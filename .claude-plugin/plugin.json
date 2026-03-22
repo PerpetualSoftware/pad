@@ -1,0 +1,8 @@
+{
+  "name": "pad",
+  "description": "A shared knowledge base for developers and AI agents. Provides slash commands to save, load, search, and brainstorm with project planning documents stored in Pad.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Pad"
+  }
+}

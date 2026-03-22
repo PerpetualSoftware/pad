@@ -1,0 +1,60 @@
+version: 2
+
+before:
+  hooks:
+    # Build web UI before Go compilation so it gets embedded
+    - cmd: bash -c "cd web && npm ci && npm run build"
+
+builds:
+  - main: ./cmd/pad
+    binary: pad
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "pad_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: xarmian
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://getpad.dev"
+    description: "Project management for developers and AI agents"
+    license: "Apache-2.0"
+    test: |
+      system "#{bin}/pad", "--version"
+
+release:
+  github:
+    owner: xarmian
+    name: pad
+  draft: false
+  prerelease: auto
+  name_template: "Pad v{{.Version}}"

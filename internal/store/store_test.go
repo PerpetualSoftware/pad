@@ -1,0 +1,582 @@
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/xarmian/pad/internal/models"
+)
+
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func createTestWorkspace(t *testing.T, s *Store, name string) *models.Workspace {
+	t.Helper()
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: name})
+	if err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+	return ws
+}
+
+func createTestDoc(t *testing.T, s *Store, workspaceID, title, content string) *models.Document {
+	t.Helper()
+	doc, err := s.CreateDocument(workspaceID, models.DocumentCreate{
+		Title:   title,
+		Content: content,
+		DocType: "notes",
+		Status:  "active",
+	})
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+	return doc
+}
+
+func TestNewStore(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer s.Close()
+
+	// DB file should exist
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Error("database file was not created")
+	}
+}
+
+// --- Workspace Tests ---
+
+func TestWorkspaceCRUD(t *testing.T) {
+	s := testStore(t)
+
+	// Create
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "My App"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace error: %v", err)
+	}
+	if ws.Name != "My App" {
+		t.Errorf("expected name 'My App', got %q", ws.Name)
+	}
+	if ws.Slug != "my-app" {
+		t.Errorf("expected slug 'my-app', got %q", ws.Slug)
+	}
+
+	// List
+	list, err := s.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 workspace, got %d", len(list))
+	}
+
+	// Get by slug
+	got, err := s.GetWorkspaceBySlug("my-app")
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug error: %v", err)
+	}
+	if got == nil || got.ID != ws.ID {
+		t.Error("GetWorkspaceBySlug returned wrong workspace")
+	}
+
+	// Update
+	newName := "My Updated App"
+	updated, err := s.UpdateWorkspace("my-app", models.WorkspaceUpdate{Name: &newName})
+	if err != nil {
+		t.Fatalf("UpdateWorkspace error: %v", err)
+	}
+	if updated.Name != "My Updated App" {
+		t.Errorf("expected updated name, got %q", updated.Name)
+	}
+
+	// Delete (soft)
+	err = s.DeleteWorkspace("my-app")
+	if err != nil {
+		t.Fatalf("DeleteWorkspace error: %v", err)
+	}
+
+	// Should not appear in list
+	list, _ = s.ListWorkspaces()
+	if len(list) != 0 {
+		t.Error("deleted workspace still appears in list")
+	}
+
+	// Should not be found by slug
+	got, _ = s.GetWorkspaceBySlug("my-app")
+	if got != nil {
+		t.Error("deleted workspace still found by slug")
+	}
+}
+
+func TestWorkspaceUniqueSlug(t *testing.T) {
+	s := testStore(t)
+
+	ws1, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Test"})
+	ws2, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Test"})
+
+	if ws1.Slug == ws2.Slug {
+		t.Error("duplicate slugs should not be allowed")
+	}
+	if ws2.Slug != "test-2" {
+		t.Errorf("expected slug 'test-2', got %q", ws2.Slug)
+	}
+}
+
+// --- Document Tests ---
+
+func TestDocumentCRUD(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	// Create
+	doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "My Doc",
+		Content: "Hello world",
+		DocType: "notes",
+		Status:  "draft",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument error: %v", err)
+	}
+	if doc.Title != "My Doc" {
+		t.Errorf("expected title 'My Doc', got %q", doc.Title)
+	}
+	if doc.Slug != "my-doc" {
+		t.Errorf("expected slug 'my-doc', got %q", doc.Slug)
+	}
+
+	// Get
+	got, err := s.GetDocument(doc.ID)
+	if err != nil {
+		t.Fatalf("GetDocument error: %v", err)
+	}
+	if got.Content != "Hello world" {
+		t.Errorf("expected content 'Hello world', got %q", got.Content)
+	}
+
+	// Update
+	newContent := "Updated content"
+	updated, err := s.UpdateDocument(doc.ID, models.DocumentUpdate{
+		Content: &newContent,
+	})
+	if err != nil {
+		t.Fatalf("UpdateDocument error: %v", err)
+	}
+	if updated.Content != "Updated content" {
+		t.Errorf("expected updated content, got %q", updated.Content)
+	}
+
+	// List
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{})
+	if err != nil {
+		t.Fatalf("ListDocuments error: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+	}
+
+	// Delete
+	err = s.DeleteDocument(doc.ID)
+	if err != nil {
+		t.Fatalf("DeleteDocument error: %v", err)
+	}
+
+	// Should not appear in list
+	docs, _ = s.ListDocuments(ws.ID, models.DocumentListParams{})
+	if len(docs) != 0 {
+		t.Error("deleted document still appears in list")
+	}
+
+	// Restore
+	restored, err := s.RestoreDocument(doc.ID)
+	if err != nil {
+		t.Fatalf("RestoreDocument error: %v", err)
+	}
+	if restored.Status != "draft" {
+		t.Errorf("expected restored status 'draft', got %q", restored.Status)
+	}
+
+	docs, _ = s.ListDocuments(ws.ID, models.DocumentListParams{})
+	if len(docs) != 1 {
+		t.Error("restored document not in list")
+	}
+}
+
+func TestDocumentListFilters(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	// Create docs of different types and statuses
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Roadmap", DocType: "roadmap", Status: "active"})
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Plan", DocType: "phase-plan", Status: "active"})
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Notes", DocType: "notes", Status: "draft"})
+
+	// Filter by type
+	docs, _ := s.ListDocuments(ws.ID, models.DocumentListParams{Type: "roadmap"})
+	if len(docs) != 1 {
+		t.Errorf("type filter: expected 1, got %d", len(docs))
+	}
+
+	// Filter by status
+	docs, _ = s.ListDocuments(ws.ID, models.DocumentListParams{Status: "active"})
+	if len(docs) != 2 {
+		t.Errorf("status filter: expected 2, got %d", len(docs))
+	}
+
+	// Filter by pinned
+	pinned := true
+	docs, _ = s.ListDocuments(ws.ID, models.DocumentListParams{Pinned: &pinned})
+	if len(docs) != 0 {
+		t.Errorf("pinned filter: expected 0, got %d", len(docs))
+	}
+}
+
+func TestVersionCreation(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc := createTestDoc(t, s, ws.ID, "My Doc", "Version 1")
+
+	// First content update — should create a version (no previous versions exist)
+	v2 := "Version 2"
+	s.UpdateDocument(doc.ID, models.DocumentUpdate{Content: &v2})
+
+	versions, err := s.ListVersions(doc.ID)
+	if err != nil {
+		t.Fatalf("ListVersions error: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 version after first update, got %d", len(versions))
+	}
+
+	// Second rapid update (same actor, same source, within throttle) — should NOT create a version
+	v3 := "Version 3"
+	s.UpdateDocument(doc.ID, models.DocumentUpdate{Content: &v3})
+
+	versions, _ = s.ListVersions(doc.ID)
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 version after rapid second update (throttled), got %d", len(versions))
+	}
+
+	// Resolve the version to verify content
+	doc2, _ := s.GetDocument(doc.ID)
+	resolved, _ := s.ListVersionsResolved(doc.ID, doc2.Content)
+	if resolved[0].Content != "Version 1" {
+		t.Errorf("expected resolved version content 'Version 1', got %q", resolved[0].Content)
+	}
+}
+
+func TestVersionCreationActorChange(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc := createTestDoc(t, s, ws.ID, "My Doc", "Original")
+
+	// Update as user
+	v2 := "User edit"
+	s.UpdateDocument(doc.ID, models.DocumentUpdate{Content: &v2, LastModifiedBy: "user", Source: "web"})
+
+	// Update as agent — should force a new version despite throttle
+	v3 := "Agent edit"
+	s.UpdateDocument(doc.ID, models.DocumentUpdate{Content: &v3, LastModifiedBy: "agent", Source: "cli"})
+
+	versions, _ := s.ListVersions(doc.ID)
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 versions (actor change forces version), got %d", len(versions))
+	}
+}
+
+func TestVersionNotCreatedWithoutContentChange(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc := createTestDoc(t, s, ws.ID, "My Doc", "Content")
+
+	// Update only status — should NOT create a version
+	newStatus := "active"
+	s.UpdateDocument(doc.ID, models.DocumentUpdate{Status: &newStatus})
+
+	versions, _ := s.ListVersions(doc.ID)
+	if len(versions) != 0 {
+		t.Errorf("expected 0 versions for non-content change, got %d", len(versions))
+	}
+}
+
+func TestQuickSave(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	// First save — creates new doc
+	doc, err := s.QuickSave(ws.ID, models.QuickSave{
+		Title:   "Quick Doc",
+		Content: "Initial",
+		DocType: "notes",
+	})
+	if err != nil {
+		t.Fatalf("QuickSave create error: %v", err)
+	}
+	if doc.Content != "Initial" {
+		t.Errorf("expected 'Initial', got %q", doc.Content)
+	}
+
+	// Second save — updates existing doc
+	doc2, err := s.QuickSave(ws.ID, models.QuickSave{
+		Title:   "Quick Doc",
+		Content: "Updated",
+	})
+	if err != nil {
+		t.Fatalf("QuickSave update error: %v", err)
+	}
+	if doc2.ID != doc.ID {
+		t.Error("quick save should have updated existing doc, not created new one")
+	}
+	if doc2.Content != "Updated" {
+		t.Errorf("expected 'Updated', got %q", doc2.Content)
+	}
+
+	// Should also have created a version
+	versions, _ := s.ListVersions(doc.ID)
+	if len(versions) != 1 {
+		t.Errorf("expected 1 version after quick save update, got %d", len(versions))
+	}
+}
+
+func TestBulkRead(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc1 := createTestDoc(t, s, ws.ID, "Doc 1", "Content 1")
+	doc2 := createTestDoc(t, s, ws.ID, "Doc 2", "Content 2")
+	createTestDoc(t, s, ws.ID, "Doc 3", "Content 3")
+
+	docs, err := s.BulkRead([]string{doc1.ID, doc2.ID})
+	if err != nil {
+		t.Fatalf("BulkRead error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("expected 2 docs, got %d", len(docs))
+	}
+}
+
+func TestDocumentLinking(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc1 := createTestDoc(t, s, ws.ID, "Architecture", "The architecture doc")
+	createTestDoc(t, s, ws.ID, "Phase Plan", "See [[Architecture]] for details")
+
+	// Get backlinks for Architecture
+	backlinks, err := s.GetBacklinks(ws.ID, doc1.Title)
+	if err != nil {
+		t.Fatalf("GetBacklinks error: %v", err)
+	}
+	if len(backlinks) != 1 {
+		t.Errorf("expected 1 backlink, got %d", len(backlinks))
+	}
+	if len(backlinks) > 0 && backlinks[0].Title != "Phase Plan" {
+		t.Errorf("expected backlink from 'Phase Plan', got %q", backlinks[0].Title)
+	}
+
+	// Get links from Phase Plan
+	phasePlan, _ := s.GetDocumentByTitle(ws.ID, "Phase Plan")
+	linkedDocs, err := s.GetLinks(ws.ID, phasePlan.Content)
+	if err != nil {
+		t.Fatalf("GetLinks error: %v", err)
+	}
+	if len(linkedDocs) != 1 {
+		t.Errorf("expected 1 link, got %d", len(linkedDocs))
+	}
+}
+
+func TestDocumentLinkRename(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	createTestDoc(t, s, ws.ID, "Old Name", "The original doc")
+	refDoc := createTestDoc(t, s, ws.ID, "Referencing Doc", "See [[Old Name]] for details")
+
+	// Rename the document
+	newTitle := "New Name"
+	s.UpdateDocument(refDoc.ID, models.DocumentUpdate{}) // ensure the first doc exists
+
+	// Get the original doc and rename it
+	origDoc, _ := s.GetDocumentByTitle(ws.ID, "Old Name")
+	_, err := s.UpdateDocument(origDoc.ID, models.DocumentUpdate{Title: &newTitle})
+	if err != nil {
+		t.Fatalf("rename error: %v", err)
+	}
+
+	// The referencing doc should now have [[New Name]]
+	updated, _ := s.GetDocument(refDoc.ID)
+	if updated.Content != "See [[New Name]] for details" {
+		t.Errorf("link not updated: %q", updated.Content)
+	}
+}
+
+func TestFTSSearch(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+	colls, _ := s.ListCollections(ws.ID)
+	var docsCollID string
+	for _, c := range colls {
+		if c.Slug == "docs" {
+			docsCollID = c.ID
+			break
+		}
+	}
+
+	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Auth Flow", Content: "OAuth2 authentication flow for API"})
+	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Data Model", Content: "Database schema and models"})
+
+	results, err := s.Search(SearchParams{Query: "authentication"})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].Item.Title != "Auth Flow" {
+		t.Errorf("expected 'Auth Flow', got %q", results[0].Item.Title)
+	}
+}
+
+func TestFTSSearchScoped(t *testing.T) {
+	s := testStore(t)
+	ws1 := createTestWorkspace(t, s, "Workspace 1")
+	ws2 := createTestWorkspace(t, s, "Workspace 2")
+	s.SeedDefaultCollections(ws1.ID)
+	s.SeedDefaultCollections(ws2.ID)
+
+	colls1, _ := s.ListCollections(ws1.ID)
+	colls2, _ := s.ListCollections(ws2.ID)
+	var docs1ID, docs2ID string
+	for _, c := range colls1 {
+		if c.Slug == "docs" {
+			docs1ID = c.ID
+			break
+		}
+	}
+	for _, c := range colls2 {
+		if c.Slug == "docs" {
+			docs2ID = c.ID
+			break
+		}
+	}
+
+	s.CreateItem(ws1.ID, docs1ID, models.ItemCreate{Title: "Doc A", Content: "authentication in workspace 1"})
+	s.CreateItem(ws2.ID, docs2ID, models.ItemCreate{Title: "Doc B", Content: "authentication in workspace 2"})
+
+	// Unscoped — should find both
+	results, _ := s.Search(SearchParams{Query: "authentication"})
+	if len(results) != 2 {
+		t.Errorf("unscoped: expected 2 results, got %d", len(results))
+	}
+
+	// Scoped — should find one
+	results, _ = s.Search(SearchParams{Query: "authentication", Workspace: ws1.Slug})
+	if len(results) != 1 {
+		t.Errorf("scoped: expected 1 result, got %d", len(results))
+	}
+}
+
+func TestContext(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	createTestDoc(t, s, ws.ID, "Active Doc", "content")     // active
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Draft Doc", Status: "draft"})  // draft
+
+	// Pin one doc
+	draftDocs, _ := s.ListDocuments(ws.ID, models.DocumentListParams{Status: "draft"})
+	if len(draftDocs) > 0 {
+		pinned := true
+		s.UpdateDocument(draftDocs[0].ID, models.DocumentUpdate{Pinned: &pinned})
+	}
+
+	// Context should return active + pinned
+	docs, err := s.GetContext(ws.ID, nil, true)
+	if err != nil {
+		t.Fatalf("GetContext error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("expected 2 context docs, got %d", len(docs))
+	}
+}
+
+func TestActivity(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
+
+	s.CreateActivity(models.Activity{
+		WorkspaceID: ws.ID,
+		DocumentID:  doc.ID,
+		Action:      "created",
+		Actor:       "user",
+		Source:      "web",
+	})
+	s.CreateActivity(models.Activity{
+		WorkspaceID: ws.ID,
+		DocumentID:  doc.ID,
+		Action:      "updated",
+		Actor:       "agent",
+		Source:      "skill",
+	})
+
+	// Workspace activity
+	activities, err := s.ListWorkspaceActivity(ws.ID, models.ActivityListParams{})
+	if err != nil {
+		t.Fatalf("ListWorkspaceActivity error: %v", err)
+	}
+	if len(activities) != 2 {
+		t.Errorf("expected 2 activities, got %d", len(activities))
+	}
+
+	// Filter by actor
+	activities, _ = s.ListWorkspaceActivity(ws.ID, models.ActivityListParams{Actor: "agent"})
+	if len(activities) != 1 {
+		t.Errorf("expected 1 agent activity, got %d", len(activities))
+	}
+
+	// Document activity
+	activities, _ = s.ListDocumentActivity(doc.ID, models.ActivityListParams{})
+	if len(activities) != 2 {
+		t.Errorf("expected 2 doc activities, got %d", len(activities))
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"My App", "my-app"},
+		{"Phase 1: Core API", "phase-1-core-api"},
+		{"Hello World!!!", "hello-world"},
+		{"   spaces   ", "spaces"},
+		{"UPPERCASE", "uppercase"},
+		{"already-slugified", "already-slugified"},
+		{"dots.and.more", "dots-and-more"},
+	}
+	for _, tt := range tests {
+		got := slugify(tt.input)
+		if got != tt.expected {
+			t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}

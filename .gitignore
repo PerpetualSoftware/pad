@@ -1,0 +1,44 @@
+# Binary
+/pad
+/pad.exe
+
+# Web build output
+web/build/
+web/node_modules/
+web/.svelte-kit/
+
+# Pad workspace data (local to each user)
+.pad/
+.pad.toml
+
+# Legacy planning docs (not for public repo)
+v1-archive/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Distribution
+dist/

@@ -1,0 +1,2 @@
+ALTER TABLE collections ADD COLUMN prefix TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN item_number INTEGER;
