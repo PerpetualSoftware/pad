@@ -113,13 +113,21 @@
 		}
 	});
 
+	function showSaved() {
+		saveStatus = 'saved';
+		clearTimeout(saveStatusTimer);
+		saveStatusTimer = setTimeout(() => { saveStatus = 'idle'; }, 2000);
+	}
+
 	async function saveTitle() {
 		editingTitle = false;
 		if (!item || titleDraft.trim() === item.title) return;
+		saveStatus = 'saving';
 		try {
 			item = await api.items.update(wsSlug, item.slug, { title: titleDraft.trim() });
-			toastStore.show('Title updated', 'success');
+			showSaved();
 		} catch {
+			saveStatus = 'idle';
 			toastStore.show('Failed to update title', 'error');
 		}
 	}
@@ -136,10 +144,12 @@
 	async function updateField(key: string, value: any) {
 		if (!item) return;
 		const updated = { ...fields, [key]: value };
+		saveStatus = 'saving';
 		try {
 			item = await api.items.update(wsSlug, item.slug, { fields: JSON.stringify(updated) });
-			toastStore.show(`Updated ${key}`, 'success');
+			showSaved();
 		} catch {
+			saveStatus = 'idle';
 			toastStore.show('Failed to save', 'error');
 		}
 	}

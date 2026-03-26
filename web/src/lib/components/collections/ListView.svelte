@@ -43,15 +43,20 @@
 	let displayGroups = $derived.by(() => {
 		const known = new Set(groupOptions);
 		const extra: string[] = [];
+		let hasUngrouped = false;
 		for (const item of items) {
 			const fields = parseFields(item);
 			const value = fields[groupField] ?? '';
-			if (value && !known.has(value)) {
+			if (!value) {
+				hasUngrouped = true;
+			} else if (!known.has(value)) {
 				known.add(value);
 				extra.push(value);
 			}
 		}
-		return [...groupOptions, ...extra.sort()];
+		const groups = [...groupOptions, ...extra.sort()];
+		if (hasUngrouped) groups.push('');
+		return groups;
 	});
 
 	let collapsedGroups = new SvelteSet<string>();
@@ -70,8 +75,8 @@
 		}
 		for (const item of items) {
 			const fields = parseFields(item);
-			const value = fields[groupField] ?? 'none';
-			if (result[value]) {
+			const value = fields[groupField] ?? '';
+			if (result[value] !== undefined) {
 				result[value].push(item);
 			} else {
 				result[value] = [item];
@@ -143,6 +148,7 @@
 	}
 
 	function formatLabel(value: string): string {
+		if (!value) return 'Uncategorized';
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 </script>
