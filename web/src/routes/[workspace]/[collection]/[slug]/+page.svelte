@@ -7,14 +7,15 @@
 	import VersionHistory from '$lib/components/versions/VersionHistory.svelte';
 	import CommentThread from '$lib/components/comments/CommentThread.svelte';
 	import PhaseTasks from '$lib/components/phases/PhaseTasks.svelte';
+	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Item, Collection, CollectionSettings } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
 
-	let wsSlug = $derived(page.params.workspace);
-	let collSlug = $derived(page.params.collection);
-	let itemSlug = $derived(page.params.slug);
+	let wsSlug = $derived(page.params.workspace ?? '');
+	let collSlug = $derived(page.params.collection ?? '');
+	let itemSlug = $derived(page.params.slug ?? '');
 
 	let item = $state<Item | null>(null);
 	let collection = $state<Collection | null>(null);
@@ -45,6 +46,8 @@
 	let saveStatus = $state<'idle' | 'saving' | 'saved'>('idle');
 	let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
 	let showHistory = $state(false);
+	let confirmDelete = $state(false);
+	let deleting = $state(false);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -193,6 +196,20 @@
 		item = updatedItem;
 		showHistory = false;
 	}
+
+	async function handleDelete() {
+		if (!item) return;
+		deleting = true;
+		try {
+			await api.items.delete(wsSlug, item.slug);
+			toastStore.show('Item deleted', 'success');
+			goto(`/${wsSlug}/${collSlug}`);
+		} catch {
+			toastStore.show('Failed to delete item', 'error');
+			deleting = false;
+			confirmDelete = false;
+		}
+	}
 </script>
 
 {#if loading}
@@ -240,13 +257,30 @@
 			{:else if saveStatus === 'saved'}
 				<span class="save-status saved">✓ Saved</span>
 			{/if}
-			<button
-				class="history-btn"
-				class:active={showHistory}
-				onclick={() => { showHistory = !showHistory; }}
-			>
-				History
-			</button>
+			<div class="meta-actions">
+				<button
+					class="history-btn"
+					class:active={showHistory}
+					onclick={() => { showHistory = !showHistory; }}
+				>
+					History
+				</button>
+				{#if confirmDelete}
+					<span class="delete-confirm">
+						Delete this item?
+						<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
+							{deleting ? '...' : 'Yes'}
+						</button>
+						<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
+							No
+						</button>
+					</span>
+				{:else}
+					<button class="history-btn delete-btn" onclick={() => { confirmDelete = true; }}>
+						Delete
+					</button>
+				{/if}
+			</div>
 		</div>
 
 		<!-- Layout wrapper -->
@@ -549,8 +583,13 @@
 	}
 
 	/* History */
-	.history-btn {
+	.meta-actions {
 		margin-left: auto;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.history-btn {
 		padding: 2px var(--space-3);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
@@ -568,6 +607,43 @@
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
+	}
+	.delete-btn:hover {
+		color: var(--accent-orange);
+		border-color: var(--accent-orange);
+	}
+	.delete-confirm {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.85em;
+		color: var(--accent-orange);
+		font-weight: 500;
+	}
+	.delete-confirm-btn {
+		padding: 2px var(--space-2);
+		border-radius: var(--radius);
+		font-size: 0.85em;
+		cursor: pointer;
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+	}
+	.delete-confirm-btn.yes {
+		color: var(--accent-orange);
+		border-color: var(--accent-orange);
+	}
+	.delete-confirm-btn.yes:hover {
+		background: var(--accent-orange);
+		color: #fff;
+	}
+	.delete-confirm-btn.no:hover {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+	}
+	.delete-confirm-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 	.modal-backdrop {
 		position: fixed;
