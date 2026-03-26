@@ -57,12 +57,20 @@ type CollectionCreate struct {
 	IsDefault   bool   `json:"is_default,omitempty"`
 }
 
+// FieldMigration describes a bulk update to apply to existing items when
+// a collection schema changes (e.g. renaming select options).
+type FieldMigration struct {
+	Field         string            `json:"field"`                    // field key to migrate
+	RenameOptions map[string]string `json:"rename_options,omitempty"` // old_value → new_value
+}
+
 type CollectionUpdate struct {
-	Name        *string `json:"name,omitempty"`
-	Prefix      *string `json:"prefix,omitempty"`
-	Icon        *string `json:"icon,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Schema      *string `json:"schema,omitempty"`
-	Settings    *string `json:"settings,omitempty"`
-	SortOrder   *int    `json:"sort_order,omitempty"`
+	Name        *string          `json:"name,omitempty"`
+	Prefix      *string          `json:"prefix,omitempty"`
+	Icon        *string          `json:"icon,omitempty"`
+	Description *string          `json:"description,omitempty"`
+	Schema      *string          `json:"schema,omitempty"`
+	Settings    *string          `json:"settings,omitempty"`
+	SortOrder   *int             `json:"sort_order,omitempty"`
+	Migrations  []FieldMigration `json:"migrations,omitempty"`
 }

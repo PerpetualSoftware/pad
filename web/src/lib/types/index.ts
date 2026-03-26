@@ -74,6 +74,11 @@ export interface CollectionCreate {
 	settings?: string;
 }
 
+export interface FieldMigration {
+	field: string;
+	rename_options?: Record<string, string>;
+}
+
 export interface CollectionUpdate {
 	name?: string;
 	icon?: string;
@@ -81,6 +86,7 @@ export interface CollectionUpdate {
 	schema?: string;
 	settings?: string;
 	sort_order?: number;
+	migrations?: FieldMigration[];
 }
 
 // ─── Items ───────────────────────────────────────────────────────────────────

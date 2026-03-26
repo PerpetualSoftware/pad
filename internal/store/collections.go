@@ -228,6 +228,42 @@ func (s *Store) DeleteCollection(id string) error {
 	return nil
 }
 
+// MigrateItemFieldValues bulk-updates items in a collection when select
+// options are renamed. Each entry in renames maps old_value → new_value
+// for the given field key.
+func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.FieldMigration) (int64, error) {
+	if len(migrations) == 0 {
+		return 0, nil
+	}
+
+	ts := now()
+	var totalAffected int64
+
+	for _, m := range migrations {
+		for oldVal, newVal := range m.RenameOptions {
+			if oldVal == newVal {
+				continue
+			}
+			fieldPath := fmt.Sprintf("$.%s", m.Field)
+			result, err := s.db.Exec(`
+				UPDATE items
+				SET fields = json_set(fields, ?, ?),
+				    updated_at = ?
+				WHERE collection_id = ?
+				  AND json_extract(fields, ?) = ?
+				  AND deleted_at IS NULL
+			`, fieldPath, newVal, ts, collectionID, fieldPath, oldVal)
+			if err != nil {
+				return totalAffected, fmt.Errorf("migrate field %s (%s → %s): %w", m.Field, oldVal, newVal, err)
+			}
+			n, _ := result.RowsAffected()
+			totalAffected += n
+		}
+	}
+
+	return totalAffected, nil
+}
+
 func (s *Store) SeedDefaultCollections(workspaceID string) error {
 	return s.SeedCollectionsFromTemplate(workspaceID, "")
 }

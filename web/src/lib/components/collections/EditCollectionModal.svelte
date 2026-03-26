@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { Collection, CollectionUpdate, FieldDef } from '$lib/types';
+	import type { Collection, CollectionUpdate, FieldDef, FieldMigration } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -26,26 +26,52 @@
 		'relation'
 	];
 
+	// ── Core form state ──────────────────────────────────────────────────────
+
 	let name = $state('');
 	let selectedIcon = $state('');
 	let description = $state('');
 	let showEmojiPicker = $state(false);
-	let existingFields = $state<(FieldDef & { _optionsText: string })[]>([]);
-	let newFields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
 	let saving = $state(false);
 	let error = $state('');
 
-	// Sync from collection when modal opens
+	// ── Field editing state ──────────────────────────────────────────────────
+
+	interface EditableField {
+		key: string;
+		label: string;
+		type: FieldDef['type'];
+		options: string[];
+		originalOptions: string[];
+		required?: boolean;
+		computed?: boolean;
+		collection?: string;
+		suffix?: string;
+		default?: any;
+	}
+
+	let existingFields = $state<EditableField[]>([]);
+	let newFields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
+
+	// ── Sync from collection when modal opens ────────────────────────────────
+
 	$effect(() => {
 		if (open && collection) {
 			name = collection.name;
 			selectedIcon = collection.icon || '';
 			description = collection.description || '';
 			const schema = parseSchema(collection);
-			existingFields = schema.fields.map(f => ({
-				...f,
-				options: f.options ? [...f.options] : undefined,
-				_optionsText: f.options?.length ? f.options.join(', ') : ''
+			existingFields = schema.fields.map((f) => ({
+				key: f.key,
+				label: f.label || f.key,
+				type: f.type,
+				options: f.options ? [...f.options] : [],
+				originalOptions: f.options ? [...f.options] : [],
+				required: f.required,
+				computed: f.computed,
+				collection: f.collection,
+				suffix: f.suffix,
+				default: f.default
 			}));
 			newFields = [];
 			showEmojiPicker = false;
@@ -53,19 +79,92 @@
 		}
 	});
 
+	// ── Existing field actions ───────────────────────────────────────────────
+
+	function moveField(index: number, direction: -1 | 1) {
+		const target = index + direction;
+		if (target < 0 || target >= existingFields.length) return;
+		const temp = existingFields[index];
+		existingFields[index] = existingFields[target];
+		existingFields[target] = temp;
+	}
+
+	function removeExistingField(index: number) {
+		existingFields.splice(index, 1);
+	}
+
+	// ── Option editing for select fields ─────────────────────────────────────
+
+	function removeOption(field: EditableField, optIndex: number) {
+		field.options.splice(optIndex, 1);
+	}
+
+	function addOption(field: EditableField) {
+		field.options.push('');
+	}
+
+	// ── New field actions ────────────────────────────────────────────────────
+
 	function addField() {
 		newFields.push({ key: '', type: 'text', options: '' });
 	}
 
-	function removeField(index: number) {
+	function removeNewField(index: number) {
 		newFields.splice(index, 1);
 	}
+
+	// ── Build migrations ─────────────────────────────────────────────────────
+
+	function buildMigrations(): FieldMigration[] {
+		const migrations: FieldMigration[] = [];
+
+		for (const field of existingFields) {
+			if (field.type !== 'select' && field.type !== 'multi_select') continue;
+			if (field.originalOptions.length === 0) continue;
+
+			const renames: Record<string, string> = {};
+			for (let i = 0; i < field.originalOptions.length; i++) {
+				const oldVal = field.originalOptions[i];
+				const newVal = field.options[i];
+				if (newVal !== undefined && newVal !== oldVal && newVal.trim() !== '') {
+					renames[oldVal] = newVal.trim();
+				}
+			}
+
+			if (Object.keys(renames).length > 0) {
+				migrations.push({ field: field.key, rename_options: renames });
+			}
+		}
+
+		return migrations;
+	}
+
+	// ── Save ─────────────────────────────────────────────────────────────────
 
 	async function handleSave() {
 		if (!name.trim() || saving) return;
 		saving = true;
 		error = '';
 		try {
+			// Build existing fields back into FieldDef[]
+			const updatedExisting: FieldDef[] = existingFields.map((f) => {
+				const def: FieldDef = {
+					key: f.key,
+					label: f.label.trim() || f.key,
+					type: f.type
+				};
+				if ((f.type === 'select' || f.type === 'multi_select') && f.options.length > 0) {
+					def.options = f.options.map((o) => o.trim()).filter(Boolean);
+				}
+				if (f.required) def.required = true;
+				if (f.computed) def.computed = true;
+				if (f.collection) def.collection = f.collection;
+				if (f.suffix) def.suffix = f.suffix;
+				if (f.default !== undefined) def.default = f.default;
+				return def;
+			});
+
+			// Build new fields
 			const addedFields: FieldDef[] = newFields
 				.filter((f) => f.key.trim())
 				.map((f) => {
@@ -79,16 +178,8 @@
 					return def;
 				});
 
-			// Apply options edits back to existing fields
-			const updatedExisting = existingFields.map(({ _optionsText, ...f }) => {
-				const def = { ...f };
-				if ((def.type === 'select' || def.type === 'multi_select') && _optionsText.trim()) {
-					def.options = _optionsText.split(',').map(o => o.trim()).filter(Boolean);
-				}
-				return def;
-			});
-
 			const allFields = [...updatedExisting, ...addedFields];
+			const migrations = buildMigrations();
 
 			const data: CollectionUpdate = {
 				name: name.trim(),
@@ -96,6 +187,10 @@
 				description: description.trim() || undefined,
 				schema: JSON.stringify({ fields: allFields })
 			};
+
+			if (migrations.length > 0) {
+				data.migrations = migrations;
+			}
 
 			await api.collections.update(wsSlug, collection.slug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
@@ -168,32 +263,84 @@
 					bind:value={description}
 				/>
 
+				<!-- Existing fields -->
 				{#if existingFields.length > 0}
 					<div class="fields-section">
 						<div class="fields-header">
 							<span class="fields-label">Fields</span>
 						</div>
-						{#each existingFields as field (field.key)}
-							<div class="field-row">
-								<span class="field-name-display">{field.label || field.key}</span>
-								<select class="field-type-select" bind:value={field.type}>
-									{#each FIELD_TYPES as ft (ft)}
-										<option value={ft}>{ft.replace('_', ' ')}</option>
-									{/each}
-								</select>
-								{#if field.type === 'select' || field.type === 'multi_select'}
+						{#each existingFields as field, i (field.key)}
+							<div class="field-card">
+								<div class="field-row">
+									<div class="field-reorder">
+										<button
+											class="reorder-btn"
+											type="button"
+											disabled={i === 0}
+											onclick={() => moveField(i, -1)}
+											title="Move up"
+										>&#9650;</button>
+										<button
+											class="reorder-btn"
+											type="button"
+											disabled={i === existingFields.length - 1}
+											onclick={() => moveField(i, 1)}
+											title="Move down"
+										>&#9660;</button>
+									</div>
 									<input
-										class="field-options-input"
+										class="field-label-input"
 										type="text"
-										placeholder="option1, option2, ..."
-										bind:value={field._optionsText}
+										bind:value={field.label}
+										placeholder="Field label"
 									/>
+									<select class="field-type-select" bind:value={field.type}>
+										{#each FIELD_TYPES as ft (ft)}
+											<option value={ft}>{ft.replace('_', ' ')}</option>
+										{/each}
+									</select>
+									<button
+										class="remove-field-btn"
+										type="button"
+										onclick={() => removeExistingField(i)}
+										title="Remove field"
+									>&#10005;</button>
+								</div>
+
+								{#if field.type === 'select' || field.type === 'multi_select'}
+									<div class="options-area">
+										<div class="options-list">
+											{#each field.options as _opt, oi (oi)}
+												<div class="option-chip">
+													<input
+														class="option-input"
+														type="text"
+														bind:value={field.options[oi]}
+														placeholder="option"
+													/>
+													<button
+														class="option-remove"
+														type="button"
+														onclick={() => removeOption(field, oi)}
+														title="Remove option"
+													>&#10005;</button>
+												</div>
+											{/each}
+											<button
+												class="option-add-btn"
+												type="button"
+												onclick={() => addOption(field)}
+												title="Add option"
+											>+</button>
+										</div>
+									</div>
 								{/if}
 							</div>
 						{/each}
 					</div>
 				{/if}
 
+				<!-- Add new fields -->
 				<div class="fields-section">
 					<div class="fields-header">
 						<span class="fields-label">Add Fields</span>
@@ -224,10 +371,8 @@
 							<button
 								class="remove-field-btn"
 								type="button"
-								onclick={() => removeField(i)}
-							>
-								&#10005;
-							</button>
+								onclick={() => removeNewField(i)}
+							>&#10005;</button>
 						</div>
 					{/each}
 				</div>
@@ -444,7 +589,19 @@
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
 
-	/* ── Existing field rows (read-only) ────────────────────────────────────── */
+	/* ── Field card (existing fields) ──────────────────────────────────────── */
+
+	.field-card {
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-3);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	/* ── Field rows ────────────────────────────────────────────────────────── */
 
 	.field-row {
 		display: flex;
@@ -453,37 +610,166 @@
 		flex-wrap: wrap;
 	}
 
-	.field-row.existing {
-		opacity: 0.7;
+	/* ── Reorder buttons ───────────────────────────────────────────────────── */
+
+	.field-reorder {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+
+	.reorder-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.6em;
+		cursor: pointer;
+		padding: 0 var(--space-1);
+		line-height: 1.2;
+		border-radius: var(--radius-sm);
+	}
+
+	.reorder-btn:hover:not(:disabled) {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.reorder-btn:disabled {
+		opacity: 0.25;
 		cursor: default;
 	}
 
-	.field-name-display {
+	/* ── Field label input (existing fields) ───────────────────────────────── */
+
+	.field-label-input {
+		flex: 1;
+		min-width: 100px;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
 		font-size: 0.88em;
 		color: var(--text-primary);
-		flex: 1;
-		min-width: 0;
 	}
 
-	.field-type-display {
-		font-size: 0.8em;
+	.field-label-input:hover {
+		border-color: var(--border);
+	}
+
+	.field-label-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	/* ── Field type select ─────────────────────────────────────────────────── */
+
+	.field-type-select {
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		font-size: 0.82em;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+
+	.field-type-select:hover {
+		border-color: var(--border);
+	}
+
+	.field-type-select:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	/* ── Remove field button ───────────────────────────────────────────────── */
+
+	.remove-field-btn {
+		background: none;
+		border: none;
 		color: var(--text-muted);
-		background: var(--bg-tertiary);
-		padding: 1px 8px;
-		border-radius: 10px;
-		font-family: var(--font-mono);
+		font-size: 0.85em;
+		cursor: pointer;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+		line-height: 1;
 	}
 
-	.field-options-display {
+	.remove-field-btn:hover {
+		color: var(--accent-red, #ef4444);
+		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+	}
+
+	/* ── Options area (select / multi_select) ──────────────────────────────── */
+
+	.options-area {
+		padding-left: 28px;
+	}
+
+	.options-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
+		align-items: center;
+	}
+
+	.option-chip {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		padding: 1px 4px 1px 8px;
+	}
+
+	.option-input {
+		background: transparent;
+		border: none;
+		outline: none;
+		color: var(--text-primary);
 		font-size: 0.8em;
-		color: var(--text-muted);
-		flex: 2;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		width: 72px;
+		padding: 2px 0;
 	}
 
-	/* ── New field rows (editable) ──────────────────────────────────────────── */
+	.option-input:focus {
+		color: var(--accent-blue);
+	}
+
+	.option-remove {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.7em;
+		cursor: pointer;
+		padding: 2px 4px;
+		border-radius: 50%;
+		line-height: 1;
+	}
+
+	.option-remove:hover {
+		color: var(--accent-red, #ef4444);
+		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
+	}
+
+	.option-add-btn {
+		background: none;
+		border: 1px dashed var(--border);
+		color: var(--text-muted);
+		font-size: 0.82em;
+		cursor: pointer;
+		padding: 2px 10px;
+		border-radius: 12px;
+		line-height: 1.4;
+	}
+
+	.option-add-btn:hover {
+		color: var(--accent-blue);
+		border-color: var(--accent-blue);
+	}
+
+	/* ── New field rows ────────────────────────────────────────────────────── */
 
 	.field-name-input {
 		flex: 1;
@@ -505,25 +791,6 @@
 		outline: none;
 	}
 
-	.field-type-select {
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		color: var(--text-primary);
-		cursor: pointer;
-	}
-
-	.field-type-select:hover {
-		border-color: var(--border);
-	}
-
-	.field-type-select:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
 	.field-options-input {
 		flex: 1 1 100%;
 		padding: var(--space-2) var(--space-3);
@@ -541,22 +808,6 @@
 	.field-options-input:focus {
 		border-color: var(--accent-blue);
 		outline: none;
-	}
-
-	.remove-field-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.85em;
-		cursor: pointer;
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		line-height: 1;
-	}
-
-	.remove-field-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
 	/* ── Footer ─────────────────────────────────────────────────────────────── */

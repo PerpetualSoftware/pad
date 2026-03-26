@@ -100,6 +100,10 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Extract migrations before updating (they're not stored on the collection)
+	migrations := input.Migrations
+	input.Migrations = nil
+
 	updated, err := s.store.UpdateCollection(coll.ID, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -108,6 +112,14 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	if updated == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
+	}
+
+	// Apply field value migrations to existing items
+	if len(migrations) > 0 {
+		if _, err := s.store.MigrateItemFieldValues(coll.ID, migrations); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Schema updated but migration failed: "+err.Error())
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, updated)
