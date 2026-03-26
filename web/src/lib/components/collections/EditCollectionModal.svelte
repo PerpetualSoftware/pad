@@ -46,9 +46,7 @@
 			existingFields = schema.fields.map(f => ({ ...f, options: f.options ? [...f.options] : undefined }));
 			const optsText: Record<string, string> = {};
 			for (const f of existingFields) {
-				if (f.options?.length) {
-					optsText[f.key] = f.options.join(', ');
-				}
+				optsText[f.key] = f.options?.length ? f.options.join(', ') : '';
 			}
 			existingOptionsText = optsText;
 			newFields = [];

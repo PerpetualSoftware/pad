@@ -4,8 +4,9 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import Editor from '$lib/components/editor/Editor.svelte';
-	import type { Collection } from '$lib/types';
-	import { getStatusOptions } from '$lib/types';
+	import type { Collection, FieldDef } from '$lib/types';
+	import { getStatusOptions, parseSchema } from '$lib/types';
+	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	let wsSlug = $derived(page.params.workspace);
@@ -17,8 +18,13 @@
 	let content = $state('');
 	let creating = $state(false);
 
+	let extraFields = $state<Record<string, any>>({});
+
 	let activeColl = $derived(collections.find(c => c.slug === selectedColl));
+	let schema = $derived(activeColl ? parseSchema(activeColl) : { fields: [] });
 	let statusOptions = $derived(activeColl ? getStatusOptions(activeColl) : []);
+	// Non-status, non-computed fields that should show on create form
+	let editableFields = $derived(schema.fields.filter(f => f.key !== 'status' && !f.computed));
 	let status = $derived(statusOverride ?? (statusOptions.length > 0 ? statusOptions[0] : ''));
 	let showEditor = $derived(activeColl ? (() => {
 		try { return JSON.parse(activeColl.settings).layout === 'content-primary'; } catch { return false; }
@@ -54,7 +60,7 @@
 		if (!title.trim() || !selectedColl) return;
 		creating = true;
 		try {
-			const fields: Record<string, any> = {};
+			const fields: Record<string, any> = { ...extraFields };
 			if (status) fields.status = status;
 			const item = await api.items.create(wsSlug, selectedColl, {
 				title: title.trim(),
@@ -78,7 +84,7 @@
 	<div class="form">
 		<label>
 			<span>Collection</span>
-			<select bind:value={selectedColl} onchange={() => { statusOverride = null; }}>
+			<select bind:value={selectedColl} onchange={() => { statusOverride = null; extraFields = {}; }}>
 				{#each collections as coll (coll.slug)}
 					<option value={coll.slug}>{coll.icon} {coll.name}</option>
 				{/each}
@@ -100,6 +106,18 @@
 				</select>
 			</label>
 		{/if}
+
+		{#each editableFields as field (field.key)}
+			<label>
+				<span>{field.label}</span>
+				<FieldEditor
+					{field}
+					value={extraFields[field.key] ?? ''}
+					onchange={(v) => { extraFields[field.key] = v; }}
+					wsSlug={wsSlug}
+				/>
+			</label>
+		{/each}
 
 		{#if showEditor}
 			<div class="editor-wrap">
