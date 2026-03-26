@@ -241,6 +241,10 @@
 				</a>
 
 				{#if sidebarCollections.length > 0}
+					<div class="section-header">
+						<span class="section-label">Collections</span>
+					</div>
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="nav-section"
 						use:dndzone={{items: sidebarCollections, flipDurationMs, type: 'sidebar-collection', dragDisabled: uiStore.isTouch}}
@@ -250,10 +254,11 @@
 						{#each sidebarCollections as collection (collection.id)}
 							<a
 								href="/{wsSlug}/{collection.slug}"
-								class="nav-item"
+								class="nav-item draggable"
 								class:active={activeCollectionSlug === collection.slug}
 								onclick={() => uiStore.onNavigate()}
 							>
+								<span class="drag-handle" title="Drag to reorder">⠿</span>
 								<span class="nav-icon">{collection.icon}</span>
 								<span class="nav-label">{collection.name}</span>
 								{#if collection.item_count != null}
@@ -265,7 +270,9 @@
 				{/if}
 
 				{#if agentCollections.length > 0}
-					<div class="nav-spacer"></div>
+					<div class="section-header agent-section">
+						<span class="section-label">Agent</span>
+					</div>
 					{#each agentCollections as collection (collection.id)}
 						<a
 							href="/{wsSlug}/{collection.slug}"
@@ -373,11 +380,20 @@
 		flex: 1;
 		min-height: 0;
 	}
-	.nav-spacer {
-		height: 1px;
-		background: var(--border);
-		margin: var(--space-2) var(--space-3);
-		opacity: 0.5;
+	.section-header {
+		padding: var(--space-3) var(--space-3) var(--space-1);
+	}
+	.section-header.agent-section {
+		margin-top: var(--space-2);
+		border-top: 1px solid var(--border);
+		padding-top: var(--space-3);
+	}
+	.section-label {
+		font-size: 0.7em;
+		font-weight: 600;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 	}
 	.nav-section {
 		display: flex;
@@ -395,10 +411,30 @@
 		text-decoration: none;
 		transition: background 0.15s ease, color 0.15s ease;
 	}
-	.nav-section .nav-item {
+	.nav-item.draggable {
 		cursor: grab;
 	}
-	.nav-section .nav-item:active {
+	.nav-item.draggable:active {
+		cursor: grabbing;
+	}
+	.drag-handle {
+		flex-shrink: 0;
+		width: 1em;
+		text-align: center;
+		color: var(--text-muted);
+		font-size: 0.75em;
+		opacity: 0;
+		transition: opacity 0.15s;
+		cursor: grab;
+		user-select: none;
+		margin-left: -4px;
+		margin-right: -4px;
+	}
+	.nav-item.draggable:hover .drag-handle {
+		opacity: 0.5;
+	}
+	.nav-item.draggable:active .drag-handle {
+		opacity: 1;
 		cursor: grabbing;
 	}
 	.nav-item:hover {

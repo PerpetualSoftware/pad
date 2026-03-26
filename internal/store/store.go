@@ -206,7 +206,7 @@ func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, exclude
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND id != ? AND deleted_at IS NULL", table, scopeCol)
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND id != ?", table, scopeCol)
 		err := s.db.QueryRow(query, scopeVal, slug, excludeID).Scan(&count)
 		if err != nil {
 			return "", err
@@ -370,7 +370,8 @@ func (s *Store) uniqueSlug(table, scopeCol, scopeVal, baseSlug string) (string, 
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND deleted_at IS NULL", table, scopeCol)
+		// Check all rows including soft-deleted to respect the DB UNIQUE constraint
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ?", table, scopeCol)
 		err := s.db.QueryRow(query, scopeVal, slug).Scan(&count)
 		if err != nil {
 			return "", err
