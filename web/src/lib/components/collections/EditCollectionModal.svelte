@@ -30,9 +30,8 @@
 	let selectedIcon = $state('');
 	let description = $state('');
 	let showEmojiPicker = $state(false);
-	let existingFields = $state<FieldDef[]>([]);
+	let existingFields = $state<(FieldDef & { _optionsText: string })[]>([]);
 	let newFields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
-	let existingOptionsText = $state<Record<string, string>>({});
 	let saving = $state(false);
 	let error = $state('');
 
@@ -43,12 +42,11 @@
 			selectedIcon = collection.icon || '';
 			description = collection.description || '';
 			const schema = parseSchema(collection);
-			existingFields = schema.fields.map(f => ({ ...f, options: f.options ? [...f.options] : undefined }));
-			const optsText: Record<string, string> = {};
-			for (const f of existingFields) {
-				optsText[f.key] = f.options?.length ? f.options.join(', ') : '';
-			}
-			existingOptionsText = optsText;
+			existingFields = schema.fields.map(f => ({
+				...f,
+				options: f.options ? [...f.options] : undefined,
+				_optionsText: f.options?.length ? f.options.join(', ') : ''
+			}));
 			newFields = [];
 			showEmojiPicker = false;
 			error = '';
@@ -82,13 +80,10 @@
 				});
 
 			// Apply options edits back to existing fields
-			const updatedExisting = existingFields.map(f => {
+			const updatedExisting = existingFields.map(({ _optionsText, ...f }) => {
 				const def = { ...f };
-				if (def.type === 'select' || def.type === 'multi_select') {
-					const text = existingOptionsText[f.key] ?? '';
-					if (text.trim()) {
-						def.options = text.split(',').map(o => o.trim()).filter(Boolean);
-					}
+				if ((def.type === 'select' || def.type === 'multi_select') && _optionsText.trim()) {
+					def.options = _optionsText.split(',').map(o => o.trim()).filter(Boolean);
 				}
 				return def;
 			});
@@ -191,7 +186,7 @@
 										class="field-options-input"
 										type="text"
 										placeholder="option1, option2, ..."
-										bind:value={existingOptionsText[field.key]}
+										bind:value={field._optionsText}
 									/>
 								{/if}
 							</div>
