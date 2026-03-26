@@ -438,6 +438,7 @@ Usage:
 	.field-input {
 		width: 100%;
 		padding: var(--space-1) var(--space-2);
+		min-height: 30px;
 		font-size: 0.88em;
 		font-family: inherit;
 		color: var(--text-primary);
@@ -506,6 +507,7 @@ Usage:
 		gap: var(--space-2);
 		width: 100%;
 		padding: var(--space-1) var(--space-2);
+		min-height: 30px;
 		font-size: 0.88em;
 		font-family: inherit;
 		color: var(--text-primary);
