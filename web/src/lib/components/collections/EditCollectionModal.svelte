@@ -26,6 +26,9 @@
 		'relation'
 	];
 
+	// ── Tab state ────────────────────────────────────────────────────────────
+	let activeTab = $state<'general' | 'fields' | 'display'>('general');
+
 	// ── Core form state ──────────────────────────────────────────────────────
 
 	let name = $state('');
@@ -99,6 +102,7 @@
 			newFields = [];
 			showEmojiPicker = false;
 			error = '';
+			activeTab = 'general';
 
 			// Sync display settings
 			const s = parseSettings(collection);
@@ -259,220 +263,255 @@
 				<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
 			</div>
 
+			<div class="tab-bar">
+				<button
+					class="tab"
+					class:active={activeTab === 'general'}
+					type="button"
+					onclick={() => (activeTab = 'general')}
+				>General</button>
+				<button
+					class="tab"
+					class:active={activeTab === 'fields'}
+					type="button"
+					onclick={() => (activeTab = 'fields')}
+				>Fields</button>
+				<button
+					class="tab"
+					class:active={activeTab === 'display'}
+					type="button"
+					onclick={() => (activeTab = 'display')}
+				>Display</button>
+			</div>
+
+			{#if error}
+				<div class="error-banner">{error}</div>
+			{/if}
+
 			<div class="modal-body">
-				{#if error}
-					<div class="error-banner">{error}</div>
-				{/if}
-
-				<div class="name-row">
-					<button
-						class="icon-btn"
-						type="button"
-						onclick={() => (showEmojiPicker = !showEmojiPicker)}
-					>
-						{#if selectedIcon}
-							<span class="icon-preview">{selectedIcon}</span>
-						{:else}
-							<span class="icon-placeholder">+</span>
-						{/if}
-					</button>
-					<input
-						class="name-input"
-						type="text"
-						placeholder="Collection name"
-						bind:value={name}
-					/>
-				</div>
-
-				{#if showEmojiPicker}
-					<div class="emoji-picker-container">
-						<EmojiPicker
-							selected={selectedIcon}
-							onselect={(emoji) => {
-								selectedIcon = emoji;
-								showEmojiPicker = false;
-							}}
-						/>
-					</div>
-				{/if}
-
-				<input
-					class="desc-input"
-					type="text"
-					placeholder="Description (optional)"
-					bind:value={description}
-				/>
-
-				<!-- Existing fields -->
-				{#if existingFields.length > 0}
-					<div class="fields-section">
-						<div class="fields-header">
-							<span class="fields-label">Fields</span>
+				{#if activeTab === 'general'}
+					<!-- ── General Tab ──────────────────────────────────────── -->
+					<div class="tab-content">
+						<div class="name-row">
+							<button
+								class="icon-btn"
+								type="button"
+								onclick={() => (showEmojiPicker = !showEmojiPicker)}
+							>
+								{#if selectedIcon}
+									<span class="icon-preview">{selectedIcon}</span>
+								{:else}
+									<span class="icon-placeholder">+</span>
+								{/if}
+							</button>
+							<input
+								class="name-input"
+								type="text"
+								placeholder="Collection name"
+								bind:value={name}
+							/>
 						</div>
-						{#each existingFields as field, i (field.key)}
-							<div class="field-card">
-								<div class="field-row">
-									<div class="field-reorder">
-										<button
-											class="reorder-btn"
-											type="button"
-											disabled={i === 0}
-											onclick={() => moveField(i, -1)}
-											title="Move up"
-										>&#9650;</button>
-										<button
-											class="reorder-btn"
-											type="button"
-											disabled={i === existingFields.length - 1}
-											onclick={() => moveField(i, 1)}
-											title="Move down"
-										>&#9660;</button>
+
+						{#if showEmojiPicker}
+							<div class="emoji-picker-container">
+								<EmojiPicker
+									selected={selectedIcon}
+									onselect={(emoji) => {
+										selectedIcon = emoji;
+										showEmojiPicker = false;
+									}}
+								/>
+							</div>
+						{/if}
+
+						<div class="form-group">
+							<label class="form-label" for="edit-desc">Description</label>
+							<input
+								id="edit-desc"
+								class="form-input"
+								type="text"
+								placeholder="What is this collection for?"
+								bind:value={description}
+							/>
+						</div>
+
+						{#if collection.prefix}
+							<div class="form-group">
+								<span class="form-label">Prefix</span>
+								<div class="prefix-display">{collection.prefix}</div>
+							</div>
+						{/if}
+					</div>
+				{:else if activeTab === 'fields'}
+					<!-- ── Fields Tab ──────────────────────────────────────── -->
+					<div class="tab-content">
+						{#if existingFields.length > 0}
+							<div class="fields-list">
+								{#each existingFields as field, i (field.key)}
+									<div class="field-card">
+										<div class="field-card-main">
+											<div class="field-reorder">
+												<button
+													class="reorder-btn"
+													type="button"
+													disabled={i === 0}
+													onclick={() => moveField(i, -1)}
+													title="Move up"
+												>&#9650;</button>
+												<button
+													class="reorder-btn"
+													type="button"
+													disabled={i === existingFields.length - 1}
+													onclick={() => moveField(i, 1)}
+													title="Move down"
+												>&#9660;</button>
+											</div>
+											<div class="field-info">
+												<input
+													class="field-label-input"
+													type="text"
+													bind:value={field.label}
+													placeholder="Field label"
+												/>
+												<span class="field-key">{field.key}</span>
+											</div>
+											<select class="field-type-select" bind:value={field.type}>
+												{#each FIELD_TYPES as ft (ft)}
+													<option value={ft}>{ft.replace('_', ' ')}</option>
+												{/each}
+											</select>
+											<button
+												class="remove-field-btn"
+												type="button"
+												onclick={() => removeExistingField(i)}
+												title="Remove field"
+											>&#10005;</button>
+										</div>
+
+										{#if field.type === 'select' || field.type === 'multi_select'}
+											<div class="options-area">
+												<div class="options-list">
+													{#each field.options as _opt, oi (oi)}
+														<div class="option-chip">
+															<input
+																class="option-input"
+																type="text"
+																bind:value={field.options[oi]}
+																placeholder="option"
+															/>
+															<button
+																class="option-remove"
+																type="button"
+																onclick={() => removeOption(field, oi)}
+																title="Remove option"
+															>&#10005;</button>
+														</div>
+													{/each}
+													<button
+														class="option-add-btn"
+														type="button"
+														onclick={() => addOption(field)}
+														title="Add option"
+													>+</button>
+												</div>
+											</div>
+										{/if}
 									</div>
+								{/each}
+							</div>
+						{:else}
+							<div class="empty-state">No fields defined yet.</div>
+						{/if}
+
+						<div class="add-field-section">
+							<div class="add-field-header">
+								<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
+							</div>
+
+							{#each newFields as field, i (i)}
+								<div class="new-field-row">
 									<input
-										class="field-label-input"
+										class="field-name-input"
 										type="text"
-										bind:value={field.label}
-										placeholder="Field label"
+										placeholder="Field name"
+										bind:value={field.key}
 									/>
 									<select class="field-type-select" bind:value={field.type}>
 										{#each FIELD_TYPES as ft (ft)}
 											<option value={ft}>{ft.replace('_', ' ')}</option>
 										{/each}
 									</select>
+									{#if field.type === 'select' || field.type === 'multi_select'}
+										<input
+											class="field-options-input"
+											type="text"
+											placeholder="option1, option2, ..."
+											bind:value={field.options}
+										/>
+									{/if}
 									<button
 										class="remove-field-btn"
 										type="button"
-										onclick={() => removeExistingField(i)}
-										title="Remove field"
+										onclick={() => removeNewField(i)}
 									>&#10005;</button>
 								</div>
-
-								{#if field.type === 'select' || field.type === 'multi_select'}
-									<div class="options-area">
-										<div class="options-list">
-											{#each field.options as _opt, oi (oi)}
-												<div class="option-chip">
-													<input
-														class="option-input"
-														type="text"
-														bind:value={field.options[oi]}
-														placeholder="option"
-													/>
-													<button
-														class="option-remove"
-														type="button"
-														onclick={() => removeOption(field, oi)}
-														title="Remove option"
-													>&#10005;</button>
-												</div>
-											{/each}
-											<button
-												class="option-add-btn"
-												type="button"
-												onclick={() => addOption(field)}
-												title="Add option"
-											>+</button>
-										</div>
-									</div>
-								{/if}
+							{/each}
+						</div>
+					</div>
+				{:else if activeTab === 'display'}
+					<!-- ── Display Tab ─────────────────────────────────────── -->
+					<div class="tab-content">
+						<div class="settings-grid">
+							<div class="setting-item">
+								<label class="setting-label" for="edit-default-view">Default view</label>
+								<select id="edit-default-view" class="setting-select" bind:value={defaultView}>
+									<option value="list">List</option>
+									<option value="board">Board</option>
+								</select>
 							</div>
-						{/each}
+
+							<div class="setting-item">
+								<label class="setting-label" for="edit-layout">Item layout</label>
+								<select id="edit-layout" class="setting-select" bind:value={layout}>
+									<option value="balanced">Balanced</option>
+									<option value="fields-primary">Fields primary</option>
+									<option value="content-primary">Content primary</option>
+								</select>
+							</div>
+
+							{#if selectFieldKeys.length > 0}
+								<div class="setting-item">
+									<label class="setting-label" for="edit-board-group">Board group by</label>
+									<select id="edit-board-group" class="setting-select" bind:value={boardGroupBy}>
+										{#each selectFieldKeys as f (f.key)}
+											<option value={f.key}>{f.label}</option>
+										{/each}
+									</select>
+								</div>
+
+								<div class="setting-item">
+									<label class="setting-label" for="edit-list-group">List group by</label>
+									<select id="edit-list-group" class="setting-select" bind:value={listGroupBy}>
+										<option value="">None</option>
+										{#each selectFieldKeys as f (f.key)}
+											<option value={f.key}>{f.label}</option>
+										{/each}
+									</select>
+								</div>
+							{/if}
+
+							<div class="setting-item">
+								<label class="setting-label" for="edit-list-sort">List sort by</label>
+								<select id="edit-list-sort" class="setting-select" bind:value={listSortBy}>
+									<option value="">Default</option>
+									{#each sortableFieldKeys as f (f.key)}
+										<option value={f.key}>{f.label}</option>
+									{/each}
+								</select>
+							</div>
+						</div>
 					</div>
 				{/if}
-
-				<!-- Add new fields -->
-				<div class="fields-section">
-					<div class="fields-header">
-						<span class="fields-label">Add Fields</span>
-						<button class="add-field-btn" type="button" onclick={addField}>+ Add</button>
-					</div>
-
-					{#each newFields as field, i (i)}
-						<div class="field-row">
-							<input
-								class="field-name-input"
-								type="text"
-								placeholder="Field name"
-								bind:value={field.key}
-							/>
-							<select class="field-type-select" bind:value={field.type}>
-								{#each FIELD_TYPES as ft (ft)}
-									<option value={ft}>{ft.replace('_', ' ')}</option>
-								{/each}
-							</select>
-							{#if field.type === 'select' || field.type === 'multi_select'}
-								<input
-									class="field-options-input"
-									type="text"
-									placeholder="option1, option2, ..."
-									bind:value={field.options}
-								/>
-							{/if}
-							<button
-								class="remove-field-btn"
-								type="button"
-								onclick={() => removeNewField(i)}
-							>&#10005;</button>
-						</div>
-					{/each}
-				</div>
-
-				<!-- Display settings -->
-				<div class="fields-section">
-					<div class="fields-header">
-						<span class="fields-label">Display</span>
-					</div>
-
-					<div class="settings-grid">
-						<div class="setting-row">
-							<label class="setting-label" for="edit-default-view">Default view</label>
-							<select id="edit-default-view" class="setting-select" bind:value={defaultView}>
-								<option value="list">List</option>
-								<option value="board">Board</option>
-							</select>
-						</div>
-
-						<div class="setting-row">
-							<label class="setting-label" for="edit-layout">Item layout</label>
-							<select id="edit-layout" class="setting-select" bind:value={layout}>
-								<option value="balanced">Balanced</option>
-								<option value="fields-primary">Fields primary</option>
-								<option value="content-primary">Content primary</option>
-							</select>
-						</div>
-
-						{#if selectFieldKeys.length > 0}
-							<div class="setting-row">
-								<label class="setting-label" for="edit-board-group">Board group by</label>
-								<select id="edit-board-group" class="setting-select" bind:value={boardGroupBy}>
-									{#each selectFieldKeys as f (f.key)}
-										<option value={f.key}>{f.label}</option>
-									{/each}
-								</select>
-							</div>
-
-							<div class="setting-row">
-								<label class="setting-label" for="edit-list-group">List group by</label>
-								<select id="edit-list-group" class="setting-select" bind:value={listGroupBy}>
-									<option value="">None</option>
-									{#each selectFieldKeys as f (f.key)}
-										<option value={f.key}>{f.label}</option>
-									{/each}
-								</select>
-							</div>
-						{/if}
-
-						<div class="setting-row">
-							<label class="setting-label" for="edit-list-sort">List sort by</label>
-							<select id="edit-list-sort" class="setting-select" bind:value={listSortBy}>
-								<option value="">Default</option>
-								{#each sortableFieldKeys as f (f.key)}
-									<option value={f.key}>{f.label}</option>
-								{/each}
-							</select>
-						</div>
-					</div>
-				</div>
 			</div>
 
 			<div class="modal-footer">
@@ -499,19 +538,19 @@
 		display: flex;
 		justify-content: center;
 		align-items: flex-start;
-		padding-top: 10vh;
+		padding-top: 8vh;
 	}
 
 	.modal {
 		width: 100%;
-		max-width: 520px;
+		max-width: 680px;
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
 		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-		overflow: hidden;
-		max-height: 80vh;
-		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		max-height: 82vh;
 	}
 
 	/* ── Header ─────────────────────────────────────────────────────────────── */
@@ -520,8 +559,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: var(--space-4) var(--space-5);
-		border-bottom: 1px solid var(--border);
+		padding: var(--space-4) var(--space-6);
+		flex-shrink: 0;
 	}
 
 	.modal-header h2 {
@@ -546,24 +585,66 @@
 		background: var(--bg-hover);
 	}
 
-	/* ── Body ───────────────────────────────────────────────────────────────── */
+	/* ── Tab bar ────────────────────────────────────────────────────────────── */
 
-	.modal-body {
-		padding: var(--space-5);
+	.tab-bar {
 		display: flex;
-		flex-direction: column;
-		gap: var(--space-4);
+		gap: 0;
+		padding: 0 var(--space-6);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
 	}
 
+	.tab {
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.88em;
+		font-weight: 500;
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		cursor: pointer;
+		margin-bottom: -1px;
+		transition: color 0.15s, border-color 0.15s;
+	}
+
+	.tab:hover {
+		color: var(--text-secondary);
+	}
+
+	.tab.active {
+		color: var(--accent-blue);
+		border-bottom-color: var(--accent-blue);
+	}
+
+	/* ── Error banner ──────────────────────────────────────────────────────── */
+
 	.error-banner {
+		margin: var(--space-3) var(--space-6) 0;
 		padding: var(--space-2) var(--space-3);
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
 		color: var(--accent-red, #ef4444);
 		border-radius: var(--radius);
 		font-size: 0.85em;
+		flex-shrink: 0;
 	}
 
-	/* ── Icon + Name row ────────────────────────────────────────────────────── */
+	/* ── Body ───────────────────────────────────────────────────────────────── */
+
+	.modal-body {
+		flex: 1;
+		overflow-y: auto;
+		min-height: 0;
+	}
+
+	.tab-content {
+		padding: var(--space-5) var(--space-6);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+
+	/* ── General tab ───────────────────────────────────────────────────────── */
 
 	.name-row {
 		display: flex;
@@ -619,15 +700,23 @@
 		outline: none;
 	}
 
-	/* ── Emoji picker ───────────────────────────────────────────────────────── */
-
 	.emoji-picker-container {
-		margin-bottom: var(--space-3);
+		margin-bottom: var(--space-2);
 	}
 
-	/* ── Description ────────────────────────────────────────────────────────── */
+	.form-group {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
 
-	.desc-input {
+	.form-label {
+		font-size: 0.82em;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.form-input {
 		width: 100%;
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-tertiary);
@@ -637,82 +726,59 @@
 		color: var(--text-primary);
 	}
 
-	.desc-input:hover {
+	.form-input:hover {
 		border-color: var(--border);
 	}
 
-	.desc-input:focus {
+	.form-input:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
 
-	.desc-input::placeholder {
+	.form-input::placeholder {
 		color: var(--text-muted);
 	}
 
-	/* ── Fields sections ────────────────────────────────────────────────────── */
+	.prefix-display {
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-tertiary);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		font-size: 0.9em;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		letter-spacing: 0.04em;
+	}
 
-	.fields-section {
+	/* ── Fields tab ────────────────────────────────────────────────────────── */
+
+	.fields-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
 	}
-
-	.fields-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.fields-label {
-		font-size: 0.85em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.add-field-btn {
-		background: none;
-		border: none;
-		color: var(--accent-blue);
-		font-size: 0.85em;
-		cursor: pointer;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
-	}
-
-	.add-field-btn:hover {
-		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-	}
-
-	/* ── Field card (existing fields) ──────────────────────────────────────── */
 
 	.field-card {
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
+		padding: var(--space-3);
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
 	}
 
-	/* ── Field rows ────────────────────────────────────────────────────────── */
-
-	.field-row {
+	.field-card-main {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
-		flex-wrap: wrap;
+		gap: var(--space-3);
 	}
-
-	/* ── Reorder buttons ───────────────────────────────────────────────────── */
 
 	.field-reorder {
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
+		flex-shrink: 0;
 	}
 
 	.reorder-btn {
@@ -721,7 +787,7 @@
 		color: var(--text-muted);
 		font-size: 0.6em;
 		cursor: pointer;
-		padding: 0 var(--space-1);
+		padding: 2px var(--space-1);
 		line-height: 1.2;
 		border-radius: var(--radius-sm);
 	}
@@ -736,16 +802,22 @@
 		cursor: default;
 	}
 
-	/* ── Field label input (existing fields) ───────────────────────────────── */
+	.field-info {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
 
 	.field-label-input {
-		flex: 1;
-		min-width: 100px;
+		width: 100%;
 		padding: var(--space-1) var(--space-2);
 		background: var(--bg-secondary);
 		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
-		font-size: 0.88em;
+		font-size: 0.9em;
+		font-weight: 500;
 		color: var(--text-primary);
 	}
 
@@ -758,7 +830,12 @@
 		outline: none;
 	}
 
-	/* ── Field type select ─────────────────────────────────────────────────── */
+	.field-key {
+		font-size: 0.75em;
+		color: var(--text-muted);
+		padding-left: var(--space-2);
+		font-family: var(--font-mono);
+	}
 
 	.field-type-select {
 		padding: var(--space-1) var(--space-2);
@@ -768,6 +845,7 @@
 		font-size: 0.82em;
 		color: var(--text-primary);
 		cursor: pointer;
+		flex-shrink: 0;
 	}
 
 	.field-type-select:hover {
@@ -779,8 +857,6 @@
 		outline: none;
 	}
 
-	/* ── Remove field button ───────────────────────────────────────────────── */
-
 	.remove-field-btn {
 		background: none;
 		border: none;
@@ -790,6 +866,7 @@
 		padding: var(--space-1);
 		border-radius: var(--radius-sm);
 		line-height: 1;
+		flex-shrink: 0;
 	}
 
 	.remove-field-btn:hover {
@@ -800,7 +877,7 @@
 	/* ── Options area (select / multi_select) ──────────────────────────────── */
 
 	.options-area {
-		padding-left: 28px;
+		padding-left: 32px;
 	}
 
 	.options-list {
@@ -866,21 +943,66 @@
 		border-color: var(--accent-blue);
 	}
 
-	/* ── New field rows ────────────────────────────────────────────────────── */
+	.empty-state {
+		padding: var(--space-6) var(--space-4);
+		text-align: center;
+		color: var(--text-muted);
+		font-size: 0.88em;
+	}
+
+	/* ── Add field section ─────────────────────────────────────────────────── */
+
+	.add-field-section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		border-top: 1px solid var(--border);
+		padding-top: var(--space-4);
+	}
+
+	.add-field-header {
+		display: flex;
+		align-items: center;
+	}
+
+	.add-field-btn {
+		background: none;
+		border: 1px dashed var(--border);
+		color: var(--accent-blue);
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+		padding: var(--space-2) var(--space-4);
+		border-radius: var(--radius);
+		width: 100%;
+		text-align: center;
+	}
+
+	.add-field-btn:hover {
+		background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+		border-color: var(--accent-blue);
+	}
+
+	.new-field-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
 
 	.field-name-input {
 		flex: 1;
 		min-width: 120px;
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-tertiary);
-		border: 1px solid transparent;
+		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		font-size: 0.85em;
 		color: var(--text-primary);
 	}
 
 	.field-name-input:hover {
-		border-color: var(--border);
+		border-color: var(--text-muted);
 	}
 
 	.field-name-input:focus {
@@ -892,14 +1014,14 @@
 		flex: 1 1 100%;
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-tertiary);
-		border: 1px solid transparent;
+		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		font-size: 0.85em;
 		color: var(--text-primary);
 	}
 
 	.field-options-input:hover {
-		border-color: var(--border);
+		border-color: var(--text-muted);
 	}
 
 	.field-options-input:focus {
@@ -907,33 +1029,33 @@
 		outline: none;
 	}
 
-	/* ── Display settings ──────────────────────────────────────────────────── */
+	/* ── Display tab ───────────────────────────────────────────────────────── */
 
 	.settings-grid {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-4);
 	}
 
-	.setting-row {
+	.setting-item {
 		display: flex;
-		align-items: center;
-		gap: var(--space-3);
+		flex-direction: column;
+		gap: var(--space-1);
 	}
 
 	.setting-label {
-		flex: 0 0 120px;
 		font-size: 0.82em;
+		font-weight: 500;
 		color: var(--text-muted);
 	}
 
 	.setting-select {
-		flex: 1;
-		padding: var(--space-1) var(--space-2);
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
 		background: var(--bg-tertiary);
 		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.82em;
+		border-radius: var(--radius);
+		font-size: 0.88em;
 		color: var(--text-primary);
 		cursor: pointer;
 	}
@@ -954,8 +1076,9 @@
 		align-items: center;
 		justify-content: flex-end;
 		gap: var(--space-3);
-		padding: var(--space-4) var(--space-5);
+		padding: var(--space-4) var(--space-6);
 		border-top: 1px solid var(--border);
+		flex-shrink: 0;
 	}
 
 	.btn-cancel {
