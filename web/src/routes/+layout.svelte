@@ -46,6 +46,11 @@
 
 <svelte:head>
 	<title>Pad</title>
+	<meta name="description" content="Project management for developers and AI agents" />
+	<meta property="og:title" content="Pad" />
+	<meta property="og:description" content="Project management for developers and AI agents" />
+	<meta property="og:image" content="/padicon.png" />
+	<meta property="og:type" content="website" />
 </svelte:head>
 
 <svelte:window onkeydown={handleKeydown} />
