@@ -300,9 +300,6 @@
 				🔍 Search <kbd>⌘K</kbd>
 			</button>
 			{#if wsSlug}
-				<a href="/{wsSlug}/library" class="settings-btn" onclick={() => uiStore.onNavigate()}>
-					📚 Library
-				</a>
 				<a href="/{wsSlug}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
 					⚙ Settings
 				</a>

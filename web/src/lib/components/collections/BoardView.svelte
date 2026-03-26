@@ -165,7 +165,7 @@
 	.board-view {
 		display: grid;
 		grid-template-columns: repeat(var(--col-count, 3), 1fr);
-		gap: var(--space-4);
+		gap: var(--space-5);
 	}
 
 	.kanban-column {
@@ -213,10 +213,11 @@
 	.column-cards {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		flex: 1;
+		gap: var(--space-3);
 		min-height: 60px;
 		border-radius: var(--radius);
-		padding: var(--space-1);
+		padding: var(--space-2);
 		transition: background 0.15s ease;
 	}
 
