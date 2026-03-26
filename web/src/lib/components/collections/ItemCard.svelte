@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import type { Item, Collection } from '$lib/types';
-	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
+	import { parseFields, parseSchema, formatItemRef, itemUrlId } from '$lib/types';
 
 	interface Props {
 		item: Item;
@@ -15,7 +15,7 @@
 
 	let { item, collection, compact = false, statusOptions, onStatusClick, progress = null, relationLabels = {} }: Props = $props();
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 	let fields = $derived(parseFields(item));
 	let schema = $derived(parseSchema(collection));
 
@@ -23,7 +23,7 @@
 	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
 	let assigneeField = $derived(schema.fields.find((f) => f.key === 'assignee'));
 
-	let itemUrl = $derived(`/${wsSlug}/${collection.slug}/${item.slug}`);
+	let itemUrl = $derived(`/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
 
 	let statusCyclable = $derived(
@@ -142,11 +142,11 @@
 	.item-card {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-3);
+		border-radius: var(--radius-lg);
+		padding: var(--space-4) var(--space-5);
 		text-decoration: none;
 		color: inherit;
 		transition: background 0.1s;
@@ -158,13 +158,13 @@
 	}
 
 	.item-card.compact {
-		padding: var(--space-2) var(--space-3);
+		padding: var(--space-3) var(--space-4);
 	}
 
 	.card-title {
-		font-size: 0.88em;
+		font-size: 0.95em;
 		color: var(--text-primary);
-		line-height: 1.4;
+		line-height: 1.45;
 		font-weight: 500;
 	}
 
@@ -178,20 +178,21 @@
 	}
 
 	.compact .card-title {
-		font-size: 0.84em;
+		font-size: 0.92em;
 	}
 
 	.card-badges {
 		display: flex;
 		align-items: center;
-		gap: var(--space-1);
+		gap: var(--space-2);
+		row-gap: var(--space-2);
 		flex-wrap: wrap;
 	}
 
 	.badge {
-		font-size: 0.72em;
-		padding: 1px 6px;
-		border-radius: 3px;
+		font-size: 0.8em;
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
 		white-space: nowrap;
 		font-weight: 500;
 		color: var(--badge-color);
@@ -232,11 +233,11 @@
 	}
 
 	.phase-badge {
-		font-size: 0.7em;
+		font-size: 0.8em;
 		color: var(--accent-purple, var(--text-secondary));
 		background: color-mix(in srgb, var(--accent-purple, var(--text-secondary)) 12%, transparent);
-		padding: 1px 6px;
-		border-radius: 3px;
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
 		white-space: nowrap;
 	}
 
@@ -273,16 +274,16 @@
 	}
 
 	.assignee {
-		font-size: 0.78em;
+		font-size: 0.8em;
 		color: var(--accent-blue);
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		padding: 1px 6px;
-		border-radius: 3px;
+		padding: 2px 8px;
+		border-radius: var(--radius-sm);
 		white-space: nowrap;
 	}
 
 	.updated {
-		font-size: 0.72em;
+		font-size: 0.75em;
 		color: var(--text-muted);
 		margin-left: auto;
 	}

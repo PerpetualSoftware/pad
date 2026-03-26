@@ -139,6 +139,104 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 	return s.GetItem(id)
 }
 
+// GetItemByRef looks up an item by its PREFIX-NUMBER reference (e.g. "IDEA-15").
+func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
+	var id string
+	err := s.db.QueryRow(`
+		SELECT i.id FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
+	`, workspaceID, prefix, number).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get item by ref: %w", err)
+	}
+	return s.GetItem(id)
+}
+
+// ResolveItem looks up an item by either a PREFIX-NUMBER ref (e.g. "IDEA-15")
+// or a traditional slug. Refs are tried first for backwards compatibility.
+func (s *Store) ResolveItem(workspaceID, slugOrRef string) (*models.Item, error) {
+	if prefix, number, ok := parseItemRef(slugOrRef); ok {
+		item, err := s.GetItemByRef(workspaceID, prefix, number)
+		if err != nil {
+			return nil, err
+		}
+		if item != nil {
+			return item, nil
+		}
+	}
+	// Fall back to slug lookup
+	return s.GetItemBySlug(workspaceID, slugOrRef)
+}
+
+// ResolveItemIncludeDeleted is like ResolveItem but includes soft-deleted items.
+func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*models.Item, error) {
+	if prefix, number, ok := parseItemRef(slugOrRef); ok {
+		var item models.Item
+		var createdAt, updatedAt string
+		var deletedAt *string
+		var pinned int
+
+		err := s.db.QueryRow(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+			       c.slug, c.name, c.icon, c.prefix
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
+		`, workspaceID, prefix, number).Scan(
+			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+			&item.Content, &item.Fields, &item.Tags,
+			&pinned, &item.SortOrder, &item.ParentID, &item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+		)
+		if err == nil {
+			item.Pinned = pinned == 1
+			item.CreatedAt = parseTime(createdAt)
+			item.UpdatedAt = parseTime(updatedAt)
+			item.DeletedAt = parseTimePtr(deletedAt)
+			return &item, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, fmt.Errorf("resolve ref (include deleted): %w", err)
+		}
+	}
+	return s.GetItemBySlugIncludeDeleted(workspaceID, slugOrRef)
+}
+
+// parseItemRef parses "PREFIX-123" into ("PREFIX", 123, true).
+// Returns false if the string is not a valid item ref.
+func parseItemRef(s string) (string, int, bool) {
+	idx := strings.LastIndex(s, "-")
+	if idx <= 0 || idx == len(s)-1 {
+		return "", 0, false
+	}
+	prefix := s[:idx]
+	// Prefix must be all uppercase letters
+	for _, c := range prefix {
+		if c < 'A' || c > 'Z' {
+			return "", 0, false
+		}
+	}
+	numStr := s[idx+1:]
+	num := 0
+	for _, c := range numStr {
+		if c < '0' || c > '9' {
+			return "", 0, false
+		}
+		num = num*10 + int(c-'0')
+	}
+	if num == 0 {
+		return "", 0, false
+	}
+	return prefix, num, true
+}
+
 // GetItemBySlugIncludeDeleted finds an item by slug including soft-deleted items.
 // Used for restore operations where the item is archived.
 func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.Item, error) {

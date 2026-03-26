@@ -1,11 +1,12 @@
 import { marked } from 'marked';
 import type { Item } from '$lib/types';
+import { itemUrlId } from '$lib/types';
 
 export function renderMarkdown(content: string, items: Item[], workspaceSlug: string): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
 		const item = items.find(i => i.title === title);
 		if (item && item.collection_slug) {
-			return `<a href="/${workspaceSlug}/${item.collection_slug}/${item.slug}" class="doc-link">${title}</a>`;
+			return `<a href="/${workspaceSlug}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${title}</a>`;
 		}
 		return `<span class="doc-link broken">${title}</span>`;
 	});
@@ -64,7 +65,7 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 		});
 
 		if (item && item.collection_slug) {
-			return `[${searchTitle}](/${workspaceSlug}/${item.collection_slug}/${item.slug})`;
+			return `[${searchTitle}](/${workspaceSlug}/${item.collection_slug}/${itemUrlId(item)})`;
 		}
 		// Unresolved — render as styled text (editor will show it as plain text)
 		return `[${searchTitle}](broken)`;
@@ -76,9 +77,16 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
  * Reverses wikiLinksToMarkdown() so we store [[]] not []() in the database.
  */
 export function markdownToWikiLinks(markdown: string, items: Item[]): string {
-	// Match [Title](/workspace/collection/slug) pattern
-	return markdown.replace(/\[([^\]]+)\]\(\/[^/]+\/[^/]+\/([^)]+)\)/g, (_match, title: string, itemSlug: string) => {
-		const item = items.find(i => i.slug === itemSlug);
+	// Match [Title](/workspace/collection/slug-or-REF) pattern
+	return markdown.replace(/\[([^\]]+)\]\(\/[^/]+\/[^/]+\/([^)]+)\)/g, (_match, title: string, slugOrRef: string) => {
+		const item = items.find(i => {
+			if (i.slug === slugOrRef) return true;
+			// Also match PREFIX-NUMBER refs
+			if (i.item_number && i.collection_prefix) {
+				return `${i.collection_prefix}-${i.item_number}` === slugOrRef;
+			}
+			return false;
+		});
 		if (item) {
 			return `[[${title}]]`;
 		}

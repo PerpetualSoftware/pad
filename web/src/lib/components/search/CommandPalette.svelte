@@ -4,7 +4,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import type { SearchResult } from '$lib/types';
-	import { getFieldValue } from '$lib/types';
+	import { getFieldValue, itemUrlId } from '$lib/types';
 
 	let query = $state('');
 	let results = $state<SearchResult[]>([]);
@@ -59,7 +59,7 @@
 		const ws = workspaceStore.current?.slug;
 		const collSlug = r.item.collection_slug;
 		if (ws && collSlug) {
-			goto(`/${ws}/${collSlug}/${r.item.slug}`);
+			goto(`/${ws}/${collSlug}/${itemUrlId(r.item)}`);
 		}
 		uiStore.closeSearch();
 	}

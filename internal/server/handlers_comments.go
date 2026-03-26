@@ -18,7 +18,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.GetItemBySlug(workspaceID, itemSlug)
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -48,7 +48,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.GetItemBySlug(workspaceID, itemSlug)
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

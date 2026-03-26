@@ -8,7 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseSchema } from '$lib/types';
+	import { parseSchema, itemUrlId } from '$lib/types';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
@@ -107,7 +107,7 @@
 				source: 'web'
 			});
 			uiStore.onNavigate();
-			goto(`/${wsSlug}/${activeCollectionSlug}/${item.slug}?new=1`);
+			goto(`/${wsSlug}/${activeCollectionSlug}/${itemUrlId(item)}?new=1`);
 		} catch {
 			toastStore.show('Failed to create item', 'error');
 		}

@@ -372,3 +372,8 @@ export function formatItemRef(item: Item): string | null {
 	const prefix = item.collection_prefix || '';
 	return prefix ? `${prefix}-${item.item_number}` : `#${item.item_number}`;
 }
+
+/** Build the URL path segment for an item: uses PREFIX-NUMBER ref if available, falls back to slug. */
+export function itemUrlId(item: Item): string {
+	return formatItemRef(item) ?? item.slug;
+}

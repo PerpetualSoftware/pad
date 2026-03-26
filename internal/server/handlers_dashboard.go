@@ -291,7 +291,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	var candidates []suggestion
 
 	for _, dp := range resp.ActivePhases {
-		phaseItem, err := s.store.GetItemBySlug(workspaceID, dp.Slug)
+		phaseItem, err := s.store.ResolveItem(workspaceID, dp.Slug)
 		if err != nil || phaseItem == nil {
 			continue
 		}
