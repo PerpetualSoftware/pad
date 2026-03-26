@@ -83,7 +83,7 @@ func Defaults() []DefaultCollection {
 						Key:      "status",
 						Label:    "Status",
 						Type:     "select",
-						Options:  []string{"new", "exploring", "planned", "rejected"},
+						Options:  []string{"new", "exploring", "planned", "implemented", "rejected"},
 						Default:  "new",
 						Required: true,
 					},

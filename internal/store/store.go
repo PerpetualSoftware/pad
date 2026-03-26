@@ -70,6 +70,7 @@ func (s *Store) migrate() error {
 		"006_item_numbers.sql",
 		"007_comments.sql",
 		"008_tasks_phase_field.sql",
+		"009_ideas_implemented_status.sql",
 	}
 
 	for _, name := range migrations {
