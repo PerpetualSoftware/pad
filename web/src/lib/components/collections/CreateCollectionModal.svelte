@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { CollectionCreate, FieldDef } from '$lib/types';
+	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
+	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
@@ -24,13 +25,67 @@
 		'relation'
 	];
 
+	// Step state: 'templates' or 'editor'
+	let step = $state<'templates' | 'editor'>('templates');
+
+	// Form state
 	let name = $state('');
 	let selectedIcon = $state('');
 	let description = $state('');
 	let showEmojiPicker = $state(false);
 	let fields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
+	let selectedSettings = $state<CollectionSettings | null>(null);
 	let creating = $state(false);
 	let error = $state('');
+
+	// Track previous open state to detect open transitions
+	let prevOpen = $state(false);
+
+	// Reset to step 1 whenever the modal opens (false -> true transition)
+	$effect.pre(() => {
+		if (open && !prevOpen) {
+			step = 'templates';
+			name = '';
+			selectedIcon = '';
+			description = '';
+			fields = [];
+			selectedSettings = null;
+			showEmojiPicker = false;
+			error = '';
+		}
+		prevOpen = open;
+	});
+
+	function resetForm() {
+		name = '';
+		selectedIcon = '';
+		description = '';
+		fields = [];
+		selectedSettings = null;
+		showEmojiPicker = false;
+		error = '';
+	}
+
+	function selectTemplate(template: CollectionTemplate | null) {
+		resetForm();
+		if (template) {
+			name = template.name;
+			selectedIcon = template.icon;
+			description = template.description;
+			selectedSettings = { ...template.settings };
+			fields = template.fields.map((f) => ({
+				key: f.key,
+				type: f.type,
+				options: f.options ? f.options.join(', ') : ''
+			}));
+		}
+		step = 'editor';
+	}
+
+	function goBack() {
+		step = 'templates';
+		resetForm();
+	}
 
 	function addField() {
 		fields.push({ key: '', type: 'text', options: '' });
@@ -38,15 +93,6 @@
 
 	function removeField(index: number) {
 		fields.splice(index, 1);
-	}
-
-	function resetForm() {
-		name = '';
-		selectedIcon = '';
-		description = '';
-		fields = [];
-		showEmojiPicker = false;
-		error = '';
 	}
 
 	async function handleCreate() {
@@ -71,7 +117,8 @@
 				name: name.trim(),
 				icon: selectedIcon || undefined,
 				description: description.trim() || undefined,
-				schema: JSON.stringify({ fields: fieldDefs })
+				schema: JSON.stringify({ fields: fieldDefs }),
+				settings: selectedSettings ? JSON.stringify(selectedSettings) : undefined
 			};
 			await api.collections.create(wsSlug, data);
 			toastStore.show(`Created ${name.trim()}`, 'success');
@@ -97,104 +144,143 @@
 	<div class="overlay" onclick={onclose}>
 		<div class="modal" onclick={(e) => e.stopPropagation()}>
 			<div class="modal-header">
-				<h2>New Collection</h2>
+				{#if step === 'editor'}
+					<div class="header-left">
+						<button class="back-btn" type="button" onclick={goBack} aria-label="Back to templates">
+							<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+								<path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+							</svg>
+						</button>
+						<h2>New Collection</h2>
+					</div>
+				{:else}
+					<h2>New Collection</h2>
+				{/if}
 				<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
 			</div>
 
-			<div class="modal-body">
-				{#if error}
-					<div class="error-banner">{error}</div>
-				{/if}
-
-				<div class="name-row">
-					<button
-						class="icon-btn"
-						type="button"
-						onclick={() => (showEmojiPicker = !showEmojiPicker)}
-					>
-						{#if selectedIcon}
-							<span class="icon-preview">{selectedIcon}</span>
-						{:else}
-							<span class="icon-placeholder">+</span>
-						{/if}
-					</button>
-					<input
-						class="name-input"
-						type="text"
-						placeholder="Collection name"
-						bind:value={name}
-					/>
+			{#if step === 'templates'}
+				<div class="modal-body">
+					<p class="step-hint">Choose a template or start from scratch</p>
+					<div class="template-grid">
+						<button
+							class="template-card template-card--blank"
+							type="button"
+							onclick={() => selectTemplate(null)}
+						>
+							<span class="template-icon">+</span>
+							<span class="template-name">Blank</span>
+							<span class="template-desc">Start from scratch</span>
+						</button>
+						{#each COLLECTION_TEMPLATES as template (template.id)}
+							<button
+								class="template-card"
+								type="button"
+								onclick={() => selectTemplate(template)}
+							>
+								<span class="template-icon">{template.icon}</span>
+								<span class="template-name">{template.name}</span>
+								<span class="template-desc">{template.description}</span>
+							</button>
+						{/each}
+					</div>
 				</div>
+			{:else}
+				<div class="modal-body">
+					{#if error}
+						<div class="error-banner">{error}</div>
+					{/if}
 
-				{#if showEmojiPicker}
-					<div class="emoji-picker-container">
-						<EmojiPicker
-							selected={selectedIcon}
-							onselect={(emoji) => {
-								selectedIcon = emoji;
-								showEmojiPicker = false;
-							}}
+					<div class="name-row">
+						<button
+							class="icon-btn"
+							type="button"
+							onclick={() => (showEmojiPicker = !showEmojiPicker)}
+						>
+							{#if selectedIcon}
+								<span class="icon-preview">{selectedIcon}</span>
+							{:else}
+								<span class="icon-placeholder">+</span>
+							{/if}
+						</button>
+						<input
+							class="name-input"
+							type="text"
+							placeholder="Collection name"
+							bind:value={name}
 						/>
 					</div>
-				{/if}
 
-				<input
-					class="desc-input"
-					type="text"
-					placeholder="Description (optional)"
-					bind:value={description}
-				/>
-
-				<div class="fields-section">
-					<div class="fields-header">
-						<span class="fields-label">Fields</span>
-						<button class="add-field-btn" type="button" onclick={addField}>+ Add</button>
-					</div>
-
-					{#each fields as field, i (i)}
-						<div class="field-row">
-							<input
-								class="field-name-input"
-								type="text"
-								placeholder="Field name"
-								bind:value={field.key}
+					{#if showEmojiPicker}
+						<div class="emoji-picker-container">
+							<EmojiPicker
+								selected={selectedIcon}
+								onselect={(emoji) => {
+									selectedIcon = emoji;
+									showEmojiPicker = false;
+								}}
 							/>
-							<select class="field-type-select" bind:value={field.type}>
-								{#each FIELD_TYPES as ft (ft)}
-									<option value={ft}>{ft.replace('_', ' ')}</option>
-								{/each}
-							</select>
-							{#if field.type === 'select' || field.type === 'multi_select'}
-								<input
-									class="field-options-input"
-									type="text"
-									placeholder="option1, option2, ..."
-									bind:value={field.options}
-								/>
-							{/if}
-							<button
-								class="remove-field-btn"
-								type="button"
-								onclick={() => removeField(i)}
-							>
-								&#10005;
-							</button>
 						</div>
-					{/each}
-				</div>
-			</div>
+					{/if}
 
-			<div class="modal-footer">
-				<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
-				<button
-					class="btn-create"
-					type="button"
-					onclick={handleCreate}
-					disabled={!name.trim() || creating}
-				>
-					{creating ? 'Creating...' : 'Create Collection'}
-				</button>
-			</div>
+					<input
+						class="desc-input"
+						type="text"
+						placeholder="Description (optional)"
+						bind:value={description}
+					/>
+
+					<div class="fields-section">
+						<div class="fields-header">
+							<span class="fields-label">Fields</span>
+							<button class="add-field-btn" type="button" onclick={addField}>+ Add</button>
+						</div>
+
+						{#each fields as field, i (i)}
+							<div class="field-row">
+								<input
+									class="field-name-input"
+									type="text"
+									placeholder="Field name"
+									bind:value={field.key}
+								/>
+								<select class="field-type-select" bind:value={field.type}>
+									{#each FIELD_TYPES as ft (ft)}
+										<option value={ft}>{ft.replace('_', ' ')}</option>
+									{/each}
+								</select>
+								{#if field.type === 'select' || field.type === 'multi_select'}
+									<input
+										class="field-options-input"
+										type="text"
+										placeholder="option1, option2, ..."
+										bind:value={field.options}
+									/>
+								{/if}
+								<button
+									class="remove-field-btn"
+									type="button"
+									onclick={() => removeField(i)}
+								>
+									&#10005;
+								</button>
+							</div>
+						{/each}
+					</div>
+				</div>
+
+				<div class="modal-footer">
+					<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
+					<button
+						class="btn-create"
+						type="button"
+						onclick={handleCreate}
+						disabled={!name.trim() || creating}
+					>
+						{creating ? 'Creating...' : 'Create Collection'}
+					</button>
+				</div>
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -223,7 +309,7 @@
 		overflow-y: auto;
 	}
 
-	/* ── Header ─────────────────────────────────────────────────────────────── */
+	/* -- Header ------------------------------------------------------------ */
 
 	.modal-header {
 		display: flex;
@@ -237,6 +323,32 @@
 		margin: 0;
 		font-size: 1.1em;
 		font-weight: 600;
+	}
+
+	.header-left {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.back-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		background: none;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0;
+	}
+
+	.back-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+		border-color: var(--border);
 	}
 
 	.close-btn {
@@ -255,7 +367,7 @@
 		background: var(--bg-hover);
 	}
 
-	/* ── Body ───────────────────────────────────────────────────────────────── */
+	/* -- Body -------------------------------------------------------------- */
 
 	.modal-body {
 		padding: var(--space-5);
@@ -272,7 +384,68 @@
 		font-size: 0.85em;
 	}
 
-	/* ── Icon + Name row ────────────────────────────────────────────────────── */
+	/* -- Step 1: Template picker ------------------------------------------- */
+
+	.step-hint {
+		margin: 0;
+		font-size: 0.85em;
+		color: var(--text-muted);
+	}
+
+	.template-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-3);
+	}
+
+	.template-card {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-1);
+		padding: var(--space-4);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		cursor: pointer;
+		text-align: left;
+		transition: border-color 0.15s ease, background 0.15s ease;
+	}
+
+	.template-card:hover {
+		border-color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 5%, var(--bg-tertiary));
+	}
+
+	.template-card--blank {
+		border-style: dashed;
+		border-color: var(--border);
+	}
+
+	.template-card--blank:hover {
+		border-style: dashed;
+		border-color: var(--accent-blue);
+	}
+
+	.template-icon {
+		font-size: 1.5em;
+		line-height: 1;
+	}
+
+	.template-name {
+		font-size: 0.9em;
+		font-weight: 600;
+		color: var(--text-primary);
+		margin-top: var(--space-1);
+	}
+
+	.template-desc {
+		font-size: 0.78em;
+		color: var(--text-muted);
+		line-height: 1.35;
+	}
+
+	/* -- Step 2: Icon + Name row ------------------------------------------- */
 
 	.name-row {
 		display: flex;
@@ -328,13 +501,13 @@
 		outline: none;
 	}
 
-	/* ── Emoji picker ───────────────────────────────────────────────────────── */
+	/* -- Emoji picker ------------------------------------------------------ */
 
 	.emoji-picker-container {
 		margin-bottom: var(--space-3);
 	}
 
-	/* ── Description ────────────────────────────────────────────────────────── */
+	/* -- Description ------------------------------------------------------- */
 
 	.desc-input {
 		width: 100%;
@@ -359,7 +532,7 @@
 		color: var(--text-muted);
 	}
 
-	/* ── Fields builder ─────────────────────────────────────────────────────── */
+	/* -- Fields builder ---------------------------------------------------- */
 
 	.fields-section {
 		display: flex;
@@ -476,7 +649,7 @@
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
-	/* ── Footer ─────────────────────────────────────────────────────────────── */
+	/* -- Footer ------------------------------------------------------------ */
 
 	.modal-footer {
 		display: flex;
