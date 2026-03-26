@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { Collection, CollectionUpdate, FieldDef, FieldMigration } from '$lib/types';
-	import { parseSchema } from '$lib/types';
+	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration } from '$lib/types';
+	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
@@ -53,6 +53,29 @@
 	let existingFields = $state<EditableField[]>([]);
 	let newFields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
 
+	// ── Display settings state ──────────────────────────────────────────────
+
+	let defaultView = $state<'list' | 'board'>('list');
+	let layout = $state<'fields-primary' | 'content-primary' | 'balanced'>('balanced');
+	let boardGroupBy = $state('status');
+	let listGroupBy = $state('');
+	let listSortBy = $state('');
+
+	// Select fields available for grouping (derived from current fields)
+	let selectFieldKeys = $derived(
+		existingFields
+			.filter((f) => f.type === 'select' || f.type === 'multi_select')
+			.map((f) => ({ key: f.key, label: f.label || f.key }))
+	);
+
+	// All fields available for sorting
+	let sortableFieldKeys = $derived([
+		...existingFields.map((f) => ({ key: f.key, label: f.label || f.key })),
+		{ key: 'created_at', label: 'Created date' },
+		{ key: 'updated_at', label: 'Updated date' },
+		{ key: 'sort_order', label: 'Manual order' }
+	]);
+
 	// ── Sync from collection when modal opens ────────────────────────────────
 
 	$effect(() => {
@@ -76,6 +99,14 @@
 			newFields = [];
 			showEmojiPicker = false;
 			error = '';
+
+			// Sync display settings
+			const s = parseSettings(collection);
+			defaultView = (s.default_view === 'board' ? 'board' : 'list');
+			layout = (['fields-primary', 'content-primary', 'balanced'].includes(s.layout) ? s.layout : 'balanced') as typeof layout;
+			boardGroupBy = s.board_group_by || 'status';
+			listGroupBy = s.list_group_by || '';
+			listSortBy = s.list_sort_by || '';
 		}
 	});
 
@@ -181,11 +212,20 @@
 			const allFields = [...updatedExisting, ...addedFields];
 			const migrations = buildMigrations();
 
+			const settingsObj: CollectionSettings = {
+				default_view: defaultView,
+				layout,
+				board_group_by: boardGroupBy || undefined,
+				list_group_by: listGroupBy || undefined,
+				list_sort_by: listSortBy || undefined
+			};
+
 			const data: CollectionUpdate = {
 				name: name.trim(),
 				icon: selectedIcon || undefined,
 				description: description.trim() || undefined,
-				schema: JSON.stringify({ fields: allFields })
+				schema: JSON.stringify({ fields: allFields }),
+				settings: JSON.stringify(settingsObj)
 			};
 
 			if (migrations.length > 0) {
@@ -375,6 +415,63 @@
 							>&#10005;</button>
 						</div>
 					{/each}
+				</div>
+
+				<!-- Display settings -->
+				<div class="fields-section">
+					<div class="fields-header">
+						<span class="fields-label">Display</span>
+					</div>
+
+					<div class="settings-grid">
+						<div class="setting-row">
+							<label class="setting-label" for="edit-default-view">Default view</label>
+							<select id="edit-default-view" class="setting-select" bind:value={defaultView}>
+								<option value="list">List</option>
+								<option value="board">Board</option>
+							</select>
+						</div>
+
+						<div class="setting-row">
+							<label class="setting-label" for="edit-layout">Item layout</label>
+							<select id="edit-layout" class="setting-select" bind:value={layout}>
+								<option value="balanced">Balanced</option>
+								<option value="fields-primary">Fields primary</option>
+								<option value="content-primary">Content primary</option>
+							</select>
+						</div>
+
+						{#if selectFieldKeys.length > 0}
+							<div class="setting-row">
+								<label class="setting-label" for="edit-board-group">Board group by</label>
+								<select id="edit-board-group" class="setting-select" bind:value={boardGroupBy}>
+									{#each selectFieldKeys as f (f.key)}
+										<option value={f.key}>{f.label}</option>
+									{/each}
+								</select>
+							</div>
+
+							<div class="setting-row">
+								<label class="setting-label" for="edit-list-group">List group by</label>
+								<select id="edit-list-group" class="setting-select" bind:value={listGroupBy}>
+									<option value="">None</option>
+									{#each selectFieldKeys as f (f.key)}
+										<option value={f.key}>{f.label}</option>
+									{/each}
+								</select>
+							</div>
+						{/if}
+
+						<div class="setting-row">
+							<label class="setting-label" for="edit-list-sort">List sort by</label>
+							<select id="edit-list-sort" class="setting-select" bind:value={listSortBy}>
+								<option value="">Default</option>
+								{#each sortableFieldKeys as f (f.key)}
+									<option value={f.key}>{f.label}</option>
+								{/each}
+							</select>
+						</div>
+					</div>
 				</div>
 			</div>
 
@@ -806,6 +903,46 @@
 	}
 
 	.field-options-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	/* ── Display settings ──────────────────────────────────────────────────── */
+
+	.settings-grid {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.setting-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.setting-label {
+		flex: 0 0 120px;
+		font-size: 0.82em;
+		color: var(--text-muted);
+	}
+
+	.setting-select {
+		flex: 1;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-tertiary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		font-size: 0.82em;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+
+	.setting-select:hover {
+		border-color: var(--border);
+	}
+
+	.setting-select:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
