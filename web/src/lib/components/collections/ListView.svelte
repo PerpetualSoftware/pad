@@ -14,6 +14,7 @@
 		statusOptions?: string[];
 		onStatusChange?: (item: Item, newStatus: string) => void;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		onArchiveGroup?: (items: Item[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		relationLabels?: Record<string, string>;
 	}
@@ -25,9 +26,12 @@
 		statusOptions,
 		onStatusChange,
 		onReorder,
+		onArchiveGroup,
 		itemProgress,
 		relationLabels
 	}: Props = $props();
+
+	let confirmArchiveGroup = $state<string | null>(null);
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
@@ -169,7 +173,23 @@
 						>&#9662;</span
 					>
 					<span class="group-title">{formatLabel(groupName)}</span>
-					<span class="group-count">{itemCount(groupItems)}</span>
+					<span class="group-actions">
+						<span class="group-count">{itemCount(groupItems)}</span>
+						{#if onArchiveGroup && itemCount(groupItems) > 0}
+							{#if confirmArchiveGroup === groupName}
+								<span class="archive-confirm">
+									<button class="archive-yes" onclick={(e) => { e.stopPropagation(); onArchiveGroup(groupItems); confirmArchiveGroup = null; }}>Archive {itemCount(groupItems)}?</button>
+									<button class="archive-no" onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = null; }}>Cancel</button>
+								</span>
+							{:else}
+								<button
+									class="archive-group-btn"
+									title="Archive all {formatLabel(groupName).toLowerCase()} items"
+									onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = groupName; }}
+								>&#128451;</button>
+							{/if}
+						{/if}
+					</span>
 				</button>
 
 				{#if !collapsedGroups.has(groupName)}
@@ -248,6 +268,70 @@
 
 	.group-header:hover {
 		background: var(--bg-hover);
+	}
+
+	.group-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		flex-shrink: 0;
+	}
+
+	.group-header:hover .archive-group-btn {
+		opacity: 1;
+	}
+
+	.archive-group-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.8em;
+		cursor: pointer;
+		padding: 2px 4px;
+		border-radius: var(--radius-sm);
+		opacity: 0;
+		transition: opacity 0.15s;
+		line-height: 1;
+	}
+
+	.archive-group-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.archive-confirm {
+		display: flex;
+		gap: var(--space-1);
+		align-items: center;
+	}
+
+	.archive-yes {
+		background: none;
+		border: none;
+		color: var(--accent-red, #ef4444);
+		font-size: 0.78em;
+		cursor: pointer;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+		white-space: nowrap;
+	}
+
+	.archive-yes:hover {
+		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+	}
+
+	.archive-no {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.78em;
+		cursor: pointer;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+	}
+
+	.archive-no:hover {
+		color: var(--text-primary);
 	}
 
 	.collapse-icon {

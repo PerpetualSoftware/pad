@@ -12,11 +12,14 @@
 		groupField?: string;
 		onStatusChange: (item: Item, newStatus: string) => void;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		onArchiveColumn?: (items: Item[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, groupField = 'status', onStatusChange, onReorder, itemProgress, relationLabels }: Props = $props();
+	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, itemProgress, relationLabels }: Props = $props();
+
+	let confirmArchiveColumn = $state<string | null>(null);
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
@@ -124,7 +127,23 @@
 		<div class="kanban-column" role="group" aria-label="{formatLabel(colValue)} column">
 			<div class="column-header {columnCssClass(colValue)}">
 				<span class="column-name">{formatLabel(colValue)}</span>
-				<span class="column-count">{colItems.length}</span>
+				<div class="column-actions">
+					<span class="column-count">{colItems.length}</span>
+					{#if onArchiveColumn && colItems.length > 0}
+						{#if confirmArchiveColumn === colValue}
+							<span class="archive-confirm">
+								<button class="archive-yes" onclick={() => { onArchiveColumn(colItems); confirmArchiveColumn = null; }}>Archive {colItems.length}?</button>
+								<button class="archive-no" onclick={() => confirmArchiveColumn = null}>Cancel</button>
+							</span>
+						{:else}
+							<button
+								class="archive-col-btn"
+								title="Archive all {formatLabel(colValue).toLowerCase()} items"
+								onclick={() => confirmArchiveColumn = colValue}
+							>&#128451;</button>
+						{/if}
+					{/if}
+				</div>
 			</div>
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
@@ -185,6 +204,12 @@
 		font-size: 0.9em;
 	}
 
+	.column-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+
 	.column-header.col-in-progress {
 		border-bottom-color: var(--accent-amber);
 	}
@@ -208,6 +233,63 @@
 		background: var(--bg-tertiary);
 		padding: 1px 8px;
 		border-radius: 10px;
+	}
+
+	.archive-col-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.8em;
+		cursor: pointer;
+		padding: 2px 4px;
+		border-radius: var(--radius-sm);
+		opacity: 0;
+		transition: opacity 0.15s;
+		line-height: 1;
+	}
+
+	.column-header:hover .archive-col-btn {
+		opacity: 1;
+	}
+
+	.archive-col-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.archive-confirm {
+		display: flex;
+		gap: var(--space-1);
+		align-items: center;
+	}
+
+	.archive-yes {
+		background: none;
+		border: none;
+		color: var(--accent-red, #ef4444);
+		font-size: 0.75em;
+		cursor: pointer;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+		white-space: nowrap;
+	}
+
+	.archive-yes:hover {
+		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+	}
+
+	.archive-no {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.75em;
+		cursor: pointer;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+	}
+
+	.archive-no:hover {
+		color: var(--text-primary);
 	}
 
 	.column-cards {

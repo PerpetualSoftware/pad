@@ -19,11 +19,12 @@
 	let viewMode = $state<ViewMode>('list');
 	let activeFilters = $state<Record<string, string>>({});
 	let searchQuery = $state('');
+	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
 	let relationLabels = $state<Record<string, string>>({});
 
-	let wsSlug = $derived(page.params.workspace);
-	let collSlug = $derived(page.params.collection);
+	let wsSlug = $derived(page.params.workspace ?? '');
+	let collSlug = $derived(page.params.collection ?? '');
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {
@@ -73,7 +74,7 @@
 	}
 
 	$effect(() => {
-		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug);
+		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
 	});
 
 	// Subscribe to SSE events for live updates to this collection's items
@@ -120,12 +121,13 @@
 		unsubscribeSSE?.();
 	});
 
-	async function loadCollection(ws: string, coll: string) {
+	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		loading = true;
 		try {
+			const listParams = includeArchived ? { include_archived: true } : undefined;
 			const [collData, itemsData] = await Promise.all([
 				api.collections.get(ws, coll),
-				api.items.listByCollection(ws, coll)
+				api.items.listByCollection(ws, coll, listParams)
 			]);
 			collection = collData;
 			items = itemsData;
@@ -317,12 +319,40 @@
 		}
 	}
 
+	async function handleBulkArchive(itemsToArchive: Item[]) {
+		if (!wsSlug) return;
+		const count = itemsToArchive.length;
+		try {
+			for (const item of itemsToArchive) {
+				await api.items.delete(wsSlug, item.slug);
+			}
+			items = items.filter((i) => !itemsToArchive.some((a) => a.id === i.id));
+			toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+		} catch {
+			toastStore.show('Failed to archive some items', 'error');
+		}
+	}
+
+	async function handleRestore(item: Item) {
+		if (!wsSlug) return;
+		try {
+			const restored = await api.items.restore(wsSlug, item.slug);
+			const idx = items.findIndex((i) => i.id === item.id);
+			if (idx !== -1) {
+				items[idx] = restored;
+			}
+			toastStore.show(`Restored "${item.title}"`, 'success');
+		} catch {
+			toastStore.show('Failed to restore item', 'error');
+		}
+	}
+
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 </script>
 
-<div class="collection-page">
+<div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
 		<div class="loading">Loading...</div>
 	{:else if !collection}
@@ -374,6 +404,11 @@
 					{relationLabels}
 				/>
 
+				<label class="archive-toggle">
+					<input type="checkbox" bind:checked={showArchived} />
+					<span>Show archived</span>
+				</label>
+
 				<button class="new-btn" onclick={createNewItem} disabled={creatingNew}>
 					+ New {singularName()}
 				</button>
@@ -403,6 +438,7 @@
 				{groupField}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
+				onArchiveColumn={handleBulkArchive}
 				{itemProgress}
 				{relationLabels}
 			/>
@@ -414,6 +450,7 @@
 				{statusOptions}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
+				onArchiveGroup={handleBulkArchive}
 				{itemProgress}
 				{relationLabels}
 			/>
@@ -426,6 +463,11 @@
 		max-width: var(--content-max-width);
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
+	}
+
+	.collection-page.board-active {
+		max-width: none;
+		padding: var(--space-6) var(--space-6);
 	}
 
 	.loading {
@@ -554,6 +596,25 @@
 
 	.toggle-btn:hover:not(.active) {
 		background: var(--bg-hover);
+	}
+
+	.archive-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.82em;
+		color: var(--text-muted);
+		cursor: pointer;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.archive-toggle input {
+		accent-color: var(--accent-blue);
+	}
+
+	.archive-toggle:hover {
+		color: var(--text-secondary);
 	}
 
 	.new-btn {
