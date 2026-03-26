@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import type { Collection, Item } from '$lib/types';
-	import { parseSettings, parseFields, parseSchema, getStatusOptions } from '$lib/types';
+	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
@@ -311,7 +311,7 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			goto(`/${wsSlug}/${collSlug}/${item.slug}?new=1`);
+			goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 		} catch {
 			toastStore.show('Failed to create item', 'error');
 		} finally {

@@ -5,11 +5,11 @@
 	import { api } from '$lib/api/client';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import type { Collection, FieldDef } from '$lib/types';
-	import { getStatusOptions, parseSchema } from '$lib/types';
+	import { getStatusOptions, parseSchema, itemUrlId } from '$lib/types';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 
 	let collections = $state<Collection[]>([]);
 	let selectedColl = $state('');
@@ -68,7 +68,7 @@
 				fields: JSON.stringify(fields),
 				source: 'web'
 			});
-			goto(`/${wsSlug}/${selectedColl}/${item.slug}`);
+			goto(`/${wsSlug}/${selectedColl}/${itemUrlId(item)}`);
 		} catch {
 			creating = false;
 			toastStore.show('Failed to create item', 'error');

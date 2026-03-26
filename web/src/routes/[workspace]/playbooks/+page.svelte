@@ -2,13 +2,13 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseFields, type Item } from '$lib/types';
+	import { parseFields, itemUrlId, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	const TRIGGERS = ['on-implement', 'on-triage', 'on-release', 'on-plan', 'on-review', 'on-deploy', 'manual'] as const;
 	const SCOPES = ['all', 'backend', 'frontend', 'mobile', 'devops'] as const;
 	const STATUS_ORDER: Record<string, number> = { active: 0, draft: 1, deprecated: 2 };
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 	let playbooks = $state<Item[]>([]);
 	let loading = $state(true);
 	let expandedId = $state<string | null>(null);
@@ -16,6 +16,10 @@
 	let deleting = $state<string | null>(null);
 	let confirmDeleteSlug = $state<string | null>(null);
 	let togglingStatus = $state<string | null>(null);
+	let duplicating = $state<string | null>(null);
+	let searchQuery = $state('');
+	let filterTrigger = $state<string>('');
+	let filterScope = $state<string>('');
 	let newTitle = $state('');
 	let newTrigger = $state<string>('manual');
 	let newScope = $state<string>('all');
@@ -29,14 +33,29 @@
 		finally { loading = false; }
 	}
 
-	let sorted = $derived.by(() => [...playbooks].sort((a, b) => {
-		const fa = parseFields(a), fb = parseFields(b);
-		const sa = STATUS_ORDER[fa.status] ?? 1, sb = STATUS_ORDER[fb.status] ?? 1;
-		if (sa !== sb) return sa - sb;
-		const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
-		if (ta !== tb) return ta.localeCompare(tb);
-		return a.title.localeCompare(b.title);
-	}));
+	let hasActiveFilters = $derived(searchQuery !== '' || filterTrigger !== '' || filterScope !== '');
+
+	let sorted = $derived.by(() => {
+		let items = [...playbooks];
+		if (searchQuery) {
+			const q = searchQuery.toLowerCase();
+			items = items.filter(i => i.title.toLowerCase().includes(q) || (i.content ?? '').toLowerCase().includes(q));
+		}
+		if (filterTrigger) {
+			items = items.filter(i => (parseFields(i).trigger ?? 'manual') === filterTrigger);
+		}
+		if (filterScope) {
+			items = items.filter(i => (parseFields(i).scope ?? 'all') === filterScope);
+		}
+		return items.sort((a, b) => {
+			const fa = parseFields(a), fb = parseFields(b);
+			const sa = STATUS_ORDER[fa.status] ?? 1, sb = STATUS_ORDER[fb.status] ?? 1;
+			if (sa !== sb) return sa - sb;
+			const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
+			if (ta !== tb) return ta.localeCompare(tb);
+			return a.title.localeCompare(b.title);
+		});
+	});
 
 	function countSteps(content: string): number {
 		if (!content) return 0;
@@ -93,6 +112,23 @@
 		} catch { toastStore.show('Failed to delete playbook', 'error'); }
 		finally { deleting = null; }
 	}
+	async function duplicatePlaybook(item: Item) {
+		duplicating = item.slug;
+		try {
+			const fields = parseFields(item);
+			await api.items.create(wsSlug, 'playbooks', {
+				title: `${item.title} (copy)`,
+				content: item.content,
+				fields: JSON.stringify({ status: 'draft', trigger: fields.trigger ?? 'manual', scope: fields.scope ?? 'all' })
+			});
+			toastStore.show('Playbook duplicated as draft', 'success');
+			await loadPlaybooks(wsSlug);
+		} catch { toastStore.show('Failed to duplicate playbook', 'error'); }
+		finally { duplicating = null; }
+	}
+
+	function clearFilters() { searchQuery = ''; filterTrigger = ''; filterScope = ''; }
+
 	function resetForm() { showNewForm = false; newTitle = ''; newTrigger = 'manual'; newScope = 'all'; newContent = ''; }
 	function statusLabel(s: string) { return s === 'active' ? 'Active' : s === 'deprecated' ? 'Deprecated' : 'Draft'; }
 	function nextStatusLabel(s: string) { return s === 'active' ? 'Mark as Draft' : s === 'draft' ? 'Mark as Active' : 'Mark as Draft'; }
@@ -153,7 +189,29 @@
 			</div>
 		{/if}
 
-		{#if sorted.length === 0 && !showNewForm}
+		{#if playbooks.length > 0 && !showNewForm}
+			<div class="filter-bar">
+				<input type="text" class="search-input" placeholder="Search playbooks..." bind:value={searchQuery} />
+				<select class="filter-select" bind:value={filterTrigger}>
+					<option value="">All triggers</option>
+					{#each TRIGGERS as t (t)}<option value={t}>{t}</option>{/each}
+				</select>
+				<select class="filter-select" bind:value={filterScope}>
+					<option value="">All scopes</option>
+					{#each SCOPES as s (s)}<option value={s}>{s}</option>{/each}
+				</select>
+				{#if hasActiveFilters}
+					<button class="action-btn" onclick={clearFilters}>Clear</button>
+				{/if}
+			</div>
+		{/if}
+
+		{#if sorted.length === 0 && hasActiveFilters && !showNewForm}
+			<div class="empty-state">
+				<p>No playbooks match your filters.</p>
+				<button class="btn btn-secondary" onclick={clearFilters}>Clear filters</button>
+			</div>
+		{:else if sorted.length === 0 && !showNewForm}
 			<div class="empty-state">
 				<div class="empty-icon">&#x1F4D8;</div>
 				<h2>No playbooks yet</h2>
@@ -206,9 +264,12 @@
 								</div>
 								<div class="card-divider"></div>
 								<div class="card-actions">
-									<button class="action-btn" onclick={() => goto(`/${wsSlug}/playbooks/${item.slug}`)}>Edit</button>
+									<button class="action-btn" onclick={() => goto(`/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</button>
 									<button class="action-btn" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
 										{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
+									</button>
+									<button class="action-btn" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
+										{duplicating === item.slug ? '...' : 'Duplicate'}
 									</button>
 									{#if confirmDeleteSlug === item.slug}
 										<span class="delete-confirm">
@@ -241,6 +302,12 @@
 	.empty-icon { font-size: 3em; margin-bottom: var(--space-4); opacity: 0.6; }
 	.empty-state h2 { font-size: 1.2em; font-weight: 600; margin-bottom: var(--space-2); color: var(--text-primary); }
 	.empty-state p { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-5); }
+	.filter-bar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
+	.search-input { flex: 1; min-width: 160px; padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; color: var(--text-primary); }
+	.search-input::placeholder { color: var(--text-muted); }
+	.search-input:focus { border-color: var(--accent-blue); outline: none; }
+	.filter-select { padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.82em; color: var(--text-primary); cursor: pointer; }
+	.filter-select:focus { border-color: var(--accent-blue); outline: none; }
 	.cards { display: flex; flex-direction: column; gap: var(--space-3); }
 	.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); transition: border-color 0.15s; }
 	.card:hover { border-color: var(--accent-blue); }
