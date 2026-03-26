@@ -291,6 +291,32 @@
 		}
 	}
 
+	let creatingNew = $state(false);
+
+	async function createNewItem() {
+		if (!wsSlug || !collSlug || creatingNew) return;
+		creatingNew = true;
+		try {
+			const schema = collection ? parseSchema(collection) : { fields: [] };
+			const defaultFields: Record<string, any> = {};
+			const statusField = schema.fields.find(f => f.key === 'status');
+			if (statusField?.options?.length) {
+				defaultFields.status = statusField.options[0];
+			}
+			const item = await api.items.create(wsSlug, collSlug, {
+				title: 'Untitled',
+				content: '',
+				fields: JSON.stringify(defaultFields),
+				source: 'web'
+			});
+			goto(`/${wsSlug}/${collSlug}/${item.slug}?new=1`);
+		} catch {
+			toastStore.show('Failed to create item', 'error');
+		} finally {
+			creatingNew = false;
+		}
+	}
+
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
@@ -348,9 +374,9 @@
 					{relationLabels}
 				/>
 
-				<a href="/{wsSlug}/new?collection={collSlug}" class="new-btn">
+				<button class="new-btn" onclick={createNewItem} disabled={creatingNew}>
 					+ New {singularName()}
-				</a>
+				</button>
 			</div>
 		</div>
 

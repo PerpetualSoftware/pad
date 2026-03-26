@@ -6,8 +6,11 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
+	import { parseSchema } from '$lib/types';
 	import type { Collection } from '$lib/types';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
@@ -84,6 +87,30 @@
 			}
 		}
 		collectionStore.loadCollections(wsSlug);
+	}
+
+	async function createNewItem() {
+		if (!wsSlug || !activeCollectionSlug) return;
+		const coll = activeColl;
+		if (!coll) return;
+		try {
+			const schema = parseSchema(coll);
+			const defaultFields: Record<string, any> = {};
+			const statusField = schema.fields.find(f => f.key === 'status');
+			if (statusField?.options?.length) {
+				defaultFields.status = statusField.options[0];
+			}
+			const item = await api.items.create(wsSlug, activeCollectionSlug, {
+				title: 'Untitled',
+				content: '',
+				fields: JSON.stringify(defaultFields),
+				source: 'web'
+			});
+			uiStore.onNavigate();
+			goto(`/${wsSlug}/${activeCollectionSlug}/${item.slug}?new=1`);
+		} catch {
+			toastStore.show('Failed to create item', 'error');
+		}
 	}
 
 	onMount(() => {
@@ -256,15 +283,14 @@
 				{/if}
 			</nav>
 
-			{#if !agentSlugs.includes(activeCollectionSlug ?? '')}
+			{#if !agentSlugs.includes(activeCollectionSlug ?? '') && activeCollectionSlug}
 			<div class="actions">
-				<a
-					href="/{wsSlug}/new{activeCollectionSlug ? `?collection=${activeCollectionSlug}` : ''}"
+				<button
 					class="new-item-btn"
-					onclick={() => uiStore.onNavigate()}
+					onclick={createNewItem}
 				>
 					+ New {activeColl?.name ? activeColl.name.replace(/s$/, '') : 'Item'}
-				</a>
+				</button>
 			</div>
 			{/if}
 		{/if}

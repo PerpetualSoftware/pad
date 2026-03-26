@@ -23,6 +23,7 @@
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
+	let titleInputEl = $state<HTMLInputElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
@@ -88,6 +89,13 @@
 			error = e.message ?? 'Failed to load item';
 		} finally {
 			loading = false;
+
+			// Auto-start title editing for newly created items
+			if (page.url.searchParams.get('new') === '1' && item) {
+				startEditTitle();
+				// Clean up the URL param
+				goto(`/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+			}
 		}
 	}
 
@@ -95,7 +103,15 @@
 		if (!item) return;
 		titleDraft = item.title;
 		editingTitle = true;
+		// Focus and select will happen via $effect on titleInputEl
 	}
+
+	$effect(() => {
+		if (editingTitle && titleInputEl) {
+			titleInputEl.focus();
+			titleInputEl.select();
+		}
+	});
 
 	async function saveTitle() {
 		editingTitle = false;
@@ -192,6 +208,7 @@
 			{#if editingTitle}
 				<input
 					class="title-input"
+					bind:this={titleInputEl}
 					bind:value={titleDraft}
 					onblur={saveTitle}
 					onkeydown={handleTitleKeydown}
