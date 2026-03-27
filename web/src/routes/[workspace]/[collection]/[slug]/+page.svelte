@@ -4,6 +4,8 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
+	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
+	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
 	import type { Editor as EditorType } from '@tiptap/core';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import VersionHistory from '$lib/components/versions/VersionHistory.svelte';
@@ -54,6 +56,7 @@
 	let showHistory = $state(false);
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
+	let rawMode = $state(false);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -145,6 +148,8 @@
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			saveTitle();
+			// Move focus to the editor so you can start writing immediately
+			requestAnimationFrame(() => editorInstance?.commands.focus());
 		} else if (e.key === 'Escape') {
 			editingTitle = false;
 		}
@@ -177,6 +182,22 @@
 			api.items.update(wsSlug, item.id, { content: toSave }).then(() => {
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
+				showSaved();
+			}).catch(() => {
+				saveStatus = 'idle';
+				toastStore.show('Failed to save content', 'error');
+			});
+		}, 500);
+	}
+
+	function handleRawContentUpdate(markdown: string) {
+		clearTimeout(contentDebounceTimer);
+		saveStatus = 'saving';
+		contentDebounceTimer = setTimeout(() => {
+			if (!item) return;
+			// Raw mode: content is already in storage format (with [[wiki links]])
+			api.items.update(wsSlug, item.id, { content: markdown }).then((updated) => {
+				item = updated;
 				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
@@ -338,15 +359,36 @@
 
 			<!-- Content editor -->
 			<div class="content-panel">
-				{#key item.id}
-					<Editor content={editorContent} onUpdate={handleContentUpdate} editable={true} onEditor={(e) => editorInstance = e} />
-				{/key}
-				<EditorBubbleMenu
-					editor={editorInstance}
-					{wsSlug}
-					collections={collectionStore.collections}
-					onItemCreated={() => collectionStore.loadItems(wsSlug)}
-				/>
+				<div class="editor-mode-toggle">
+					<button
+						class="mode-btn"
+						class:active={!rawMode}
+						onclick={() => rawMode = false}
+						title="Rich text editor"
+					>Rich</button>
+					<button
+						class="mode-btn"
+						class:active={rawMode}
+						onclick={() => rawMode = true}
+						title="Raw markdown editor"
+					>Markdown</button>
+				</div>
+				{#if rawMode}
+					{#key item.id}
+						<RawMarkdownEditor content={item.content ?? ''} onUpdate={handleRawContentUpdate} />
+					{/key}
+				{:else}
+					{#key item.id}
+						<Editor content={editorContent} onUpdate={handleContentUpdate} editable={true} onEditor={(e) => editorInstance = e} />
+					{/key}
+					<EditorBubbleMenu
+						editor={editorInstance}
+						{wsSlug}
+						collections={collectionStore.collections}
+						onItemCreated={() => collectionStore.loadItems(wsSlug)}
+					/>
+					<EditorLinkPopover editor={editorInstance} />
+				{/if}
 			</div>
 		</div>
 
@@ -587,6 +629,38 @@
 	/* Content */
 	.content-panel {
 		min-height: 300px;
+	}
+
+	.editor-mode-toggle {
+		display: flex;
+		gap: 1px;
+		margin-bottom: var(--space-3);
+		background: var(--bg-tertiary);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+		width: fit-content;
+	}
+
+	.mode-btn {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.75em;
+		font-weight: 500;
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: color 0.15s, background 0.15s;
+	}
+
+	.mode-btn:hover {
+		color: var(--text-secondary);
+	}
+
+	.mode-btn.active {
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 	}
 
 	/* Comments */

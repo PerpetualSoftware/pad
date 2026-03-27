@@ -17,6 +17,7 @@
 		onArchiveGroup?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
+		progressLabel?: string;
 		relationLabels?: Record<string, string>;
 	}
 
@@ -30,6 +31,7 @@
 		onArchiveGroup,
 		onGroupReorder,
 		itemProgress,
+		progressLabel = 'tasks',
 		relationLabels
 	}: Props = $props();
 
@@ -259,6 +261,7 @@
 									{statusOptions}
 									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
+									{progressLabel}
 									{relationLabels}
 								/>
 							</div>

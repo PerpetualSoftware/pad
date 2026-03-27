@@ -45,6 +45,7 @@ func main() {
 		serveCmd(),
 		stopCmd(),
 		initCmd(),
+		linkCmd(),
 		onboardCmd(),
 		workspacesCmd(),
 		switchCmd(),
@@ -327,6 +328,67 @@ Use --list-templates to see available templates.`,
 	cmd.Flags().BoolVar(&listTemplates, "list-templates", false, "list available workspace templates")
 
 	return cmd
+}
+
+func linkCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "link <workspace>",
+		Short: "Link the current directory to an existing workspace",
+		Long: `Link the current directory to an existing workspace by creating a .pad.toml file.
+
+Unlike 'pad init', this does NOT create a new workspace — it only links to one that already exists.
+
+  pad link myproject
+
+Use 'pad workspaces' to see available workspaces.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			cwd, _ := os.Getwd()
+			nameOrSlug := args[0]
+
+			// Check if already linked
+			existingSlug, err := cli.DetectWorkspace("")
+			if err == nil {
+				ws, err := client.GetWorkspace(existingSlug)
+				if err == nil && ws != nil {
+					fmt.Printf("Already linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
+					return nil
+				}
+			}
+
+			// Find workspace by name or slug
+			var ws *models.Workspace
+			workspaces, err := client.ListWorkspaces()
+			if err != nil {
+				return fmt.Errorf("list workspaces: %w", err)
+			}
+			for i := range workspaces {
+				if strings.EqualFold(workspaces[i].Name, nameOrSlug) || workspaces[i].Slug == nameOrSlug {
+					ws = &workspaces[i]
+					break
+				}
+			}
+
+			if ws == nil {
+				fmt.Fprintf(os.Stderr, "Workspace %q not found.\n\n", nameOrSlug)
+				fmt.Fprintln(os.Stderr, "Available workspaces:")
+				for _, w := range workspaces {
+					fmt.Fprintf(os.Stderr, "  %-20s (slug: %s)\n", w.Name, w.Slug)
+				}
+				return fmt.Errorf("workspace %q does not exist — use 'pad init %s' to create it", nameOrSlug, nameOrSlug)
+			}
+
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+				return fmt.Errorf("write .pad.toml: %w", err)
+			}
+
+			fmt.Printf("Linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
+			fmt.Printf("  %s/.pad.toml\n", cwd)
+			offerSkillInstall()
+			return nil
+		},
+	}
 }
 
 func offerSkillInstall() {

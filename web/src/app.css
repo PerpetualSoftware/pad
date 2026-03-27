@@ -189,6 +189,31 @@ input:focus, textarea:focus {
 	text-decoration: line-through;
 }
 
+/* External links in rendered markdown */
+.prose .external-link {
+	color: var(--accent-blue);
+	text-decoration: none;
+}
+.prose .external-link:hover {
+	text-decoration: underline;
+}
+.prose .external-icon {
+	font-size: 0.75em;
+	opacity: 0.6;
+	vertical-align: super;
+}
+
+/* Editor link styles — autolinked URLs and wiki-links */
+.prose a.editor-link {
+	color: var(--accent-blue);
+	text-decoration: none;
+	border-bottom: 1px solid color-mix(in srgb, var(--accent-blue) 30%, transparent);
+	transition: border-color 0.15s;
+}
+.prose a.editor-link:hover {
+	border-bottom-color: var(--accent-blue);
+}
+
 /* Light mode */
 [data-theme="light"] {
 	--bg-primary: #ffffff;

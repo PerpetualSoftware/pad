@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -8,6 +9,7 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let loading = $state(true);
@@ -71,6 +73,23 @@
 		collectionStore.loadCollections(wsSlug);
 		editingCollection = null;
 	}
+	let confirmDelete = $state(false);
+	let deleting = $state(false);
+	let deleteInput = $state('');
+
+	async function handleDeleteWorkspace() {
+		if (deleteInput !== wsSlug) return;
+		deleting = true;
+		try {
+			await api.workspaces.delete(wsSlug);
+			toastStore.show(`Workspace "${wsName}" archived`, 'success');
+			goto('/');
+		} catch {
+			toastStore.show('Failed to archive workspace', 'error');
+			deleting = false;
+		}
+	}
+
 	let createdDate = $derived(
 		workspaceStore.current?.created_at
 			? new Date(workspaceStore.current.created_at).toLocaleDateString('en-US', {
@@ -179,6 +198,42 @@
 				</div>
 			</div>
 		</section>
+		<section class="section danger-section">
+			<h2>Danger Zone</h2>
+			<div class="card danger-card">
+				{#if !confirmDelete}
+					<div class="danger-row">
+						<div class="danger-info">
+							<strong>Archive this workspace</strong>
+							<p>This will hide the workspace and all its collections, items, and documents. The data is preserved but no longer accessible.</p>
+						</div>
+						<button class="btn btn-danger" onclick={() => confirmDelete = true}>
+							Archive workspace
+						</button>
+					</div>
+				{:else}
+					<div class="danger-confirm">
+						<p class="danger-warning">This will archive <strong>{wsName}</strong> and all its contents. To confirm, type the workspace slug below:</p>
+						<div class="danger-input-row">
+							<code class="slug-hint">{wsSlug}</code>
+							<input
+								type="text"
+								class="danger-input"
+								bind:value={deleteInput}
+								placeholder="Type workspace slug to confirm"
+								onkeydown={(e) => e.key === 'Enter' && handleDeleteWorkspace()}
+							/>
+						</div>
+						<div class="danger-actions">
+							<button class="btn btn-danger" onclick={handleDeleteWorkspace} disabled={deleteInput !== wsSlug || deleting}>
+								{deleting ? 'Archiving...' : 'Archive this workspace'}
+							</button>
+							<button class="btn" onclick={() => { confirmDelete = false; deleteInput = ''; }}>Cancel</button>
+						</div>
+					</div>
+				{/if}
+			</div>
+		</section>
 	{/if}
 </div>
 
@@ -227,4 +282,22 @@
 	.theme-toggle { display: flex; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; }
 	.theme-option { padding: var(--space-1) var(--space-4); font-size: 0.85em; transition: background 0.15s, color 0.15s; }
 	.theme-option.active { background: var(--accent-blue); color: #fff; }
+	/* ── Danger Zone ──── */
+	.danger-section h2 { color: #ef4444; }
+	.danger-card { border-color: color-mix(in srgb, #ef4444 30%, var(--border)); }
+	.danger-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+	.danger-info { flex: 1; }
+	.danger-info strong { font-size: 0.9em; }
+	.danger-info p { font-size: 0.8em; color: var(--text-muted); margin: var(--space-1) 0 0; }
+	.btn-danger { padding: var(--space-2) var(--space-4); background: none; border: 1px solid #ef4444; border-radius: var(--radius); color: #ef4444; font-size: 0.85em; cursor: pointer; white-space: nowrap; font-weight: 500; }
+	.btn-danger:hover:not(:disabled) { background: #ef4444; color: #fff; }
+	.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+	.danger-confirm { display: flex; flex-direction: column; gap: var(--space-3); }
+	.danger-warning { font-size: 0.88em; color: var(--text-primary); margin: 0; }
+	.danger-warning strong { color: #ef4444; }
+	.danger-input-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+	.slug-hint { font-size: 0.82em; padding: var(--space-1) var(--space-2); background: var(--bg-tertiary); border-radius: var(--radius-sm); color: var(--text-muted); font-family: var(--font-mono); }
+	.danger-input { flex: 1; min-width: 180px; max-width: 300px; padding: var(--space-2); font-size: 0.88em; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); }
+	.danger-input:focus { outline: none; border-color: #ef4444; }
+	.danger-actions { display: flex; gap: var(--space-2); }
 </style>

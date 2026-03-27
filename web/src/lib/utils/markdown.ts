@@ -1,6 +1,20 @@
-import { marked } from 'marked';
+import { marked, type Tokens } from 'marked';
 import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
+
+// Custom renderer to open external links in new tabs
+const renderer = new marked.Renderer();
+renderer.link = ({ href, title, tokens }: Tokens.Link) => {
+	const text = marked.parseInline(tokens.map(t => t.raw).join(''));
+	const isExternal = href && /^https?:\/\//.test(href);
+	const titleAttr = title ? ` title="${title}"` : '';
+	if (isExternal) {
+		return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer" class="external-link">${text}<span class="external-icon" aria-hidden="true"> ↗</span></a>`;
+	}
+	return `<a href="${href}"${titleAttr}>${text}</a>`;
+};
+
+marked.use({ renderer });
 
 export function renderMarkdown(content: string, items: Item[], workspaceSlug: string): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {

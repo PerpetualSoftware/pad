@@ -106,6 +106,11 @@ export const api = {
 			request<Collection>(`/workspaces/${ws}/collections/${slug}`, {
 				method: 'PATCH',
 				body: JSON.stringify(data)
+			}),
+
+		delete: (ws: string, slug: string) =>
+			request<void>(`/workspaces/${ws}/collections/${slug}`, {
+				method: 'DELETE'
 			})
 	},
 

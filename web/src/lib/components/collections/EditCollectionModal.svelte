@@ -15,6 +15,28 @@
 
 	let { open, collection, wsSlug, onupdated, onclose }: Props = $props();
 
+	let confirmArchive = $state(false);
+	let archiving = $state(false);
+
+	async function handleArchive() {
+		if (!confirmArchive) {
+			confirmArchive = true;
+			return;
+		}
+		archiving = true;
+		try {
+			await api.collections.delete(wsSlug, collection.slug);
+			toastStore.show(`Archived "${collection.name}"`, 'success');
+			onupdated();
+			onclose();
+		} catch (err) {
+			toastStore.show('Failed to archive collection', 'error');
+		} finally {
+			archiving = false;
+			confirmArchive = false;
+		}
+	}
+
 	const FIELD_TYPES: FieldDef['type'][] = [
 		'text',
 		'number',
@@ -141,6 +163,7 @@
 			showEmojiPicker = false;
 			error = '';
 			activeTab = 'general';
+			confirmArchive = false;
 
 			// Sync display settings
 			const s = parseSettings(collection);
@@ -669,6 +692,20 @@
 			</div>
 
 			<div class="modal-footer">
+				{#if !collection.is_default}
+					{#if confirmArchive}
+						<span class="archive-confirm">
+							<span class="archive-warn">Archive "{collection.name}" and all its items?</span>
+							<button class="btn-archive-yes" type="button" onclick={handleArchive} disabled={archiving}>
+								{archiving ? 'Archiving...' : 'Yes, archive'}
+							</button>
+							<button class="btn-cancel-sm" type="button" onclick={() => confirmArchive = false}>Cancel</button>
+						</span>
+					{:else}
+						<button class="btn-archive" type="button" onclick={handleArchive}>Archive</button>
+					{/if}
+				{/if}
+				<span class="footer-spacer"></span>
 				<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
 				<button
 					class="btn-save"
@@ -1268,6 +1305,71 @@
 	.btn-save:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.footer-spacer {
+		flex: 1;
+	}
+
+	.btn-archive {
+		padding: var(--space-2) var(--space-4);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		font-size: 0.85em;
+		cursor: pointer;
+	}
+
+	.btn-archive:hover {
+		border-color: #ef4444;
+		color: #ef4444;
+		background: rgba(239, 68, 68, 0.06);
+	}
+
+	.archive-confirm {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.archive-warn {
+		font-size: 0.82em;
+		color: #ef4444;
+		font-weight: 500;
+	}
+
+	.btn-archive-yes {
+		padding: var(--space-1) var(--space-3);
+		background: #ef4444;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: #fff;
+		font-size: 0.82em;
+		font-weight: 500;
+		cursor: pointer;
+	}
+
+	.btn-archive-yes:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn-archive-yes:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.btn-cancel-sm {
+		padding: var(--space-1) var(--space-2);
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.82em;
+		cursor: pointer;
+	}
+
+	.btn-cancel-sm:hover {
+		color: var(--text-primary);
 	}
 
 	/* ── Quick Actions tab ─────────────────────────────────────────────────── */

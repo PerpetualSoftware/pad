@@ -22,6 +22,7 @@
 	let searchQuery = $state('');
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
+	let progressLabel = $state('tasks');
 	let relationLabels = $state<Record<string, string>>({});
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -142,11 +143,22 @@
 						map[p.phase_id] = { total: p.total, done: p.done };
 					}
 					itemProgress = map;
+					progressLabel = 'tasks';
 				} catch {
 					itemProgress = {};
 				}
 			} else {
-				itemProgress = {};
+				// Compute checklist progress from item content (markdown checkboxes)
+				const map: Record<string, { total: number; done: number }> = {};
+				for (const it of itemsData) {
+					if (!it.content) continue;
+					const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
+					if (total === 0) continue;
+					const done = (it.content.match(/- \[x\]/g) ?? []).length;
+					map[it.id] = { total, done };
+				}
+				itemProgress = map;
+				progressLabel = 'done';
 			}
 
 			// Fetch phase names for relation display on task cards
@@ -481,6 +493,7 @@
 				onArchiveColumn={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
 				{itemProgress}
+				{progressLabel}
 				{relationLabels}
 			/>
 		{:else}
@@ -494,6 +507,7 @@
 				onArchiveGroup={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
 				{itemProgress}
+				{progressLabel}
 				{relationLabels}
 			/>
 		{/if}

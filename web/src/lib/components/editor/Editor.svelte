@@ -1,12 +1,126 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { Editor } from '@tiptap/core';
+	import { Editor, mergeAttributes } from '@tiptap/core';
 	import StarterKit from '@tiptap/starter-kit';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
 	import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 	import Link from '@tiptap/extension-link';
+	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
+
+	// Serialized mermaid render queue — mermaid can't handle concurrent renders
+	let mermaidMod: typeof import('mermaid') | null = null;
+	let renderQueue: Promise<void> = Promise.resolve();
+
+	async function initMermaid() {
+		if (!mermaidMod) {
+			mermaidMod = await import('mermaid');
+			mermaidMod.default.initialize({
+				startOnLoad: false,
+				theme: 'dark',
+				securityLevel: 'strict',
+				fontFamily: 'inherit',
+			});
+		}
+		return mermaidMod;
+	}
+
+	function queueMermaidRender(source: string, target: HTMLElement) {
+		renderQueue = renderQueue.then(async () => {
+			try {
+				const m = await initMermaid();
+				const id = `mmd-${Math.random().toString(36).slice(2, 10)}`;
+				const { svg } = await m.default.render(id, source);
+				target.innerHTML = svg;
+			} catch {
+				target.textContent = '⚠ Invalid Mermaid syntax';
+				target.classList.add('mermaid-error');
+			}
+		});
+	}
+
+	// CodeBlock with inline mermaid rendering via NodeView.
+	// Key: ignoreMutation prevents ProseMirror's MutationObserver from
+	// detecting our SVG insertion and triggering an infinite re-parse loop.
+	const MermaidCodeBlock = CodeBlock.extend({
+		addNodeView() {
+			return ({ node }: any) => {
+				const lang = node.attrs.language;
+
+				// Non-mermaid: default rendering
+				if (lang !== 'mermaid') {
+					const pre = document.createElement('pre');
+					pre.classList.add('code-block');
+					const code = document.createElement('code');
+					if (lang) code.classList.add(`language-${lang}`);
+					pre.appendChild(code);
+					return { dom: pre, contentDOM: code };
+				}
+
+				// Mermaid: diagram with hidden editable source
+				const wrapper = document.createElement('div');
+				wrapper.className = 'mermaid-wrapper';
+
+				const diagram = document.createElement('div');
+				diagram.className = 'mermaid-diagram';
+				diagram.setAttribute('contenteditable', 'false');
+				diagram.textContent = 'Rendering...';
+
+				const pre = document.createElement('pre');
+				pre.classList.add('code-block', 'mermaid-source');
+				pre.style.display = 'none';
+				const code = document.createElement('code');
+				code.classList.add('language-mermaid');
+				pre.appendChild(code);
+
+				const toggleBtn = document.createElement('button');
+				toggleBtn.className = 'mermaid-toggle';
+				toggleBtn.textContent = '< >';
+				toggleBtn.title = 'Toggle source code';
+				toggleBtn.setAttribute('contenteditable', 'false');
+				toggleBtn.addEventListener('mousedown', (e) => {
+					e.preventDefault();
+					const showingCode = pre.style.display !== 'none';
+					pre.style.display = showingCode ? 'none' : '';
+					diagram.style.display = showingCode ? '' : 'none';
+					toggleBtn.classList.toggle('active', !showingCode);
+				});
+
+				wrapper.append(toggleBtn, diagram, pre);
+
+				const source = node.textContent?.trim() ?? '';
+				if (source) {
+					queueMermaidRender(source, diagram);
+				}
+
+				return {
+					dom: wrapper,
+					contentDOM: code,
+					// Critical: tell ProseMirror to ignore DOM mutations outside
+					// the contentDOM (code element). Without this, inserting the
+					// mermaid SVG triggers ProseMirror's MutationObserver → re-parse
+					// → NodeView recreation → infinite loop.
+					ignoreMutation(mutation: MutationRecord) {
+						return !code.contains(mutation.target);
+					},
+				};
+			};
+		},
+	});
+
+	// Extend Link to render data-href instead of href in the editor DOM.
+	// This prevents mobile browsers from navigating when tapping links —
+	// no href attribute means nothing for the browser to follow.
+	// Mark attributes still store href, so markdown serialization and the
+	// link popover work unchanged.
+	const SafeLink = Link.extend({
+		renderHTML({ HTMLAttributes }) {
+			const merged = mergeAttributes(this.options.HTMLAttributes, HTMLAttributes);
+			const { href, ...rest } = merged;
+			return ['a', { ...rest, 'data-href': href }, 0];
+		},
+	});
 	import { Markdown } from 'tiptap-markdown';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -115,9 +229,10 @@
 
 		const extensions = [
 			StarterKit.configure({
-				codeBlock: {
-					HTMLAttributes: { class: 'code-block' },
-				},
+				codeBlock: false,
+			}),
+			MermaidCodeBlock.configure({
+				HTMLAttributes: { class: 'code-block' },
 			}),
 			TaskList,
 			TaskItem.configure({ nested: true }),
@@ -125,8 +240,10 @@
 			TableRow,
 			TableCell,
 			TableHeader,
-			Link.configure({
+			SafeLink.configure({
 				openOnClick: false,
+				autolink: true,
+				linkOnPaste: true,
 				HTMLAttributes: { class: 'editor-link', target: null, rel: null },
 			}),
 			Placeholder.configure({
@@ -249,6 +366,17 @@
 		editor.on('focus', () => { editorFocused = true; });
 		editor.on('blur', () => { editorFocused = false; });
 
+		// Prevent link navigation in edit mode — Tiptap's openOnClick:false
+		// doesn't fully prevent the browser default on all platforms (especially touch).
+		// Links are opened intentionally via the link popover's "Open" button.
+		editor.view.dom.addEventListener('click', (e) => {
+			const target = e.target as HTMLElement;
+			const link = target.closest('a');
+			if (link && editor?.view.dom.contains(link)) {
+				e.preventDefault();
+			}
+		});
+
 		// Prevent mobile keyboard from opening when tapping task list checkboxes
 		if (isMobile) {
 			editor.view.dom.addEventListener('touchend', (e) => {
@@ -307,6 +435,7 @@
 			}
 		}
 	});
+
 
 	export function getEditor(): Editor | null {
 		return editor;
@@ -621,6 +750,60 @@
 		font-family: var(--font-mono);
 		font-size: 0.9em;
 	}
+
+	/* Mermaid diagrams (inline via NodeView) */
+	.editor-content :global(.mermaid-wrapper) {
+		position: relative;
+		margin: 0.8em 0;
+		background: var(--bg-tertiary);
+		border-radius: var(--radius);
+		overflow: hidden;
+	}
+	.editor-content :global(.mermaid-diagram) {
+		padding: var(--space-4);
+		display: flex;
+		justify-content: center;
+		overflow-x: auto;
+	}
+	.editor-content :global(.mermaid-diagram svg) {
+		max-width: 100%;
+		height: auto;
+	}
+	.editor-content :global(.mermaid-error) {
+		color: var(--accent-orange);
+		font-size: 0.85em;
+		text-align: center;
+	}
+	.editor-content :global(.mermaid-toggle) {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		z-index: 5;
+		padding: 2px 8px;
+		font-size: 0.7em;
+		font-family: var(--font-mono);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	.editor-content :global(.mermaid-wrapper:hover .mermaid-toggle) {
+		opacity: 1;
+	}
+	.editor-content :global(.mermaid-toggle.active) {
+		opacity: 1;
+		color: var(--accent-blue);
+		border-color: var(--accent-blue);
+	}
+	.editor-content :global(.mermaid-source) {
+		margin: 0 !important;
+		border-radius: 0 !important;
+	}
+
+
 
 	/* Mobile keyboard toolbar */
 	.mobile-toolbar {

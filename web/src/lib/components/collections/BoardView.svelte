@@ -15,10 +15,11 @@
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
+		progressLabel?: string;
 		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, relationLabels }: Props = $props();
+	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 
@@ -229,6 +230,7 @@
 							statusOptions={columns}
 							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
+							{progressLabel}
 							{relationLabels}
 						/>
 					</div>
