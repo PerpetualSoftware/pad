@@ -69,6 +69,10 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Retrospective:**
 - "phase 2 is done, let's retro" → Review completed work, save retrospective
 
+**Onboarding:**
+- "scan this codebase" / "set up my workspace" → Codebase analysis + onboarding workflow (see below)
+- "what conventions should this project follow?" → Analyze tooling, suggest conventions from the library
+
 ## Before Performing Work
 
 When you are about to take action (implement code, complete a task, create a PR, etc.), load the relevant conventions and playbooks FIRST:
@@ -194,6 +198,25 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 2. Run `pad list tasks --status in-progress --format json` (current work)
 3. Run `pad status --format json` for blockers/attention items
 4. Present as: Yesterday / Today / Blockers format
+
+### Onboarding: "Scan this codebase" / "Set up my workspace"
+
+1. **Check workspace state:** `pad status --format json` — if the workspace already has items, ask if they want to add more or start fresh sections.
+2. **Analyze the codebase:** Read key project files to understand the project:
+   - `README.md` or `README` — project overview, setup instructions
+   - `CLAUDE.md` — existing AI/agent instructions
+   - Build config: `Makefile`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `pom.xml`
+   - CI config: `.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`
+   - Directory structure: `ls` the top-level directories to understand the layout
+3. **Detect project type and tooling:**
+   - Language: Go, Node/TypeScript, Rust, Python, Java, etc.
+   - Build system: make, npm, cargo, pip, maven, etc.
+   - Test runner: what command runs the tests?
+   - Linter/formatter: what tools enforce code style?
+4. **Suggest conventions:** Based on the detected tooling, suggest conventions from the library. Customize the content with the actual commands found in the project (e.g., "Run `make test`" not just "Run the test suite"). Present as a checklist and ask which to activate.
+5. **Draft an architecture doc:** Summarize the project structure, tech stack, key directories, and how the pieces fit together. Offer to save as a Doc item.
+6. **Propose an initial phase:** Based on recent git activity (`git log --oneline -20`) and any open TODOs, suggest a phase name and a few starter tasks. Ask before creating.
+7. **Always confirm before creating each item.** Show what will be created, get approval, then create.
 
 ### Retrospective: "Phase X is done, let's retro"
 

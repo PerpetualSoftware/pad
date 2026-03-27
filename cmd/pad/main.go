@@ -45,6 +45,7 @@ func main() {
 		serveCmd(),
 		stopCmd(),
 		initCmd(),
+		onboardCmd(),
 		workspacesCmd(),
 		switchCmd(),
 		skillsCmd(),
@@ -285,6 +286,7 @@ Use --list-templates to see available templates.`,
 				}
 			}
 
+			newlyCreated := false
 			if ws != nil {
 				if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
 					return fmt.Errorf("write .pad.toml: %w", err)
@@ -309,9 +311,14 @@ Use --list-templates to see available templates.`,
 				}
 				fmt.Printf("Created workspace %q (slug: %s)%s\n", ws.Name, ws.Slug, tmplMsg)
 				fmt.Printf("Linked to %s\n", cwd)
+				newlyCreated = true
 			}
 
 			offerSkillInstall()
+
+			if newlyCreated {
+				printOnboardingHints()
+			}
 			return nil
 		},
 	}
@@ -384,6 +391,151 @@ func readChoice() string {
 	var input string
 	fmt.Scanln(&input)
 	return strings.TrimSpace(input)
+}
+
+func printOnboardingHints() {
+	fmt.Println()
+	fmt.Println("Get started:")
+	fmt.Println("  /pad scan this codebase and set up my workspace")
+	fmt.Println("  /pad what conventions should this project follow?")
+	fmt.Println("  /pad create a phase for what I'm working on")
+	fmt.Println()
+	fmt.Println("Or open the web UI at http://localhost:7777")
+}
+
+// --- onboard ---
+
+func onboardCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "onboard",
+		Short: "Analyze the project and suggest items to populate the workspace",
+		Long: `Analyze the current project directory to detect tooling and suggest
+conventions, then optionally create them in the workspace.
+
+This scans for build config, CI setup, linters, and project structure to
+recommend conventions from the built-in library.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			cwd, _ := os.Getwd()
+			info := cli.DetectProject(cwd)
+
+			// Print detection results
+			fmt.Println("Scanning project...")
+			if info.Language != "" {
+				fmt.Printf("  Language:   %s\n", info.Language)
+			}
+			if info.BuildTool != "" {
+				fmt.Printf("  Build:      %s\n", info.BuildTool)
+			}
+			if info.TestCmd != "" {
+				fmt.Printf("  Tests:      %s\n", info.TestCmd)
+			}
+			if info.HasCI {
+				fmt.Printf("  CI:         %s\n", info.CIProvider)
+			}
+			if info.HasLinter {
+				fmt.Println("  Linter:     detected")
+			}
+			if info.Language == "" && info.BuildTool == "" {
+				fmt.Println("  Could not detect project type.")
+				fmt.Println()
+				fmt.Println("Try using /pad to set up your workspace conversationally:")
+				fmt.Println("  /pad scan this codebase and set up my workspace")
+				return nil
+			}
+
+			fmt.Println()
+
+			// Get suggested conventions
+			suggestions := cli.SuggestedConventions(info)
+
+			// Check which are already active
+			existingConventions, _ := client.ListCollectionItems(ws, "conventions", nil)
+			existingTitles := make(map[string]bool)
+			for _, item := range existingConventions {
+				existingTitles[item.Title] = true
+			}
+
+			// Filter to new suggestions only
+			type suggestion struct {
+				title   string
+				content string
+			}
+			var newSuggestions []suggestion
+			for title, content := range suggestions {
+				if !existingTitles[title] {
+					newSuggestions = append(newSuggestions, suggestion{title, content})
+				}
+			}
+
+			if len(newSuggestions) == 0 {
+				fmt.Println("All suggested conventions are already active.")
+				return nil
+			}
+
+			fmt.Printf("Suggested conventions (%d new):\n", len(newSuggestions))
+			for i, s := range newSuggestions {
+				fmt.Printf("  %d. %s\n", i+1, s.title)
+			}
+
+			if !cli.IsTerminal() {
+				// Non-interactive: just print suggestions
+				fmt.Println()
+				fmt.Println("Run 'pad onboard' in a terminal to activate, or use:")
+				fmt.Println("  /pad what conventions should this project follow?")
+				return nil
+			}
+
+			fmt.Print("\nCreate these conventions? (y/N): ")
+			choice := readChoice()
+			if choice != "y" && choice != "Y" {
+				fmt.Println("Skipped. You can activate conventions from the library:")
+				fmt.Printf("  http://localhost:7777/%s/library\n", ws)
+				return nil
+			}
+
+			// Look up library conventions to get proper trigger/scope/priority
+			libraryConventions := collections.ConventionLibrary()
+			libraryMap := make(map[string]collections.LibraryConvention)
+			for _, cat := range libraryConventions {
+				for _, conv := range cat.Conventions {
+					libraryMap[conv.Title] = conv
+				}
+			}
+
+			created := 0
+			for _, s := range newSuggestions {
+				// Use library metadata if available, otherwise use sensible defaults
+				trigger := "on-implement"
+				scope := "all"
+				priority := "should"
+				if lc, ok := libraryMap[s.title]; ok {
+					trigger = lc.Trigger
+					scope = lc.Scope
+					priority = lc.Priority
+				}
+
+				fieldsJSON := fmt.Sprintf(`{"status":"active","trigger":"%s","scope":"%s","priority":"%s"}`, trigger, scope, priority)
+				_, err := client.CreateItem(ws, "conventions", models.ItemCreate{
+					Title:   s.title,
+					Content: s.content,
+					Fields:  fieldsJSON,
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Failed to create %q: %v\n", s.title, err)
+					continue
+				}
+				fmt.Printf("  Created: %s\n", s.title)
+				created++
+			}
+
+			fmt.Printf("\n%d conventions created.\n", created)
+			return nil
+		},
+	}
+	return cmd
 }
 
 // --- skills ---

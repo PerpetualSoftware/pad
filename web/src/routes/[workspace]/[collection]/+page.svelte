@@ -236,6 +236,18 @@
 		return counts;
 	});
 
+	const emptyHintMap: Record<string, string> = {
+		tasks: '/pad break down my current work into tasks',
+		ideas: "/pad I have an idea for...",
+		phases: '/pad create a phase for what I\'m working on',
+		docs: '/pad document the architecture of this project',
+		conventions: '/pad what conventions should this project follow?',
+		playbooks: '/pad set up playbooks for our workflow',
+		bugs: '/pad triage open issues in this project',
+	};
+
+	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
+
 	function singularName(): string {
 		if (!collection) return 'item';
 		const name = collection.name;
@@ -447,6 +459,9 @@
 				<h2>No {collection.name.toLowerCase()} yet</h2>
 				<p>Create your first {singularName().toLowerCase()} to get started.</p>
 				<a href="/{wsSlug}/{collSlug}/new" class="empty-cta">+ Create {singularName()}</a>
+				{#if emptyHint}
+					<p class="empty-hint">Or try: <code>{emptyHint}</code></p>
+				{/if}
 			</div>
 		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0)}
 			<div class="empty-state-box">
@@ -523,6 +538,18 @@
 		font-size: 0.9em;
 		color: var(--text-muted);
 		margin: 0 0 var(--space-5) 0;
+	}
+	.empty-hint {
+		font-size: 0.82em !important;
+		color: var(--text-muted) !important;
+		margin-top: var(--space-3) !important;
+	}
+	.empty-hint code {
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 1px 5px;
+		font-size: 0.95em;
 	}
 	.empty-cta {
 		display: inline-block;

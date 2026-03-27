@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,6 +114,12 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve relation fields (slugs/refs → UUIDs) before validation
+	if err := s.resolveRelationFields(workspaceID, fieldMap, schema); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
@@ -204,6 +211,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		fieldMap := make(map[string]any)
 		if err := json.Unmarshal([]byte(*input.Fields), &fieldMap); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "Invalid fields JSON")
+			return
+		}
+
+		// Resolve relation fields (slugs/refs → UUIDs) before validation
+		if err := s.resolveRelationFields(workspaceID, fieldMap, schema); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
 
@@ -363,6 +376,57 @@ func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
 		tasks = []models.Item{}
 	}
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// resolveRelationFields resolves slugs, PREFIX-NUMBER refs, and other identifiers
+// in relation fields to their canonical UUIDs. This allows clients to send
+// human-readable identifiers (e.g. --field phase=workspace-onboarding) and have
+// them stored as UUIDs that the dashboard and queries expect.
+func (s *Server) resolveRelationFields(workspaceID string, fields map[string]any, schema models.CollectionSchema) error {
+	for _, def := range schema.Fields {
+		if def.Type != "relation" {
+			continue
+		}
+		val, exists := fields[def.Key]
+		if !exists || val == nil {
+			continue
+		}
+		strVal, ok := val.(string)
+		if !ok || strVal == "" {
+			continue
+		}
+		// Already a UUID — nothing to resolve
+		if isUUID(strVal) {
+			continue
+		}
+		// Resolve the identifier (slug, PREFIX-NUMBER, etc.) to an item
+		item, err := s.store.ResolveItem(workspaceID, strVal)
+		if err != nil {
+			return fmt.Errorf("field %q: failed to resolve %q: %w", def.Key, strVal, err)
+		}
+		if item == nil {
+			return fmt.Errorf("field %q: item %q not found", def.Key, strVal)
+		}
+		fields[def.Key] = item.ID
+	}
+	return nil
+}
+
+// isUUID checks if a string looks like a UUID (8-4-4-4-12 hex).
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // autoPopulateDates auto-fills start_date/end_date when status changes to active/completed.

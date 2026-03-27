@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
+	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -78,15 +79,7 @@
 		</header>
 
 		{#if totalItems === 0}
-			<div class="welcome-box">
-				<div class="welcome-icon">🚀</div>
-				<h2>Welcome to {workspaceStore.current?.name ?? 'your workspace'}</h2>
-				<p>Your project is ready. Start by creating items or use <kbd>/pad</kbd> in Claude Code to manage your project conversationally.</p>
-				<div class="welcome-actions">
-					<a href="/{wsSlug}/new" class="welcome-btn primary">Create your first item</a>
-					<a href="/{wsSlug}/tasks" class="welcome-btn secondary">Browse collections</a>
-				</div>
-			</div>
+			<OnboardingChecklist {wsSlug} byCollection={dashboard.summary.by_collection} />
 		{/if}
 
 		<!-- Collection Summary -->
@@ -212,26 +205,6 @@
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
 	}
-	.welcome-box {
-		text-align: center;
-		padding: var(--space-10) var(--space-6);
-	}
-	.welcome-icon { font-size: 3em; margin-bottom: var(--space-4); }
-	.welcome-box h2 { font-size: 1.3em; font-weight: 600; margin: 0 0 var(--space-2) 0; }
-	.welcome-box p { font-size: 0.9em; color: var(--text-muted); margin: 0 0 var(--space-6) 0; max-width: 480px; margin-left: auto; margin-right: auto; }
-	.welcome-box kbd {
-		background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 3px;
-		padding: 1px 5px; font-size: 0.9em; font-family: inherit;
-	}
-	.welcome-actions { display: flex; gap: var(--space-3); justify-content: center; flex-wrap: wrap; }
-	.welcome-btn {
-		padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-weight: 600;
-		font-size: 0.9em; text-decoration: none; transition: opacity 0.1s;
-	}
-	.welcome-btn.primary { background: var(--accent-blue); color: #fff; }
-	.welcome-btn.secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
-	.welcome-btn:hover { opacity: 0.85; }
-
 	.loading {
 		text-align: center;
 		padding-top: 20vh;
