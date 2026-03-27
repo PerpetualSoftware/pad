@@ -12,7 +12,7 @@
 		collection: Collection;
 		groupField?: string;
 		statusOptions?: string[];
-		onStatusChange?: (item: Item, newStatus: string) => void;
+		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveGroup?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
@@ -142,7 +142,7 @@
 		isDragging = true;
 	}
 
-	function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
+	async function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
 		groupData[groupName] = e.detail.items;
 		isDragging = false;
 
@@ -153,7 +153,7 @@
 			if (originalItem && onStatusChange) {
 				const fields = parseFields(originalItem);
 				if (fields[groupField] !== groupName) {
-					onStatusChange(originalItem, groupName);
+					await onStatusChange(originalItem, groupName);
 				}
 			}
 		}
@@ -161,7 +161,7 @@
 		if (onReorder) {
 			const updates = groupData[groupName]
 				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-				.map((item, index) => ({ slug: item.slug, sort_order: index }));
+				.map((item, index) => ({ slug: item.id, sort_order: index }));
 			if (updates.length > 0) {
 				onReorder(updates);
 			}

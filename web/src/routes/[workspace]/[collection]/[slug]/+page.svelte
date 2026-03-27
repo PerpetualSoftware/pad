@@ -133,7 +133,7 @@
 		if (!item || titleDraft.trim() === item.title) return;
 		saveStatus = 'saving';
 		try {
-			item = await api.items.update(wsSlug, item.slug, { title: titleDraft.trim() });
+			item = await api.items.update(wsSlug, item.id, { title: titleDraft.trim() });
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -155,7 +155,7 @@
 		const updated = { ...fields, [key]: value };
 		saveStatus = 'saving';
 		try {
-			item = await api.items.update(wsSlug, item.slug, { fields: JSON.stringify(updated) });
+			item = await api.items.update(wsSlug, item.id, { fields: JSON.stringify(updated) });
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -174,7 +174,7 @@
 				toSave = markdownToWikiLinks(toSave, allItems);
 			}
 			toSave = cleanBrokenLinks(toSave);
-			api.items.update(wsSlug, item.slug, { content: toSave }).then(() => {
+			api.items.update(wsSlug, item.id, { content: toSave }).then(() => {
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
 				showSaved();
@@ -206,7 +206,7 @@
 		if (!item) return;
 		deleting = true;
 		try {
-			await api.items.delete(wsSlug, item.slug);
+			await api.items.delete(wsSlug, item.id);
 			toastStore.show('Item deleted', 'success');
 			goto(`/${wsSlug}/${collSlug}`);
 		} catch {

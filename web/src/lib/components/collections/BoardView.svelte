@@ -10,7 +10,7 @@
 		items: Item[];
 		collection: Collection;
 		groupField?: string;
-		onStatusChange: (item: Item, newStatus: string) => void;
+		onStatusChange: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
@@ -123,7 +123,7 @@
 		isDragging = true;
 	}
 
-	function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
+	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
 		columnData[columnValue] = e.detail.items;
 		isDragging = false;
 
@@ -134,7 +134,7 @@
 			if (originalItem) {
 				const fields = parseFields(originalItem);
 				if (fields[groupField] !== columnValue) {
-					onStatusChange(originalItem, columnValue);
+					await onStatusChange(originalItem, columnValue);
 				}
 			}
 		}
@@ -142,7 +142,7 @@
 		if (onReorder) {
 			const updates = columnData[columnValue]
 				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-				.map((item, index) => ({ slug: item.slug, sort_order: index }));
+				.map((item, index) => ({ slug: item.id, sort_order: index }));
 			if (updates.length > 0) {
 				onReorder(updates);
 			}

@@ -261,7 +261,7 @@
 		const fields = parseFields(item);
 		fields[groupField] = newValue;
 		try {
-			const updated = await api.items.update(wsSlug, item.slug, {
+			const updated = await api.items.update(wsSlug, item.id, {
 				fields: JSON.stringify(fields)
 			});
 			// Replace item in-place
@@ -280,15 +280,16 @@
 		if (!wsSlug) return;
 		// Optimistically update local sort_order values
 		for (const { slug, sort_order } of updates) {
-			const idx = items.findIndex((i) => i.slug === slug);
-			if (idx !== -1) {
-				items[idx] = { ...items[idx], sort_order };
+			const item = items.find((i) => i.slug === slug || i.id === slug);
+			if (item) {
+				item.sort_order = sort_order;
 			}
 		}
 		// Persist to API sequentially (SQLite can't handle concurrent writes)
 		try {
 			for (const { slug, sort_order } of updates) {
-				await api.items.update(wsSlug, slug, { sort_order });
+				const item = items.find((i) => i.slug === slug || i.id === slug);
+				await api.items.update(wsSlug, item?.id ?? slug, { sort_order });
 			}
 		} catch (e) {
 			console.error('Failed to persist sort order:', e);
@@ -344,7 +345,7 @@
 		const count = itemsToArchive.length;
 		try {
 			for (const item of itemsToArchive) {
-				await api.items.delete(wsSlug, item.slug);
+				await api.items.delete(wsSlug, item.id);
 			}
 			items = items.filter((i) => !itemsToArchive.some((a) => a.id === i.id));
 			toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
@@ -356,7 +357,7 @@
 	async function handleRestore(item: Item) {
 		if (!wsSlug) return;
 		try {
-			const restored = await api.items.restore(wsSlug, item.slug);
+			const restored = await api.items.restore(wsSlug, item.id);
 			const idx = items.findIndex((i) => i.id === item.id);
 			if (idx !== -1) {
 				items[idx] = restored;

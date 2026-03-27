@@ -156,10 +156,21 @@ func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.It
 	return s.GetItem(id)
 }
 
-// ResolveItem looks up an item by either a PREFIX-NUMBER ref (e.g. "IDEA-15")
-// or a traditional slug. Refs are tried first for backwards compatibility.
-func (s *Store) ResolveItem(workspaceID, slugOrRef string) (*models.Item, error) {
-	if prefix, number, ok := parseItemRef(slugOrRef); ok {
+// ResolveItem looks up an item by UUID, PREFIX-NUMBER ref (e.g. "IDEA-15"),
+// or slug. UUID is tried first, then ref, then slug.
+func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
+	// Try UUID lookup first (8-4-4-4-12 hex format)
+	if isUUID(identifier) {
+		item, err := s.GetItem(identifier)
+		if err != nil {
+			return nil, err
+		}
+		if item != nil && item.WorkspaceID == workspaceID {
+			return item, nil
+		}
+	}
+	// Try PREFIX-NUMBER ref
+	if prefix, number, ok := parseItemRef(identifier); ok {
 		item, err := s.GetItemByRef(workspaceID, prefix, number)
 		if err != nil {
 			return nil, err
@@ -169,7 +180,24 @@ func (s *Store) ResolveItem(workspaceID, slugOrRef string) (*models.Item, error)
 		}
 	}
 	// Fall back to slug lookup
-	return s.GetItemBySlug(workspaceID, slugOrRef)
+	return s.GetItemBySlug(workspaceID, identifier)
+}
+
+// isUUID checks if a string looks like a UUID (8-4-4-4-12 hex).
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveItemIncludeDeleted is like ResolveItem but includes soft-deleted items.
