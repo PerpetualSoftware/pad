@@ -29,41 +29,65 @@
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
 	let columns = $derived(field?.options ?? []);
 
-	// Column reordering state — dndzone needs objects with `id`
-	interface ColumnItem { id: string }
-	let columnItems = $state<ColumnItem[]>([]);
-	let isDraggingColumn = $state(false);
+	// Column order state — tracks the displayed order, syncs from schema when not dragging
+	let columnOrder = $state<string[]>([]);
 
 	$effect(() => {
-		if (!isDraggingColumn) {
-			columnItems = columns.map((c) => ({ id: c }));
-		}
+		columnOrder = [...columns];
 	});
 
-	function handleColumnConsider(e: CustomEvent<DndEvent<ColumnItem>>) {
-		columnItems = e.detail.items;
-		isDraggingColumn = true;
+	// Native HTML5 drag-and-drop for column reordering
+	let draggedColumn = $state<string | null>(null);
+	let dragOverColumn = $state<string | null>(null);
+
+	function handleColumnDragStart(e: DragEvent, colValue: string) {
+		draggedColumn = colValue;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', colValue);
+		}
 	}
 
-	function handleColumnFinalize(e: CustomEvent<DndEvent<ColumnItem>>) {
-		columnItems = e.detail.items;
-		isDraggingColumn = false;
+	function handleColumnDragOver(e: DragEvent, colValue: string) {
+		if (!draggedColumn || draggedColumn === colValue) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		dragOverColumn = colValue;
+	}
+
+	function handleColumnDragLeave() {
+		dragOverColumn = null;
+	}
+
+	function handleColumnDrop(e: DragEvent, colValue: string) {
+		e.preventDefault();
+		if (!draggedColumn || draggedColumn === colValue) return;
+
+		const fromIdx = columnOrder.indexOf(draggedColumn);
+		const toIdx = columnOrder.indexOf(colValue);
+		if (fromIdx === -1 || toIdx === -1) return;
+
+		const newOrder = [...columnOrder];
+		newOrder.splice(fromIdx, 1);
+		newOrder.splice(toIdx, 0, draggedColumn);
+		columnOrder = newOrder;
+
 		if (onGroupReorder) {
-			const newOrder = columnItems
-				.filter((c: any) => !c[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-				.map((c) => c.id);
 			onGroupReorder(newOrder);
 		}
+
+		draggedColumn = null;
+		dragOverColumn = null;
+	}
+
+	function handleColumnDragEnd() {
+		draggedColumn = null;
+		dragOverColumn = null;
 	}
 
 	let isDragging = $state(false);
 	let columnData: Record<string, Item[]> = $state({});
 
-	/**
-	 * Derived column data from props, grouped by the groupField value
-	 * and sorted by sort_order within each column.
-	 * This is the "source of truth" from props and always reflects the latest items.
-	 */
 	let propColumnData = $derived.by(() => {
 		const result: Record<string, Item[]> = {};
 		for (const col of columns) {
@@ -82,12 +106,6 @@
 		return result;
 	});
 
-	/**
-	 * Sync the mutable columnData from the derived prop data,
-	 * but only when the user is not actively dragging.
-	 * During a drag, svelte-dnd-action mutates columnData directly
-	 * via handleConsider/handleFinalize.
-	 */
 	$effect(() => {
 		const data = propColumnData;
 		if (!isDragging) {
@@ -149,25 +167,25 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-	class="board-view"
-	style:--col-count={columnItems.length}
-	use:dndzone={{
-		items: columnItems,
-		flipDurationMs,
-		type: 'board-column',
-		dropTargetClasses: ['column-drop-target'],
-		morphDisabled: true
-	}}
-	onconsider={handleColumnConsider}
-	onfinalize={handleColumnFinalize}
->
-	{#each columnItems as col (col.id)}
-		{@const colValue = col.id}
+<div class="board-view" style:--col-count={columnOrder.length}>
+	{#each columnOrder as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
-		<div class="kanban-column" role="group" aria-label="{formatLabel(colValue)} column">
-			<div class="column-header {columnCssClass(colValue)}">
+		<div
+			class="kanban-column"
+			class:drag-over-left={dragOverColumn === colValue}
+			class:dragging-source={draggedColumn === colValue}
+			role="group"
+			aria-label="{formatLabel(colValue)} column"
+			ondragover={(e) => handleColumnDragOver(e, colValue)}
+			ondragleave={handleColumnDragLeave}
+			ondrop={(e) => handleColumnDrop(e, colValue)}
+		>
+			<div
+				class="column-header {columnCssClass(colValue)}"
+				draggable="true"
+				ondragstart={(e) => handleColumnDragStart(e, colValue)}
+				ondragend={handleColumnDragEnd}
+			>
 				<span class="column-drag-handle" title="Drag to reorder">⠿</span>
 				<span class="column-name">{formatLabel(colValue)}</span>
 				<div class="column-actions">
@@ -234,6 +252,15 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
+		transition: transform 0.15s ease;
+	}
+
+	.kanban-column.dragging-source {
+		opacity: 0.4;
+	}
+
+	.kanban-column.drag-over-left {
+		box-shadow: -3px 0 0 0 var(--accent-blue);
 	}
 
 	.column-header {
@@ -245,6 +272,11 @@
 		border-bottom: 2px solid var(--text-secondary);
 		font-weight: 600;
 		font-size: 0.9em;
+		cursor: grab;
+	}
+
+	.column-header:active {
+		cursor: grabbing;
 	}
 
 	.column-actions {
