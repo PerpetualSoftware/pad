@@ -80,7 +80,7 @@
 
 	// ── Display settings state ──────────────────────────────────────────────
 
-	let defaultView = $state<'list' | 'board'>('list');
+	let defaultView = $state<'list' | 'board' | 'table'>('list');
 	let layout = $state<'fields-primary' | 'content-primary' | 'balanced'>('balanced');
 	let boardGroupBy = $state('status');
 	let listGroupBy = $state('');
@@ -167,7 +167,7 @@
 
 			// Sync display settings
 			const s = parseSettings(collection);
-			defaultView = (s.default_view === 'board' ? 'board' : 'list');
+			defaultView = (['board', 'list', 'table'].includes(s.default_view) ? s.default_view : 'list') as typeof defaultView;
 			layout = (['fields-primary', 'content-primary', 'balanced'].includes(s.layout) ? s.layout : 'balanced') as typeof layout;
 			boardGroupBy = s.board_group_by || 'status';
 			listGroupBy = s.list_group_by || '';
@@ -553,6 +553,7 @@
 								<select id="edit-default-view" class="setting-select" bind:value={defaultView}>
 									<option value="list">List</option>
 									<option value="board">Board</option>
+									<option value="table">Table</option>
 								</select>
 							</div>
 

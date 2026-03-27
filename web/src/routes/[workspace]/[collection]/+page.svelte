@@ -6,13 +6,14 @@
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
+	import TableView from '$lib/components/collections/TableView.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import { onDestroy } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
-	type ViewMode = 'list' | 'board';
+	type ViewMode = 'list' | 'board' | 'table';
 
 	let loading = $state(true);
 	let collection = $state<Collection | null>(null);
@@ -39,7 +40,7 @@
 	function loadSavedViewMode(coll: string, defaultMode: ViewMode): ViewMode {
 		try {
 			const saved = localStorage.getItem(`pad-view-${coll}`);
-			if (saved === 'list' || saved === 'board') return saved;
+			if (saved === 'list' || saved === 'board' || saved === 'table') return saved;
 		} catch {}
 		return defaultMode;
 	}
@@ -179,8 +180,8 @@
 
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
-			const defaultMode = (settings.default_view === 'board' || settings.default_view === 'list')
-				? settings.default_view : 'list';
+			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
+				? settings.default_view as ViewMode : 'list';
 			viewMode = loadSavedViewMode(coll, defaultMode);
 
 			// Override with URL params if present
@@ -438,6 +439,13 @@
 						aria-label="Board view"
 						title="Board view"
 					>&#9638;</button>
+					<button
+						class="toggle-btn"
+						class:active={viewMode === 'table'}
+						onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
+						aria-label="Table view"
+						title="Table view"
+					>&#9783;</button>
 				</div>
 
 				<FilterBar
@@ -492,6 +500,15 @@
 				onReorder={handleReorder}
 				onArchiveColumn={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
+				{itemProgress}
+				{progressLabel}
+				{relationLabels}
+			/>
+		{:else if viewMode === 'table'}
+			<TableView
+				items={filteredItems}
+				{collection}
+				onStatusChange={handleStatusChange}
 				{itemProgress}
 				{progressLabel}
 				{relationLabels}
