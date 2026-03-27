@@ -13,6 +13,7 @@ import { Extension } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { TURN_INTO_ITEMS } from './block-types';
 
 const LIST_CONTAINERS = new Set(['bulletList', 'orderedList', 'taskList']);
 const LIST_ITEMS = new Set(['listItem', 'taskItem']);
@@ -23,25 +24,6 @@ interface BlockInfo {
 	dom: HTMLElement;
 	size: number;
 }
-
-// --- Context menu definition ---
-interface MenuItem {
-	icon: string;
-	label: string;
-	type: string; // block type key
-}
-
-const TURN_INTO_ITEMS: MenuItem[] = [
-	{ icon: 'Aa', label: 'Text', type: 'paragraph' },
-	{ icon: 'H1', label: 'Heading 1', type: 'heading1' },
-	{ icon: 'H2', label: 'Heading 2', type: 'heading2' },
-	{ icon: 'H3', label: 'Heading 3', type: 'heading3' },
-	{ icon: '•', label: 'Bullet List', type: 'bulletList' },
-	{ icon: '1.', label: 'Numbered List', type: 'orderedList' },
-	{ icon: '☑', label: 'Checklist', type: 'taskList' },
-	{ icon: '⟨⟩', label: 'Code Block', type: 'codeBlock' },
-	{ icon: '❝', label: 'Quote', type: 'blockquote' },
-];
 
 function currentBlockType(block: BlockInfo): string {
 	const name = block.node.type.name;
@@ -162,7 +144,7 @@ function dropPosAtY(view: EditorView, y: number, dragPos: number): number | null
 		}
 	});
 
-	return best?.pos ?? null;
+	return (best as { pos: number; dist: number } | null)?.pos ?? null;
 }
 
 function executeMove(view: EditorView, fromPos: number, fromNode: any, targetPos: number) {
@@ -249,9 +231,9 @@ export const BlockDragHandle = Extension.create({
 						const btn = document.createElement('button');
 						btn.className = 'block-menu-item';
 						btn.innerHTML = `<span class="block-menu-icon">${item.icon}</span><span>${item.label}</span>`;
-						btn.dataset.type = item.type;
+						btn.dataset.type = item.id;
 						menu.appendChild(btn);
-						menuItems.push({ el: btn, type: item.type });
+						menuItems.push({ el: btn, type: item.id });
 					}
 
 					const divider = document.createElement('div');

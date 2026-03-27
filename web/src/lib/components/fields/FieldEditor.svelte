@@ -23,6 +23,19 @@ Usage:
 
 	let { field, value, onchange, wsSlug }: Props = $props();
 
+	// ── Date input state ──────────────────────────────────────────────────
+
+	let dateInputEl: HTMLInputElement | undefined = $state(undefined);
+
+	function formatDate(dateStr: string): string {
+		try {
+			const d = new Date(dateStr + 'T00:00:00');
+			return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+		} catch {
+			return dateStr;
+		}
+	}
+
 	// ── Select dropdown state ──────────────────────────────────────────────
 
 	let dropdownOpen = $state(false);
@@ -203,8 +216,9 @@ Usage:
 
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		const num = target.value === '' ? null : Number(target.value);
-		onchange(num);
+		if (target.value === '') { onchange(null); return; }
+		const num = Number(target.value);
+		if (!isNaN(num)) onchange(num);
 	}
 
 	function handleDateInput(e: Event) {
@@ -303,34 +317,81 @@ Usage:
 	</button>
 
 {:else if field.type === 'date'}
-	<!-- Date input -->
-	<input
-		class="field-input date-input"
-		type="date"
-		value={value ?? ''}
-		onchange={handleDateInput}
-	/>
+	<!-- Custom date picker -->
+	<div class="date-wrapper">
+		<button
+			class="select-trigger date-trigger"
+			type="button"
+			onclick={() => dateInputEl?.showPicker()}
+		>
+			{#if value}
+				<span class="date-label">{formatDate(value)}</span>
+				<span
+					class="clear-btn"
+					role="button"
+					tabindex="0"
+					onclick={(e) => { e.stopPropagation(); onchange(null); }}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onchange(null); } }}
+				>&#x2715;</span>
+			{:else}
+				<span class="date-placeholder">Pick a date...</span>
+			{/if}
+			<svg class="select-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+				<rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" />
+				<line x1="2" y1="6" x2="12" y2="6" stroke="currentColor" stroke-width="1.2" />
+				<line x1="5" y1="1.5" x2="5" y2="4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+				<line x1="9" y1="1.5" x2="9" y2="4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+			</svg>
+		</button>
+		<input
+			bind:this={dateInputEl}
+			class="date-hidden-input"
+			type="date"
+			value={value ?? ''}
+			onchange={handleDateInput}
+			tabindex={-1}
+			aria-hidden="true"
+		/>
+	</div>
 
 {:else if field.type === 'number'}
-	<!-- Number input with optional suffix -->
-	{#if field.suffix}
-		<div class="number-wrapper">
-			<input
-				class="field-input number-input"
-				type="number"
-				value={value ?? ''}
-				oninput={handleNumberInput}
-			/>
-			<span class="number-suffix">{field.suffix}</span>
-		</div>
-	{:else}
+	<!-- Custom number input with +/- buttons -->
+	<div class="number-wrapper">
+		<button
+			class="number-btn"
+			type="button"
+			tabindex={-1}
+			aria-label="Decrease"
+			onclick={() => onchange((Number(value) || 0) - 1)}
+		>
+			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+		</button>
 		<input
-			class="field-input"
-			type="number"
+			class="number-input"
+			type="text"
+			inputmode="numeric"
 			value={value ?? ''}
 			oninput={handleNumberInput}
+			placeholder="—"
 		/>
-	{/if}
+		{#if field.suffix}
+			<span class="number-suffix">{field.suffix}</span>
+		{/if}
+		<button
+			class="number-btn"
+			type="button"
+			tabindex={-1}
+			aria-label="Increase"
+			onclick={() => onchange((Number(value) || 0) + 1)}
+		>
+			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+				<line x1="5" y1="2" x2="5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+		</button>
+	</div>
 
 {:else if field.type === 'relation'}
 	<!-- Relation picker dropdown -->
@@ -421,14 +482,39 @@ Usage:
 		{/if}
 	</div>
 
+{:else if field.type === 'url'}
+	<!-- URL input with link icon -->
+	<div class="url-wrapper">
+		<input
+			class="field-input url-input"
+			type="url"
+			value={value ?? ''}
+			oninput={handleTextInput}
+			placeholder="https://..."
+		/>
+		{#if value}
+			<a
+				class="url-open"
+				href={value}
+				target="_blank"
+				rel="noopener noreferrer"
+				title="Open link"
+			>
+				<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+					<path d="M5 1H2.5A1.5 1.5 0 001 2.5v7A1.5 1.5 0 002.5 11h7A1.5 1.5 0 0011 9.5V7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+					<path d="M7 1h4v4M11 1L5.5 6.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+			</a>
+		{/if}
+	</div>
+
 {:else}
-	<!-- Text / URL / Multi-select fallback -->
+	<!-- Text / Multi-select fallback -->
 	<input
 		class="field-input"
 		type="text"
 		value={value ?? ''}
 		oninput={handleTextInput}
-		placeholder={field.type === 'url' ? 'https://...' : ''}
 	/>
 {/if}
 
@@ -462,36 +548,110 @@ Usage:
 		color: var(--text-muted);
 	}
 
-	/* ── Date input ───────────────────────────────────────────────────── */
+	/* ── Date picker ─────────────────────────────────────────────────── */
 
-	.date-input {
-		color-scheme: dark;
-	}
-
-	:global([data-theme='light']) .date-input {
-		color-scheme: light;
-	}
-
-	/* ── Number with suffix ───────────────────────────────────────────── */
-
-	.number-wrapper {
+	.date-wrapper {
 		position: relative;
-		display: flex;
-		align-items: center;
 		width: 100%;
 	}
 
+	.date-trigger {
+		position: relative;
+	}
+
+	.date-label {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.date-placeholder {
+		flex: 1;
+		color: var(--text-muted);
+	}
+
+	.date-hidden-input {
+		position: absolute;
+		inset: 0;
+		opacity: 0;
+		width: 100%;
+		height: 100%;
+		cursor: pointer;
+		pointer-events: none;
+	}
+
+	/* ── Number input ────────────────────────────────────────────────── */
+
+	.number-wrapper {
+		display: flex;
+		align-items: center;
+		width: 100%;
+		background: var(--bg-tertiary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		transition: border-color 0.15s;
+		overflow: hidden;
+	}
+
+	.number-wrapper:hover {
+		border-color: var(--border);
+	}
+
+	.number-wrapper:focus-within {
+		border-color: var(--accent-blue);
+	}
+
+	.number-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		min-height: 30px;
+		padding: 0;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: color 0.1s, background 0.1s;
+	}
+
+	.number-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.number-btn:active {
+		background: var(--bg-active);
+	}
+
 	.number-input {
-		padding-right: calc(var(--space-2) + 2em);
+		flex: 1;
+		min-width: 0;
+		padding: var(--space-1) var(--space-1);
+		font-size: 0.88em;
+		font-family: inherit;
+		color: var(--text-primary);
+		background: transparent;
+		border: none;
+		outline: none;
+		text-align: center;
+		box-sizing: border-box;
+	}
+
+	.number-input::placeholder {
+		color: var(--text-muted);
 	}
 
 	.number-suffix {
-		position: absolute;
-		right: var(--space-2);
-		font-size: 0.88em;
+		font-size: 0.82em;
 		color: var(--text-muted);
+		padding-right: var(--space-2);
 		pointer-events: none;
 		user-select: none;
+		flex-shrink: 0;
 	}
 
 	/* ── Select dropdown ──────────────────────────────────────────────── */
@@ -626,18 +786,6 @@ Usage:
 		transform: translateX(16px);
 	}
 
-	/* ── Remove spinner from number inputs (optional) ─────────────────── */
-
-	.field-input[type='number']::-webkit-inner-spin-button,
-	.field-input[type='number']::-webkit-outer-spin-button {
-		-webkit-appearance: none;
-		margin: 0;
-	}
-
-	.field-input[type='number'] {
-		-moz-appearance: textfield;
-	}
-
 	/* ── Relation picker ──────────────────────────────────────────────── */
 
 	.relation-dropdown {
@@ -691,5 +839,34 @@ Usage:
 	.clear-btn:hover {
 		color: var(--accent-orange);
 		background: var(--bg-hover);
+	}
+
+	/* ── URL input ────────────────────────────────────────────────────── */
+
+	.url-wrapper {
+		position: relative;
+		display: flex;
+		align-items: center;
+		width: 100%;
+	}
+
+	.url-input {
+		padding-right: calc(var(--space-2) + 20px);
+	}
+
+	.url-open {
+		position: absolute;
+		right: var(--space-2);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-muted);
+		padding: 2px;
+		border-radius: var(--radius-sm);
+		transition: color 0.1s;
+	}
+
+	.url-open:hover {
+		color: var(--accent-blue);
 	}
 </style>

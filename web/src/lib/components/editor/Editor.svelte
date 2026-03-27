@@ -11,6 +11,7 @@
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { BlockDragHandle } from './block-drag-handle';
+	import { SLASH_ITEMS } from './block-types';
 
 	let {
 		content = '',
@@ -51,23 +52,10 @@
 	let linkStartPos = -1;
 	let bracketCount = $state(0); // track consecutive [ chars
 
-	const SLASH_ITEMS = [
-		{ title: 'Heading 1', icon: 'H1', desc: 'Large heading', id: 'h1' },
-		{ title: 'Heading 2', icon: 'H2', desc: 'Medium heading', id: 'h2' },
-		{ title: 'Heading 3', icon: 'H3', desc: 'Small heading', id: 'h3' },
-		{ title: 'Bullet List', icon: '•', desc: 'Unordered list', id: 'bullet' },
-		{ title: 'Numbered List', icon: '1.', desc: 'Ordered list', id: 'ordered' },
-		{ title: 'Checklist', icon: '☐', desc: 'Task list', id: 'task' },
-		{ title: 'Code Block', icon: '<>', desc: 'Fenced code block', id: 'code' },
-		{ title: 'Blockquote', icon: '❝', desc: 'Quote block', id: 'quote' },
-		{ title: 'Divider', icon: '——', desc: 'Horizontal rule', id: 'hr' },
-		{ title: 'Table', icon: '⊞', desc: '3x3 table', id: 'table' },
-	];
-
 	function getFilteredSlash() {
 		if (!slashQuery) return SLASH_ITEMS;
 		const q = slashQuery.toLowerCase();
-		return SLASH_ITEMS.filter(i => i.title.toLowerCase().includes(q));
+		return SLASH_ITEMS.filter(i => i.label.toLowerCase().includes(q) || i.description.toLowerCase().includes(q));
 	}
 
 	function execSlash(id: string) {
@@ -77,16 +65,18 @@
 			editor.chain().focus().deleteRange({ from: slashStartPos, to }).run();
 		}
 		const c = editor.chain().focus();
-		if (id === 'h1') c.toggleHeading({ level: 1 }).run();
-		else if (id === 'h2') c.toggleHeading({ level: 2 }).run();
-		else if (id === 'h3') c.toggleHeading({ level: 3 }).run();
-		else if (id === 'bullet') c.toggleBulletList().run();
-		else if (id === 'ordered') c.toggleOrderedList().run();
-		else if (id === 'task') c.toggleTaskList().run();
-		else if (id === 'code') c.toggleCodeBlock().run();
-		else if (id === 'quote') c.toggleBlockquote().run();
-		else if (id === 'hr') c.setHorizontalRule().run();
-		else if (id === 'table') c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+		switch (id) {
+			case 'heading1': c.toggleHeading({ level: 1 }).run(); break;
+			case 'heading2': c.toggleHeading({ level: 2 }).run(); break;
+			case 'heading3': c.toggleHeading({ level: 3 }).run(); break;
+			case 'bulletList': c.toggleBulletList().run(); break;
+			case 'orderedList': c.toggleOrderedList().run(); break;
+			case 'taskList': c.toggleTaskList().run(); break;
+			case 'codeBlock': c.toggleCodeBlock().run(); break;
+			case 'blockquote': c.toggleBlockquote().run(); break;
+			case 'horizontalRule': c.setHorizontalRule().run(); break;
+			case 'table': c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break;
+		}
 		closeSlash();
 	}
 
@@ -140,7 +130,7 @@
 				HTMLAttributes: { class: 'editor-link', target: null, rel: null },
 			}),
 			Placeholder.configure({
-				placeholder: 'Type / for commands...',
+				placeholder: isMobile ? 'Start writing...' : 'Type / for commands...',
 			}),
 			Markdown.configure({
 				html: true,
@@ -157,7 +147,7 @@
 			content,
 			onUpdate: ({ editor: e }) => {
 				if (suppressUpdate) return;
-				const md = unescapeDocLinks(e.storage.markdown.getMarkdown());
+				const md = unescapeDocLinks((e.storage as any).markdown.getMarkdown());
 				if (md === lastMarkdown) return;
 				lastMarkdown = md;
 				onUpdate?.(md);
@@ -253,7 +243,7 @@
 			},
 		});
 
-		lastMarkdown = unescapeDocLinks(editor.storage.markdown.getMarkdown());
+		lastMarkdown = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
 		onEditor?.(editor);
 
 		editor.on('focus', () => { editorFocused = true; });
@@ -308,11 +298,11 @@
 		}
 		if (editor && content !== tracker.prev) {
 			tracker.prev = content;
-			const currentEditorContent = unescapeDocLinks(editor.storage.markdown?.getMarkdown?.() ?? '');
+			const currentEditorContent = unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '');
 			if (currentEditorContent !== content) {
 				suppressUpdate = true;
 				editor.commands.setContent(content);
-				lastMarkdown = unescapeDocLinks(editor.storage.markdown?.getMarkdown?.() ?? '');
+				lastMarkdown = unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '');
 				suppressUpdate = false;
 			}
 		}
@@ -322,12 +312,47 @@
 		return editor;
 	}
 
+	function getTableToolbarPos(): { top: number; left: number } | null {
+		if (!editor || !element) return null;
+		const { selection } = editor.state;
+		const resolvedPos = selection.$from;
+		for (let d = resolvedPos.depth; d > 0; d--) {
+			if (resolvedPos.node(d).type.name === 'table') {
+				const tableStart = resolvedPos.before(d);
+				const dom = editor.view.nodeDOM(tableStart);
+				if (dom instanceof HTMLElement) {
+					const wrapperEl = element.parentElement;
+					if (!wrapperEl) return null;
+					const wrapperRect = wrapperEl.getBoundingClientRect();
+					const tableRect = dom.getBoundingClientRect();
+					return {
+						top: Math.max(0, tableRect.top - wrapperRect.top - 34),
+						left: tableRect.left - wrapperRect.left,
+					};
+				}
+			}
+		}
+		return null;
+	}
+
+	function openSlashFromToolbar() {
+		if (!editor) return;
+		editor.chain().focus().run();
+		slashStartPos = -1;
+		slashQuery = '';
+		slashIdx = 0;
+		slashX = 16;
+		slashY = 60;
+		slashOpen = true;
+	}
 
 </script>
 
 {#if isMobile && keyboardVisible && editor}
 	{@const _tick = editorTick}
 	<div class="mobile-toolbar" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
+		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block">+</button>
+		<span class="mt-sep"></span>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} onclick={() => editor?.chain().focus().toggleBold().run()}>B</button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('italic')} onclick={() => editor?.chain().focus().toggleItalic().run()}><em>I</em></button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('strike')} onclick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
@@ -346,6 +371,21 @@
 
 <div class="editor-wrapper">
 	<div bind:this={element} class="editor-content prose"></div>
+	{#if editor && editorTick >= 0 && editor.isActive('table')}
+		{@const tpos = getTableToolbarPos()}
+		{#if tpos}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="table-toolbar" style:top="{tpos.top}px" style:left="{tpos.left}px" onmousedown={(e) => e.preventDefault()}>
+				<button class="tt-btn" onclick={() => editor?.chain().focus().addRowAfter().run()} title="Add row below">+ Row</button>
+				<button class="tt-btn" onclick={() => editor?.chain().focus().addColumnAfter().run()} title="Add column right">+ Col</button>
+				<span class="tt-sep"></span>
+				<button class="tt-btn" onclick={() => editor?.chain().focus().deleteRow().run()} title="Delete row">− Row</button>
+				<button class="tt-btn" onclick={() => editor?.chain().focus().deleteColumn().run()} title="Delete column">− Col</button>
+				<span class="tt-sep"></span>
+				<button class="tt-btn tt-btn-danger" onclick={() => editor?.chain().focus().deleteTable().run()} title="Delete table">✕</button>
+			</div>
+		{/if}
+	{/if}
 </div>
 
 {#if slashOpen}
@@ -359,7 +399,7 @@
 				onclick={() => execSlash(item.id)}
 			>
 				<span class="slash-icon">{item.icon}</span>
-				<span class="slash-title">{item.title}</span>
+				<span class="slash-title">{item.label}</span>
 			</button>
 		{/each}
 	</div>
@@ -376,7 +416,7 @@
 				onmouseenter={() => linkIdx = i}
 				onclick={() => execLink(doc.title)}
 			>
-				<span class="slash-icon">{doc.doc_type === 'roadmap' ? '📋' : doc.doc_type === 'phase-plan' ? '🏗️' : doc.doc_type === 'architecture' ? '🧠' : doc.doc_type === 'ideation' ? '💡' : doc.doc_type === 'feature-spec' ? '📄' : doc.doc_type === 'notes' ? '📝' : doc.doc_type === 'prompt-library' ? '💬' : doc.doc_type === 'reference' ? '📚' : '📄'}</span>
+				<span class="slash-icon">{doc.collection_icon ?? '📄'}</span>
 				<span class="slash-title">{doc.title}</span>
 			</button>
 		{:else}
@@ -641,4 +681,50 @@
 		font-size: 0.85em; color: var(--text-secondary);
 	}
 	.slash-title { font-weight: 500; }
+
+	/* Table toolbar */
+	.table-toolbar {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		padding: 3px 4px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+		z-index: 10;
+		white-space: nowrap;
+	}
+	.tt-btn {
+		padding: 3px 8px;
+		border-radius: var(--radius-sm);
+		font-size: 0.75em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		cursor: pointer;
+		white-space: nowrap;
+		font-family: inherit;
+	}
+	.tt-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.tt-btn-danger:hover {
+		background: rgba(239, 68, 68, 0.1);
+		color: #ef4444;
+	}
+	.tt-sep {
+		width: 1px;
+		height: 16px;
+		background: var(--border);
+		margin: 0 2px;
+		flex-shrink: 0;
+	}
+
+	/* Mobile + button */
+	.mt-btn-add {
+		font-size: 1.1em;
+		color: var(--accent-blue);
+	}
 </style>

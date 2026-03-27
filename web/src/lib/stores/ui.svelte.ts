@@ -14,6 +14,8 @@ if (browser) {
 			if (mobile) {
 				sidebarOpen = false;
 				detailPanelOpen = false;
+			} else {
+				sidebarOpen = true;
 			}
 		}
 	});

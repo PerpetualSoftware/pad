@@ -62,7 +62,6 @@ jobs:
 
       - name: Type check (svelte-check)
         run: npm run check
-        continue-on-error: true  # TODO: fix existing TS errors, then make this blocking
 
   full-build:
     name: Full Binary Build

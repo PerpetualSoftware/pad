@@ -3,7 +3,7 @@
 	import { api } from '$lib/api/client';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 
 	let categories = $state<LibraryCategory[]>([]);
 	let playbookCategories = $state<PlaybookCategory[]>([]);

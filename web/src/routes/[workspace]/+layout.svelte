@@ -9,7 +9,7 @@
 
 	let { children } = $props();
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 	let unsubscribeSSE: (() => void) | null = null;
 
 	onMount(() => {

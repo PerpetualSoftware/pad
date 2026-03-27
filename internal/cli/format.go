@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -95,6 +96,46 @@ func PrintItemTitles(items []models.Item) {
 	for _, item := range items {
 		fmt.Println(item.Title)
 	}
+}
+
+// FormatFieldSummary returns a formatted summary of item fields.
+// Example output: "status: open | priority: high | category: platform"
+func FormatFieldSummary(fieldsJSON string) string {
+	if fieldsJSON == "" || fieldsJSON == "{}" || fieldsJSON == "null" {
+		return ""
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return ""
+	}
+
+	if len(fields) == 0 {
+		return ""
+	}
+
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	for _, k := range keys {
+		v := fields[k]
+		str := fmt.Sprintf("%v", v)
+		if str == "" || str == "<nil>" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", k, str))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return strings.Join(parts, " | ")
 }
 
 // PrintJSON prints any value as formatted JSON.

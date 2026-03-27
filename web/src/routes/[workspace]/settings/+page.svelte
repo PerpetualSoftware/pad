@@ -9,7 +9,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 	let loading = $state(true);
 	let collections = $state<Collection[]>([]);
 	let wsName = $state('');

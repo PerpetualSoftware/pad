@@ -651,6 +651,9 @@ Examples:
 				icon = "📦"
 			}
 			fmt.Printf("Created %s %s: %q (%s)\n", icon, item.CollectionName, item.Title, item.Slug)
+			if summary := cli.FormatFieldSummary(item.Fields); summary != "" {
+				fmt.Printf("  %s\n", summary)
+			}
 			return nil
 		},
 	}
@@ -1000,6 +1003,9 @@ Examples:
 			}
 
 			fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
+			if summary := cli.FormatFieldSummary(updated.Fields); summary != "" {
+				fmt.Printf("  %s\n", summary)
+			}
 			return nil
 		},
 	}

@@ -24,7 +24,7 @@
 	const SCOPES = ['all','backend','frontend','mobile','docs','devops'] as const;
 	const PRIORITIES = ['must','should','nice-to-have'] as const;
 
-	let workspace = $derived(page.params.workspace);
+	let workspace = $derived(page.params.workspace ?? '');
 	let conventions = $state<Item[]>([]);
 	let loading = $state(true);
 	let expandedSlug = $state<string | null>(null);
@@ -32,6 +32,14 @@
 	let showCreate = $state(false);
 	let creating = $state(false);
 	let confirmDelete = $state<string | null>(null);
+	let searchQuery = $state('');
+	let filterScope = $state<string>('');
+	let filterPriority = $state<string>('');
+
+	// Inline editing state
+	let editingSlug = $state<string | null>(null);
+	let editContent = $state('');
+	let saving = $state(false);
 
 	// Inline create form state
 	let newTitle = $state('');
@@ -55,10 +63,27 @@
 		}
 	}
 
+	let hasActiveFilters = $derived(searchQuery !== '' || filterScope !== '' || filterPriority !== '');
+
+	let filtered = $derived.by(() => {
+		let items = conventions;
+		if (searchQuery) {
+			const q = searchQuery.toLowerCase();
+			items = items.filter(i => i.title.toLowerCase().includes(q) || (i.content ?? '').toLowerCase().includes(q));
+		}
+		if (filterScope) {
+			items = items.filter(i => getScope(i) === filterScope);
+		}
+		if (filterPriority) {
+			items = items.filter(i => getPriority(i) === filterPriority);
+		}
+		return items;
+	});
+
 	let grouped = $derived.by(() => {
 		const groups: { trigger: Trigger; items: Item[]; activeCount: number }[] = [];
 		const byTrigger = new SvelteMap<Trigger, Item[]>();
-		for (const item of conventions) {
+		for (const item of filtered) {
 			const fields = parseFields(item);
 			const t = (fields.trigger as Trigger) || 'always';
 			if (!byTrigger.has(t)) byTrigger.set(t, []);
@@ -152,6 +177,59 @@
 		}
 	}
 
+	function startEditing(item: Item) {
+		editingSlug = item.slug;
+		editContent = item.content ?? '';
+	}
+
+	async function saveEditing(item: Item) {
+		if (!workspace || saving) return;
+		saving = true;
+		try {
+			const updated = await api.items.update(workspace, item.slug, { content: editContent });
+			const idx = conventions.findIndex(c => c.id === item.id);
+			if (idx !== -1) conventions[idx] = updated;
+			conventions = [...conventions];
+			editingSlug = null;
+			toastStore.show('Convention updated', 'success');
+		} catch {
+			toastStore.show('Failed to update convention', 'error');
+		} finally {
+			saving = false;
+		}
+	}
+
+	function cancelEditing() {
+		editingSlug = null;
+		editContent = '';
+	}
+
+	async function bulkToggleGroup(group: { trigger: Trigger; items: Item[] }, enable: boolean) {
+		if (!workspace) return;
+		const targetStatus = enable ? 'active' : 'disabled';
+		const toUpdate = group.items.filter(i => {
+			const s = parseFields(i).status;
+			return enable ? s !== 'active' : s === 'active';
+		});
+		if (toUpdate.length === 0) return;
+		for (const item of toUpdate) {
+			const fields = parseFields(item);
+			fields.status = targetStatus;
+			item.fields = JSON.stringify(fields);
+			try {
+				await api.items.update(workspace, item.slug, { fields: JSON.stringify(fields) });
+			} catch { /* individual failures won't block the rest */ }
+		}
+		conventions = [...conventions];
+		toastStore.show(`${toUpdate.length} convention${toUpdate.length > 1 ? 's' : ''} ${enable ? 'enabled' : 'disabled'}`, 'success');
+	}
+
+	function clearFilters() {
+		searchQuery = '';
+		filterScope = '';
+		filterPriority = '';
+	}
+
 	function isActive(item: Item): boolean {
 		return parseFields(item).status === 'active';
 	}
@@ -221,11 +299,38 @@
 			</form>
 		{/if}
 
+		{#if conventions.length > 0}
+			<div class="filter-bar">
+				<input
+					type="text"
+					class="search-input"
+					placeholder="Search conventions..."
+					bind:value={searchQuery}
+				/>
+				<select class="filter-select" bind:value={filterScope}>
+					<option value="">All scopes</option>
+					{#each SCOPES as s (s)}<option value={s}>{s}</option>{/each}
+				</select>
+				<select class="filter-select" bind:value={filterPriority}>
+					<option value="">All priorities</option>
+					{#each PRIORITIES as p (p)}<option value={p}>{p}</option>{/each}
+				</select>
+				{#if hasActiveFilters}
+					<button class="btn btn-small btn-secondary" onclick={clearFilters}>Clear</button>
+				{/if}
+			</div>
+		{/if}
+
 		{#if conventions.length === 0 && !showCreate}
 			<div class="empty-state">
 				<div class="empty-icon">📏</div>
 				<h2>No conventions yet</h2>
 				<p>Add rules from the library or create your own.</p>
+			</div>
+		{:else if grouped.length === 0 && hasActiveFilters}
+			<div class="empty-state">
+				<p>No conventions match your filters.</p>
+				<button class="btn btn-secondary" onclick={clearFilters}>Clear filters</button>
 			</div>
 		{:else}
 			<div class="groups">
@@ -233,12 +338,24 @@
 					{@const meta = TRIGGER_META[group.trigger]}
 					{@const collapsed = collapsedGroups.has(group.trigger)}
 					<section class="trigger-group">
-						<button class="group-header" onclick={() => toggleGroup(group.trigger)}>
-							<span class="group-chevron" class:collapsed>{collapsed ? '\u25B6' : '\u25BC'}</span>
-							<span class="group-icon">{meta.icon}</span>
-							<span class="group-label">{meta.label}</span>
-							<span class="group-count">{group.activeCount} active</span>
-						</button>
+						<div class="group-header-row">
+							<button class="group-header" onclick={() => toggleGroup(group.trigger)}>
+								<span class="group-chevron" class:collapsed>{collapsed ? '\u25B6' : '\u25BC'}</span>
+								<span class="group-icon">{meta.icon}</span>
+								<span class="group-label">{meta.label}</span>
+								<span class="group-count">{group.activeCount}/{group.items.length} active</span>
+							</button>
+							{#if !collapsed}
+								<div class="group-bulk">
+									{#if group.activeCount < group.items.length}
+										<button class="btn btn-tiny" title="Enable all in this group" onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
+									{/if}
+									{#if group.activeCount > 0}
+										<button class="btn btn-tiny btn-muted" title="Disable all in this group" onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
+									{/if}
+								</div>
+							{/if}
+						</div>
 
 						{#if !collapsed}
 							<div class="group-items">
@@ -271,21 +388,35 @@
 
 										{#if expanded}
 											<div class="row-expanded">
-												{#if item.content}
-													<p class="convention-content">{item.content}</p>
+												{#if editingSlug === item.slug}
+													<textarea
+														class="edit-textarea"
+														bind:value={editContent}
+														rows="4"
+														onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveEditing(item); } if (e.key === 'Escape') cancelEditing(); }}
+													></textarea>
+													<div class="expanded-actions">
+														<button class="btn btn-small btn-primary" disabled={saving} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</button>
+														<button class="btn btn-small btn-secondary" onclick={cancelEditing}>Cancel</button>
+														<span class="edit-hint">⌘+Enter to save · Esc to cancel</span>
+													</div>
 												{:else}
-													<p class="convention-content muted">No instruction content.</p>
-												{/if}
-												<div class="expanded-actions">
-													<a href="/{workspace}/conventions/{item.slug}" class="btn btn-small btn-secondary">Edit</a>
-													{#if confirmDelete === item.slug}
-														<span class="confirm-text">Delete this convention?</span>
-														<button class="btn btn-small btn-danger" onclick={() => deleteConvention(item)}>Confirm</button>
-														<button class="btn btn-small btn-secondary" onclick={() => (confirmDelete = null)}>Cancel</button>
+													{#if item.content}
+														<p class="convention-content">{item.content}</p>
 													{:else}
-														<button class="btn btn-small btn-danger-outline" onclick={() => (confirmDelete = item.slug)}>Delete</button>
+														<p class="convention-content muted">No instruction content.</p>
 													{/if}
-												</div>
+													<div class="expanded-actions">
+														<button class="btn btn-small btn-secondary" onclick={() => startEditing(item)}>Edit</button>
+														{#if confirmDelete === item.slug}
+															<span class="confirm-text">Delete this convention?</span>
+															<button class="btn btn-small btn-danger" onclick={() => deleteConvention(item)}>Confirm</button>
+															<button class="btn btn-small btn-secondary" onclick={() => (confirmDelete = null)}>Cancel</button>
+														{:else}
+															<button class="btn btn-small btn-danger-outline" onclick={() => (confirmDelete = item.slug)}>Delete</button>
+														{/if}
+													</div>
+												{/if}
 											</div>
 										{/if}
 									</div>
@@ -335,15 +466,28 @@
 	.empty-state h2 { font-size: 1.2em; font-weight: 600; margin-bottom: var(--space-2); }
 	.empty-state p { color: var(--text-muted); font-size: 0.9em; }
 
+	/* Search/filter bar */
+	.filter-bar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
+	.search-input { flex: 1; min-width: 160px; padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; color: var(--text-primary); }
+	.search-input::placeholder { color: var(--text-muted); }
+	.search-input:focus { border-color: var(--accent-blue); outline: none; }
+	.filter-select { padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.82em; color: var(--text-primary); cursor: pointer; }
+	.filter-select:focus { border-color: var(--accent-blue); outline: none; }
+
 	/* Trigger groups */
 	.groups { display: flex; flex-direction: column; gap: var(--space-4); }
 	.trigger-group { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
-	.group-header { width: 100%; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); background: var(--bg-secondary); cursor: pointer; font-weight: 600; font-size: 0.95em; }
+	.group-header-row { display: flex; align-items: center; background: var(--bg-secondary); }
+	.group-header { flex: 1; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); cursor: pointer; font-weight: 600; font-size: 0.95em; }
 	.group-header:hover { background: var(--bg-hover); }
 	.group-chevron { font-size: 0.7em; width: 14px; color: var(--text-muted); }
 	.group-icon { font-size: 1.1em; }
 	.group-label { flex: 1; text-align: left; }
 	.group-count { font-size: 0.8em; font-weight: 400; color: var(--text-muted); }
+	.group-bulk { display: flex; gap: var(--space-1); padding-right: var(--space-3); }
+	.btn-tiny { padding: 2px var(--space-2); font-size: 0.72em; font-weight: 600; border-radius: var(--radius-sm); background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); cursor: pointer; white-space: nowrap; }
+	.btn-tiny:hover { background: var(--bg-hover); color: var(--text-primary); }
+	.btn-muted { color: var(--text-muted); }
 
 	/* Convention rows */
 	.group-items { border-top: 1px solid var(--border); }
@@ -375,6 +519,9 @@
 	.convention-content { font-size: 0.85em; line-height: 1.6; color: var(--text-secondary); margin-bottom: var(--space-3); white-space: pre-wrap; }
 	.convention-content.muted { font-style: italic; color: var(--text-muted); }
 	.expanded-actions { display: flex; gap: var(--space-2); align-items: center; }
+	.edit-textarea { width: 100%; padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.85em; font-family: inherit; line-height: 1.6; resize: vertical; margin-bottom: var(--space-3); box-sizing: border-box; }
+	.edit-textarea:focus { border-color: var(--accent-blue); outline: none; }
+	.edit-hint { font-size: 0.75em; color: var(--text-muted); margin-left: auto; }
 	.confirm-text { font-size: 0.8em; color: #dc2626; }
 
 	@media (max-width: 640px) {
