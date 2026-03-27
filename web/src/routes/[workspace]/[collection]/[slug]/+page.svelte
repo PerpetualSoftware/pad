@@ -3,6 +3,8 @@
 	import { api } from '$lib/api/client';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
+	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
+	import type { Editor as EditorType } from '@tiptap/core';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import VersionHistory from '$lib/components/versions/VersionHistory.svelte';
 	import CommentThread from '$lib/components/comments/CommentThread.svelte';
@@ -21,6 +23,8 @@
 	let collection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+
+	let editorInstance = $state<EditorType | null>(null);
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
@@ -331,8 +335,14 @@
 			<!-- Content editor -->
 			<div class="content-panel">
 				{#key item.id}
-					<Editor content={editorContent} onUpdate={handleContentUpdate} editable={true} />
+					<Editor content={editorContent} onUpdate={handleContentUpdate} editable={true} onEditor={(e) => editorInstance = e} />
 				{/key}
+				<EditorBubbleMenu
+					editor={editorInstance}
+					{wsSlug}
+					collections={collectionStore.collections}
+					onItemCreated={() => collectionStore.loadItems(wsSlug)}
+				/>
 			</div>
 		</div>
 
