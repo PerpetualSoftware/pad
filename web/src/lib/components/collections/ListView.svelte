@@ -15,6 +15,7 @@
 		onStatusChange?: (item: Item, newStatus: string) => void;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveGroup?: (items: Item[]) => void;
+		onGroupReorder?: (newOrder: string[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		relationLabels?: Record<string, string>;
 	}
@@ -27,6 +28,7 @@
 		onStatusChange,
 		onReorder,
 		onArchiveGroup,
+		onGroupReorder,
 		itemProgress,
 		relationLabels
 	}: Props = $props();
@@ -64,6 +66,33 @@
 	});
 
 	let collapsedGroups = new SvelteSet<string>();
+
+	// Group reordering state
+	interface GroupItem { id: string }
+	let groupItems = $state<GroupItem[]>([]);
+	let isDraggingGroup = $state(false);
+
+	$effect(() => {
+		if (!isDraggingGroup) {
+			groupItems = displayGroups.map((g) => ({ id: g }));
+		}
+	});
+
+	function handleGroupConsider(e: CustomEvent<DndEvent<GroupItem>>) {
+		groupItems = e.detail.items;
+		isDraggingGroup = true;
+	}
+
+	function handleGroupFinalize(e: CustomEvent<DndEvent<GroupItem>>) {
+		groupItems = e.detail.items;
+		isDraggingGroup = false;
+		if (onGroupReorder) {
+			const newOrder = groupItems
+				.filter((g: any) => !g[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+				.map((g) => g.id);
+			onGroupReorder(newOrder);
+		}
+	}
 
 	let isDragging = $state(false);
 	let groupData: Record<string, Item[]> = $state({});
@@ -160,25 +189,39 @@
 {#if items.length === 0}
 	<div class="empty-state">No items yet</div>
 {:else}
-	<div class="list-view">
-		{#each displayGroups as groupName (groupName)}
-			{@const groupItems = groupData[groupName] ?? []}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="list-view"
+		use:dndzone={{
+			items: groupItems,
+			flipDurationMs,
+			type: 'list-group',
+			dropTargetClasses: ['group-drop-target'],
+			morphDisabled: true
+		}}
+		onconsider={handleGroupConsider}
+		onfinalize={handleGroupFinalize}
+	>
+		{#each groupItems as group (group.id)}
+			{@const groupName = group.id}
+			{@const grpItems = groupData[groupName] ?? []}
 			<div class="item-group">
 				<button
 					class="group-header"
 					onclick={() => toggleGroup(groupName)}
 					aria-expanded={!collapsedGroups.has(groupName)}
 				>
+					<span class="group-drag-handle" title="Drag to reorder">⠿</span>
 					<span class="collapse-icon" class:collapsed={collapsedGroups.has(groupName)}
 						>&#9662;</span
 					>
 					<span class="group-title">{formatLabel(groupName)}</span>
 					<span class="group-actions">
-						<span class="group-count">{itemCount(groupItems)}</span>
-						{#if onArchiveGroup && itemCount(groupItems) > 0}
+						<span class="group-count">{itemCount(grpItems)}</span>
+						{#if onArchiveGroup && itemCount(grpItems) > 0}
 							{#if confirmArchiveGroup === groupName}
 								<span class="archive-confirm">
-									<button class="archive-yes" onclick={(e) => { e.stopPropagation(); onArchiveGroup(groupItems); confirmArchiveGroup = null; }}>Archive {itemCount(groupItems)}?</button>
+									<button class="archive-yes" onclick={(e) => { e.stopPropagation(); onArchiveGroup(grpItems); confirmArchiveGroup = null; }}>Archive {itemCount(grpItems)}?</button>
 									<button class="archive-no" onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = null; }}>Cancel</button>
 								</span>
 							{:else}
@@ -197,7 +240,7 @@
 					<div
 						class="group-items"
 						use:dndzone={{
-							items: groupItems,
+							items: grpItems,
 							flipDurationMs,
 							type: 'list-item',
 							dropTargetClasses: ['drop-target'],
@@ -207,7 +250,7 @@
 						onfinalize={(e) => handleFinalize(groupName, e)}
 						oncontextmenu={(e) => e.preventDefault()}
 					>
-						{#each groupItems as item (item.id)}
+						{#each grpItems as item (item.id)}
 							<div class="list-row">
 								<ItemCard
 									{item}
@@ -220,7 +263,7 @@
 								/>
 							</div>
 						{/each}
-						{#if groupItems.length === 0}
+						{#if grpItems.length === 0}
 							<div class="group-empty">No {formatLabel(groupName).toLowerCase()} items</div>
 						{/if}
 					</div>
@@ -249,6 +292,24 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		overflow: hidden;
+	}
+
+	.group-drag-handle {
+		color: var(--text-muted);
+		font-size: 0.75em;
+		opacity: 0;
+		transition: opacity 0.15s;
+		user-select: none;
+		cursor: grab;
+	}
+
+	.item-group:hover .group-drag-handle {
+		opacity: 0.5;
+	}
+
+	.group-drag-handle:active {
+		opacity: 1;
+		cursor: grabbing;
 	}
 
 	.group-header {

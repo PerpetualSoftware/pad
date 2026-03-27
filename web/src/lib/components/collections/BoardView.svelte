@@ -13,11 +13,12 @@
 		onStatusChange: (item: Item, newStatus: string) => void;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveColumn?: (items: Item[]) => void;
+		onGroupReorder?: (newOrder: string[]) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, itemProgress, relationLabels }: Props = $props();
+	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, relationLabels }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 
@@ -27,6 +28,33 @@
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
 	let columns = $derived(field?.options ?? []);
+
+	// Column reordering state — dndzone needs objects with `id`
+	interface ColumnItem { id: string }
+	let columnItems = $state<ColumnItem[]>([]);
+	let isDraggingColumn = $state(false);
+
+	$effect(() => {
+		if (!isDraggingColumn) {
+			columnItems = columns.map((c) => ({ id: c }));
+		}
+	});
+
+	function handleColumnConsider(e: CustomEvent<DndEvent<ColumnItem>>) {
+		columnItems = e.detail.items;
+		isDraggingColumn = true;
+	}
+
+	function handleColumnFinalize(e: CustomEvent<DndEvent<ColumnItem>>) {
+		columnItems = e.detail.items;
+		isDraggingColumn = false;
+		if (onGroupReorder) {
+			const newOrder = columnItems
+				.filter((c: any) => !c[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+				.map((c) => c.id);
+			onGroupReorder(newOrder);
+		}
+	}
 
 	let isDragging = $state(false);
 	let columnData: Record<string, Item[]> = $state({});
@@ -121,11 +149,26 @@
 	}
 </script>
 
-<div class="board-view" style:--col-count={columns.length}>
-	{#each columns as colValue (colValue)}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="board-view"
+	style:--col-count={columnItems.length}
+	use:dndzone={{
+		items: columnItems,
+		flipDurationMs,
+		type: 'board-column',
+		dropTargetClasses: ['column-drop-target'],
+		morphDisabled: true
+	}}
+	onconsider={handleColumnConsider}
+	onfinalize={handleColumnFinalize}
+>
+	{#each columnItems as col (col.id)}
+		{@const colValue = col.id}
 		{@const colItems = columnData[colValue] ?? []}
 		<div class="kanban-column" role="group" aria-label="{formatLabel(colValue)} column">
 			<div class="column-header {columnCssClass(colValue)}">
+				<span class="column-drag-handle" title="Drag to reorder">⠿</span>
 				<span class="column-name">{formatLabel(colValue)}</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
@@ -222,8 +265,29 @@
 		border-bottom-color: var(--accent-orange);
 	}
 
+	.column-drag-handle {
+		color: var(--text-muted);
+		font-size: 0.75em;
+		cursor: grab;
+		opacity: 0;
+		transition: opacity 0.15s;
+		user-select: none;
+		margin-right: var(--space-1);
+	}
+
+	.column-header:hover .column-drag-handle {
+		opacity: 0.5;
+	}
+
+	.column-drag-handle:active {
+		opacity: 1;
+		cursor: grabbing;
+	}
+
 	.column-name {
 		color: var(--text-primary);
+		flex: 1;
+		text-align: left;
 	}
 
 	.column-count {

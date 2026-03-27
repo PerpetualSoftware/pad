@@ -293,6 +293,24 @@
 		}
 	}
 
+	async function handleGroupReorder(newOrder: string[]) {
+		if (!wsSlug || !collSlug || !collection) return;
+		const currentSchema = parseSchema(collection);
+		const fieldIdx = currentSchema.fields.findIndex((f) => f.key === groupField);
+		if (fieldIdx === -1) return;
+
+		// Update the field's options to the new order
+		currentSchema.fields[fieldIdx].options = newOrder;
+		const newSchemaStr = JSON.stringify(currentSchema);
+
+		try {
+			const updated = await api.collections.update(wsSlug, collSlug, { schema: newSchemaStr });
+			collection = updated;
+		} catch {
+			toastStore.show('Failed to save column order', 'error');
+		}
+	}
+
 	let creatingNew = $state(false);
 
 	async function createNewItem() {
@@ -439,6 +457,7 @@
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
 				onArchiveColumn={handleBulkArchive}
+				onGroupReorder={handleGroupReorder}
 				{itemProgress}
 				{relationLabels}
 			/>
@@ -451,6 +470,7 @@
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
 				onArchiveGroup={handleBulkArchive}
+				onGroupReorder={handleGroupReorder}
 				{itemProgress}
 				{relationLabels}
 			/>
