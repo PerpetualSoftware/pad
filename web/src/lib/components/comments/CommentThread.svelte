@@ -135,7 +135,7 @@
 							{authorLabel(comment.created_by)}
 						</span>
 						<span class="source">{sourceLabel(comment.source)}</span>
-						<span class="timestamp">{relativeTime(comment.created_at)}</span>
+						<span class="timestamp" title={new Date(comment.created_at).toLocaleString()}>{relativeTime(comment.created_at)}</span>
 						<button
 							class="delete-btn"
 							type="button"

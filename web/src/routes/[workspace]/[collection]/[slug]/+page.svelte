@@ -249,9 +249,9 @@
 
 		<!-- Meta -->
 		<div class="meta">
-			<span>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
+			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
 			<span class="meta-sep">·</span>
-			<span>Updated {relativeTime(item.updated_at)}</span>
+			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
 			{#if saveStatus === 'saving'}
 				<span class="save-status saving">Saving...</span>
 			{:else if saveStatus === 'saved'}

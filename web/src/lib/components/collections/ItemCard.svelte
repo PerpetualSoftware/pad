@@ -134,7 +134,7 @@
 		{#if assigneeField && fields.assignee}
 			<span class="assignee">{fields.assignee}</span>
 		{/if}
-		<span class="updated">{relativeTime(item.updated_at)}</span>
+		<span class="updated" title={new Date(item.updated_at).toLocaleString()}>{relativeTime(item.updated_at)}</span>
 	</div>
 </a>
 

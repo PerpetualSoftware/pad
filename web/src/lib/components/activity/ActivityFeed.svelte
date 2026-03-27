@@ -31,12 +31,12 @@
 			<div class="info">
 				<span class="action">
 					{actorIcon(a.actor) === '🤖' ? 'Agent' : 'You'} {actionLabel(a.action)}
-					{#if a.document_id}
+					{#if a.item_id}
 						a document
 					{/if}
 				</span>
 				<span class="meta">
-					via {sourceLabel(a.source)} · {relativeTime(a.created_at)}
+					via {sourceLabel(a.source)} · <span title={new Date(a.created_at).toLocaleString()}>{relativeTime(a.created_at)}</span>
 				</span>
 			</div>
 		</div>

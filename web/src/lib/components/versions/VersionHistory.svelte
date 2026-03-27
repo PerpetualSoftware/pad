@@ -152,7 +152,7 @@
 								onclick={() => selectVersion(version.id)}
 							>
 								<div class="entry-meta">
-									<span class="entry-time">{relativeTime(version.created_at)}</span>
+									<span class="entry-time" title={new Date(version.created_at).toLocaleString()}>{relativeTime(version.created_at)}</span>
 									<div class="badges">
 										<span
 											class="badge"

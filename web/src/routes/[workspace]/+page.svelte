@@ -6,7 +6,7 @@
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
-	let wsSlug = $derived(page.params.workspace);
+	let wsSlug = $derived(page.params.workspace ?? '');
 
 	let loading = $state(true);
 	let dashboard = $state<DashboardResponse | null>(null);
@@ -194,7 +194,7 @@
 							<span class="activity-meta">
 								by {activity.actor === 'user' ? 'you' : activity.actor}
 								via {activity.source}
-								· {relativeTime(activity.created_at)}
+								· <span title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>
 							</span>
 						</div>
 					{/each}
