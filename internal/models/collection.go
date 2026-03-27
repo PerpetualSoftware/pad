@@ -18,12 +18,21 @@ type CollectionSchema struct {
 	Fields []FieldDef `json:"fields"`
 }
 
+// QuickAction defines a prompt template that can be triggered from the UI.
+type QuickAction struct {
+	Label    string `json:"label"`              // display label for the button
+	Prompt   string `json:"prompt"`             // prompt template with {ref}, {title}, {status}, etc.
+	Scope    string `json:"scope"`              // "item" or "collection"
+	Icon     string `json:"icon,omitempty"`     // optional emoji/icon
+}
+
 type CollectionSettings struct {
-	Layout       string `json:"layout,omitempty"`        // fields-primary, content-primary, balanced
-	DefaultView  string `json:"default_view,omitempty"`  // list, board, table
-	BoardGroupBy string `json:"board_group_by,omitempty"`
-	ListSortBy   string `json:"list_sort_by,omitempty"`
-	ListGroupBy  string `json:"list_group_by,omitempty"`
+	Layout       string        `json:"layout,omitempty"`        // fields-primary, content-primary, balanced
+	DefaultView  string        `json:"default_view,omitempty"`  // list, board, table
+	BoardGroupBy string        `json:"board_group_by,omitempty"`
+	ListSortBy   string        `json:"list_sort_by,omitempty"`
+	ListGroupBy  string        `json:"list_group_by,omitempty"`
+	QuickActions []QuickAction `json:"quick_actions,omitempty"`
 }
 
 type Collection struct {

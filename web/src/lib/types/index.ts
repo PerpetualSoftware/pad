@@ -40,12 +40,20 @@ export interface CollectionSchema {
 	fields: FieldDef[];
 }
 
+export interface QuickAction {
+	label: string;
+	prompt: string;
+	scope: 'item' | 'collection';
+	icon?: string;
+}
+
 export interface CollectionSettings {
 	layout: 'fields-primary' | 'content-primary' | 'balanced';
 	default_view: 'list' | 'board' | 'table';
 	board_group_by?: string;
 	list_sort_by?: string;
 	list_group_by?: string;
+	quick_actions?: QuickAction[];
 }
 
 export interface Collection {

@@ -69,6 +69,13 @@ func Defaults() []DefaultCollection {
 				DefaultView:  "board",
 				BoardGroupBy: "status",
 				ListSortBy:   "priority",
+				QuickActions: []models.QuickAction{
+					{Label: "Implement this", Prompt: "/pad implement {ref} \"{title}\" (status: {status}, priority: {priority})", Scope: "item", Icon: "🔨"},
+					{Label: "Write tests", Prompt: "/pad write tests for {ref} \"{title}\"", Scope: "item", Icon: "🧪"},
+					{Label: "Explain this task", Prompt: "/pad explain {ref} \"{title}\" — what does it involve and why is it needed?", Scope: "item", Icon: "💬"},
+					{Label: "Triage open tasks", Prompt: "/pad triage all open tasks and suggest priorities", Scope: "collection", Icon: "📋"},
+					{Label: "Status report", Prompt: "/pad summarize progress on all tasks", Scope: "collection", Icon: "📊"},
+				},
 			},
 		},
 		{
@@ -105,6 +112,12 @@ func Defaults() []DefaultCollection {
 				DefaultView: "list",
 				ListSortBy:  "created_at",
 				ListGroupBy: "status",
+				QuickActions: []models.QuickAction{
+					{Label: "Explore this idea", Prompt: "/pad explore {ref} \"{title}\" — research feasibility, trade-offs, and implementation approaches", Scope: "item", Icon: "🔍"},
+					{Label: "Break into tasks", Prompt: "/pad break down {ref} \"{title}\" into actionable tasks", Scope: "item", Icon: "📝"},
+					{Label: "Research this", Prompt: "/pad research {ref} \"{title}\" and summarize findings", Scope: "item", Icon: "📚"},
+					{Label: "Review all new ideas", Prompt: "/pad triage all new ideas and suggest which to pursue", Scope: "collection", Icon: "💡"},
+				},
 			},
 		},
 		{
@@ -146,6 +159,12 @@ func Defaults() []DefaultCollection {
 				Layout:      "content-primary",
 				DefaultView: "list",
 				ListSortBy:  "sort_order",
+				QuickActions: []models.QuickAction{
+					{Label: "Plan this phase", Prompt: "/pad plan {ref} \"{title}\" — outline goals, deliverables, and timeline", Scope: "item", Icon: "📐"},
+					{Label: "Break into tasks", Prompt: "/pad break {ref} \"{title}\" into PR-sized tasks", Scope: "item", Icon: "📝"},
+					{Label: "Run a retro", Prompt: "/pad run a retrospective on {ref} \"{title}\"", Scope: "item", Icon: "🔄"},
+					{Label: "Compare progress", Prompt: "/pad compare progress across all phases", Scope: "collection", Icon: "📊"},
+				},
 			},
 		},
 		{
@@ -176,6 +195,12 @@ func Defaults() []DefaultCollection {
 				DefaultView: "list",
 				ListSortBy:  "updated_at",
 				ListGroupBy: "category",
+				QuickActions: []models.QuickAction{
+					{Label: "Review this doc", Prompt: "/pad review {ref} \"{title}\" for accuracy and completeness", Scope: "item", Icon: "👀"},
+					{Label: "Update this doc", Prompt: "/pad update {ref} \"{title}\" to reflect the current state of the codebase", Scope: "item", Icon: "✏️"},
+					{Label: "Summarize this", Prompt: "/pad summarize {ref} \"{title}\"", Scope: "item", Icon: "📋"},
+					{Label: "Find outdated docs", Prompt: "/pad review all docs and identify which are outdated", Scope: "collection", Icon: "🔍"},
+				},
 			},
 		},
 		{

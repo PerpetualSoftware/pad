@@ -12,8 +12,9 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection, CollectionSettings } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
+	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
@@ -34,6 +35,7 @@
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'list' });
 	let layout = $derived(settings.layout);
+	let quickActions = $derived<QuickAction[]>(settings.quick_actions ?? []);
 
 	// Convert wiki-links to markdown links for the editor
 	let editorContent = $derived.by(() => {
@@ -172,11 +174,10 @@
 				toSave = markdownToWikiLinks(toSave, allItems);
 			}
 			toSave = cleanBrokenLinks(toSave);
-			api.items.update(wsSlug, item.slug, { content: toSave }).then((updated) => {
-				item = updated;
-				saveStatus = 'saved';
-				clearTimeout(saveStatusTimer);
-				saveStatusTimer = setTimeout(() => { saveStatus = 'idle'; }, 2000);
+			api.items.update(wsSlug, item.slug, { content: toSave }).then(() => {
+				// Don't overwrite item -- resetting editorContent would
+				// clobber anything typed since the debounce started.
+				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
@@ -262,6 +263,9 @@
 				<span class="save-status saved">✓ Saved</span>
 			{/if}
 			<div class="meta-actions">
+				{#if quickActions.length > 0 && collection}
+					<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
+				{/if}
 				<button
 					class="history-btn"
 					class:active={showHistory}

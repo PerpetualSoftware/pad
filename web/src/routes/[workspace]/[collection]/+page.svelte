@@ -2,11 +2,12 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import type { Collection, Item } from '$lib/types';
+	import type { Collection, Item, QuickAction } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
+	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import { onDestroy } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -181,6 +182,7 @@
 	}
 
 	let settings = $derived(collection ? parseSettings(collection) : null);
+	let quickActions = $derived<QuickAction[]>(settings?.quick_actions ?? []);
 	let schema = $derived(collection ? parseSchema(collection) : null);
 	let groupField = $derived(
 		viewMode === 'board'
@@ -426,6 +428,10 @@
 					<input type="checkbox" bind:checked={showArchived} />
 					<span>Show archived</span>
 				</label>
+
+				{#if quickActions.length > 0 && collection}
+					<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
+				{/if}
 
 				<button class="new-btn" onclick={createNewItem} disabled={creatingNew}>
 					+ New {singularName()}
