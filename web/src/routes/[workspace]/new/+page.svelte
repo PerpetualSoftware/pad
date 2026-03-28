@@ -68,7 +68,7 @@
 				fields: JSON.stringify(fields),
 				source: 'web'
 			});
-			goto(`/${wsSlug}/${selectedColl}/${itemUrlId(item)}`);
+			goto(`/${wsSlug}/${selectedColl}/${itemUrlId(item)}?new=1`);
 		} catch {
 			creating = false;
 			toastStore.show('Failed to create item', 'error');

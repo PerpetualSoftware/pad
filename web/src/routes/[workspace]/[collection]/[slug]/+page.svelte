@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { tick } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
@@ -104,26 +105,22 @@
 
 			// Auto-start title editing for newly created items
 			if (page.url.searchParams.get('new') === '1' && item) {
-				startEditTitle();
-				// Clean up the URL param
+				// Clean up the URL param first, then focus title after DOM settles
 				goto(`/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+				await startEditTitle();
 			}
 		}
 	}
 
-	function startEditTitle() {
+	async function startEditTitle() {
 		if (!item) return;
 		titleDraft = item.title;
 		editingTitle = true;
-		// Focus and select will happen via $effect on titleInputEl
+		// Wait for the DOM to render the input, then focus
+		await tick();
+		titleInputEl?.focus();
+		titleInputEl?.select();
 	}
-
-	$effect(() => {
-		if (editingTitle && titleInputEl) {
-			titleInputEl.focus();
-			titleInputEl.select();
-		}
-	});
 
 	function showSaved() {
 		saveStatus = 'saved';
