@@ -401,7 +401,7 @@ var templates = []WorkspaceTemplate{
 	},
 	{
 		Name:        "demo",
-		Description: "Startup template with sample data — try Pad in 30 seconds",
+		Description: "Fully populated workspace — see every feature in 30 seconds",
 		Collections: Defaults(),
 		SeedItems:   demoSeedItems(),
 	},
@@ -504,7 +504,7 @@ Pad is a single Go binary with an embedded SvelteKit web UI and SQLite storage.
 - **REST API** — chi router serving JSON endpoints at /api/v1/
 - **Web UI** — SvelteKit 2 + Svelte 5, compiled to static files and embedded via go:embed
 - **Store** — SQLite with FTS5 for full-text search, automatic migrations
-- **Agent Skill** — /pad skill for Claude Code, uses the CLI under the hood
+- **Agent Skill** — /pad skill for Claude Code, Cursor, Copilot, and more — uses the CLI under the hood
 
 ## Key Design Decisions
 
@@ -526,6 +526,26 @@ See [[MVP Launch]] for the current phase and [[Write API documentation]] for the
 			Title:          "Run tests before completing tasks",
 			Content:        "Always run `make test` and verify tests pass before marking a task as done. If tests fail, fix them before completing the task.",
 			Fields:         `{"status":"active","trigger":"on-task-complete","scope":"all","priority":"must"}`,
+		},
+		{
+			CollectionSlug: "conventions",
+			Title:          "Use conventional commit format",
+			Content:        "Commit messages must follow the conventional commits format: type(scope): description. Types: feat, fix, docs, refactor, test, chore.",
+			Fields:         `{"status":"active","trigger":"on-commit","scope":"all","priority":"should"}`,
+		},
+
+		// Playbook
+		{
+			CollectionSlug: "playbooks",
+			Title:          "Implementation Workflow",
+			Content: `1. Read the task description and any linked items
+2. Create a feature branch from main
+3. Implement the change in small, focused commits
+4. Run tests: ` + "`make test`" + `
+5. Run the build: ` + "`make build`" + `
+6. Self-review the diff before creating a PR
+7. Update the task status to done`,
+			Fields: `{"status":"active","trigger":"on-implement","scope":"all"}`,
 		},
 	}
 }
