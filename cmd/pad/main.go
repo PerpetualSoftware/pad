@@ -194,12 +194,6 @@ func serveCmd() *cobra.Command {
 
 			srv := server.New(s)
 
-			// Enable password auth if configured
-			if cfg.Password != "" {
-				srv.SetPassword(cfg.Password)
-				log.Printf("Password authentication enabled")
-			}
-
 			// Attach event bus for real-time SSE
 			srv.SetEventBus(events.New())
 

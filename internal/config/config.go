@@ -16,14 +16,8 @@ type Config struct {
 	URL      string `toml:"url"`      // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
-	Password string `toml:"password"` // Optional: password for web UI access. Set via config or PAD_PASSWORD env var.
-	DBPath   string `toml:"-"`        // computed, not from config file
+	DBPath string `toml:"-"` // computed, not from config file
 	DataDir  string `toml:"-"`        // computed
-}
-
-// AuthEnabled returns true if a password is configured.
-func (c *Config) AuthEnabled() bool {
-	return c.Password != ""
 }
 
 func DefaultConfig() *Config {
@@ -80,10 +74,6 @@ func Load() (*Config, error) {
 		cfg.DBPath = v
 		cfg.DataDir = filepath.Dir(cfg.DBPath)
 	}
-	if v := os.Getenv("PAD_PASSWORD"); v != "" {
-		cfg.Password = v
-	}
-
 	return cfg, nil
 }
 
