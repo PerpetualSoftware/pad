@@ -1,0 +1,27 @@
+# Build artifacts
+pad
+pad.exe
+dist/
+
+# Web build (rebuilt in Docker)
+web/build/
+web/node_modules/
+web/.svelte-kit/
+
+# Local data
+.pad/
+.pad.toml
+*.db
+*.sqlite
+*.sqlite3
+
+# Dev files
+.git/
+.github/
+.vscode/
+.idea/
+v1-archive/
+
+# OS
+.DS_Store
+Thumbs.db

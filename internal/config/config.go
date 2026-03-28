@@ -66,12 +66,12 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_URL"); v != "" {
 		cfg.URL = v
 	}
+	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
+		cfg.DataDir = v
+		cfg.DBPath = filepath.Join(v, "pad.db")
+	}
 	if v := os.Getenv("PAD_DB_PATH"); v != "" {
 		cfg.DBPath = v
-	}
-
-	// Recompute data dir from db path if overridden
-	if os.Getenv("PAD_DB_PATH") != "" {
 		cfg.DataDir = filepath.Dir(cfg.DBPath)
 	}
 

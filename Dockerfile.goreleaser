@@ -1,0 +1,10 @@
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY pad /usr/local/bin/pad
+RUN mkdir -p /data
+ENV PAD_DATA_DIR=/data
+ENV PAD_HOST=0.0.0.0
+EXPOSE 7777
+VOLUME /data
+ENTRYPOINT ["pad"]
+CMD ["serve"]

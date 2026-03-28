@@ -51,6 +51,36 @@ brews:
     test: |
       system "#{bin}/pad", "--version"
 
+dockers:
+  - image_templates:
+      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    extra_files:
+      - web/build
+  - image_templates:
+      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    extra_files:
+      - web/build
+
+docker_manifests:
+  - name_template: "ghcr.io/xarmian/pad:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
+      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/xarmian/pad:latest"
+    image_templates:
+      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
+      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
+
 release:
   github:
     owner: xarmian

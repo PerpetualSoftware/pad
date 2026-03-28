@@ -29,6 +29,9 @@ git clone https://github.com/xarmian/pad
 cd pad && make build
 cp pad /usr/local/bin/
 
+# Or run with Docker
+docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
+
 # Initialize a workspace in your project
 cd ~/projects/myapp
 pad init "My App"
