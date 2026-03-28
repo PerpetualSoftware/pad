@@ -273,3 +273,51 @@ func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.Workspace
 	}
 	return result, rows.Err()
 }
+
+// backfillWorkspaceOwners ensures every workspace has at least one owner.
+// For workspaces with no members, the first admin user is added as owner.
+// This handles the migration case where workspaces existed before the user system.
+func (s *Store) backfillWorkspaceOwners() error {
+	// Find the first admin user (if any)
+	var adminID string
+	err := s.db.QueryRow(
+		"SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1",
+	).Scan(&adminID)
+	if err == sql.ErrNoRows {
+		return nil // No users yet — nothing to backfill
+	}
+	if err != nil {
+		return fmt.Errorf("find admin user: %w", err)
+	}
+
+	// Find workspaces with no members
+	rows, err := s.db.Query(`
+		SELECT w.id FROM workspaces w
+		WHERE w.deleted_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id = w.id)
+	`)
+	if err != nil {
+		return fmt.Errorf("find ownerless workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var wsIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		wsIDs = append(wsIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, wsID := range wsIDs {
+		if err := s.AddWorkspaceMember(wsID, adminID, "owner"); err != nil {
+			return fmt.Errorf("add owner to workspace %s: %w", wsID, err)
+		}
+	}
+
+	return nil
+}

@@ -44,6 +44,10 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("backfill item numbers: %w", err)
 	}
 
+	if err := s.backfillWorkspaceOwners(); err != nil {
+		return nil, fmt.Errorf("backfill workspace owners: %w", err)
+	}
+
 	return s, nil
 }
 
