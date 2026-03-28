@@ -678,8 +678,38 @@ Use --list-templates to see available templates.`,
 				}
 			}
 
-			client, _ := getClient()
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
 			cwd, _ := os.Getwd()
+
+			// Ensure the user is authenticated before proceeding
+			session, err := client.CheckSession()
+			if err != nil {
+				return fmt.Errorf("failed to check auth status: %w", err)
+			}
+			if session.NeedsSetup {
+				fmt.Println("Welcome to Pad!")
+				fmt.Println()
+				fmt.Println("No account found. Let's set you up.")
+				fmt.Println()
+				if err := doRegister(client, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
+				// Recreate client so it picks up the new credentials
+				client = cli.NewClientFromURL(cfg.BaseURL())
+			} else if !session.Authenticated {
+				fmt.Println("Log in to continue.")
+				fmt.Println()
+				if err := doLogin(client, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
+				client = cli.NewClientFromURL(cfg.BaseURL())
+			}
 
 			var name string
 			if len(args) > 0 {

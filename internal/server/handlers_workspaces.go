@@ -73,6 +73,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Add the creator as workspace owner
+	if userID := currentUserID(r); userID != "" {
+		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
+	}
+
 	writeJSON(w, http.StatusCreated, ws)
 }
 
