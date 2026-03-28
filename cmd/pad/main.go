@@ -1,18 +1,25 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	pad "github.com/xarmian/pad"
@@ -23,6 +30,7 @@ import (
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
+	"github.com/xarmian/pad/internal/webhooks"
 )
 
 var (
@@ -65,13 +73,20 @@ func main() {
 		searchCmd(),
 		statusCmd(),
 		nextCmd(),
+		standupCmd(),
+		changelogCmd(),
 		collectionsCmd(),
 		editCmd(),
 		libraryCmd(),
 		commentCmd(),
 		commentsCmd(),
+		blocksCmd(),
+		blockedByCmd(),
+		depsCmd(),
+		unblockCmd(),
 		exportCmd(),
 		importCmd(),
+		watchCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -175,6 +190,9 @@ func serveCmd() *cobra.Command {
 
 			// Attach event bus for real-time SSE
 			srv.SetEventBus(events.New())
+
+			// Attach webhook dispatcher for outgoing notifications
+			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
 
 			// Mount embedded web UI if available
 			webFS, err := fs.Sub(pad.WebUI, "web/build")
@@ -333,6 +351,10 @@ Use --list-templates to see available templates.`,
 				}
 			}
 
+			green := color.New(color.FgGreen)
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+
 			newlyCreated := false
 			if ws != nil {
 				if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
@@ -354,10 +376,11 @@ Use --list-templates to see available templates.`,
 
 				tmplMsg := ""
 				if templateFlag != "" && templateFlag != "startup" {
-					tmplMsg = fmt.Sprintf(" with %q template", templateFlag)
+					tmplMsg = dim.Sprintf(" with %s template", templateFlag)
 				}
-				fmt.Printf("Created workspace %q (slug: %s)%s\n", ws.Name, ws.Slug, tmplMsg)
-				fmt.Printf("Linked to %s\n", cwd)
+				green.Printf("✓ Created workspace %q", ws.Name)
+				fmt.Printf(" %s%s\n", dim.Sprintf("(slug: %s)", ws.Slug), tmplMsg)
+				fmt.Printf("  Linked to %s\n", bold.Sprint(cwd))
 				newlyCreated = true
 			}
 
@@ -513,10 +536,11 @@ func offerSkillInstall() {
 		content := cli.FormatForTool(tool, pad.PadSkill)
 		path, err := cli.InstallForTool(tool, content)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+			color.New(color.FgRed).Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
-		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+		color.New(color.FgGreen).Printf("  ✓ %s", tool.Label)
+		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(path))
 	}
 }
 
@@ -527,13 +551,18 @@ func readChoice() string {
 }
 
 func printOnboardingHints() {
+	bold := color.New(color.Bold)
+	dim := color.New(color.Faint)
+	cyan := color.New(color.FgCyan)
+
 	fmt.Println()
-	fmt.Println("Get started:")
-	fmt.Println("  /pad scan this codebase and set up my workspace")
-	fmt.Println("  /pad what conventions should this project follow?")
-	fmt.Println("  /pad create a phase for what I'm working on")
+	bold.Println("Get started:")
+	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "scan this codebase and set up my workspace")
+	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "what conventions should this project follow?")
+	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a phase for what I'm working on")
 	fmt.Println()
-	fmt.Println("Or open the web UI at http://localhost:7777")
+	fmt.Printf("Or open the web UI at %s\n", bold.Sprint("http://localhost:7777"))
+	fmt.Println(dim.Sprint("Run 'pad status' to see your project dashboard"))
 }
 
 // --- onboard ---
@@ -555,27 +584,32 @@ recommend conventions from the built-in library.`,
 			info := cli.DetectProject(cwd)
 
 			// Print detection results
-			fmt.Println("Scanning project...")
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+			cyan := color.New(color.FgCyan)
+			green := color.New(color.FgGreen)
+
+			bold.Println("🔍 Scanning project...")
 			if info.Language != "" {
-				fmt.Printf("  Language:   %s\n", info.Language)
+				fmt.Printf("  %s   %s\n", dim.Sprint("Language:"), cyan.Sprint(info.Language))
 			}
 			if info.BuildTool != "" {
-				fmt.Printf("  Build:      %s\n", info.BuildTool)
+				fmt.Printf("  %s      %s\n", dim.Sprint("Build:"), info.BuildTool)
 			}
 			if info.TestCmd != "" {
-				fmt.Printf("  Tests:      %s\n", info.TestCmd)
+				fmt.Printf("  %s      %s\n", dim.Sprint("Tests:"), info.TestCmd)
 			}
 			if info.HasCI {
-				fmt.Printf("  CI:         %s\n", info.CIProvider)
+				fmt.Printf("  %s         %s\n", dim.Sprint("CI:"), green.Sprint(info.CIProvider))
 			}
 			if info.HasLinter {
-				fmt.Println("  Linter:     detected")
+				fmt.Printf("  %s     %s\n", dim.Sprint("Linter:"), green.Sprint("detected"))
 			}
 			if info.Language == "" && info.BuildTool == "" {
-				fmt.Println("  Could not detect project type.")
+				fmt.Println(dim.Sprint("  Could not detect project type."))
 				fmt.Println()
 				fmt.Println("Try using /pad to set up your workspace conversationally:")
-				fmt.Println("  /pad scan this codebase and set up my workspace")
+				fmt.Printf("  %s scan this codebase and set up my workspace\n", cyan.Sprint("/pad"))
 				return nil
 			}
 
@@ -1288,6 +1322,9 @@ func printItemsGroupedByCollection(items []models.Item) {
 		groups[key] = append(groups[key], item)
 	}
 
+	bold := color.New(color.Bold)
+	dim := color.New(color.Faint)
+
 	for _, key := range order {
 		groupItems := groups[key]
 		icon := ""
@@ -1300,15 +1337,31 @@ func printItemsGroupedByCollection(items []models.Item) {
 				name = groupItems[0].CollectionName
 			}
 		}
-		fmt.Printf("\n%s%s (%d)\n", icon, name, len(groupItems))
-		fmt.Println(strings.Repeat("─", 40))
+		fmt.Printf("\n%s%s %s\n", icon, bold.Sprint(name), dim.Sprintf("(%d)", len(groupItems)))
+		fmt.Println(dim.Sprint(strings.Repeat("─", 40)))
 
 		for _, item := range groupItems {
-			statusStr := extractFieldFromJSON(item.Fields, "status")
-			if statusStr != "" {
-				statusStr = " [" + statusStr + "]"
+			ref := cli.ItemRef(item)
+			refStr := ""
+			if ref != "" {
+				refStr = dim.Sprintf("%-9s", ref)
+			} else {
+				refStr = "         "
 			}
-			fmt.Printf("  %s%s\n", item.Title, statusStr)
+
+			statusStr := extractFieldFromJSON(item.Fields, "status")
+			coloredStatus := ""
+			if statusStr != "" {
+				coloredStatus = " [" + cli.StatusColor(statusStr).Sprint(statusStr) + "]"
+			}
+
+			priorityStr := extractFieldFromJSON(item.Fields, "priority")
+			coloredPriority := ""
+			if priorityStr != "" {
+				coloredPriority = "  " + cli.PriorityColor(priorityStr).Sprint(priorityStr)
+			}
+
+			fmt.Printf("  %s %s%s%s\n", refStr, item.Title, coloredStatus, coloredPriority)
 		}
 	}
 	fmt.Println()
@@ -1355,6 +1408,32 @@ func showCmd() *cobra.Command {
 
 			if item.Content != "" {
 				fmt.Println(item.Content)
+			}
+
+			// Show dependencies (blocks / blocked by)
+			links, err := client.GetItemLinks(ws, item.Slug)
+			if err == nil && len(links) > 0 {
+				var blocks []string
+				var blockedBy []string
+				for _, link := range links {
+					if link.LinkType != "blocks" {
+						continue
+					}
+					if link.SourceID == item.ID {
+						blocks = append(blocks, link.TargetTitle)
+					} else if link.TargetID == item.ID {
+						blockedBy = append(blockedBy, link.SourceTitle)
+					}
+				}
+				if len(blocks) > 0 || len(blockedBy) > 0 {
+					fmt.Println("\n--- Dependencies ---")
+					if len(blocks) > 0 {
+						fmt.Printf("%s %s\n", color.New(color.FgYellow, color.Bold).Sprint("Blocks:"), strings.Join(blocks, ", "))
+					}
+					if len(blockedBy) > 0 {
+						fmt.Printf("%s %s\n", color.New(color.FgRed, color.Bold).Sprint("Blocked by:"), strings.Join(blockedBy, ", "))
+					}
+				}
 			}
 
 			// Show recent comments
@@ -1638,6 +1717,280 @@ func commentsCmd() *cobra.Command {
 	}
 }
 
+// --- dependencies ---
+
+func blocksCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "blocks <source-slug> <target-slug>",
+		Short: "Mark that one item blocks another",
+		Long: `Create a blocking dependency between two items.
+
+The source item blocks the target item. For example:
+  pad blocks TASK-5 TASK-8    # TASK-5 blocks TASK-8`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve source item
+			source, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return fmt.Errorf("resolve source %q: %w", args[0], err)
+			}
+
+			// Resolve target item
+			target, err := client.GetItem(ws, args[1])
+			if err != nil {
+				return fmt.Errorf("resolve target %q: %w", args[1], err)
+			}
+
+			// Create link: source blocks target
+			input := models.ItemLinkCreate{
+				TargetID:  target.ID,
+				LinkType:  "blocks",
+				CreatedBy: "user",
+			}
+			link, err := client.CreateItemLink(ws, source.Slug, input)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(link)
+			}
+
+			sourceRef := cli.ItemRef(*source)
+			targetRef := cli.ItemRef(*target)
+			srcLabel := source.Title
+			tgtLabel := target.Title
+			if sourceRef != "" {
+				srcLabel = sourceRef + " " + source.Title
+			}
+			if targetRef != "" {
+				tgtLabel = targetRef + " " + target.Title
+			}
+			fmt.Printf("%s now blocks %s\n", cli.Bold.Sprint(srcLabel), cli.Bold.Sprint(tgtLabel))
+			return nil
+		},
+	}
+}
+
+func blockedByCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "blocked-by <source-slug> <blocker-slug>",
+		Short: "Mark that an item is blocked by another",
+		Long: `Create a blocking dependency (reverse direction).
+
+The source item is blocked by the blocker item. For example:
+  pad blocked-by TASK-5 TASK-3    # TASK-5 is blocked by TASK-3`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve source (the blocked item)
+			source, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return fmt.Errorf("resolve item %q: %w", args[0], err)
+			}
+
+			// Resolve blocker
+			blocker, err := client.GetItem(ws, args[1])
+			if err != nil {
+				return fmt.Errorf("resolve blocker %q: %w", args[1], err)
+			}
+
+			// Create link: blocker blocks source (blocker is the source of the "blocks" link)
+			input := models.ItemLinkCreate{
+				TargetID:  source.ID,
+				LinkType:  "blocks",
+				CreatedBy: "user",
+			}
+			link, err := client.CreateItemLink(ws, blocker.Slug, input)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(link)
+			}
+
+			sourceRef := cli.ItemRef(*source)
+			blockerRef := cli.ItemRef(*blocker)
+			srcLabel := source.Title
+			blkLabel := blocker.Title
+			if sourceRef != "" {
+				srcLabel = sourceRef + " " + source.Title
+			}
+			if blockerRef != "" {
+				blkLabel = blockerRef + " " + blocker.Title
+			}
+			fmt.Printf("%s is now blocked by %s\n", cli.Bold.Sprint(srcLabel), cli.Bold.Sprint(blkLabel))
+			return nil
+		},
+	}
+}
+
+func depsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deps <slug>",
+		Short: "Show all dependencies for an item",
+		Long: `Display blocking relationships for an item.
+
+Shows two sections:
+  Blocks:      items that this item is blocking
+  Blocked by:  items that are blocking this item
+
+Example:
+  pad deps TASK-5`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve item
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			// Fetch all links for this item
+			links, err := client.GetItemLinks(ws, item.Slug)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(links)
+			}
+
+			// Separate into "blocks" and "blocked by"
+			var blocks []models.ItemLink    // this item blocks others (source=this item)
+			var blockedBy []models.ItemLink // this item is blocked by others (target=this item)
+
+			for _, link := range links {
+				if link.LinkType != "blocks" {
+					continue
+				}
+				if link.SourceID == item.ID {
+					blocks = append(blocks, link)
+				} else if link.TargetID == item.ID {
+					blockedBy = append(blockedBy, link)
+				}
+			}
+
+			ref := cli.ItemRef(*item)
+			label := item.Title
+			if ref != "" {
+				label = ref + " " + item.Title
+			}
+			fmt.Printf("Dependencies for %s\n\n", cli.Bold.Sprint(label))
+
+			blocksHeader := color.New(color.FgYellow, color.Bold)
+			blockedByHeader := color.New(color.FgRed, color.Bold)
+
+			if len(blocks) > 0 {
+				blocksHeader.Println("Blocks:")
+				for _, link := range blocks {
+					fmt.Printf("  %s %s\n", color.YellowString("->"), link.TargetTitle)
+				}
+			} else {
+				blocksHeader.Print("Blocks: ")
+				cli.Dim.Println("none")
+			}
+
+			fmt.Println()
+
+			if len(blockedBy) > 0 {
+				blockedByHeader.Println("Blocked by:")
+				for _, link := range blockedBy {
+					fmt.Printf("  %s %s\n", color.RedString("<-"), link.SourceTitle)
+				}
+			} else {
+				blockedByHeader.Print("Blocked by: ")
+				cli.Dim.Println("none")
+			}
+
+			return nil
+		},
+	}
+}
+
+func unblockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unblock <source-slug> <target-slug>",
+		Short: "Remove a blocking dependency between items",
+		Long: `Remove a "blocks" relationship where source blocks target.
+
+Example:
+  pad unblock TASK-5 TASK-8    # TASK-5 no longer blocks TASK-8`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve both items
+			source, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return fmt.Errorf("resolve source %q: %w", args[0], err)
+			}
+			target, err := client.GetItem(ws, args[1])
+			if err != nil {
+				return fmt.Errorf("resolve target %q: %w", args[1], err)
+			}
+
+			// Find the "blocks" link between source and target
+			links, err := client.GetItemLinks(ws, source.Slug)
+			if err != nil {
+				return err
+			}
+
+			var linkID string
+			for _, link := range links {
+				if link.LinkType == "blocks" && link.SourceID == source.ID && link.TargetID == target.ID {
+					linkID = link.ID
+					break
+				}
+			}
+
+			if linkID == "" {
+				sourceRef := cli.ItemRef(*source)
+				targetRef := cli.ItemRef(*target)
+				srcLabel := source.Title
+				tgtLabel := target.Title
+				if sourceRef != "" {
+					srcLabel = sourceRef
+				}
+				if targetRef != "" {
+					tgtLabel = targetRef
+				}
+				return fmt.Errorf("no blocking relationship found: %s does not block %s", srcLabel, tgtLabel)
+			}
+
+			if err := client.DeleteItemLink(ws, linkID); err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]string{"status": "removed"})
+			}
+
+			sourceRef := cli.ItemRef(*source)
+			targetRef := cli.ItemRef(*target)
+			srcLabel := source.Title
+			tgtLabel := target.Title
+			if sourceRef != "" {
+				srcLabel = sourceRef + " " + source.Title
+			}
+			if targetRef != "" {
+				tgtLabel = targetRef + " " + target.Title
+			}
+			fmt.Printf("%s no longer blocks %s\n", cli.Bold.Sprint(srcLabel), cli.Bold.Sprint(tgtLabel))
+			return nil
+		},
+	}
+}
+
 // --- search ---
 
 func searchCmd() *cobra.Command {
@@ -1724,6 +2077,15 @@ func statusCmd() *cobra.Command {
 					TotalItems   int                       `json:"total_items"`
 					ByCollection map[string]map[string]int `json:"by_collection"`
 				} `json:"summary"`
+				ActiveItems []struct {
+					Slug           string `json:"slug"`
+					Title          string `json:"title"`
+					CollectionSlug string `json:"collection_slug"`
+					CollectionIcon string `json:"collection_icon"`
+					Priority       string `json:"priority"`
+					Status         string `json:"status"`
+					ItemRef        string `json:"item_ref"`
+				} `json:"active_items"`
 				ActivePhases []struct {
 					Slug      string `json:"slug"`
 					Title     string `json:"title"`
@@ -1749,8 +2111,15 @@ func statusCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("📊 Project Status (%d items)\n", dash.Summary.TotalItems)
-			fmt.Println(strings.Repeat("═", 50))
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+			headerColor := color.New(color.Bold, color.FgCyan)
+			yellow := color.New(color.FgYellow)
+			blue := color.New(color.FgBlue)
+			green := color.New(color.FgGreen)
+
+			headerColor.Printf("📊 Project Status (%d items)\n", dash.Summary.TotalItems)
+			fmt.Println(dim.Sprint(strings.Repeat("═", 50)))
 
 			// Collection summary
 			if len(dash.Summary.ByCollection) > 0 {
@@ -1758,37 +2127,61 @@ func statusCmd() *cobra.Command {
 				for collSlug, statuses := range dash.Summary.ByCollection {
 					parts := []string{}
 					for status, count := range statuses {
-						parts = append(parts, fmt.Sprintf("%s: %d", status, count))
+						sc := cli.StatusColor(status)
+						parts = append(parts, sc.Sprintf("%s: %d", status, count))
 					}
-					fmt.Printf("  %-10s  %s\n", collSlug, strings.Join(parts, ", "))
+					fmt.Printf("  %s  %s\n", bold.Sprintf("%-10s", collSlug), strings.Join(parts, ", "))
+				}
+			}
+
+			// Active work
+			if len(dash.ActiveItems) > 0 {
+				fmt.Println()
+				bold.Printf("🔨 Active Work (%d)\n", len(dash.ActiveItems))
+				for _, ai := range dash.ActiveItems {
+					ref := ""
+					if ai.ItemRef != "" {
+						ref = dim.Sprintf("%-10s ", ai.ItemRef)
+					}
+					status := cli.ColorizedStatus(ai.Status)
+					priority := ""
+					if ai.Priority != "" {
+						priority = " " + cli.PriorityColor(ai.Priority).Sprint(ai.Priority)
+					}
+					fmt.Printf("  %s%s  %s%s\n", ref, bold.Sprint(ai.Title), status, priority)
 				}
 			}
 
 			// Active phases
 			if len(dash.ActivePhases) > 0 {
 				fmt.Println()
-				fmt.Println("🏗️  Active Phases")
+				bold.Println("🏗️  Active Phases")
 				for _, p := range dash.ActivePhases {
-					bar := progressBar(p.Progress, 20)
-					fmt.Printf("  %s %s %d%% (%d/%d tasks)\n", p.Title, bar, p.Progress, p.DoneCount, p.TaskCount)
+					bar := colorProgressBar(p.Progress, 20, green)
+					fmt.Printf("  %s %s %s %s\n",
+						bold.Sprint(p.Title),
+						bar,
+						color.New(color.FgGreen).Sprintf("%d%%", p.Progress),
+						dim.Sprintf("(%d/%d tasks)", p.DoneCount, p.TaskCount),
+					)
 				}
 			}
 
 			// Attention items
 			if len(dash.Attention) > 0 {
 				fmt.Println()
-				fmt.Println("⚠️  Needs Attention")
+				bold.Println("⚠️  Needs Attention")
 				for _, a := range dash.Attention {
-					fmt.Printf("  %s — %s\n", a.ItemTitle, a.Reason)
+					fmt.Printf("  %s — %s\n", yellow.Sprint(a.ItemTitle), dim.Sprint(a.Reason))
 				}
 			}
 
 			// Suggested next
 			if len(dash.SuggestedNext) > 0 {
 				fmt.Println()
-				fmt.Println("💡 Suggested Next")
+				bold.Println("💡 Suggested Next")
 				for _, s := range dash.SuggestedNext {
-					fmt.Printf("  %s — %s\n", s.ItemTitle, s.Reason)
+					fmt.Printf("  %s — %s\n", blue.Sprint(s.ItemTitle), dim.Sprint(s.Reason))
 				}
 			}
 
@@ -1804,6 +2197,15 @@ func progressBar(pct, width int) string {
 		filled = width
 	}
 	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+}
+
+func colorProgressBar(pct, width int, filledColor *color.Color) string {
+	filled := (pct * width) / 100
+	if filled > width {
+		filled = width
+	}
+	dim := color.New(color.Faint)
+	return "[" + filledColor.Sprint(strings.Repeat("█", filled)) + dim.Sprint(strings.Repeat("░", width-filled)) + "]"
 }
 
 // --- next ---
@@ -1843,12 +2245,486 @@ func nextCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Println("💡 Recommended next:")
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+
+			bold.Println("💡 Recommended next:")
 			for i, s := range dash.SuggestedNext {
-				fmt.Printf("  %d. %s\n     %s\n", i+1, s.ItemTitle, s.Reason)
+				fmt.Printf("  %s %s\n     %s\n",
+					dim.Sprintf("%d.", i+1),
+					bold.Sprint(s.ItemTitle),
+					dim.Sprint(s.Reason),
+				)
 			}
 			return nil
 		},
+	}
+}
+
+// --- standup ---
+
+func standupCmd() *cobra.Command {
+	var days int
+
+	cmd := &cobra.Command{
+		Use:   "standup",
+		Short: "Auto-generate a daily standup report from recent activity",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Fetch dashboard data
+			dashJSON, err := client.GetDashboard(ws)
+			if err != nil {
+				return err
+			}
+
+			// Parse dashboard
+			var dash struct {
+				ActiveItems []struct {
+					Slug     string `json:"slug"`
+					Title    string `json:"title"`
+					Priority string `json:"priority"`
+					Status   string `json:"status"`
+					ItemRef  string `json:"item_ref"`
+				} `json:"active_items"`
+				Attention []struct {
+					Type      string `json:"type"`
+					ItemSlug  string `json:"item_slug"`
+					ItemTitle string `json:"item_title"`
+					Reason    string `json:"reason"`
+				} `json:"attention"`
+				SuggestedNext []struct {
+					ItemSlug  string `json:"item_slug"`
+					ItemTitle string `json:"item_title"`
+					Reason    string `json:"reason"`
+				} `json:"suggested_next"`
+			}
+			if err := json.Unmarshal(dashJSON, &dash); err != nil {
+				return fmt.Errorf("parsing dashboard: %w", err)
+			}
+
+			// Fetch recently completed items (done statuses)
+			doneStatuses := []string{"done", "completed", "fixed", "implemented", "resolved"}
+			var completedItems []models.Item
+			cutoff := time.Now().AddDate(0, 0, -days)
+
+			for _, status := range doneStatuses {
+				items, err := client.ListItems(ws, url.Values{
+					"status": {status},
+					"sort":   {"updated_at:desc"},
+					"limit":  {"20"},
+				})
+				if err != nil {
+					continue
+				}
+				for _, item := range items {
+					if item.UpdatedAt.After(cutoff) {
+						completedItems = append(completedItems, item)
+					}
+				}
+			}
+
+			// Fetch in-progress items
+			inProgressItems, err := client.ListItems(ws, url.Values{
+				"status": {"in-progress"},
+				"sort":   {"updated_at:desc"},
+			})
+			if err != nil {
+				inProgressItems = nil
+			}
+
+			// Build JSON output if requested
+			if formatFlag == "json" {
+				type standupItem struct {
+					Ref      string `json:"ref"`
+					Title    string `json:"title"`
+					Status   string `json:"status,omitempty"`
+					Priority string `json:"priority,omitempty"`
+					Reason   string `json:"reason,omitempty"`
+				}
+
+				type standupJSON struct {
+					Date          string       `json:"date"`
+					Days          int          `json:"days"`
+					Completed     []standupItem `json:"completed"`
+					InProgress    []standupItem `json:"in_progress"`
+					Blockers      []standupItem `json:"blockers"`
+					SuggestedNext []standupItem `json:"suggested_next"`
+				}
+
+				output := standupJSON{
+					Date:          time.Now().Format("2006-01-02"),
+					Days:          days,
+					Completed:     []standupItem{},
+					InProgress:    []standupItem{},
+					Blockers:      []standupItem{},
+					SuggestedNext: []standupItem{},
+				}
+
+				for _, item := range completedItems {
+					output.Completed = append(output.Completed, standupItem{
+						Ref:    cli.ItemRef(item),
+						Title:  item.Title,
+						Status: extractFieldFromJSON(item.Fields, "status"),
+					})
+				}
+				for _, item := range inProgressItems {
+					output.InProgress = append(output.InProgress, standupItem{
+						Ref:      cli.ItemRef(item),
+						Title:    item.Title,
+						Priority: extractFieldFromJSON(item.Fields, "priority"),
+					})
+				}
+				for _, a := range dash.Attention {
+					output.Blockers = append(output.Blockers, standupItem{
+						Title:  a.ItemTitle,
+						Reason: a.Reason,
+					})
+				}
+				for _, s := range dash.SuggestedNext {
+					output.SuggestedNext = append(output.SuggestedNext, standupItem{
+						Title:  s.ItemTitle,
+						Reason: s.Reason,
+					})
+				}
+
+				return cli.PrintJSON(output)
+			}
+
+			// Human-readable output
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+			headerColor := color.New(color.Bold, color.FgCyan)
+			yellow := color.New(color.FgYellow)
+			blue := color.New(color.FgBlue)
+			green := color.New(color.FgGreen)
+
+			dateStr := time.Now().Format("January 2, 2006")
+			headerColor.Printf("📋 Standup — %s\n", dateStr)
+			fmt.Println(dim.Sprint(strings.Repeat("═", 40)))
+
+			// Completed
+			fmt.Println()
+			bold.Println("✅ Completed")
+			if len(completedItems) == 0 {
+				fmt.Println("  " + dim.Sprint("(none)"))
+			} else {
+				for _, item := range completedItems {
+					ref := cli.ItemRef(item)
+					refStr := ""
+					if ref != "" {
+						refStr = dim.Sprintf("%-10s", ref) + "  "
+					}
+					fmt.Printf("  %s%s\n", refStr, green.Sprint(item.Title))
+				}
+			}
+
+			// In Progress
+			fmt.Println()
+			bold.Println("🔨 In Progress")
+			if len(inProgressItems) == 0 && len(dash.ActiveItems) == 0 {
+				fmt.Println("  " + dim.Sprint("(none)"))
+			} else {
+				// Prefer dashboard active items (they include more metadata)
+				if len(dash.ActiveItems) > 0 {
+					for _, ai := range dash.ActiveItems {
+						ref := ""
+						if ai.ItemRef != "" {
+							ref = dim.Sprintf("%-10s", ai.ItemRef) + "  "
+						}
+						priority := ""
+						if ai.Priority != "" {
+							priority = " (" + cli.PriorityColor(ai.Priority).Sprint(ai.Priority) + ")"
+						}
+						fmt.Printf("  %s%s%s\n", ref, bold.Sprint(ai.Title), priority)
+					}
+				} else {
+					for _, item := range inProgressItems {
+						ref := cli.ItemRef(item)
+						refStr := ""
+						if ref != "" {
+							refStr = dim.Sprintf("%-10s", ref) + "  "
+						}
+						priorityStr := extractFieldFromJSON(item.Fields, "priority")
+						priority := ""
+						if priorityStr != "" {
+							priority = " (" + cli.PriorityColor(priorityStr).Sprint(priorityStr) + ")"
+						}
+						fmt.Printf("  %s%s%s\n", refStr, bold.Sprint(item.Title), priority)
+					}
+				}
+			}
+
+			// Blockers
+			fmt.Println()
+			bold.Println("⚠️  Blockers")
+			if len(dash.Attention) == 0 {
+				fmt.Println("  " + dim.Sprint("(none)"))
+			} else {
+				for _, a := range dash.Attention {
+					fmt.Printf("  %s — %s\n", yellow.Sprint(a.ItemTitle), dim.Sprint(a.Reason))
+				}
+			}
+
+			// Up Next
+			fmt.Println()
+			bold.Println("💡 Up Next")
+			if len(dash.SuggestedNext) == 0 {
+				fmt.Println("  " + dim.Sprint("(none)"))
+			} else {
+				for _, s := range dash.SuggestedNext {
+					reason := ""
+					if s.Reason != "" {
+						reason = " (" + dim.Sprint(s.Reason) + ")"
+					}
+					fmt.Printf("  %s%s\n", blue.Sprint(s.ItemTitle), reason)
+				}
+			}
+
+			fmt.Println()
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&days, "days", 1, "number of days to look back for completed items")
+	return cmd
+}
+
+// --- changelog ---
+
+func changelogCmd() *cobra.Command {
+	var days int
+	var since string
+	var phase string
+
+	cmd := &cobra.Command{
+		Use:   "changelog",
+		Short: "Generate release notes from completed items",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Determine cutoff date
+			var cutoff time.Time
+			if since != "" {
+				parsed, err := time.Parse("2006-01-02", since)
+				if err != nil {
+					return fmt.Errorf("invalid --since date (expected YYYY-MM-DD): %w", err)
+				}
+				cutoff = parsed
+			} else {
+				cutoff = time.Now().AddDate(0, 0, -days)
+			}
+
+			// Fetch completed items across all done-like statuses
+			doneStatuses := []string{"done", "completed", "fixed", "implemented", "resolved"}
+			var allItems []models.Item
+
+			for _, status := range doneStatuses {
+				items, err := client.ListItems(ws, url.Values{
+					"status": {status},
+					"sort":   {"updated_at:desc"},
+					"limit":  {"100"},
+				})
+				if err != nil {
+					continue
+				}
+				for _, item := range items {
+					if item.UpdatedAt.After(cutoff) {
+						allItems = append(allItems, item)
+					}
+				}
+			}
+
+			// Filter by phase if specified
+			if phase != "" {
+				var filtered []models.Item
+				for _, item := range allItems {
+					itemPhase := extractFieldFromJSON(item.Fields, "phase")
+					if strings.EqualFold(itemPhase, phase) {
+						filtered = append(filtered, item)
+					}
+				}
+				allItems = filtered
+			}
+
+			// Group by collection
+			type collectionGroup struct {
+				Name  string
+				Icon  string
+				Items []models.Item
+			}
+			groupOrder := []string{}
+			groups := map[string]*collectionGroup{}
+
+			for _, item := range allItems {
+				key := item.CollectionSlug
+				if key == "" {
+					key = "other"
+				}
+				if _, exists := groups[key]; !exists {
+					name := item.CollectionName
+					if name == "" {
+						name = key
+					}
+					groups[key] = &collectionGroup{
+						Name: name,
+						Icon: item.CollectionIcon,
+					}
+					groupOrder = append(groupOrder, key)
+				}
+				groups[key].Items = append(groups[key].Items, item)
+			}
+
+			// Determine period label
+			periodLabel := fmt.Sprintf("last %d days", days)
+			if since != "" {
+				periodLabel = "since " + since
+			}
+			if phase != "" {
+				periodLabel += " (phase: " + phase + ")"
+			}
+
+			// JSON output
+			if formatFlag == "json" {
+				type changelogItem struct {
+					Ref    string `json:"ref"`
+					Title  string `json:"title"`
+					Status string `json:"status"`
+				}
+				type changelogGroup struct {
+					Collection string          `json:"collection"`
+					Icon       string          `json:"icon,omitempty"`
+					Count      int             `json:"count"`
+					Items      []changelogItem `json:"items"`
+				}
+				type changelogJSON struct {
+					Period string           `json:"period"`
+					Since  string           `json:"since"`
+					Total  int              `json:"total"`
+					Groups []changelogGroup `json:"groups"`
+				}
+
+				output := changelogJSON{
+					Period: periodLabel,
+					Since:  cutoff.Format("2006-01-02"),
+					Total:  len(allItems),
+					Groups: []changelogGroup{},
+				}
+
+				for _, key := range groupOrder {
+					g := groups[key]
+					cg := changelogGroup{
+						Collection: g.Name,
+						Icon:       g.Icon,
+						Count:      len(g.Items),
+						Items:      []changelogItem{},
+					}
+					for _, item := range g.Items {
+						cg.Items = append(cg.Items, changelogItem{
+							Ref:    cli.ItemRef(item),
+							Title:  item.Title,
+							Status: extractFieldFromJSON(item.Fields, "status"),
+						})
+					}
+					output.Groups = append(output.Groups, cg)
+				}
+
+				return cli.PrintJSON(output)
+			}
+
+			// Markdown output
+			if formatFlag == "markdown" {
+				fmt.Printf("# Changelog — %s\n\n", periodLabel)
+
+				if len(allItems) == 0 {
+					fmt.Println("No completed items in this period.")
+					return nil
+				}
+
+				for _, key := range groupOrder {
+					g := groups[key]
+					icon := g.Icon
+					if icon == "" {
+						icon = collectionDefaultIcon(key)
+					}
+					fmt.Printf("## %s %s (%d)\n\n", icon, g.Name, len(g.Items))
+					for _, item := range g.Items {
+						ref := cli.ItemRef(item)
+						if ref != "" {
+							fmt.Printf("- **%s** %s\n", ref, item.Title)
+						} else {
+							fmt.Printf("- %s\n", item.Title)
+						}
+					}
+					fmt.Println()
+				}
+
+				return nil
+			}
+
+			// Human-readable table output (default)
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+			headerColor := color.New(color.Bold, color.FgCyan)
+			green := color.New(color.FgGreen)
+
+			headerColor.Printf("📦 Changelog — %s\n", periodLabel)
+			fmt.Println(dim.Sprint(strings.Repeat("═", 40)))
+
+			if len(allItems) == 0 {
+				fmt.Println()
+				fmt.Println(dim.Sprint("  No completed items in this period."))
+				fmt.Println()
+				return nil
+			}
+
+			for _, key := range groupOrder {
+				g := groups[key]
+				icon := g.Icon
+				if icon == "" {
+					icon = collectionDefaultIcon(key)
+				}
+				fmt.Println()
+				bold.Printf("%s %s (%d)\n", icon, g.Name, len(g.Items))
+				for _, item := range g.Items {
+					ref := cli.ItemRef(item)
+					refStr := ""
+					if ref != "" {
+						refStr = dim.Sprintf("%-10s", ref) + "  "
+					}
+					fmt.Printf("  %s%s\n", refStr, green.Sprint(item.Title))
+				}
+			}
+
+			fmt.Println()
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&days, "days", 7, "show items completed in last N days")
+	cmd.Flags().StringVar(&since, "since", "", "only show items completed after this date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&phase, "phase", "", "only show items from a specific phase")
+
+	return cmd
+}
+
+// collectionDefaultIcon returns a default icon for known collection slugs.
+func collectionDefaultIcon(slug string) string {
+	switch strings.ToLower(slug) {
+	case "tasks":
+		return "✓"
+	case "bugs":
+		return "🐛"
+	case "ideas":
+		return "💡"
+	case "docs":
+		return "📄"
+	case "phases":
+		return "📋"
+	default:
+		return "•"
 	}
 }
 
@@ -2396,5 +3272,200 @@ func extractFieldFromJSON(fieldsJSON, key string) string {
 		return fmt.Sprintf("%.0f", v)
 	default:
 		return fmt.Sprintf("%v", v)
+	}
+}
+
+// --- watch ---
+
+func watchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "watch",
+		Short: "Stream real-time workspace activity (like kubectl get events --watch)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, cfg := getClient()
+			ws := getWorkspace()
+
+			sseURL := cfg.BaseURL() + "/api/v1/events?workspace=" + url.QueryEscape(ws)
+
+			// Set up context with signal handling for graceful shutdown
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			dim := color.New(color.Faint)
+			bold := color.New(color.Bold)
+			greenColor := color.New(color.FgGreen)
+			blueColor := color.New(color.FgBlue)
+			grayColor := color.New(color.Faint)
+			purpleColor := color.New(color.FgMagenta)
+
+			fmt.Printf("👁  Watching %s... (Ctrl+C to stop)\n\n", bold.Sprint(ws))
+
+			// Use an HTTP client with no timeout for SSE streaming
+			httpClient := &http.Client{}
+
+			req, err := http.NewRequestWithContext(ctx, "GET", sseURL, nil)
+			if err != nil {
+				return fmt.Errorf("create request: %w", err)
+			}
+			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set("Cache-Control", "no-cache")
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil // graceful shutdown
+				}
+				return fmt.Errorf("connect to event stream: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("event stream returned %d: %s", resp.StatusCode, string(body))
+			}
+
+			// Read SSE stream line by line
+			scanner := bufio.NewScanner(resp.Body)
+			var currentEvent string
+
+			for scanner.Scan() {
+				line := scanner.Text()
+
+				if strings.HasPrefix(line, "event: ") {
+					currentEvent = strings.TrimPrefix(line, "event: ")
+					continue
+				}
+
+				if strings.HasPrefix(line, "data: ") {
+					data := strings.TrimPrefix(line, "data: ")
+
+					// Skip the initial "connected" event
+					if currentEvent == "connected" {
+						currentEvent = ""
+						continue
+					}
+
+					// Parse the event data
+					var evt struct {
+						ItemID     string `json:"item_id"`
+						Title      string `json:"title"`
+						Collection string `json:"collection"`
+						Actor      string `json:"actor"`
+						Source     string `json:"source"`
+						Timestamp  int64  `json:"timestamp"`
+					}
+					if err := json.Unmarshal([]byte(data), &evt); err != nil {
+						currentEvent = ""
+						continue
+					}
+
+					// Format timestamp
+					ts := time.Now()
+					if evt.Timestamp > 0 {
+						ts = time.UnixMilli(evt.Timestamp)
+					}
+					timeStr := dim.Sprintf("%s", ts.Format("15:04:05"))
+
+					// Determine emoji and color based on event type
+					var emoji string
+					var actionColor *color.Color
+					var action string
+					var prep string
+
+					switch currentEvent {
+					case "item_created":
+						emoji = "✨"
+						actionColor = greenColor
+						action = "Created"
+						prep = "in"
+					case "item_updated":
+						emoji = "✏️ "
+						actionColor = blueColor
+						action = "Updated"
+						prep = "in"
+					case "item_archived":
+						emoji = "🗑️"
+						actionColor = grayColor
+						action = "Archived"
+						prep = "from"
+					case "item_restored":
+						emoji = "♻️ "
+						actionColor = greenColor
+						action = "Restored"
+						prep = "in"
+					case "comment_created":
+						emoji = "💬"
+						actionColor = blueColor
+						action = "Comment on"
+						prep = "in"
+					case "comment_deleted":
+						emoji = "💬"
+						actionColor = grayColor
+						action = "Comment removed from"
+						prep = "in"
+					case "workspace_updated":
+						emoji = "⚙️ "
+						actionColor = blueColor
+						action = "Workspace updated"
+						prep = ""
+					default:
+						emoji = "•"
+						actionColor = dim
+						action = currentEvent
+						prep = "in"
+					}
+
+					// Format actor with color
+					actorStr := evt.Actor
+					if actorStr == "" {
+						actorStr = evt.Source
+					}
+					if actorStr == "" {
+						actorStr = "unknown"
+					}
+
+					// Color agent actors in purple
+					var actorFormatted string
+					if actorStr == "agent" || actorStr == "cli" || evt.Source == "agent" || evt.Source == "cli" || evt.Source == "skill" {
+						actorFormatted = purpleColor.Sprint(actorStr)
+					} else {
+						actorFormatted = actorStr
+					}
+
+					// Build the output line
+					title := bold.Sprint(evt.Title)
+					if evt.Title == "" && currentEvent == "workspace_updated" {
+						fmt.Printf("%s  %s %s by %s\n",
+							timeStr, emoji, actionColor.Sprint(action), actorFormatted)
+					} else if evt.Collection != "" {
+						fmt.Printf("%s  %s %s %q %s %s by %s\n",
+							timeStr, emoji, actionColor.Sprint(action), title, prep, evt.Collection, actorFormatted)
+					} else {
+						fmt.Printf("%s  %s %s %q by %s\n",
+							timeStr, emoji, actionColor.Sprint(action), title, actorFormatted)
+					}
+
+					currentEvent = ""
+					continue
+				}
+
+				// Keepalive comments (lines starting with ":") — ignore silently
+				if strings.HasPrefix(line, ":") {
+					continue
+				}
+
+				// Empty line is the event separator — already handled above
+			}
+
+			if err := scanner.Err(); err != nil {
+				if ctx.Err() != nil {
+					fmt.Println("\nStopped watching.")
+					return nil
+				}
+				return fmt.Errorf("reading event stream: %w", err)
+			}
+
+			return nil
+		},
 	}
 }
