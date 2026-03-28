@@ -269,6 +269,16 @@ export const api = {
 					})
 				})
 			})
+	},
+
+	// ── Raw requests ──────────────────────────────────────────────────────────
+
+	raw: {
+		post: (path: string, data: unknown) =>
+			request<any>(path, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			})
 	}
 };
 

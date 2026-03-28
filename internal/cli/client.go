@@ -256,6 +256,31 @@ func (c *Client) GetPlaybookLibrary() (*PlaybookLibraryResponse, error) {
 	return &result, c.get("/playbook-library", &result)
 }
 
+// --- Export / Import ---
+
+// RawGet fetches raw bytes from the API.
+func (c *Client) RawGet(path string) ([]byte, error) {
+	resp, err := c.httpClient.Get(c.baseURL + path)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, c.parseError(resp)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// PostRaw sends raw bytes to the API and decodes the JSON response.
+func (c *Client) PostRaw(path string, data []byte, result interface{}) error {
+	resp, err := c.httpClient.Post(c.baseURL+path, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, result)
+}
+
 // --- HTTP helpers ---
 
 type APIError struct {

@@ -7,6 +7,7 @@
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
+	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
 	import { isMod } from '$lib/utils/keyboard';
 
 	let { children } = $props();
@@ -75,6 +76,7 @@
 </div>
 
 <CommandPalette />
+<CreateWorkspaceModal />
 <ToastContainer />
 
 <style>

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -121,4 +122,35 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	export, err := s.store.ExportWorkspace(slug)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.json"`, slug))
+	writeJSON(w, http.StatusOK, export)
+}
+
+func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
+	var data models.WorkspaceExport
+	if err := decodeJSON(r, &data); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid export data: "+err.Error())
+		return
+	}
+
+	// Optional: override workspace name via query param
+	newName := r.URL.Query().Get("name")
+
+	ws, err := s.store.ImportWorkspace(&data, newName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, ws)
 }

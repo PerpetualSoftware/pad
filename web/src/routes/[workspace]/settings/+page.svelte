@@ -135,6 +135,12 @@
 						<span class="field-value">{createdDate}</span>
 					</div>
 				{/if}
+				<div class="field-row">
+					<span class="field-label">Export</span>
+					<a href="/api/v1/workspaces/{wsSlug}/export" download="{wsSlug}-export.json" class="btn btn-small">
+						Download JSON
+					</a>
+				</div>
 			</div>
 		</section>
 		<section class="section">

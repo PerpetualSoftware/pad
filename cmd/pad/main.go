@@ -65,6 +65,8 @@ func main() {
 		libraryCmd(),
 		commentCmd(),
 		commentsCmd(),
+		exportCmd(),
+		importCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -1982,6 +1984,77 @@ Examples:
 			return fmt.Errorf("not found in convention or playbook library: %q", title)
 		},
 	}
+}
+
+// --- export ---
+
+func exportCmd() *cobra.Command {
+	var outputFile string
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export workspace to JSON",
+		Long:  `Export the current workspace (collections, items, comments, versions) to a portable JSON file.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			resp, err := client.RawGet("/workspaces/" + ws + "/export")
+			if err != nil {
+				return fmt.Errorf("export: %w", err)
+			}
+
+			if outputFile != "" {
+				if err := os.WriteFile(outputFile, resp, 0644); err != nil {
+					return fmt.Errorf("write file: %w", err)
+				}
+				fmt.Printf("Exported workspace %q to %s\n", ws, outputFile)
+			} else {
+				os.Stdout.Write(resp)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
+	return cmd
+}
+
+// --- import ---
+
+func importCmd() *cobra.Command {
+	var nameFlag string
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Import workspace from JSON export",
+		Long:  `Import a workspace from a previously exported JSON file. Creates a new workspace with regenerated IDs.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			filePath := args[0]
+
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("read file: %w", err)
+			}
+
+			path := "/workspaces/import"
+			if nameFlag != "" {
+				path += "?name=" + nameFlag
+			}
+
+			var ws models.Workspace
+			if err := client.PostRaw(path, data, &ws); err != nil {
+				return fmt.Errorf("import: %w", err)
+			}
+
+			fmt.Printf("Imported workspace %q (slug: %s)\n", ws.Name, ws.Slug)
+			fmt.Printf("  Collections: imported\n")
+			fmt.Printf("  Items, comments, links, versions: imported\n")
+			fmt.Printf("  All IDs regenerated\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&nameFlag, "name", "", "override workspace name")
+	return cmd
 }
 
 func extractFieldFromJSON(fieldsJSON, key string) string {

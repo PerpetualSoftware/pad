@@ -71,11 +71,13 @@ func (s *Server) setupRouter() {
 		r.Route("/workspaces", func(r chi.Router) {
 			r.Get("/", s.handleListWorkspaces)
 			r.Post("/", s.handleCreateWorkspace)
+			r.Post("/import", s.handleImportWorkspace)
 
 			r.Route("/{slug}", func(r chi.Router) {
 				r.Get("/", s.handleGetWorkspace)
 				r.Patch("/", s.handleUpdateWorkspace)
 				r.Delete("/", s.handleDeleteWorkspace)
+				r.Get("/export", s.handleExportWorkspace)
 
 				// Activity (workspace level)
 				r.Get("/activity", s.handleListWorkspaceActivity)
