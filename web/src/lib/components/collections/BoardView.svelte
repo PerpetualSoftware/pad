@@ -452,5 +452,18 @@
 			scroll-snap-align: center;
 			flex-shrink: 0;
 		}
+
+		.column-header {
+			position: sticky;
+			top: 0;
+			z-index: 10;
+			background: var(--bg-primary);
+			cursor: default;
+			margin-bottom: var(--space-2);
+		}
+
+		.column-drag-handle {
+			display: none;
+		}
 	}
 </style>
