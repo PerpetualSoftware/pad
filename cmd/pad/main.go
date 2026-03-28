@@ -61,6 +61,7 @@ func main() {
 		showCmd(),
 		updateCmd(),
 		deleteCmd(),
+		moveCmd(),
 		searchCmd(),
 		statusCmd(),
 		nextCmd(),
@@ -1528,6 +1529,57 @@ func deleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- move ---
+
+func moveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "move <slug> <target-collection>",
+		Short: "Move an item to a different collection",
+		Long: `Move an item to a different collection with automatic field migration.
+
+Fields with matching names and compatible types transfer automatically.
+Incompatible fields are dropped. Use --field to set values for target-specific fields.
+
+Examples:
+  pad move fix-oauth bugs                      # Move to bugs collection
+  pad move my-idea tasks --field priority=high  # Move idea to tasks with priority`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			input := map[string]any{
+				"target_collection": normalizeCollectionSlug(args[1]),
+				"actor":             "user",
+				"source":            "cli",
+			}
+
+			// Parse field overrides
+			fieldFlags, _ := cmd.Flags().GetStringArray("field")
+			if len(fieldFlags) > 0 {
+				overrides := map[string]any{}
+				for _, f := range fieldFlags {
+					parts := strings.SplitN(f, "=", 2)
+					if len(parts) == 2 {
+						overrides[parts[0]] = parts[1]
+					}
+				}
+				input["field_overrides"] = overrides
+			}
+
+			moved, err := client.MoveItem(ws, args[0], input)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Moved %q to %s\n", moved.Title, args[1])
+			return nil
+		},
+	}
+	cmd.Flags().StringArray("field", nil, "set field values in target collection (key=value)")
+	return cmd
 }
 
 // --- comments ---

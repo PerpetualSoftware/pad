@@ -133,6 +133,11 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug)
 }
 
+func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {
+	var result models.Item
+	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/move", input, &result)
+}
+
 // --- Links ---
 
 func (c *Client) GetItemLinks(wsSlug, itemSlug string) ([]models.ItemLink, error) {

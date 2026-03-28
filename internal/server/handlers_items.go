@@ -318,6 +318,123 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, restored)
 }
 
+// handleMoveItem moves an item to a different collection with field migration.
+func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	itemSlug := chi.URLParam(r, "itemSlug")
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	if err != nil || item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+
+	var input struct {
+		TargetCollection string         `json:"target_collection"`
+		FieldOverrides   map[string]any `json:"field_overrides"`
+		Actor            string         `json:"actor"`
+		Source           string         `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+		return
+	}
+	if input.TargetCollection == "" {
+		writeError(w, http.StatusBadRequest, "missing_field", "target_collection is required")
+		return
+	}
+	if input.Actor == "" {
+		input.Actor = "user"
+	}
+	if input.Source == "" {
+		input.Source = "web"
+	}
+
+	// Get target collection
+	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
+	if err != nil || targetColl == nil {
+		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
+		return
+	}
+
+	// Don't move to the same collection
+	if targetColl.ID == item.CollectionID {
+		writeError(w, http.StatusBadRequest, "same_collection", "Item is already in this collection")
+		return
+	}
+
+	// Get source collection for schema
+	sourceColl, err := s.store.GetCollection(item.CollectionID)
+	if err != nil || sourceColl == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get source collection")
+		return
+	}
+
+	// Parse schemas
+	var sourceSchema, targetSchema models.CollectionSchema
+	if err := json.Unmarshal([]byte(sourceColl.Schema), &sourceSchema); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse source schema")
+		return
+	}
+	if err := json.Unmarshal([]byte(targetColl.Schema), &targetSchema); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse target schema")
+		return
+	}
+
+	// Parse current fields
+	var currentFields map[string]any
+	if err := json.Unmarshal([]byte(item.Fields), &currentFields); err != nil {
+		currentFields = make(map[string]any)
+	}
+
+	// Migrate fields
+	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+
+	// Apply overrides
+	for k, v := range input.FieldOverrides {
+		result.Fields[k] = v
+	}
+
+	// Check for required field errors (after overrides)
+	if len(result.Errors) > 0 {
+		writeError(w, http.StatusBadRequest, "missing_required_fields",
+			fmt.Sprintf("Required fields missing: %s", strings.Join(result.Errors, ", ")))
+		return
+	}
+
+	// Serialize migrated fields
+	fieldsJSON, err := json.Marshal(result.Fields)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to serialize fields")
+		return
+	}
+
+	// Move the item
+	moved, err := s.store.MoveItem(item.ID, targetColl.ID, string(fieldsJSON))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	// Log activity with metadata about the move
+	_ = s.store.CreateActivity(models.Activity{
+		WorkspaceID: workspaceID,
+		DocumentID:  moved.ID,
+		Action:      "moved",
+		Actor:       input.Actor,
+		Source:      input.Source,
+		Metadata:    fmt.Sprintf(`{"from_collection":"%s","to_collection":"%s"}`, sourceColl.Slug, targetColl.Slug),
+	})
+
+	// Publish events for both old and new collections
+	s.publishItemEvent(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, input.Actor, input.Source)
+
+	writeJSON(w, http.StatusOK, moved)
+}
+
 // publishItemEvent publishes a real-time event for item changes.
 func (s *Server) publishItemEvent(eventType, workspaceID, itemID, title, collection, actor, source string) {
 	if s.events == nil {

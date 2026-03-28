@@ -4,7 +4,7 @@ import "time"
 
 // Valid actions
 var ValidActions = []string{
-	"created", "updated", "archived", "restored", "read", "searched",
+	"created", "updated", "archived", "restored", "moved", "read", "searched",
 }
 
 type Activity struct {

@@ -800,6 +800,40 @@ func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 	return scanItems(rows)
 }
 
+// MoveItem moves an item to a different collection within the same workspace.
+// It updates the collection_id, assigns a new item_number in the target collection,
+// and updates the fields JSON.
+func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*models.Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Get next item_number in the target collection
+	var nextNumber int
+	err = tx.QueryRow(`SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?`, targetCollectionID).Scan(&nextNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get next item number: %w", err)
+	}
+
+	// Update the item
+	_, err = tx.Exec(`
+		UPDATE items
+		SET collection_id = ?, fields = ?, item_number = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL`,
+		targetCollectionID, newFieldsJSON, nextNumber, time.Now().UTC().Format(time.RFC3339), itemID)
+	if err != nil {
+		return nil, fmt.Errorf("move item: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return s.GetItem(itemID)
+}
+
 // --- Helpers ---
 
 // validSortField matches safe field names (alphanumeric + underscore, starting with a letter).

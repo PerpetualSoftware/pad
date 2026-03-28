@@ -126,6 +126,7 @@ func (s *Server) setupRouter() {
 					r.Patch("/", s.handleUpdateItem)
 					r.Delete("/", s.handleDeleteItem)
 					r.Post("/restore", s.handleRestoreItem)
+					r.Post("/move", s.handleMoveItem)
 					r.Get("/versions", s.handleListItemVersions)
 					r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)
 					r.Get("/links", s.handleGetItemLinks)

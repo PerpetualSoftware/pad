@@ -58,6 +58,8 @@
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let rawMode = $state(false);
+	let showMoveMenu = $state(false);
+	let moving = $state(false);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -233,6 +235,24 @@
 			confirmDelete = false;
 		}
 	}
+
+	let allCollections = $derived(collectionStore.collections ?? []);
+	let moveTargets = $derived(allCollections.filter(c => c.slug !== collSlug));
+
+	async function handleMove(targetSlug: string) {
+		if (!item || moving) return;
+		moving = true;
+		showMoveMenu = false;
+		try {
+			const moved = await api.items.move(wsSlug, item.slug, targetSlug);
+			toastStore.show(`Moved to ${targetSlug}`, 'success');
+			goto(`/${wsSlug}/${targetSlug}/${moved.slug}`);
+		} catch (e: any) {
+			toastStore.show(e.message ?? 'Failed to move item', 'error');
+		} finally {
+			moving = false;
+		}
+	}
 </script>
 
 {#if loading}
@@ -291,6 +311,21 @@
 				>
 					History
 				</button>
+				<div class="move-wrapper">
+					<button class="history-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
+						{moving ? 'Moving...' : 'Move to...'}
+					</button>
+					{#if showMoveMenu}
+						<div class="move-dropdown">
+							{#each moveTargets as target (target.slug)}
+								<button class="move-option" onclick={() => handleMove(target.slug)}>
+									{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+									{target.name}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
 				{#if confirmDelete}
 					<span class="delete-confirm">
 						Delete this item?
@@ -692,6 +727,42 @@
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
+	}
+	.move-wrapper {
+		position: relative;
+	}
+	.move-dropdown {
+		position: absolute;
+		top: 100%;
+		right: 0;
+		margin-top: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+		z-index: 100;
+		min-width: 180px;
+		padding: var(--space-1);
+	}
+	.move-option {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
+		background: none;
+		border: none;
+		color: var(--text-primary);
+		font-size: 0.85em;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		text-align: left;
+	}
+	.move-option:hover {
+		background: var(--bg-hover);
+	}
+	.move-icon {
+		font-size: 1.1em;
 	}
 	.delete-btn:hover {
 		color: var(--accent-orange);

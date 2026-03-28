@@ -158,6 +158,16 @@ export const api = {
 				method: 'POST'
 			}),
 
+		move: (ws: string, slug: string, targetCollection: string, fieldOverrides?: Record<string, any>) =>
+			request<Item>(`/workspaces/${ws}/items/${slug}/move`, {
+				method: 'POST',
+				body: JSON.stringify({
+					target_collection: targetCollection,
+					field_overrides: fieldOverrides,
+					source: 'web'
+				})
+			}),
+
 		/** Get tasks linked to a phase item */
 		tasks: (ws: string, slug: string) =>
 			request<Item[]>(`/workspaces/${ws}/items/${slug}/tasks`),
