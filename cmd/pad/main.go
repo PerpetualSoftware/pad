@@ -1401,11 +1401,14 @@ func showCmd() *cobra.Command {
 			// Table format: show metadata + fields + content
 			cli.PrintItemMeta(item)
 
-			// Print fields
+			// Print fields (skip internal keys like github_pr which are shown separately)
 			if item.Fields != "" && item.Fields != "{}" {
 				var fields map[string]interface{}
 				if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
+						if k == "github_pr" {
+							continue // shown in dedicated section below
+						}
 						fmt.Printf("%-12s %v\n", k+":", v)
 					}
 					fmt.Println("---")
@@ -3859,7 +3862,7 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		return nil, fmt.Errorf("GitHub CLI (gh) not found. Install it from https://cli.github.com/")
 	}
 
-	out, err := exec.Command("gh", "pr", "view", "--json", "number,url,title,state,headRefName,updatedAt,repository").Output()
+	out, err := exec.Command("gh", "pr", "view", "--json", "number,url,title,state,headRefName,updatedAt").Output()
 	if err != nil {
 		return nil, fmt.Errorf("no pull request found for the current branch. Create one with: gh pr create")
 	}
@@ -3871,12 +3874,15 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		State     string `json:"state"`
 		Branch    string `json:"headRefName"`
 		UpdatedAt string `json:"updatedAt"`
-		Repo      struct {
-			NameWithOwner string `json:"nameWithOwner"`
-		} `json:"repository"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse gh output: %w", err)
+	}
+
+	// Extract owner/repo from the PR URL (e.g. https://github.com/xarmian/pad/pull/5)
+	repo := ""
+	if parts := strings.Split(raw.URL, "/"); len(parts) >= 5 {
+		repo = parts[3] + "/" + parts[4]
 	}
 
 	return &GitHubPR{
@@ -3885,7 +3891,7 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		Title:     raw.Title,
 		State:     raw.State,
 		Branch:    raw.Branch,
-		Repo:      raw.Repo.NameWithOwner,
+		Repo:      repo,
 		UpdatedAt: raw.UpdatedAt,
 	}, nil
 }
@@ -4015,10 +4021,21 @@ Examples:
 				return showItemPRStatus(item, bold, dim)
 			}
 
-			// All items mode — scan for items with github_pr in fields
-			items, err := client.ListItems(ws, url.Values{"limit": {"200"}, "all": {"true"}})
+			// All items mode — scan across all collections for items with github_pr in fields
+			colls, err := client.ListCollections(ws)
 			if err != nil {
 				return err
+			}
+			var items []models.Item
+			for _, coll := range colls {
+				collItems, err := client.ListCollectionItems(ws, coll.Slug, url.Values{
+					"limit":            {"100"},
+					"include_archived": {"true"},
+				})
+				if err != nil {
+					continue
+				}
+				items = append(items, collItems...)
 			}
 
 			if formatFlag == "json" {
