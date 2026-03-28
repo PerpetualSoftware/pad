@@ -69,6 +69,20 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set author from authenticated user if available
+	if u := currentUser(r); u != nil && input.Author == "" {
+		input.Author = u.Name
+	}
+
+	// Derive actor/source from auth context
+	actor, source := actorFromRequest(r)
+	if input.CreatedBy == "" {
+		input.CreatedBy = actor
+	}
+	if input.Source == "" {
+		input.Source = source
+	}
+
 	comment, err := s.store.CreateComment(workspaceID, item.ID, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -76,10 +90,10 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	s.logActivity(workspaceID, item.ID, "commented", comment.CreatedBy, comment.Source)
+	s.logActivity(workspaceID, item.ID, "commented", r)
 
 	// Publish SSE event
-	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, comment.CreatedBy, comment.Source)
+	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
 	writeJSON(w, http.StatusCreated, comment)

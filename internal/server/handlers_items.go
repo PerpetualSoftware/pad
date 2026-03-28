@@ -143,8 +143,9 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(workspaceID, item.ID, "created", input.CreatedBy, input.Source)
-	s.publishItemEvent(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, input.CreatedBy, input.Source)
+	actor, source := actorFromRequest(r)
+	s.logActivity(workspaceID, item.ID, "created", r)
+	s.publishItemEvent(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	writeJSON(w, http.StatusCreated, item)
@@ -258,8 +259,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			meta = fmt.Sprintf(`{"changes":"title: %s → %s"}`, item.Title, *input.Title)
 		}
 	}
-	s.logActivityWithMeta(workspaceID, updated.ID, "updated", input.LastModifiedBy, input.Source, meta)
-	s.publishItemEvent(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, input.LastModifiedBy, input.Source)
+	actor, source := actorFromRequest(r)
+	s.logActivityWithMeta(workspaceID, updated.ID, "updated", r, meta)
+	s.publishItemEvent(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
 	writeJSON(w, http.StatusOK, updated)
@@ -288,8 +290,9 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(workspaceID, item.ID, "archived", "user", "web")
-	s.publishItemEvent(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, "user", "web")
+	actor, source := actorFromRequest(r)
+	s.logActivity(workspaceID, item.ID, "archived", r)
+	s.publishItemEvent(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
@@ -325,8 +328,9 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(workspaceID, restored.ID, "restored", "user", "web")
-	s.publishItemEvent(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, "user", "web")
+	actor, source := actorFromRequest(r)
+	s.logActivity(workspaceID, restored.ID, "restored", r)
+	s.publishItemEvent(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, source)
 
 	writeJSON(w, http.StatusOK, restored)
 }
@@ -348,8 +352,6 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		TargetCollection string         `json:"target_collection"`
 		FieldOverrides   map[string]any `json:"field_overrides"`
-		Actor            string         `json:"actor"`
-		Source           string         `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
@@ -358,12 +360,6 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	if input.TargetCollection == "" {
 		writeError(w, http.StatusBadRequest, "missing_field", "target_collection is required")
 		return
-	}
-	if input.Actor == "" {
-		input.Actor = "user"
-	}
-	if input.Source == "" {
-		input.Source = "web"
 	}
 
 	// Get target collection
@@ -433,17 +429,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity with metadata about the move
-	_ = s.store.CreateActivity(models.Activity{
-		WorkspaceID: workspaceID,
-		DocumentID:  moved.ID,
-		Action:      "moved",
-		Actor:       input.Actor,
-		Source:      input.Source,
-		Metadata:    fmt.Sprintf(`{"from_collection":"%s","to_collection":"%s"}`, sourceColl.Slug, targetColl.Slug),
-	})
+	actor, source := actorFromRequest(r)
+	moveMeta := fmt.Sprintf(`{"from_collection":"%s","to_collection":"%s"}`, sourceColl.Slug, targetColl.Slug)
+	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections
-	s.publishItemEvent(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, input.Actor, input.Source)
+	s.publishItemEvent(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, source)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
 	writeJSON(w, http.StatusOK, moved)

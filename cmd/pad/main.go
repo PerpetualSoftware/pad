@@ -1370,8 +1370,6 @@ Examples:
 				Content:   body,
 				Fields:    string(fieldsJSON),
 				Tags:      tags,
-				CreatedBy: "user",
-				Source:    "cli",
 			}
 
 			item, err := client.CreateItem(ws, collSlug, input)
@@ -1742,8 +1740,6 @@ Examples:
 			}
 
 			input := models.ItemUpdate{
-				LastModifiedBy: "user",
-				Source:         "cli",
 			}
 
 			if title != "" {
@@ -1924,8 +1920,6 @@ func commentCmd() *cobra.Command {
 
 			input := models.CommentCreate{
 				Body:      args[1],
-				CreatedBy: "user",
-				Source:    "cli",
 			}
 
 			comment, err := client.CreateComment(ws, args[0], input)
@@ -1996,9 +1990,8 @@ The source item blocks the target item. For example:
 
 			// Create link: source blocks target
 			input := models.ItemLinkCreate{
-				TargetID:  target.ID,
-				LinkType:  "blocks",
-				CreatedBy: "user",
+				TargetID: target.ID,
+				LinkType: "blocks",
 			}
 			link, err := client.CreateItemLink(ws, source.Slug, input)
 			if err != nil {
@@ -2052,9 +2045,8 @@ The source item is blocked by the blocker item. For example:
 
 			// Create link: blocker blocks source (blocker is the source of the "blocks" link)
 			input := models.ItemLinkCreate{
-				TargetID:  source.ID,
-				LinkType:  "blocks",
-				CreatedBy: "user",
+				TargetID: source.ID,
+				LinkType: "blocks",
 			}
 			link, err := client.CreateItemLink(ws, blocker.Slug, input)
 			if err != nil {
@@ -3152,8 +3144,6 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 
 			updated, err := client.UpdateItem(ws, slug, models.ItemUpdate{
 				Content:        &edited,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return err
@@ -3361,8 +3351,6 @@ Examples:
 					Title:     foundConvention.Title,
 					Content:   foundConvention.Content,
 					Fields:    string(fieldsJSON),
-					CreatedBy: "user",
-					Source:    "cli",
 				}
 
 				item, err := client.CreateItem(ws, "conventions", input)
@@ -3410,8 +3398,6 @@ Examples:
 					Title:     foundPlaybook.Title,
 					Content:   foundPlaybook.Content,
 					Fields:    string(fieldsJSON),
-					CreatedBy: "user",
-					Source:    "cli",
 				}
 
 				item, err := client.CreateItem(ws, "playbooks", input)
@@ -3980,8 +3966,6 @@ Examples:
 
 				input := models.ItemUpdate{
 					Fields:         &fieldsStr,
-					LastModifiedBy: "user",
-					Source:         "cli",
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)
@@ -4193,8 +4177,6 @@ Examples:
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
@@ -4341,8 +4323,6 @@ func githubUnlinkCmd() *cobra.Command {
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return err
