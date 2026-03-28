@@ -195,7 +195,11 @@ export const api = {
 		restore: (ws: string, itemSlug: string, versionId: string) =>
 			request<Item>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}/restore`, {
 				method: 'POST'
-			})
+			}),
+
+		/** Activity feed for a single item (all changes, not just content versions). */
+		activity: (ws: string, itemSlug: string) =>
+			request<Activity[]>(`/workspaces/${ws}/items/${itemSlug}/activity`)
 	},
 
 	// ── Links ─────────────────────────────────────────────────────────────────
