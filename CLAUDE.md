@@ -47,6 +47,7 @@ internal/
   events/                — EventBus for real-time SSE
   config/                — Workspace detection, .pad.toml
   diff/                  — Version diff storage
+  webhooks/              — Webhook dispatcher with HMAC signing
   links/                 — Wiki-link parsing
 web/src/
   routes/                — SvelteKit pages
@@ -64,7 +65,10 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/collections` — collection CRUD
 - `GET/POST /workspaces/{ws}/collections/{coll}/items` — item CRUD
 - `GET/PATCH/DELETE /workspaces/{ws}/items/{slug}` — item by slug
-- `GET /workspaces/{ws}/dashboard` — computed project overview
+- `GET /workspaces/{ws}/dashboard` — computed project overview (active items, phases, attention, blockers)
+- `GET /workspaces/{ws}/activity` — workspace activity feed
+- `GET/POST/DELETE /workspaces/{ws}/webhooks` — webhook management
+- `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by)
 - `GET /search?q=query&workspace=slug` — full-text search
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
 
@@ -76,13 +80,24 @@ pad list [collection] [--status X] [--all]
 pad show <slug>
 pad update <slug> [--status X] [--priority X]
 pad delete <slug>
+pad move <slug> <target-collection>
 pad search "query"
 pad status                    # Project dashboard
 pad next                      # Recommended next task
+pad standup [--days N]        # Daily standup report
+pad changelog [--days N]      # Release notes from completed items
+pad blocks <source> <target>  # Create dependency
+pad blocked-by <item> <blocker>
+pad deps <slug>               # Show dependencies
+pad unblock <source> <target>
 pad collections               # List collections
 pad collections create "Name" --fields "key:type[:opts]; ..."
 pad edit <slug>               # Open in $EDITOR
 pad init [--template X]       # Create workspace
+pad install [tool]            # Install /pad skill for AI tools
+pad onboard                   # Analyze codebase, suggest conventions
+pad open                      # Open web UI in browser
+pad watch                     # Real-time activity stream
 ```
 
 Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc`→`docs`.

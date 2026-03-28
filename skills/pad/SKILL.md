@@ -66,6 +66,17 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "let's brainstorm about X" → Multi-step ideation workflow (see below)
 - "what if we added X?" → Discuss, then offer to capture as an Idea
 
+**Dependencies:**
+- "what's blocking X?" / "show deps for X" → `pad deps <slug> --format json`
+- "X blocks Y" / "X depends on Y" → `pad blocks X Y` or `pad blocked-by Y X`
+- "remove the dependency" → `pad unblock <source> <target>`
+
+**Reports:**
+- "prep for standup" / "what did we do?" → `pad standup --format json`
+- "generate changelog" / "what shipped?" → `pad changelog --format json`
+- "changelog for this phase" → `pad changelog --phase <slug> --format json`
+- "changelog since Monday" → `pad changelog --since 2026-03-24 --format json`
+
 **Retrospective:**
 - "phase 2 is done, let's retro" → Review completed work, save retrospective
 
@@ -138,12 +149,31 @@ pad search "query" [--format json]
 ```bash
 pad status [--format json]            # Project dashboard
 pad next [--format json]              # Recommended next task
+pad standup [--days N] [--format json]  # Daily standup report (completed/in-progress/blockers)
+pad changelog [--days N] [--since DATE] [--phase SLUG] [--format json|markdown]  # Release notes
+```
+
+### Dependencies
+```bash
+pad blocks <source> <target>          # "TASK-5 blocks TASK-8"
+pad blocked-by <item> <blocker>       # "TASK-5 is blocked by TASK-3"
+pad deps <slug>                       # Show all dependencies for an item
+pad unblock <source> <target>         # Remove a dependency
 ```
 
 ### Collections
 ```bash
 pad collections [--format json]       # List collections with counts
 pad collections create "Name" --fields "key:type[:options]; ..." [--icon "X"]
+```
+
+### Webhooks
+```bash
+# Webhooks are managed via the REST API:
+# POST /api/v1/workspaces/{ws}/webhooks   — create webhook
+# GET /api/v1/workspaces/{ws}/webhooks    — list webhooks
+# DELETE /api/v1/workspaces/{ws}/webhooks/{id}  — delete
+# Events: item.created, item.updated, item.deleted, item.moved, comment.created
 ```
 
 ### Output Formats

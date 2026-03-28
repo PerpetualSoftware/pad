@@ -1,17 +1,21 @@
 ## What does this PR do?
 
-<!-- A brief description of the change and why it's needed. -->
+<!-- A brief description of the change. Link to a related issue if one exists. -->
+
+Closes #
 
 ## How to test
 
-<!-- Steps to verify the change works correctly. -->
+<!-- Steps to verify this works correctly -->
 
-1. `make install`
-2. ...
+1.
+2.
+3.
 
 ## Checklist
 
 - [ ] `make build` passes
 - [ ] `make test` passes
-- [ ] New backend functionality has tests
-- [ ] Web UI changes verified in browser
+- [ ] New features have tests (if applicable)
+- [ ] TypeScript types updated (if API changed)
+- [ ] CLI help text updated (if new command)

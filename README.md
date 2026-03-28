@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Pad</h1>
-  <p align="center">Project management for developers and AI agents.</p>
+  <p align="center"><strong>Project management for developers and AI agents.</strong></p>
   <p align="center">
     <a href="https://github.com/xarmian/pad/actions/workflows/ci.yml"><img src="https://github.com/xarmian/pad/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://github.com/xarmian/pad/releases"><img src="https://img.shields.io/github/v/release/xarmian/pad" alt="Release"></a>
@@ -10,137 +10,86 @@
 
 ---
 
-One binary. Local-first. No accounts. Pad gives you a web UI, a CLI, and an AI agent skill — all backed by SQLite, all in a single `~18MB` binary.
+> One binary. Local-first. No accounts. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data never leaves your laptop.
 
-**For you:** A clean web interface to organize tasks, ideas, phases, docs, and custom collections — with a rich editor, board views, wiki-links, and full-text search.
-
-**For your AI agent:** A `/pad` skill that lets your AI coding tool manage your project through natural language — create tasks, check status, follow conventions, and plan phases. Works with Claude Code, Cursor, Windsurf, Codex, GitHub Copilot, Amazon Q, and JetBrains Junie.
-
-<!-- TODO: Add screenshot/GIF of the web UI here -->
+<!-- Screenshots: dashboard, board view, CLI output -->
+<!-- TODO: Replace with actual screenshots -->
+<!--
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" width="800" alt="Pad dashboard showing collection overview, active phases, and activity feed" />
+</p>
+-->
 
 ## Quick Start
 
 ```bash
-# Install via Homebrew
 brew install xarmian/tap/pad
-
-# Or build from source
-git clone https://github.com/xarmian/pad
-cd pad && make build
-cp pad /usr/local/bin/
-
-# Or run with Docker
-docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
-
-# Initialize a workspace in your project
-cd ~/projects/myapp
-pad init "My App"
-
-# Install the /pad skill for your AI tools
-pad install
-
-# Create your first task
-pad create task "Set up CI pipeline" --priority high
-
-# Open the web UI
+cd your-project
+pad init
 pad open
 ```
 
-The server auto-starts on first use. No configuration needed.
+That's it. Four commands, zero configuration. The server auto-starts, the web UI opens at `localhost:7777`, and you're managing your project.
+
+## Why Pad?
+
+Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them.
+
+| | Pad | Linear / Jira | Notion |
+|---|---|---|---|
+| **Setup** | `pad init` | Create account, invite team, configure | Create account, pick template |
+| **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
+| **Data** | Local SQLite, you own it | Their cloud | Their cloud |
+| **Offline** | Full functionality | Read-only cache at best | Limited |
+| **CLI** | First-class | Afterthought | None |
+| **Price** | Free, open source | Per-seat pricing | Per-seat pricing |
 
 ## Features
 
-### Collections & Items
+### For Developers
 
-Pad organizes work into **collections** — typed containers with structured fields and optional rich content.
-
-**Default collections:**
-
-| Collection | Purpose |
-|---|---|
-| **Tasks** | Track work items with status, priority, assignee, effort, due date |
-| **Ideas** | Capture feature ideas with impact and category |
-| **Phases** | Plan and track project milestones with progress |
-| **Docs** | Documentation, decisions, reference material |
-| **Conventions** | Project rules that guide agent behavior |
-| **Playbooks** | Multi-step workflows for agents to follow |
-
-Create your own collections with custom fields:
+**CLI that doesn't get in your way.** Create tasks, search items, check status — without leaving the terminal.
 
 ```bash
-pad collections create "Bug Reports" --fields "severity:select:low,medium,high,critical; browser:text; reproducible:checkbox"
-```
-
-### Web UI
-
-A dark-themed web app at `http://localhost:7777`, embedded in the binary:
-
-- **Board & list views** — drag-and-drop between status columns, group and sort by any field
-- **Rich editor** — Tiptap-based with markdown support, formatting toolbar, and auto-save
-- **Wiki-links** — `[[Title]]` links between items, rendered as clickable references
-- **Full-text search** — instant search across all items and content
-- **Dashboard** — collection summaries, phase progress, activity feed, and suggested next actions
-- **Real-time updates** — changes from the CLI or agents appear instantly via SSE
-
-### CLI
-
-```bash
-# Create items (accepts singular: task, idea, phase, doc)
 pad create task "Fix OAuth redirect" --priority high
 pad create idea "Real-time collaboration" --category infrastructure
-pad create phase "API Redesign" --status active
-
-# List and filter
-pad list tasks                          # Open + in-progress tasks
-pad list tasks --status done            # Completed tasks
-pad list --all                          # Everything across all collections
-
-# View and update
-pad show fix-oauth                      # Item detail (by slug)
-pad update fix-oauth --status done      # Update fields
-pad edit fix-oauth                      # Open in $EDITOR
-
-# Search and navigate
-pad search "authentication"             # Full-text search with snippets
-
-# Project intelligence
-pad status                              # Dashboard: phases, attention items, suggestions
-pad next                                # Recommended next task
-
-# Collections
-pad collections                         # List collections with item counts
-pad collections create "Name" --fields "key:type[:options]; ..."
+pad list tasks --status in-progress
+pad search "authentication"
+pad status                              # Project dashboard
+pad next                                # What should I work on?
 ```
 
-The CLI auto-detects your workspace by walking up the directory tree for a `.pad.toml` file.
+**Web UI that stays out of your way.** A clean, dark-themed interface at `localhost:7777` with:
 
-### Agent Integration
+- **Board, list, and table views** — drag-and-drop between status columns
+- **Keyboard navigation** — `j`/`k` to move, `Enter` to open, `Esc` to go back, `Cmd+K` to search
+- **Rich text editor** — Tiptap-based with markdown, formatting toolbar, and auto-save
+- **Wiki-links** — type `[[Title]]` to link between items
+- **Real-time updates** — agent creates a task in the terminal, it appears in the browser instantly (via SSE)
+- **Dashboard** — collection overview, active work, phase tracking, activity feed
 
-Pad ships a `/pad` skill that works with any AI coding tool. Install it and your agent becomes a project partner:
+<!-- TODO: Screenshot of board view with drag-and-drop -->
+
+### For AI Agents
+
+**Your agent becomes a project partner.** Install the `/pad` skill once, and your AI coding tool can read, create, and update project items through natural language.
 
 ```bash
-pad install              # Auto-detect your tools and install
-pad install claude       # Claude Code
-pad install cursor       # Cursor (also covers Codex & Windsurf)
-pad install copilot      # GitHub Copilot
-pad install amazon-q     # Amazon Q
-pad install junie        # JetBrains Junie
+pad install              # Auto-detects your tools and installs the skill
 ```
+
+Works with **Claude Code**, **Cursor**, **Windsurf**, **Codex**, **GitHub Copilot**, **Amazon Q**, and **JetBrains Junie**.
 
 Then just talk to your project:
 
 ```
 > /pad what should I work on next?
 > /pad I finished the OAuth fix
-> /pad let's brainstorm about the API redesign
 > /pad create a task to add rate limiting
+> /pad let's brainstorm about the API redesign
 ```
 
-The agent reads your conventions and playbooks to follow project-specific rules. All agent actions are attributed in the activity feed, so you always know what the AI changed.
-
-### Conventions & Playbooks
-
-Teach your agents how your project works:
+**Conventions and playbooks** teach agents how your project works:
 
 - **Conventions** — trigger-based rules like "run tests before marking a task done" or "use conventional commits"
 - **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement"
@@ -152,56 +101,186 @@ pad create convention "Run tests before completing tasks" \
   --field priority=must
 ```
 
-Agents load relevant conventions automatically based on what they're doing.
+Agents load relevant conventions automatically. All agent actions are attributed in the activity feed, so you always know what the AI changed.
+
+**Onboard agents to a new codebase:**
+
+```bash
+pad onboard              # Analyzes project structure and suggests conventions
+```
+
+### Collections & Custom Fields
+
+Pad organizes work into **collections** — typed containers with structured fields.
+
+**Built-in collections:**
+
+| Collection | Purpose |
+|---|---|
+| **Tasks** | Work items with status, priority, assignee, effort, due date |
+| **Ideas** | Feature ideas with impact and category |
+| **Phases** | Project milestones with progress tracking |
+| **Docs** | Documentation, decisions, reference material |
+| **Conventions** | Project rules that guide agent behavior |
+| **Playbooks** | Multi-step workflows for agents to follow |
+
+**Create your own** with typed fields — select, text, date, number, url, relation, checkbox:
+
+```bash
+pad collections create "Bug Reports" \
+  --fields "severity:select:low,medium,high,critical; browser:text; reproducible:checkbox"
+```
+
+Items get reference numbers automatically (`TASK-5`, `BUG-12`) and can be moved between collections with field migration.
+
+## Installation
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew install xarmian/tap/pad
+```
+
+### Go Install
+
+```bash
+go install github.com/xarmian/pad/cmd/pad@latest
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/xarmian/pad
+cd pad
+make build
+cp pad ~/.local/bin/   # or /usr/local/bin/
+```
+
+Requires Go 1.25+ and Node.js 22+.
+
+### Docker
+
+```bash
+docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
+```
+
+### Binary Download
+
+Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/xarmian/pad/releases).
+
+## Getting Started
+
+### 1. Initialize a workspace
+
+```bash
+cd ~/projects/myapp
+pad init "My App"
+```
+
+This creates a `.pad.toml` file linking your project directory to a Pad workspace with default collections. Choose a template to start with pre-configured collections:
+
+```bash
+pad init "My App" --template scrum     # Scrum-style with sprints
+pad init "My App" --template product   # Product management focused
+```
+
+### 2. Install the AI skill
+
+```bash
+pad install                  # Auto-detect and install for all found tools
+pad install claude           # Or install for a specific tool
+pad install cursor
+pad install copilot
+```
+
+### 3. Start working
+
+```bash
+# From the CLI
+pad create task "Set up CI pipeline" --priority high
+pad create idea "Add WebSocket support" --category infrastructure
+pad status
+
+# From the web UI
+pad open                     # Opens localhost:7777 in your browser
+
+# From your AI agent
+# Just use /pad in Claude Code, Cursor, etc.
+```
+
+### 4. Teach your agents the rules
+
+```bash
+pad onboard                  # Auto-analyze project and suggest conventions
+# Or browse the convention library
+pad library conventions      # Pre-built conventions you can adopt
+pad library playbooks        # Pre-built multi-step workflows
+```
+
+## CLI Reference
+
+```
+pad init [name]              Initialize workspace in current directory
+pad open                     Open web UI in browser
+pad install [tool]           Install /pad skill for AI coding tools
+pad onboard                  Analyze project and suggest conventions
+
+pad create <coll> "title"    Create item (task, idea, phase, doc, ...)
+pad list [collection]        List items (filters: --status, --priority, --all)
+pad show <slug>              Show item detail
+pad update <slug>            Update item fields
+pad delete <slug>            Delete item
+pad move <slug> <collection> Move item between collections
+pad edit <slug>              Open item in $EDITOR
+pad search "query"           Full-text search across all items
+
+pad status                   Project dashboard
+pad next                     Recommended next task
+pad collections              List collections with item counts
+pad comment <slug> "text"    Add comment to an item
+pad comments <slug>          View item comments
+
+pad export                   Export workspace data
+pad import <file>            Import workspace data
+
+pad workspaces               List all workspaces
+pad switch <workspace>       Switch active workspace
+pad library [type]           Browse convention and playbook library
+```
+
+All commands accept `--format json` for machine-readable output and `--workspace` to target a specific workspace.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
 │              pad (single binary)              │
-│                                              │
-│  ┌──────────┐  ┌──────────┐  ┌────────────┐ │
-│  │   CLI    │  │  REST    │  │  Embedded  │ │
-│  │ (Cobra)  │  │  API     │  │  Web UI    │ │
-│  └────┬─────┘  └────┬─────┘  │ (SvelteKit)│ │
-│       │    HTTP      │        └────────────┘ │
-│       └──────────────┤                       │
-│                ┌─────▼─────┐                 │
-│                │  SQLite   │                 │
-│                │  + FTS5   │                 │
-│                └───────────┘                 │
-└──────────────────────────────────────────────┘
+│                                               │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
+│  │   CLI    │  │  REST    │  │  Embedded  │  │
+│  │ (Cobra)  │  │  API     │  │  Web UI    │  │
+│  └────┬─────┘  └────┬─────┘  │ (SvelteKit)│  │
+│       │    HTTP      │        └────────────┘  │
+│       └──────────────┤                        │
+│                ┌─────▼─────┐                  │
+│                │  SQLite   │                  │
+│                │  + FTS5   │                  │
+│                └───────────┘                  │
+└───────────────────────────────────────────────┘
 ```
 
 - **Go backend** — chi router, SQLite via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no CGO), FTS5 full-text search, SSE for real-time updates
-- **SvelteKit frontend** — Svelte 5, Tiptap editor, svelte-dnd-action, adapter-static, embedded via `go:embed`
-- **Single binary** — serves the API + web UI, runs on macOS, Linux, and Windows
-- **Workspace-per-project** — each project gets its own workspace via `pad init`, linked by a `.pad.toml` file
+- **SvelteKit frontend** — Svelte 5, Tiptap editor, drag-and-drop, adapter-static, embedded via `go:embed`
+- **Single binary** — serves the API and web UI, runs on macOS, Linux, and Windows
+- **Workspace-per-project** — each project gets its own workspace linked by a `.pad.toml` file
 
-### Data
+All data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no cloud, no accounts.
 
-All data lives in `~/.pad/`:
+## Contributing
 
-```
-~/.pad/
-├── pad.db        # SQLite database (all items, versions, activity)
-├── config.toml   # Optional config (host, port)
-└── pad.pid       # Server PID file
-```
-
-Per-project workspace links:
-
-```
-~/projects/myapp/.pad.toml   # workspace = "my-app"
-```
-
-## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick version:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development guide.
 
 ```bash
-# Prerequisites: Go 1.25+, Node.js 22+, Make
-
 make build      # Build web UI + Go binary
 make test       # Run Go tests
 make dev-web    # SvelteKit dev server with hot reload
@@ -214,4 +293,4 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 
-[Apache License 2.0](LICENSE) — © 2026 [Perpetual Software LLC](https://perpetualsoftware.org)
+[Apache License 2.0](LICENSE)

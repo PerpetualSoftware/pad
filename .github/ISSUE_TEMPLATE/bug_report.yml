@@ -1,66 +1,51 @@
 name: Bug Report
-description: Something isn't working as expected
+description: Report something that isn't working correctly
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug! Please fill out the details below.
+        Thanks for reporting a bug! Please fill in the details below.
 
   - type: textarea
     id: description
     attributes:
       label: What happened?
       description: A clear description of the bug.
-      placeholder: "When I try to X, Y happens instead of Z."
+      placeholder: When I do X, I expect Y, but Z happens instead.
     validations:
       required: true
 
   - type: textarea
-    id: reproduce
+    id: steps
     attributes:
       label: Steps to reproduce
       description: How can we reproduce this?
       placeholder: |
         1. Run `pad create task "test"`
-        2. Open http://localhost:7777
+        2. Open the web UI
         3. Click on the task
-        4. See error
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-      description: What should have happened?
-    validations:
-      required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: Pad version
-      description: "Output of `pad --version`"
-      placeholder: "pad version 0.1.0"
+        4. See error...
     validations:
       required: true
 
   - type: dropdown
-    id: os
+    id: component
     attributes:
-      label: Operating system
+      label: Component
       options:
-        - macOS (Apple Silicon)
-        - macOS (Intel)
-        - Linux
-        - Windows
+        - CLI
+        - Web UI
+        - API
+        - Agent Skill
         - Other
-    validations:
-      required: true
 
   - type: textarea
-    id: context
+    id: environment
     attributes:
-      label: Additional context
-      description: Logs, screenshots, or anything else that might help.
+      label: Environment
+      description: OS, Pad version, browser (if web UI)
+      placeholder: |
+        - OS: macOS 15.2
+        - Pad version: v0.1.0
+        - Browser: Chrome 130 (if web UI issue)

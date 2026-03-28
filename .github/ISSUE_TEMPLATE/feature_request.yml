@@ -5,14 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Have an idea for Pad? We'd love to hear it.
+        Thanks for suggesting a feature! Describe the problem first, then your proposed solution.
 
   - type: textarea
     id: problem
     attributes:
       label: What problem does this solve?
-      description: Describe the problem or limitation you're running into.
-      placeholder: "I'm always frustrated when..."
+      description: Describe the use case or pain point.
+      placeholder: I often need to... but currently I have to...
     validations:
       required: true
 
@@ -21,17 +21,24 @@ body:
     attributes:
       label: Proposed solution
       description: How do you think this should work?
+      placeholder: It would be great if `pad` could...
     validations:
       required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - CLI
+        - Web UI
+        - API
+        - Agent Skill
+        - New Feature
+        - Other
 
   - type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered
       description: Any other approaches you've thought about?
-
-  - type: textarea
-    id: context
-    attributes:
-      label: Additional context
-      description: Screenshots, mockups, links to similar features in other tools, etc.
