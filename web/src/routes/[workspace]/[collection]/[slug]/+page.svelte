@@ -273,7 +273,7 @@
 			<span class="sep">/</span>
 			<a href="/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
 			<span class="sep">/</span>
-			<span class="current">{item.title}</span>
+			<span class="current">{formatItemRef(item) || item.title}</span>
 		</nav>
 
 		<!-- Title -->
