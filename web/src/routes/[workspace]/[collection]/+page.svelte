@@ -340,6 +340,9 @@
 	}
 
 	let creatingNew = $state(false);
+	let quickCreateTitle = $state('');
+	let quickCreateOpen = $state(false);
+	let quickCreateInput = $state<HTMLInputElement>();
 
 	async function createNewItem() {
 		if (!wsSlug || !collSlug || creatingNew) return;
@@ -362,6 +365,48 @@
 			toastStore.show('Failed to create item', 'error');
 		} finally {
 			creatingNew = false;
+		}
+	}
+
+	async function quickCreate() {
+		const title = quickCreateTitle.trim();
+		if (!title || !wsSlug || !collSlug || creatingNew) return;
+		creatingNew = true;
+		try {
+			const schema = collection ? parseSchema(collection) : { fields: [] };
+			const defaultFields: Record<string, any> = {};
+			const statusField = schema.fields.find(f => f.key === 'status');
+			if (statusField?.options?.length) {
+				defaultFields.status = statusField.options[0];
+			}
+			const item = await api.items.create(wsSlug, collSlug, {
+				title,
+				content: '',
+				fields: JSON.stringify(defaultFields),
+				source: 'web'
+			});
+			items = [...items, item];
+			quickCreateTitle = '';
+			toastStore.show(`Created "${title}"`, 'success');
+		} catch {
+			toastStore.show('Failed to create item', 'error');
+		} finally {
+			creatingNew = false;
+		}
+	}
+
+	function openQuickCreate() {
+		quickCreateOpen = true;
+		requestAnimationFrame(() => quickCreateInput?.focus());
+	}
+
+	function handleQuickCreateKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && quickCreateTitle.trim()) {
+			e.preventDefault();
+			quickCreate();
+		} else if (e.key === 'Escape') {
+			quickCreateOpen = false;
+			quickCreateTitle = '';
 		}
 	}
 
@@ -466,10 +511,24 @@
 					<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
 				{/if}
 
-				<button class="new-btn" onclick={createNewItem} disabled={creatingNew}>
+				<button class="new-btn" onclick={openQuickCreate} disabled={creatingNew}>
 					+ New {singularName()}
 				</button>
 			</div>
+
+			{#if quickCreateOpen}
+				<div class="quick-create">
+					<input
+						bind:this={quickCreateInput}
+						bind:value={quickCreateTitle}
+						class="quick-create-input"
+						placeholder="Title — press Enter to create, Esc to cancel"
+						onkeydown={handleQuickCreateKeydown}
+						onblur={() => { if (!quickCreateTitle.trim()) quickCreateOpen = false; }}
+						disabled={creatingNew}
+					/>
+				</div>
+			{/if}
 		</div>
 
 		<!-- Content -->
@@ -718,6 +777,31 @@
 	.new-btn:hover {
 		opacity: 0.85;
 		text-decoration: none;
+	}
+
+	.quick-create {
+		margin-top: var(--space-3);
+	}
+
+	.quick-create-input {
+		width: 100%;
+		padding: var(--space-3) var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--accent-blue);
+		border-radius: var(--radius);
+		color: var(--text-primary);
+		font-size: 0.95em;
+		outline: none;
+		transition: border-color 0.15s;
+	}
+
+	.quick-create-input::placeholder {
+		color: var(--text-muted);
+	}
+
+	.quick-create-input:focus {
+		border-color: var(--accent-blue);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 15%, transparent);
 	}
 
 	@media (max-width: 768px) {
