@@ -333,7 +333,7 @@ export const api = {
 				invitations: { id: string; email: string; role: string; code: string; join_url?: string; created_at: string }[];
 			}>(`/workspaces/${ws}/members`),
 		invite: (ws: string, email: string, role: string) =>
-			request<{ added?: boolean; invited?: boolean; code?: string; email: string; role: string; name?: string; user_id?: string }>(
+			request<{ added?: boolean; invited?: boolean; code?: string; join_url?: string; email: string; role: string; name?: string; user_id?: string }>(
 				`/workspaces/${ws}/members/invite`,
 				{ method: 'POST', body: JSON.stringify({ email, role }) }
 			),
