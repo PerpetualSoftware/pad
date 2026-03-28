@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { fly, fade } from 'svelte/transition';
-	import { goto } from '$app/navigation';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { HistoryEntry } from '$lib/stores/toast.svelte';
 
@@ -62,11 +61,11 @@
 			{:else}
 				{#each toastStore.history as entry (entry.id)}
 					{#if entry.link}
-						<button class="notification-row clickable" onclick={() => { onclose(); goto(entry.link!); }}>
+						<a href={entry.link} class="notification-row clickable" onclick={(e: MouseEvent) => { e.stopPropagation(); }}>
 							<span class="notification-dot" style="background: {dotColor(entry.type)}"></span>
 							<span class="notification-message">{entry.message}</span>
 							<span class="notification-time">{formatRelativeTime(entry.timestamp)}</span>
-						</button>
+						</a>
 					{:else}
 						<div class="notification-row">
 							<span class="notification-dot" style="background: {dotColor(entry.type)}"></span>
@@ -188,9 +187,12 @@
 	.notification-row.clickable {
 		cursor: pointer;
 		transition: background 0.15s;
+		text-decoration: none;
+		color: inherit;
 	}
 	.notification-row.clickable:hover {
 		background: var(--bg-hover);
+		text-decoration: none;
 	}
 
 	.notification-dot {
