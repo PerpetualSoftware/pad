@@ -16,6 +16,11 @@ type Activity struct {
 	Source      string    `json:"source"`
 	Metadata    string    `json:"metadata,omitempty"` // JSON
 	CreatedAt   time.Time `json:"created_at"`
+
+	// Enrichment fields — populated by handlers, not stored in DB
+	ItemTitle      string `json:"item_title,omitempty"`
+	ItemSlug       string `json:"item_slug,omitempty"`
+	CollectionSlug string `json:"collection_slug,omitempty"`
 }
 
 type ActivityListParams struct {

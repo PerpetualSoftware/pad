@@ -238,6 +238,9 @@ export interface Activity {
 	source: string;
 	metadata: string;
 	created_at: string;
+	item_title?: string;
+	item_slug?: string;
+	collection_slug?: string;
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
