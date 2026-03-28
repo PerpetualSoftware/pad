@@ -9,29 +9,95 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/xarmian/pad/internal/models"
 )
 
-// StatusIcon returns a status indicator.
-func StatusIcon(status string) string {
-	switch status {
-	case "active":
-		return "● Active"
-	case "draft":
-		return "○ Draft"
-	case "completed":
-		return "✓ Done"
-	case "archived":
-		return "⊘ Archived"
-	case "open":
-		return "● Open"
-	case "in_progress":
-		return "◐ In Progress"
-	case "done":
-		return "✓ Done"
+// Color definitions for reuse across the CLI.
+var (
+	Bold    = color.New(color.Bold)
+	Dim     = color.New(color.Faint)
+	BoldCyan = color.New(color.Bold, color.FgCyan)
+)
+
+// StatusColor returns a *color.Color appropriate for the given status string.
+func StatusColor(status string) *color.Color {
+	s := strings.ToLower(strings.ReplaceAll(status, "_", "-"))
+	switch s {
+	case "done", "completed", "fixed", "implemented", "resolved", "accepted":
+		return color.New(color.FgGreen)
+	case "in-progress", "in_progress", "exploring", "fixing", "building",
+		"researching", "planning", "triaged", "in-sprint", "in_sprint", "paused":
+		return color.New(color.FgYellow)
+	case "open", "new", "draft", "todo", "planned", "proposed", "raw", "ready":
+		return color.New(color.FgBlue)
+	case "cancelled", "rejected", "wontfix":
+		return color.New(color.FgRed)
+	case "active", "published":
+		return color.New(color.FgCyan)
+	case "archived", "disabled":
+		return color.New(color.Faint)
 	default:
-		return status
+		return color.New(color.Reset)
 	}
+}
+
+// PriorityColor returns a *color.Color appropriate for the given priority string.
+func PriorityColor(priority string) *color.Color {
+	switch strings.ToLower(priority) {
+	case "critical", "urgent":
+		return color.New(color.FgRed, color.Bold)
+	case "high":
+		return color.New(color.FgYellow)
+	case "medium":
+		return color.New(color.FgWhite)
+	case "low":
+		return color.New(color.Faint)
+	default:
+		return color.New(color.Reset)
+	}
+}
+
+// ColorizedStatus returns a status icon + status text with appropriate color.
+func ColorizedStatus(status string) string {
+	icon := statusIconChar(status)
+	c := StatusColor(status)
+	return c.Sprintf("%s %s", icon, status)
+}
+
+// statusIconChar returns just the icon character for a status (no text, no color).
+func statusIconChar(status string) string {
+	s := strings.ToLower(strings.ReplaceAll(status, "_", "-"))
+	switch s {
+	case "active", "open":
+		return "●"
+	case "draft", "raw", "new", "planned", "proposed", "ready":
+		return "○"
+	case "completed", "done", "fixed", "implemented", "resolved", "accepted":
+		return "✓"
+	case "archived", "disabled":
+		return "⊘"
+	case "in-progress", "exploring", "fixing", "building", "researching",
+		"planning", "triaged", "in-sprint", "paused":
+		return "◐"
+	case "cancelled", "rejected", "wontfix":
+		return "✗"
+	default:
+		return "·"
+	}
+}
+
+// ItemRef returns the reference string (e.g. "TASK-5") for an item, or empty string.
+func ItemRef(item models.Item) string {
+	if item.CollectionPrefix != "" && item.ItemNumber != nil {
+		return fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
+	}
+	return ""
+}
+
+// StatusIcon returns a colorized status indicator.
+func StatusIcon(status string) string {
+	return ColorizedStatus(status)
 }
 
 // RelativeTime returns a human-readable relative time string.
@@ -71,21 +137,34 @@ func PrintItemTable(items []models.Item) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "TITLE\tCOLLECTION\tUPDATED\tBY\n")
+	headerColor := color.New(color.Faint)
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		headerColor.Sprint("TITLE"),
+		headerColor.Sprint("COLLECTION"),
+		headerColor.Sprint("UPDATED"),
+		headerColor.Sprint("BY"),
+	)
 	for _, item := range items {
 		pin := ""
 		if item.Pinned {
-			pin = "* "
+			pin = color.YellowString("* ")
+		}
+		ref := ItemRef(item)
+		titlePart := item.Title
+		if ref != "" {
+			titlePart = Dim.Sprint(ref) + "  " + Bold.Sprint(item.Title)
+		} else {
+			titlePart = Bold.Sprint(item.Title)
 		}
 		collLabel := item.CollectionName
 		if item.CollectionIcon != "" {
 			collLabel = item.CollectionIcon + " " + collLabel
 		}
 		fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n",
-			pin, item.Title,
+			pin, titlePart,
 			collLabel,
-			RelativeTime(item.UpdatedAt),
-			item.LastModifiedBy,
+			Dim.Sprint(RelativeTime(item.UpdatedAt)),
+			Dim.Sprint(item.LastModifiedBy),
 		)
 	}
 	w.Flush()
@@ -128,7 +207,15 @@ func FormatFieldSummary(fieldsJSON string) string {
 		if str == "" || str == "<nil>" {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s: %s", k, str))
+		// Colorize well-known fields
+		switch k {
+		case "status":
+			parts = append(parts, fmt.Sprintf("%s: %s", k, StatusColor(str).Sprint(str)))
+		case "priority":
+			parts = append(parts, fmt.Sprintf("%s: %s", k, PriorityColor(str).Sprint(str)))
+		default:
+			parts = append(parts, fmt.Sprintf("%s: %s", k, str))
+		}
 	}
 
 	if len(parts) == 0 {
@@ -145,27 +232,39 @@ func PrintJSON(v interface{}) error {
 	return enc.Encode(v)
 }
 
-// PrintItemMeta prints item metadata header.
+// PrintItemMeta prints item metadata header with colors.
 func PrintItemMeta(item *models.Item) {
-	fmt.Printf("Title:      %s\n", item.Title)
-	fmt.Printf("Slug:       %s\n", item.Slug)
+	label := color.New(color.Faint)
+	// Item ref + Title
+	ref := ItemRef(*item)
+	if ref != "" {
+		fmt.Printf("%s  %s\n", Dim.Sprint(ref), Bold.Sprint(item.Title))
+	} else {
+		fmt.Printf("%s\n", Bold.Sprint(item.Title))
+	}
+
 	if item.CollectionName != "" {
 		collLabel := item.CollectionName
 		if item.CollectionIcon != "" {
 			collLabel = item.CollectionIcon + " " + collLabel
 		}
-		fmt.Printf("Collection: %s\n", collLabel)
+		fmt.Printf("%s %s\n", label.Sprint("Collection:"), collLabel)
 	}
 	tags := item.Tags
 	if tags == "[]" || tags == "" || tags == "null" {
-		tags = "(none)"
+		tags = Dim.Sprint("(none)")
 	}
-	fmt.Printf("Tags:       %s\n", tags)
+	fmt.Printf("%s %s\n", label.Sprint("Tags:      "), tags)
 	if item.Pinned {
-		fmt.Printf("Pinned:     yes\n")
+		fmt.Printf("%s %s\n", label.Sprint("Pinned:    "), color.YellowString("★ yes"))
 	}
-	fmt.Printf("Updated:    %s by %s via %s\n", RelativeTime(item.UpdatedAt), item.LastModifiedBy, item.Source)
-	fmt.Println("---")
+	fmt.Printf("%s %s by %s via %s\n",
+		label.Sprint("Updated:   "),
+		Dim.Sprint(RelativeTime(item.UpdatedAt)),
+		Dim.Sprint(item.LastModifiedBy),
+		Dim.Sprint(item.Source),
+	)
+	fmt.Println(Dim.Sprint("───────────────────────────────────────────"))
 }
 
 // PrintCollectionTable prints collections in a formatted table.
