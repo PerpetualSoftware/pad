@@ -5,14 +5,16 @@
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
+	import PhaseChart from './PhaseChart.svelte';
 
 	interface Props {
 		wsSlug: string;
 		itemSlug: string;
 		itemId: string;
+		phaseFields?: Record<string, any>;
 	}
 
-	let { wsSlug, itemSlug, itemId }: Props = $props();
+	let { wsSlug, itemSlug, itemId, phaseFields }: Props = $props();
 
 	let tasks = $state<Item[]>([]);
 	let loading = $state(true);
@@ -122,6 +124,10 @@
 	<div class="progress-bar">
 		<div class="progress-fill" style:width="{percentage}%"></div>
 	</div>
+
+	{#if !loading && tasks.length > 0 && phaseFields?.start_date}
+		<PhaseChart {tasks} startDate={phaseFields.start_date} endDate={phaseFields.end_date} />
+	{/if}
 
 	{#if loading}
 		<div class="loading">
