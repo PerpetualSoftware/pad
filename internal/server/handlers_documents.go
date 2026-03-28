@@ -1,7 +1,10 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -351,6 +354,11 @@ func (s *Server) publishEvent(eventType, workspaceID, documentID, title, docType
 
 // logActivity is a helper that logs activity, ignoring errors (best-effort).
 func (s *Server) logActivity(workspaceID, documentID, action, actor, source string) {
+	s.logActivityWithMeta(workspaceID, documentID, action, actor, source, "")
+}
+
+// logActivityWithMeta logs activity with optional JSON metadata.
+func (s *Server) logActivityWithMeta(workspaceID, documentID, action, actor, source, metadata string) {
 	if actor == "" {
 		actor = "user"
 	}
@@ -363,5 +371,36 @@ func (s *Server) logActivity(workspaceID, documentID, action, actor, source stri
 		Action:      action,
 		Actor:       actor,
 		Source:      source,
+		Metadata:    metadata,
 	})
+}
+
+// diffFields compares old and new field JSON strings and returns a human-readable
+// summary of changes (e.g. "status: open → done, priority: medium → high").
+func diffFields(oldFields, newFields string) string {
+	var oldMap, newMap map[string]any
+	if err := json.Unmarshal([]byte(oldFields), &oldMap); err != nil {
+		return ""
+	}
+	if err := json.Unmarshal([]byte(newFields), &newMap); err != nil {
+		return ""
+	}
+
+	var changes []string
+	for key, newVal := range newMap {
+		oldVal, exists := oldMap[key]
+		newStr := fmt.Sprintf("%v", newVal)
+		if !exists {
+			changes = append(changes, fmt.Sprintf("%s: → %s", key, newStr))
+		} else {
+			oldStr := fmt.Sprintf("%v", oldVal)
+			if oldStr != newStr {
+				changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
+			}
+		}
+	}
+
+	// Sort for deterministic output
+	sort.Strings(changes)
+	return strings.Join(changes, ", ")
 }

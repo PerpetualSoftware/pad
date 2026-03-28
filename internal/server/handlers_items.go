@@ -248,7 +248,17 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(workspaceID, updated.ID, "updated", input.LastModifiedBy, input.Source)
+	// Build rich metadata describing what changed
+	var meta string
+	if changes := diffFields(item.Fields, updated.Fields); changes != "" {
+		meta = fmt.Sprintf(`{"changes":%q}`, changes)
+	}
+	if input.Title != nil && *input.Title != item.Title {
+		if meta == "" {
+			meta = fmt.Sprintf(`{"changes":"title: %s → %s"}`, item.Title, *input.Title)
+		}
+	}
+	s.logActivityWithMeta(workspaceID, updated.ID, "updated", input.LastModifiedBy, input.Source, meta)
 	s.publishItemEvent(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, input.LastModifiedBy, input.Source)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
