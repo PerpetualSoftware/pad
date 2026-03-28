@@ -6,6 +6,7 @@
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { api } from '$lib/api/client';
+	import { toastStore } from '$lib/stores/toast.svelte';
 
 	let { children } = $props();
 
@@ -38,6 +39,7 @@
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
 			const activeItem = collectionStore.activeItem;
+			const isExternal = event.source !== 'web';
 
 			switch (event.type) {
 				case 'item_created': {
@@ -48,6 +50,10 @@
 						collectionStore.addItem(item);
 					} catch {
 						// Item might not be fetchable by event ID, refresh collection
+					}
+					if (isExternal) {
+						const who = event.actor === 'agent' ? 'Agent' : 'CLI';
+						toastStore.show(`${who} created: ${event.title}`, 'info');
 					}
 					break;
 				}
