@@ -88,10 +88,11 @@
 		}
 	}
 
-	// Client-side collection filter (metadata contains item_collection info)
+	// Client-side collection filter using enriched top-level field or metadata fallback
 	let filteredActivities = $derived.by(() => {
 		if (!filterCollection) return activities;
 		return activities.filter((a) => {
+			if (a.collection_slug) return a.collection_slug === filterCollection;
 			try {
 				const meta = JSON.parse(a.metadata);
 				return meta.collection_slug === filterCollection || meta.collection === filterCollection;
@@ -299,6 +300,9 @@
 					<div class="date-entries">
 						{#each group.items as activity (activity.id)}
 							{@const meta = parseMeta(activity.metadata)}
+							{@const itemTitle = activity.item_title || meta.item_title || meta.title}
+							{@const itemSlug = activity.item_slug || meta.item_slug}
+							{@const collSlug = activity.collection_slug || meta.collection_slug}
 							{@const src = getSourceLabel(activity.source, activity.actor)}
 							<div class="entry {borderClass(activity.source, activity.actor)}">
 								<span
@@ -310,18 +314,16 @@
 								<div class="entry-content">
 									<div class="entry-main">
 										<span class="entry-verb">{activityVerb(activity.action)}</span>
-										{#if meta.item_title && meta.item_slug && meta.collection_slug}
+										{#if itemTitle && itemSlug && collSlug}
 											<a
-												href="/{wsSlug}/{meta.collection_slug}/{meta.item_slug}"
-												class="entry-item-link">{meta.item_title}</a
+												href="/{wsSlug}/{collSlug}/{itemSlug}"
+												class="entry-item-link">{itemTitle}</a
 											>
-										{:else if meta.item_title}
-											<span class="entry-item-name">{meta.item_title}</span>
-										{:else if meta.title}
-											<span class="entry-item-name">{meta.title}</span>
+										{:else if itemTitle}
+											<span class="entry-item-name">{itemTitle}</span>
 										{/if}
-										{#if meta.collection_slug}
-											<span class="entry-collection">{meta.collection_slug}</span>
+										{#if collSlug}
+											<span class="entry-collection">{collSlug}</span>
 										{/if}
 									</div>
 									{#if meta.changes}

@@ -39,6 +39,9 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		activities = []models.Activity{}
 	}
 
+	// Enrich activities with item titles and collection info
+	s.enrichActivities(activities)
+
 	writeJSON(w, http.StatusOK, activities)
 }
 
@@ -73,5 +76,25 @@ func (s *Server) handleListDocumentActivity(w http.ResponseWriter, r *http.Reque
 		activities = []models.Activity{}
 	}
 
+	// Enrich activities with item titles and collection info
+	s.enrichActivities(activities)
+
 	writeJSON(w, http.StatusOK, activities)
+}
+
+// enrichActivities populates ItemTitle, ItemSlug, and CollectionSlug
+// on each activity by looking up the referenced item.
+func (s *Server) enrichActivities(activities []models.Activity) {
+	for i := range activities {
+		if activities[i].DocumentID == "" {
+			continue
+		}
+		item, err := s.store.GetItem(activities[i].DocumentID)
+		if err != nil || item == nil {
+			continue
+		}
+		activities[i].ItemTitle = item.Title
+		activities[i].ItemSlug = item.Slug
+		activities[i].CollectionSlug = item.CollectionSlug
+	}
 }
