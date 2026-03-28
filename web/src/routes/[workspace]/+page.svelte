@@ -116,16 +116,21 @@
 		try {
 			const coll = collections.find(c => c.slug === collectionSlug);
 			const defaultFields: Record<string, any> = {};
+			let contentTemplate = '';
 			if (coll) {
 				try {
 					const schema = JSON.parse(coll.schema);
 					const statusField = schema.fields?.find((f: any) => f.key === 'status');
 					if (statusField?.options?.length) defaultFields.status = statusField.options[0];
 				} catch { /* ignore */ }
+				try {
+					const settings = JSON.parse(coll.settings);
+					if (settings.content_template) contentTemplate = settings.content_template;
+				} catch { /* ignore */ }
 			}
 			const item = await api.items.create(wsSlug, collectionSlug, {
 				title: 'Untitled',
-				content: '',
+				content: contentTemplate,
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});

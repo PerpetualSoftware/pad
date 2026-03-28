@@ -54,6 +54,7 @@ export interface CollectionSettings {
 	list_sort_by?: string;
 	list_group_by?: string;
 	quick_actions?: QuickAction[];
+	content_template?: string;
 }
 
 export interface Collection {

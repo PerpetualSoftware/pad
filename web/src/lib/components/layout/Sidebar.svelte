@@ -8,7 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseSchema, itemUrlId } from '$lib/types';
+	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
@@ -99,6 +99,7 @@
 		if (!coll) return;
 		try {
 			const schema = parseSchema(coll);
+			const settings = parseSettings(coll);
 			const defaultFields: Record<string, any> = {};
 			const statusField = schema.fields.find(f => f.key === 'status');
 			if (statusField?.options?.length) {
@@ -106,7 +107,7 @@
 			}
 			const item = await api.items.create(wsSlug, activeCollectionSlug, {
 				title: 'Untitled',
-				content: '',
+				content: settings.content_template || '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});

@@ -261,6 +261,30 @@ func (c *Client) GetPlaybookLibrary() (*PlaybookLibraryResponse, error) {
 	return &result, c.get("/playbook-library", &result)
 }
 
+// --- Webhooks ---
+
+// ListWebhooks returns all webhooks for a workspace.
+func (c *Client) ListWebhooks(wsSlug string) ([]models.Webhook, error) {
+	var result []models.Webhook
+	return result, c.get("/workspaces/"+wsSlug+"/webhooks", &result)
+}
+
+// CreateWebhook registers a new webhook for a workspace.
+func (c *Client) CreateWebhook(wsSlug string, input models.WebhookCreate) (*models.Webhook, error) {
+	var result models.Webhook
+	return &result, c.post("/workspaces/"+wsSlug+"/webhooks", input, &result)
+}
+
+// DeleteWebhook removes a webhook by ID.
+func (c *Client) DeleteWebhook(wsSlug, webhookID string) error {
+	return c.delete("/workspaces/" + wsSlug + "/webhooks/" + webhookID)
+}
+
+// TestWebhook sends a test payload to a webhook.
+func (c *Client) TestWebhook(wsSlug, webhookID string) error {
+	return c.post("/workspaces/"+wsSlug+"/webhooks/"+webhookID+"/test", nil, nil)
+}
+
 // --- Export / Import ---
 
 // RawGet fetches raw bytes from the API.

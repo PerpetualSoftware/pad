@@ -27,12 +27,13 @@ type QuickAction struct {
 }
 
 type CollectionSettings struct {
-	Layout       string        `json:"layout,omitempty"`        // fields-primary, content-primary, balanced
-	DefaultView  string        `json:"default_view,omitempty"`  // list, board, table
-	BoardGroupBy string        `json:"board_group_by,omitempty"`
-	ListSortBy   string        `json:"list_sort_by,omitempty"`
-	ListGroupBy  string        `json:"list_group_by,omitempty"`
-	QuickActions []QuickAction `json:"quick_actions,omitempty"`
+	Layout          string        `json:"layout,omitempty"`           // fields-primary, content-primary, balanced
+	DefaultView     string        `json:"default_view,omitempty"`     // list, board, table
+	BoardGroupBy    string        `json:"board_group_by,omitempty"`
+	ListSortBy      string        `json:"list_sort_by,omitempty"`
+	ListGroupBy     string        `json:"list_group_by,omitempty"`
+	QuickActions    []QuickAction `json:"quick_actions,omitempty"`
+	ContentTemplate string        `json:"content_template,omitempty"` // markdown template for new items
 }
 
 type Collection struct {
