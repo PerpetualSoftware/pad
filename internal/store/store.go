@@ -71,6 +71,7 @@ func (s *Store) migrate() error {
 		"007_comments.sql",
 		"008_tasks_phase_field.sql",
 		"009_ideas_implemented_status.sql",
+		"010_webhooks.sql",
 	}
 
 	for _, name := range migrations {

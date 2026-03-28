@@ -21,6 +21,7 @@ type Activity struct {
 type ActivityListParams struct {
 	Action string
 	Actor  string
+	Source string
 	Limit  int
 	Offset int
 }

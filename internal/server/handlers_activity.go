@@ -16,6 +16,7 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 	params := models.ActivityListParams{
 		Action: r.URL.Query().Get("action"),
 		Actor:  r.URL.Query().Get("actor"),
+		Source: r.URL.Query().Get("source"),
 	}
 
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {

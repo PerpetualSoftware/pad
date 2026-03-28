@@ -145,6 +145,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	s.logActivity(workspaceID, item.ID, "created", input.CreatedBy, input.Source)
 	s.publishItemEvent(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, input.CreatedBy, input.Source)
+	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -249,6 +250,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 	s.logActivity(workspaceID, updated.ID, "updated", input.LastModifiedBy, input.Source)
 	s.publishItemEvent(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, input.LastModifiedBy, input.Source)
+	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -278,6 +280,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 	s.logActivity(workspaceID, item.ID, "archived", "user", "web")
 	s.publishItemEvent(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, "user", "web")
+	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -431,6 +434,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Publish events for both old and new collections
 	s.publishItemEvent(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, input.Actor, input.Source)
+	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
 	writeJSON(w, http.StatusOK, moved)
 }

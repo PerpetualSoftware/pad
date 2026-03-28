@@ -15,10 +15,22 @@ import (
 
 type DashboardResponse struct {
 	Summary        DashboardSummary       `json:"summary"`
+	ActiveItems    []DashboardActiveItem  `json:"active_items"`
 	ActivePhases   []DashboardPhase       `json:"active_phases"`
 	Attention      []DashboardAttention   `json:"attention"`
 	RecentActivity []DashboardActivity    `json:"recent_activity"`
 	SuggestedNext  []DashboardSuggestion  `json:"suggested_next"`
+}
+
+type DashboardActiveItem struct {
+	Slug           string `json:"slug"`
+	Title          string `json:"title"`
+	CollectionSlug string `json:"collection_slug"`
+	CollectionIcon string `json:"collection_icon"`
+	Priority       string `json:"priority,omitempty"`
+	Status         string `json:"status"`
+	UpdatedAt      string `json:"updated_at"`
+	ItemRef        string `json:"item_ref,omitempty"`
 }
 
 type DashboardActivity struct {
@@ -76,10 +88,23 @@ func priorityRank(priority string) int {
 	}
 }
 
-// isDoneStatus returns true if the status indicates a completed item.
+// isDoneStatus returns true if the status indicates a completed or terminal item.
 func isDoneStatus(status string) bool {
 	switch strings.ToLower(status) {
-	case "done", "completed", "resolved":
+	case "done", "completed", "resolved", "cancelled", "rejected", "wontfix", "fixed", "implemented":
+		return true
+	default:
+		return false
+	}
+}
+
+// isActiveStatus returns true if the status indicates work actively in progress.
+// It excludes both initial/queued states and terminal/completed states.
+func isActiveStatus(status string) bool {
+	s := strings.ToLower(strings.ReplaceAll(status, "-", "_"))
+	switch s {
+	// Active statuses
+	case "in_progress", "exploring", "fixing", "confirmed", "in_review":
 		return true
 	default:
 		return false
@@ -96,6 +121,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		Summary: DashboardSummary{
 			ByCollection: make(map[string]map[string]int),
 		},
+		ActiveItems:    []DashboardActiveItem{},
 		ActivePhases:   []DashboardPhase{},
 		Attention:      []DashboardAttention{},
 		RecentActivity: []DashboardActivity{},
@@ -121,6 +147,44 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			status = "unknown"
 		}
 		resp.Summary.ByCollection[collSlug][status]++
+	}
+
+	// Active items: items currently being worked on (not initial state, not terminal state)
+	for _, item := range allItems {
+		status := extractFieldValue(item.Fields, "status")
+		if !isActiveStatus(status) {
+			continue
+		}
+		// Skip phases (they have their own section)
+		if item.CollectionSlug == "phases" {
+			continue
+		}
+		ai := DashboardActiveItem{
+			Slug:           item.Slug,
+			Title:          item.Title,
+			CollectionSlug: item.CollectionSlug,
+			CollectionIcon: item.CollectionIcon,
+			Status:         status,
+			UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+		ai.Priority = extractFieldValue(item.Fields, "priority")
+		if item.CollectionPrefix != "" && item.ItemNumber != nil {
+			ai.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+		}
+		resp.ActiveItems = append(resp.ActiveItems, ai)
+	}
+	// Sort active items: by priority rank then by most recently updated
+	sort.Slice(resp.ActiveItems, func(i, j int) bool {
+		pi := priorityRank(resp.ActiveItems[i].Priority)
+		pj := priorityRank(resp.ActiveItems[j].Priority)
+		if pi != pj {
+			return pi < pj
+		}
+		return resp.ActiveItems[i].UpdatedAt > resp.ActiveItems[j].UpdatedAt
+	})
+	// Cap at 10
+	if len(resp.ActiveItems) > 10 {
+		resp.ActiveItems = resp.ActiveItems[:10]
 	}
 
 	// Active phases: items in "phases" collection where status=active
@@ -252,6 +316,44 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 			}
+		}
+	}
+
+	// (e) Blocked: non-done items that are blocked by other non-done items
+	for _, item := range allItems {
+		status := extractFieldValue(item.Fields, "status")
+		if isDoneStatus(status) {
+			continue
+		}
+		links, err := s.store.GetItemLinks(item.ID)
+		if err != nil {
+			continue
+		}
+		for _, link := range links {
+			if link.LinkType != "blocks" {
+				continue
+			}
+			// We care about links where this item is the target (i.e., blocked by source)
+			if link.TargetID != item.ID {
+				continue
+			}
+			// Check if the blocking item is still not done
+			blocker, err := s.store.GetItem(link.SourceID)
+			if err != nil || blocker == nil {
+				continue
+			}
+			blockerStatus := extractFieldValue(blocker.Fields, "status")
+			if isDoneStatus(blockerStatus) {
+				continue
+			}
+			resp.Attention = append(resp.Attention, DashboardAttention{
+				Type:       "blocked",
+				ItemSlug:   item.Slug,
+				ItemTitle:  item.Title,
+				Collection: item.CollectionSlug,
+				Reason:     "Blocked by " + link.SourceTitle + " (still " + blockerStatus + ")",
+			})
+			break // only report the first active blocker per item
 		}
 	}
 

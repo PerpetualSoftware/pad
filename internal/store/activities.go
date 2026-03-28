@@ -36,6 +36,10 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		query += " AND actor = ?"
 		args = append(args, params.Actor)
 	}
+	if params.Source != "" {
+		query += " AND source = ?"
+		args = append(args, params.Source)
+	}
 
 	query += " ORDER BY created_at DESC"
 

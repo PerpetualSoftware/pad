@@ -15,13 +15,15 @@ import (
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/store"
+	"github.com/xarmian/pad/internal/webhooks"
 )
 
 type Server struct {
-	store  *store.Store
-	router *chi.Mux
-	webFS  fs.FS       // embedded web UI static files (optional)
-	events *events.Bus // real-time event bus (optional)
+	store    *store.Store
+	router   *chi.Mux
+	webFS    fs.FS                // embedded web UI static files (optional)
+	events   *events.Bus          // real-time event bus (optional)
+	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
 }
 
 func New(s *store.Store) *Server {
@@ -33,6 +35,11 @@ func New(s *store.Store) *Server {
 // SetEventBus attaches an event bus for real-time SSE streaming.
 func (s *Server) SetEventBus(bus *events.Bus) {
 	s.events = bus
+}
+
+// SetWebhookDispatcher attaches a webhook dispatcher for outgoing notifications.
+func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
+	s.webhooks = d
 }
 
 func (s *Server) setupRouter() {
@@ -113,6 +120,13 @@ func (s *Server) setupRouter() {
 						// Items within collection
 						r.Get("/items", s.handleListCollectionItems)
 						r.Post("/items", s.handleCreateItem)
+						// Saved views within collection
+						r.Get("/views", s.handleListViews)
+						r.Post("/views", s.handleCreateView)
+						r.Route("/views/{viewID}", func(r chi.Router) {
+							r.Patch("/", s.handleUpdateView)
+							r.Delete("/", s.handleDeleteView)
+						})
 					})
 				})
 
@@ -141,6 +155,16 @@ func (s *Server) setupRouter() {
 
 				// Comments (v2)
 				r.Delete("/comments/{commentID}", s.handleDeleteComment)
+
+				// Webhooks
+				r.Route("/webhooks", func(r chi.Router) {
+					r.Get("/", s.handleListWebhooks)
+					r.Post("/", s.handleCreateWebhook)
+					r.Route("/{webhookID}", func(r chi.Router) {
+						r.Delete("/", s.handleDeleteWebhook)
+						r.Post("/test", s.handleTestWebhook)
+					})
+				})
 
 				// Dashboard (v2)
 				r.Get("/dashboard", s.handleGetDashboard)

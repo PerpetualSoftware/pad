@@ -80,6 +80,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Publish SSE event
 	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, comment.CreatedBy, comment.Source)
+	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
 	writeJSON(w, http.StatusCreated, comment)
 }
