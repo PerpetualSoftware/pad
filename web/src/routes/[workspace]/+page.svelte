@@ -158,6 +158,16 @@
 		if (action === 'restored') return '\u21ba';
 		return '\u2022';
 	}
+
+	function parseActivityChanges(metadata?: string): string {
+		if (!metadata) return '';
+		try {
+			const meta = JSON.parse(metadata);
+			return meta.changes || '';
+		} catch {
+			return '';
+		}
+	}
 </script>
 
 <div class="dashboard">
@@ -168,7 +178,7 @@
 				<div class="skeleton-line" style="width: 60px; height: 16px;"></div>
 			</div>
 			<div class="skeleton-grid">
-				{#each Array(4) as _}
+				{#each Array(4) as _, i (i)}
 					<div class="skeleton-card">
 						<div class="skeleton-line" style="width: 60%; height: 14px;"></div>
 						<div class="skeleton-line" style="width: 80%; height: 12px;"></div>
@@ -354,6 +364,7 @@
 				</div>
 				<div class="activity-list">
 					{#each dashboard.recent_activity.slice(0, 10) as activity, i (i)}
+						{@const changes = parseActivityChanges(activity.metadata)}
 						<div class="activity-row">
 							{#if activity.source === 'cli' && activity.actor === 'agent'}
 								<span class="actor-badge agent">agent</span>
@@ -364,6 +375,9 @@
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
 							{#if activity.item_title}
 								<a href="/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
+							{/if}
+							{#if changes}
+								<span class="activity-changes">{changes}</span>
 							{/if}
 							<span class="activity-time" title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>
 						</div>
@@ -885,6 +899,14 @@
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
 		color: var(--accent-blue);
+	}
+	.activity-changes {
+		font-size: 0.75em;
+		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 200px;
 	}
 
 	/* ── Skeleton loader ────────────────────────────────────────────────── */
