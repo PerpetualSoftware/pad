@@ -269,17 +269,21 @@ All commands accept `--format json` for machine-readable output and `--workspace
 
 ### Authentication
 
-Pad runs without authentication by default for frictionless local use. To protect the web UI when exposing the server:
+Pad runs without authentication by default for frictionless local use. On first `pad login`, you'll be prompted to create an account:
 
 ```bash
-# Set a password via environment variable
-PAD_PASSWORD=mypassword pad serve
-
-# Or add to ~/.pad/config.toml
-password = "mypassword"
+pad login              # Register (first time) or sign in
+pad whoami             # Show current user
+pad logout             # Sign out
 ```
 
-When a password is set, the web UI shows a login page and all API requests require either a session cookie or an [API token](https://getpad.dev/docs/api). CLI tools use API tokens, which work independently of password auth.
+Once a user exists, all API requests and web UI access require authentication. Credentials are stored in `~/.pad/credentials.json`. Multiple users can be invited to workspaces with role-based access control (`owner`, `editor`, `viewer`).
+
+```bash
+pad members                         # List workspace members
+pad invite user@example.com         # Invite to workspace
+pad join <code>                     # Accept invitation
+```
 
 ## Architecture
 

@@ -71,23 +71,42 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by)
 - `GET /search?q=query&workspace=slug` — full-text search
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
-- `GET /api/v1/auth/session` — auth status check
-- `POST /api/v1/auth/login` — password login (returns session cookie)
+- `GET /workspaces/{ws}/members` — list members + pending invitations
+- `POST /workspaces/{ws}/members/invite` — invite user to workspace
+- `GET /api/v1/auth/session` — auth status (needs_setup, authenticated, user)
+- `POST /api/v1/auth/register` — create account (first user becomes admin)
+- `POST /api/v1/auth/login` — email/password login (returns session token)
 - `POST /api/v1/auth/logout` — destroy session
+- `GET /api/v1/auth/me` — current user profile
+- `GET/POST/DELETE /api/v1/auth/tokens` — user-scoped API tokens
+- `POST /api/v1/invitations/{code}/accept` — accept workspace invitation
 
 ## Authentication
 
-Optional password protection for the web UI. When enabled, all API requests and page loads require either a session cookie or API token.
+User-based authentication with email/password. When no users exist (fresh install), everything works without auth. Once a user registers, all API requests require authentication.
 
 ```bash
-# Enable via environment variable
-PAD_PASSWORD=mypassword pad serve
+# First-time setup: register creates the admin account
+pad login              # Prompts to register if no users exist
 
-# Or in ~/.pad/config.toml
-password = "mypassword"
+# Subsequent logins
+pad login              # Email + password prompt
+pad whoami             # Show current user
+pad logout             # Sign out
+
+# Credentials stored in ~/.pad/credentials.json (0600 permissions)
+# CLI auto-attaches auth token to all API requests
 ```
 
-When no password is configured, everything works exactly as before (zero-friction localhost). CLI commands use API tokens (already separate from password auth).
+### Workspace membership
+```bash
+pad members                         # List workspace members
+pad invite user@example.com         # Invite (adds directly if user exists, creates join code if not)
+pad invite user@example.com --role viewer  # Invite with specific role
+pad join <code>                     # Accept a workspace invitation
+```
+
+Roles: `owner` (full access), `editor` (CRUD items), `viewer` (read-only).
 
 ## CLI
 
@@ -120,6 +139,12 @@ pad github status [item-ref]  # Show PR status for linked items
 pad github unlink <item-ref>  # Remove PR link from item
 pad bulk-update --status done SLUG1 SLUG2  # Batch operations
 pad webhooks list/create/delete/test       # Webhook management
+pad login                     # Log in (or register if first user)
+pad logout                    # Sign out
+pad whoami                    # Show current user
+pad members                   # List workspace members
+pad invite <email> [--role X] # Invite user to workspace
+pad join <code>               # Accept workspace invitation
 ```
 
 Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc`→`docs`.
