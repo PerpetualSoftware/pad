@@ -167,12 +167,19 @@
 </script>
 
 <!-- Swipe from left edge to open (when sidebar is closed on mobile) -->
-<!-- Touch zone: 0-24px from left edge only — avoids conflicts with board horizontal scroll -->
+<!-- Touch zone: 0-16px from left edge only — skip if touch is inside a horizontally scrollable element -->
 <svelte:window
 	ontouchstart={(e) => {
 		if (!uiStore.isMobile || uiStore.sidebarOpen) return;
 		const x = e.touches[0].clientX;
-		if (x <= 24) {
+		if (x <= 16) {
+			// Don't activate if the touch is inside a horizontally scrollable container
+			// (e.g. board view with overflow-x: auto)
+			let el = e.target as HTMLElement | null;
+			while (el) {
+				if (el.scrollWidth > el.clientWidth + 1) return;
+				el = el.parentElement;
+			}
 			openSwipeStartX = x;
 			openSwipeStartY = e.touches[0].clientY;
 			openSwipeTracking = true;

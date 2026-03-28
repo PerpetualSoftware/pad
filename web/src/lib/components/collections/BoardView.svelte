@@ -444,13 +444,13 @@
 			scroll-behavior: smooth;
 			-webkit-overflow-scrolling: touch;
 			gap: var(--space-3);
-			padding-bottom: var(--space-3);
+			padding: 0 var(--space-4) var(--space-3);
 		}
 
 		.kanban-column {
-			min-width: 85vw;
-			max-width: 85vw;
-			scroll-snap-align: center;
+			min-width: 78vw;
+			max-width: 78vw;
+			scroll-snap-align: start;
 			flex-shrink: 0;
 		}
 	}
