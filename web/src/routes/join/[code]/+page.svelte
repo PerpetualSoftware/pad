@@ -61,13 +61,19 @@
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
 				if (password.length < 8) { formError = 'Password must be at least 8 characters'; submitting = false; return; }
 				if (password !== confirmPassword) { formError = 'Passwords do not match'; submitting = false; return; }
-				await api.auth.register(email.trim(), name.trim(), password);
+				// Pass the invitation code so the backend allows registration
+				// and auto-accepts the invitation in one step.
+				await api.auth.register(email.trim(), name.trim(), password, code);
+				// Registration with invitation_code already accepted the invite,
+				// so redirect directly instead of calling acceptInvitation().
+				await goto('/', { replaceState: true });
+				return;
 			} else {
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
 				if (!password) { formError = 'Password is required'; submitting = false; return; }
 				await api.auth.login(email.trim(), password);
 			}
-			// Logged in — now accept the invitation
+			// Logged in via login — now accept the invitation
 			await acceptInvitation();
 		} catch (err: unknown) {
 			formError = err instanceof Error ? err.message : 'Authentication failed';

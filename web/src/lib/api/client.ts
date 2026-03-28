@@ -360,10 +360,10 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ email, password })
 			}),
-		register: (email: string, name: string, password: string) =>
+		register: (email: string, name: string, password: string, invitation_code?: string) =>
 			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/register', {
 				method: 'POST',
-				body: JSON.stringify({ email, name, password })
+				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
 			}),
 		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 		me: () => request<{ id: string; email: string; name: string; role: string }>('/auth/me')
