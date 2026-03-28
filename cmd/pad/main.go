@@ -1557,7 +1557,12 @@ Examples:
 			if icon == "" {
 				icon = "📦"
 			}
-			fmt.Printf("Created %s %s: %q (%s)\n", icon, item.CollectionName, item.Title, item.Slug)
+			ref := cli.ItemRef(*item)
+			if ref != "" {
+				fmt.Printf("Created %s %s %s: %q\n", icon, item.CollectionName, ref, item.Title)
+			} else {
+				fmt.Printf("Created %s %s: %q (%s)\n", icon, item.CollectionName, item.Title, item.Slug)
+			}
 			if summary := cli.FormatFieldSummary(item.Fields); summary != "" {
 				fmt.Printf("  %s\n", summary)
 			}
@@ -1732,7 +1737,7 @@ func printItemsGroupedByCollection(items []models.Item) {
 			ref := cli.ItemRef(item)
 			refStr := ""
 			if ref != "" {
-				refStr = dim.Sprintf("%-9s", ref)
+				refStr = cli.BoldCyan.Sprintf("%-9s", ref)
 			} else {
 				refStr = "         "
 			}
@@ -1759,7 +1764,7 @@ func printItemsGroupedByCollection(items []models.Item) {
 
 func showCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <slug>",
+		Use:   "show <ref>",
 		Short: "Show item detail (fields + content)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1891,14 +1896,16 @@ func updateCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "update <slug> [--field value...]",
+		Use:   "update <ref> [--field value...]",
 		Short: "Update an item's fields or content",
 		Long: `Update an existing item. Only the specified fields are changed.
 
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
+
 Examples:
-  pad update fix-oauth --status done
-  pad update api-redesign --status active --priority high
-  pad update payment-arch --stdin < updated-doc.md`,
+  pad update TASK-5 --status done
+  pad update PHASE-2 --status active --priority high
+  pad update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -1984,7 +1991,12 @@ Examples:
 				return cli.PrintJSON(updated)
 			}
 
-			fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
+			ref := cli.ItemRef(*updated)
+			if ref != "" {
+				fmt.Printf("Updated %s %q\n", ref, updated.Title)
+			} else {
+				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
+			}
 			if summary := cli.FormatFieldSummary(updated.Fields); summary != "" {
 				fmt.Printf("  %s\n", summary)
 			}
@@ -2010,7 +2022,7 @@ Examples:
 
 func deleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <slug>",
+		Use:   "delete <ref>",
 		Short: "Archive (soft-delete) an item",
 		Aliases: []string{"rm"},
 		Args:  cobra.ExactArgs(1),
@@ -2018,11 +2030,22 @@ func deleteCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
+			// Get item first so we can show its ref in output
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
 			if err := client.DeleteItem(ws, args[0]); err != nil {
 				return err
 			}
 
-			fmt.Printf("Archived %q\n", args[0])
+			ref := cli.ItemRef(*item)
+			if ref != "" {
+				fmt.Printf("Archived %s %q\n", ref, item.Title)
+			} else {
+				fmt.Printf("Archived %q\n", args[0])
+			}
 			return nil
 		},
 	}
@@ -2032,16 +2055,18 @@ func deleteCmd() *cobra.Command {
 
 func moveCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "move <slug> <target-collection>",
+		Use:   "move <ref> <target-collection>",
 		Short: "Move an item to a different collection",
 		Long: `Move an item to a different collection with automatic field migration.
 
 Fields with matching names and compatible types transfer automatically.
 Incompatible fields are dropped. Use --field to set values for target-specific fields.
 
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
+
 Examples:
-  pad move fix-oauth bugs                      # Move to bugs collection
-  pad move my-idea tasks --field priority=high  # Move idea to tasks with priority`,
+  pad move BUG-3 tasks                         # Move to tasks collection
+  pad move IDEA-7 tasks --field priority=high   # Move idea to tasks with priority`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2083,7 +2108,7 @@ Examples:
 
 func commentCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "comment <slug> <message>",
+		Use:   "comment <ref> <message>",
 		Short: "Add a comment to an item",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2111,7 +2136,7 @@ func commentCmd() *cobra.Command {
 
 func commentsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "comments <slug>",
+		Use:   "comments <ref>",
 		Short: "List comments on an item",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2137,7 +2162,7 @@ func commentsCmd() *cobra.Command {
 
 func blocksCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "blocks <source-slug> <target-slug>",
+		Use:   "blocks <source-ref> <target-ref>",
 		Short: "Mark that one item blocks another",
 		Long: `Create a blocking dependency between two items.
 
@@ -2192,7 +2217,7 @@ The source item blocks the target item. For example:
 
 func blockedByCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "blocked-by <source-slug> <blocker-slug>",
+		Use:   "blocked-by <source-ref> <blocker-ref>",
 		Short: "Mark that an item is blocked by another",
 		Long: `Create a blocking dependency (reverse direction).
 
@@ -2247,7 +2272,7 @@ The source item is blocked by the blocker item. For example:
 
 func depsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "deps <slug>",
+		Use:   "deps <ref>",
 		Short: "Show all dependencies for an item",
 		Long: `Display blocking relationships for an item.
 
@@ -2332,7 +2357,7 @@ Example:
 
 func unblockCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unblock <source-slug> <target-slug>",
+		Use:   "unblock <source-ref> <target-ref>",
 		Short: "Remove a blocking dependency between items",
 		Long: `Remove a "blocks" relationship where source blocks target.
 
@@ -3287,11 +3312,12 @@ Examples:
 
 func editCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "edit <slug>",
+		Use:   "edit <ref>",
 		Short: "Open an item's content in $EDITOR",
 		Long: `Open an item's rich content in your default editor. After editing
 and saving, the content is updated in Pad.
 
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
 Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -3321,7 +3347,12 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return err
 			}
 
-			fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
+			ref := cli.ItemRef(*updated)
+			if ref != "" {
+				fmt.Printf("Updated %s %q\n", ref, updated.Title)
+			} else {
+				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
+			}
 			return nil
 		},
 	}
@@ -4085,9 +4116,11 @@ func bulkUpdateCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "bulk-update [--status X] [--priority X] <slug>...",
+		Use:   "bulk-update [--status X] [--priority X] <ref>...",
 		Short: "Update multiple items at once",
 		Long: `Update the status or priority of multiple items in a single command.
+
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
   pad bulk-update --status done TASK-5 TASK-8 TASK-12

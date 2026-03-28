@@ -152,7 +152,7 @@ func PrintItemTable(items []models.Item) {
 		ref := ItemRef(item)
 		titlePart := item.Title
 		if ref != "" {
-			titlePart = Dim.Sprint(ref) + "  " + Bold.Sprint(item.Title)
+			titlePart = BoldCyan.Sprint(ref) + "  " + Bold.Sprint(item.Title)
 		} else {
 			titlePart = Bold.Sprint(item.Title)
 		}
@@ -238,7 +238,7 @@ func PrintItemMeta(item *models.Item) {
 	// Item ref + Title
 	ref := ItemRef(*item)
 	if ref != "" {
-		fmt.Printf("%s  %s\n", Dim.Sprint(ref), Bold.Sprint(item.Title))
+		fmt.Printf("%s  %s\n", BoldCyan.Sprint(ref), Bold.Sprint(item.Title))
 	} else {
 		fmt.Printf("%s\n", Bold.Sprint(item.Title))
 	}

@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Item struct {
 	ID             string     `json:"id"`
@@ -8,6 +11,7 @@ type Item struct {
 	CollectionID   string     `json:"collection_id"`
 	Title          string     `json:"title"`
 	Slug           string     `json:"slug"`
+	Ref            string     `json:"ref,omitempty"` // computed: e.g. "TASK-5", "BUG-8"
 	Content        string     `json:"content"`
 	Fields         string     `json:"fields"` // JSON string
 	Tags           string     `json:"tags"`   // JSON array string
@@ -29,6 +33,14 @@ type Item struct {
 	CollectionName   string `json:"collection_name,omitempty"`
 	CollectionIcon   string `json:"collection_icon,omitempty"`
 	CollectionPrefix string `json:"collection_prefix,omitempty"`
+}
+
+// ComputeRef sets the Ref field from CollectionPrefix and ItemNumber.
+// Call this after populating the item from a database query.
+func (item *Item) ComputeRef() {
+	if item.CollectionPrefix != "" && item.ItemNumber != nil {
+		item.Ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
+	}
 }
 
 type ItemCreate struct {

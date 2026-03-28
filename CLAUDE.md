@@ -110,25 +110,28 @@ Roles: `owner` (full access), `editor` (CRUD items), `viewer` (read-only).
 
 ## CLI
 
+Items are referenced by **issue ID** (e.g. `TASK-5`, `BUG-8`) wherever a `<ref>` argument appears.
+Slugs also work but issue IDs are preferred.
+
 ```bash
 pad create <collection> "title" [--status X] [--priority X]
 pad list [collection] [--status X] [--all]
-pad show <slug>
-pad update <slug> [--status X] [--priority X]
-pad delete <slug>
-pad move <slug> <target-collection>
+pad show <ref>                # e.g. pad show TASK-5
+pad update <ref> [--status X] [--priority X]
+pad delete <ref>
+pad move <ref> <target-collection>
 pad search "query"
 pad status                    # Project dashboard
 pad next                      # Recommended next task
 pad standup [--days N]        # Daily standup report
 pad changelog [--days N]      # Release notes from completed items
-pad blocks <source> <target>  # Create dependency
+pad blocks <source> <target>  # e.g. pad blocks TASK-5 TASK-8
 pad blocked-by <item> <blocker>
-pad deps <slug>               # Show dependencies
+pad deps <ref>                # Show dependencies
 pad unblock <source> <target>
 pad collections               # List collections
 pad collections create "Name" --fields "key:type[:opts]; ..."
-pad edit <slug>               # Open in $EDITOR
+pad edit <ref>                # Open in $EDITOR
 pad init [--template X]       # Create workspace
 pad install [tool]            # Install /pad skill for AI tools
 pad onboard                   # Analyze codebase, suggest conventions
@@ -137,8 +140,8 @@ pad watch                     # Real-time activity stream
 pad github link [item-ref]    # Link current branch's PR to item
 pad github status [item-ref]  # Show PR status for linked items
 pad github unlink <item-ref>  # Remove PR link from item
-pad bulk-update --status done SLUG1 SLUG2  # Batch operations
-pad webhooks list/create/delete/test       # Webhook management
+pad bulk-update --status done TASK-5 TASK-8  # Batch operations
+pad webhooks list/create/delete/test         # Webhook management
 pad login                     # Log in (or register if first user)
 pad logout                    # Sign out
 pad whoami                    # Show current user
