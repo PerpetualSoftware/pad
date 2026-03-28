@@ -2,11 +2,14 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
 	import { page } from '$app/state';
+	import EmptyState from '../common/EmptyState.svelte';
 
 	interface Props {
 		items: Item[];
 		collection: Collection;
+		wsSlug?: string;
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
+		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		relationLabels?: Record<string, string>;
@@ -15,13 +18,15 @@
 	let {
 		items,
 		collection,
+		wsSlug = '',
 		onStatusChange,
+		oncreate,
 		itemProgress,
 		progressLabel,
 		relationLabels
 	}: Props = $props();
 
-	let wsSlug = $derived(page.params.workspace);
+	let resolvedWsSlug = $derived(wsSlug || page.params.workspace);
 	let schema = $derived(parseSchema(collection));
 	let visibleFields = $derived(schema.fields.filter((f) => !f.computed));
 
@@ -95,6 +100,9 @@
 	}
 </script>
 
+{#if items.length === 0}
+	<EmptyState {collection} wsSlug={resolvedWsSlug} {oncreate} />
+{:else}
 <div class="table-scroll">
 	<table class="table-view">
 		<thead>
@@ -121,7 +129,7 @@
 				<tr>
 					<td class="col-ref"><span class="ref">{formatItemRef(item) ?? ''}</span></td>
 					<td class="col-title">
-						<a href="/{wsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
+						<a href="/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
 						{#if itemProgress?.[item.id]}
 							{@const p = itemProgress[item.id]}
 							<div class="cell-progress">
@@ -149,6 +157,7 @@
 		</tbody>
 	</table>
 </div>
+{/if}
 
 <style>
 	.table-scroll {

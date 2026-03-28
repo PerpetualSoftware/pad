@@ -8,9 +8,12 @@
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
-	import { isMod } from '$lib/utils/keyboard';
+	import { isMod, isInputFocused } from '$lib/utils/keyboard';
+	import KeyboardShortcuts from '$lib/components/common/KeyboardShortcuts.svelte';
 
 	let { children } = $props();
+
+	let showShortcuts = $state(false);
 
 	onMount(async () => {
 		await workspaceStore.loadAll();
@@ -37,6 +40,15 @@
 			if (workspaceStore.current) {
 				goto(`/${workspaceStore.current.slug}/new`);
 			}
+			return;
+		}
+		if (e.key === '?' && !isInputFocused()) {
+			e.preventDefault();
+			showShortcuts = !showShortcuts;
+			return;
+		}
+		if (e.key === 'Escape' && showShortcuts) {
+			showShortcuts = false;
 			return;
 		}
 		if (e.key === 'Escape' && uiStore.searchOpen) {
@@ -68,7 +80,7 @@
 						<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
 					</svg>
 				</button>
-				<span class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</span>
+				<a href="/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
 			</div>
 		{/if}
 		{@render children()}
@@ -78,6 +90,7 @@
 <CommandPalette />
 <CreateWorkspaceModal />
 <ToastContainer />
+<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
 
 <style>
 	.app-shell {
@@ -116,5 +129,11 @@
 	.mobile-title {
 		font-weight: 600;
 		font-size: 0.95em;
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+	.mobile-title:hover {
+		color: var(--accent-blue);
+		text-decoration: none;
 	}
 </style>

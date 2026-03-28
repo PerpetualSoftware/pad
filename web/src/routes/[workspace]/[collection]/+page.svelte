@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import type { Collection, Item, QuickAction } from '$lib/types';
+	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
@@ -25,6 +25,14 @@
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
 	let progressLabel = $state('tasks');
 	let relationLabels = $state<Record<string, string>>({});
+
+	// Saved views state
+	let savedViews = $state<View[]>([]);
+	let activeViewId = $state<string | null>(null);
+	let savingView = $state(false);
+	let saveViewOpen = $state(false);
+	let saveViewName = $state('');
+	let saveViewInput = $state<HTMLInputElement>();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
@@ -128,12 +136,15 @@
 		loading = true;
 		try {
 			const listParams = includeArchived ? { include_archived: true } : undefined;
-			const [collData, itemsData] = await Promise.all([
+			const [collData, itemsData, viewsData] = await Promise.all([
 				api.collections.get(ws, coll),
-				api.items.listByCollection(ws, coll, listParams)
+				api.items.listByCollection(ws, coll, listParams),
+				api.views.list(ws, coll).catch(() => [] as View[])
 			]);
 			collection = collData;
 			items = itemsData;
+			savedViews = viewsData;
+			activeViewId = null;
 
 			// Fetch phase progress if viewing phases collection
 			if (coll === 'phases') {
@@ -260,6 +271,9 @@
 	};
 
 	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
+
+	let filtersOpen = $state(false);
+	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0);
 
 	function singularName(): string {
 		if (!collection) return 'item';
@@ -428,7 +442,7 @@
 		// Don't capture when typing in inputs/textareas or when quick-create is open
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-		if (quickCreateOpen) return;
+		if (quickCreateOpen || saveViewOpen) return;
 
 		switch (e.key) {
 			case 'j':
@@ -497,6 +511,110 @@
 		}
 	}
 
+	// --- Saved views ---
+
+	function buildViewConfig(): ViewConfig {
+		const config: ViewConfig = {};
+		const filterEntries = Object.entries(activeFilters);
+		if (filterEntries.length > 0) {
+			config.filters = filterEntries.map(([field, value]) => ({ field, op: 'eq', value }));
+		}
+		return config;
+	}
+
+	function applyViewConfig(view: View) {
+		// Set view mode
+		const vt = view.view_type;
+		if (vt === 'list' || vt === 'board' || vt === 'table') {
+			viewMode = vt;
+			saveViewMode(vt);
+		}
+
+		// Parse and apply config
+		let config: ViewConfig = {};
+		try { config = JSON.parse(view.config); } catch {}
+
+		// Apply filters
+		const newFilters: Record<string, string> = {};
+		if (config.filters) {
+			for (const f of config.filters) {
+				if (f.op === 'eq' && typeof f.value === 'string') {
+					newFilters[f.field] = f.value;
+				}
+			}
+		}
+		activeFilters = newFilters;
+		searchQuery = '';
+
+		// Open filters panel if the view has filters
+		if (Object.keys(newFilters).length > 0) {
+			filtersOpen = true;
+		}
+
+		activeViewId = view.id;
+		updateUrlFilters();
+	}
+
+	function clearActiveView() {
+		activeViewId = null;
+		activeFilters = {};
+		searchQuery = '';
+		filtersOpen = false;
+		updateUrlFilters();
+	}
+
+	async function saveCurrentView() {
+		const name = saveViewName.trim();
+		if (!name || !wsSlug || !collSlug || savingView) return;
+		savingView = true;
+		try {
+			const config = buildViewConfig();
+			const view = await api.views.create(wsSlug, collSlug, {
+				name,
+				view_type: viewMode,
+				config: JSON.stringify(config)
+			});
+			savedViews = [...savedViews, view];
+			activeViewId = view.id;
+			saveViewOpen = false;
+			saveViewName = '';
+			toastStore.show(`Saved view "${name}"`, 'success');
+		} catch {
+			toastStore.show('Failed to save view', 'error');
+		} finally {
+			savingView = false;
+		}
+	}
+
+	async function deleteView(viewId: string, viewName: string) {
+		if (!wsSlug || !collSlug) return;
+		try {
+			await api.views.delete(wsSlug, collSlug, viewId);
+			savedViews = savedViews.filter((v) => v.id !== viewId);
+			if (activeViewId === viewId) {
+				clearActiveView();
+			}
+			toastStore.show(`Deleted view "${viewName}"`, 'success');
+		} catch {
+			toastStore.show('Failed to delete view', 'error');
+		}
+	}
+
+	function openSaveView() {
+		saveViewOpen = true;
+		requestAnimationFrame(() => saveViewInput?.focus());
+	}
+
+	function handleSaveViewKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && saveViewName.trim()) {
+			e.preventDefault();
+			saveCurrentView();
+		} else if (e.key === 'Escape') {
+			saveViewOpen = false;
+			saveViewName = '';
+		}
+	}
+
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
@@ -516,66 +634,127 @@
 				<h1>
 					{#if collection.icon}<span class="collection-icon">{collection.icon}</span>{/if}
 					{collection.name}
+					<span class="item-count">{items.length}</span>
 				</h1>
-				{#if itemCounts}
-					<span class="summary-stats">
-						{#each Object.entries(itemCounts) as [status, count] (status)}
-							<span class="stat">{count} {formatLabel(status).toLowerCase()}</span>
-							{#if status !== Object.keys(itemCounts).at(-1)}
-								<span class="stat-sep">&middot;</span>
-							{/if}
-						{/each}
-					</span>
-				{/if}
-			</div>
 
-			<div class="controls-row">
-				<div class="view-toggle">
+				<div class="header-actions">
+					<div class="view-toggle">
+						<button
+							class="toggle-btn"
+							class:active={viewMode === 'list'}
+							onclick={() => { saveViewMode('list'); updateUrlFilters(); }}
+							aria-label="List view"
+							title="List view"
+						>&#9776;</button>
+						<button
+							class="toggle-btn"
+							class:active={viewMode === 'board'}
+							onclick={() => { saveViewMode('board'); updateUrlFilters(); }}
+							aria-label="Board view"
+							title="Board view"
+						>&#9638;</button>
+						<button
+							class="toggle-btn"
+							class:active={viewMode === 'table'}
+							onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
+							aria-label="Table view"
+							title="Table view"
+						>&#9783;</button>
+					</div>
+
 					<button
-						class="toggle-btn"
-						class:active={viewMode === 'list'}
-						onclick={() => { saveViewMode('list'); updateUrlFilters(); }}
-						aria-label="List view"
-						title="List view"
-					>&#9776;</button>
+						class="filter-toggle-btn"
+						class:has-filters={hasActiveFilters}
+						onclick={() => filtersOpen = !filtersOpen}
+						aria-label="Toggle filters"
+						title="Toggle filters"
+					>
+						<span class="filter-icon">&#9697;</span>
+						<span class="filter-label">Filters</span>
+						{#if hasActiveFilters}
+							<span class="filter-badge"></span>
+						{/if}
+					</button>
+
+					<label class="archive-toggle">
+						<input type="checkbox" bind:checked={showArchived} />
+						<span>Archived</span>
+					</label>
+
 					<button
-						class="toggle-btn"
-						class:active={viewMode === 'board'}
-						onclick={() => { saveViewMode('board'); updateUrlFilters(); }}
-						aria-label="Board view"
-						title="Board view"
-					>&#9638;</button>
-					<button
-						class="toggle-btn"
-						class:active={viewMode === 'table'}
-						onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
-						aria-label="Table view"
-						title="Table view"
-					>&#9783;</button>
+						class="save-view-btn"
+						onclick={openSaveView}
+						aria-label="Save current view"
+						title="Save current view"
+					>
+						<span class="save-view-icon">&#9733;</span>
+						<span class="save-view-label">Save View</span>
+					</button>
+
+					{#if quickActions.length > 0 && collection}
+						<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
+					{/if}
+
+					<button class="new-btn" onclick={openQuickCreate} disabled={creatingNew}>
+						+ <span class="new-btn-label">New {singularName()}</span>
+					</button>
 				</div>
-
-				<FilterBar
-					{collection}
-					{activeFilters}
-					{searchQuery}
-					onFilterChange={handleFilterChange}
-					onSearchChange={handleSearchChange}
-					{relationLabels}
-				/>
-
-				<label class="archive-toggle">
-					<input type="checkbox" bind:checked={showArchived} />
-					<span>Show archived</span>
-				</label>
-
-				{#if quickActions.length > 0 && collection}
-					<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
-				{/if}
-
-				<button class="new-btn" onclick={openQuickCreate} disabled={creatingNew}>
-					+ New {singularName()}
-				</button>
 			</div>
+
+			{#if filtersOpen}
+				<div class="filters-panel">
+					<FilterBar
+						{collection}
+						{activeFilters}
+						{searchQuery}
+						onFilterChange={handleFilterChange}
+						onSearchChange={handleSearchChange}
+						{relationLabels}
+					/>
+				</div>
+			{/if}
+
+			{#if savedViews.length > 0}
+				<div class="saved-views-bar">
+					<button
+						class="saved-view-tab"
+						class:active={activeViewId === null}
+						onclick={clearActiveView}
+					>All</button>
+					{#each savedViews as view (view.id)}
+						<button
+							class="saved-view-tab"
+							class:active={activeViewId === view.id}
+							onclick={() => applyViewConfig(view)}
+						>
+							<span class="saved-view-name">{view.name}</span>
+							<span
+								class="saved-view-delete"
+								role="button"
+								tabindex="0"
+								onclick={(e) => { e.stopPropagation(); deleteView(view.id, view.name); }}
+								onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); deleteView(view.id, view.name); } }}
+								aria-label="Delete view {view.name}"
+								title="Delete view"
+							>&times;</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+
+			{#if saveViewOpen}
+				<div class="save-view-form">
+					<input
+						bind:this={saveViewInput}
+						bind:value={saveViewName}
+						class="save-view-input"
+						placeholder="View name — press Enter to save, Esc to cancel"
+						onkeydown={handleSaveViewKeydown}
+						onblur={() => { if (!saveViewName.trim()) saveViewOpen = false; }}
+						disabled={savingView}
+					/>
+				</div>
+			{/if}
 
 			{#if quickCreateOpen}
 				<div class="quick-create">
@@ -590,6 +769,8 @@
 					/>
 				</div>
 			{/if}
+
+			<div class="header-separator"></div>
 		</div>
 
 		<!-- Content -->
@@ -615,12 +796,14 @@
 			<BoardView
 				items={filteredItems}
 				{collection}
+				{wsSlug}
 				{groupField}
 				{focusedItemId}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
 				onArchiveColumn={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
+				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
 				{relationLabels}
@@ -629,7 +812,9 @@
 			<TableView
 				items={filteredItems}
 				{collection}
+				{wsSlug}
 				onStatusChange={handleStatusChange}
+				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
 				{relationLabels}
@@ -638,6 +823,7 @@
 			<ListView
 				items={filteredItems}
 				{collection}
+				{wsSlug}
 				{groupField}
 				{focusedItemId}
 				{statusOptions}
@@ -645,6 +831,7 @@
 				onReorder={handleReorder}
 				onArchiveGroup={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
+				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
 				{relationLabels}
@@ -727,14 +914,15 @@
 
 	/* Header */
 	.page-header {
-		margin-bottom: var(--space-6);
+		margin-bottom: var(--space-4);
 	}
 
 	.title-row {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
+		justify-content: space-between;
 		gap: var(--space-4);
-		margin-bottom: var(--space-4);
+		margin-bottom: var(--space-3);
 		flex-wrap: wrap;
 	}
 
@@ -750,27 +938,20 @@
 		font-size: 0.9em;
 	}
 
-	.summary-stats {
-		font-size: 0.85em;
-		color: var(--text-secondary);
+	.item-count {
+		font-size: 0.5em;
+		font-weight: 400;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 10px;
+		vertical-align: middle;
+	}
+
+	.header-actions {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
-	}
-
-	.stat {
-		color: var(--text-secondary);
-	}
-
-	.stat-sep {
-		color: var(--text-muted);
-	}
-
-	/* Controls */
-	.controls-row {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--space-4);
+		gap: var(--space-3);
 		flex-wrap: wrap;
 	}
 
@@ -785,9 +966,9 @@
 	.toggle-btn {
 		background: var(--bg-secondary);
 		border: none;
-		padding: var(--space-2) var(--space-3);
+		padding: var(--space-1) var(--space-2);
 		cursor: pointer;
-		font-size: 1em;
+		font-size: 0.95em;
 		color: var(--text-secondary);
 		line-height: 1;
 	}
@@ -803,6 +984,50 @@
 
 	.toggle-btn:hover:not(.active) {
 		background: var(--bg-hover);
+	}
+
+	/* Filter toggle */
+	.filter-toggle-btn {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		position: relative;
+		transition: border-color 0.15s, color 0.15s;
+	}
+
+	.filter-toggle-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
+	}
+
+	.filter-toggle-btn.has-filters {
+		border-color: var(--accent-blue);
+		color: var(--text-primary);
+	}
+
+	.filter-icon {
+		font-size: 1.1em;
+		line-height: 1;
+	}
+
+	.filter-badge {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--accent-blue);
+		flex-shrink: 0;
+	}
+
+	.filters-panel {
+		padding: var(--space-3) 0;
 	}
 
 	.archive-toggle {
@@ -842,6 +1067,12 @@
 		text-decoration: none;
 	}
 
+	.header-separator {
+		height: 1px;
+		background: var(--border);
+		margin-top: var(--space-2);
+	}
+
 	.quick-create {
 		margin-top: var(--space-3);
 	}
@@ -867,10 +1098,145 @@
 		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 15%, transparent);
 	}
 
+	/* Save view button */
+	.save-view-btn {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		transition: border-color 0.15s, color 0.15s;
+	}
+
+	.save-view-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
+	}
+
+	.save-view-icon {
+		font-size: 1em;
+		line-height: 1;
+	}
+
+	/* Saved views tabs */
+	.saved-views-bar {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: var(--space-2) 0;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+
+	.saved-views-bar::-webkit-scrollbar {
+		display: none;
+	}
+
+	.saved-view-tab {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.8em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		transition: all 0.15s;
+	}
+
+	.saved-view-tab:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.saved-view-tab.active {
+		background: var(--bg-tertiary);
+		border-color: var(--accent-blue);
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+
+	.saved-view-delete {
+		display: none;
+		font-size: 1.1em;
+		line-height: 1;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 2px;
+		border-radius: 2px;
+	}
+
+	.saved-view-tab:hover .saved-view-delete {
+		display: inline;
+	}
+
+	.saved-view-delete:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+	}
+
+	/* Save view form */
+	.save-view-form {
+		padding: var(--space-2) 0;
+	}
+
+	.save-view-input {
+		width: 100%;
+		max-width: 320px;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--accent-blue);
+		border-radius: var(--radius);
+		color: var(--text-primary);
+		font-size: 0.85em;
+		outline: none;
+		transition: border-color 0.15s;
+	}
+
+	.save-view-input::placeholder {
+		color: var(--text-muted);
+	}
+
+	.save-view-input:focus {
+		border-color: var(--accent-blue);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 15%, transparent);
+	}
+
 	@media (max-width: 768px) {
-		.controls-row {
+		.title-row {
 			flex-direction: column;
 			align-items: flex-start;
+			gap: var(--space-3);
+		}
+
+		.header-actions {
+			width: 100%;
+			justify-content: flex-start;
+		}
+
+		.archive-toggle {
+			display: none;
+		}
+
+		.filter-label {
+			display: none;
+		}
+
+		.new-btn-label {
+			display: none;
+		}
+
+		.save-view-label {
+			display: none;
 		}
 	}
 </style>

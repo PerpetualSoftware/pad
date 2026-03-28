@@ -12,9 +12,13 @@
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
+	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
+
+	let notificationPanelOpen = $state(false);
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
+	let isActivityPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}/activity` : false);
 
 	let activeCollectionSlug = $derived.by(() => {
 		if (!wsSlug) return null;
@@ -23,7 +27,7 @@
 		if (!path.startsWith(prefix)) return null;
 		const rest = path.slice(prefix.length);
 		const slug = rest.split('/')[0];
-		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === '') return null;
+		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === '') return null;
 		return slug;
 	});
 
@@ -161,14 +165,13 @@
 	}
 </script>
 
-<!-- Swipe from left side to open (when sidebar is closed on mobile) -->
-<!-- Touch zone: 30px from left to 50% viewport width, requires intentional rightward swipe -->
+<!-- Swipe from left edge to open (when sidebar is closed on mobile) -->
+<!-- Touch zone: 0-24px from left edge only — avoids conflicts with board horizontal scroll -->
 <svelte:window
 	ontouchstart={(e) => {
 		if (!uiStore.isMobile || uiStore.sidebarOpen) return;
 		const x = e.touches[0].clientX;
-		const halfVw = window.innerWidth / 2;
-		if (x > 20 && x < halfVw) {
+		if (x <= 24) {
 			openSwipeStartX = x;
 			openSwipeStartY = e.touches[0].clientY;
 			openSwipeTracking = true;
@@ -239,6 +242,15 @@
 					<span class="nav-icon">📊</span>
 					<span class="nav-label">Dashboard</span>
 				</a>
+				<a
+					href="/{wsSlug}/activity"
+					class="nav-item"
+					class:active={isActivityPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">📋</span>
+					<span class="nav-label">Activity</span>
+				</a>
 
 				{#if sidebarCollections.length > 0}
 					<div class="section-header">
@@ -261,7 +273,9 @@
 								<span class="drag-handle" title="Drag to reorder">⠿</span>
 								<span class="nav-icon">{collection.icon}</span>
 								<span class="nav-label">{collection.name}</span>
-								{#if collection.item_count != null}
+								{#if collection.active_item_count != null && collection.active_item_count > 0}
+									<span class="nav-count">{collection.active_item_count}</span>
+								{:else if collection.active_item_count == null && collection.item_count != null && collection.item_count > 0}
 									<span class="nav-count">{collection.item_count}</span>
 								{/if}
 							</a>
@@ -311,12 +325,29 @@
 					⚙ Settings
 				</a>
 			{/if}
-			<button class="theme-btn" onclick={toggleTheme}>
-				{currentTheme === 'dark' ? '☀️ Light' : '🌙 Dark'}
-			</button>
+			<div class="footer-row">
+				<button class="theme-btn" onclick={toggleTheme}>
+					{currentTheme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+				</button>
+				<button
+					class="bell-btn"
+					onclick={() => { notificationPanelOpen = !notificationPanelOpen; }}
+					aria-label="Notification history"
+				>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+						<path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+					</svg>
+					{#if toastStore.unreadCount > 0}
+						<span class="bell-badge">{toastStore.unreadCount > 9 ? '9+' : toastStore.unreadCount}</span>
+					{/if}
+				</button>
+			</div>
 		</div>
 	</div>
 </aside>
+
+<NotificationPanel visible={notificationPanelOpen} onclose={() => { notificationPanelOpen = false; }} />
 
 <style>
 	.sidebar {
@@ -524,8 +555,14 @@
 		margin-top: var(--space-2);
 	}
 	.settings-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
+	.footer-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-top: var(--space-2);
+	}
 	.theme-btn {
-		width: 100%;
+		flex: 1;
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
@@ -533,9 +570,42 @@
 		border-radius: var(--radius);
 		color: var(--text-muted);
 		font-size: 0.85em;
-		margin-top: var(--space-2);
 	}
 	.theme-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+	.bell-btn {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		cursor: pointer;
+	}
+	.bell-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+	}
+	.bell-badge {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		min-width: 16px;
+		height: 16px;
+		padding: 0 4px;
+		background: var(--accent-red, #ef4444);
+		color: #fff;
+		font-size: 0.65em;
+		font-weight: 700;
+		line-height: 16px;
+		text-align: center;
+		border-radius: 8px;
+		pointer-events: none;
+	}
 	kbd {
 		background: var(--bg-primary);
 		padding: 1px 5px;

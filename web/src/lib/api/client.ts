@@ -20,7 +20,8 @@ import type {
 	ConventionLibraryResponse,
 	LibraryConvention,
 	PlaybookLibraryResponse,
-	LibraryPlaybook
+	LibraryPlaybook,
+	View
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -216,6 +217,30 @@ export const api = {
 
 		delete: (ws: string, commentId: string) =>
 			request<void>(`/workspaces/${ws}/comments/${commentId}`, {
+				method: 'DELETE'
+			})
+	},
+
+	// ── Views ─────────────────────────────────────────────────────────────────
+
+	views: {
+		list: (ws: string, coll: string) =>
+			request<View[]>(`/workspaces/${ws}/collections/${coll}/views`),
+
+		create: (ws: string, coll: string, data: { name: string; view_type: string; config: string }) =>
+			request<View>(`/workspaces/${ws}/collections/${coll}/views`, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			}),
+
+		update: (ws: string, coll: string, viewId: string, data: { name?: string; view_type?: string; config?: string; sort_order?: number }) =>
+			request<View>(`/workspaces/${ws}/collections/${coll}/views/${viewId}`, {
+				method: 'PATCH',
+				body: JSON.stringify(data)
+			}),
+
+		delete: (ws: string, coll: string, viewId: string) =>
+			request<void>(`/workspaces/${ws}/collections/${coll}/views/${viewId}`, {
 				method: 'DELETE'
 			})
 	},

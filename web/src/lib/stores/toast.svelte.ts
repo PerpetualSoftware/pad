@@ -5,10 +5,20 @@ export interface Toast {
 	duration: number;
 }
 
+export interface HistoryEntry {
+	id: string;
+	message: string;
+	type: Toast['type'];
+	timestamp: number;
+}
+
 const MAX_TOASTS = 5;
+const MAX_HISTORY = 20;
 const DEFAULT_DURATION = 3000;
 
 let toasts = $state<Toast[]>([]);
+let history = $state<HistoryEntry[]>([]);
+let unreadCount = $state(0);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function generateId(): string {
@@ -20,6 +30,13 @@ function show(message: string, type: Toast['type'] = 'info', duration: number = 
 	const toast: Toast = { id, message, type, duration };
 
 	toasts.push(toast);
+
+	// Add to history
+	history.unshift({ id, message, type, timestamp: Date.now() });
+	while (history.length > MAX_HISTORY) {
+		history.pop();
+	}
+	unreadCount++;
 
 	// Drop oldest if exceeded max
 	while (toasts.length > MAX_TOASTS) {
@@ -54,10 +71,27 @@ function clearTimerFor(id: string): void {
 	}
 }
 
+function markAllRead(): void {
+	unreadCount = 0;
+}
+
+function clearHistory(): void {
+	history.length = 0;
+	unreadCount = 0;
+}
+
 export const toastStore = {
 	get toasts(): Toast[] {
 		return toasts;
 	},
+	get history(): HistoryEntry[] {
+		return history;
+	},
+	get unreadCount(): number {
+		return unreadCount;
+	},
 	show,
-	dismiss
+	dismiss,
+	markAllRead,
+	clearHistory
 };

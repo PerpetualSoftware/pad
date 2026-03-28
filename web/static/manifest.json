@@ -1,0 +1,16 @@
+{
+  "name": "Pad",
+  "short_name": "Pad",
+  "description": "Project management for developers and AI agents",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a1a",
+  "theme_color": "#4a9eff",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

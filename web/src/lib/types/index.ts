@@ -70,6 +70,7 @@ export interface Collection {
 	created_at: string;
 	updated_at: string;
 	item_count?: number;
+	active_item_count?: number;
 	prefix: string;
 }
 
@@ -240,11 +241,23 @@ export interface Activity {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
+export interface DashboardActiveItem {
+	slug: string;
+	title: string;
+	collection_slug: string;
+	collection_icon: string;
+	priority?: string;
+	status: string;
+	updated_at: string;
+	item_ref?: string;
+}
+
 export interface DashboardResponse {
 	summary: {
 		total_items: number;
 		by_collection: Record<string, Record<string, number>>;
 	};
+	active_items: DashboardActiveItem[];
 	active_phases: {
 		slug: string;
 		title: string;

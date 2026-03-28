@@ -5,11 +5,13 @@
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
+	import EmptyState from '../common/EmptyState.svelte';
 
 
 	interface Props {
 		items: Item[];
 		collection: Collection;
+		wsSlug?: string;
 		groupField?: string;
 		focusedItemId?: string | null;
 		statusOptions?: string[];
@@ -17,6 +19,7 @@
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveGroup?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
+		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		relationLabels?: Record<string, string>;
@@ -25,6 +28,7 @@
 	let {
 		items,
 		collection,
+		wsSlug = '',
 		groupField = 'status',
 		focusedItemId = null,
 		statusOptions,
@@ -32,6 +36,7 @@
 		onReorder,
 		onArchiveGroup,
 		onGroupReorder,
+		oncreate,
 		itemProgress,
 		progressLabel = 'tasks',
 		relationLabels
@@ -193,7 +198,7 @@
 </script>
 
 {#if items.length === 0}
-	<div class="empty-state">No items yet</div>
+	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
@@ -282,13 +287,6 @@
 {/if}
 
 <style>
-	.empty-state {
-		text-align: center;
-		padding: var(--space-8) 0;
-		color: var(--text-muted);
-		font-size: 0.95em;
-	}
-
 	.list-view {
 		display: flex;
 		flex-direction: column;

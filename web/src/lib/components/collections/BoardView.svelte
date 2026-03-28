@@ -4,23 +4,26 @@
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
+	import EmptyState from '../common/EmptyState.svelte';
 
 
 	interface Props {
 		items: Item[];
 		collection: Collection;
+		wsSlug?: string;
 		groupField?: string;
 		focusedItemId?: string | null;
 		onStatusChange: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
+		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 
@@ -171,6 +174,9 @@
 	}
 </script>
 
+{#if items.length === 0}
+	<EmptyState {collection} {wsSlug} {oncreate} />
+{:else}
 <div class="board-view" style:--col-count={columnOrder.length}>
 	{#each columnOrder as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
@@ -184,9 +190,11 @@
 			ondragleave={handleColumnDragLeave}
 			ondrop={(e) => handleColumnDrop(e, colValue)}
 		>
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="column-header {columnCssClass(colValue)}"
 				draggable="true"
+				role="toolbar"
 				ondragstart={(e) => handleColumnDragStart(e, colValue)}
 				ondragend={handleColumnDragEnd}
 			>
@@ -246,6 +254,7 @@
 		</div>
 	{/each}
 </div>
+{/if}
 
 <style>
 	.board-view {
@@ -429,7 +438,20 @@
 
 	@media (max-width: 768px) {
 		.board-view {
-			grid-template-columns: 1fr;
+			display: flex;
+			overflow-x: auto;
+			scroll-snap-type: x mandatory;
+			scroll-behavior: smooth;
+			-webkit-overflow-scrolling: touch;
+			gap: var(--space-3);
+			padding-bottom: var(--space-3);
+		}
+
+		.kanban-column {
+			min-width: 85vw;
+			max-width: 85vw;
+			scroll-snap-align: center;
+			flex-shrink: 0;
 		}
 	}
 </style>

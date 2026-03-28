@@ -60,6 +60,7 @@
 	let rawMode = $state(false);
 	let showMoveMenu = $state(false);
 	let moving = $state(false);
+	let itemLinks = $state<import('$lib/types').ItemLink[]>([]);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -100,6 +101,11 @@
 			if ((collectionStore.items ?? []).length === 0) {
 				collectionStore.loadItems(wsSlug);
 			}
+
+			// Load links for this item
+			try {
+				itemLinks = await api.links.list(wsSlug, itemData.slug);
+			} catch { itemLinks = []; }
 		} catch (e: any) {
 			error = e.message ?? 'Failed to load item';
 		} finally {
@@ -424,6 +430,28 @@
 			</div>
 		</div>
 
+		<!-- Relationships -->
+		{#if itemLinks.length > 0}
+			<div class="relationships-section">
+				<h3 class="section-title">Relationships</h3>
+				<div class="links-list">
+					{#each itemLinks as link (link.id)}
+						{@const isSource = link.source_id === item?.id}
+						{@const targetTitle = isSource ? link.target_title : link.source_title}
+						{@const linkLabel = link.link_type === 'blocks'
+							? (isSource ? 'Blocks' : 'Blocked by')
+							: link.link_type === 'wiki_link'
+								? (isSource ? 'Links to' : 'Referenced by')
+								: link.link_type || 'Related to'}
+						<div class="link-row" class:blocking={link.link_type === 'blocks' && !isSource}>
+							<span class="link-type" class:type-blocks={link.link_type === 'blocks'} class:type-wiki={link.link_type === 'wiki_link'}>{linkLabel}</span>
+							<a href="/{wsSlug}/{link.link_type === 'blocks' ? 'tasks' : collSlug}/{isSource ? link.target_title : link.source_title}" class="link-target">{targetTitle || 'Unknown item'}</a>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		<!-- Phase Tasks (shown only for phases collection) -->
 		{#if collSlug === 'phases' && item}
 			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} />
@@ -693,6 +721,58 @@
 		background: var(--bg-secondary);
 		color: var(--text-primary);
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+	}
+
+	/* Relationships */
+	.relationships-section {
+		margin-top: var(--space-6);
+		padding-top: var(--space-6);
+		border-top: 1px solid var(--border);
+	}
+	.section-title {
+		font-size: 0.8em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-muted);
+		margin-bottom: var(--space-3);
+	}
+	.links-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.link-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 0.9em;
+	}
+	.link-row.blocking {
+		border-left: 3px solid var(--accent-orange);
+	}
+	.link-type {
+		font-size: 0.75em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		min-width: 80px;
+	}
+	.link-type.type-blocks { color: var(--accent-orange); }
+	.link-type.type-wiki { color: var(--accent-blue); }
+	.link-target {
+		font-weight: 500;
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+	.link-target:hover {
+		color: var(--accent-blue);
+		text-decoration: underline;
 	}
 
 	/* Comments */
