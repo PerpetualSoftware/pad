@@ -440,16 +440,15 @@
 		.board-view {
 			display: flex;
 			overflow-x: auto;
-			scroll-snap-type: x mandatory;
-			scroll-behavior: smooth;
+			scroll-snap-type: x proximity;
 			-webkit-overflow-scrolling: touch;
 			gap: var(--space-3);
 			padding: 0 var(--space-4) var(--space-3);
 		}
 
 		.kanban-column {
-			min-width: 78vw;
-			max-width: 78vw;
+			min-width: 75vw;
+			max-width: 75vw;
 			scroll-snap-align: start;
 			flex-shrink: 0;
 		}
