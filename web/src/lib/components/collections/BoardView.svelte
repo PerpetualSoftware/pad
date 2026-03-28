@@ -449,7 +449,7 @@
 		.kanban-column {
 			min-width: 75vw;
 			max-width: 75vw;
-			scroll-snap-align: start;
+			scroll-snap-align: center;
 			flex-shrink: 0;
 		}
 	}
