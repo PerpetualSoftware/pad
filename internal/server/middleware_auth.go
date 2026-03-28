@@ -75,8 +75,21 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Store workspace ID from the token in request context.
-		ctx := context.WithValue(r.Context(), ctxTokenWorkspaceID, apiToken.WorkspaceID)
+		ctx := r.Context()
+
+		// Resolve user from token's user_id (new user-owned tokens)
+		if apiToken.UserID != "" {
+			user, err := s.store.GetUser(apiToken.UserID)
+			if err == nil && user != nil {
+				ctx = context.WithValue(ctx, ctxCurrentUser, user)
+			}
+		}
+
+		// Store workspace ID from the token if workspace-scoped
+		if apiToken.WorkspaceID != "" {
+			ctx = context.WithValue(ctx, ctxTokenWorkspaceID, apiToken.WorkspaceID)
+		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

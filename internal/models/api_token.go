@@ -6,6 +6,7 @@ import "time"
 type APIToken struct {
 	ID          string     `json:"id"`
 	WorkspaceID string     `json:"workspace_id"`
+	UserID      string     `json:"user_id,omitempty"`
 	Name        string     `json:"name"`
 	Prefix      string     `json:"prefix"`
 	Scopes      string     `json:"scopes"`
@@ -16,8 +17,9 @@ type APIToken struct {
 
 // APITokenCreate is the input for creating a new API token.
 type APITokenCreate struct {
-	Name   string `json:"name"`
-	Scopes string `json:"scopes,omitempty"`
+	Name        string `json:"name"`
+	Scopes      string `json:"scopes,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"` // optional scope
 }
 
 // APITokenWithSecret is returned only on creation and includes the

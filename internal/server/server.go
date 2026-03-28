@@ -75,6 +75,11 @@ func (s *Server) setupRouter() {
 			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)
 			r.Get("/me", s.handleGetCurrentUser)
+
+			// User-scoped API tokens
+			r.Get("/tokens", s.handleListUserTokens)
+			r.Post("/tokens", s.handleCreateUserToken)
+			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 		})
 
 		// Templates
