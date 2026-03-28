@@ -650,3 +650,44 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 
 	return params
 }
+
+// handleListItemActivity returns the activity feed for a specific item.
+func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	itemSlug := chi.URLParam(r, "itemSlug")
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+
+	params := models.ActivityListParams{
+		Action: r.URL.Query().Get("action"),
+		Actor:  r.URL.Query().Get("actor"),
+		Source: r.URL.Query().Get("source"),
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			params.Limit = l
+		}
+	}
+
+	activities, err := s.store.ListDocumentActivity(item.ID, params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if activities == nil {
+		activities = []models.Activity{}
+	}
+
+	writeJSON(w, http.StatusOK, activities)
+}
