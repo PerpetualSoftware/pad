@@ -73,6 +73,7 @@ func (s *Store) migrate() error {
 		"009_ideas_implemented_status.sql",
 		"010_webhooks.sql",
 		"011_api_tokens.sql",
+		"012_users.sql",
 	}
 
 	for _, name := range migrations {
