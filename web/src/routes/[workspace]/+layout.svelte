@@ -52,7 +52,7 @@
 						// Item might not be fetchable by event ID, refresh collection
 					}
 					if (isExternal) {
-						const who = event.actor === 'agent' ? 'Agent' : 'CLI';
+						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
 						const link = event.collection ? `/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
 						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
 					}

@@ -235,6 +235,7 @@ export interface Activity {
 	item_id?: string;
 	action: string;
 	actor: string;
+	actor_name?: string;
 	source: string;
 	metadata: string;
 	created_at: string;
@@ -279,6 +280,7 @@ export interface DashboardResponse {
 	recent_activity: {
 		action: string;
 		actor: string;
+		actor_name?: string;
 		source: string;
 		created_at: string;
 		item_title?: string;

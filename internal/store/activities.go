@@ -14,34 +14,35 @@ func (s *Store) CreateActivity(a models.Activity) error {
 	ts := now()
 
 	_, err := s.db.Exec(`
-		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, ts)
+		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), ts)
 	return err
 }
 
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT id, workspace_id, COALESCE(document_id, ''), action, actor, source, metadata, created_at
-		FROM activities
-		WHERE workspace_id = ?
+		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
+		FROM activities a
+		LEFT JOIN users u ON a.user_id = u.id
+		WHERE a.workspace_id = ?
 	`
 	args := []interface{}{workspaceID}
 
 	if params.Action != "" {
-		query += " AND action = ?"
+		query += " AND a.action = ?"
 		args = append(args, params.Action)
 	}
 	if params.Actor != "" {
-		query += " AND actor = ?"
+		query += " AND a.actor = ?"
 		args = append(args, params.Actor)
 	}
 	if params.Source != "" {
-		query += " AND source = ?"
+		query += " AND a.source = ?"
 		args = append(args, params.Source)
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY a.created_at DESC"
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -58,27 +59,28 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 	}
 	defer rows.Close()
 
-	return scanActivities(rows)
+	return scanActivitiesWithUser(rows)
 }
 
 func (s *Store) ListDocumentActivity(documentID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT id, workspace_id, COALESCE(document_id, ''), action, actor, source, metadata, created_at
-		FROM activities
-		WHERE document_id = ?
+		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
+		FROM activities a
+		LEFT JOIN users u ON a.user_id = u.id
+		WHERE a.document_id = ?
 	`
 	args := []interface{}{documentID}
 
 	if params.Action != "" {
-		query += " AND action = ?"
+		query += " AND a.action = ?"
 		args = append(args, params.Action)
 	}
 	if params.Actor != "" {
-		query += " AND actor = ?"
+		query += " AND a.actor = ?"
 		args = append(args, params.Actor)
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY a.created_at DESC"
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -95,10 +97,10 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 	}
 	defer rows.Close()
 
-	return scanActivities(rows)
+	return scanActivitiesWithUser(rows)
 }
 
-func scanActivities(rows interface {
+func scanActivitiesWithUser(rows interface {
 	Next() bool
 	Scan(dest ...interface{}) error
 	Err() error
@@ -107,7 +109,7 @@ func scanActivities(rows interface {
 	for rows.Next() {
 		var a models.Activity
 		var createdAt string
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.DocumentID, &a.Action, &a.Actor, &a.Source, &a.Metadata, &createdAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.DocumentID, &a.Action, &a.Actor, &a.Source, &a.Metadata, &a.UserID, &createdAt, &a.ActorName); err != nil {
 			return nil, err
 		}
 		a.CreatedAt = parseTime(createdAt)

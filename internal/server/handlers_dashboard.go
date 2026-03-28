@@ -36,6 +36,7 @@ type DashboardActiveItem struct {
 type DashboardActivity struct {
 	Action         string `json:"action"`
 	Actor          string `json:"actor"`
+	ActorName      string `json:"actor_name,omitempty"`
 	Source         string `json:"source"`
 	CreatedAt      string `json:"created_at"`
 	ItemTitle      string `json:"item_title,omitempty"`
@@ -365,7 +366,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Recent activity — enriched with item titles
+	// Recent activity — enriched with item titles and user names
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, models.ActivityListParams{
 		Limit: 10,
 	})
@@ -374,6 +375,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			da := DashboardActivity{
 				Action:    a.Action,
 				Actor:     a.Actor,
+				ActorName: a.ActorName,
 				Source:    a.Source,
 				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z"),
 				Metadata:  a.Metadata,

@@ -16,6 +16,12 @@
 		return actor === 'agent' ? '🤖' : '👤';
 	}
 
+	function actorLabel(a: Activity): string {
+		if (a.actor === 'agent') return 'Agent';
+		if (a.actor_name) return a.actor_name;
+		return 'You';
+	}
+
 	function sourceLabel(source: string): string {
 		const labels: Record<string, string> = {
 			cli: 'CLI', web: 'Web', skill: 'Skill',
@@ -30,7 +36,7 @@
 			<span class="actor">{actorIcon(a.actor)}</span>
 			<div class="info">
 				<span class="action">
-					{actorIcon(a.actor) === '🤖' ? 'Agent' : 'You'} {actionLabel(a.action)}
+					{actorLabel(a)} {actionLabel(a.action)}
 					{#if a.item_id}
 						a document
 					{/if}

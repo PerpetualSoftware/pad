@@ -366,8 +366,10 @@
 					{#each dashboard.recent_activity.slice(0, 10) as activity, i (i)}
 						{@const changes = parseActivityChanges(activity.metadata)}
 						<div class="activity-row">
-							{#if activity.source === 'cli' && activity.actor === 'agent'}
+							{#if activity.actor === 'agent'}
 								<span class="actor-badge agent">agent</span>
+							{:else if activity.actor_name}
+								<span class="actor-name">{activity.actor_name}</span>
 							{:else if activity.source === 'cli'}
 								<span class="actor-badge cli">cli</span>
 							{/if}
@@ -899,6 +901,13 @@
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
 		color: var(--accent-blue);
+	}
+	.actor-name {
+		font-size: 0.8em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
 	.activity-changes {
 		font-size: 0.75em;

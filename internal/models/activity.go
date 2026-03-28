@@ -15,12 +15,14 @@ type Activity struct {
 	Actor       string    `json:"actor"`
 	Source      string    `json:"source"`
 	Metadata    string    `json:"metadata,omitempty"` // JSON
+	UserID      string    `json:"user_id,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 
 	// Enrichment fields — populated by handlers, not stored in DB
 	ItemTitle      string `json:"item_title,omitempty"`
 	ItemSlug       string `json:"item_slug,omitempty"`
 	CollectionSlug string `json:"collection_slug,omitempty"`
+	ActorName      string `json:"actor_name,omitempty"`
 }
 
 type ActivityListParams struct {

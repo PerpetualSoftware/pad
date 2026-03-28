@@ -9,6 +9,7 @@ export interface ItemEvent {
 	title: string;
 	collection: string;
 	actor: string;
+	actor_name?: string;
 	source: string;
 	timestamp: number;
 }
