@@ -180,8 +180,9 @@
 		}
 	}
 
-	function getSourceLabel(source: string, actor: string): { label: string; kind: string } {
-		if (source === 'cli' && actor === 'agent') return { label: 'agent', kind: 'agent' };
+	function getSourceLabel(source: string, actor: string, actorName?: string): { label: string; kind: string } {
+		if (actor === 'agent') return { label: 'agent', kind: 'agent' };
+		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user' };
 		if (source === 'cli') return { label: 'cli', kind: 'cli' };
 		return { label: 'web', kind: 'web' };
 	}
@@ -303,7 +304,7 @@
 							{@const itemTitle = activity.item_title || meta.item_title || meta.title}
 							{@const itemSlug = activity.item_slug || meta.item_slug}
 							{@const collSlug = activity.collection_slug || meta.collection_slug}
-							{@const src = getSourceLabel(activity.source, activity.actor)}
+							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name)}
 							<div class="entry {borderClass(activity.source, activity.actor)}">
 								<span
 									class="entry-icon"
@@ -591,6 +592,12 @@
 	.actor-badge.web {
 		background: var(--bg-tertiary);
 		color: var(--text-muted);
+	}
+	.actor-badge.user {
+		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+		color: var(--accent-green);
+		text-transform: none;
+		letter-spacing: normal;
 	}
 
 	.entry-time {

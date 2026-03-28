@@ -82,7 +82,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	// Log activity and publish event
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, doc.ID, "created", r)
-	s.publishEvent(events.DocumentCreated, workspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
+	s.publishEventWithName(events.DocumentCreated, workspaceID, doc.ID, doc.Title, doc.DocType, actor, actorNameFromRequest(r), source)
 
 	writeJSON(w, http.StatusCreated, doc)
 }
@@ -141,7 +141,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	if !isWebAutoSave {
 		s.logActivity(updated.WorkspaceID, updated.ID, "updated", r)
 	}
-	s.publishEvent(events.DocumentUpdated, updated.WorkspaceID, updated.ID, updated.Title, updated.DocType, actor, source)
+	s.publishEventWithName(events.DocumentUpdated, updated.WorkspaceID, updated.ID, updated.Title, updated.DocType, actor, actorNameFromRequest(r), source)
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -159,7 +159,7 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(doc.WorkspaceID, doc.ID, "archived", r)
-	s.publishEvent(events.DocumentArchived, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
+	s.publishEventWithName(events.DocumentArchived, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, actorNameFromRequest(r), source)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -189,7 +189,7 @@ func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(doc.WorkspaceID, doc.ID, "restored", r)
-	s.publishEvent(events.DocumentRestored, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
+	s.publishEventWithName(events.DocumentRestored, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, actorNameFromRequest(r), source)
 
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -238,7 +238,7 @@ func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
 	if action == "created" {
 		eventType = events.DocumentCreated
 	}
-	s.publishEvent(eventType, workspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
+	s.publishEventWithName(eventType, workspaceID, doc.ID, doc.Title, doc.DocType, actor, actorNameFromRequest(r), source)
 
 	status := http.StatusOK
 	if action == "created" {
@@ -343,6 +343,11 @@ func (s *Server) handleGetContext(w http.ResponseWriter, r *http.Request) {
 
 // publishEvent publishes a real-time event if the event bus is available (best-effort).
 func (s *Server) publishEvent(eventType, workspaceID, documentID, title, docType, actor, source string) {
+	s.publishEventWithName(eventType, workspaceID, documentID, title, docType, actor, "", source)
+}
+
+// publishEventWithName publishes a real-time event with actor name.
+func (s *Server) publishEventWithName(eventType, workspaceID, documentID, title, docType, actor, actorName, source string) {
 	if s.events == nil {
 		return
 	}
@@ -353,8 +358,17 @@ func (s *Server) publishEvent(eventType, workspaceID, documentID, title, docType
 		Title:       title,
 		DocType:     docType,
 		Actor:       actor,
+		ActorName:   actorName,
 		Source:      source,
 	})
+}
+
+// actorNameFromRequest returns the authenticated user's display name, or empty string.
+func actorNameFromRequest(r *http.Request) string {
+	if u := currentUser(r); u != nil {
+		return u.Name
+	}
+	return ""
 }
 
 // actorFromRequest derives actor and source from the request's auth context.
@@ -410,6 +424,7 @@ func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *
 		Actor:       actor,
 		Source:      source,
 		Metadata:    metadata,
+		UserID:      currentUserID(r),
 	})
 }
 

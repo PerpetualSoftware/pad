@@ -145,7 +145,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEvent(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, source)
+	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	writeJSON(w, http.StatusCreated, item)
@@ -261,7 +261,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, source := actorFromRequest(r)
 	s.logActivityWithMeta(workspaceID, updated.ID, "updated", r, meta)
-	s.publishItemEvent(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, source)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
 	writeJSON(w, http.StatusOK, updated)
@@ -292,7 +292,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
-	s.publishItemEvent(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, source)
+	s.publishItemEventWithName(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
@@ -330,7 +330,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
-	s.publishItemEvent(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, source)
+	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source)
 
 	writeJSON(w, http.StatusOK, restored)
 }
@@ -434,7 +434,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections
-	s.publishItemEvent(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, source)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
 	writeJSON(w, http.StatusOK, moved)
@@ -442,6 +442,11 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 // publishItemEvent publishes a real-time event for item changes.
 func (s *Server) publishItemEvent(eventType, workspaceID, itemID, title, collection, actor, source string) {
+	s.publishItemEventWithName(eventType, workspaceID, itemID, title, collection, actor, "", source)
+}
+
+// publishItemEventWithName publishes a real-time event for item changes with actor name.
+func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title, collection, actor, actorName, source string) {
 	if s.events == nil {
 		return
 	}
@@ -452,6 +457,7 @@ func (s *Server) publishItemEvent(eventType, workspaceID, itemID, title, collect
 		Collection:  collection,
 		Title:       title,
 		Actor:       actor,
+		ActorName:   actorName,
 		Source:      source,
 	})
 }
@@ -649,4 +655,45 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	}
 
 	return params
+}
+
+// handleListItemActivity returns the activity feed for a specific item.
+func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	itemSlug := chi.URLParam(r, "itemSlug")
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+
+	params := models.ActivityListParams{
+		Action: r.URL.Query().Get("action"),
+		Actor:  r.URL.Query().Get("actor"),
+		Source: r.URL.Query().Get("source"),
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			params.Limit = l
+		}
+	}
+
+	activities, err := s.store.ListDocumentActivity(item.ID, params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if activities == nil {
+		activities = []models.Activity{}
+	}
+
+	writeJSON(w, http.StatusOK, activities)
 }

@@ -35,6 +35,7 @@ type Event struct {
 	Title       string `json:"title,omitempty"`
 	DocType     string `json:"doc_type,omitempty"`
 	Actor       string `json:"actor,omitempty"`
+	ActorName   string `json:"actor_name,omitempty"`
 	Source      string `json:"source,omitempty"`
 	Timestamp   int64  `json:"timestamp"`
 }
