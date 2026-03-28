@@ -107,6 +107,30 @@
 			</div>
 		{/if}
 
+		<!-- In-Progress Focus -->
+		{@const inProgress = dashboard.recent_activity.length > 0 ? (() => {
+			const byCol = dashboard.summary.by_collection;
+			const ipItems: {collection: string, slug: string, count: number}[] = [];
+			for (const [col, statuses] of Object.entries(byCol)) {
+				const ip = (statuses as Record<string, number>)['in-progress'] ?? (statuses as Record<string, number>)['in_progress'] ?? 0;
+				if (ip > 0) ipItems.push({ collection: col, slug: col, count: ip });
+			}
+			return ipItems;
+		})() : []}
+		{#if inProgress.length > 0}
+			<section class="section focus-section">
+				<h2>In Progress</h2>
+				<div class="focus-chips">
+					{#each inProgress as ip (ip.slug)}
+						<a href="/{wsSlug}/{ip.slug}?status=in-progress" class="focus-chip">
+							<span class="focus-count">{ip.count}</span>
+							<span class="focus-label">{ip.collection}</span>
+						</a>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<!-- Collection Summary -->
 		<section class="section">
 			<h2>Collections</h2>
@@ -204,15 +228,18 @@
 				<h2>Recent Activity</h2>
 				<div class="activity-list">
 					{#each dashboard.recent_activity.slice(0, 10) as activity, i (i)}
-						<div class="activity-row">
+						<div class="activity-row" class:agent-activity={activity.source === 'cli' && activity.actor === 'agent'}>
+							{#if activity.source === 'cli' && activity.actor === 'agent'}
+								<span class="actor-badge agent">agent</span>
+							{:else if activity.source === 'cli'}
+								<span class="actor-badge cli">cli</span>
+							{/if}
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
 							{#if activity.item_title}
 								<a href="/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
 							{/if}
 							<span class="activity-meta">
-								by {activity.actor === 'user' ? 'you' : activity.actor}
-								via {activity.source}
-								· <span title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>
+								<span title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>
 							</span>
 						</div>
 					{/each}
@@ -461,6 +488,37 @@
 		color: var(--text-muted);
 	}
 
+	/* Focus / In-Progress */
+	.focus-chips {
+		display: flex;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+	.focus-chip {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--accent-blue);
+		border-radius: var(--radius);
+		text-decoration: none;
+		color: var(--text-primary);
+		font-size: 0.9em;
+		transition: background 0.15s;
+	}
+	.focus-chip:hover {
+		background: var(--bg-hover);
+		text-decoration: none;
+	}
+	.focus-count {
+		font-weight: 700;
+		color: var(--accent-blue);
+	}
+	.focus-label {
+		text-transform: capitalize;
+	}
+
 	/* Activity */
 	.activity-list {
 		display: flex;
@@ -494,5 +552,26 @@
 	.activity-meta {
 		color: var(--text-muted);
 		font-size: 0.9em;
+	}
+	.actor-badge {
+		font-size: 0.7em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 1px 6px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+	.actor-badge.agent {
+		background: color-mix(in srgb, var(--accent-purple, #a78bfa) 15%, transparent);
+		color: var(--accent-purple, #a78bfa);
+	}
+	.actor-badge.cli {
+		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+		color: var(--accent-blue);
+	}
+	.agent-activity {
+		border-left: 2px solid var(--accent-purple, #a78bfa);
+		padding-left: var(--space-3);
 	}
 </style>
