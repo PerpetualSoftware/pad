@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
 )
 
@@ -15,6 +16,8 @@ const (
 	ctxTokenWorkspaceID contextKey = "token_workspace_id"
 	// ctxCurrentUser is set when an authenticated user is resolved.
 	ctxCurrentUser contextKey = "current_user"
+	// ctxWorkspaceRole is set by RequireWorkspaceAccess with the user's role.
+	ctxWorkspaceRole contextKey = "workspace_role"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
@@ -175,4 +178,109 @@ func currentUserID(r *http.Request) string {
 		return u.ID
 	}
 	return ""
+}
+
+// RequireWorkspaceAccess checks that the current user is a member of the
+// workspace identified by the {slug} URL parameter. The user's workspace
+// role is stored in the request context for downstream permission checks.
+//
+// When no users exist (fresh install), access is granted with an implicit
+// "owner" role. Legacy API tokens (workspace-scoped, no user) are allowed
+// if the token's workspace matches the requested workspace.
+func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug := chi.URLParam(r, "slug")
+		if slug == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ws, err := s.store.GetWorkspaceBySlug(slug)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to resolve workspace")
+			return
+		}
+		if ws == nil {
+			writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+			return
+		}
+
+		// Fresh install: no users → everyone gets owner access
+		count, _ := s.store.UserCount()
+		if count == 0 {
+			ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "owner")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Legacy API token: workspace-scoped token without user context
+		if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && currentUser(r) == nil {
+			if tokenWsID == ws.ID {
+				ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "editor")
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			writeError(w, http.StatusForbidden, "forbidden", "Token not authorized for this workspace")
+			return
+		}
+
+		// Authenticated user: check workspace membership
+		user := currentUser(r)
+		if user == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+			return
+		}
+
+		// Admin users get owner access to all workspaces
+		if user.Role == "admin" {
+			ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "owner")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			return
+		}
+		if member == nil {
+			writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxWorkspaceRole, member.Role)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// workspaceRole returns the user's role in the current workspace,
+// as set by RequireWorkspaceAccess. Returns empty string if not set.
+func workspaceRole(r *http.Request) string {
+	v, _ := r.Context().Value(ctxWorkspaceRole).(string)
+	return v
+}
+
+// requireRole checks if the user's workspace role meets the minimum
+// required level. Role hierarchy: owner > editor > viewer.
+func requireRole(r *http.Request, minRole string) bool {
+	role := workspaceRole(r)
+	if role == "" {
+		return false
+	}
+	return roleLevel(role) >= roleLevel(minRole)
+}
+
+// roleLevel returns a numeric level for role comparison.
+// Higher values indicate more permissions.
+func roleLevel(role string) int {
+	switch role {
+	case "owner":
+		return 3
+	case "editor":
+		return 2
+	case "viewer":
+		return 1
+	default:
+		return 0
+	}
 }

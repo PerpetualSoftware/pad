@@ -93,6 +93,8 @@ func (s *Server) setupRouter() {
 			r.Post("/import", s.handleImportWorkspace)
 
 			r.Route("/{slug}", func(r chi.Router) {
+				r.Use(s.RequireWorkspaceAccess)
+
 				r.Get("/", s.handleGetWorkspace)
 				r.Patch("/", s.handleUpdateWorkspace)
 				r.Delete("/", s.handleDeleteWorkspace)
