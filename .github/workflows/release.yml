@@ -27,6 +27,9 @@ jobs:
           cache: "npm"
           cache-dependency-path: web/package-lock.json
 
+      - name: Create web build placeholder for tests
+        run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
+
       - name: Run tests
         run: go test ./...
 

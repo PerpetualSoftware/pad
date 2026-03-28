@@ -14,7 +14,7 @@ One binary. Local-first. No accounts. Pad gives you a web UI, a CLI, and an AI a
 
 **For you:** A clean web interface to organize tasks, ideas, phases, docs, and custom collections — with a rich editor, board views, wiki-links, and full-text search.
 
-**For your AI agent:** A `/pad` skill that lets Claude Code manage your project through natural language — create tasks, check status, follow conventions, and plan phases.
+**For your AI agent:** A `/pad` skill that lets your AI coding tool manage your project through natural language — create tasks, check status, follow conventions, and plan phases. Works with Claude Code, Cursor, Windsurf, Codex, GitHub Copilot, Amazon Q, and JetBrains Junie.
 
 <!-- TODO: Add screenshot/GIF of the web UI here -->
 
@@ -32,6 +32,9 @@ cp pad /usr/local/bin/
 # Initialize a workspace in your project
 cd ~/projects/myapp
 pad init "My App"
+
+# Install the /pad skill for your AI tools
+pad install
 
 # Create your first task
 pad create task "Set up CI pipeline" --priority high
@@ -110,12 +113,15 @@ The CLI auto-detects your workspace by walking up the directory tree for a `.pad
 
 ### Agent Integration
 
-Pad includes a `/pad` skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Install it and your agent becomes a project partner:
+Pad ships a `/pad` skill that works with any AI coding tool. Install it and your agent becomes a project partner:
 
 ```bash
-# Install the skill
-pad skills install           # Project-level (.claude/skills/)
-pad skills install --global  # Global (~/.claude/skills/)
+pad install              # Auto-detect your tools and install
+pad install claude       # Claude Code
+pad install cursor       # Cursor (also covers Codex & Windsurf)
+pad install copilot      # GitHub Copilot
+pad install amazon-q     # Amazon Q
+pad install junie        # JetBrains Junie
 ```
 
 Then just talk to your project:
