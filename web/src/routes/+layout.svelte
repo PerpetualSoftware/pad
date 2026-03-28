@@ -2,6 +2,8 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -14,9 +16,28 @@
 	let { children } = $props();
 
 	let showShortcuts = $state(false);
+	let authReady = $state(false);
+	let isLoginPage = $derived(page.url.pathname === '/login');
 
 	onMount(async () => {
-		await workspaceStore.loadAll();
+		// Check auth status before loading the app
+		try {
+			const auth = await api.auth.session();
+			if (auth.auth_required && !auth.authenticated) {
+				if (!isLoginPage) {
+					goto('/login', { replaceState: true });
+				}
+				authReady = true;
+				return;
+			}
+		} catch {
+			// If auth check fails, proceed anyway (server may not support it)
+		}
+
+		authReady = true;
+		if (!isLoginPage) {
+			await workspaceStore.loadAll();
+		}
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -68,29 +89,35 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="app-shell">
-	<Sidebar />
-	<main class="main-content">
-		{#if uiStore.isMobile && !uiStore.sidebarOpen}
-			<div class="mobile-header">
-				<button class="hamburger" onclick={() => uiStore.openSidebar()} aria-label="Open sidebar">
-					<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-						<rect y="3" width="20" height="2" rx="1" fill="currentColor"/>
-						<rect y="9" width="20" height="2" rx="1" fill="currentColor"/>
-						<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
-					</svg>
-				</button>
-				<a href="/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
-			</div>
-		{/if}
-		{@render children()}
-	</main>
-</div>
+{#if !authReady}
+	<!-- Auth check in progress — blank screen to avoid flash -->
+{:else if isLoginPage}
+	{@render children()}
+{:else}
+	<div class="app-shell">
+		<Sidebar />
+		<main class="main-content">
+			{#if uiStore.isMobile && !uiStore.sidebarOpen}
+				<div class="mobile-header">
+					<button class="hamburger" onclick={() => uiStore.openSidebar()} aria-label="Open sidebar">
+						<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+							<rect y="3" width="20" height="2" rx="1" fill="currentColor"/>
+							<rect y="9" width="20" height="2" rx="1" fill="currentColor"/>
+							<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
+						</svg>
+					</button>
+					<a href="/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
+				</div>
+			{/if}
+			{@render children()}
+		</main>
+	</div>
 
-<CommandPalette />
-<CreateWorkspaceModal />
-<ToastContainer />
-<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
+	<CommandPalette />
+	<CreateWorkspaceModal />
+	<ToastContainer />
+	<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
+{/if}
 
 <style>
 	.app-shell {

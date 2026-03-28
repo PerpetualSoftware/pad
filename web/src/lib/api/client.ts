@@ -37,8 +37,16 @@ class PadApiError extends Error {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const resp = await fetch(BASE + path, {
 		headers: { 'Content-Type': 'application/json' },
+		credentials: 'same-origin',
 		...options
 	});
+	if (resp.status === 401) {
+		// Redirect to login page (avoid infinite loop)
+		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+			window.location.href = '/login';
+		}
+		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);
 		if (body?.error) throw new PadApiError(body.error);
@@ -314,6 +322,19 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify(data)
 			})
+	},
+
+	// ── Auth ──────────────────────────────────────────────────────────────────
+
+	auth: {
+		session: (): Promise<{ authenticated: boolean; auth_required: boolean }> =>
+			fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
+		login: (password: string) =>
+			request<{ ok: boolean }>('/auth/login', {
+				method: 'POST',
+				body: JSON.stringify({ password })
+			}),
+		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' })
 	}
 };
 
