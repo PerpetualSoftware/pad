@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,6 +46,7 @@ func main() {
 	rootCmd.AddCommand(
 		serveCmd(),
 		stopCmd(),
+		openCmd(),
 		initCmd(),
 		linkCmd(),
 		onboardCmd(),
@@ -205,6 +208,45 @@ func stopCmd() *cobra.Command {
 			fmt.Println("Server stopped.")
 			return nil
 		},
+	}
+}
+
+// --- open ---
+
+func openCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "open",
+		Short: "Open the Pad web UI in your browser",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return fmt.Errorf("start server: %w", err)
+			}
+
+			url := cfg.BaseURL()
+
+			// If there's a workspace, go directly to it
+			ws, _ := cli.DetectWorkspace(workspaceFlag)
+			if ws != "" {
+				url += "/" + ws
+			}
+
+			fmt.Printf("Opening %s\n", url)
+			return openBrowser(url)
+		},
+	}
+}
+
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Start()
+	case "linux":
+		return exec.Command("xdg-open", url).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	default:
+		return fmt.Errorf("unsupported platform — open %s manually", url)
 	}
 }
 
@@ -633,7 +675,7 @@ recommend conventions from the built-in library.`,
 func skillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
-		Short: "Manage Claude Code skill installation",
+		Short: "Manage skill installation (use 'pad install' for multi-tool support)",
 	}
 
 	installCmd := &cobra.Command{
