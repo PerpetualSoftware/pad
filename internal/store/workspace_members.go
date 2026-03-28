@@ -1,8 +1,11 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/xarmian/pad/internal/models"
 )
@@ -151,4 +154,122 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// --- Invitations ---
+
+// CreateInvitation creates a pending workspace invitation.
+func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*models.WorkspaceInvitation, error) {
+	// Generate a random 8-char join code
+	raw := make([]byte, 4)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("generate invitation code: %w", err)
+	}
+	code := hex.EncodeToString(raw)
+
+	id := newID()
+	ts := now()
+
+	_, err := s.db.Exec(`
+		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, code, ts)
+	if err != nil {
+		return nil, fmt.Errorf("insert invitation: %w", err)
+	}
+
+	return s.GetInvitation(id)
+}
+
+// GetInvitation retrieves an invitation by ID.
+func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
+	var inv models.WorkspaceInvitation
+	var acceptedAt *string
+	var createdAt string
+
+	err := s.db.QueryRow(`
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		FROM workspace_invitations WHERE id = ?
+	`, id).Scan(
+		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
+		&inv.Code, &acceptedAt, &createdAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get invitation: %w", err)
+	}
+
+	inv.CreatedAt = parseTime(createdAt)
+	inv.AcceptedAt = parseTimePtr(acceptedAt)
+	return &inv, nil
+}
+
+// GetInvitationByCode retrieves a pending invitation by its join code.
+func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, error) {
+	var inv models.WorkspaceInvitation
+	var acceptedAt *string
+	var createdAt string
+
+	err := s.db.QueryRow(`
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		FROM workspace_invitations WHERE code = ? AND accepted_at IS NULL
+	`, code).Scan(
+		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
+		&inv.Code, &acceptedAt, &createdAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get invitation by code: %w", err)
+	}
+
+	inv.CreatedAt = parseTime(createdAt)
+	inv.AcceptedAt = parseTimePtr(acceptedAt)
+	return &inv, nil
+}
+
+// AcceptInvitation marks an invitation as accepted.
+func (s *Store) AcceptInvitation(id string) error {
+	_, err := s.db.Exec(
+		"UPDATE workspace_invitations SET accepted_at = ? WHERE id = ?",
+		now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("accept invitation: %w", err)
+	}
+	return nil
+}
+
+// ListWorkspaceInvitations returns all invitations for a workspace.
+func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.WorkspaceInvitation, error) {
+	rows, err := s.db.Query(`
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		FROM workspace_invitations
+		WHERE workspace_id = ? AND accepted_at IS NULL
+		ORDER BY created_at ASC
+	`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace invitations: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.WorkspaceInvitation
+	for rows.Next() {
+		var inv models.WorkspaceInvitation
+		var acceptedAt *string
+		var createdAt string
+		if err := rows.Scan(
+			&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
+			&inv.Code, &acceptedAt, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan invitation: %w", err)
+		}
+		inv.CreatedAt = parseTime(createdAt)
+		inv.AcceptedAt = parseTimePtr(acceptedAt)
+		result = append(result, inv)
+	}
+	return result, rows.Err()
 }

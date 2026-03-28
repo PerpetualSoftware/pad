@@ -74,6 +74,7 @@ func (s *Store) migrate() error {
 		"010_webhooks.sql",
 		"011_api_tokens.sql",
 		"012_users.sql",
+		"013_workspace_invitations.sql",
 	}
 
 	for _, name := range migrations {

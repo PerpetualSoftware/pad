@@ -97,6 +97,9 @@ func main() {
 		webhooksCmd(),
 		bulkUpdateCmd(),
 		githubCmd(),
+		membersCmd(),
+		inviteCmd(),
+		joinCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -482,6 +485,140 @@ func whoamiCmd() *cobra.Command {
 				fmt.Printf("Email: %s\n", user.Email)
 				fmt.Printf("Role:  %s\n", user.Role)
 			}
+			return nil
+		},
+	}
+}
+
+// --- members ---
+
+func membersCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "members",
+		Short: "List workspace members",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			var result struct {
+				Members     json.RawMessage `json:"members"`
+				Invitations json.RawMessage `json:"invitations"`
+			}
+			raw, err := client.RawGet("/workspaces/" + ws + "/members")
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(raw, &result); err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				fmt.Println(string(raw))
+				return nil
+			}
+
+			var members []struct {
+				UserName  string `json:"user_name"`
+				UserEmail string `json:"user_email"`
+				Role      string `json:"role"`
+			}
+			json.Unmarshal(result.Members, &members)
+
+			if len(members) == 0 {
+				fmt.Println("No members (workspace has no users yet)")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tEMAIL\tROLE")
+			for _, m := range members {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", m.UserName, m.UserEmail, m.Role)
+			}
+			w.Flush()
+
+			var invitations []struct {
+				Email string `json:"email"`
+				Role  string `json:"role"`
+				Code  string `json:"code"`
+			}
+			json.Unmarshal(result.Invitations, &invitations)
+
+			if len(invitations) > 0 {
+				fmt.Println()
+				fmt.Println("Pending invitations:")
+				for _, inv := range invitations {
+					fmt.Printf("  %s (%s) — join code: %s\n", inv.Email, inv.Role, inv.Code)
+				}
+			}
+
+			return nil
+		},
+	}
+	return cmd
+}
+
+func inviteCmd() *cobra.Command {
+	var roleFlag string
+
+	cmd := &cobra.Command{
+		Use:   "invite <email>",
+		Short: "Invite a user to the workspace",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			email := args[0]
+
+			var result map[string]interface{}
+			raw, err := json.Marshal(map[string]string{
+				"email": email,
+				"role":  roleFlag,
+			})
+			if err != nil {
+				return err
+			}
+			if err := client.PostRaw("/workspaces/"+ws+"/members/invite", raw, &result); err != nil {
+				return err
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+
+			if added, ok := result["added"].(bool); ok && added {
+				name, _ := result["name"].(string)
+				role, _ := result["role"].(string)
+				fmt.Printf("%s Added %s (%s) as %s\n", green("✓"), name, email, role)
+			} else {
+				code, _ := result["code"].(string)
+				role, _ := result["role"].(string)
+				fmt.Printf("%s Invitation created for %s (%s)\n", green("✓"), email, role)
+				fmt.Printf("  Join code: %s\n", code)
+				fmt.Printf("  They can accept with: pad join %s\n", code)
+			}
+
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roleFlag, "role", "editor", "role for the invited user (owner, editor, viewer)")
+	return cmd
+}
+
+func joinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join <code>",
+		Short: "Accept a workspace invitation",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			code := args[0]
+
+			var result map[string]interface{}
+			if err := client.PostRaw("/invitations/"+code+"/accept", nil, &result); err != nil {
+				return fmt.Errorf("failed to accept invitation: %w", err)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			role, _ := result["role"].(string)
+			fmt.Printf("%s Joined workspace as %s\n", green("✓"), role)
 			return nil
 		},
 	}

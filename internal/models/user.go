@@ -39,6 +39,18 @@ type Session struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// WorkspaceInvitation represents a pending invitation to join a workspace.
+type WorkspaceInvitation struct {
+	ID          string     `json:"id"`
+	WorkspaceID string     `json:"workspace_id"`
+	Email       string     `json:"email"`
+	Role        string     `json:"role"`
+	InvitedBy   string     `json:"invited_by"`
+	Code        string     `json:"code"`
+	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
 // WorkspaceMember represents a user's membership in a workspace.
 type WorkspaceMember struct {
 	WorkspaceID string    `json:"workspace_id"`

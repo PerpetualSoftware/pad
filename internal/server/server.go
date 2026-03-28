@@ -91,6 +91,9 @@ func (s *Server) setupRouter() {
 		// Playbook Library
 		r.Get("/playbook-library", s.handlePlaybookLibrary)
 
+		// Invitations (outside workspace scope)
+		r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
+
 		// Workspaces
 		r.Route("/workspaces", func(r chi.Router) {
 			r.Get("/", s.handleListWorkspaces)
@@ -190,6 +193,14 @@ func (s *Server) setupRouter() {
 					r.Get("/", s.handleListTokens)
 					r.Post("/", s.handleCreateToken)
 					r.Delete("/{tokenID}", s.handleDeleteToken)
+				})
+
+				// Members
+				r.Route("/members", func(r chi.Router) {
+					r.Get("/", s.handleListMembers)
+					r.Post("/invite", s.handleInviteMember)
+					r.Delete("/{userID}", s.handleRemoveMember)
+					r.Patch("/{userID}", s.handleUpdateMemberRole)
 				})
 
 				// Dashboard (v2)
