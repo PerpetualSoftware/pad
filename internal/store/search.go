@@ -21,8 +21,8 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
-		       i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon,
+		       i.item_number, i.created_at, i.updated_at,
+		       c.slug, c.name, c.icon, c.prefix,
 		       snippet(items_fts, 1, '<mark>', '</mark>', '...', 32) as snippet,
 		       rank
 		FROM items_fts fts
@@ -60,8 +60,8 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
 			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.CreatedBy, &r.Item.LastModifiedBy,
-			&r.Item.Source, &createdAt, &updatedAt,
-			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon,
+			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
+			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
 			&r.Snippet, &r.Rank,
 		); err != nil {
 			return nil, err
@@ -69,6 +69,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		r.Item.Pinned = pinned == 1
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
+		r.Item.ComputeRef()
 		// Don't include full content in search results
 		r.Item.Content = ""
 		results = append(results, r)

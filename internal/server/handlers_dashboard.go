@@ -51,6 +51,7 @@ type DashboardSummary struct {
 
 type DashboardPhase struct {
 	Slug      string `json:"slug"`
+	Ref       string `json:"ref,omitempty"`
 	Title     string `json:"title"`
 	Progress  int    `json:"progress"`
 	TaskCount int    `json:"task_count"`
@@ -60,6 +61,7 @@ type DashboardPhase struct {
 type DashboardAttention struct {
 	Type       string `json:"type"`
 	ItemSlug   string `json:"item_slug"`
+	ItemRef    string `json:"item_ref,omitempty"`
 	ItemTitle  string `json:"item_title"`
 	Collection string `json:"collection"`
 	Reason     string `json:"reason"`
@@ -67,6 +69,7 @@ type DashboardAttention struct {
 
 type DashboardSuggestion struct {
 	ItemSlug   string `json:"item_slug"`
+	ItemRef    string `json:"item_ref,omitempty"`
 	ItemTitle  string `json:"item_title"`
 	Collection string `json:"collection"`
 	Reason     string `json:"reason"`
@@ -196,6 +199,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		for _, phase := range phases {
 			dp := DashboardPhase{
 				Slug:  phase.Slug,
+				Ref:   phase.Ref,
 				Title: phase.Title,
 			}
 
@@ -239,6 +243,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				resp.Attention = append(resp.Attention, DashboardAttention{
 					Type:       "stalled",
 					ItemSlug:   item.Slug,
+					ItemRef:    item.Ref,
 					ItemTitle:  item.Title,
 					Collection: item.CollectionSlug,
 					Reason:     "In progress for " + strconv.Itoa(daysSince) + " days with no updates",
@@ -264,6 +269,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				resp.Attention = append(resp.Attention, DashboardAttention{
 					Type:       "overdue",
 					ItemSlug:   item.Slug,
+					ItemRef:    item.Ref,
 					ItemTitle:  item.Title,
 					Collection: item.CollectionSlug,
 					Reason:     strings.ReplaceAll(dateField, "_", " ") + " was " + dateVal,
@@ -310,6 +316,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					resp.Attention = append(resp.Attention, DashboardAttention{
 						Type:       "orphaned_task",
 						ItemSlug:   task.Slug,
+						ItemRef:    task.Ref,
 						ItemTitle:  task.Title,
 						Collection: "tasks",
 						Reason:     "Task has no phase assigned",
@@ -349,6 +356,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			resp.Attention = append(resp.Attention, DashboardAttention{
 				Type:       "blocked",
 				ItemSlug:   item.Slug,
+				ItemRef:    item.Ref,
 				ItemTitle:  item.Title,
 				Collection: item.CollectionSlug,
 				Reason:     "Blocked by " + link.SourceTitle + " (still " + blockerStatus + ")",
@@ -432,6 +440,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.SuggestedNext = append(resp.SuggestedNext, DashboardSuggestion{
 			ItemSlug:   c.item.Slug,
+			ItemRef:    c.item.Ref,
 			ItemTitle:  c.item.Title,
 			Collection: "tasks",
 			Reason:     reason,
