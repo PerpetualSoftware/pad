@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fly, fade } from 'svelte/transition';
+	import { goto } from '$app/navigation';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Toast } from '$lib/stores/toast.svelte';
 
@@ -10,6 +11,13 @@
 			case 'info': return '\u2139';
 		}
 	}
+
+	function handleClick(toast: Toast) {
+		if (toast.link) {
+			toastStore.dismiss(toast.id);
+			goto(toast.link);
+		}
+	}
 </script>
 
 {#if toastStore.toasts.length > 0}
@@ -17,14 +25,19 @@
 		{#each toastStore.toasts as toast (toast.id)}
 			<div
 				class="toast toast-{toast.type}"
+				class:clickable={!!toast.link}
 				in:fly={{ x: 80, duration: 250 }}
 				out:fade={{ duration: 150 }}
+				onclick={() => handleClick(toast)}
+				role={toast.link ? 'button' : undefined}
+				tabindex={toast.link ? 0 : undefined}
+				onkeydown={(e) => { if (toast.link && e.key === 'Enter') handleClick(toast); }}
 			>
 				<span class="toast-icon">{iconForType(toast.type)}</span>
-				<span class="toast-message">{toast.message}</span>
+				<span class="toast-message">{toast.message}{#if toast.link}<span class="toast-link-hint"> →</span>{/if}</span>
 				<button
 					class="toast-dismiss"
-					onclick={() => toastStore.dismiss(toast.id)}
+					onclick={(e) => { e.stopPropagation(); toastStore.dismiss(toast.id); }}
 					aria-label="Dismiss notification"
 				>&times;</button>
 			</div>
@@ -57,6 +70,19 @@
 		font-size: 0.88em;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 		pointer-events: auto;
+	}
+
+	.toast.clickable {
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	.toast.clickable:hover {
+		background: var(--bg-hover);
+	}
+	.toast-link-hint {
+		color: var(--accent-blue);
+		font-weight: 600;
+		margin-left: 2px;
 	}
 
 	.toast-success {

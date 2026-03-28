@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { fly, fade } from 'svelte/transition';
+	import { goto } from '$app/navigation';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { HistoryEntry } from '$lib/stores/toast.svelte';
 
@@ -60,11 +61,19 @@
 				</div>
 			{:else}
 				{#each toastStore.history as entry (entry.id)}
-					<div class="notification-row">
-						<span class="notification-dot" style="background: {dotColor(entry.type)}"></span>
-						<span class="notification-message">{entry.message}</span>
-						<span class="notification-time">{formatRelativeTime(entry.timestamp)}</span>
-					</div>
+					{#if entry.link}
+						<button class="notification-row clickable" onclick={() => { onclose(); goto(entry.link!); }}>
+							<span class="notification-dot" style="background: {dotColor(entry.type)}"></span>
+							<span class="notification-message">{entry.message}</span>
+							<span class="notification-time">{formatRelativeTime(entry.timestamp)}</span>
+						</button>
+					{:else}
+						<div class="notification-row">
+							<span class="notification-dot" style="background: {dotColor(entry.type)}"></span>
+							<span class="notification-message">{entry.message}</span>
+							<span class="notification-time">{formatRelativeTime(entry.timestamp)}</span>
+						</div>
+					{/if}
 				{/each}
 			{/if}
 		</div>
@@ -163,9 +172,25 @@
 		gap: var(--space-3);
 		padding: var(--space-3) var(--space-4);
 		border-bottom: 1px solid var(--border);
+		width: 100%;
+		text-align: left;
+		background: none;
+		border-top: none;
+		border-left: none;
+		border-right: none;
+		font-family: inherit;
+		font-size: inherit;
+		color: inherit;
 	}
 	.notification-row:last-child {
 		border-bottom: none;
+	}
+	.notification-row.clickable {
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	.notification-row.clickable:hover {
+		background: var(--bg-hover);
 	}
 
 	.notification-dot {

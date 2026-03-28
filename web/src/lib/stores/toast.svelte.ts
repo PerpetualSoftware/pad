@@ -3,6 +3,7 @@ export interface Toast {
 	message: string;
 	type: 'success' | 'error' | 'info';
 	duration: number;
+	link?: string;
 }
 
 export interface HistoryEntry {
@@ -10,6 +11,7 @@ export interface HistoryEntry {
 	message: string;
 	type: Toast['type'];
 	timestamp: number;
+	link?: string;
 }
 
 const MAX_TOASTS = 5;
@@ -25,14 +27,14 @@ function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function show(message: string, type: Toast['type'] = 'info', duration: number = DEFAULT_DURATION): string {
+function show(message: string, type: Toast['type'] = 'info', duration: number = DEFAULT_DURATION, link?: string): string {
 	const id = generateId();
-	const toast: Toast = { id, message, type, duration };
+	const toast: Toast = { id, message, type, duration, link };
 
 	toasts.push(toast);
 
 	// Add to history
-	history.unshift({ id, message, type, timestamp: Date.now() });
+	history.unshift({ id, message, type, timestamp: Date.now(), link });
 	while (history.length > MAX_HISTORY) {
 		history.pop();
 	}

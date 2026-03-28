@@ -53,7 +53,8 @@
 					}
 					if (isExternal) {
 						const who = event.actor === 'agent' ? 'Agent' : 'CLI';
-						toastStore.show(`${who} created: ${event.title}`, 'info');
+						const link = event.collection ? `/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
+						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
 					}
 					break;
 				}
