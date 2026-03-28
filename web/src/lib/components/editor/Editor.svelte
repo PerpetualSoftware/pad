@@ -45,7 +45,7 @@
 	// detecting our SVG insertion and triggering an infinite re-parse loop.
 	const MermaidCodeBlock = CodeBlock.extend({
 		addNodeView() {
-			return ({ node }: any) => {
+			return (({ node }: any) => {
 				const lang = node.attrs.language;
 
 				// Non-mermaid: default rendering
@@ -105,7 +105,7 @@
 						return !code.contains(mutation.target);
 					},
 				};
-			};
+			}) as any;
 		},
 	});
 
