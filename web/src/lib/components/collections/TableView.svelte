@@ -26,7 +26,7 @@
 		relationLabels
 	}: Props = $props();
 
-	let resolvedWsSlug = $derived(wsSlug || page.params.workspace);
+	let resolvedWsSlug = $derived(wsSlug || page.params.workspace || '');
 	let schema = $derived(parseSchema(collection));
 	let visibleFields = $derived(schema.fields.filter((f) => !f.computed));
 
