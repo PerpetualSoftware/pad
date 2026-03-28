@@ -50,6 +50,7 @@ func main() {
 		workspacesCmd(),
 		switchCmd(),
 		skillsCmd(),
+		installCmd(),
 		completionCmd(),
 		// v2 commands
 		createCmd(),
@@ -394,60 +395,85 @@ Use 'pad workspaces' to see available workspaces.`,
 }
 
 func offerSkillInstall() {
-	location, installed := cli.SkillsInstalled()
-	if installed {
-		outdated, _ := cli.SkillsOutdated(pad.PadSkill)
-		if outdated {
-			fmt.Printf("\nClaude Code skills are outdated (%s).\n", location)
-			if cli.IsTerminal() {
-				fmt.Print("Update to latest version? (y/N): ")
-				if choice := readChoice(); choice == "y" || choice == "Y" {
-					path, err := cli.InstallSkill(pad.PadSkill, location)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error updating skill: %v\n", err)
-						return
-					}
-					fmt.Printf("Updated /pad skill at %s\n", path)
-				}
-			} else {
-				fmt.Println("Run 'pad skills update' to update.")
-			}
-		} else {
-			fmt.Printf("\nClaude Code skills up to date (%s).\n", location)
+	// Detect tools and install for all detected ones
+	detected := cli.DetectTools()
+
+	// Always include Claude if not already detected
+	hasClaude := false
+	for _, t := range detected {
+		if t.Name == "claude" {
+			hasClaude = true
+			break
 		}
+	}
+	if !hasClaude {
+		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
+	}
+
+	// Check if any are already installed
+	allInstalled := true
+	for _, tool := range detected {
+		if !cli.ToolInstalled(tool) {
+			allInstalled = false
+			break
+		}
+	}
+
+	if allInstalled && len(detected) > 0 {
+		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad install --update' to update.\n", len(detected))
 		return
 	}
 
 	if !cli.IsTerminal() {
+		// Non-interactive: silently install for all detected tools
+		fmt.Println()
+		for _, tool := range detected {
+			if cli.ToolInstalled(tool) {
+				continue
+			}
+			content := cli.FormatForTool(tool, pad.PadSkill)
+			path, err := cli.InstallForTool(tool, content)
+			if err != nil {
+				continue
+			}
+			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
+		}
 		return
 	}
 
 	fmt.Println()
-	fmt.Println("Claude Code skills are not installed.")
-	fmt.Println("Install skills?")
-	fmt.Println("  1. Project (.claude/skills/) — just this project")
-	fmt.Println("  2. Global  (~/.claude/skills/) — all projects")
-	fmt.Println("  3. Skip")
-	fmt.Print("\nChoice (1/2/3): ")
+	if len(detected) == 1 {
+		fmt.Printf("Install /pad skill for %s? (Y/n): ", detected[0].Label)
+	} else {
+		fmt.Println("Detected AI coding tools:")
+		for _, tool := range detected {
+			installed := ""
+			if cli.ToolInstalled(tool) {
+				installed = " (installed)"
+			}
+			fmt.Printf("  • %s%s\n", tool.Label, installed)
+		}
+		fmt.Printf("\nInstall /pad skill for all? (Y/n): ")
+	}
 
 	choice := readChoice()
-	switch choice {
-	case "1":
-		path, err := cli.InstallSkill(pad.PadSkill, "project")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error installing skill: %v\n", err)
-			return
+	if choice == "n" || choice == "N" {
+		fmt.Println("Skipped. Run 'pad install' later.")
+		return
+	}
+
+	fmt.Println()
+	for _, tool := range detected {
+		if cli.ToolInstalled(tool) {
+			continue
 		}
-		fmt.Printf("Installed /pad skill to %s\n", path)
-	case "2":
-		path, err := cli.InstallSkill(pad.PadSkill, "global")
+		content := cli.FormatForTool(tool, pad.PadSkill)
+		path, err := cli.InstallForTool(tool, content)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error installing skill: %v\n", err)
-			return
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+			continue
 		}
-		fmt.Printf("Installed /pad skill to %s\n", path)
-	default:
-		fmt.Println("Skipped. Run 'pad skills install' later.")
+		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
 	}
 }
 
@@ -672,6 +698,206 @@ func skillsCmd() *cobra.Command {
 
 	cmd.AddCommand(installCmd, updateCmd, statusSubCmd)
 	return cmd
+}
+
+// --- install ---
+
+func installCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "install [tool]",
+		Short: "Install the /pad skill for your AI coding tools",
+		Long: `Install the Pad skill file for AI coding tools.
+
+With no arguments, auto-detects tools in use and offers to install for each.
+Specify a tool name to install for that tool directly.
+
+Supported tools:
+  claude       Claude Code (.claude/skills/)
+  cursor       Cursor (.agents/skills/) — also covers Codex & Windsurf
+  codex        OpenAI Codex (.agents/skills/)
+  windsurf     Windsurf (.agents/skills/)
+  copilot      GitHub Copilot (.github/instructions/)
+  amazon-q     Amazon Q Developer (.amazonq/rules/)
+  junie        JetBrains Junie (.junie/guidelines/)
+
+Examples:
+  pad install              # Auto-detect and install
+  pad install claude       # Install for Claude Code
+  pad install cursor       # Install for Cursor/Codex/Windsurf
+  pad install --all        # Install for all detected tools
+  pad install --list       # Show supported tools and status`,
+		ValidArgs: cli.AllToolNames(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			listFlag, _ := cmd.Flags().GetBool("list")
+			allFlag, _ := cmd.Flags().GetBool("all")
+			updateFlag, _ := cmd.Flags().GetBool("update")
+
+			if listFlag {
+				return installList()
+			}
+
+			if updateFlag {
+				return installUpdate()
+			}
+
+			if len(args) > 0 {
+				return installForTool(args[0])
+			}
+
+			if allFlag {
+				return installAll()
+			}
+
+			return installInteractive()
+		},
+	}
+	cmd.Flags().Bool("list", false, "list supported tools and installation status")
+	cmd.Flags().Bool("all", false, "install for all detected tools")
+	cmd.Flags().Bool("update", false, "update all installed tool integrations")
+	return cmd
+}
+
+func installList() error {
+	detected := map[string]bool{}
+	for _, t := range cli.DetectTools() {
+		detected[t.Name] = true
+	}
+
+	fmt.Println("Supported tools:")
+	fmt.Println()
+	for _, tool := range cli.SupportedTools {
+		status := "  not installed"
+		if cli.ToolInstalled(tool) {
+			status = "  installed ✓"
+		}
+		det := ""
+		if detected[tool.Name] {
+			det = " (detected)"
+		}
+		aliases := ""
+		if len(tool.Aliases) > 0 {
+			aliases = fmt.Sprintf(" [aliases: %s]", strings.Join(tool.Aliases, ", "))
+		}
+		fmt.Printf("  %-12s %s%s%s%s\n", tool.Name, tool.Label, aliases, det, status)
+	}
+	return nil
+}
+
+func installUpdate() error {
+	updated := 0
+	for _, tool := range cli.SupportedTools {
+		if !cli.ToolInstalled(tool) {
+			continue
+		}
+		content := cli.FormatForTool(tool, pad.PadSkill)
+		path, err := cli.InstallForTool(tool, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+			continue
+		}
+		fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, path)
+		updated++
+	}
+	if updated == 0 {
+		fmt.Println("No tools installed. Run 'pad install' first.")
+	}
+	return nil
+}
+
+func installForTool(name string) error {
+	tool := cli.ResolveTool(name)
+	if tool == nil {
+		return fmt.Errorf("unknown tool %q. Run 'pad install --list' to see supported tools", name)
+	}
+
+	content := cli.FormatForTool(*tool, pad.PadSkill)
+	path, err := cli.InstallForTool(*tool, content)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
+	return nil
+}
+
+func installAll() error {
+	detected := cli.DetectTools()
+	if len(detected) == 0 {
+		fmt.Println("No AI coding tools detected. Installing for Claude Code by default.")
+		detected = []cli.AgentTool{cli.SupportedTools[0]} // Claude
+	}
+
+	for _, tool := range detected {
+		content := cli.FormatForTool(tool, pad.PadSkill)
+		path, err := cli.InstallForTool(tool, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+			continue
+		}
+		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+	}
+	return nil
+}
+
+func installInteractive() error {
+	detected := cli.DetectTools()
+
+	// Always include Claude if not already detected
+	hasClaude := false
+	for _, t := range detected {
+		if t.Name == "claude" {
+			hasClaude = true
+			break
+		}
+	}
+	if !hasClaude {
+		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
+	}
+
+	if !cli.IsTerminal() {
+		// Non-interactive: install for all detected tools
+		for _, tool := range detected {
+			content := cli.FormatForTool(tool, pad.PadSkill)
+			path, err := cli.InstallForTool(tool, content)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+				continue
+			}
+			fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+		}
+		return nil
+	}
+
+	fmt.Println("Detected AI coding tools:")
+	fmt.Println()
+	for i, tool := range detected {
+		installed := ""
+		if cli.ToolInstalled(tool) {
+			installed = " (already installed)"
+		}
+		fmt.Printf("  %d. %s%s\n", i+1, tool.Label, installed)
+	}
+	fmt.Println()
+	fmt.Printf("Install /pad skill for all %d? (Y/n): ", len(detected))
+
+	choice := readChoice()
+	if choice == "n" || choice == "N" {
+		fmt.Println()
+		fmt.Println("Install individually with: pad install <tool>")
+		fmt.Println("Supported tools:", strings.Join(cli.AllToolNames(), ", "))
+		return nil
+	}
+
+	fmt.Println()
+	for _, tool := range detected {
+		content := cli.FormatForTool(tool, pad.PadSkill)
+		path, err := cli.InstallForTool(tool, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
+			continue
+		}
+		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+	}
+	return nil
 }
 
 // --- workspaces ---
