@@ -21,6 +21,15 @@
 	let showCreateModal = $state(false);
 	let editingCollection = $state<Collection | null>(null);
 
+	// Members
+	let members = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
+	let invitations = $state<{ id: string; email: string; role: string; code: string }[]>([]);
+	let inviteEmail = $state('');
+	let inviteRole = $state('editor');
+	let inviting = $state(false);
+	let inviteResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
+	let currentUserRole = $state('');
+
 	$effect(() => {
 		if (wsSlug) load(wsSlug);
 	});
@@ -39,6 +48,17 @@
 			await workspaceStore.setCurrent(slug);
 			wsName = workspaceStore.current?.name ?? '';
 			collections = await api.collections.list(slug);
+			try {
+				const memberData = await api.members.list(slug);
+				members = memberData.members ?? [];
+				invitations = memberData.invitations ?? [];
+				// Determine current user's role
+				const session = await api.auth.session();
+				if (session.user) {
+					const me = members.find(m => m.user_email === session.user!.email);
+					currentUserRole = me?.role ?? '';
+				}
+			} catch {}
 		} catch { /* allow partial render */
 		} finally {
 			loading = false;
@@ -73,6 +93,53 @@
 		collectionStore.loadCollections(wsSlug);
 		editingCollection = null;
 	}
+	async function handleInvite() {
+		if (!inviteEmail.trim() || inviting) return;
+		inviting = true;
+		inviteResult = null;
+		try {
+			const result = await api.members.invite(wsSlug, inviteEmail.trim(), inviteRole);
+			if (result.added) {
+				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
+			} else {
+				inviteResult = { message: `Invitation sent to ${result.email}. Join code: ${result.code}`, type: 'success' };
+			}
+			inviteEmail = '';
+			inviteRole = 'editor';
+			// Reload members
+			const memberData = await api.members.list(wsSlug);
+			members = memberData.members ?? [];
+			invitations = memberData.invitations ?? [];
+		} catch (err: unknown) {
+			inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
+		} finally {
+			inviting = false;
+		}
+	}
+
+	async function handleRemoveMember(userId: string, name: string) {
+		if (!confirm(`Remove ${name} from this workspace?`)) return;
+		try {
+			await api.members.remove(wsSlug, userId);
+			members = members.filter(m => m.user_id !== userId);
+			toastStore.show(`Removed ${name}`, 'success');
+		} catch {
+			toastStore.show('Failed to remove member', 'error');
+		}
+	}
+
+	async function handleChangeRole(userId: string, newRole: string) {
+		try {
+			await api.members.updateRole(wsSlug, userId, newRole);
+			members = members.map(m => m.user_id === userId ? { ...m, role: newRole } : m);
+			toastStore.show('Role updated', 'success');
+		} catch {
+			toastStore.show('Failed to update role', 'error');
+		}
+	}
+
+	let isOwner = $derived(currentUserRole === 'owner');
+
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let deleteInput = $state('');
@@ -142,6 +209,85 @@
 					</a>
 				</div>
 			</div>
+		</section>
+		<section class="section">
+			<h2>Members</h2>
+			{#if members.length === 0}
+				<p class="empty-text">No members yet.</p>
+			{:else}
+				<div class="members-list">
+					{#each members as member (member.user_id)}
+						<div class="card member-row">
+							<div class="member-info">
+								<span class="member-avatar">{member.user_name.charAt(0).toUpperCase()}</span>
+								<div class="member-details">
+									<span class="member-name">{member.user_name}</span>
+									<span class="member-email">{member.user_email}</span>
+								</div>
+							</div>
+							<div class="member-actions">
+								{#if isOwner}
+									<select
+										class="role-select"
+										value={member.role}
+										onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value)}
+									>
+										<option value="owner">Owner</option>
+										<option value="editor">Editor</option>
+										<option value="viewer">Viewer</option>
+									</select>
+									<button class="btn btn-small btn-remove" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
+										Remove
+									</button>
+								{:else}
+									<span class="role-badge">{member.role}</span>
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			{#if invitations.length > 0}
+				<div class="invitations-section">
+					<h3>Pending Invitations</h3>
+					{#each invitations as inv (inv.id)}
+						<div class="card invitation-row">
+							<span class="inv-email">{inv.email}</span>
+							<span class="role-badge">{inv.role}</span>
+							<code class="inv-code">{inv.code}</code>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			{#if isOwner}
+				<div class="invite-form card">
+					<h3>Invite Member</h3>
+					<div class="invite-row">
+						<input
+							type="email"
+							placeholder="Email address"
+							bind:value={inviteEmail}
+							onkeydown={(e) => e.key === 'Enter' && handleInvite()}
+							disabled={inviting}
+						/>
+						<select class="role-select" bind:value={inviteRole}>
+							<option value="editor">Editor</option>
+							<option value="viewer">Viewer</option>
+							<option value="owner">Owner</option>
+						</select>
+						<button class="btn btn-primary btn-small" onclick={handleInvite} disabled={inviting || !inviteEmail.trim()}>
+							{inviting ? 'Inviting...' : 'Invite'}
+						</button>
+					</div>
+					{#if inviteResult}
+						<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
+							{inviteResult.message}
+						</p>
+					{/if}
+				</div>
+			{/if}
 		</section>
 		<section class="section">
 			<h2>Collections</h2>
@@ -288,6 +434,31 @@
 	.theme-toggle { display: flex; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; }
 	.theme-option { padding: var(--space-1) var(--space-4); font-size: 0.85em; transition: background 0.15s, color 0.15s; }
 	.theme-option.active { background: var(--accent-blue); color: #fff; }
+	/* ── Members ──── */
+	.members-list { display: flex; flex-direction: column; gap: var(--space-3); }
+	.member-row { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); gap: var(--space-3); }
+	.member-info { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+	.member-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-blue); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.85em; flex-shrink: 0; }
+	.member-details { display: flex; flex-direction: column; min-width: 0; }
+	.member-name { font-weight: 500; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.member-email { font-size: 0.8em; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.member-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+	.role-select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: 0.8em; color: var(--text-primary); cursor: pointer; }
+	.role-badge { font-size: 0.8em; background: var(--bg-tertiary); color: var(--text-secondary); padding: 2px 10px; border-radius: 10px; }
+	.btn-remove { color: #ef4444; border-color: transparent; background: none; }
+	.btn-remove:hover { background: color-mix(in srgb, #ef4444 15%, transparent); }
+	.invitations-section { margin-top: var(--space-4); }
+	.invitations-section h3 { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-2); }
+	.invitation-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); font-size: 0.85em; }
+	.inv-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+	.inv-code { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg-tertiary); padding: 1px 6px; border-radius: var(--radius-sm); color: var(--text-muted); }
+	.invite-form { margin-top: var(--space-4); }
+	.invite-form h3 { font-size: 0.9em; color: var(--text-secondary); margin-bottom: var(--space-3); }
+	.invite-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+	.invite-row input { flex: 1; min-width: 180px; max-width: 300px; }
+	.invite-result { font-size: 0.82em; margin-top: var(--space-2); }
+	.invite-success { color: var(--accent-green); }
+	.invite-error { color: #ef4444; }
 	/* ── Danger Zone ──── */
 	.danger-section h2 { color: #ef4444; }
 	.danger-card { border-color: color-mix(in srgb, #ef4444 30%, var(--border)); }

@@ -324,6 +324,28 @@ export const api = {
 			})
 	},
 
+	// ── Members ──────────────────────────────────────────────────────────────
+
+	members: {
+		list: (ws: string) =>
+			request<{
+				members: { workspace_id: string; user_id: string; role: string; created_at: string; user_name: string; user_email: string }[];
+				invitations: { id: string; email: string; role: string; code: string; created_at: string }[];
+			}>(`/workspaces/${ws}/members`),
+		invite: (ws: string, email: string, role: string) =>
+			request<{ added?: boolean; invited?: boolean; code?: string; email: string; role: string; name?: string; user_id?: string }>(
+				`/workspaces/${ws}/members/invite`,
+				{ method: 'POST', body: JSON.stringify({ email, role }) }
+			),
+		remove: (ws: string, userId: string) =>
+			request<void>(`/workspaces/${ws}/members/${userId}`, { method: 'DELETE' }),
+		updateRole: (ws: string, userId: string, role: string) =>
+			request<{ user_id: string; role: string }>(`/workspaces/${ws}/members/${userId}`, {
+				method: 'PATCH',
+				body: JSON.stringify({ role })
+			})
+	},
+
 	// ── Auth ──────────────────────────────────────────────────────────────────
 
 	auth: {
