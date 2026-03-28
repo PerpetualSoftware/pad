@@ -15,6 +15,7 @@
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 
 	let notificationPanelOpen = $state(false);
+	let currentAuthUser = $state<{ name: string; email: string; role: string } | null>(null);
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
@@ -118,7 +119,7 @@
 		}
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		const saved = localStorage.getItem('pad-theme');
 		if (saved === 'light' || saved === 'dark') {
 			currentTheme = saved;
@@ -126,7 +127,21 @@
 			currentTheme = 'light';
 		}
 		document.documentElement.setAttribute('data-theme', currentTheme);
+
+		try {
+			const session = await api.auth.session();
+			if (session.authenticated && session.user) {
+				currentAuthUser = session.user;
+			}
+		} catch {}
 	});
+
+	async function handleLogout() {
+		try {
+			await api.auth.logout();
+			window.location.href = '/login';
+		} catch {}
+	}
 
 	function toggleTheme() {
 		currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
@@ -322,6 +337,13 @@
 				</button>
 			</div>
 			{/if}
+		{/if}
+
+		{#if currentAuthUser}
+			<div class="user-section">
+				<span class="user-name">{currentAuthUser.name}</span>
+				<button class="logout-btn" onclick={handleLogout}>Sign out</button>
+			</div>
 		{/if}
 
 		<div class="sidebar-footer">
@@ -613,6 +635,30 @@
 		text-align: center;
 		border-radius: 8px;
 		pointer-events: none;
+	}
+	/* User section */
+	.user-section {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-2) var(--space-4);
+		border-top: 1px solid var(--border);
+		font-size: 0.8em;
+		color: var(--text-muted);
+	}
+	.user-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.logout-btn {
+		color: var(--text-muted);
+		font-size: 0.85em;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+	.logout-btn:hover {
+		color: var(--text-secondary);
 	}
 	kbd {
 		background: var(--bg-primary);

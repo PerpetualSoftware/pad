@@ -17,14 +17,21 @@
 
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
-	let isLoginPage = $derived(page.url.pathname === '/login');
+	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register');
 
 	onMount(async () => {
 		// Check auth status before loading the app
 		try {
 			const auth = await api.auth.session();
-			if (auth.auth_required && !auth.authenticated) {
-				if (!isLoginPage) {
+			if (auth.needs_setup) {
+				if (page.url.pathname !== '/register') {
+					goto('/register', { replaceState: true });
+				}
+				authReady = true;
+				return;
+			}
+			if (!auth.authenticated) {
+				if (!isAuthPage) {
 					goto('/login', { replaceState: true });
 				}
 				authReady = true;
@@ -35,7 +42,7 @@
 		}
 
 		authReady = true;
-		if (!isLoginPage) {
+		if (!isAuthPage) {
 			await workspaceStore.loadAll();
 		}
 	});
@@ -91,7 +98,7 @@
 
 {#if !authReady}
 	<!-- Auth check in progress — blank screen to avoid flash -->
-{:else if isLoginPage}
+{:else if isAuthPage}
 	{@render children()}
 {:else}
 	<div class="app-shell">

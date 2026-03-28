@@ -3,18 +3,16 @@
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 
+	let name = $state('');
 	let email = $state('');
 	let password = $state('');
+	let confirmPassword = $state('');
 	let error = $state('');
 	let loading = $state(false);
 
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
-			if (session.needs_setup) {
-				goto('/register', { replaceState: true });
-				return;
-			}
 			if (session.authenticated) {
 				goto('/', { replaceState: true });
 				return;
@@ -22,26 +20,33 @@
 		} catch {}
 	});
 
+	function validate(): string | null {
+		if (!name.trim()) return 'Please enter your name.';
+		if (!email.trim()) return 'Please enter your email.';
+		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+		if (!emailRegex.test(email)) return 'Please enter a valid email address.';
+		if (password.length < 8) return 'Password must be at least 8 characters.';
+		if (password !== confirmPassword) return 'Passwords do not match.';
+		return null;
+	}
+
 	async function handleSubmit() {
 		error = '';
-		if (!email) {
-			error = 'Please enter your email.';
-			return;
-		}
-		if (!password) {
-			error = 'Please enter your password.';
+		const validationError = validate();
+		if (validationError) {
+			error = validationError;
 			return;
 		}
 
 		loading = true;
 		try {
-			await api.auth.login(email, password);
+			await api.auth.register(email, name, password);
 			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
-				error = err.message || 'Invalid email or password.';
+				error = err.message || 'Registration failed.';
 			} else {
-				error = 'Invalid email or password.';
+				error = 'Registration failed.';
 			}
 		} finally {
 			loading = false;
@@ -55,12 +60,21 @@
 	}
 </script>
 
-<div class="login-page">
-	<div class="login-card">
+<div class="register-page">
+	<div class="register-card">
 		<h1 class="logo">Pad</h1>
-		<p class="subtitle">Sign in to continue</p>
+		<p class="subtitle">Create your account</p>
 
 		<div class="form">
+			<input
+				type="text"
+				placeholder="Name"
+				bind:value={name}
+				onkeydown={handleKeydown}
+				disabled={loading}
+				autocomplete="name"
+			/>
+
 			<input
 				type="email"
 				placeholder="Email"
@@ -76,7 +90,16 @@
 				bind:value={password}
 				onkeydown={handleKeydown}
 				disabled={loading}
-				autocomplete="current-password"
+				autocomplete="new-password"
+			/>
+
+			<input
+				type="password"
+				placeholder="Confirm password"
+				bind:value={confirmPassword}
+				onkeydown={handleKeydown}
+				disabled={loading}
+				autocomplete="new-password"
 			/>
 
 			{#if error}
@@ -85,21 +108,21 @@
 
 			<button onclick={handleSubmit} disabled={loading}>
 				{#if loading}
-					Signing in...
+					Creating account...
 				{:else}
-					Sign in
+					Create account
 				{/if}
 			</button>
 		</div>
 
-		<p class="register-link">
-			First time? <a href="/register">Create an account</a>
+		<p class="login-link">
+			Already have an account? <a href="/login">Sign in</a>
 		</p>
 	</div>
 </div>
 
 <style>
-	.login-page {
+	.register-page {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -108,7 +131,7 @@
 		padding: var(--space-4);
 	}
 
-	.login-card {
+	.register-card {
 		width: 100%;
 		max-width: 360px;
 		background: var(--bg-secondary);
@@ -192,18 +215,18 @@
 		cursor: not-allowed;
 	}
 
-	.register-link {
+	.login-link {
 		margin-top: var(--space-6);
 		color: var(--text-muted);
 		font-size: 0.85rem;
 	}
 
-	.register-link a {
+	.login-link a {
 		color: var(--accent-blue);
 		text-decoration: none;
 	}
 
-	.register-link a:hover {
+	.login-link a:hover {
 		text-decoration: underline;
 	}
 </style>

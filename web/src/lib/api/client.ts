@@ -327,14 +327,20 @@ export const api = {
 	// ── Auth ──────────────────────────────────────────────────────────────────
 
 	auth: {
-		session: (): Promise<{ authenticated: boolean; auth_required: boolean }> =>
+		session: (): Promise<{ authenticated: boolean; needs_setup?: boolean; user?: { id: string; email: string; name: string; role: string } }> =>
 			fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
-		login: (password: string) =>
-			request<{ ok: boolean }>('/auth/login', {
+		login: (email: string, password: string) =>
+			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/login', {
 				method: 'POST',
-				body: JSON.stringify({ password })
+				body: JSON.stringify({ email, password })
 			}),
-		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' })
+		register: (email: string, name: string, password: string) =>
+			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/register', {
+				method: 'POST',
+				body: JSON.stringify({ email, name, password })
+			}),
+		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+		me: () => request<{ id: string; email: string; name: string; role: string }>('/auth/me')
 	}
 };
 
