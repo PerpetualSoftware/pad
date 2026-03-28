@@ -240,6 +240,23 @@ pad collections              List collections with item counts
 pad comment <slug> "text"    Add comment to an item
 pad comments <slug>          View item comments
 
+pad standup [--days N]        Daily standup report
+pad changelog [--days N]     Release notes from completed items
+pad watch                    Real-time activity stream
+
+pad blocks <src> <target>    Create dependency
+pad blocked-by <item> <blk>  Mark item as blocked
+pad deps <slug>              Show dependencies
+pad unblock <src> <target>   Remove dependency
+
+pad github link [item-ref]   Link current branch's PR to item
+pad github status [item-ref] Show PR status for linked items
+pad github unlink <item-ref> Remove PR link from item
+
+pad webhooks list            List workspace webhooks
+pad webhooks create <url>    Create webhook
+pad bulk-update --status X   Batch update multiple items
+
 pad export                   Export workspace data
 pad import <file>            Import workspace data
 
@@ -249,6 +266,20 @@ pad library [type]           Browse convention and playbook library
 ```
 
 All commands accept `--format json` for machine-readable output and `--workspace` to target a specific workspace.
+
+### Authentication
+
+Pad runs without authentication by default for frictionless local use. To protect the web UI when exposing the server:
+
+```bash
+# Set a password via environment variable
+PAD_PASSWORD=mypassword pad serve
+
+# Or add to ~/.pad/config.toml
+password = "mypassword"
+```
+
+When a password is set, the web UI shows a login page and all API requests require either a session cookie or an [API token](https://getpad.dev/docs/api). CLI tools use API tokens, which work independently of password auth.
 
 ## Architecture
 

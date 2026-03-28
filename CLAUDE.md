@@ -66,11 +66,28 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/collections/{coll}/items` — item CRUD
 - `GET/PATCH/DELETE /workspaces/{ws}/items/{slug}` — item by slug
 - `GET /workspaces/{ws}/dashboard` — computed project overview (active items, phases, attention, blockers)
-- `GET /workspaces/{ws}/activity` — workspace activity feed
+- `GET /workspaces/{ws}/activity` — workspace activity feed (enriched with item titles + change details)
 - `GET/POST/DELETE /workspaces/{ws}/webhooks` — webhook management
 - `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by)
 - `GET /search?q=query&workspace=slug` — full-text search
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
+- `GET /api/v1/auth/session` — auth status check
+- `POST /api/v1/auth/login` — password login (returns session cookie)
+- `POST /api/v1/auth/logout` — destroy session
+
+## Authentication
+
+Optional password protection for the web UI. When enabled, all API requests and page loads require either a session cookie or API token.
+
+```bash
+# Enable via environment variable
+PAD_PASSWORD=mypassword pad serve
+
+# Or in ~/.pad/config.toml
+password = "mypassword"
+```
+
+When no password is configured, everything works exactly as before (zero-friction localhost). CLI commands use API tokens (already separate from password auth).
 
 ## CLI
 
@@ -98,6 +115,11 @@ pad install [tool]            # Install /pad skill for AI tools
 pad onboard                   # Analyze codebase, suggest conventions
 pad open                      # Open web UI in browser
 pad watch                     # Real-time activity stream
+pad github link [item-ref]    # Link current branch's PR to item
+pad github status [item-ref]  # Show PR status for linked items
+pad github unlink <item-ref>  # Remove PR link from item
+pad bulk-update --status done SLUG1 SLUG2  # Batch operations
+pad webhooks list/create/delete/test       # Webhook management
 ```
 
 Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc`→`docs`.
