@@ -200,6 +200,7 @@ func serveCmd() *cobra.Command {
 			}
 
 			srv := server.New(s)
+			srv.SetBaseURL(cfg.BaseURL())
 
 			// Attach event bus for real-time SSE
 			srv.SetEventBus(events.New())
@@ -588,11 +589,15 @@ func inviteCmd() *cobra.Command {
 				role, _ := result["role"].(string)
 				fmt.Printf("%s Added %s (%s) as %s\n", green("✓"), name, email, role)
 			} else {
-				code, _ := result["code"].(string)
 				role, _ := result["role"].(string)
 				fmt.Printf("%s Invitation created for %s (%s)\n", green("✓"), email, role)
-				fmt.Printf("  Join code: %s\n", code)
-				fmt.Printf("  They can accept with: pad join %s\n", code)
+				if joinURL, ok := result["join_url"].(string); ok && joinURL != "" {
+					fmt.Printf("  Share this link: %s\n", joinURL)
+				} else {
+					code, _ := result["code"].(string)
+					fmt.Printf("  Join code: %s\n", code)
+					fmt.Printf("  They can accept with: pad join %s\n", code)
+				}
 			}
 
 			return nil

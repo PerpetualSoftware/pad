@@ -24,12 +24,18 @@ type Server struct {
 	webFS    fs.FS                // embedded web UI static files (optional)
 	events   *events.Bus          // real-time event bus (optional)
 	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
+	baseURL  string               // public base URL for generating links (e.g. invite URLs)
 }
 
 func New(s *store.Store) *Server {
 	srv := &Server{store: s}
 	srv.setupRouter()
 	return srv
+}
+
+// SetBaseURL sets the public base URL used for generating shareable links.
+func (s *Server) SetBaseURL(url string) {
+	s.baseURL = strings.TrimRight(url, "/")
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.

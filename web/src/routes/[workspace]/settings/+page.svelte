@@ -23,7 +23,7 @@
 
 	// Members
 	let members = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
-	let invitations = $state<{ id: string; email: string; role: string; code: string }[]>([]);
+	let invitations = $state<{ id: string; email: string; role: string; code: string; join_url?: string }[]>([]);
 	let inviteEmail = $state('');
 	let inviteRole = $state('editor');
 	let inviting = $state(false);
@@ -101,6 +101,9 @@
 			const result = await api.members.invite(wsSlug, inviteEmail.trim(), inviteRole);
 			if (result.added) {
 				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
+			} else if (result.join_url) {
+				inviteResult = { message: `Invitation sent to ${result.email}. Link copied to clipboard!`, type: 'success' };
+				navigator.clipboard.writeText(result.join_url).catch(() => {});
 			} else {
 				inviteResult = { message: `Invitation sent to ${result.email}. Join code: ${result.code}`, type: 'success' };
 			}
@@ -255,7 +258,13 @@
 						<div class="card invitation-row">
 							<span class="inv-email">{inv.email}</span>
 							<span class="role-badge">{inv.role}</span>
-							<code class="inv-code">{inv.code}</code>
+							{#if inv.join_url}
+								<button class="btn btn-small copy-link-btn" onclick={() => { navigator.clipboard.writeText(inv.join_url ?? ''); toastStore.show('Link copied!', 'success'); }}>
+									Copy invite link
+								</button>
+							{:else}
+								<code class="inv-code">{inv.code}</code>
+							{/if}
 						</div>
 					{/each}
 				</div>
@@ -452,6 +461,8 @@
 	.invitation-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); font-size: 0.85em; }
 	.inv-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.inv-code { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg-tertiary); padding: 1px 6px; border-radius: var(--radius-sm); color: var(--text-muted); }
+	.copy-link-btn { color: var(--accent-blue); border-color: var(--accent-blue); background: none; }
+	.copy-link-btn:hover { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); }
 	.invite-form { margin-top: var(--space-4); }
 	.invite-form h3 { font-size: 0.9em; color: var(--text-secondary); margin-bottom: var(--space-3); }
 	.invite-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }

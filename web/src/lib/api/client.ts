@@ -330,7 +330,7 @@ export const api = {
 		list: (ws: string) =>
 			request<{
 				members: { workspace_id: string; user_id: string; role: string; created_at: string; user_name: string; user_email: string }[];
-				invitations: { id: string; email: string; role: string; code: string; created_at: string }[];
+				invitations: { id: string; email: string; role: string; code: string; join_url?: string; created_at: string }[];
 			}>(`/workspaces/${ws}/members`),
 		invite: (ws: string, email: string, role: string) =>
 			request<{ added?: boolean; invited?: boolean; code?: string; email: string; role: string; name?: string; user_id?: string }>(
@@ -343,6 +343,10 @@ export const api = {
 			request<{ user_id: string; role: string }>(`/workspaces/${ws}/members/${userId}`, {
 				method: 'PATCH',
 				body: JSON.stringify({ role })
+			}),
+		acceptInvitation: (code: string) =>
+			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
+				method: 'POST'
 			})
 	},
 

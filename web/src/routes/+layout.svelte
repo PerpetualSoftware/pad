@@ -17,7 +17,7 @@
 
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
-	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register');
+	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/'));
 
 	onMount(async () => {
 		// Check auth status before loading the app

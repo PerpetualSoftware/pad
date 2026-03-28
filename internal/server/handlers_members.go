@@ -19,16 +19,38 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Include pending invitations
+	// Include pending invitations, enriched with join URLs
 	invitations, err := s.store.ListWorkspaceInvitations(workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
+	type invWithURL struct {
+		ID        string `json:"id"`
+		Email     string `json:"email"`
+		Role      string `json:"role"`
+		Code      string `json:"code"`
+		JoinURL   string `json:"join_url,omitempty"`
+		CreatedAt string `json:"created_at"`
+	}
+	enrichedInvs := make([]invWithURL, len(invitations))
+	for i, inv := range invitations {
+		enrichedInvs[i] = invWithURL{
+			ID:        inv.ID,
+			Email:     inv.Email,
+			Role:      inv.Role,
+			Code:      inv.Code,
+			CreatedAt: inv.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+		if s.baseURL != "" {
+			enrichedInvs[i].JoinURL = s.baseURL + "/join/" + inv.Code
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"members":     members,
-		"invitations": invitations,
+		"invitations": enrichedInvs,
 	})
 }
 
@@ -99,12 +121,17 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	resp := map[string]interface{}{
 		"invited": true,
 		"code":    inv.Code,
 		"email":   inv.Email,
 		"role":    inv.Role,
-	})
+	}
+	if s.baseURL != "" {
+		resp["join_url"] = s.baseURL + "/join/" + inv.Code
+	}
+
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleRemoveMember removes a user from a workspace.
