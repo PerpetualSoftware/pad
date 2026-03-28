@@ -52,10 +52,11 @@ func (s *Server) setupRouter() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:*", "http://127.0.0.1:*"},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.Use(s.TokenAuth)
 	r.Use(jsonContentType)
 
 	// SSE endpoint (outside jsonContentType middleware)
@@ -164,6 +165,13 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteWebhook)
 						r.Post("/test", s.handleTestWebhook)
 					})
+				})
+
+				// API Tokens
+				r.Route("/tokens", func(r chi.Router) {
+					r.Get("/", s.handleListTokens)
+					r.Post("/", s.handleCreateToken)
+					r.Delete("/{tokenID}", s.handleDeleteToken)
 				})
 
 				// Dashboard (v2)
