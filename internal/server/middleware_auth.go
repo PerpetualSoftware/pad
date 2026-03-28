@@ -63,3 +63,60 @@ func tokenWorkspaceID(r *http.Request) string {
 	v, _ := r.Context().Value(ctxTokenWorkspaceID).(string)
 	return v
 }
+
+// PasswordAuth middleware protects routes when a password is configured.
+// When no password is set, all requests pass through (existing localhost behaviour).
+// When a password is set, requests must have a valid session cookie OR a valid API token.
+func (s *Server) PasswordAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No password configured => passthrough
+		if s.password == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		path := r.URL.Path
+
+		// Auth endpoints are always exempt
+		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Static assets are exempt (CSS, JS, images, fonts, manifest)
+		if strings.HasPrefix(path, "/_app/") ||
+			path == "/favicon.ico" ||
+			strings.HasSuffix(path, ".png") ||
+			strings.HasSuffix(path, ".svg") ||
+			strings.HasSuffix(path, ".ico") ||
+			strings.HasSuffix(path, ".webmanifest") ||
+			strings.HasSuffix(path, ".json") && !strings.HasPrefix(path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Already authenticated by TokenAuth (valid API token)
+		if tokenWorkspaceID(r) != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Valid session cookie
+		if cookie, err := r.Cookie(sessionCookie); err == nil {
+			if s.sessions != nil && s.sessions.Validate(cookie.Value) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// Unauthenticated — return 401 for API, let SPA handle the redirect for browser
+		if strings.HasPrefix(path, "/api/") {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+			return
+		}
+
+		// For browser page requests, serve the SPA (the frontend will check auth and show login)
+		next.ServeHTTP(w, r)
+	})
+}
+

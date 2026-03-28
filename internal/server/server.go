@@ -24,12 +24,20 @@ type Server struct {
 	webFS    fs.FS                // embedded web UI static files (optional)
 	events   *events.Bus          // real-time event bus (optional)
 	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
+	password string               // optional password for web UI access
+	sessions *SessionManager      // session manager (initialized when password is set)
 }
 
 func New(s *store.Store) *Server {
 	srv := &Server{store: s}
 	srv.setupRouter()
 	return srv
+}
+
+// SetPassword enables password authentication for the web UI.
+func (s *Server) SetPassword(pw string) {
+	s.password = pw
+	s.sessions = NewSessionManager()
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
@@ -57,6 +65,7 @@ func (s *Server) setupRouter() {
 		MaxAge:           300,
 	}))
 	r.Use(s.TokenAuth)
+	r.Use(s.PasswordAuth)
 	r.Use(jsonContentType)
 
 	// SSE endpoint (outside jsonContentType middleware)
@@ -65,6 +74,13 @@ func (s *Server) setupRouter() {
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+
+		// Auth endpoints (exempt from PasswordAuth middleware)
+		r.Route("/auth", func(r chi.Router) {
+			r.Get("/session", s.handleSessionCheck)
+			r.Post("/login", s.handleLogin)
+			r.Post("/logout", s.handleLogout)
+		})
 
 		// Templates
 		r.Get("/templates", s.handleListTemplates)
