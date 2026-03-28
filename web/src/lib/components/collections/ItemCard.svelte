@@ -7,6 +7,7 @@
 		item: Item;
 		collection: Collection;
 		compact?: boolean;
+		focused?: boolean;
 		statusOptions?: string[];
 		onStatusClick?: (item: Item, newStatus: string) => void;
 		progress?: { total: number; done: number } | null;
@@ -14,7 +15,7 @@
 		relationLabels?: Record<string, string>;
 	}
 
-	let { item, collection, compact = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', relationLabels = {} }: Props = $props();
+	let { item, collection, compact = false, focused = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', relationLabels = {} }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let fields = $derived(parseFields(item));
@@ -86,7 +87,7 @@
 	}
 </script>
 
-<a href={itemUrl} class="item-card" class:compact>
+<a href={itemUrl} class="item-card" class:compact class:focused>
 	<div class="card-title">
 		{#if itemRef}<span class="item-ref">{itemRef}</span>{/if}
 		{item.title}
@@ -153,9 +154,15 @@
 		transition: background 0.1s;
 	}
 
-	.item-card:hover {
+	.item-card:hover,
+	.item-card.focused {
 		background: var(--bg-hover);
 		text-decoration: none;
+	}
+
+	.item-card.focused {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -2px;
 	}
 
 	.item-card.compact {

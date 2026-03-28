@@ -410,6 +410,65 @@
 		}
 	}
 
+	// --- Keyboard navigation ---
+	let focusedIndex = $state(-1);
+	let focusedItemId = $derived(
+		focusedIndex >= 0 && focusedIndex < filteredItems.length
+			? filteredItems[focusedIndex].id
+			: null
+	);
+
+	// Reset focus when items or filters change
+	$effect(() => {
+		filteredItems;
+		focusedIndex = -1;
+	});
+
+	function handlePageKeydown(e: KeyboardEvent) {
+		// Don't capture when typing in inputs/textareas or when quick-create is open
+		const tag = (e.target as HTMLElement)?.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		if (quickCreateOpen) return;
+
+		switch (e.key) {
+			case 'j':
+			case 'ArrowDown':
+				e.preventDefault();
+				if (filteredItems.length > 0) {
+					focusedIndex = Math.min(focusedIndex + 1, filteredItems.length - 1);
+					scrollFocusedIntoView();
+				}
+				break;
+			case 'k':
+			case 'ArrowUp':
+				e.preventDefault();
+				if (filteredItems.length > 0) {
+					focusedIndex = Math.max(focusedIndex - 1, 0);
+					scrollFocusedIntoView();
+				}
+				break;
+			case 'Enter':
+				if (focusedIndex >= 0 && focusedIndex < filteredItems.length) {
+					e.preventDefault();
+					const item = filteredItems[focusedIndex];
+					goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}`);
+				}
+				break;
+			case 'Escape':
+				focusedIndex = -1;
+				break;
+		}
+	}
+
+	function scrollFocusedIntoView() {
+		requestAnimationFrame(() => {
+			const el = document.querySelector('.item-card.focused');
+			if (el) {
+				el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			}
+		});
+	}
+
 	async function handleBulkArchive(itemsToArchive: Item[]) {
 		if (!wsSlug) return;
 		const count = itemsToArchive.length;
@@ -442,6 +501,8 @@
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 </script>
+
+<svelte:window onkeydown={handlePageKeydown} />
 
 <div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
@@ -555,6 +616,7 @@
 				items={filteredItems}
 				{collection}
 				{groupField}
+				{focusedItemId}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
 				onArchiveColumn={handleBulkArchive}
@@ -577,6 +639,7 @@
 				items={filteredItems}
 				{collection}
 				{groupField}
+				{focusedItemId}
 				{statusOptions}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}

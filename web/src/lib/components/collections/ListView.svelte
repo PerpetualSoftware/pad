@@ -11,6 +11,7 @@
 		items: Item[];
 		collection: Collection;
 		groupField?: string;
+		focusedItemId?: string | null;
 		statusOptions?: string[];
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
@@ -25,6 +26,7 @@
 		items,
 		collection,
 		groupField = 'status',
+		focusedItemId = null,
 		statusOptions,
 		onStatusChange,
 		onReorder,
@@ -255,11 +257,12 @@
 						oncontextmenu={(e) => e.preventDefault()}
 					>
 						{#each grpItems as item (item.id)}
-							<div class="list-row">
+							<div class="list-row" class:kb-focused={focusedItemId === item.id}>
 								<ItemCard
 									{item}
 									{collection}
 									compact={false}
+									focused={focusedItemId === item.id}
 									{statusOptions}
 									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}

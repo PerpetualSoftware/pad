@@ -10,6 +10,7 @@
 		items: Item[];
 		collection: Collection;
 		groupField?: string;
+		focusedItemId?: string | null;
 		onStatusChange: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveColumn?: (items: Item[]) => void;
@@ -19,7 +20,7 @@
 		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, groupField = 'status', onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
+	let { items, collection, groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 
@@ -229,6 +230,7 @@
 							{item}
 							{collection}
 							compact={true}
+							focused={focusedItemId === item.id}
 							statusOptions={columns}
 							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
