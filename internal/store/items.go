@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -801,6 +802,9 @@ func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 
 // --- Helpers ---
 
+// validSortField matches safe field names (alphanumeric + underscore, starting with a letter).
+var validSortField = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
 func buildItemSort(sort string) string {
 	if sort == "" {
 		return " ORDER BY i.pinned DESC, i.updated_at DESC"
@@ -826,7 +830,11 @@ func buildItemSort(sort string) string {
 		case "sort_order":
 			parts = append(parts, fmt.Sprintf("i.sort_order %s", dir))
 		default:
-			// For field-based sorting, use json_extract
+			// For field-based sorting, use json_extract — validate the field name
+			// to prevent SQL injection via crafted sort parameters.
+			if !validSortField.MatchString(col) {
+				continue // skip invalid field names
+			}
 			parts = append(parts, fmt.Sprintf("json_extract(i.fields, '$.%s') %s", col, dir))
 		}
 	}

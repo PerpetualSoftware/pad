@@ -2,7 +2,7 @@
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
-HOST?=0.0.0.0
+HOST?=127.0.0.1
 INSTALL_DIR?=$(HOME)/.local/bin
 
 build: web
