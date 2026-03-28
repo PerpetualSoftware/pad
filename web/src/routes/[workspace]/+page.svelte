@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
@@ -13,6 +14,24 @@
 	let dashboard = $state<DashboardResponse | null>(null);
 	let collections = $state<Collection[]>([]);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	let onboardingDismissed = $state(false);
+
+	// Sync dismissed state from localStorage when workspace changes
+	$effect(() => {
+		if (browser && wsSlug) {
+			onboardingDismissed = localStorage.getItem(`pad-onboarding-dismissed-${wsSlug}`) === 'true';
+		}
+	});
+
+	function dismissOnboarding() {
+		onboardingDismissed = true;
+		if (browser) localStorage.setItem(`pad-onboarding-dismissed-${wsSlug}`, 'true');
+	}
+
+	function showOnboarding() {
+		onboardingDismissed = false;
+		if (browser) localStorage.removeItem(`pad-onboarding-dismissed-${wsSlug}`);
+	}
 
 	$effect(() => {
 		if (wsSlug) load(wsSlug);
@@ -78,8 +97,14 @@
 			<span class="item-count">{totalItems} items</span>
 		</header>
 
-		{#if totalItems === 0}
-			<OnboardingChecklist {wsSlug} byCollection={dashboard.summary.by_collection} />
+		{#if totalItems === 0 && !onboardingDismissed}
+			<div class="onboarding-wrapper">
+				<OnboardingChecklist {wsSlug} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
+			</div>
+		{:else if totalItems === 0 && onboardingDismissed}
+			<div class="onboarding-reshow">
+				<button class="reshow-btn" onclick={showOnboarding}>Show setup guide</button>
+			</div>
 		{/if}
 
 		<!-- Collection Summary -->
@@ -209,6 +234,28 @@
 		text-align: center;
 		padding-top: 20vh;
 		color: var(--text-muted);
+	}
+
+	/* Onboarding */
+	.onboarding-wrapper {
+		margin-bottom: var(--space-6);
+	}
+	.onboarding-reshow {
+		margin-bottom: var(--space-4);
+	}
+	.reshow-btn {
+		background: none;
+		border: 1px dashed var(--border);
+		color: var(--text-muted);
+		font-size: 0.85em;
+		cursor: pointer;
+		padding: var(--space-2) var(--space-4);
+		border-radius: var(--radius);
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.reshow-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
 	}
 
 	/* Header */

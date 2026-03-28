@@ -1,10 +1,15 @@
 <script lang="ts">
+	import { copyToClipboard } from '$lib/utils/clipboard';
+
 	interface Props {
 		wsSlug: string;
 		byCollection: Record<string, Record<string, number>>;
+		ondismiss?: () => void;
 	}
 
-	let { wsSlug, byCollection }: Props = $props();
+	let { wsSlug, byCollection, ondismiss }: Props = $props();
+
+	let copiedHint = $state<string | null>(null);
 
 	function collectionHasItems(slug: string): boolean {
 		const breakdown = byCollection[slug];
@@ -54,12 +59,25 @@
 
 	let completedCount = $derived(steps.filter((s) => s.done).length);
 	let progressPct = $derived(Math.round((completedCount / steps.length) * 100));
+
+	async function copyHint(text: string) {
+		const ok = await copyToClipboard(text);
+		if (ok) {
+			copiedHint = text;
+			setTimeout(() => { copiedHint = null; }, 1500);
+		}
+	}
 </script>
 
 <div class="onboarding">
 	<div class="onboarding-header">
-		<h2>Set up your workspace</h2>
-		<p class="subtitle">Complete these steps to get the most out of Pad.</p>
+		<div class="header-text">
+			<h2>Set up your workspace</h2>
+			<p class="subtitle">Complete these steps to get the most out of Pad.</p>
+		</div>
+		{#if ondismiss}
+			<button class="dismiss-btn" onclick={ondismiss} title="Dismiss setup guide" aria-label="Dismiss setup guide">&times;</button>
+		{/if}
 	</div>
 
 	<div class="progress-section">
@@ -87,7 +105,20 @@
 				<div class="step-body">
 					<a href={step.href} class="step-title">{step.title}</a>
 					{#if !step.done}
-						<span class="step-hint">Try: <code>{step.hint}</code></span>
+						<span class="step-hint">
+							Try: <code>{step.hint}</code>
+							<button
+								class="copy-btn"
+								onclick={() => copyHint(step.hint)}
+								title="Copy to clipboard"
+							>
+								{#if copiedHint === step.hint}
+									Copied!
+								{:else}
+									Copy
+								{/if}
+							</button>
+						</span>
 					{/if}
 				</div>
 			</li>
@@ -95,8 +126,10 @@
 	</ol>
 
 	<div class="onboarding-footer">
-		<a href="/{wsSlug}/library" class="footer-link">Or open the library to browse conventions and playbooks</a>
-		<span class="footer-muted">View web UI at http://localhost:7777</span>
+		<p class="footer-instructions">
+			Install the Pad skill in your project with <code>pad init</code>, then paste a prompt above into Claude Code or your favorite AI agent.
+		</p>
+		<a href="/{wsSlug}/library" class="footer-link">Or browse the library for conventions and playbooks</a>
 	</div>
 </div>
 
@@ -110,7 +143,15 @@
 	}
 
 	.onboarding-header {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-3);
 		margin-bottom: var(--space-5);
+	}
+
+	.header-text {
+		margin-bottom: 0;
 	}
 
 	.onboarding-header h2 {
@@ -124,6 +165,23 @@
 		font-size: 0.88em;
 		color: var(--text-muted);
 		margin: 0;
+	}
+
+	.dismiss-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 1.3em;
+		cursor: pointer;
+		padding: 0 var(--space-1);
+		line-height: 1;
+		border-radius: var(--radius-sm);
+		flex-shrink: 0;
+	}
+
+	.dismiss-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
 	}
 
 	/* Progress */
@@ -218,6 +276,10 @@
 		font-size: 0.8em;
 		color: var(--text-muted);
 		line-height: 1.5;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
 	}
 
 	.step-hint code {
@@ -227,6 +289,23 @@
 		padding: 1px 5px;
 		font-size: 0.92em;
 		word-break: break-all;
+	}
+
+	.copy-btn {
+		background: none;
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+		font-size: 0.88em;
+		cursor: pointer;
+		padding: 0 6px;
+		border-radius: 3px;
+		white-space: nowrap;
+		line-height: 1.6;
+	}
+
+	.copy-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
 	}
 
 	/* Footer */
@@ -249,8 +328,18 @@
 		text-decoration: underline;
 	}
 
-	.footer-muted {
-		font-size: 0.78em;
-		color: var(--text-muted);
+	.footer-instructions {
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		margin: 0;
+		line-height: 1.5;
+	}
+
+	.footer-instructions code {
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 1px 5px;
+		font-size: 0.92em;
 	}
 </style>

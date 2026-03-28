@@ -126,6 +126,13 @@
 
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
 		columnData[columnValue] = e.detail.items;
+
+		// Capture the desired order BEFORE setting isDragging = false or awaiting,
+		// because both can trigger reactive effects that overwrite columnData.
+		const reorderUpdates = columnData[columnValue]
+			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+			.map((item, index) => ({ slug: item.id, sort_order: index }));
+
 		isDragging = false;
 
 		const { id: itemId, trigger } = e.detail.info;
@@ -140,13 +147,8 @@
 			}
 		}
 
-		if (onReorder) {
-			const updates = columnData[columnValue]
-				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-				.map((item, index) => ({ slug: item.id, sort_order: index }));
-			if (updates.length > 0) {
-				onReorder(updates);
-			}
+		if (onReorder && reorderUpdates.length > 0) {
+			onReorder(reorderUpdates);
 		}
 	}
 
@@ -235,10 +237,10 @@
 						/>
 					</div>
 				{/each}
+				{#if colItems.length === 0 && !isDragging}
+					<div class="column-empty">No {formatLabel(colValue).toLowerCase()} items</div>
+				{/if}
 			</div>
-			{#if colItems.length === 0 && !isDragging}
-				<div class="column-empty">No {formatLabel(colValue).toLowerCase()} items</div>
-			{/if}
 		</div>
 	{/each}
 </div>

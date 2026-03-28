@@ -146,6 +146,13 @@
 
 	async function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
 		groupData[groupName] = e.detail.items;
+
+		// Capture the desired order BEFORE setting isDragging = false or awaiting,
+		// because both can trigger reactive effects that overwrite groupData.
+		const reorderUpdates = groupData[groupName]
+			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+			.map((item, index) => ({ slug: item.id, sort_order: index }));
+
 		isDragging = false;
 
 		const { id: itemId, trigger } = e.detail.info;
@@ -160,13 +167,8 @@
 			}
 		}
 
-		if (onReorder) {
-			const updates = groupData[groupName]
-				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-				.map((item, index) => ({ slug: item.id, sort_order: index }));
-			if (updates.length > 0) {
-				onReorder(updates);
-			}
+		if (onReorder && reorderUpdates.length > 0) {
+			onReorder(reorderUpdates);
 		}
 	}
 
