@@ -17,6 +17,8 @@ import (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	authToken  string // session or API token, sent as Authorization: Bearer
+	agentName  string // optional agent name, sent as X-Pad-Agent header
 }
 
 func NewClient(host string, port int) *Client {
@@ -26,17 +28,38 @@ func NewClient(host string, port int) *Client {
 // NewClientFromURL creates a client from a full base URL (e.g., "https://api.getpad.dev").
 func NewClientFromURL(baseURL string) *Client {
 	baseURL = strings.TrimRight(baseURL, "/")
-	return &Client{
+	c := &Client{
 		baseURL: baseURL + "/api/v1",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+
+	// Auto-load credentials if available
+	if creds, err := LoadCredentials(); err == nil && creds != nil {
+		c.authToken = creds.Token
+	}
+
+	// Auto-load agent name from .pad.toml if available
+	if pt, _ := LoadPadToml(); pt != nil && pt.AgentName != "" {
+		c.agentName = pt.AgentName
+	}
+
+	return c
+}
+
+// SetAuthToken sets the authorization token for API requests.
+func (c *Client) SetAuthToken(token string) {
+	c.authToken = token
 }
 
 // Health checks if the server is running.
 func (c *Client) Health() error {
-	resp, err := c.httpClient.Get(c.baseURL + "/health")
+	req, err := c.newRequest("GET", "/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -289,7 +312,11 @@ func (c *Client) TestWebhook(wsSlug, webhookID string) error {
 
 // RawGet fetches raw bytes from the API.
 func (c *Client) RawGet(path string) ([]byte, error) {
-	resp, err := c.httpClient.Get(c.baseURL + path)
+	req, err := c.newRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -302,12 +329,78 @@ func (c *Client) RawGet(path string) ([]byte, error) {
 
 // PostRaw sends raw bytes to the API and decodes the JSON response.
 func (c *Client) PostRaw(path string, data []byte, result interface{}) error {
-	resp, err := c.httpClient.Post(c.baseURL+path, "application/json", bytes.NewReader(data))
+	req, err := c.newRequest("POST", path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	return c.handleResponse(resp, result)
+}
+
+// --- Auth API ---
+
+// LoginResponse is the response from POST /auth/login.
+type LoginResponse struct {
+	User  LoginUser `json:"user"`
+	Token string    `json:"token"`
+}
+
+// LoginUser is the user info returned from auth endpoints.
+type LoginUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Role  string `json:"role"`
+}
+
+// SessionResponse is the response from GET /auth/session.
+type SessionResponse struct {
+	Authenticated bool      `json:"authenticated"`
+	NeedsSetup    bool      `json:"needs_setup"`
+	User          LoginUser `json:"user"`
+}
+
+// Login authenticates with email and password.
+func (c *Client) Login(email, password string) (*LoginResponse, error) {
+	var result LoginResponse
+	err := c.post("/auth/login", map[string]string{
+		"email":    email,
+		"password": password,
+	}, &result)
+	return &result, err
+}
+
+// Register creates a new user account.
+func (c *Client) Register(email, name, password string) (*LoginResponse, error) {
+	var result LoginResponse
+	err := c.post("/auth/register", map[string]string{
+		"email":    email,
+		"name":     name,
+		"password": password,
+	}, &result)
+	return &result, err
+}
+
+// Logout destroys the current session.
+func (c *Client) Logout() error {
+	return c.post("/auth/logout", nil, nil)
+}
+
+// GetCurrentUser returns the authenticated user's profile.
+func (c *Client) GetCurrentUser() (*LoginUser, error) {
+	var result LoginUser
+	return &result, c.get("/auth/me", &result)
+}
+
+// CheckSession returns the current auth status.
+func (c *Client) CheckSession() (*SessionResponse, error) {
+	var result SessionResponse
+	return &result, c.get("/auth/session", &result)
 }
 
 // --- HTTP helpers ---
@@ -321,8 +414,27 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
+// newRequest creates an http.Request with auth and agent headers set.
+func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	if c.agentName != "" {
+		req.Header.Set("X-Pad-Agent", c.agentName)
+	}
+	return req, nil
+}
+
 func (c *Client) get(path string, result interface{}) error {
-	resp, err := c.httpClient.Get(c.baseURL + path)
+	req, err := c.newRequest("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -339,7 +451,12 @@ func (c *Client) post(path string, body interface{}, result interface{}) error {
 		}
 		bodyReader = bytes.NewReader(data)
 	}
-	resp, err := c.httpClient.Post(c.baseURL+path, "application/json", bodyReader)
+	req, err := c.newRequest("POST", path, bodyReader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -352,7 +469,7 @@ func (c *Client) patch(path string, body interface{}, result interface{}) error 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("PATCH", c.baseURL+path, bytes.NewReader(data))
+	req, err := c.newRequest("PATCH", path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -366,7 +483,7 @@ func (c *Client) patch(path string, body interface{}, result interface{}) error 
 }
 
 func (c *Client) delete(path string) error {
-	req, err := http.NewRequest("DELETE", c.baseURL+path, nil)
+	req, err := c.newRequest("DELETE", path, nil)
 	if err != nil {
 		return err
 	}

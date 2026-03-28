@@ -34,6 +34,7 @@ import (
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
 	"github.com/xarmian/pad/internal/webhooks"
+	"golang.org/x/term"
 )
 
 var (
@@ -58,6 +59,9 @@ func main() {
 		serveCmd(),
 		stopCmd(),
 		openCmd(),
+		loginCmd(),
+		logoutCmd(),
+		whoamiCmd(),
 		initCmd(),
 		linkCmd(),
 		onboardCmd(),
@@ -272,6 +276,214 @@ func openBrowser(url string) error {
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	default:
 		return fmt.Errorf("unsupported platform — open %s manually", url)
+	}
+}
+
+// --- auth commands ---
+
+func loginCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "login",
+		Short: "Log in to Pad",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+
+			// Check if already logged in with valid session
+			creds, _ := cli.LoadCredentials()
+			if creds != nil && creds.Token != "" {
+				client.SetAuthToken(creds.Token)
+				user, err := client.GetCurrentUser()
+				if err == nil && user != nil {
+					fmt.Printf("Already logged in as %s (%s)\n", user.Name, user.Email)
+					return nil
+				}
+			}
+
+			// Check if this is a first-time setup
+			session, err := client.CheckSession()
+			if err != nil {
+				return fmt.Errorf("failed to check server status: %w", err)
+			}
+
+			if session.NeedsSetup {
+				fmt.Println("No account found. Let's set you up.")
+				fmt.Println()
+				return doRegister(client, cfg)
+			}
+
+			// Prompt for login
+			return doLogin(client, cfg)
+		},
+	}
+}
+
+func doLogin(client *cli.Client, cfg *config.Config) error {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("  Email: ")
+	email, _ := reader.ReadString('\n')
+	email = strings.TrimSpace(email)
+
+	fmt.Print("  Password: ")
+	password, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	fmt.Println()
+
+	resp, err := client.Login(email, password)
+	if err != nil {
+		return fmt.Errorf("login failed: %w", err)
+	}
+
+	// Save credentials
+	if err := cli.SaveCredentials(&cli.Credentials{
+		ServerURL: cfg.BaseURL(),
+		Token:     resp.Token,
+		UserID:    resp.User.ID,
+		Email:     resp.User.Email,
+		Name:      resp.User.Name,
+	}); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	return nil
+}
+
+func doRegister(client *cli.Client, cfg *config.Config) error {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("  Email: ")
+	email, _ := reader.ReadString('\n')
+	email = strings.TrimSpace(email)
+
+	fmt.Print("  Name: ")
+	name, _ := reader.ReadString('\n')
+	name = strings.TrimSpace(name)
+
+	fmt.Print("  Password: ")
+	password, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	fmt.Println()
+
+	fmt.Print("  Confirm: ")
+	confirm, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password confirmation: %w", err)
+	}
+	fmt.Println()
+
+	if password != confirm {
+		return fmt.Errorf("passwords do not match")
+	}
+
+	resp, err := client.Register(email, name, password)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+
+	// Save credentials
+	if err := cli.SaveCredentials(&cli.Credentials{
+		ServerURL: cfg.BaseURL(),
+		Token:     resp.Token,
+		UserID:    resp.User.ID,
+		Email:     resp.User.Email,
+		Name:      resp.User.Name,
+	}); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s Account created\n", green("✓"))
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	return nil
+}
+
+func readPassword() (string, error) {
+	fd := int(os.Stdin.Fd())
+	pw, err := term.ReadPassword(fd)
+	if err != nil {
+		// Fallback for non-terminal (pipes, tests)
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(line), nil
+	}
+	return string(pw), nil
+}
+
+func logoutCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "logout",
+		Short: "Log out of Pad",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+
+			// Try to invalidate server-side session
+			_ = client.Logout()
+
+			// Delete local credentials
+			if err := cli.DeleteCredentials(); err != nil {
+				return fmt.Errorf("delete credentials: %w", err)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Logged out\n", green("✓"))
+			return nil
+		},
+	}
+}
+
+func whoamiCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "whoami",
+		Short: "Show current user info",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			creds, err := cli.LoadCredentials()
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
+			if creds == nil || creds.Token == "" {
+				fmt.Println("Not logged in. Run 'pad login'.")
+				return nil
+			}
+
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+			client.SetAuthToken(creds.Token)
+
+			user, err := client.GetCurrentUser()
+			if err != nil {
+				fmt.Println("Session expired. Run 'pad login'.")
+				return nil
+			}
+
+			if formatFlag == "json" {
+				outputJSON(user)
+			} else {
+				fmt.Printf("Name:  %s\n", user.Name)
+				fmt.Printf("Email: %s\n", user.Email)
+				fmt.Printf("Role:  %s\n", user.Role)
+			}
+			return nil
+		},
 	}
 }
 
