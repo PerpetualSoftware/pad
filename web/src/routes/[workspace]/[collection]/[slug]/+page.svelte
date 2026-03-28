@@ -454,7 +454,7 @@
 
 		<!-- Phase Tasks (shown only for phases collection) -->
 		{#if collSlug === 'phases' && item}
-			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} />
+			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} />
 		{/if}
 
 		<!-- Comments -->
