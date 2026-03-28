@@ -34,6 +34,7 @@ import (
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
 	"github.com/xarmian/pad/internal/webhooks"
+	"golang.org/x/term"
 )
 
 var (
@@ -58,6 +59,9 @@ func main() {
 		serveCmd(),
 		stopCmd(),
 		openCmd(),
+		loginCmd(),
+		logoutCmd(),
+		whoamiCmd(),
 		initCmd(),
 		linkCmd(),
 		onboardCmd(),
@@ -93,6 +97,9 @@ func main() {
 		webhooksCmd(),
 		bulkUpdateCmd(),
 		githubCmd(),
+		membersCmd(),
+		inviteCmd(),
+		joinCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -193,12 +200,7 @@ func serveCmd() *cobra.Command {
 			}
 
 			srv := server.New(s)
-
-			// Enable password auth if configured
-			if cfg.Password != "" {
-				srv.SetPassword(cfg.Password)
-				log.Printf("Password authentication enabled")
-			}
+			srv.SetBaseURL(cfg.BaseURL())
 
 			// Attach event bus for real-time SSE
 			srv.SetEventBus(events.New())
@@ -281,6 +283,352 @@ func openBrowser(url string) error {
 	}
 }
 
+// --- auth commands ---
+
+func loginCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "login",
+		Short: "Log in to Pad",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+
+			// Check if already logged in with valid session
+			creds, _ := cli.LoadCredentials()
+			if creds != nil && creds.Token != "" {
+				client.SetAuthToken(creds.Token)
+				user, err := client.GetCurrentUser()
+				if err == nil && user != nil {
+					fmt.Printf("Already logged in as %s (%s)\n", user.Name, user.Email)
+					return nil
+				}
+			}
+
+			// Check if this is a first-time setup
+			session, err := client.CheckSession()
+			if err != nil {
+				return fmt.Errorf("failed to check server status: %w", err)
+			}
+
+			if session.NeedsSetup {
+				fmt.Println("No account found. Let's set you up.")
+				fmt.Println()
+				return doRegister(client, cfg)
+			}
+
+			// Prompt for login
+			return doLogin(client, cfg)
+		},
+	}
+}
+
+func doLogin(client *cli.Client, cfg *config.Config) error {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("  Email: ")
+	email, _ := reader.ReadString('\n')
+	email = strings.TrimSpace(email)
+
+	fmt.Print("  Password: ")
+	password, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	fmt.Println()
+
+	resp, err := client.Login(email, password)
+	if err != nil {
+		return fmt.Errorf("login failed: %w", err)
+	}
+
+	// Save credentials
+	if err := cli.SaveCredentials(&cli.Credentials{
+		ServerURL: cfg.BaseURL(),
+		Token:     resp.Token,
+		UserID:    resp.User.ID,
+		Email:     resp.User.Email,
+		Name:      resp.User.Name,
+	}); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	return nil
+}
+
+func doRegister(client *cli.Client, cfg *config.Config) error {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("  Email: ")
+	email, _ := reader.ReadString('\n')
+	email = strings.TrimSpace(email)
+
+	fmt.Print("  Name: ")
+	name, _ := reader.ReadString('\n')
+	name = strings.TrimSpace(name)
+
+	fmt.Print("  Password: ")
+	password, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	fmt.Println()
+
+	fmt.Print("  Confirm: ")
+	confirm, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read password confirmation: %w", err)
+	}
+	fmt.Println()
+
+	if password != confirm {
+		return fmt.Errorf("passwords do not match")
+	}
+
+	resp, err := client.Register(email, name, password)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+
+	// Save credentials
+	if err := cli.SaveCredentials(&cli.Credentials{
+		ServerURL: cfg.BaseURL(),
+		Token:     resp.Token,
+		UserID:    resp.User.ID,
+		Email:     resp.User.Email,
+		Name:      resp.User.Name,
+	}); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s Account created\n", green("✓"))
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	return nil
+}
+
+func readPassword() (string, error) {
+	fd := int(os.Stdin.Fd())
+	pw, err := term.ReadPassword(fd)
+	if err != nil {
+		// Fallback for non-terminal (pipes, tests)
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(line), nil
+	}
+	return string(pw), nil
+}
+
+func logoutCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "logout",
+		Short: "Log out of Pad",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+
+			// Try to invalidate server-side session
+			_ = client.Logout()
+
+			// Delete local credentials
+			if err := cli.DeleteCredentials(); err != nil {
+				return fmt.Errorf("delete credentials: %w", err)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Logged out\n", green("✓"))
+			return nil
+		},
+	}
+}
+
+func whoamiCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "whoami",
+		Short: "Show current user info",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			creds, err := cli.LoadCredentials()
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
+			if creds == nil || creds.Token == "" {
+				fmt.Println("Not logged in. Run 'pad login'.")
+				return nil
+			}
+
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
+			client.SetAuthToken(creds.Token)
+
+			user, err := client.GetCurrentUser()
+			if err != nil {
+				fmt.Println("Session expired. Run 'pad login'.")
+				return nil
+			}
+
+			if formatFlag == "json" {
+				outputJSON(user)
+			} else {
+				fmt.Printf("Name:  %s\n", user.Name)
+				fmt.Printf("Email: %s\n", user.Email)
+				fmt.Printf("Role:  %s\n", user.Role)
+			}
+			return nil
+		},
+	}
+}
+
+// --- members ---
+
+func membersCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "members",
+		Short: "List workspace members",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			var result struct {
+				Members     json.RawMessage `json:"members"`
+				Invitations json.RawMessage `json:"invitations"`
+			}
+			raw, err := client.RawGet("/workspaces/" + ws + "/members")
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(raw, &result); err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				fmt.Println(string(raw))
+				return nil
+			}
+
+			var members []struct {
+				UserName  string `json:"user_name"`
+				UserEmail string `json:"user_email"`
+				Role      string `json:"role"`
+			}
+			json.Unmarshal(result.Members, &members)
+
+			if len(members) == 0 {
+				fmt.Println("No members (workspace has no users yet)")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tEMAIL\tROLE")
+			for _, m := range members {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", m.UserName, m.UserEmail, m.Role)
+			}
+			w.Flush()
+
+			var invitations []struct {
+				Email string `json:"email"`
+				Role  string `json:"role"`
+				Code  string `json:"code"`
+			}
+			json.Unmarshal(result.Invitations, &invitations)
+
+			if len(invitations) > 0 {
+				fmt.Println()
+				fmt.Println("Pending invitations:")
+				for _, inv := range invitations {
+					fmt.Printf("  %s (%s) — join code: %s\n", inv.Email, inv.Role, inv.Code)
+				}
+			}
+
+			return nil
+		},
+	}
+	return cmd
+}
+
+func inviteCmd() *cobra.Command {
+	var roleFlag string
+
+	cmd := &cobra.Command{
+		Use:   "invite <email>",
+		Short: "Invite a user to the workspace",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			email := args[0]
+
+			var result map[string]interface{}
+			raw, err := json.Marshal(map[string]string{
+				"email": email,
+				"role":  roleFlag,
+			})
+			if err != nil {
+				return err
+			}
+			if err := client.PostRaw("/workspaces/"+ws+"/members/invite", raw, &result); err != nil {
+				return err
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+
+			if added, ok := result["added"].(bool); ok && added {
+				name, _ := result["name"].(string)
+				role, _ := result["role"].(string)
+				fmt.Printf("%s Added %s (%s) as %s\n", green("✓"), name, email, role)
+			} else {
+				role, _ := result["role"].(string)
+				fmt.Printf("%s Invitation created for %s (%s)\n", green("✓"), email, role)
+				if joinURL, ok := result["join_url"].(string); ok && joinURL != "" {
+					fmt.Printf("  Share this link: %s\n", joinURL)
+				} else {
+					code, _ := result["code"].(string)
+					fmt.Printf("  Join code: %s\n", code)
+					fmt.Printf("  They can accept with: pad join %s\n", code)
+				}
+			}
+
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roleFlag, "role", "editor", "role for the invited user (owner, editor, viewer)")
+	return cmd
+}
+
+func joinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join <code>",
+		Short: "Accept a workspace invitation",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			code := args[0]
+
+			var result map[string]interface{}
+			if err := client.PostRaw("/invitations/"+code+"/accept", nil, &result); err != nil {
+				return fmt.Errorf("failed to accept invitation: %w", err)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			role, _ := result["role"].(string)
+			fmt.Printf("%s Joined workspace as %s\n", green("✓"), role)
+			return nil
+		},
+	}
+}
+
 // --- init ---
 
 func initCmd() *cobra.Command {
@@ -330,8 +678,38 @@ Use --list-templates to see available templates.`,
 				}
 			}
 
-			client, _ := getClient()
+			cfg := getConfig()
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
 			cwd, _ := os.Getwd()
+
+			// Ensure the user is authenticated before proceeding
+			session, err := client.CheckSession()
+			if err != nil {
+				return fmt.Errorf("failed to check auth status: %w", err)
+			}
+			if session.NeedsSetup {
+				fmt.Println("Welcome to Pad!")
+				fmt.Println()
+				fmt.Println("No account found. Let's set you up.")
+				fmt.Println()
+				if err := doRegister(client, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
+				// Recreate client so it picks up the new credentials
+				client = cli.NewClientFromURL(cfg.BaseURL())
+			} else if !session.Authenticated {
+				fmt.Println("Log in to continue.")
+				fmt.Println()
+				if err := doLogin(client, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
+				client = cli.NewClientFromURL(cfg.BaseURL())
+			}
 
 			var name string
 			if len(args) > 0 {
@@ -1164,8 +1542,6 @@ Examples:
 				Content:   body,
 				Fields:    string(fieldsJSON),
 				Tags:      tags,
-				CreatedBy: "user",
-				Source:    "cli",
 			}
 
 			item, err := client.CreateItem(ws, collSlug, input)
@@ -1536,8 +1912,6 @@ Examples:
 			}
 
 			input := models.ItemUpdate{
-				LastModifiedBy: "user",
-				Source:         "cli",
 			}
 
 			if title != "" {
@@ -1718,8 +2092,6 @@ func commentCmd() *cobra.Command {
 
 			input := models.CommentCreate{
 				Body:      args[1],
-				CreatedBy: "user",
-				Source:    "cli",
 			}
 
 			comment, err := client.CreateComment(ws, args[0], input)
@@ -1790,9 +2162,8 @@ The source item blocks the target item. For example:
 
 			// Create link: source blocks target
 			input := models.ItemLinkCreate{
-				TargetID:  target.ID,
-				LinkType:  "blocks",
-				CreatedBy: "user",
+				TargetID: target.ID,
+				LinkType: "blocks",
 			}
 			link, err := client.CreateItemLink(ws, source.Slug, input)
 			if err != nil {
@@ -1846,9 +2217,8 @@ The source item is blocked by the blocker item. For example:
 
 			// Create link: blocker blocks source (blocker is the source of the "blocks" link)
 			input := models.ItemLinkCreate{
-				TargetID:  source.ID,
-				LinkType:  "blocks",
-				CreatedBy: "user",
+				TargetID: source.ID,
+				LinkType: "blocks",
 			}
 			link, err := client.CreateItemLink(ws, blocker.Slug, input)
 			if err != nil {
@@ -2946,8 +3316,6 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 
 			updated, err := client.UpdateItem(ws, slug, models.ItemUpdate{
 				Content:        &edited,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return err
@@ -3155,8 +3523,6 @@ Examples:
 					Title:     foundConvention.Title,
 					Content:   foundConvention.Content,
 					Fields:    string(fieldsJSON),
-					CreatedBy: "user",
-					Source:    "cli",
 				}
 
 				item, err := client.CreateItem(ws, "conventions", input)
@@ -3204,8 +3570,6 @@ Examples:
 					Title:     foundPlaybook.Title,
 					Content:   foundPlaybook.Content,
 					Fields:    string(fieldsJSON),
-					CreatedBy: "user",
-					Source:    "cli",
 				}
 
 				item, err := client.CreateItem(ws, "playbooks", input)
@@ -3774,8 +4138,6 @@ Examples:
 
 				input := models.ItemUpdate{
 					Fields:         &fieldsStr,
-					LastModifiedBy: "user",
-					Source:         "cli",
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)
@@ -3987,8 +4349,6 @@ Examples:
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
@@ -4135,8 +4495,6 @@ func githubUnlinkCmd() *cobra.Command {
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
 			})
 			if err != nil {
 				return err

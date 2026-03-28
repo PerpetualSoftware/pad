@@ -324,17 +324,49 @@ export const api = {
 			})
 	},
 
+	// ── Members ──────────────────────────────────────────────────────────────
+
+	members: {
+		list: (ws: string) =>
+			request<{
+				members: { workspace_id: string; user_id: string; role: string; created_at: string; user_name: string; user_email: string }[];
+				invitations: { id: string; email: string; role: string; code: string; join_url?: string; created_at: string }[];
+			}>(`/workspaces/${ws}/members`),
+		invite: (ws: string, email: string, role: string) =>
+			request<{ added?: boolean; invited?: boolean; code?: string; join_url?: string; email: string; role: string; name?: string; user_id?: string }>(
+				`/workspaces/${ws}/members/invite`,
+				{ method: 'POST', body: JSON.stringify({ email, role }) }
+			),
+		remove: (ws: string, userId: string) =>
+			request<void>(`/workspaces/${ws}/members/${userId}`, { method: 'DELETE' }),
+		updateRole: (ws: string, userId: string, role: string) =>
+			request<{ user_id: string; role: string }>(`/workspaces/${ws}/members/${userId}`, {
+				method: 'PATCH',
+				body: JSON.stringify({ role })
+			}),
+		acceptInvitation: (code: string) =>
+			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
+				method: 'POST'
+			})
+	},
+
 	// ── Auth ──────────────────────────────────────────────────────────────────
 
 	auth: {
-		session: (): Promise<{ authenticated: boolean; auth_required: boolean }> =>
+		session: (): Promise<{ authenticated: boolean; needs_setup?: boolean; user?: { id: string; email: string; name: string; role: string } }> =>
 			fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
-		login: (password: string) =>
-			request<{ ok: boolean }>('/auth/login', {
+		login: (email: string, password: string) =>
+			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/login', {
 				method: 'POST',
-				body: JSON.stringify({ password })
+				body: JSON.stringify({ email, password })
 			}),
-		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' })
+		register: (email: string, name: string, password: string, invitation_code?: string) =>
+			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/register', {
+				method: 'POST',
+				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
+			}),
+		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+		me: () => request<{ id: string; email: string; name: string; role: string }>('/auth/me')
 	}
 };
 

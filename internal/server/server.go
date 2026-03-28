@@ -24,8 +24,7 @@ type Server struct {
 	webFS    fs.FS                // embedded web UI static files (optional)
 	events   *events.Bus          // real-time event bus (optional)
 	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
-	password string               // optional password for web UI access
-	sessions *SessionManager      // session manager (initialized when password is set)
+	baseURL  string               // public base URL for generating links (e.g. invite URLs)
 }
 
 func New(s *store.Store) *Server {
@@ -34,10 +33,9 @@ func New(s *store.Store) *Server {
 	return srv
 }
 
-// SetPassword enables password authentication for the web UI.
-func (s *Server) SetPassword(pw string) {
-	s.password = pw
-	s.sessions = NewSessionManager()
+// SetBaseURL sets the public base URL used for generating shareable links.
+func (s *Server) SetBaseURL(url string) {
+	s.baseURL = strings.TrimRight(url, "/")
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
@@ -65,7 +63,8 @@ func (s *Server) setupRouter() {
 		MaxAge:           300,
 	}))
 	r.Use(s.TokenAuth)
-	r.Use(s.PasswordAuth)
+	r.Use(s.SessionAuth)
+	r.Use(s.RequireAuth)
 	r.Use(jsonContentType)
 
 	// SSE endpoint (outside jsonContentType middleware)
@@ -75,11 +74,18 @@ func (s *Server) setupRouter() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
 
-		// Auth endpoints (exempt from PasswordAuth middleware)
+		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {
 			r.Get("/session", s.handleSessionCheck)
+			r.Post("/register", s.handleRegister)
 			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)
+			r.Get("/me", s.handleGetCurrentUser)
+
+			// User-scoped API tokens
+			r.Get("/tokens", s.handleListUserTokens)
+			r.Post("/tokens", s.handleCreateUserToken)
+			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 		})
 
 		// Templates
@@ -91,6 +97,9 @@ func (s *Server) setupRouter() {
 		// Playbook Library
 		r.Get("/playbook-library", s.handlePlaybookLibrary)
 
+		// Invitations (outside workspace scope)
+		r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
+
 		// Workspaces
 		r.Route("/workspaces", func(r chi.Router) {
 			r.Get("/", s.handleListWorkspaces)
@@ -98,6 +107,8 @@ func (s *Server) setupRouter() {
 			r.Post("/import", s.handleImportWorkspace)
 
 			r.Route("/{slug}", func(r chi.Router) {
+				r.Use(s.RequireWorkspaceAccess)
+
 				r.Get("/", s.handleGetWorkspace)
 				r.Patch("/", s.handleUpdateWorkspace)
 				r.Delete("/", s.handleDeleteWorkspace)
@@ -188,6 +199,14 @@ func (s *Server) setupRouter() {
 					r.Get("/", s.handleListTokens)
 					r.Post("/", s.handleCreateToken)
 					r.Delete("/{tokenID}", s.handleDeleteToken)
+				})
+
+				// Members
+				r.Route("/members", func(r chi.Router) {
+					r.Get("/", s.handleListMembers)
+					r.Post("/invite", s.handleInviteMember)
+					r.Delete("/{userID}", s.handleRemoveMember)
+					r.Patch("/{userID}", s.handleUpdateMemberRole)
 				})
 
 				// Dashboard (v2)

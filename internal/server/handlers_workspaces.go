@@ -38,6 +38,23 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+
+	// If a user is authenticated and is not an admin, scope to their memberships.
+	if user != nil && user.Role != "admin" {
+		workspaces, err := s.store.GetUserWorkspaces(user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if workspaces == nil {
+			workspaces = []models.Workspace{}
+		}
+		writeJSON(w, http.StatusOK, workspaces)
+		return
+	}
+
+	// Admin users (or fresh-install with no users) see all workspaces.
 	workspaces, err := s.store.ListWorkspaces()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -71,6 +88,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SeedCollectionsFromTemplate(ws.ID, input.Template); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Workspace created but failed to seed collections: "+err.Error())
 		return
+	}
+
+	// Add the creator as workspace owner
+	if userID := currentUserID(r); userID != "" {
+		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
 	}
 
 	writeJSON(w, http.StatusCreated, ws)

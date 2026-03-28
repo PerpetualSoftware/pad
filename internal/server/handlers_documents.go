@@ -80,8 +80,9 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity and publish event
-	s.logActivity(workspaceID, doc.ID, "created", input.CreatedBy, input.Source)
-	s.publishEvent(events.DocumentCreated, workspaceID, doc.ID, doc.Title, doc.DocType, input.CreatedBy, input.Source)
+	actor, source := actorFromRequest(r)
+	s.logActivity(workspaceID, doc.ID, "created", r)
+	s.publishEvent(events.DocumentCreated, workspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
 
 	writeJSON(w, http.StatusCreated, doc)
 }
@@ -136,10 +137,11 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		input.Tags == nil && input.Pinned == nil && input.SortOrder == nil
 	isWebAutoSave := isContentOnly && input.Source == "web"
 
+	actor, source := actorFromRequest(r)
 	if !isWebAutoSave {
-		s.logActivity(updated.WorkspaceID, updated.ID, "updated", input.LastModifiedBy, input.Source)
+		s.logActivity(updated.WorkspaceID, updated.ID, "updated", r)
 	}
-	s.publishEvent(events.DocumentUpdated, updated.WorkspaceID, updated.ID, updated.Title, updated.DocType, input.LastModifiedBy, input.Source)
+	s.publishEvent(events.DocumentUpdated, updated.WorkspaceID, updated.ID, updated.Title, updated.DocType, actor, source)
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -155,8 +157,9 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(doc.WorkspaceID, doc.ID, "archived", "user", "web")
-	s.publishEvent(events.DocumentArchived, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, "user", "web")
+	actor, source := actorFromRequest(r)
+	s.logActivity(doc.WorkspaceID, doc.ID, "archived", r)
+	s.publishEvent(events.DocumentArchived, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -184,8 +187,9 @@ func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(doc.WorkspaceID, doc.ID, "restored", "user", "web")
-	s.publishEvent(events.DocumentRestored, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, "user", "web")
+	actor, source := actorFromRequest(r)
+	s.logActivity(doc.WorkspaceID, doc.ID, "restored", r)
+	s.publishEvent(events.DocumentRestored, doc.WorkspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
 
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -207,12 +211,13 @@ func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Defaults
+	// Derive actor/source from auth context
+	actor, source := actorFromRequest(r)
 	if input.CreatedBy == "" {
-		input.CreatedBy = "user"
+		input.CreatedBy = actor
 	}
 	if input.Source == "" {
-		input.Source = "web"
+		input.Source = source
 	}
 
 	// Check if doc exists to determine activity action
@@ -228,12 +233,12 @@ func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logActivity(workspaceID, doc.ID, action, input.CreatedBy, input.Source)
+	s.logActivity(workspaceID, doc.ID, action, r)
 	eventType := events.DocumentUpdated
 	if action == "created" {
 		eventType = events.DocumentCreated
 	}
-	s.publishEvent(eventType, workspaceID, doc.ID, doc.Title, doc.DocType, input.CreatedBy, input.Source)
+	s.publishEvent(eventType, workspaceID, doc.ID, doc.Title, doc.DocType, actor, source)
 
 	status := http.StatusOK
 	if action == "created" {
@@ -352,19 +357,52 @@ func (s *Server) publishEvent(eventType, workspaceID, documentID, title, docType
 	})
 }
 
+// actorFromRequest derives actor and source from the request's auth context.
+// Actor is "user" or "agent" (determined by X-Pad-Agent header).
+// Source is "web" (cookie session), "cli" (Bearer token), or falls back to "web".
+func actorFromRequest(r *http.Request) (actor, source string) {
+	actor = "user"
+	source = "web"
+
+	// If an agent name header is present, mark as agent
+	if r.Header.Get("X-Pad-Agent") != "" {
+		actor = "agent"
+	}
+
+	// Determine source from auth method
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		source = "cli"
+	}
+
+	return actor, source
+}
+
+// agentMeta returns metadata JSON with the agent name if X-Pad-Agent is set,
+// merged with any existing metadata. Returns empty string if no agent.
+func agentMeta(r *http.Request, existingMeta string) string {
+	agentName := r.Header.Get("X-Pad-Agent")
+	if agentName == "" {
+		return existingMeta
+	}
+	if existingMeta == "" || existingMeta == "{}" {
+		return fmt.Sprintf(`{"agent":"%s"}`, agentName)
+	}
+	// Merge: insert agent field into existing JSON
+	if strings.HasPrefix(existingMeta, "{") {
+		return fmt.Sprintf(`{"agent":"%s",%s`, agentName, existingMeta[1:])
+	}
+	return existingMeta
+}
+
 // logActivity is a helper that logs activity, ignoring errors (best-effort).
-func (s *Server) logActivity(workspaceID, documentID, action, actor, source string) {
-	s.logActivityWithMeta(workspaceID, documentID, action, actor, source, "")
+func (s *Server) logActivity(workspaceID, documentID, action string, r *http.Request) {
+	s.logActivityWithMeta(workspaceID, documentID, action, r, "")
 }
 
 // logActivityWithMeta logs activity with optional JSON metadata.
-func (s *Server) logActivityWithMeta(workspaceID, documentID, action, actor, source, metadata string) {
-	if actor == "" {
-		actor = "user"
-	}
-	if source == "" {
-		source = "web"
-	}
+func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *http.Request, metadata string) {
+	actor, source := actorFromRequest(r)
+	metadata = agentMeta(r, metadata)
 	_ = s.store.CreateActivity(models.Activity{
 		WorkspaceID: workspaceID,
 		DocumentID:  documentID,

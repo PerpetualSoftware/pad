@@ -10,10 +10,10 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
-// CreateAPIToken generates a new API token for a workspace. The plaintext
-// token is returned in the response and is never stored — only its SHA-256
-// hash is persisted.
-func (s *Store) CreateAPIToken(workspaceID string, input models.APITokenCreate) (*models.APITokenWithSecret, error) {
+// CreateAPIToken generates a new API token owned by a user, optionally
+// scoped to a workspace. The plaintext token is returned in the response
+// and is never stored — only its SHA-256 hash is persisted.
+func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*models.APITokenWithSecret, error) {
 	// Generate 32 random bytes → 64 hex chars
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -34,10 +34,16 @@ func (s *Store) CreateAPIToken(workspaceID string, input models.APITokenCreate) 
 		scopes = `["*"]`
 	}
 
+	// workspace_id is optional (empty string → NULL for unscoped tokens)
+	var wsID interface{}
+	if input.WorkspaceID != "" {
+		wsID = input.WorkspaceID
+	}
+
 	_, err := s.db.Exec(`
-		INSERT INTO api_tokens (id, workspace_id, name, token_hash, prefix, scopes, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, input.Name, tokenHash, prefix, scopes, ts)
+		INSERT INTO api_tokens (id, workspace_id, user_id, name, token_hash, prefix, scopes, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, wsID, userID, input.Name, tokenHash, prefix, scopes, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
 	}
@@ -56,13 +62,37 @@ func (s *Store) CreateAPIToken(workspaceID string, input models.APITokenCreate) 
 // ListAPITokens returns all API tokens for a workspace (without secrets).
 func (s *Store) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
 	rows, err := s.db.Query(`
-		SELECT id, workspace_id, name, prefix, scopes, expires_at, last_used_at, created_at
+		SELECT id, COALESCE(workspace_id, ''), COALESCE(user_id, ''), name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE workspace_id = ?
 		ORDER BY created_at ASC
 	`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list api tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.APIToken
+	for rows.Next() {
+		t, err := scanAPIToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *t)
+	}
+	return result, rows.Err()
+}
+
+// ListUserAPITokens returns all API tokens owned by a user (without secrets).
+func (s *Store) ListUserAPITokens(userID string) ([]models.APIToken, error) {
+	rows, err := s.db.Query(`
+		SELECT id, COALESCE(workspace_id, ''), COALESCE(user_id, ''), name, prefix, scopes, expires_at, last_used_at, created_at
+		FROM api_tokens
+		WHERE user_id = ?
+		ORDER BY created_at ASC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user api tokens: %w", err)
 	}
 	defer rows.Close()
 
@@ -90,6 +120,19 @@ func (s *Store) DeleteAPIToken(id string) error {
 	return nil
 }
 
+// DeleteUserAPIToken removes an API token by ID, verifying it belongs to the user.
+func (s *Store) DeleteUserAPIToken(id, userID string) error {
+	result, err := s.db.Exec("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", id, userID)
+	if err != nil {
+		return fmt.Errorf("delete user api token: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ValidateToken hashes the provided plaintext token, looks it up in the
 // database, checks expiry, and updates last_used_at. Returns nil if the
 // token is invalid or expired.
@@ -98,15 +141,16 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	var t models.APIToken
-	var expiresAt, lastUsedAt *string
+	var expiresAt, lastUsedAt, userID *string
+	var workspaceID *string
 	var createdAt string
 
 	err := s.db.QueryRow(`
-		SELECT id, workspace_id, name, prefix, scopes, expires_at, last_used_at, created_at
+		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE token_hash = ?
 	`, tokenHash).Scan(
-		&t.ID, &t.WorkspaceID, &t.Name, &t.Prefix, &t.Scopes,
+		&t.ID, &workspaceID, &userID, &t.Name, &t.Prefix, &t.Scopes,
 		&expiresAt, &lastUsedAt, &createdAt,
 	)
 	if err == sql.ErrNoRows {
@@ -116,6 +160,12 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 		return nil, fmt.Errorf("validate token: %w", err)
 	}
 
+	if workspaceID != nil {
+		t.WorkspaceID = *workspaceID
+	}
+	if userID != nil {
+		t.UserID = *userID
+	}
 	t.CreatedAt = parseTime(createdAt)
 	t.ExpiresAt = parseTimePtr(expiresAt)
 	t.LastUsedAt = parseTimePtr(lastUsedAt)
@@ -135,15 +185,15 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 // getAPIToken retrieves a single API token by ID.
 func (s *Store) getAPIToken(id string) (*models.APIToken, error) {
 	var t models.APIToken
-	var expiresAt, lastUsedAt *string
+	var expiresAt, lastUsedAt, userID, workspaceID *string
 	var createdAt string
 
 	err := s.db.QueryRow(`
-		SELECT id, workspace_id, name, prefix, scopes, expires_at, last_used_at, created_at
+		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE id = ?
 	`, id).Scan(
-		&t.ID, &t.WorkspaceID, &t.Name, &t.Prefix, &t.Scopes,
+		&t.ID, &workspaceID, &userID, &t.Name, &t.Prefix, &t.Scopes,
 		&expiresAt, &lastUsedAt, &createdAt,
 	)
 	if err == sql.ErrNoRows {
@@ -153,6 +203,12 @@ func (s *Store) getAPIToken(id string) (*models.APIToken, error) {
 		return nil, fmt.Errorf("get api token: %w", err)
 	}
 
+	if workspaceID != nil {
+		t.WorkspaceID = *workspaceID
+	}
+	if userID != nil {
+		t.UserID = *userID
+	}
 	t.CreatedAt = parseTime(createdAt)
 	t.ExpiresAt = parseTimePtr(expiresAt)
 	t.LastUsedAt = parseTimePtr(lastUsedAt)
@@ -171,7 +227,7 @@ func scanAPIToken(s scanner) (*models.APIToken, error) {
 	var createdAt string
 
 	if err := s.Scan(
-		&t.ID, &t.WorkspaceID, &t.Name, &t.Prefix, &t.Scopes,
+		&t.ID, &t.WorkspaceID, &t.UserID, &t.Name, &t.Prefix, &t.Scopes,
 		&expiresAt, &lastUsedAt, &createdAt,
 	); err != nil {
 		return nil, fmt.Errorf("scan api token: %w", err)
