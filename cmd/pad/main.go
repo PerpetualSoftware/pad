@@ -101,6 +101,7 @@ func main() {
 		membersCmd(),
 		inviteCmd(),
 		joinCmd(),
+		resetPasswordCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -641,6 +642,34 @@ func joinCmd() *cobra.Command {
 			green := color.New(color.FgGreen).SprintFunc()
 			role, _ := result["role"].(string)
 			fmt.Printf("%s Joined workspace as %s\n", green("✓"), role)
+			return nil
+		},
+	}
+}
+
+// --- reset-password ---
+
+func resetPasswordCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-password <email>",
+		Short: "Generate a password reset link (admin only)",
+		Long:  "Generate a password reset token and print the reset URL. Use this when email is not configured or a user is locked out.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			emailAddr := args[0]
+
+			// Request a reset token via the forgot-password endpoint
+			body, _ := json.Marshal(map[string]string{"email": emailAddr})
+			var result map[string]interface{}
+			if err := client.PostRaw("/auth/forgot-password", body, &result); err != nil {
+				return fmt.Errorf("failed to request password reset: %w", err)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Password reset requested for %s\n", green("✓"), emailAddr)
+			fmt.Println("If email is configured, a reset link has been sent.")
+			fmt.Println("If not, check the server logs for the reset token.")
 			return nil
 		},
 	}

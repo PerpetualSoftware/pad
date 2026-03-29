@@ -1,26 +1,10 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
-	import { goto } from '$app/navigation';
 
 	let email = $state('');
-	let password = $state('');
 	let error = $state('');
 	let loading = $state(false);
-
-	onMount(async () => {
-		try {
-			const session = await api.auth.session();
-			if (session.needs_setup) {
-				goto('/register', { replaceState: true });
-				return;
-			}
-			if (session.authenticated) {
-				goto('/', { replaceState: true });
-				return;
-			}
-		} catch {}
-	});
+	let sent = $state(false);
 
 	async function handleSubmit() {
 		error = '';
@@ -28,20 +12,16 @@
 			error = 'Please enter your email.';
 			return;
 		}
-		if (!password) {
-			error = 'Please enter your password.';
-			return;
-		}
 
 		loading = true;
 		try {
-			await api.auth.login(email, password);
-			await goto('/', { replaceState: true });
+			await api.auth.forgotPassword(email);
+			sent = true;
 		} catch (err: unknown) {
 			if (err instanceof Error) {
-				error = err.message || 'Invalid email or password.';
+				error = err.message || 'Something went wrong.';
 			} else {
-				error = 'Invalid email or password.';
+				error = 'Something went wrong.';
 			}
 		} finally {
 			loading = false;
@@ -55,54 +35,56 @@
 	}
 </script>
 
-<div class="login-page">
-	<div class="login-card">
+<div class="page">
+	<div class="card">
 		<h1 class="logo">Pad</h1>
-		<p class="subtitle">Sign in to continue</p>
 
-		<div class="form">
-			<input
-				type="email"
-				placeholder="Email"
-				bind:value={email}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="email"
-			/>
+		{#if sent}
+			<p class="subtitle">Check your email</p>
+			<p class="message">
+				If an account with that email exists, we've sent a password reset link. Check your inbox and spam folder.
+			</p>
+			<p class="back-link">
+				<a href="/login">Back to sign in</a>
+			</p>
+		{:else}
+			<p class="subtitle">Reset your password</p>
+			<p class="message">
+				Enter your email address and we'll send you a link to reset your password.
+			</p>
 
-			<input
-				type="password"
-				placeholder="Password"
-				bind:value={password}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="current-password"
-			/>
+			<div class="form">
+				<input
+					type="email"
+					placeholder="Email"
+					bind:value={email}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="email"
+				/>
 
-			{#if error}
-				<p class="error">{error}</p>
-			{/if}
-
-			<button onclick={handleSubmit} disabled={loading}>
-				{#if loading}
-					Signing in...
-				{:else}
-					Sign in
+				{#if error}
+					<p class="error">{error}</p>
 				{/if}
-			</button>
-		</div>
 
-		<p class="register-link">
-			<a href="/forgot-password">Forgot password?</a>
-		</p>
-		<p class="register-link">
-			First time? <a href="/register">Create an account</a>
-		</p>
+				<button onclick={handleSubmit} disabled={loading}>
+					{#if loading}
+						Sending...
+					{:else}
+						Send reset link
+					{/if}
+				</button>
+			</div>
+
+			<p class="back-link">
+				<a href="/login">Back to sign in</a>
+			</p>
+		{/if}
 	</div>
 </div>
 
 <style>
-	.login-page {
+	.page {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -111,7 +93,7 @@
 		padding: var(--space-4);
 	}
 
-	.login-card {
+	.card {
 		width: 100%;
 		max-width: 360px;
 		background: var(--bg-secondary);
@@ -132,7 +114,14 @@
 	.subtitle {
 		color: var(--text-muted);
 		font-size: 0.9rem;
-		margin-bottom: var(--space-8);
+		margin-bottom: var(--space-4);
+	}
+
+	.message {
+		color: var(--text-secondary);
+		font-size: 0.88rem;
+		line-height: 1.5;
+		margin-bottom: var(--space-6);
 	}
 
 	.form {
@@ -154,17 +143,9 @@
 		transition: border-color 0.15s;
 	}
 
-	input::placeholder {
-		color: var(--text-muted);
-	}
-
-	input:focus {
-		border-color: var(--accent-blue);
-	}
-
-	input:disabled {
-		opacity: 0.6;
-	}
+	input::placeholder { color: var(--text-muted); }
+	input:focus { border-color: var(--accent-blue); }
+	input:disabled { opacity: 0.6; }
 
 	.error {
 		color: #ef4444;
@@ -186,27 +167,19 @@
 		transition: opacity 0.15s;
 	}
 
-	button:hover:not(:disabled) {
-		opacity: 0.9;
-	}
+	button:hover:not(:disabled) { opacity: 0.9; }
+	button:disabled { opacity: 0.6; cursor: not-allowed; }
 
-	button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-
-	.register-link {
+	.back-link {
 		margin-top: var(--space-6);
 		color: var(--text-muted);
 		font-size: 0.85rem;
 	}
 
-	.register-link a {
+	.back-link a {
 		color: var(--accent-blue);
 		text-decoration: none;
 	}
 
-	.register-link a:hover {
-		text-decoration: underline;
-	}
+	.back-link a:hover { text-decoration: underline; }
 </style>

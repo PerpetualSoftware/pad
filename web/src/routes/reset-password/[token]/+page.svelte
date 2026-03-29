@@ -1,47 +1,36 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { api } from '$lib/api/client';
 
-	let email = $state('');
+	let token = $derived(page.params.token ?? '');
+
 	let password = $state('');
+	let confirmPassword = $state('');
 	let error = $state('');
 	let loading = $state(false);
 
-	onMount(async () => {
-		try {
-			const session = await api.auth.session();
-			if (session.needs_setup) {
-				goto('/register', { replaceState: true });
-				return;
-			}
-			if (session.authenticated) {
-				goto('/', { replaceState: true });
-				return;
-			}
-		} catch {}
-	});
-
 	async function handleSubmit() {
 		error = '';
-		if (!email) {
-			error = 'Please enter your email.';
+
+		if (password.length < 8) {
+			error = 'Password must be at least 8 characters.';
 			return;
 		}
-		if (!password) {
-			error = 'Please enter your password.';
+		if (password !== confirmPassword) {
+			error = 'Passwords do not match.';
 			return;
 		}
 
 		loading = true;
 		try {
-			await api.auth.login(email, password);
+			await api.auth.resetPassword(token, password);
 			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
-				error = err.message || 'Invalid email or password.';
+				error = err.message || 'Failed to reset password.';
 			} else {
-				error = 'Invalid email or password.';
+				error = 'Failed to reset password.';
 			}
 		} finally {
 			loading = false;
@@ -55,28 +44,28 @@
 	}
 </script>
 
-<div class="login-page">
-	<div class="login-card">
+<div class="page">
+	<div class="card">
 		<h1 class="logo">Pad</h1>
-		<p class="subtitle">Sign in to continue</p>
+		<p class="subtitle">Set a new password</p>
 
 		<div class="form">
 			<input
-				type="email"
-				placeholder="Email"
-				bind:value={email}
+				type="password"
+				placeholder="New password"
+				bind:value={password}
 				onkeydown={handleKeydown}
 				disabled={loading}
-				autocomplete="email"
+				autocomplete="new-password"
 			/>
 
 			<input
 				type="password"
-				placeholder="Password"
-				bind:value={password}
+				placeholder="Confirm new password"
+				bind:value={confirmPassword}
 				onkeydown={handleKeydown}
 				disabled={loading}
-				autocomplete="current-password"
+				autocomplete="new-password"
 			/>
 
 			{#if error}
@@ -85,24 +74,21 @@
 
 			<button onclick={handleSubmit} disabled={loading}>
 				{#if loading}
-					Signing in...
+					Resetting...
 				{:else}
-					Sign in
+					Reset password
 				{/if}
 			</button>
 		</div>
 
-		<p class="register-link">
-			<a href="/forgot-password">Forgot password?</a>
-		</p>
-		<p class="register-link">
-			First time? <a href="/register">Create an account</a>
+		<p class="back-link">
+			<a href="/login">Back to sign in</a>
 		</p>
 	</div>
 </div>
 
 <style>
-	.login-page {
+	.page {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -111,7 +97,7 @@
 		padding: var(--space-4);
 	}
 
-	.login-card {
+	.card {
 		width: 100%;
 		max-width: 360px;
 		background: var(--bg-secondary);
@@ -154,17 +140,9 @@
 		transition: border-color 0.15s;
 	}
 
-	input::placeholder {
-		color: var(--text-muted);
-	}
-
-	input:focus {
-		border-color: var(--accent-blue);
-	}
-
-	input:disabled {
-		opacity: 0.6;
-	}
+	input::placeholder { color: var(--text-muted); }
+	input:focus { border-color: var(--accent-blue); }
+	input:disabled { opacity: 0.6; }
 
 	.error {
 		color: #ef4444;
@@ -186,27 +164,19 @@
 		transition: opacity 0.15s;
 	}
 
-	button:hover:not(:disabled) {
-		opacity: 0.9;
-	}
+	button:hover:not(:disabled) { opacity: 0.9; }
+	button:disabled { opacity: 0.6; cursor: not-allowed; }
 
-	button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-
-	.register-link {
+	.back-link {
 		margin-top: var(--space-6);
 		color: var(--text-muted);
 		font-size: 0.85rem;
 	}
 
-	.register-link a {
+	.back-link a {
 		color: var(--accent-blue);
 		text-decoration: none;
 	}
 
-	.register-link a:hover {
-		text-decoration: underline;
-	}
+	.back-link a:hover { text-decoration: underline; }
 </style>

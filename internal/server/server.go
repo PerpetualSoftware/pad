@@ -116,6 +116,10 @@ func (s *Server) setupRouter() {
 			r.Get("/me", s.handleGetCurrentUser)
 			r.Patch("/me", s.handleUpdateCurrentUser)
 
+			// Password reset
+			r.Post("/forgot-password", s.handleForgotPassword)
+			r.Post("/reset-password", s.handleResetPassword)
+
 			// User-scoped API tokens
 			r.Get("/tokens", s.handleListUserTokens)
 			r.Post("/tokens", s.handleCreateUserToken)

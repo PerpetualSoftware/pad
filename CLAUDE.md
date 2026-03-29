@@ -78,8 +78,12 @@ REST API at `/api/v1/`. Key endpoints:
 - `POST /api/v1/auth/register` — create account (first user becomes admin)
 - `POST /api/v1/auth/login` — email/password login (returns session token)
 - `POST /api/v1/auth/logout` — destroy session
-- `GET /api/v1/auth/me` — current user profile
+- `GET/PATCH /api/v1/auth/me` — current user profile (GET) and update name/password (PATCH)
+- `POST /api/v1/auth/forgot-password` — request password reset email
+- `POST /api/v1/auth/reset-password` — reset password with token
 - `GET/POST/DELETE /api/v1/auth/tokens` — user-scoped API tokens
+- `GET/PATCH /api/v1/admin/settings` — platform settings (admin-only)
+- `POST /api/v1/admin/test-email` — send test email (admin-only)
 - `POST /api/v1/invitations/{code}/accept` — accept workspace invitation
 
 ## Authentication
@@ -94,6 +98,7 @@ pad login              # Prompts to register if no users exist
 pad login              # Email + password prompt
 pad whoami             # Show current user
 pad logout             # Sign out
+pad reset-password user@example.com  # Generate reset link (admin fallback)
 
 # Credentials stored in ~/.pad/credentials.json (0600 permissions)
 # CLI auto-attaches auth token to all API requests
