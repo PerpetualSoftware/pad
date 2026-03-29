@@ -1,3 +1,37 @@
+// ─── User & Auth ──────────────────────────────────────────────────────────────
+
+export interface User {
+	id: string;
+	email: string;
+	name: string;
+	role: string;
+	avatar_url?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface UserProfileUpdate {
+	name?: string;
+	current_password?: string;
+	new_password?: string;
+}
+
+export interface APIToken {
+	id: string;
+	workspace_id: string;
+	user_id?: string;
+	name: string;
+	prefix: string;
+	scopes: string;
+	expires_at?: string;
+	last_used_at?: string;
+	created_at: string;
+}
+
+export interface APITokenWithSecret extends APIToken {
+	token: string;
+}
+
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 export interface Workspace {

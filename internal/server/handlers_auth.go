@@ -321,3 +321,88 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"updated_at": user.UpdatedAt,
 	})
 }
+
+// handleUpdateCurrentUser updates the authenticated user's profile.
+// Supports updating name and/or password. Password changes require the
+// current password for verification.
+func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil {
+		// Try cookie directly (auth endpoints are exempt from middleware)
+		if cookie, err := r.Cookie(sessionCookie); err == nil {
+			user, _ = s.store.ValidateSession(cookie.Value)
+		}
+	}
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
+		return
+	}
+
+	var input struct {
+		Name            *string `json:"name,omitempty"`
+		CurrentPassword string  `json:"current_password,omitempty"`
+		NewPassword     string  `json:"new_password,omitempty"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// Validate name if provided
+	if input.Name != nil {
+		trimmed := strings.TrimSpace(*input.Name)
+		if trimmed == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", "Name cannot be empty")
+			return
+		}
+		input.Name = &trimmed
+	}
+
+	// Validate password change
+	if input.NewPassword != "" {
+		if input.CurrentPassword == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
+			return
+		}
+		if len(input.NewPassword) < 8 {
+			writeError(w, http.StatusBadRequest, "validation_error", "New password must be at least 8 characters")
+			return
+		}
+
+		// Verify current password
+		valid, err := s.store.ValidatePassword(user.Email, input.CurrentPassword)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate password")
+			return
+		}
+		if valid == nil {
+			time.Sleep(500 * time.Millisecond) // Slow down brute force
+			writeError(w, http.StatusForbidden, "invalid_password", "Current password is incorrect")
+			return
+		}
+	}
+
+	// Build update
+	update := models.UserUpdate{
+		Name: input.Name,
+	}
+	if input.NewPassword != "" {
+		update.Password = &input.NewPassword
+	}
+
+	updated, err := s.store.UpdateUser(user.ID, update)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         updated.ID,
+		"email":      updated.Email,
+		"name":       updated.Name,
+		"role":       updated.Role,
+		"avatar_url": updated.AvatarURL,
+		"created_at": updated.CreatedAt,
+		"updated_at": updated.UpdatedAt,
+	})
+}

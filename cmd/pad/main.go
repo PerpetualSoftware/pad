@@ -29,6 +29,7 @@ import (
 	"github.com/xarmian/pad/internal/config"
 	"regexp"
 
+	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
@@ -207,6 +208,22 @@ func serveCmd() *cobra.Command {
 
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
+
+			// Attach email sender: env vars first, then platform settings overlay
+			if cfg.MailerooAPIKey != "" {
+				fromAddr := cfg.EmailFrom
+				if fromAddr == "" {
+					fromAddr = "noreply@getpad.dev"
+				}
+				fromName := cfg.EmailFromName
+				if fromName == "" {
+					fromName = "Pad"
+				}
+				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()))
+				log.Println("Email sending enabled via Maileroo (env)")
+			}
+			// Platform settings can override or provide email config
+			srv.InitEmailFromSettings()
 
 			// Mount embedded web UI if available
 			webFS, err := fs.Sub(pad.WebUI, "web/build")

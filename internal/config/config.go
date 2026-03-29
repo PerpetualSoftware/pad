@@ -18,6 +18,11 @@ type Config struct {
 	LogLevel string `toml:"log_level"`
 	DBPath string `toml:"-"` // computed, not from config file
 	DataDir  string `toml:"-"`        // computed
+
+	// Email (Maileroo)
+	MailerooAPIKey string `toml:"maileroo_api_key"`
+	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
+	EmailFromName  string `toml:"email_from_name"`  // Sender display name (e.g. Pad)
 }
 
 func DefaultConfig() *Config {
@@ -74,6 +79,18 @@ func Load() (*Config, error) {
 		cfg.DBPath = v
 		cfg.DataDir = filepath.Dir(cfg.DBPath)
 	}
+
+	// Email (Maileroo)
+	if v := os.Getenv("PAD_MAILEROO_API_KEY"); v != "" {
+		cfg.MailerooAPIKey = v
+	}
+	if v := os.Getenv("PAD_EMAIL_FROM"); v != "" {
+		cfg.EmailFrom = v
+	}
+	if v := os.Getenv("PAD_EMAIL_FROM_NAME"); v != "" {
+		cfg.EmailFromName = v
+	}
+
 	return cfg, nil
 }
 

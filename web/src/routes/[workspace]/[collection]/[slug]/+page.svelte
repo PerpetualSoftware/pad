@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { tick } from 'svelte';
+	import { tick, onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -66,6 +67,34 @@
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
 		}
+	});
+
+	// Refresh item when the tab regains focus (SSE events may have been lost)
+	let unsubscribeVisibility: (() => void) | null = null;
+
+	onMount(() => {
+		unsubscribeVisibility = visibility.onTabResume(async () => {
+			if (!wsSlug || !itemSlug || !item) return;
+			// Don't refresh if the user is actively editing
+			if (saveStatus === 'saving' || editingTitle) return;
+			try {
+				const updated = await api.items.get(wsSlug, itemSlug);
+				// Merge server state without disrupting the editor:
+				// update fields/metadata but preserve local content to avoid resetting the editor
+				item = {
+					...updated,
+					content: item!.content
+				};
+				// Refresh links too
+				itemLinks = await api.links.list(wsSlug, updated.slug).catch(() => []);
+			} catch {
+				// Ignore — will catch up on next event
+			}
+		});
+	});
+
+	onDestroy(() => {
+		unsubscribeVisibility?.();
 	});
 
 	async function loadData() {
