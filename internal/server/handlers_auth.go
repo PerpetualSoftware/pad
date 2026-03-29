@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -404,5 +406,132 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		"avatar_url": updated.AvatarURL,
 		"created_at": updated.CreatedAt,
 		"updated_at": updated.UpdatedAt,
+	})
+}
+
+// handleForgotPassword generates a password reset token and sends it via email.
+// Always returns 200 regardless of whether the email exists (prevents enumeration).
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	input.Email = strings.TrimSpace(input.Email)
+
+	// Always return the same response to prevent email enumeration
+	okResponse := map[string]interface{}{
+		"ok":      true,
+		"message": "If an account with that email exists, a password reset link has been sent.",
+	}
+
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+		writeJSON(w, http.StatusOK, okResponse)
+		return
+	}
+
+	user, err := s.store.GetUserByEmail(input.Email)
+	if err != nil || user == nil {
+		// Don't reveal whether the email exists
+		writeJSON(w, http.StatusOK, okResponse)
+		return
+	}
+
+	// Generate reset token
+	token, err := s.store.CreatePasswordReset(user.ID)
+	if err != nil {
+		log.Printf("Failed to create password reset for %s: %v", input.Email, err)
+		writeJSON(w, http.StatusOK, okResponse)
+		return
+	}
+
+	// Send reset email
+	if s.email != nil && s.baseURL != "" {
+		resetURL := s.baseURL + "/reset-password/" + token
+		go func() {
+			if err := s.email.SendPasswordReset(context.Background(), user.Email, user.Name, resetURL); err != nil {
+				log.Printf("Failed to send password reset email to %s: %v", user.Email, err)
+			}
+		}()
+	} else {
+		resetURL := s.baseURL + "/reset-password/" + token
+		log.Printf("Password reset token generated for %s (email not configured). Reset URL: %s", input.Email, resetURL)
+	}
+
+	writeJSON(w, http.StatusOK, okResponse)
+}
+
+// handleResetPassword validates a reset token and sets a new password.
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	if input.Token == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is required")
+		return
+	}
+	if len(input.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+		return
+	}
+
+	// Atomically validate and consume the reset token (prevents race conditions)
+	user, err := s.store.ConsumePasswordReset(input.Token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusBadRequest, "invalid_token", "Invalid or expired reset link. Please request a new one.")
+		return
+	}
+
+	// Update password
+	password := input.Password
+	update := models.UserUpdate{Password: &password}
+	if _, err := s.store.UpdateUser(user.ID, update); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update password")
+		return
+	}
+
+	// Invalidate all existing sessions (force logout everywhere)
+	if err := s.store.DeleteUserSessions(user.ID); err != nil {
+		log.Printf("Failed to invalidate sessions for user %s after password reset: %v", user.ID, err)
+	}
+
+	// Create a fresh session so the user is logged in
+	sessionToken, err := s.store.CreateSession(user.ID, "web", webSessionTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sessionToken,
+		Path:     "/",
+		MaxAge:   int(webSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+		"user": map[string]interface{}{
+			"id":    user.ID,
+			"email": user.Email,
+			"name":  user.Name,
+			"role":  user.Role,
+		},
+		"token": sessionToken,
 	})
 }

@@ -8,11 +8,11 @@ INSTALL_DIR?=$(HOME)/.local/bin
 build: web
 	@# Write a build timestamp into embed.go so Go's content-hash cache
 	@# sees a real change and re-embeds the web assets.
-	@printf 'package pad\n\nimport "embed"\n\n//go:embed web/build/*\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
+	@printf 'package pad\n\nimport "embed"\n\n//go:embed all:web/build\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
 	go build -o $(BINARY) $(BUILD_DIR)
 
 build-go:
-	@printf 'package pad\n\nimport "embed"\n\n//go:embed web/build/*\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
+	@printf 'package pad\n\nimport "embed"\n\n//go:embed all:web/build\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
 	go build -o $(BINARY) $(BUILD_DIR)
 
 install: build

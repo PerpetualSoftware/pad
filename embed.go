@@ -2,10 +2,10 @@ package pad
 
 import "embed"
 
-//go:embed web/build/*
+//go:embed all:web/build
 var WebUI embed.FS
 
 //go:embed skills/pad/SKILL.md
 var PadSkill []byte
 
-// embed cache bust: 1774821189
+// embed cache bust: 1774824569

@@ -376,6 +376,16 @@ export const api = {
 				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
 			}),
 		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+		forgotPassword: (email: string) =>
+			request<{ ok: boolean; message: string }>('/auth/forgot-password', {
+				method: 'POST',
+				body: JSON.stringify({ email })
+			}),
+		resetPassword: (token: string, password: string) =>
+			request<{ ok: boolean; user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/reset-password', {
+				method: 'POST',
+				body: JSON.stringify({ token, password })
+			}),
 		me: () => request<User>('/auth/me'),
 		updateProfile: (data: UserProfileUpdate) =>
 			request<User>('/auth/me', {
