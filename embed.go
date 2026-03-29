@@ -8,4 +8,4 @@ var WebUI embed.FS
 //go:embed skills/pad/SKILL.md
 var PadSkill []byte
 
-// embed cache bust: 1774785399
+// embed cache bust: 1774786532
