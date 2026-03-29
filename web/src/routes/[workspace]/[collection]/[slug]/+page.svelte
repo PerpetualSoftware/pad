@@ -296,56 +296,58 @@
 			{/if}
 		</div>
 
-		<!-- Meta -->
-		<div class="meta">
+		<!-- Meta info -->
+		<div class="meta-info">
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
 			<span class="meta-sep">·</span>
 			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
 			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
 				{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
 			</span>
-			<div class="meta-actions">
-				{#if quickActions.length > 0 && collection}
-					<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
-				{/if}
-				<button
-					class="history-btn"
-					class:active={showHistory}
-					onclick={() => { showHistory = !showHistory; }}
-				>
-					History
+		</div>
+
+		<!-- Actions -->
+		<div class="meta-actions">
+			{#if quickActions.length > 0 && collection}
+				<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
+			{/if}
+			<button
+				class="action-btn"
+				class:active={showHistory}
+				onclick={() => { showHistory = !showHistory; }}
+			>
+				History
+			</button>
+			<div class="move-wrapper">
+				<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
+					{moving ? 'Moving...' : 'Move to...'}
 				</button>
-				<div class="move-wrapper">
-					<button class="history-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
-						{moving ? 'Moving...' : 'Move to...'}
-					</button>
-					{#if showMoveMenu}
-						<div class="move-dropdown">
-							{#each moveTargets as target (target.slug)}
-								<button class="move-option" onclick={() => handleMove(target.slug)}>
-									{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
-									{target.name}
-								</button>
-							{/each}
-						</div>
-					{/if}
-				</div>
-				{#if confirmDelete}
-					<span class="delete-confirm">
-						Delete this item?
-						<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
-							{deleting ? '...' : 'Yes'}
-						</button>
-						<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
-							No
-						</button>
-					</span>
-				{:else}
-					<button class="history-btn delete-btn" onclick={() => { confirmDelete = true; }}>
-						Delete
-					</button>
+				{#if showMoveMenu}
+					<div class="move-dropdown">
+						{#each moveTargets as target (target.slug)}
+							<button class="move-option" onclick={() => handleMove(target.slug)}>
+								{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+								{target.name}
+							</button>
+						{/each}
+					</div>
 				{/if}
 			</div>
+			{#if confirmDelete}
+				<span class="delete-confirm">
+					Delete this item?
+					<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
+						{deleting ? '...' : 'Yes'}
+					</button>
+					<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
+						No
+					</button>
+				</span>
+			{:else}
+				<button class="action-btn delete-btn" onclick={() => { confirmDelete = true; }}>
+					Delete
+				</button>
+			{/if}
 		</div>
 
 		<!-- Layout wrapper -->
@@ -555,13 +557,14 @@
 	}
 
 	/* Meta */
-	.meta {
+	.meta-info {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
 		font-size: 0.8em;
 		color: var(--text-muted);
-		margin-bottom: var(--space-6);
+		margin-bottom: var(--space-2);
+		flex-wrap: wrap;
 	}
 	.meta-sep { color: var(--text-muted); }
 	.save-status {
@@ -784,13 +787,16 @@
 
 	/* History */
 	.meta-actions {
-		margin-left: auto;
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
+		margin-bottom: var(--space-6);
+		flex-wrap: wrap;
 	}
-	.history-btn {
-		padding: 2px var(--space-3);
+	.action-btn {
+		padding: var(--space-1) var(--space-3);
+		min-width: 70px;
+		text-align: center;
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -798,12 +804,13 @@
 		font-size: 0.85em;
 		cursor: pointer;
 		transition: all 0.1s;
+		white-space: nowrap;
 	}
-	.history-btn:hover {
+	.action-btn:hover {
 		background: var(--bg-tertiary);
 		color: var(--text-primary);
 	}
-	.history-btn.active {
+	.action-btn.active {
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
