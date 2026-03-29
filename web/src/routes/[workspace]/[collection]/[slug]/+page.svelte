@@ -301,11 +301,9 @@
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
 			<span class="meta-sep">·</span>
 			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
-			{#if saveStatus === 'saving'}
-				<span class="save-status saving">Saving...</span>
-			{:else if saveStatus === 'saved'}
-				<span class="save-status saved">✓ Saved</span>
-			{/if}
+			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
+				{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
+			</span>
 			<div class="meta-actions">
 				{#if quickActions.length > 0 && collection}
 					<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
@@ -569,8 +567,10 @@
 	.save-status {
 		font-size: 0.85em;
 		margin-left: var(--space-2);
+		opacity: 0;
 		transition: opacity 0.2s;
 	}
+	.save-status.visible { opacity: 1; }
 	.save-status.saving { color: var(--text-muted); }
 	.save-status.saved { color: var(--accent-green); }
 
