@@ -457,7 +457,8 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	} else {
-		log.Printf("Password reset token generated for %s but email is not configured", input.Email)
+		resetURL := s.baseURL + "/reset-password/" + token
+		log.Printf("Password reset token generated for %s (email not configured). Reset URL: %s", input.Email, resetURL)
 	}
 
 	writeJSON(w, http.StatusOK, okResponse)
@@ -483,8 +484,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate token
-	user, resetID, err := s.store.ValidatePasswordReset(input.Token)
+	// Atomically validate and consume the reset token (prevents race conditions)
+	user, err := s.store.ConsumePasswordReset(input.Token)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
@@ -502,11 +503,10 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark token as used
-	_ = s.store.MarkPasswordResetUsed(resetID)
-
 	// Invalidate all existing sessions (force logout everywhere)
-	_ = s.store.DeleteUserSessions(user.ID)
+	if err := s.store.DeleteUserSessions(user.ID); err != nil {
+		log.Printf("Failed to invalidate sessions for user %s after password reset: %v", user.ID, err)
+	}
 
 	// Create a fresh session so the user is logged in
 	sessionToken, err := s.store.CreateSession(user.ID, "web", webSessionTTL)

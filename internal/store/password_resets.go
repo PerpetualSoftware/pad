@@ -44,56 +44,40 @@ func (s *Store) CreatePasswordReset(userID string) (string, error) {
 	return plaintext, nil
 }
 
-// ValidatePasswordReset checks a plaintext reset token. Returns the user
-// if the token is valid, unused, and not expired. Returns nil if invalid.
-func (s *Store) ValidatePasswordReset(token string) (*models.User, string, error) {
+// ConsumePasswordReset atomically validates and marks a reset token as used.
+// Returns the user if the token is valid, unused, and not expired.
+// Returns nil user if the token is invalid, already used, or expired.
+// The token is marked as used in the same UPDATE, preventing race conditions
+// where two concurrent requests could both validate the same token.
+func (s *Store) ConsumePasswordReset(token string) (*models.User, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	var resetID, userID, expiresAtStr string
-	var usedAt sql.NullString
-
+	// Atomically mark the token as used and return it, only if it's
+	// currently unused and not expired. The WHERE clause ensures only
+	// one concurrent caller can succeed.
+	var userID string
 	err := s.db.QueryRow(`
-		SELECT id, user_id, expires_at, used_at FROM password_reset_tokens
-		WHERE token_hash = ?
-	`, tokenHash).Scan(&resetID, &userID, &expiresAtStr, &usedAt)
+		UPDATE password_reset_tokens
+		SET used_at = ?
+		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		RETURNING user_id
+	`, now(), tokenHash, now()).Scan(&userID)
 
 	if err == sql.ErrNoRows {
-		return nil, "", nil
+		return nil, nil // Invalid, expired, or already used
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("query reset token: %w", err)
+		return nil, fmt.Errorf("consume reset token: %w", err)
 	}
 
-	// Already used
-	if usedAt.Valid {
-		return nil, "", nil
-	}
-
-	// Expired
-	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse expires_at: %w", err)
-	}
-	if time.Now().UTC().After(expiresAt) {
-		return nil, "", nil
-	}
-
-	// Valid — fetch the user
+	// Fetch the user
 	user, err := s.GetUser(userID)
 	if err != nil {
-		return nil, "", fmt.Errorf("get user: %w", err)
+		return nil, fmt.Errorf("get user: %w", err)
 	}
 
-	return user, resetID, nil
-}
-
-// MarkPasswordResetUsed marks a reset token as consumed.
-func (s *Store) MarkPasswordResetUsed(resetID string) error {
-	_, err := s.db.Exec(`
-		UPDATE password_reset_tokens SET used_at = ? WHERE id = ?
-	`, now(), resetID)
-	return err
+	return user, nil
 }
 
 // CleanExpiredPasswordResets removes old reset tokens.
