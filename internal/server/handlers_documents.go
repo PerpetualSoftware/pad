@@ -414,10 +414,12 @@ func (s *Server) logActivity(workspaceID, documentID, action string, r *http.Req
 }
 
 // logActivityWithMeta logs activity with optional JSON metadata.
+// For "updated" actions, uses debouncing to coalesce rapid successive saves
+// (e.g., autosave) into a single activity entry within a cooldown window.
 func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *http.Request, metadata string) {
 	actor, source := actorFromRequest(r)
 	metadata = agentMeta(r, metadata)
-	_ = s.store.CreateActivity(models.Activity{
+	_ = s.store.CreateActivityDebounced(models.Activity{
 		WorkspaceID: workspaceID,
 		DocumentID:  documentID,
 		Action:      action,
