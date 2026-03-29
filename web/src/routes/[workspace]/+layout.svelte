@@ -5,6 +5,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
@@ -12,13 +13,23 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let unsubscribeSSE: (() => void) | null = null;
+	let unsubscribeVisibility: (() => void) | null = null;
 
 	onMount(() => {
+		visibility.init();
+		unsubscribeVisibility = visibility.onTabResume(() => {
+			if (!wsSlug) return;
+			// Reconnect SSE — events may have been lost while the tab was hidden
+			sseService.connect(wsSlug);
+			// Refresh collection metadata (counts, etc.)
+			collectionStore.loadCollections(wsSlug);
+		});
 		connectSSE();
 	});
 
 	onDestroy(() => {
 		unsubscribeSSE?.();
+		unsubscribeVisibility?.();
 		sseService.disconnect();
 	});
 

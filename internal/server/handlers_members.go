@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -127,11 +129,30 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		"email":   inv.Email,
 		"role":    inv.Role,
 	}
+	joinURL := ""
 	if s.baseURL != "" {
-		resp["join_url"] = s.baseURL + "/join/" + inv.Code
+		joinURL = s.baseURL + "/join/" + inv.Code
+		resp["join_url"] = joinURL
 	}
 
 	writeJSON(w, http.StatusCreated, resp)
+
+	// Send invitation email asynchronously (fire-and-forget)
+	if s.email != nil && joinURL != "" {
+		go func() {
+			inviterName := "A team member"
+			wsName := "a workspace"
+			if user, err := s.store.GetUser(inviterID); err == nil && user != nil {
+				inviterName = user.Name
+			}
+			if ws, err := s.store.GetWorkspaceByID(workspaceID); err == nil && ws != nil {
+				wsName = ws.Name
+			}
+			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL); err != nil {
+				log.Printf("Failed to send invitation email to %s: %v", inv.Email, err)
+			}
+		}()
+	}
 }
 
 // handleRemoveMember removes a user from a workspace.
@@ -198,6 +219,27 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		"user_id": userID,
 		"role":    input.Role,
 	})
+}
+
+// handleCancelInvitation deletes a pending invitation.
+func (s *Server) handleCancelInvitation(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	if !requireRole(r, "owner") {
+		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can cancel invitations")
+		return
+	}
+
+	invID := chi.URLParam(r, "invID")
+	if err := s.store.DeleteInvitation(workspaceID, invID); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleAcceptInvitation accepts a workspace invitation by code.

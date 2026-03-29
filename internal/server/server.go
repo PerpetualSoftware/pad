@@ -12,6 +12,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/store"
@@ -24,6 +25,7 @@ type Server struct {
 	webFS    fs.FS                // embedded web UI static files (optional)
 	events   *events.Bus          // real-time event bus (optional)
 	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
+	email    *email.Sender        // transactional email sender (optional)
 	baseURL  string               // public base URL for generating links (e.g. invite URLs)
 }
 
@@ -46,6 +48,37 @@ func (s *Server) SetEventBus(bus *events.Bus) {
 // SetWebhookDispatcher attaches a webhook dispatcher for outgoing notifications.
 func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 	s.webhooks = d
+}
+
+// SetEmailSender attaches a transactional email sender.
+func (s *Server) SetEmailSender(e *email.Sender) {
+	s.email = e
+}
+
+// reconfigureEmail reads email settings from the platform_settings table
+// and updates (or creates) the email sender. Called after admin settings change.
+func (s *Server) reconfigureEmail() {
+	apiKey, _ := s.store.GetPlatformSetting(settingMailerooAPIKey)
+	fromAddr, _ := s.store.GetPlatformSetting(settingEmailFrom)
+	fromName, _ := s.store.GetPlatformSetting(settingEmailFromName)
+
+	if apiKey == "" {
+		return // No API key — leave email as-is (may still have env var config)
+	}
+
+	if s.email == nil {
+		// Create a new sender from platform settings
+		s.email = email.NewSender(apiKey, fromAddr, fromName, s.baseURL)
+	} else {
+		// Update existing sender
+		s.email.Configure(apiKey, fromAddr, fromName, s.baseURL)
+	}
+}
+
+// InitEmailFromSettings loads email config from platform settings on startup,
+// merging with any env-var-based sender that was already attached.
+func (s *Server) InitEmailFromSettings() {
+	s.reconfigureEmail()
 }
 
 func (s *Server) setupRouter() {
@@ -81,11 +114,19 @@ func (s *Server) setupRouter() {
 			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)
 			r.Get("/me", s.handleGetCurrentUser)
+			r.Patch("/me", s.handleUpdateCurrentUser)
 
 			// User-scoped API tokens
 			r.Get("/tokens", s.handleListUserTokens)
 			r.Post("/tokens", s.handleCreateUserToken)
 			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
+		})
+
+		// Admin endpoints (admin-only, handlers check role internally)
+		r.Route("/admin", func(r chi.Router) {
+			r.Get("/settings", s.handleGetPlatformSettings)
+			r.Patch("/settings", s.handleUpdatePlatformSettings)
+			r.Post("/test-email", s.handleTestEmail)
 		})
 
 		// Templates
@@ -206,6 +247,7 @@ func (s *Server) setupRouter() {
 				r.Route("/members", func(r chi.Router) {
 					r.Get("/", s.handleListMembers)
 					r.Post("/invite", s.handleInviteMember)
+					r.Delete("/invitations/{invID}", s.handleCancelInvitation)
 					r.Delete("/{userID}", s.handleRemoveMember)
 					r.Patch("/{userID}", s.handleUpdateMemberRole)
 				})

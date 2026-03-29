@@ -243,6 +243,22 @@ func (s *Store) AcceptInvitation(id string) error {
 	return nil
 }
 
+// DeleteInvitation removes a pending invitation.
+func (s *Store) DeleteInvitation(workspaceID, invitationID string) error {
+	result, err := s.db.Exec(
+		"DELETE FROM workspace_invitations WHERE id = ? AND workspace_id = ? AND accepted_at IS NULL",
+		invitationID, workspaceID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete invitation: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ListWorkspaceInvitations returns all invitations for a workspace.
 func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.WorkspaceInvitation, error) {
 	rows, err := s.db.Query(`

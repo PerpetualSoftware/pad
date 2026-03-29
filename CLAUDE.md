@@ -48,6 +48,7 @@ internal/
   config/                — Workspace detection, .pad.toml
   diff/                  — Version diff storage
   webhooks/              — Webhook dispatcher with HMAC signing
+  email/                 — Transactional email via Maileroo
   links/                 — Wiki-link parsing
 web/src/
   routes/                — SvelteKit pages
@@ -107,6 +108,17 @@ pad join <code>                     # Accept a workspace invitation
 ```
 
 Roles: `owner` (full access), `editor` (CRUD items), `viewer` (read-only).
+
+### Email (optional)
+
+Transactional email via Maileroo. When configured, workspace invitations are sent by email. Without it, everything works via CLI-based join codes.
+
+```bash
+# Environment variables (or ~/.pad/config.toml)
+PAD_MAILEROO_API_KEY=your-sending-key   # Required to enable email
+PAD_EMAIL_FROM=noreply@yourdomain.com   # Sender address (default: noreply@getpad.dev)
+PAD_EMAIL_FROM_NAME=Pad                 # Sender display name (default: Pad)
+```
 
 ## CLI
 

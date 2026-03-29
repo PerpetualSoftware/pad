@@ -9,8 +9,9 @@
 	import TableView from '$lib/components/collections/TableView.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
@@ -128,8 +129,45 @@
 		});
 	});
 
+	// Silently refresh items when the tab regains focus (SSE events may have been lost)
+	let unsubscribeVisibility: (() => void) | null = null;
+
+	onMount(() => {
+		unsubscribeVisibility = visibility.onTabResume(async () => {
+			if (!wsSlug || !collSlug) return;
+			try {
+				const listParams = showArchived ? { include_archived: true } : undefined;
+				const freshItems = await api.items.listByCollection(wsSlug, collSlug, listParams);
+				items = freshItems;
+
+				// Update progress data without resetting view state
+				if (collSlug === 'phases') {
+					const progress = await api.items.phasesProgress(wsSlug).catch(() => []);
+					const map: Record<string, { total: number; done: number }> = {};
+					for (const p of progress) {
+						map[p.phase_id] = { total: p.total, done: p.done };
+					}
+					itemProgress = map;
+				} else {
+					const map: Record<string, { total: number; done: number }> = {};
+					for (const it of freshItems) {
+						if (!it.content) continue;
+						const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
+						if (total === 0) continue;
+						const done = (it.content.match(/- \[x\]/g) ?? []).length;
+						map[it.id] = { total, done };
+					}
+					itemProgress = map;
+				}
+			} catch {
+				// Ignore — will catch up on next SSE event
+			}
+		});
+	});
+
 	onDestroy(() => {
 		unsubscribeSSE?.();
+		unsubscribeVisibility?.();
 	});
 
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
@@ -669,7 +707,7 @@
 						aria-label="Toggle filters"
 						title="Toggle filters"
 					>
-						<span class="filter-icon">&#9697;</span>
+						<svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
 						<span class="filter-label">Filters</span>
 						{#if hasActiveFilters}
 							<span class="filter-badge"></span>
@@ -1014,8 +1052,7 @@
 	}
 
 	.filter-icon {
-		font-size: 1.1em;
-		line-height: 1;
+		flex-shrink: 0;
 	}
 
 	.filter-badge {

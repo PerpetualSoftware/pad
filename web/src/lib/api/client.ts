@@ -21,7 +21,11 @@ import type {
 	LibraryConvention,
 	PlaybookLibraryResponse,
 	LibraryPlaybook,
-	View
+	View,
+	User,
+	UserProfileUpdate,
+	APIToken,
+	APITokenWithSecret
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -348,6 +352,8 @@ export const api = {
 				method: 'PATCH',
 				body: JSON.stringify({ role })
 			}),
+		cancelInvitation: (ws: string, invitationId: string) =>
+			request<void>(`/workspaces/${ws}/members/invitations/${invitationId}`, { method: 'DELETE' }),
 		acceptInvitation: (code: string) =>
 			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
 				method: 'POST'
@@ -370,7 +376,38 @@ export const api = {
 				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
 			}),
 		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
-		me: () => request<{ id: string; email: string; name: string; role: string }>('/auth/me')
+		me: () => request<User>('/auth/me'),
+		updateProfile: (data: UserProfileUpdate) =>
+			request<User>('/auth/me', {
+				method: 'PATCH',
+				body: JSON.stringify(data)
+			}),
+		tokens: {
+			list: () => request<APIToken[]>('/auth/tokens'),
+			create: (name: string) =>
+				request<APITokenWithSecret>('/auth/tokens', {
+					method: 'POST',
+					body: JSON.stringify({ name })
+				}),
+			delete: (tokenId: string) =>
+				request<void>(`/auth/tokens/${tokenId}`, { method: 'DELETE' })
+		}
+	},
+
+	// ── Admin ────────────────────────────────────────────────────────────────
+
+	admin: {
+		getSettings: () => request<Record<string, string>>('/admin/settings'),
+		updateSettings: (settings: Record<string, string>) =>
+			request<{ ok: boolean }>('/admin/settings', {
+				method: 'PATCH',
+				body: JSON.stringify(settings)
+			}),
+		testEmail: (to?: string) =>
+			request<{ ok: boolean; sent_to: string }>('/admin/test-email', {
+				method: 'POST',
+				body: JSON.stringify(to ? { to } : {})
+			})
 	}
 };
 

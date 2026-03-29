@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { itemUrlId } from '$lib/types';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
@@ -39,11 +40,20 @@
 		if (wsSlug) load(wsSlug);
 	});
 
+	let unsubscribeVisibility: (() => void) | null = null;
+
 	onMount(() => {
 		pollTimer = setInterval(() => {
 			if (wsSlug) load(wsSlug, true);
 		}, 30000);
+		unsubscribeVisibility = visibility.onTabResume(() => {
+			if (wsSlug) load(wsSlug, true);
+		});
 		return () => clearInterval(pollTimer);
+	});
+
+	onDestroy(() => {
+		unsubscribeVisibility?.();
 	});
 
 	async function load(slug: string, silent = false) {
