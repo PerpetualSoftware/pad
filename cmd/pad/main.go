@@ -858,6 +858,7 @@ Use 'pad workspaces' to see available workspaces.`,
 				ws, err := client.GetWorkspace(existingSlug)
 				if err == nil && ws != nil {
 					fmt.Printf("Already linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
+					offerSkillInstall()
 					return nil
 				}
 			}
@@ -922,6 +923,13 @@ func offerSkillInstall() {
 	}
 
 	if allInstalled && len(detected) > 0 {
+		// Ensure existing installations are tracked in the registry
+		for _, tool := range detected {
+			path := cli.ToolSkillPath(tool)
+			if path != "" {
+				recordInstallation(tool.Name, path)
+			}
+		}
 		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad install --update' to update.\n", len(detected))
 		return
 	}
@@ -939,6 +947,7 @@ func offerSkillInstall() {
 				continue
 			}
 			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
+			recordInstallation(tool.Name, path)
 		}
 		return
 	}
@@ -967,6 +976,11 @@ func offerSkillInstall() {
 	fmt.Println()
 	for _, tool := range detected {
 		if cli.ToolInstalled(tool) {
+			// Already installed — just ensure it's tracked in the registry
+			path := cli.ToolSkillPath(tool)
+			if path != "" {
+				recordInstallation(tool.Name, path)
+			}
 			continue
 		}
 		content := cli.FormatForTool(tool, pad.PadSkill)
@@ -977,6 +991,7 @@ func offerSkillInstall() {
 		}
 		color.New(color.FgGreen).Printf("  ✓ %s", tool.Label)
 		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(path))
+		recordInstallation(tool.Name, path)
 	}
 }
 
@@ -1170,42 +1185,17 @@ func skillsCmd() *cobra.Command {
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update installed skills to the version bundled in this binary",
+		Short: "Update all installed skills across all projects",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			location, installed := cli.SkillsInstalled()
-			if !installed {
-				return fmt.Errorf("skills not installed. Run 'pad skills install' first")
-			}
-			outdated, _ := cli.SkillsOutdated(pad.PadSkill)
-			if !outdated {
-				fmt.Println("Skills are already up to date.")
-				return nil
-			}
-			path, err := cli.InstallSkill(pad.PadSkill, location)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Updated /pad skill at %s\n", path)
-			return nil
+			return installUpdate()
 		},
 	}
 
 	statusSubCmd := &cobra.Command{
 		Use:   "status",
-		Short: "Check if Claude Code skills are installed and up to date",
-		Run: func(cmd *cobra.Command, args []string) {
-			location, installed := cli.SkillsInstalled()
-			if !installed {
-				fmt.Println("Skills not installed. Run 'pad skills install' to install.")
-				return
-			}
-			outdated, _ := cli.SkillsOutdated(pad.PadSkill)
-			if outdated {
-				fmt.Printf("Skills installed (%s) — UPDATE AVAILABLE\n", location)
-				fmt.Println("  Run 'pad skills update' to update.")
-			} else {
-				fmt.Printf("Skills installed (%s) — up to date\n", location)
-			}
+		Short: "Show skill installation status across all projects",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return installList()
 		},
 	}
 
@@ -1271,6 +1261,7 @@ Examples:
 }
 
 func installList() error {
+	// Show local tool status (current directory)
 	detected := map[string]bool{}
 	for _, t := range cli.DetectTools() {
 		detected[t.Name] = true
@@ -1293,11 +1284,54 @@ func installList() error {
 		}
 		fmt.Printf("  %-12s %s%s%s%s\n", tool.Name, tool.Label, aliases, det, status)
 	}
+
+	// Show global installation registry
+	reg, err := cli.LoadRegistry()
+	if err != nil || len(reg.Installations) == 0 {
+		return nil
+	}
+
+	reg.Prune()
+	_ = reg.Save()
+
+	statuses := reg.Status(pad.PadSkill)
+	if len(statuses) == 0 {
+		return nil
+	}
+
+	fmt.Println()
+	fmt.Println("Tracked installations:")
+	fmt.Println()
+
+	outdatedCount := 0
+	for _, s := range statuses {
+		tool := cli.ResolveTool(s.Tool)
+		toolLabel := s.Tool
+		if tool != nil {
+			toolLabel = tool.Label
+		}
+
+		state := "✓ up to date"
+		if !s.Exists {
+			state = "✗ missing"
+		} else if s.Outdated {
+			state = "⟳ update available"
+			outdatedCount++
+		}
+
+		fmt.Printf("  %-40s  %-28s  %s\n", s.ProjectPath, toolLabel, state)
+	}
+
+	if outdatedCount > 0 {
+		fmt.Printf("\n  %d installation(s) can be updated. Run 'pad install --update' to update all.\n", outdatedCount)
+	}
+
 	return nil
 }
 
 func installUpdate() error {
-	updated := 0
+	// Phase 1: Update tools installed in the current directory
+	localUpdated := 0
 	for _, tool := range cli.SupportedTools {
 		if !cli.ToolInstalled(tool) {
 			continue
@@ -1309,12 +1343,69 @@ func installUpdate() error {
 			continue
 		}
 		fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, path)
-		updated++
+		recordInstallation(tool.Name, path)
+		localUpdated++
 	}
-	if updated == 0 {
-		fmt.Println("No tools installed. Run 'pad install' first.")
+
+	// Phase 2: Update all tracked installations across other projects
+	reg, err := cli.LoadRegistry()
+	if err != nil {
+		if localUpdated == 0 {
+			fmt.Println("No tools installed. Run 'pad install' first.")
+		}
+		return nil
+	}
+
+	cwd, _ := os.Getwd()
+	reg.Prune()
+	globalUpdated, updateErrors := reg.UpdateAll(pad.PadSkill, version)
+	_ = reg.Save()
+
+	for _, e := range updateErrors {
+		fmt.Fprintf(os.Stderr, "  warning: %v\n", e)
+	}
+
+	// Subtract local updates that were also counted as global (same project path)
+	overlapCount := 0
+	for _, inst := range reg.Installations {
+		if inst.ProjectPath == cwd {
+			overlapCount++
+		}
+	}
+
+	remoteUpdated := globalUpdated
+	total := localUpdated + remoteUpdated
+	if total == 0 {
+		if localUpdated == 0 && len(reg.Installations) == 0 {
+			fmt.Println("No tools installed. Run 'pad install' first.")
+		} else {
+			fmt.Println("All installations are up to date.")
+		}
+	} else {
+		if remoteUpdated > 0 {
+			fmt.Printf("\nUpdated %d installation(s) across all projects.\n", total)
+		} else {
+			fmt.Printf("\nUpdated %d tool(s) in current project.\n", localUpdated)
+		}
 	}
 	return nil
+}
+
+// recordInstallation stores a skill install in the global registry (~/.pad/installations.json).
+func recordInstallation(toolName, skillPath string) {
+	reg, err := cli.LoadRegistry()
+	if err != nil {
+		return // best-effort — don't break install on registry errors
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+
+	ws, _ := cli.DetectWorkspace("")
+	reg.Record(cwd, ws, toolName, skillPath, version)
+	_ = reg.Save()
 }
 
 func installForTool(name string) error {
@@ -1329,6 +1420,7 @@ func installForTool(name string) error {
 		return err
 	}
 	fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
+	recordInstallation(tool.Name, path)
 	return nil
 }
 
@@ -1347,6 +1439,7 @@ func installAll() error {
 			continue
 		}
 		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+		recordInstallation(tool.Name, path)
 	}
 	return nil
 }
@@ -1409,6 +1502,7 @@ func installInteractive() error {
 			continue
 		}
 		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+		recordInstallation(tool.Name, path)
 	}
 	return nil
 }
@@ -1523,15 +1617,18 @@ func createCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "create <collection> <title>",
-		Short: "Create a new item in a collection",
+		Use:     "create <collection> <title>",
+		Aliases: []string{"save"},
+		Short:   "Create a new item in a collection",
 		Long: `Create a new item in the specified collection.
 
 Examples:
   pad create task "Fix OAuth redirect" --priority high
   pad create idea "Real-time collaboration" --category infrastructure
   pad create phase "API Redesign" --status active
-  pad create doc "Payment Architecture" --category architecture --stdin`,
+  pad create doc "Payment Architecture" --category architecture --stdin
+
+Run with --help-collections to see available collections and their status values.`,
 		ValidArgsFunction: completeCollectionNames,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1633,6 +1730,13 @@ Examples:
 	})
 	cmd.RegisterFlagCompletionFunc("priority", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"low", "medium", "high", "critical"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	// Override help to append available collections with status values
+	defaultHelp := cmd.HelpFunc()
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		defaultHelp(c, args)
+		printAvailableCollections()
 	})
 
 	return cmd
@@ -1810,9 +1914,10 @@ func printItemsGroupedByCollection(items []models.Item) {
 
 func showCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <ref>",
-		Short: "Show item detail (fields + content)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "show <ref>",
+		Aliases: []string{"read"},
+		Short:   "Show item detail (fields + content)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3429,6 +3534,59 @@ func completeCollectionNames(cmd *cobra.Command, args []string, toComplete strin
 		}
 	}
 	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// printAvailableCollections fetches collections from the API and prints them
+// with their descriptions and valid status values. Used by create --help.
+// Fails silently if the server is unreachable or no workspace is configured.
+func printAvailableCollections() {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	if cli.EnsureServer(cfg) != nil {
+		return
+	}
+	client := cli.NewClientFromURL(cfg.BaseURL())
+	ws, err := cli.DetectWorkspace(workspaceFlag)
+	if err != nil {
+		return
+	}
+	colls, err := client.ListCollections(ws)
+	if err != nil || len(colls) == 0 {
+		return
+	}
+
+	fmt.Println("\nAvailable collections (this workspace):")
+	for _, coll := range colls {
+		icon := coll.Icon
+		if icon == "" {
+			icon = " "
+		}
+		desc := coll.Description
+		if len(desc) > 50 {
+			desc = desc[:47] + "..."
+		}
+
+		// Parse schema to find status field options
+		var schema models.CollectionSchema
+		statusInfo := ""
+		if err := json.Unmarshal([]byte(coll.Schema), &schema); err == nil {
+			for _, field := range schema.Fields {
+				if field.Key == "status" && len(field.Options) > 0 {
+					statusInfo = " [" + strings.Join(field.Options, ", ") + "]"
+					break
+				}
+			}
+		}
+
+		if desc != "" {
+			fmt.Printf("  %s %-16s %s%s\n", icon, coll.Slug, desc, statusInfo)
+		} else {
+			fmt.Printf("  %s %-16s%s\n", icon, coll.Slug, statusInfo)
+		}
+	}
+	fmt.Println()
 }
 
 // normalizeCollectionSlug maps common singular/short forms to actual collection slugs.
