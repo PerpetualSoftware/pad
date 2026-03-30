@@ -195,6 +195,7 @@
 				class="column-header {columnCssClass(colValue)}"
 				draggable="true"
 				role="toolbar"
+				tabindex="0"
 				ondragstart={(e) => handleColumnDragStart(e, colValue)}
 				ondragend={handleColumnDragEnd}
 			>

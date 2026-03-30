@@ -13,7 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web-builder /app/web/build ./web/build
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o pad ./cmd/pad
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION} -X main.commit=$(git rev-parse --short HEAD 2>/dev/null) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o pad ./cmd/pad
 
 # Stage 3: Runtime
 FROM alpine:3.21

@@ -217,9 +217,12 @@
 			{@const groupName = group.id}
 			{@const grpItems = groupData[groupName] ?? []}
 			<div class="item-group">
-				<button
+				<div
 					class="group-header"
+					role="button"
+					tabindex="0"
 					onclick={() => toggleGroup(groupName)}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
 					aria-expanded={!collapsedGroups.has(groupName)}
 				>
 					<span class="group-drag-handle" title="Drag to reorder">⠿</span>
@@ -244,7 +247,7 @@
 							{/if}
 						{/if}
 					</span>
-				</button>
+				</div>
 
 				{#if !collapsedGroups.has(groupName)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->

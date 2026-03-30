@@ -40,16 +40,32 @@ import (
 
 var (
 	version       = "dev"
+	commit        = ""
+	buildTime     = ""
 	workspaceFlag string
 	formatFlag    string
 	urlFlag       string
 )
 
+func fullVersion() string {
+	if commit == "" {
+		return version
+	}
+	short := commit
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	if buildTime != "" {
+		return version + " (" + short + " " + buildTime + ")"
+	}
+	return version + " (" + short + ")"
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "pad",
 		Short:   "Pad — project management for developers and AI agents",
-		Version: version,
+		Version: fullVersion(),
 	}
 
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
@@ -202,6 +218,7 @@ func serveCmd() *cobra.Command {
 			}
 
 			srv := server.New(s)
+			srv.SetVersion(version, commit, buildTime)
 			srv.SetBaseURL(cfg.BaseURL())
 
 			// Attach event bus for real-time SSE

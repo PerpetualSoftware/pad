@@ -23,6 +23,7 @@
 {#if toastStore.toasts.length > 0}
 	<div class="toast-container" role="status" aria-live="polite">
 		{#each toastStore.toasts as toast (toast.id)}
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<div
 				class="toast toast-{toast.type}"
 				class:clickable={!!toast.link}
@@ -30,7 +31,7 @@
 				out:fade={{ duration: 150 }}
 				onclick={() => handleClick(toast)}
 				role={toast.link ? 'button' : undefined}
-				tabindex={toast.link ? 0 : undefined}
+				tabindex={toast.link ? 0 : -1}
 				onkeydown={(e) => { if (toast.link && e.key === 'Enter') handleClick(toast); }}
 			>
 				<span class="toast-icon">{iconForType(toast.type)}</span>

@@ -495,9 +495,11 @@
 
 	<!-- Version History Modal -->
 	{#if showHistory}
-		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-		<div class="modal-backdrop" onclick={() => { showHistory = false; }}>
-			<div class="modal-container" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-backdrop" role="button" tabindex="0"
+			onclick={() => { showHistory = false; }}
+			onkeydown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') { showHistory = false; } }}>
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<div class="modal-container" role="none" onclick={(e) => e.stopPropagation()}>
 				<VersionHistory
 					{wsSlug}
 					{itemSlug}
