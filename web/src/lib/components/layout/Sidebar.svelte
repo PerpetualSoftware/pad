@@ -119,6 +119,8 @@
 		}
 	}
 
+	let versionLabel = $state('');
+
 	onMount(async () => {
 		const saved = localStorage.getItem('pad-theme');
 		if (saved === 'light' || saved === 'dark') {
@@ -132,6 +134,14 @@
 			const session = await api.auth.session();
 			if (session.authenticated && session.user) {
 				currentAuthUser = session.user;
+			}
+		} catch {}
+
+		try {
+			const health = await api.health();
+			if (health.version) {
+				const v = health.version === 'dev' ? 'dev' : `v${health.version}`;
+				versionLabel = health.commit ? `${v} (${health.commit.slice(0, 7)})` : v;
 			}
 		} catch {}
 	});
@@ -373,6 +383,9 @@
 					{/if}
 				</button>
 			</div>
+			{#if versionLabel}
+				<span class="version-label">{versionLabel}</span>
+			{/if}
 		</div>
 	</div>
 </aside>
@@ -590,6 +603,15 @@
 		align-items: center;
 		gap: var(--space-2);
 		margin-top: var(--space-2);
+	}
+	.version-label {
+		display: block;
+		text-align: center;
+		font-size: 0.7em;
+		color: var(--text-muted);
+		opacity: 0.6;
+		margin-top: var(--space-2);
+		user-select: text;
 	}
 	.theme-btn {
 		flex: 1;

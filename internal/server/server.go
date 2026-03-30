@@ -20,19 +20,29 @@ import (
 )
 
 type Server struct {
-	store    *store.Store
-	router   *chi.Mux
-	webFS    fs.FS                // embedded web UI static files (optional)
-	events   *events.Bus          // real-time event bus (optional)
-	webhooks *webhooks.Dispatcher // webhook dispatcher (optional)
-	email    *email.Sender        // transactional email sender (optional)
-	baseURL  string               // public base URL for generating links (e.g. invite URLs)
+	store     *store.Store
+	router    *chi.Mux
+	webFS     fs.FS                // embedded web UI static files (optional)
+	events    *events.Bus          // real-time event bus (optional)
+	webhooks  *webhooks.Dispatcher // webhook dispatcher (optional)
+	email     *email.Sender        // transactional email sender (optional)
+	baseURL   string               // public base URL for generating links (e.g. invite URLs)
+	version   string               // release version (e.g. "dev", "1.2.3")
+	commit    string               // git commit hash
+	buildTime string               // build timestamp
 }
 
 func New(s *store.Store) *Server {
 	srv := &Server{store: s}
 	srv.setupRouter()
 	return srv
+}
+
+// SetVersion stores the build version info for the health endpoint.
+func (s *Server) SetVersion(version, commit, buildTime string) {
+	s.version = version
+	s.commit = commit
+	s.buildTime = buildTime
 }
 
 // SetBaseURL sets the public base URL used for generating shareable links.

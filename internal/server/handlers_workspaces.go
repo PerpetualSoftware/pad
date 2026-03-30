@@ -12,7 +12,17 @@ import (
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	resp := map[string]string{"status": "ok"}
+	if s.version != "" {
+		resp["version"] = s.version
+	}
+	if s.commit != "" {
+		resp["commit"] = s.commit
+	}
+	if s.buildTime != "" {
+		resp["build_time"] = s.buildTime
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {

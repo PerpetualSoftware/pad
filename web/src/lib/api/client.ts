@@ -70,7 +70,18 @@ function qs(params?: Record<string, string | number | boolean | undefined>): str
 	return str ? '?' + str : '';
 }
 
+export interface HealthResponse {
+	status: string;
+	version?: string;
+	commit?: string;
+	build_time?: string;
+}
+
 export const api = {
+	// ── Health / Version ──────────────────────────────────────────────────────
+
+	health: () => request<HealthResponse>('/health'),
+
 	// ── Templates ─────────────────────────────────────────────────────────────
 
 	templates: {

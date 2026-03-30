@@ -5,15 +5,20 @@ BUILD_DIR=./cmd/pad
 HOST?=127.0.0.1
 INSTALL_DIR?=$(HOME)/.local/bin
 
+VERSION   ?= dev
+COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null)
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS   := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME)
+
 build: web
 	@# Write a build timestamp into embed.go so Go's content-hash cache
 	@# sees a real change and re-embeds the web assets.
 	@printf 'package pad\n\nimport "embed"\n\n//go:embed all:web/build\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
-	go build -o $(BINARY) $(BUILD_DIR)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
 build-go:
 	@printf 'package pad\n\nimport "embed"\n\n//go:embed all:web/build\nvar WebUI embed.FS\n\n//go:embed skills/pad/SKILL.md\nvar PadSkill []byte\n\n// embed cache bust: %s\n' "$$(date +%s)" > embed.go
-	go build -o $(BINARY) $(BUILD_DIR)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
 install: build
 	@# Stop running server, install binary, clear stale pid
