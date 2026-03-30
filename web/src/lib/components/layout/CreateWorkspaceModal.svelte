@@ -144,7 +144,7 @@
 
 			{#if mode === 'create'}
 				{#if templates.length > 0}
-					<label class="field-label">Template</label>
+					<span class="field-label">Template</span>
 					<div class="template-list">
 						{#each templates as tpl (tpl.name)}
 							<button
@@ -167,13 +167,15 @@
 					</div>
 				{/if}
 			{:else}
-				<label class="field-label">Export file</label>
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<span class="field-label">Export file</span>
 				<div
+					role="button"
+					tabindex="0"
 					class="drop-zone"
 					class:dragging
 					class:has-file={!!importFile}
 					onclick={() => fileInputEl?.click()}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputEl?.click(); } }}
 					ondrop={handleDrop}
 					ondragover={handleDragOver}
 					ondragenter={handleDragEnter}
@@ -296,7 +298,6 @@
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
 	}
-	.modal-body input[type="text"],
 	.modal-body input:not([type]) {
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-tertiary);

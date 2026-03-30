@@ -479,7 +479,7 @@
 
 {#if isMobile && keyboardVisible && editor}
 	{@const _tick = editorTick}
-	<div class="mobile-toolbar" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
+	<div class="mobile-toolbar" role="toolbar" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
 		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block">+</button>
 		<span class="mt-sep"></span>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} onclick={() => editor?.chain().focus().toggleBold().run()}>B</button>
@@ -518,7 +518,8 @@
 </div>
 
 {#if slashOpen}
-	<div style="position:fixed; inset:0; z-index:49;" onclick={closeSlash}></div>
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeSlash}></div>
 	<div class="slash-menu" style:left="{slashX}px" style:top="{slashY}px">
 		{#each getFilteredSlash() as item, i}
 			<button
@@ -535,8 +536,8 @@
 {/if}
 
 {#if linkOpen}
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div style="position:fixed; inset:0; z-index:49;" onclick={closeLink}></div>
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeLink}></div>
 	<div class="slash-menu" style:left="{linkX}px" style:top="{linkY}px">
 		{#each getFilteredLinks() as doc, i (doc.title)}
 			<button
@@ -846,7 +847,6 @@
 		margin: 0 2px;
 		flex-shrink: 0;
 	}
-	.slash-backdrop { position: fixed; inset: 0; z-index: 49; }
 	.slash-menu {
 		position: fixed; z-index: 50; background: var(--bg-secondary);
 		border: 1px solid var(--border); border-radius: var(--radius);

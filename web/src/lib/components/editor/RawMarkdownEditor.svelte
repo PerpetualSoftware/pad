@@ -7,7 +7,7 @@
 		onUpdate?: (markdown: string) => void;
 	} = $props();
 
-	let localContent = $state(content);
+	let localContent = $state('');
 	let textarea = $state<HTMLTextAreaElement>();
 
 	// Sync when content prop changes (doc switch or mode toggle)
