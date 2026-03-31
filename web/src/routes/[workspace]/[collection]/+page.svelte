@@ -817,7 +817,7 @@
 				<div class="empty-icon">{collection.icon || '📦'}</div>
 				<h2>No {collection.name.toLowerCase()} yet</h2>
 				<p>Create your first {singularName().toLowerCase()} to get started.</p>
-				<a href="/{wsSlug}/{collSlug}/new" class="empty-cta">+ Create {singularName()}</a>
+				<a href="/{wsSlug}/new?collection={collSlug}" class="empty-cta">+ Create {singularName()}</a>
 				{#if emptyHint}
 					<p class="empty-hint">Or try: <code>{emptyHint}</code></p>
 				{/if}
