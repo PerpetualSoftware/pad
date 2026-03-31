@@ -49,7 +49,7 @@ restart: build-go
 	./$(BINARY) serve --host $(HOST)
 
 web:
-	cd web && npm run build
+	cd web && npm ci && npm run build
 
 dev-web:
 	cd web && npm run dev
