@@ -452,6 +452,14 @@
 		requestAnimationFrame(() => quickCreateInput?.focus());
 	}
 
+	function handleNewButtonClick() {
+		if (quickCreateTitle.trim()) {
+			quickCreate();
+			return;
+		}
+		openQuickCreate();
+	}
+
 	function handleQuickCreateKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && quickCreateTitle.trim()) {
 			e.preventDefault();
@@ -733,7 +741,7 @@
 						<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
 					{/if}
 
-					<button class="new-btn" onclick={openQuickCreate} disabled={creatingNew}>
+					<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
 						+ <span class="new-btn-label">New {singularName()}</span>
 					</button>
 				</div>
