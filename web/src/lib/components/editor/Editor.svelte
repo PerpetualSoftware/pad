@@ -475,10 +475,47 @@
 		slashOpen = true;
 	}
 
+	type ListItemTypeName = 'listItem' | 'taskItem';
+
+	function getActiveListItemType(): ListItemTypeName | null {
+		if (!editor) return null;
+		const selectionAnchor = editor.state.selection.$from;
+		for (let depth = selectionAnchor.depth; depth > 0; depth--) {
+			const typeName = selectionAnchor.node(depth).type.name;
+			if (typeName === 'listItem' || typeName === 'taskItem') return typeName;
+		}
+		return null;
+	}
+
+	function canIndentListItem(type: ListItemTypeName | null): boolean {
+		if (!editor || !type) return false;
+		return editor.can().chain().focus().sinkListItem(type).run();
+	}
+
+	function canOutdentListItem(type: ListItemTypeName | null): boolean {
+		if (!editor || !type) return false;
+		return editor.can().chain().focus().liftListItem(type).run();
+	}
+
+	function indentCurrentListItem() {
+		const type = getActiveListItemType();
+		if (!editor || !type) return;
+		editor.chain().focus().sinkListItem(type).run();
+	}
+
+	function outdentCurrentListItem() {
+		const type = getActiveListItemType();
+		if (!editor || !type) return;
+		editor.chain().focus().liftListItem(type).run();
+	}
+
 </script>
 
 {#if isMobile && keyboardVisible && editor}
 	{@const _tick = editorTick}
+	{@const listItemType = getActiveListItemType()}
+	{@const canIndent = canIndentListItem(listItemType)}
+	{@const canOutdent = canOutdentListItem(listItemType)}
 	<div class="mobile-toolbar" role="toolbar" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
 		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block">+</button>
 		<span class="mt-sep"></span>
@@ -492,6 +529,8 @@
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bulletList')} onclick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('orderedList')} onclick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('taskList')} onclick={() => editor?.chain().focus().toggleTaskList().run()}>☐</button>
+		<button class="mt-btn" disabled={!canOutdent} onclick={outdentCurrentListItem} title="Outdent list item">&lt;</button>
+		<button class="mt-btn" disabled={!canIndent} onclick={indentCurrentListItem} title="Indent list item">&gt;</button>
 		<span class="mt-sep"></span>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} onclick={() => editor?.chain().focus().toggleCodeBlock().run()}>&lt;&gt;</button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} onclick={() => editor?.chain().focus().toggleBlockquote().run()}>❝</button>
@@ -839,6 +878,10 @@
 	.mt-btn.active {
 		background: var(--bg-active);
 		color: var(--accent-blue);
+	}
+	.mt-btn:disabled {
+		opacity: 0.4;
+		cursor: default;
 	}
 	.mt-sep {
 		width: 1px;
