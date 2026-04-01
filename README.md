@@ -141,12 +141,6 @@ Items get reference numbers automatically (`TASK-5`, `BUG-12`) and can be moved 
 brew install xarmian/tap/pad
 ```
 
-### Go Install
-
-```bash
-go install github.com/xarmian/pad/cmd/pad@latest
-```
-
 ### Build from Source
 
 ```bash
@@ -157,6 +151,8 @@ cp pad ~/.local/bin/   # or /usr/local/bin/
 ```
 
 Requires Go 1.25+ and Node.js 22+.
+
+The `go install github.com/xarmian/pad/cmd/pad@latest` path is not supported for the full Pad binary, because the web UI must be built and embedded during the source build.
 
 ### Docker
 
