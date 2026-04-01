@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { SvelteMap } from 'svelte/reactivity';
+	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import { sseService } from '$lib/services/sse.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import type { Item } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
@@ -12,13 +15,16 @@
 		itemSlug: string;
 		itemId: string;
 		phaseFields?: Record<string, any>;
+		onTasksChange?: (tasks: Item[]) => void;
 	}
 
-	let { wsSlug, itemSlug, itemId, phaseFields }: Props = $props();
+	let { wsSlug, itemSlug, itemId, phaseFields, onTasksChange }: Props = $props();
 
 	let tasks = $state<Item[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+	let unsubscribeSSE: (() => void) | null = null;
+	let unsubscribeVisibility: (() => void) | null = null;
 
 	const statusOrder: string[] = ['in_progress', 'open', 'blocked', 'done'];
 	const flipDurationMs = 200;
@@ -97,8 +103,10 @@
 		error = '';
 		try {
 			tasks = await api.items.tasks(wsSlug, itemSlug);
+			onTasksChange?.(tasks);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load tasks';
+			onTasksChange?.([]);
 		} finally {
 			loading = false;
 		}
@@ -108,6 +116,31 @@
 		void wsSlug;
 		void itemSlug;
 		loadTasks();
+	});
+
+	onMount(() => {
+		unsubscribeVisibility = visibility.onTabResume(() => {
+			if (!wsSlug || !itemSlug) return;
+			loadTasks();
+		});
+	});
+
+	$effect(() => {
+		unsubscribeSSE?.();
+		unsubscribeSSE = null;
+
+		if (!wsSlug || !itemSlug) return;
+
+		unsubscribeSSE = sseService.onItemEvent((event) => {
+			if (event.collection !== 'tasks') return;
+			if (!['item_created', 'item_updated', 'item_archived', 'item_restored'].includes(event.type)) return;
+			loadTasks();
+		});
+	});
+
+	onDestroy(() => {
+		unsubscribeSSE?.();
+		unsubscribeVisibility?.();
 	});
 
 	function formatLabel(value: string): string {

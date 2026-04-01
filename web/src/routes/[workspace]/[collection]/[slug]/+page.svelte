@@ -242,6 +242,14 @@
 
 	let computedOverrides = $state<Record<string, any>>({});
 
+	function handlePhaseTasksChange(tasks: Item[]) {
+		if (collSlug !== 'phases') return;
+		const total = tasks.length;
+		const done = tasks.filter((task) => parseFields(task).status === 'done').length;
+		const progress = total > 0 ? Math.round((done / total) * 100) : 0;
+		computedOverrides = { progress, _progressDone: done, _progressTotal: total };
+	}
+
 	function fieldValue(key: string): any {
 		if (key in computedOverrides) return computedOverrides[key];
 		return fields[key] ?? '';
@@ -483,7 +491,7 @@
 
 		<!-- Phase Tasks (shown only for phases collection) -->
 		{#if collSlug === 'phases' && item}
-			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} />
+			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} onTasksChange={handlePhaseTasksChange} />
 		{/if}
 
 		<!-- Comments -->
