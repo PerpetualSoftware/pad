@@ -30,7 +30,7 @@ Please include:
 Pad runs as a local server on the user's machine. Security concerns include:
 
 - **Data integrity** — Pad stores project data in SQLite; unauthorized modification or deletion is a security issue
-- **Network exposure** — Pad binds to localhost by default; any vulnerability that exposes the server to the network unintentionally is in scope
+- **Network exposure** — outside Docker, Pad binds to localhost by default; in Docker, exposure depends on host-side port publishing, and any vulnerability that widens access beyond the intended deployment is in scope
 - **Code injection** — Any path where user input (item content, wiki-links, field values) could lead to code execution
 - **Path traversal** — Any way to read or write files outside the workspace directory
 - **Embedded web UI** — XSS or other web vulnerabilities in the SvelteKit frontend

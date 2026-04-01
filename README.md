@@ -161,8 +161,18 @@ Requires Go 1.25+ and Node.js 22+.
 ### Docker
 
 ```bash
+docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
+```
+
+This publishes Pad to `localhost:7777` on the host machine, which is the recommended default for local use.
+
+To expose Pad beyond localhost intentionally, publish the port more broadly:
+
+```bash
 docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
 ```
+
+Use broader publishing only when you intend to make Pad reachable from other machines or interfaces.
 
 ### Binary Download
 
