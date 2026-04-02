@@ -14,6 +14,12 @@ import (
 
 // EnsureServer checks if the pad server is running; if not, starts it in the background.
 func EnsureServer(cfg *config.Config) error {
+	// External modes connect to an already-managed server and must not auto-start
+	// a local background process.
+	if cfg.Mode != "" && cfg.Mode != config.ModeLocal {
+		return nil
+	}
+
 	if isServerHealthy(cfg.Host, cfg.Port) {
 		return nil
 	}

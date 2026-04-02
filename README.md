@@ -25,11 +25,12 @@
 ```bash
 brew install xarmian/tap/pad
 cd your-project
+pad configure
 pad init
 pad open
 ```
 
-That's it. Four commands, zero configuration. The server auto-starts, the web UI opens at `localhost:7777`, and you're managing your project.
+For a local install, choose `Local` in `pad configure`. Pad will remember that this client manages a local server, auto-start it when needed, and open the web UI at `localhost:7777`.
 
 ## Why Pad?
 
@@ -37,7 +38,7 @@ Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is bui
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|
-| **Setup** | `pad init` | Create account, invite team, configure | Create account, pick template |
+| **Setup** | `pad configure` + `pad init` | Create account, invite team, configure | Create account, pick template |
 | **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
 | **Data** | Local SQLite, you own it | Their cloud | Their cloud |
 | **Offline** | Full functionality | Read-only cache at best | Limited |
@@ -176,7 +177,15 @@ Pre-built binaries for macOS, Linux, and Windows are available on the [releases 
 
 ## Getting Started
 
-### 1. Initialize a workspace
+### 1. Configure this Pad client
+
+```bash
+pad configure
+```
+
+For most local installs, choose `Local`. If you're connecting to another Pad server, choose `Remote` or `Docker` and enter its base URL.
+
+### 2. Initialize a workspace
 
 ```bash
 cd ~/projects/myapp
@@ -190,7 +199,7 @@ pad init "My App" --template scrum     # Scrum-style with sprints
 pad init "My App" --template product   # Product management focused
 ```
 
-### 2. Install the AI skill
+### 3. Install the AI skill
 
 ```bash
 pad install                  # Auto-detect and install for all found tools
@@ -199,7 +208,7 @@ pad install cursor
 pad install copilot
 ```
 
-### 3. Start working
+### 4. Start working
 
 ```bash
 # From the CLI
@@ -214,7 +223,7 @@ pad open                     # Opens localhost:7777 in your browser
 # Just use /pad in Claude Code, Cursor, etc.
 ```
 
-### 4. Teach your agents the rules
+### 5. Teach your agents the rules
 
 ```bash
 pad onboard                  # Auto-analyze project and suggest conventions
@@ -226,6 +235,7 @@ pad library playbooks        # Pre-built multi-step workflows
 ## CLI Reference
 
 ```
+pad configure                 Configure how this client connects to Pad
 pad init [name]              Initialize workspace in current directory
 pad open                     Open web UI in browser
 pad install [tool]           Install /pad skill for AI coding tools

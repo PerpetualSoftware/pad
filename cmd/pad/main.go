@@ -75,6 +75,7 @@ func main() {
 	rootCmd.AddCommand(
 		serveCmd(),
 		stopCmd(),
+		configureCmd(),
 		openCmd(),
 		loginCmd(),
 		logoutCmd(),
@@ -153,12 +154,16 @@ func getConfig() *config.Config {
 	// --url flag takes highest precedence
 	if urlFlag != "" {
 		cfg.URL = urlFlag
+		cfg.LoadedFromFlags = true
+		if cfg.Mode == "" {
+			cfg.Mode = config.ModeRemote
+		}
 	}
 	return cfg
 }
 
 func getClient() (*cli.Client, *config.Config) {
-	cfg := getConfig()
+	cfg := getConfiguredConfig()
 	if err := cli.EnsureServer(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -286,7 +291,7 @@ func openCmd() *cobra.Command {
 		Use:   "open",
 		Short: "Open the Pad web UI in your browser",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := getConfig()
+			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return fmt.Errorf("start server: %w", err)
 			}
@@ -325,7 +330,7 @@ func loginCmd() *cobra.Command {
 		Use:   "login",
 		Short: "Log in to Pad",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := getConfig()
+			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
@@ -466,7 +471,7 @@ func logoutCmd() *cobra.Command {
 		Use:   "logout",
 		Short: "Log out of Pad",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := getConfig()
+			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
@@ -501,7 +506,7 @@ func whoamiCmd() *cobra.Command {
 				return nil
 			}
 
-			cfg := getConfig()
+			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
@@ -741,7 +746,7 @@ Use --list-templates to see available templates.`,
 				}
 			}
 
-			cfg := getConfig()
+			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
