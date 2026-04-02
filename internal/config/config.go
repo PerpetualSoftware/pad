@@ -151,6 +151,12 @@ func (c *Config) IsConfigured() bool {
 	return c.LoadedFromFile || c.LoadedFromEnv || c.LoadedFromFlags
 }
 
+// ManagesLocalServer reports whether this client configuration should
+// auto-manage a local Pad server process.
+func (c *Config) ManagesLocalServer() bool {
+	return c.IsConfigured() && c.Mode == ModeLocal
+}
+
 func ValidMode(mode string) bool {
 	switch mode {
 	case "", ModeLocal, ModeRemote, ModeDocker, ModeCloud:

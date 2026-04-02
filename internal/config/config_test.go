@@ -71,3 +71,25 @@ func TestLoadWithPadURLMarksConfigConfigured(t *testing.T) {
 		t.Fatalf("unexpected base URL %q", cfg.BaseURL())
 	}
 }
+
+func TestManagesLocalServerRequiresConfiguredLocalMode(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.ManagesLocalServer() {
+		t.Fatal("expected default config without explicit mode to avoid local server management")
+	}
+
+	cfg.Mode = ModeLocal
+	if cfg.ManagesLocalServer() {
+		t.Fatal("expected local mode without persisted/env config to avoid local server management")
+	}
+
+	cfg.LoadedFromFile = true
+	if !cfg.ManagesLocalServer() {
+		t.Fatal("expected configured local mode to manage a local server")
+	}
+
+	cfg.Mode = ModeDocker
+	if cfg.ManagesLocalServer() {
+		t.Fatal("expected docker mode to avoid local server management")
+	}
+}
