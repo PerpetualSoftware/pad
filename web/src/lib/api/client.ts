@@ -77,6 +77,14 @@ export interface HealthResponse {
 	build_time?: string;
 }
 
+export interface AuthSession {
+	authenticated: boolean;
+	setup_required: boolean;
+	setup_method?: 'open_register' | 'local_cli' | 'docker_exec' | 'cloud';
+	auth_method: 'password' | 'cloud';
+	user?: { id: string; email: string; name: string; role: string };
+}
+
 export const api = {
 	// ── Health / Version ──────────────────────────────────────────────────────
 
@@ -374,8 +382,7 @@ export const api = {
 	// ── Auth ──────────────────────────────────────────────────────────────────
 
 	auth: {
-		session: (): Promise<{ authenticated: boolean; needs_setup?: boolean; user?: { id: string; email: string; name: string; role: string } }> =>
-			fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
+		session: (): Promise<AuthSession> => fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
 		login: (email: string, password: string) =>
 			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/login', {
 				method: 'POST',

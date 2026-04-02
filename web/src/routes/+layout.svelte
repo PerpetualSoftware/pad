@@ -23,7 +23,7 @@
 		// Check auth status before loading the app
 		try {
 			const auth = await api.auth.session();
-			if (auth.needs_setup) {
+			if (auth.setup_required && auth.setup_method === 'open_register') {
 				if (page.url.pathname !== '/register') {
 					goto('/register', { replaceState: true });
 				}

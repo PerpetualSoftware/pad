@@ -12,12 +12,52 @@ import (
 )
 
 const (
-	sessionCookie  = "pad_session"
-	webSessionTTL  = 7 * 24 * time.Hour  // 7 days for web sessions
-	cliSessionTTL  = 30 * 24 * time.Hour // 30 days for CLI tokens
+	sessionCookie = "pad_session"
+	webSessionTTL = 7 * 24 * time.Hour  // 7 days for web sessions
+	cliSessionTTL = 30 * 24 * time.Hour // 30 days for CLI tokens
+
+	authMethodPassword      = "password"
+	authMethodCloud         = "cloud"
+	setupMethodOpenRegister = "open_register"
+	setupMethodLocalCLI     = "local_cli"
+	setupMethodDockerExec   = "docker_exec"
+	setupMethodCloud        = "cloud"
 )
 
 var emailRegexp = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
+func sessionUserPayload(user *models.User) map[string]interface{} {
+	if user == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"id":    user.ID,
+		"email": user.Email,
+		"name":  user.Name,
+		"role":  user.Role,
+	}
+}
+
+func setupStatePayload(setupMethod string) map[string]interface{} {
+	return map[string]interface{}{
+		"authenticated":  false,
+		"setup_required": true,
+		"setup_method":   setupMethod,
+		"auth_method":    authMethodPassword,
+	}
+}
+
+func sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
+	payload := map[string]interface{}{
+		"authenticated":  authenticated,
+		"setup_required": false,
+		"auth_method":    authMethodPassword,
+	}
+	if authenticated {
+		payload["user"] = sessionUserPayload(user)
+	}
+	return payload
+}
 
 // handleRegister creates a new user account.
 // When no users exist, anyone can register (first user becomes admin).
@@ -159,10 +199,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if count == 0 {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"authenticated": false,
-			"needs_setup":   true,
-		})
+		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodOpenRegister))
 		return
 	}
 
@@ -204,12 +241,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"user": map[string]interface{}{
-			"id":    user.ID,
-			"email": user.Email,
-			"name":  user.Name,
-			"role":  user.Role,
-		},
+		"user":  sessionUserPayload(user),
 		"token": token,
 	})
 }
@@ -225,25 +257,14 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 
 	// No users → needs setup (first-time experience)
 	if count == 0 {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"authenticated": false,
-			"needs_setup":   true,
-		})
+		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodOpenRegister))
 		return
 	}
 
 	// Try to resolve user from context (set by middleware)
 	user := currentUser(r)
 	if user != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"authenticated": true,
-			"user": map[string]interface{}{
-				"id":    user.ID,
-				"email": user.Email,
-				"name":  user.Name,
-				"role":  user.Role,
-			},
-		})
+		writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
 		return
 	}
 
@@ -251,22 +272,12 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		user, _ := s.store.ValidateSession(cookie.Value)
 		if user != nil {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"authenticated": true,
-				"user": map[string]interface{}{
-					"id":    user.ID,
-					"email": user.Email,
-					"name":  user.Name,
-					"role":  user.Role,
-				},
-			})
+			writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
 			return
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"authenticated": false,
-	})
+	writeJSON(w, http.StatusOK, sessionStatePayload(false, nil))
 }
 
 // handleLogout destroys the session and clears the cookie.
