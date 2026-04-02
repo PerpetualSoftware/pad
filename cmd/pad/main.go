@@ -123,7 +123,7 @@ func main() {
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		cfg, err := config.Load()
-		if err != nil {
+		if err != nil || !cfg.IsConfigured() {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		client := cli.NewClientFromURL(cfg.BaseURL())
@@ -3542,7 +3542,7 @@ func completeCollectionNames(cmd *cobra.Command, args []string, toComplete strin
 	names := []string{"task", "tasks", "idea", "ideas", "phase", "phases", "doc", "docs", "bug", "bugs"}
 	// Try to fetch dynamic collections from API
 	cfg, err := config.Load()
-	if err == nil {
+	if err == nil && cfg.IsConfigured() {
 		if cli.EnsureServer(cfg) == nil {
 			client := cli.NewClientFromURL(cfg.BaseURL())
 			if ws, err := cli.DetectWorkspace(workspaceFlag); err == nil {
@@ -3563,7 +3563,7 @@ func completeCollectionNames(cmd *cobra.Command, args []string, toComplete strin
 // Fails silently if the server is unreachable or no workspace is configured.
 func printAvailableCollections() {
 	cfg, err := config.Load()
-	if err != nil {
+	if err != nil || !cfg.IsConfigured() {
 		return
 	}
 	if cli.EnsureServer(cfg) != nil {
