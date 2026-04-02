@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -68,19 +69,38 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linkType, err := models.NormalizeItemLinkType(input.LinkType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	input.LinkType = linkType
+
 	// Verify target item exists
 	target, err := s.store.GetItem(input.TargetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if target == nil {
+	if target == nil || target.WorkspaceID != workspaceID {
 		writeError(w, http.StatusBadRequest, "bad_request", "Target item not found")
+		return
+	}
+	if target.ID == item.ID {
+		writeError(w, http.StatusBadRequest, "bad_request", "cannot link an item to itself")
 		return
 	}
 
 	link, err := s.store.CreateItemLink(workspaceID, input, item.ID)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			writeError(w, http.StatusConflict, "conflict", "Link already exists")
+			return
+		}
+		if strings.Contains(err.Error(), "invalid link type") || strings.Contains(err.Error(), "cannot link an item to itself") {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}

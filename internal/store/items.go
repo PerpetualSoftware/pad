@@ -630,16 +630,19 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	id := newID()
 	ts := now()
 
-	linkType := input.LinkType
-	if linkType == "" {
-		linkType = "related"
+	linkType, err := models.NormalizeItemLinkType(input.LinkType)
+	if err != nil {
+		return nil, err
+	}
+	if sourceID == input.TargetID {
+		return nil, fmt.Errorf("cannot link an item to itself")
 	}
 	createdBy := input.CreatedBy
 	if createdBy == "" {
 		createdBy = "user"
 	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts)
