@@ -3,14 +3,15 @@ package models
 import "time"
 
 type Workspace struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Slug        string     `json:"slug"`
-	Description string     `json:"description"`
-	Settings    string     `json:"settings"` // JSON
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Slug        string            `json:"slug"`
+	Description string            `json:"description"`
+	Settings    string            `json:"settings"` // JSON
+	Context     *WorkspaceContext `json:"context,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	DeletedAt   *time.Time        `json:"deleted_at,omitempty"`
 }
 
 type WorkspaceCreate struct {
