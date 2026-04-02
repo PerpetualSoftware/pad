@@ -3,10 +3,12 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
+	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
 	let code = $derived(page.params.code ?? '');
-	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error'>('loading');
+	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup'>('loading');
 	let errorMsg = $state('');
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 
 	// Auth form state
 	let mode = $state<'login' | 'register'>('register');
@@ -24,8 +26,8 @@
 				// Already logged in — try to accept directly
 				await acceptInvitation();
 			} else if (session.setup_required) {
-				errorMsg = 'This Pad instance has not been initialized yet. Ask the server admin to run pad setup before accepting invitations.';
-				status = 'error';
+				setupMethod = session.setup_method;
+				status = 'setup';
 			} else {
 				// Users exist, not logged in — show login (with option to register)
 				mode = 'login';
@@ -93,6 +95,13 @@
 			<p class="subtitle">Checking invitation...</p>
 		{:else if status === 'accepting'}
 			<p class="subtitle">Joining workspace...</p>
+		{:else if status === 'setup'}
+			<SetupRequiredNotice
+				{setupMethod}
+				nextStep="An admin must finish setup before invitation links can be accepted."
+				actionHref="/login"
+				actionLabel="Go to login"
+			/>
 		{:else if status === 'error'}
 			<p class="subtitle error-text">{errorMsg}</p>
 			<a href="/login" class="link">Go to login</a>
