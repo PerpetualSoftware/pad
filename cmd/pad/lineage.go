@@ -23,7 +23,7 @@ func splitFromCmd() *cobra.Command {
 
 The first item is the derived item, and the second item is the original source.
 For example:
-  pad split-from TASK-122 TASK-121`,
+  pad item split-from TASK-122 TASK-121`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return createLineageLink(lineageLinkSpec{
@@ -42,7 +42,7 @@ func supersedesCmd() *cobra.Command {
 
 The first item is the newer replacement, and the second item is the older item.
 For example:
-  pad supersedes TASK-130 TASK-118`,
+  pad item supersedes TASK-130 TASK-118`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return createLineageLink(lineageLinkSpec{
@@ -61,7 +61,7 @@ func implementsCmd() *cobra.Command {
 
 The first item is the implementation work item, and the second item is the item being implemented.
 For example:
-  pad implements TASK-121 IDEA-108`,
+  pad item implements TASK-121 IDEA-108`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return createLineageLink(lineageLinkSpec{

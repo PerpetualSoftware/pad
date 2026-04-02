@@ -18,19 +18,18 @@ cp pad /usr/local/bin/
 
 ```bash
 cd ~/projects/myapp
-pad init "My App"
+pad workspace init "My App"
 ```
 
-`pad init` will detect that the `/pad` skill isn't installed and offer to install it to your project or globally. You can also install manually:
+`pad workspace init` will detect that the `/pad` skill isn't installed and offer to install it for detected tools. You can also install manually:
 
 ```bash
-pad skills install           # Install to .claude/skills/ in current project
-pad skills install --global  # Install to ~/.claude/skills/ for all projects
-pad skills status            # Check if installed and up to date
-pad skills update            # Update to version bundled in binary
+pad agent install claude     # Install for Claude Code
+pad agent status             # Check installed integrations
+pad agent update             # Update the version bundled in the binary
 ```
 
-When you update the `pad` binary, run `pad skills status` to check if your installed skill is outdated. If it is, run `pad skills update` to sync it.
+When you update the `pad` binary, run `pad agent status` to check if your installed integrations are outdated. If they are, run `pad agent update` to sync them.
 
 ### 3. Use it
 
@@ -60,6 +59,6 @@ The `/pad` skill is a natural-language interface — there are no rigid commands
 ## Web UI
 
 ```bash
-pad open
+pad server open
 # or visit http://localhost:7777
 ```

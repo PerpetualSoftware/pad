@@ -111,7 +111,7 @@ func ConventionLibrary() []LibraryCategory {
 			Conventions: []LibraryConvention{
 				{
 					Title:    "Update task status when starting work",
-					Content:  "When starting work on a task, update its status to in-progress: `pad update <slug> --status in-progress`",
+					Content:  "When starting work on a task, update its status to in-progress: `pad item update <ref> --status in-progress`",
 					Category: "pm",
 					Trigger:  "on-task-start",
 					Scope:    "all",

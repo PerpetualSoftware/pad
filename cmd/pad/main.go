@@ -73,66 +73,17 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://api.getpad.dev)")
 
 	rootCmd.AddCommand(
-		serveCmd(),
-		stopCmd(),
-		configureCmd(),
-		setupCmd(),
-		openCmd(),
-		loginCmd(),
-		logoutCmd(),
-		whoamiCmd(),
-		initCmd(),
-		linkCmd(),
-		onboardCmd(),
-		workspacesCmd(),
-		switchCmd(),
-		skillsCmd(),
-		installCmd(),
-		completionCmd(),
-		// v2 commands
-		createCmd(),
-		listCmd(),
-		showCmd(),
-		updateCmd(),
-		deleteCmd(),
-		moveCmd(),
-		searchCmd(),
-		reconcileCmd(),
-		statusCmd(),
-		nextCmd(),
-		standupCmd(),
-		changelogCmd(),
-		collectionsCmd(),
-		editCmd(),
-		libraryCmd(),
-		readyCmd(),
-		staleCmd(),
-		relatedCmd(),
-		implementedByCmd(),
-		commentCmd(),
-		commentsCmd(),
-		noteCmd(),
-		decideCmd(),
-		blocksCmd(),
-		blockedByCmd(),
-		splitFromCmd(),
-		supersedesCmd(),
-		implementsCmd(),
-		depsCmd(),
-		unblockCmd(),
-		unsplitCmd(),
-		unsupersedeCmd(),
-		unimplementsCmd(),
-		exportCmd(),
-		importCmd(),
-		watchCmd(),
-		webhooksCmd(),
-		bulkUpdateCmd(),
+		authCmd(),
+		serverCmd(),
+		workspaceCmd(),
+		projectCmd(),
+		itemCmd(),
+		collectionCmd(),
+		libraryGroupCmd(),
+		agentCmd(),
 		githubCmd(),
-		membersCmd(),
-		inviteCmd(),
-		joinCmd(),
-		resetPasswordCmd(),
+		webhooksCmd(),
+		completionCmd(),
 	)
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -205,7 +156,7 @@ func serveCmd() *cobra.Command {
 	var port int
 
 	cmd := &cobra.Command{
-		Use:   "serve",
+		Use:   "start",
 		Short: "Start the Pad API server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
@@ -354,9 +305,9 @@ func setupCmd() *cobra.Command {
 			if cfg.IsConfigured() {
 				switch cfg.Mode {
 				case config.ModeDocker:
-					return fmt.Errorf("docker-managed Pad must be initialized from inside the container; run 'docker exec -it <container> pad setup'")
+					return fmt.Errorf("docker-managed Pad must be initialized from inside the container; run 'docker exec -it <container> pad auth setup'")
 				case config.ModeRemote, config.ModeCloud:
-					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad setup'")
+					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
 				}
 			}
 
@@ -374,7 +325,7 @@ func setupCmd() *cobra.Command {
 					fmt.Println("Pad is already initialized and you are logged in.")
 					return nil
 				}
-				fmt.Println("Pad is already initialized. Run 'pad login' to sign in.")
+				fmt.Println("Pad is already initialized. Run 'pad auth login' to sign in.")
 				return nil
 			}
 
@@ -515,11 +466,11 @@ func printSetupRequiredHint(cfg *config.Config) {
 	fmt.Println("This Pad instance has not been initialized yet.")
 	switch cfg.Mode {
 	case config.ModeDocker:
-		fmt.Println("Run 'pad setup' inside the container, for example: docker exec -it <container> pad setup")
+		fmt.Println("Run 'pad auth setup' inside the container, for example: docker exec -it <container> pad auth setup")
 	case config.ModeRemote, config.ModeCloud:
-		fmt.Println("Run 'pad setup' on the machine or container running the Pad server, then try again.")
+		fmt.Println("Run 'pad auth setup' on the machine or container running the Pad server, then try again.")
 	default:
-		fmt.Println("Run 'pad setup' to create the first admin account, then try again.")
+		fmt.Println("Run 'pad auth setup' to create the first admin account, then try again.")
 	}
 }
 
@@ -574,7 +525,7 @@ func whoamiCmd() *cobra.Command {
 				return fmt.Errorf("load credentials: %w", err)
 			}
 			if creds == nil || creds.Token == "" {
-				fmt.Println("Not logged in. Run 'pad login'.")
+				fmt.Println("Not logged in. Run 'pad auth login'.")
 				return nil
 			}
 
@@ -587,7 +538,7 @@ func whoamiCmd() *cobra.Command {
 
 			user, err := client.GetCurrentUser()
 			if err != nil {
-				fmt.Println("Session expired. Run 'pad login'.")
+				fmt.Println("Session expired. Run 'pad auth login'.")
 				return nil
 			}
 
@@ -708,7 +659,7 @@ func inviteCmd() *cobra.Command {
 				} else {
 					code, _ := result["code"].(string)
 					fmt.Printf("  Join code: %s\n", code)
-					fmt.Printf("  They can accept with: pad join %s\n", code)
+					fmt.Printf("  They can accept with: pad workspace join %s\n", code)
 				}
 			}
 
@@ -781,7 +732,7 @@ func initCmd() *cobra.Command {
 		Long: `Create a workspace and link it to the current directory.
 
 Use --template to choose a workspace template:
-  pad init myproject --template scrum
+  pad workspace init myproject --template scrum
 
 Use --list-templates to see available templates.`,
 		Args: cobra.MaximumNArgs(1),
@@ -927,11 +878,11 @@ func linkCmd() *cobra.Command {
 		Short: "Link the current directory to an existing workspace",
 		Long: `Link the current directory to an existing workspace by creating a .pad.toml file.
 
-Unlike 'pad init', this does NOT create a new workspace — it only links to one that already exists.
+Unlike 'pad workspace init', this does NOT create a new workspace — it only links to one that already exists.
 
-  pad link myproject
+  pad workspace link myproject
 
-Use 'pad workspaces' to see available workspaces.`,
+Use 'pad workspace list' to see available workspaces.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -968,7 +919,7 @@ Use 'pad workspaces' to see available workspaces.`,
 				for _, w := range workspaces {
 					fmt.Fprintf(os.Stderr, "  %-20s (slug: %s)\n", w.Name, w.Slug)
 				}
-				return fmt.Errorf("workspace %q does not exist — use 'pad init %s' to create it", nameOrSlug, nameOrSlug)
+				return fmt.Errorf("workspace %q does not exist — use 'pad workspace init %s' to create it", nameOrSlug, nameOrSlug)
 			}
 
 			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
@@ -1016,7 +967,7 @@ func offerSkillInstall() {
 				recordInstallation(tool.Name, path)
 			}
 		}
-		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad install --update' to update.\n", len(detected))
+		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad agent update' to update.\n", len(detected))
 		return
 	}
 
@@ -1055,7 +1006,7 @@ func offerSkillInstall() {
 
 	choice := readChoice()
 	if choice == "n" || choice == "N" {
-		fmt.Println("Skipped. Run 'pad install' later.")
+		fmt.Println("Skipped. Run 'pad agent install' later.")
 		return
 	}
 
@@ -1099,7 +1050,7 @@ func printOnboardingHints() {
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a phase for what I'm working on")
 	fmt.Println()
 	fmt.Printf("Or open the web UI at %s\n", bold.Sprint("http://localhost:7777"))
-	fmt.Println(dim.Sprint("Run 'pad status' to see your project dashboard"))
+	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
 }
 
 // --- onboard ---
@@ -1187,7 +1138,7 @@ recommend conventions from the built-in library.`,
 			if !cli.IsTerminal() {
 				// Non-interactive: just print suggestions
 				fmt.Println()
-				fmt.Println("Run 'pad onboard' in a terminal to activate, or use:")
+				fmt.Println("Run 'pad workspace onboard' in a terminal to activate, or use:")
 				fmt.Println("  /pad what conventions should this project follow?")
 				return nil
 			}
@@ -1242,53 +1193,6 @@ recommend conventions from the built-in library.`,
 	return cmd
 }
 
-// --- skills ---
-
-func skillsCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "skills",
-		Short: "Manage skill installation (use 'pad install' for multi-tool support)",
-	}
-
-	installCmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install Claude Code skills",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			global, _ := cmd.Flags().GetBool("global")
-			target := "project"
-			if global {
-				target = "global"
-			}
-			path, err := cli.InstallSkill(pad.PadSkill, target)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Installed /pad skill to %s\n", path)
-			return nil
-		},
-	}
-	installCmd.Flags().Bool("global", false, "install to ~/.claude/skills/")
-
-	updateCmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update all installed skills across all projects",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return installUpdate()
-		},
-	}
-
-	statusSubCmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show skill installation status across all projects",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return installList()
-		},
-	}
-
-	cmd.AddCommand(installCmd, updateCmd, statusSubCmd)
-	return cmd
-}
-
 // --- install ---
 
 func installCmd() *cobra.Command {
@@ -1310,11 +1214,11 @@ Supported tools:
   junie        JetBrains Junie (.junie/guidelines/)
 
 Examples:
-  pad install              # Auto-detect and install
-  pad install claude       # Install for Claude Code
-  pad install cursor       # Install for Cursor/Codex/Windsurf
-  pad install --all        # Install for all detected tools
-  pad install --list       # Show supported tools and status`,
+  pad agent install              # Auto-detect and install
+  pad agent install claude       # Install for Claude Code
+  pad agent install cursor       # Install for Cursor/Codex/Windsurf
+  pad agent install --all        # Install for all detected tools
+  pad agent status               # Show supported tools and status`,
 		ValidArgs: cli.AllToolNames(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			listFlag, _ := cmd.Flags().GetBool("list")
@@ -1409,7 +1313,7 @@ func installList() error {
 	}
 
 	if outdatedCount > 0 {
-		fmt.Printf("\n  %d installation(s) can be updated. Run 'pad install --update' to update all.\n", outdatedCount)
+		fmt.Printf("\n  %d installation(s) can be updated. Run 'pad agent update' to update all.\n", outdatedCount)
 	}
 
 	return nil
@@ -1437,7 +1341,7 @@ func installUpdate() error {
 	reg, err := cli.LoadRegistry()
 	if err != nil {
 		if localUpdated == 0 {
-			fmt.Println("No tools installed. Run 'pad install' first.")
+			fmt.Println("No tools installed. Run 'pad agent install' first.")
 		}
 		return nil
 	}
@@ -1463,7 +1367,7 @@ func installUpdate() error {
 	total := localUpdated + remoteUpdated
 	if total == 0 {
 		if localUpdated == 0 && len(reg.Installations) == 0 {
-			fmt.Println("No tools installed. Run 'pad install' first.")
+			fmt.Println("No tools installed. Run 'pad agent install' first.")
 		} else {
 			fmt.Println("All installations are up to date.")
 		}
@@ -1497,7 +1401,7 @@ func recordInstallation(toolName, skillPath string) {
 func installForTool(name string) error {
 	tool := cli.ResolveTool(name)
 	if tool == nil {
-		return fmt.Errorf("unknown tool %q. Run 'pad install --list' to see supported tools", name)
+		return fmt.Errorf("unknown tool %q. Run 'pad agent status' to see supported tools", name)
 	}
 
 	content := cli.FormatForTool(*tool, pad.PadSkill)
@@ -1574,7 +1478,7 @@ func installInteractive() error {
 	choice := readChoice()
 	if choice == "n" || choice == "N" {
 		fmt.Println()
-		fmt.Println("Install individually with: pad install <tool>")
+		fmt.Println("Install individually with: pad agent install <tool>")
 		fmt.Println("Supported tools:", strings.Join(cli.AllToolNames(), ", "))
 		return nil
 	}
@@ -1597,9 +1501,8 @@ func installInteractive() error {
 
 func workspacesCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "workspaces",
-		Aliases: []string{"ws"},
-		Short:   "List all workspaces",
+		Use:   "list",
+		Short: "List all workspaces",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			workspaces, err := client.ListWorkspaces()
@@ -1607,7 +1510,7 @@ func workspacesCmd() *cobra.Command {
 				return err
 			}
 			if len(workspaces) == 0 {
-				fmt.Println("No workspaces. Run 'pad init' to create one.")
+				fmt.Println("No workspaces. Run 'pad workspace init' to create one.")
 				return nil
 			}
 
@@ -1709,10 +1612,10 @@ func createCmd() *cobra.Command {
 		Long: `Create a new item in the specified collection.
 
 Examples:
-  pad create task "Fix OAuth redirect" --priority high
-  pad create idea "Real-time collaboration" --category infrastructure
-  pad create phase "API Redesign" --status active
-  pad create doc "Payment Architecture" --category architecture --stdin
+  pad item create task "Fix OAuth redirect" --priority high
+  pad item create idea "Real-time collaboration" --category infrastructure
+  pad item create phase "API Redesign" --status active
+  pad item create doc "Payment Architecture" --category architecture --stdin
 
 Run with --help-collections to see available collections and their status values.`,
 		ValidArgsFunction: completeCollectionNames,
@@ -1849,11 +1752,11 @@ func listCmd() *cobra.Command {
 in that collection are shown. Items with status "done" are hidden by default.
 
 Examples:
-  pad list                          # all items, all collections
-  pad list tasks                    # tasks (open + in_progress by default)
-  pad list tasks --status done      # only done tasks
-  pad list ideas --status exploring # ideas being explored
-  pad list --all                    # include done/completed items`,
+  pad item list                          # all items, all collections
+  pad item list tasks                    # tasks (open + in_progress by default)
+  pad item list tasks --status done      # only done tasks
+  pad item list ideas --status exploring # ideas being explored
+  pad item list --all                    # include done/completed items`,
 		Aliases:           []string{"ls"},
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeCollectionNames,
@@ -2158,9 +2061,9 @@ func updateCmd() *cobra.Command {
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
-  pad update TASK-5 --status done
-  pad update PHASE-2 --status active --priority high
-  pad update DOC-3 --stdin < updated-doc.md`,
+  pad item update TASK-5 --status done
+  pad item update PHASE-2 --status active --priority high
+  pad item update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2319,8 +2222,8 @@ Incompatible fields are dropped. Use --field to set values for target-specific f
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
-  pad move BUG-3 tasks                         # Move to tasks collection
-  pad move IDEA-7 tasks --field priority=high   # Move idea to tasks with priority`,
+  pad item move BUG-3 tasks                         # Move to tasks collection
+  pad item move IDEA-7 tasks --field priority=high   # Move idea to tasks with priority`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2416,12 +2319,12 @@ func commentsCmd() *cobra.Command {
 
 func blocksCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "blocks <source-ref> <target-ref>",
+		Use:   "block <source-ref> <target-ref>",
 		Short: "Mark that one item blocks another",
 		Long: `Create a blocking dependency between two items.
 
 The source item blocks the target item. For example:
-  pad blocks TASK-5 TASK-8    # TASK-5 blocks TASK-8`,
+  pad item block TASK-5 TASK-8    # TASK-5 blocks TASK-8`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2476,7 +2379,7 @@ func blockedByCmd() *cobra.Command {
 		Long: `Create a blocking dependency (reverse direction).
 
 The source item is blocked by the blocker item. For example:
-  pad blocked-by TASK-5 TASK-3    # TASK-5 is blocked by TASK-3`,
+  pad item blocked-by TASK-5 TASK-3    # TASK-5 is blocked by TASK-3`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2535,7 +2438,7 @@ Shows two sections:
   Blocked by:  items that are blocking this item
 
 Example:
-  pad deps TASK-5`,
+  pad item deps TASK-5`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2616,7 +2519,7 @@ func unblockCmd() *cobra.Command {
 		Long: `Remove a "blocks" relationship where source blocks target.
 
 Example:
-  pad unblock TASK-5 TASK-8    # TASK-5 no longer blocks TASK-8`,
+  pad item unblock TASK-5 TASK-8    # TASK-5 no longer blocks TASK-8`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -2749,7 +2652,7 @@ func searchCmd() *cobra.Command {
 
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
+		Use:   "dashboard",
 		Short: "Show project dashboard — progress, attention items, suggested next",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -3424,10 +3327,9 @@ func collectionDefaultIcon(slug string) string {
 // --- collections ---
 
 func collectionsCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "collections",
-		Short:   "List and manage collections",
-		Aliases: []string{"coll"},
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List collections with item counts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3445,9 +3347,6 @@ func collectionsCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.AddCommand(collectionsCreateCmd())
-	return cmd
 }
 
 func collectionsCreateCmd() *cobra.Command {
@@ -3469,8 +3368,8 @@ Fields DSL format: key:type[:option1,option2,...]
 Separate multiple fields with newlines or semicolons.
 
 Examples:
-  pad collections create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
-  pad collections create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"`,
+  pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
+  pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -3716,16 +3615,16 @@ func libraryCmd() *cobra.Command {
 	var typeFilter string
 
 	cmd := &cobra.Command{
-		Use:   "library",
-		Short: "Browse and activate pre-built conventions and playbooks",
+		Use:   "list",
+		Short: "Browse pre-built conventions and playbooks",
 		Long: `Browse the convention and playbook libraries and activate items in your workspace.
 
 Examples:
-  pad library                          # List both conventions and playbooks
-  pad library --type conventions       # List conventions only
-  pad library --type playbooks         # List playbooks only
-  pad library --category git           # Filter by category
-  pad library --format json            # JSON output
+  pad library list                     # List both conventions and playbooks
+  pad library list --type conventions  # List conventions only
+  pad library list --type playbooks    # List playbooks only
+  pad library list --category git      # Filter by category
+  pad library list --format json       # JSON output
   pad library activate "Commit after task completion"  # Activate a convention or playbook`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -3806,8 +3705,6 @@ Examples:
 
 	cmd.Flags().StringVar(&categoryFilter, "category", "", "filter by category")
 	cmd.Flags().StringVar(&typeFilter, "type", "", "filter by type: conventions, playbooks")
-
-	cmd.AddCommand(libraryActivateCmd())
 	return cmd
 }
 
@@ -4220,15 +4117,15 @@ func watchCmd() *cobra.Command {
 
 func webhooksCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "webhooks",
+		Use:   "webhook",
 		Short: "Manage workspace webhooks",
 		Long: `Manage webhooks that receive POST notifications when events occur.
 
 Examples:
-  pad webhooks list
-  pad webhooks create https://httpbin.org/post --events "item.created,item.updated"
-  pad webhooks delete 7fde5e41
-  pad webhooks test 7fde5e41`,
+  pad webhook list
+  pad webhook create https://httpbin.org/post --events "item.created,item.updated"
+  pad webhook delete 7fde5e41
+  pad webhook test 7fde5e41`,
 	}
 
 	cmd.AddCommand(
@@ -4329,9 +4226,9 @@ func webhooksCreateCmd() *cobra.Command {
 		Long: `Register a new webhook URL to receive event notifications.
 
 Examples:
-  pad webhooks create https://httpbin.org/post
-  pad webhooks create https://slack.com/webhook/... --events "item.created,item.updated"
-  pad webhooks create https://example.com/hook --secret "mysecret"`,
+  pad webhook create https://httpbin.org/post
+  pad webhook create https://slack.com/webhook/... --events "item.created,item.updated"
+  pad webhook create https://example.com/hook --secret "mysecret"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -4430,9 +4327,9 @@ func bulkUpdateCmd() *cobra.Command {
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
-  pad bulk-update --status done TASK-5 TASK-8 TASK-12
-  pad bulk-update --priority high IDEA-3 IDEA-7
-  pad bulk-update --status in_progress --priority urgent TASK-1 TASK-2`,
+  pad item bulk-update --status done TASK-5 TASK-8 TASK-12
+  pad item bulk-update --priority high IDEA-3 IDEA-7
+  pad item bulk-update --status in_progress --priority urgent TASK-1 TASK-2`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if status == "" && priority == "" {

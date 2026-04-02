@@ -25,16 +25,16 @@
 		<div class="instructions">
 			<div class="instruction">
 				<p class="instruction-label">Local server</p>
-				<code>pad setup</code>
+				<code>pad auth setup</code>
 			</div>
 
 			<div class="instruction">
 				<p class="instruction-label">Docker</p>
-				<code>docker exec -it &lt;container&gt; pad setup</code>
+				<code>docker exec -it &lt;container&gt; pad auth setup</code>
 			</div>
 		</div>
 
-		<p class="hint">If this Pad server runs on another machine, run <code>pad setup</code> there instead.</p>
+		<p class="hint">If this Pad server runs on another machine, run <code>pad auth setup</code> there instead.</p>
 	{/if}
 
 	{#if nextStep}

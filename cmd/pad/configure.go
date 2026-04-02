@@ -63,7 +63,7 @@ func getConfiguredConfig() *config.Config {
 	}
 
 	if !canPromptForConfig() {
-		fmt.Fprintln(os.Stderr, "Pad is not configured. Run 'pad configure' first.")
+		fmt.Fprintln(os.Stderr, "Pad is not configured. Run 'pad auth configure' first.")
 		os.Exit(1)
 	}
 
@@ -77,7 +77,7 @@ func getConfiguredConfig() *config.Config {
 
 	cfg = getConfig()
 	if !cfg.IsConfigured() {
-		fmt.Fprintln(os.Stderr, "Error: Pad configuration was not saved. Run 'pad configure' again.")
+		fmt.Fprintln(os.Stderr, "Error: Pad configuration was not saved. Run 'pad auth configure' again.")
 		os.Exit(1)
 	}
 	return cfg

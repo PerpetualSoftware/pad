@@ -34,7 +34,7 @@ func readyCmd() *cobra.Command {
 		Short: "Show actionable next items for an agent",
 		Long: `List the items that Pad currently considers ready to work on.
 
-This is the broader query-oriented counterpart to 'pad next'. It reuses the
+This is the broader query-oriented counterpart to 'pad project next'. It reuses the
 dashboard's suggested-next logic and returns the current actionable backlog
 for active phases.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
