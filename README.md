@@ -252,6 +252,10 @@ pad search "query"           Full-text search across all items
 
 pad status                   Project dashboard
 pad next                     Recommended next task
+pad ready                    Query actionable next items
+pad stale                    Query stalled or attention-worthy items
+pad related <ref>            Show direct relationships for an item
+pad implemented-by <ref>     Show incoming implementers for an item
 pad collections              List collections with item counts
 pad comment <slug> "text"    Add comment to an item
 pad comments <slug>          View item comments
