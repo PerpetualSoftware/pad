@@ -255,6 +255,8 @@ pad next                     Recommended next task
 pad collections              List collections with item counts
 pad comment <slug> "text"    Add comment to an item
 pad comments <slug>          View item comments
+pad note <ref> "summary"     Append an implementation note to an item
+pad decide <ref> "decision"  Append a decision log entry to an item
 
 pad standup [--days N]        Daily standup report
 pad changelog [--days N]     Release notes from completed items

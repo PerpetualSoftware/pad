@@ -16,7 +16,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef, ItemImplementationNote, ItemDecisionLogEntry } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 
@@ -78,6 +78,14 @@
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks) : []);
 	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
 	let codeContext = $derived(item?.code_context ?? null);
+	let implementationNotes = $derived(item?.implementation_notes ?? []);
+	let decisionLog = $derived(item?.decision_log ?? []);
+	let noteSummary = $state('');
+	let noteDetails = $state('');
+	let decisionTitle = $state('');
+	let decisionRationale = $state('');
+	let savingNote = $state(false);
+	let savingDecision = $state(false);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -215,6 +223,86 @@
 		} catch {
 			saveStatus = 'idle';
 			toastStore.show('Failed to save', 'error');
+		}
+	}
+
+	function buildStructuredEntryID(prefix: string): string {
+		if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+			return `${prefix}-${crypto.randomUUID()}`;
+		}
+		return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+	}
+
+	async function updateStructuredFields(updatedFields: Record<string, any>) {
+		if (!item) return;
+		saveStatus = 'saving';
+		item = await api.items.update(wsSlug, item.id, { fields: JSON.stringify(updatedFields) });
+		showSaved();
+	}
+
+	async function addImplementationNote() {
+		if (!item || savingNote) return;
+		const summary = noteSummary.trim();
+		const details = noteDetails.trim();
+		if (!summary) return;
+
+		savingNote = true;
+		try {
+			const updatedFields = {
+				...fields,
+				implementation_notes: [
+					...(implementationNotes ?? []),
+					{
+						id: buildStructuredEntryID('note'),
+						summary,
+						details: details || undefined,
+						created_at: new Date().toISOString(),
+						created_by: 'web'
+					} satisfies ItemImplementationNote
+				]
+			};
+			await updateStructuredFields(updatedFields);
+			noteSummary = '';
+			noteDetails = '';
+			toastStore.show('Implementation note added', 'success');
+		} catch {
+			saveStatus = 'idle';
+			toastStore.show('Failed to add implementation note', 'error');
+		} finally {
+			savingNote = false;
+		}
+	}
+
+	async function addDecisionLogEntry() {
+		if (!item || savingDecision) return;
+		const decision = decisionTitle.trim();
+		const rationale = decisionRationale.trim();
+		if (!decision) return;
+
+		savingDecision = true;
+		try {
+			const updatedFields = {
+				...fields,
+				decision_log: [
+					...(decisionLog ?? []),
+					{
+						id: buildStructuredEntryID('decision'),
+						decision,
+						rationale: rationale || undefined,
+						created_at: new Date().toISOString(),
+						created_by: 'web'
+					} satisfies ItemDecisionLogEntry
+				]
+			};
+			await updateStructuredFields(updatedFields);
+			decisionTitle = '';
+			decisionRationale = '';
+			toastStore.show('Decision log entry added', 'success');
+		} catch {
+			saveStatus = 'idle';
+			toastStore.show('Failed to add decision log entry', 'error');
+		} finally {
+			savingDecision = false;
 		}
 	}
 
@@ -658,6 +746,108 @@
 				</div>
 			</div>
 		{/if}
+
+		<div class="structured-notes-section">
+			<div class="structured-notes-grid">
+				<section class="structured-card">
+					<div class="structured-card-header">
+						<h3 class="section-title">Implementation Notes</h3>
+						<span class="structured-count">{implementationNotes.length}</span>
+					</div>
+					<div class="structured-entry-form">
+						<input
+							bind:value={noteSummary}
+							class="structured-input"
+							type="text"
+							placeholder="What changed or mattered?"
+							onkeydown={(e) => {
+								if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') addImplementationNote();
+							}}
+						/>
+						<textarea
+							bind:value={noteDetails}
+							class="structured-textarea"
+							rows="3"
+							placeholder="Optional details, tradeoffs, or follow-up context"
+						></textarea>
+						<button class="structured-submit" onclick={addImplementationNote} disabled={savingNote || !noteSummary.trim()}>
+							{savingNote ? 'Saving…' : 'Add note'}
+						</button>
+					</div>
+					{#if implementationNotes.length > 0}
+						<div class="structured-entry-list">
+							{#each implementationNotes as note (note.id ?? `${note.summary}-${note.created_at ?? ''}`)}
+								<article class="structured-entry">
+									<div class="structured-entry-title">{note.summary}</div>
+									<div class="structured-entry-meta">
+										{#if note.created_at}
+											<span>{relativeTime(note.created_at)}</span>
+										{/if}
+										{#if note.created_by}
+											<span>{note.created_by}</span>
+										{/if}
+									</div>
+									{#if note.details}
+										<p class="structured-entry-body">{note.details}</p>
+									{/if}
+								</article>
+							{/each}
+						</div>
+					{:else}
+						<p class="structured-empty">No implementation notes yet.</p>
+					{/if}
+				</section>
+
+				<section class="structured-card">
+					<div class="structured-card-header">
+						<h3 class="section-title">Decision Log</h3>
+						<span class="structured-count">{decisionLog.length}</span>
+					</div>
+					<div class="structured-entry-form">
+						<input
+							bind:value={decisionTitle}
+							class="structured-input"
+							type="text"
+							placeholder="What decision did we make?"
+							onkeydown={(e) => {
+								if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') addDecisionLogEntry();
+							}}
+						/>
+						<textarea
+							bind:value={decisionRationale}
+							class="structured-textarea"
+							rows="3"
+							placeholder="Optional rationale, tradeoffs, or alternatives considered"
+						></textarea>
+						<button class="structured-submit" onclick={addDecisionLogEntry} disabled={savingDecision || !decisionTitle.trim()}>
+							{savingDecision ? 'Saving…' : 'Add decision'}
+						</button>
+					</div>
+					{#if decisionLog.length > 0}
+						<div class="structured-entry-list">
+							{#each decisionLog as decision (decision.id ?? `${decision.decision}-${decision.created_at ?? ''}`)}
+								<article class="structured-entry">
+									<div class="structured-entry-title">{decision.decision}</div>
+									<div class="structured-entry-meta">
+										{#if decision.created_at}
+											<span>{relativeTime(decision.created_at)}</span>
+										{/if}
+										{#if decision.created_by}
+											<span>{decision.created_by}</span>
+										{/if}
+									</div>
+									{#if decision.rationale}
+										<p class="structured-entry-body">{decision.rationale}</p>
+									{/if}
+								</article>
+							{/each}
+						</div>
+					{:else}
+						<p class="structured-empty">No decisions recorded yet.</p>
+					{/if}
+				</section>
+			</div>
+		</div>
 
 		<!-- Phase Tasks (shown only for phases collection) -->
 		{#if collSlug === 'phases' && item}
@@ -1123,6 +1313,113 @@
 		padding: 2px 8px;
 		border-radius: 999px;
 		white-space: nowrap;
+	}
+
+	/* Structured notes */
+	.structured-notes-section {
+		margin-top: var(--space-6);
+		padding-top: var(--space-6);
+		border-top: 1px solid var(--border);
+	}
+	.structured-notes-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+		gap: var(--space-4);
+	}
+	.structured-card {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.structured-card-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+	}
+	.structured-card .section-title {
+		margin-bottom: 0;
+	}
+	.structured-count {
+		font-size: 0.75em;
+		font-weight: 600;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 999px;
+	}
+	.structured-entry-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.structured-input,
+	.structured-textarea {
+		width: 100%;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		padding: var(--space-2) var(--space-3);
+		font: inherit;
+	}
+	.structured-textarea {
+		resize: vertical;
+		min-height: 88px;
+	}
+	.structured-submit {
+		align-self: flex-start;
+		padding: var(--space-2) var(--space-3);
+		background: var(--accent-blue);
+		color: #fff;
+		border: none;
+		border-radius: var(--radius-sm);
+		font-size: 0.9em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.structured-submit:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.structured-entry-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.structured-entry {
+		padding-top: var(--space-3);
+		border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+	}
+	.structured-entry:first-child {
+		padding-top: 0;
+		border-top: none;
+	}
+	.structured-entry-title {
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.structured-entry-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-top: 4px;
+		font-size: 0.78em;
+		color: var(--text-muted);
+	}
+	.structured-entry-body {
+		margin: var(--space-2) 0 0;
+		color: var(--text-secondary);
+		white-space: pre-wrap;
+	}
+	.structured-empty {
+		margin: 0;
+		color: var(--text-muted);
+		font-size: 0.9em;
 	}
 
 	/* Comments */

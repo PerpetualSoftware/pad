@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+const (
+	ItemFieldGitHubPR            = "github_pr"
+	ItemFieldImplementationNotes = "implementation_notes"
+	ItemFieldDecisionLog         = "decision_log"
+)
+
 type Item struct {
 	ID             string     `json:"id"`
 	WorkspaceID    string     `json:"workspace_id"`
@@ -30,12 +36,14 @@ type Item struct {
 	ItemNumber *int `json:"item_number,omitempty"`
 
 	// Populated by joins (not stored)
-	CollectionSlug   string              `json:"collection_slug,omitempty"`
-	CollectionName   string              `json:"collection_name,omitempty"`
-	CollectionIcon   string              `json:"collection_icon,omitempty"`
-	CollectionPrefix string              `json:"collection_prefix,omitempty"`
-	DerivedClosure   *ItemDerivedClosure `json:"derived_closure,omitempty"`
-	CodeContext      *ItemCodeContext    `json:"code_context,omitempty"`
+	CollectionSlug      string                   `json:"collection_slug,omitempty"`
+	CollectionName      string                   `json:"collection_name,omitempty"`
+	CollectionIcon      string                   `json:"collection_icon,omitempty"`
+	CollectionPrefix    string                   `json:"collection_prefix,omitempty"`
+	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
+	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
+	ImplementationNotes []ItemImplementationNote `json:"implementation_notes,omitempty"`
+	DecisionLog         []ItemDecisionLogEntry   `json:"decision_log,omitempty"`
 }
 
 // ComputeRef sets the Ref field from CollectionPrefix and ItemNumber.
@@ -77,6 +85,22 @@ type ItemPullRequestMetadata struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+type ItemImplementationNote struct {
+	ID        string `json:"id,omitempty"`
+	Summary   string `json:"summary"`
+	Details   string `json:"details,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
+type ItemDecisionLogEntry struct {
+	ID        string `json:"id,omitempty"`
+	Decision  string `json:"decision"`
+	Rationale string `json:"rationale,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
 type githubPRFields struct {
 	Number    int    `json:"number"`
 	URL       string `json:"url"`
@@ -88,16 +112,12 @@ type githubPRFields struct {
 }
 
 func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
-	if fieldsJSON == "" || fieldsJSON == "{}" {
+	fieldsMap, ok := parseItemFields(fieldsJSON)
+	if !ok {
 		return nil
 	}
 
-	var fieldsMap map[string]any
-	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
-		return nil
-	}
-
-	raw, ok := fieldsMap["github_pr"]
+	raw, ok := fieldsMap[ItemFieldGitHubPR]
 	if !ok {
 		return nil
 	}
@@ -131,6 +151,110 @@ func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
 	}
 
 	return context
+}
+
+func ExtractItemImplementationNotes(fieldsJSON string) []ItemImplementationNote {
+	fieldsMap, ok := parseItemFields(fieldsJSON)
+	if !ok {
+		return nil
+	}
+	raw, ok := fieldsMap[ItemFieldImplementationNotes]
+	if !ok {
+		return nil
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+
+	var notes []ItemImplementationNote
+	if err := json.Unmarshal(payload, &notes); err != nil {
+		return nil
+	}
+	if len(notes) == 0 {
+		return nil
+	}
+	return notes
+}
+
+func ExtractItemDecisionLog(fieldsJSON string) []ItemDecisionLogEntry {
+	fieldsMap, ok := parseItemFields(fieldsJSON)
+	if !ok {
+		return nil
+	}
+	raw, ok := fieldsMap[ItemFieldDecisionLog]
+	if !ok {
+		return nil
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+
+	var entries []ItemDecisionLogEntry
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		return nil
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
+}
+
+func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return "", err
+	}
+
+	notes := ExtractItemImplementationNotes(fieldsJSON)
+	notes = append(notes, note)
+	fieldsMap[ItemFieldImplementationNotes] = notes
+	return marshalItemFields(fieldsMap)
+}
+
+func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return "", err
+	}
+
+	entries := ExtractItemDecisionLog(fieldsJSON)
+	entries = append(entries, entry)
+	fieldsMap[ItemFieldDecisionLog] = entries
+	return marshalItemFields(fieldsMap)
+}
+
+func parseItemFields(fieldsJSON string) (map[string]any, bool) {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return nil, false
+	}
+	var fieldsMap map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
+		return nil, false
+	}
+	return fieldsMap, true
+}
+
+func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return map[string]any{}, nil
+	}
+	var fieldsMap map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
+		return nil, fmt.Errorf("parse item fields: %w", err)
+	}
+	return fieldsMap, nil
+}
+
+func marshalItemFields(fieldsMap map[string]any) (string, error) {
+	payload, err := json.Marshal(fieldsMap)
+	if err != nil {
+		return "", fmt.Errorf("marshal item fields: %w", err)
+	}
+	return string(payload), nil
 }
 
 type ItemCreate struct {

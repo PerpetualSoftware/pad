@@ -166,6 +166,22 @@ export interface ItemCodeContext {
 	pull_request?: ItemPullRequestMetadata;
 }
 
+export interface ItemImplementationNote {
+	id?: string;
+	summary: string;
+	details?: string;
+	created_at?: string;
+	created_by?: string;
+}
+
+export interface ItemDecisionLogEntry {
+	id?: string;
+	decision: string;
+	rationale?: string;
+	created_at?: string;
+	created_by?: string;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -190,6 +206,8 @@ export interface Item {
 	item_number?: number;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
+	implementation_notes?: ItemImplementationNote[];
+	decision_log?: ItemDecisionLogEntry[];
 }
 
 export interface ItemCreate {
