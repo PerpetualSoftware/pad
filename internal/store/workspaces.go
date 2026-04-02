@@ -58,6 +58,16 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 	if settings == "" {
 		settings = "{}"
 	}
+	settings, err = models.NormalizeWorkspaceSettings(settings)
+	if err != nil {
+		return nil, fmt.Errorf("normalize workspace settings: %w", err)
+	}
+	if input.Context != nil {
+		settings, err = models.ApplyWorkspaceContext(settings, input.Context)
+		if err != nil {
+			return nil, fmt.Errorf("apply workspace context: %w", err)
+		}
+	}
 
 	_, err = s.db.Exec(`
 		INSERT INTO workspaces (id, name, slug, description, settings, created_at, updated_at)
@@ -152,6 +162,20 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 	}
 	if input.Settings != nil {
 		w.Settings = *input.Settings
+	}
+	if input.Context != nil {
+		settings, err := models.ApplyWorkspaceContext(w.Settings, input.Context)
+		if err != nil {
+			return nil, fmt.Errorf("apply workspace context: %w", err)
+		}
+		w.Settings = settings
+	}
+	if w.Settings != "" {
+		settings, err := models.NormalizeWorkspaceSettings(w.Settings)
+		if err != nil {
+			return nil, fmt.Errorf("normalize workspace settings: %w", err)
+		}
+		w.Settings = settings
 	}
 
 	_, err = s.db.Exec(`

@@ -248,6 +248,8 @@ pad workspace init [name]             Initialize workspace in current directory
 pad workspace link <workspace>        Link current directory to an existing workspace
 pad workspace list                    List all workspaces
 pad workspace switch <workspace>      Switch active workspace
+pad workspace context                 Show structured workspace context
+pad workspace context set --file X    Update structured workspace context from JSON
 pad workspace onboard                 Analyze project and suggest conventions
 pad workspace members                 List workspace members
 pad workspace invite <email>          Invite a workspace member

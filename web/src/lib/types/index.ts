@@ -40,14 +40,65 @@ export interface Workspace {
 	slug: string;
 	description: string;
 	settings: string;
+	context?: WorkspaceContext;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface WorkspaceRepository {
+	name?: string;
+	role?: string;
+	path?: string;
+	repo?: string;
+}
+
+export interface WorkspacePaths {
+	root?: string;
+	docs_repo?: string;
+	web?: string;
+	server?: string;
+	skills?: string;
+	config?: string;
+	install_root?: string;
+}
+
+export interface WorkspaceCommands {
+	setup?: string;
+	build?: string;
+	test?: string;
+	lint?: string;
+	format?: string;
+	dev?: string;
+	start?: string;
+	web?: string;
+}
+
+export interface WorkspaceStack {
+	languages?: string[];
+	frameworks?: string[];
+	package_managers?: string[];
+}
+
+export interface WorkspaceDeployment {
+	mode?: string;
+	base_url?: string;
+	host?: string;
+}
+
+export interface WorkspaceContext {
+	repositories?: WorkspaceRepository[];
+	paths?: WorkspacePaths;
+	commands?: WorkspaceCommands;
+	stack?: WorkspaceStack;
+	deployment?: WorkspaceDeployment;
+	assumptions?: string[];
 }
 
 export interface WorkspaceCreate {
 	name: string;
 	description?: string;
 	template?: string;
+	context?: WorkspaceContext;
 }
 
 export interface WorkspaceTemplate {

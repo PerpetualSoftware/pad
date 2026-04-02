@@ -79,12 +79,63 @@ func SerializeWorkspaceSettings(settings *WorkspaceSettings) (string, error) {
 	return string(payload), nil
 }
 
+func NormalizeWorkspaceSettings(raw string) (string, error) {
+	if raw == "" {
+		return "{}", nil
+	}
+
+	settingsMap, err := parseWorkspaceSettingsMap(raw)
+	if err != nil {
+		return "", err
+	}
+
+	payload, err := json.Marshal(settingsMap)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func ApplyWorkspaceContext(raw string, context *WorkspaceContext) (string, error) {
+	settingsMap, err := parseWorkspaceSettingsMap(raw)
+	if err != nil {
+		return "", err
+	}
+
+	if context == nil {
+		delete(settingsMap, "context")
+	} else {
+		settingsMap["context"] = context
+	}
+
+	payload, err := json.Marshal(settingsMap)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
 func ExtractWorkspaceContext(raw string) *WorkspaceContext {
-	settings, err := ParseWorkspaceSettings(raw)
+	settingsMap, err := parseWorkspaceSettingsMap(raw)
 	if err != nil {
 		return nil
 	}
-	return settings.Context
+
+	rawContext, ok := settingsMap["context"]
+	if !ok {
+		return nil
+	}
+
+	payload, err := json.Marshal(rawContext)
+	if err != nil {
+		return nil
+	}
+
+	var context WorkspaceContext
+	if err := json.Unmarshal(payload, &context); err != nil {
+		return nil
+	}
+	return &context
 }
 
 func (w *Workspace) HydrateDerivedFields() {
@@ -92,4 +143,19 @@ func (w *Workspace) HydrateDerivedFields() {
 		return
 	}
 	w.Context = ExtractWorkspaceContext(w.Settings)
+}
+
+func parseWorkspaceSettingsMap(raw string) (map[string]any, error) {
+	if raw == "" {
+		return map[string]any{}, nil
+	}
+
+	var settingsMap map[string]any
+	if err := json.Unmarshal([]byte(raw), &settingsMap); err != nil {
+		return nil, err
+	}
+	if settingsMap == nil {
+		settingsMap = map[string]any{}
+	}
+	return settingsMap, nil
 }
