@@ -317,9 +317,20 @@ export const api = {
 					content: convention.content,
 					fields: JSON.stringify({
 						status: 'active',
+						category: convention.category,
 						trigger: convention.trigger,
-						scope: convention.scope,
-						priority: convention.priority
+						scope: convention.surfaces?.[0] ?? 'all',
+						priority: convention.enforcement,
+						enforcement: convention.enforcement,
+						surfaces: convention.surfaces,
+						commands: convention.commands ?? [],
+						convention: {
+							category: convention.category,
+							trigger: convention.trigger,
+							surfaces: convention.surfaces,
+							enforcement: convention.enforcement,
+							commands: convention.commands ?? []
+						}
 					})
 				})
 			}),

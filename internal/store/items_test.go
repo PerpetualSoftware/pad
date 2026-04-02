@@ -399,6 +399,34 @@ func TestItemStructuredMetadataIsHydratedOnRead(t *testing.T) {
 	}
 }
 
+func TestConventionMetadataIsHydratedOnRead(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Conventions")
+
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Run tests before completion",
+		Fields: `{"status":"active","convention":{"category":"quality","trigger":"on-task-complete","surfaces":["all"],"enforcement":"must","commands":["go test ./...","make install"]}}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem error: %v", err)
+	}
+
+	got, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem error: %v", err)
+	}
+	if got.Convention == nil {
+		t.Fatal("expected convention metadata on item read")
+	}
+	if got.Convention.Category != "quality" {
+		t.Fatalf("expected category quality, got %q", got.Convention.Category)
+	}
+	if len(got.Convention.Commands) != 2 || got.Convention.Commands[0] != "go test ./..." {
+		t.Fatalf("expected commands to be hydrated, got %#v", got.Convention.Commands)
+	}
+}
+
 func TestItemListByCollection(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
-	import type { Item, ItemCreate } from '$lib/types';
+	import type { Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
 	import { parseFields } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
@@ -21,8 +21,9 @@
 		'on-plan':           { icon: '\u{1F4CB}', label: 'On Plan' },
 	};
 
-	const SCOPES = ['all','backend','frontend','mobile','docs','devops'] as const;
-	const PRIORITIES = ['must','should','nice-to-have'] as const;
+	const CATEGORIES = ['git', 'quality', 'pm', 'docs', 'build', 'custom'] as const;
+	const SURFACES = ['all','backend','frontend','mobile','docs','devops'] as const;
+	const ENFORCEMENT_LEVELS = ['must','should','nice-to-have'] as const;
 
 	let workspace = $derived(page.params.workspace ?? '');
 	let conventions = $state<Item[]>([]);
@@ -43,9 +44,11 @@
 
 	// Inline create form state
 	let newTitle = $state('');
+	let newCategory = $state<typeof CATEGORIES[number]>('custom');
 	let newTrigger = $state<Trigger>('always');
-	let newScope = $state<typeof SCOPES[number]>('all');
-	let newPriority = $state<typeof PRIORITIES[number]>('should');
+	let newSurface = $state<typeof SURFACES[number]>('all');
+	let newEnforcement = $state<typeof ENFORCEMENT_LEVELS[number]>('should');
+	let newCommands = $state('');
 	let newContent = $state('');
 
 	$effect(() => {
@@ -72,10 +75,10 @@
 			items = items.filter(i => i.title.toLowerCase().includes(q) || (i.content ?? '').toLowerCase().includes(q));
 		}
 		if (filterScope) {
-			items = items.filter(i => getScope(i) === filterScope);
+			items = items.filter(i => getPrimarySurface(i) === filterScope);
 		}
 		if (filterPriority) {
-			items = items.filter(i => getPriority(i) === filterPriority);
+			items = items.filter(i => getEnforcement(i) === filterPriority);
 		}
 		return items;
 	});
@@ -85,7 +88,7 @@
 		const byTrigger = new SvelteMap<Trigger, Item[]>();
 		for (const item of filtered) {
 			const fields = parseFields(item);
-			const t = (fields.trigger as Trigger) || 'always';
+			const t = (getConvention(item).trigger as Trigger) || (fields.trigger as Trigger) || 'always';
 			if (!byTrigger.has(t)) byTrigger.set(t, []);
 			byTrigger.get(t)!.push(item);
 		}
@@ -134,15 +137,11 @@
 		if (!newTitle.trim() || creating || !workspace) return;
 		creating = true;
 		try {
+			const convention = buildConventionMetadata();
 			const data: ItemCreate = {
 				title: newTitle.trim(),
 				content: newContent.trim(),
-				fields: JSON.stringify({
-					status: 'active',
-					trigger: newTrigger,
-					scope: newScope,
-					priority: newPriority,
-				}),
+				fields: JSON.stringify(buildConventionFields(convention)),
 			};
 			const created = await api.items.create(workspace, 'conventions', data);
 			conventions = [...conventions, created];
@@ -158,9 +157,11 @@
 	function resetForm() {
 		showCreate = false;
 		newTitle = '';
+		newCategory = 'custom';
 		newTrigger = 'always';
-		newScope = 'all';
-		newPriority = 'should';
+		newSurface = 'all';
+		newEnforcement = 'should';
+		newCommands = '';
 		newContent = '';
 	}
 
@@ -235,11 +236,58 @@
 	}
 
 	function getScope(item: Item): string {
-		return parseFields(item).scope || 'all';
+		return getPrimarySurface(item);
 	}
 
 	function getPriority(item: Item): string {
-		return parseFields(item).priority || 'should';
+		return getEnforcement(item);
+	}
+
+	function getConvention(item: Item): ItemConventionMetadata {
+		if (item.convention) return item.convention;
+		const fields = parseFields(item);
+		return {
+			category: typeof fields.category === 'string' ? fields.category : undefined,
+			trigger: typeof fields.trigger === 'string' ? fields.trigger : undefined,
+			surfaces: typeof fields.scope === 'string' ? [fields.scope] : undefined,
+			enforcement: typeof fields.enforcement === 'string' ? fields.enforcement : typeof fields.priority === 'string' ? fields.priority : undefined,
+			commands: Array.isArray(fields.commands) ? fields.commands.filter((value): value is string => typeof value === 'string') : undefined
+		};
+	}
+
+	function getPrimarySurface(item: Item): string {
+		return getConvention(item).surfaces?.[0] ?? 'all';
+	}
+
+	function getEnforcement(item: Item): string {
+		return getConvention(item).enforcement ?? 'should';
+	}
+
+	function buildConventionMetadata(): ItemConventionMetadata {
+		return {
+			category: newCategory === 'custom' ? '' : newCategory,
+			trigger: newTrigger,
+			surfaces: [newSurface],
+			enforcement: newEnforcement,
+			commands: newCommands
+				.split('\n')
+				.map((value) => value.trim())
+				.filter(Boolean)
+		};
+	}
+
+	function buildConventionFields(convention: ItemConventionMetadata) {
+		return {
+			status: 'active',
+			category: convention.category ?? '',
+			trigger: convention.trigger ?? 'always',
+			scope: convention.surfaces?.[0] ?? 'all',
+			priority: convention.enforcement ?? 'should',
+			enforcement: convention.enforcement ?? 'should',
+			surfaces: convention.surfaces ?? ['all'],
+			commands: convention.commands ?? [],
+			convention
+		};
 	}
 </script>
 
@@ -265,6 +313,14 @@
 				<input type="text" bind:value={newTitle} placeholder="Convention title..." class="input-title" required />
 				<div class="form-row">
 					<label class="form-field">
+						<span>Category</span>
+						<select bind:value={newCategory}>
+							{#each CATEGORIES as category (category)}
+								<option value={category}>{category}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="form-field">
 						<span>Trigger</span>
 						<select bind:value={newTrigger}>
 							{#each TRIGGERS as t (t)}
@@ -273,22 +329,23 @@
 						</select>
 					</label>
 					<label class="form-field">
-						<span>Scope</span>
-						<select bind:value={newScope}>
-							{#each SCOPES as s (s)}
+						<span>Surface</span>
+						<select bind:value={newSurface}>
+							{#each SURFACES as s (s)}
 								<option value={s}>{s}</option>
 							{/each}
 						</select>
 					</label>
 					<label class="form-field">
-						<span>Priority</span>
-						<select bind:value={newPriority}>
-							{#each PRIORITIES as p (p)}
+						<span>Enforcement</span>
+						<select bind:value={newEnforcement}>
+							{#each ENFORCEMENT_LEVELS as p (p)}
 								<option value={p}>{p}</option>
 							{/each}
 						</select>
 					</label>
 				</div>
+				<textarea bind:value={newCommands} placeholder="Optional command references, one per line..." rows="2"></textarea>
 				<textarea bind:value={newContent} placeholder="Instruction the agent should follow..." rows="3"></textarea>
 				<div class="form-actions">
 					<button type="button" class="btn btn-secondary" onclick={resetForm}>Cancel</button>
@@ -309,11 +366,11 @@
 				/>
 				<select class="filter-select" bind:value={filterScope}>
 					<option value="">All scopes</option>
-					{#each SCOPES as s (s)}<option value={s}>{s}</option>{/each}
+					{#each SURFACES as s (s)}<option value={s}>{s}</option>{/each}
 				</select>
 				<select class="filter-select" bind:value={filterPriority}>
 					<option value="">All priorities</option>
-					{#each PRIORITIES as p (p)}<option value={p}>{p}</option>{/each}
+					{#each ENFORCEMENT_LEVELS as p (p)}<option value={p}>{p}</option>{/each}
 				</select>
 				{#if hasActiveFilters}
 					<button class="btn btn-small btn-secondary" onclick={clearFilters}>Clear</button>
@@ -362,6 +419,7 @@
 								{#each group.items as item (item.id)}
 									{@const active = isActive(item)}
 									{@const expanded = expandedSlug === item.slug}
+									{@const convention = getConvention(item)}
 									<div class="convention-row" class:disabled={!active}>
 										<div
 										class="row-main"
@@ -381,6 +439,9 @@
 												<span class="toggle-knob"></span>
 											</button>
 											<span class="row-title">{item.title}</span>
+											{#if convention.category}
+												<span class="badge category-badge">{convention.category}</span>
+											{/if}
 											<span class="badge scope-badge">{getScope(item)}</span>
 											<span class="priority-dot priority-{getPriority(item)}" title={getPriority(item)}></span>
 											<span class="row-chevron">{expanded ? '\u25B4' : '\u25BE'}</span>
@@ -405,6 +466,34 @@
 														<p class="convention-content">{item.content}</p>
 													{:else}
 														<p class="convention-content muted">No instruction content.</p>
+													{/if}
+													<div class="metadata-grid">
+														{#if convention.trigger}
+															<div class="metadata-row">
+																<span class="metadata-label">Trigger</span>
+																<span>{convention.trigger}</span>
+															</div>
+														{/if}
+														{#if convention.enforcement}
+															<div class="metadata-row">
+																<span class="metadata-label">Enforcement</span>
+																<span>{convention.enforcement}</span>
+															</div>
+														{/if}
+														{#if convention.surfaces?.length}
+															<div class="metadata-row">
+																<span class="metadata-label">Surfaces</span>
+																<span>{convention.surfaces.join(', ')}</span>
+															</div>
+														{/if}
+													</div>
+													{#if convention.commands?.length}
+														<div class="command-list">
+															<div class="metadata-label">Command References</div>
+															{#each convention.commands as command (command)}
+																<code>{command}</code>
+															{/each}
+														</div>
 													{/if}
 													<div class="expanded-actions">
 														<button class="btn btn-small btn-secondary" onclick={() => startEditing(item)}>Edit</button>
@@ -507,6 +596,7 @@
 
 	/* Badges */
 	.scope-badge { font-size: 0.7em; padding: 1px 8px; border-radius: 10px; background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: var(--accent-purple); font-weight: 600; white-space: nowrap; }
+	.category-badge { font-size: 0.7em; padding: 1px 8px; border-radius: 10px; background: var(--bg-tertiary); color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
 
 	/* Priority dots */
 	.priority-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -518,6 +608,11 @@
 	.row-expanded { padding: var(--space-3) var(--space-4) var(--space-3) calc(var(--space-4) + 36px + var(--space-3)); background: var(--bg-secondary); border-top: 1px solid var(--border-subtle); }
 	.convention-content { font-size: 0.85em; line-height: 1.6; color: var(--text-secondary); margin-bottom: var(--space-3); white-space: pre-wrap; }
 	.convention-content.muted { font-style: italic; color: var(--text-muted); }
+	.metadata-grid { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
+	.metadata-row { display: flex; gap: var(--space-2); align-items: baseline; flex-wrap: wrap; font-size: 0.85em; color: var(--text-secondary); }
+	.metadata-label { font-size: 0.75em; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+	.command-list { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
+	.command-list code { display: inline-block; width: fit-content; max-width: 100%; padding: var(--space-1) var(--space-2); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.8em; overflow-wrap: anywhere; }
 	.expanded-actions { display: flex; gap: var(--space-2); align-items: center; }
 	.edit-textarea { width: 100%; padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.85em; font-family: inherit; line-height: 1.6; resize: vertical; margin-bottom: var(--space-3); box-sizing: border-box; }
 	.edit-textarea:focus { border-color: var(--accent-blue); outline: none; }

@@ -1167,7 +1167,7 @@ recommend conventions from the built-in library.`,
 				return nil
 			}
 
-			// Look up library conventions to get proper trigger/scope/priority
+			// Look up library conventions to get structured metadata
 			libraryConventions := collections.ConventionLibrary()
 			libraryMap := make(map[string]collections.LibraryConvention)
 			for _, cat := range libraryConventions {
@@ -1178,24 +1178,33 @@ recommend conventions from the built-in library.`,
 
 			created := 0
 			for _, s := range newSuggestions {
-				// Use library metadata if available, otherwise use sensible defaults
-				trigger := "on-implement"
-				scope := "all"
-				priority := "should"
+				metadata := &models.ItemConventionMetadata{
+					Trigger:     "on-implement",
+					Surfaces:    []string{"all"},
+					Enforcement: "should",
+				}
 				if lc, ok := libraryMap[s.title]; ok {
-					trigger = lc.Trigger
-					scope = lc.Scope
-					priority = lc.Priority
+					metadata = &models.ItemConventionMetadata{
+						Category:    lc.Category,
+						Trigger:     lc.Trigger,
+						Surfaces:    lc.Surfaces,
+						Enforcement: lc.Enforcement,
+						Commands:    lc.Commands,
+					}
 				}
 
-				fieldsJSON := fmt.Sprintf(`{"status":"active","trigger":"%s","scope":"%s","priority":"%s"}`, trigger, scope, priority)
-				_, err := client.CreateItem(ws, "conventions", models.ItemCreate{
+				fieldsJSON, buildErr := models.BuildConventionItemFields("active", metadata)
+				if buildErr != nil {
+					fmt.Fprintf(os.Stderr, "  Failed to prepare %q: %v\n", s.title, buildErr)
+					continue
+				}
+				_, createErr := client.CreateItem(ws, "conventions", models.ItemCreate{
 					Title:   s.title,
 					Content: s.content,
 					Fields:  fieldsJSON,
 				})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "  Failed to create %q: %v\n", s.title, err)
+				if createErr != nil {
+					fmt.Fprintf(os.Stderr, "  Failed to create %q: %v\n", s.title, createErr)
 					continue
 				}
 				fmt.Printf("  Created: %s\n", s.title)
@@ -1949,7 +1958,10 @@ func showCmd() *cobra.Command {
 				var fields map[string]interface{}
 				if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
-						if k == models.ItemFieldGitHubPR || k == models.ItemFieldImplementationNotes || k == models.ItemFieldDecisionLog {
+						if k == models.ItemFieldGitHubPR || k == models.ItemFieldImplementationNotes || k == models.ItemFieldDecisionLog || k == models.ItemFieldConvention {
+							continue // shown in dedicated section below
+						}
+						if item.Convention != nil && (k == "category" || k == "trigger" || k == "scope" || k == "priority" || k == "enforcement" || k == "surfaces" || k == "commands") {
 							continue // shown in dedicated section below
 						}
 						fmt.Printf("%-12s %v\n", k+":", v)
@@ -1993,6 +2005,28 @@ func showCmd() *cobra.Command {
 				fmt.Println("\n--- Decision Log ---")
 				for _, decision := range item.DecisionLog {
 					printStructuredTimelineEntry(decision.CreatedAt, decision.CreatedBy, decision.Decision, decision.Rationale)
+				}
+			}
+
+			if item.Convention != nil {
+				fmt.Println("\n--- Convention Metadata ---")
+				if item.Convention.Category != "" {
+					fmt.Printf("Category:    %s\n", item.Convention.Category)
+				}
+				if item.Convention.Trigger != "" {
+					fmt.Printf("Trigger:     %s\n", item.Convention.Trigger)
+				}
+				if len(item.Convention.Surfaces) > 0 {
+					fmt.Printf("Surfaces:    %s\n", strings.Join(item.Convention.Surfaces, ", "))
+				}
+				if item.Convention.Enforcement != "" {
+					fmt.Printf("Enforcement: %s\n", item.Convention.Enforcement)
+				}
+				if len(item.Convention.Commands) > 0 {
+					fmt.Println("Commands:")
+					for _, command := range item.Convention.Commands {
+						fmt.Printf("  - %s\n", command)
+					}
 				}
 			}
 
@@ -3668,7 +3702,7 @@ Examples:
 
 					for _, conv := range cat.Conventions {
 						priorityTag := ""
-						switch conv.Priority {
+						switch conv.Enforcement {
 						case "must":
 							priorityTag = " [MUST]"
 						case "should":
@@ -3676,7 +3710,11 @@ Examples:
 						case "nice-to-have":
 							priorityTag = " [NICE]"
 						}
-						fmt.Printf("  %-45s %s%s\n", conv.Title, conv.Trigger, priorityTag)
+						surfaceTag := ""
+						if len(conv.Surfaces) > 0 {
+							surfaceTag = " [" + strings.Join(conv.Surfaces, ",") + "]"
+						}
+						fmt.Printf("  %-45s %s%s%s\n", conv.Title, conv.Trigger, priorityTag, surfaceTag)
 					}
 				}
 			}
@@ -3761,14 +3799,16 @@ Examples:
 			}
 
 			if foundConvention != nil {
-				// Build fields JSON for convention
-				fields := map[string]interface{}{
-					"status":   "active",
-					"trigger":  foundConvention.Trigger,
-					"scope":    foundConvention.Scope,
-					"priority": foundConvention.Priority,
+				fieldsJSON, err := models.BuildConventionItemFields("active", &models.ItemConventionMetadata{
+					Category:    foundConvention.Category,
+					Trigger:     foundConvention.Trigger,
+					Surfaces:    foundConvention.Surfaces,
+					Enforcement: foundConvention.Enforcement,
+					Commands:    foundConvention.Commands,
+				})
+				if err != nil {
+					return err
 				}
-				fieldsJSON, _ := json.Marshal(fields)
 
 				input := models.ItemCreate{
 					Title:   foundConvention.Title,

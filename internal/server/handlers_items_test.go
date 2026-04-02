@@ -697,6 +697,44 @@ func TestGetItemIncludesStructuredNotes(t *testing.T) {
 	}
 }
 
+func TestGetItemIncludesConventionMetadata(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/conventions/items", map[string]interface{}{
+		"title":  "Run tests before completing tasks",
+		"fields": `{"status":"active"}`,
+	})
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	fields := `{"status":"active","convention":{"category":"quality","trigger":"on-task-complete","surfaces":["all"],"enforcement":"must","commands":["go test ./...","make install"]}}`
+	updated, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields})
+	if err != nil {
+		t.Fatalf("update item fields: %v", err)
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+updated.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.Convention == nil {
+		t.Fatal("expected convention metadata in item response")
+	}
+	if fetched.Convention.Category != "quality" {
+		t.Fatalf("expected category quality, got %q", fetched.Convention.Category)
+	}
+	if fetched.Convention.Enforcement != "must" {
+		t.Fatalf("expected enforcement must, got %q", fetched.Convention.Enforcement)
+	}
+	if len(fetched.Convention.Commands) != 2 {
+		t.Fatalf("expected command references, got %#v", fetched.Convention.Commands)
+	}
+}
+
 func TestItemVersions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
