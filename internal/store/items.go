@@ -1048,6 +1048,7 @@ func hydrateItemComputedMetadata(item *models.Item) {
 	}
 	item.ComputeRef()
 	item.CodeContext = models.ExtractItemCodeContext(item.Fields)
+	item.Convention = models.ExtractItemConventionMetadata(item.Fields)
 	item.ImplementationNotes = models.ExtractItemImplementationNotes(item.Fields)
 	item.DecisionLog = models.ExtractItemDecisionLog(item.Fields)
 }

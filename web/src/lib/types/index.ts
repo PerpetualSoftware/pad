@@ -101,6 +101,13 @@ export interface WorkspaceCreate {
 	context?: WorkspaceContext;
 }
 
+export interface WorkspaceUpdate {
+	name?: string;
+	description?: string;
+	settings?: string;
+	context?: WorkspaceContext;
+}
+
 export interface WorkspaceTemplate {
 	name: string;
 	description: string;
@@ -217,6 +224,14 @@ export interface ItemCodeContext {
 	pull_request?: ItemPullRequestMetadata;
 }
 
+export interface ItemConventionMetadata {
+	category?: string;
+	trigger?: string;
+	surfaces?: string[];
+	enforcement?: string;
+	commands?: string[];
+}
+
 export interface ItemImplementationNote {
 	id?: string;
 	summary: string;
@@ -257,6 +272,7 @@ export interface Item {
 	item_number?: number;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
+	convention?: ItemConventionMetadata;
 	implementation_notes?: ItemImplementationNote[];
 	decision_log?: ItemDecisionLogEntry[];
 }
@@ -460,8 +476,9 @@ export interface LibraryConvention {
 	content: string;
 	category: string;
 	trigger: string;
-	scope: string;
-	priority: string;
+	surfaces: string[];
+	enforcement: string;
+	commands?: string[];
 }
 
 export interface LibraryCategory {

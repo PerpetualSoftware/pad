@@ -30,6 +30,41 @@ func TestExtractItemCodeContextReturnsNilForUnrelatedFields(t *testing.T) {
 	}
 }
 
+func TestExtractItemConventionMetadataFromStructuredFields(t *testing.T) {
+	metadata := ExtractItemConventionMetadata(`{"status":"active","convention":{"category":"build","trigger":"on-pr-create","surfaces":["backend","docs"],"enforcement":"must","commands":["go test ./...","make install"]}}`)
+	if metadata == nil {
+		t.Fatal("expected convention metadata")
+	}
+	if metadata.Category != "build" {
+		t.Fatalf("expected category build, got %q", metadata.Category)
+	}
+	if metadata.Trigger != "on-pr-create" {
+		t.Fatalf("expected trigger on-pr-create, got %q", metadata.Trigger)
+	}
+	if metadata.Enforcement != "must" {
+		t.Fatalf("expected enforcement must, got %q", metadata.Enforcement)
+	}
+	if len(metadata.Surfaces) != 2 || metadata.Surfaces[0] != "backend" || metadata.Surfaces[1] != "docs" {
+		t.Fatalf("expected surfaces backend/docs, got %#v", metadata.Surfaces)
+	}
+	if len(metadata.Commands) != 2 || metadata.Commands[0] != "go test ./..." {
+		t.Fatalf("expected commands to be preserved, got %#v", metadata.Commands)
+	}
+}
+
+func TestExtractItemConventionMetadataFallsBackToLegacyFields(t *testing.T) {
+	metadata := ExtractItemConventionMetadata(`{"status":"active","category":"quality","trigger":"on-commit","scope":"all","priority":"should"}`)
+	if metadata == nil {
+		t.Fatal("expected convention metadata")
+	}
+	if metadata.Category != "quality" || metadata.Trigger != "on-commit" || metadata.Enforcement != "should" {
+		t.Fatalf("unexpected convention metadata %#v", metadata)
+	}
+	if len(metadata.Surfaces) != 1 || metadata.Surfaces[0] != "all" {
+		t.Fatalf("expected legacy scope to map to surfaces, got %#v", metadata.Surfaces)
+	}
+}
+
 func TestExtractItemImplementationNotes(t *testing.T) {
 	notes := ExtractItemImplementationNotes(`{"status":"open","implementation_notes":[{"id":"note-1","summary":"Used SSE refresh","details":"Reload phase tasks on visibility resume","created_at":"2026-04-02T15:00:00Z","created_by":"agent"}]}`)
 	if len(notes) != 1 {
@@ -86,5 +121,27 @@ func TestAppendDecisionLogEntryPreservesExistingNotes(t *testing.T) {
 	}
 	if got := ExtractItemDecisionLog(fields); len(got) != 1 {
 		t.Fatalf("expected 1 decision log entry, got %#v", got)
+	}
+}
+
+func TestApplyItemConventionMetadataPreservesStatusAndWritesAliases(t *testing.T) {
+	fields, err := ApplyItemConventionMetadata(`{"status":"active"}`, &ItemConventionMetadata{
+		Category:    "pm",
+		Trigger:     "on-task-start",
+		Surfaces:    []string{"all"},
+		Enforcement: "must",
+		Commands:    []string{"pad item update <ref> --status in-progress"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyItemConventionMetadata error: %v", err)
+	}
+
+	metadata := ExtractItemConventionMetadata(fields)
+	if metadata == nil || metadata.Category != "pm" || metadata.Trigger != "on-task-start" {
+		t.Fatalf("expected structured convention metadata, got %#v", metadata)
+	}
+
+	if got := ExtractItemImplementationNotes(fields); got != nil {
+		t.Fatalf("did not expect implementation notes, got %#v", got)
 	}
 }

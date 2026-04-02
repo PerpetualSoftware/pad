@@ -10,6 +10,7 @@ const (
 	ItemFieldGitHubPR            = "github_pr"
 	ItemFieldImplementationNotes = "implementation_notes"
 	ItemFieldDecisionLog         = "decision_log"
+	ItemFieldConvention          = "convention"
 )
 
 type Item struct {
@@ -42,6 +43,7 @@ type Item struct {
 	CollectionPrefix    string                   `json:"collection_prefix,omitempty"`
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
+	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
 	ImplementationNotes []ItemImplementationNote `json:"implementation_notes,omitempty"`
 	DecisionLog         []ItemDecisionLogEntry   `json:"decision_log,omitempty"`
 }
@@ -77,6 +79,14 @@ type ItemCodeContext struct {
 	PullRequest *ItemPullRequestMetadata `json:"pull_request,omitempty"`
 }
 
+type ItemConventionMetadata struct {
+	Category    string   `json:"category,omitempty"`
+	Trigger     string   `json:"trigger,omitempty"`
+	Surfaces    []string `json:"surfaces,omitempty"`
+	Enforcement string   `json:"enforcement,omitempty"`
+	Commands    []string `json:"commands,omitempty"`
+}
+
 type ItemPullRequestMetadata struct {
 	Number    int    `json:"number"`
 	URL       string `json:"url"`
@@ -109,6 +119,14 @@ type githubPRFields struct {
 	Branch    string `json:"branch"`
 	Repo      string `json:"repo"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type conventionFields struct {
+	Category    string   `json:"category"`
+	Trigger     string   `json:"trigger"`
+	Surfaces    []string `json:"surfaces"`
+	Enforcement string   `json:"enforcement"`
+	Commands    []string `json:"commands"`
 }
 
 func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
@@ -151,6 +169,78 @@ func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
 	}
 
 	return context
+}
+
+func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
+	fieldsMap, ok := parseItemFields(fieldsJSON)
+	if !ok {
+		return nil
+	}
+
+	var metadata ItemConventionMetadata
+	hasMetadata := false
+
+	if raw, ok := fieldsMap[ItemFieldConvention]; ok {
+		payload, err := json.Marshal(raw)
+		if err == nil {
+			var structured conventionFields
+			if err := json.Unmarshal(payload, &structured); err == nil {
+				metadata = ItemConventionMetadata{
+					Category:    structured.Category,
+					Trigger:     structured.Trigger,
+					Surfaces:    append([]string(nil), structured.Surfaces...),
+					Enforcement: structured.Enforcement,
+					Commands:    append([]string(nil), structured.Commands...),
+				}
+				hasMetadata = true
+			}
+		}
+	}
+
+	if metadata.Category == "" {
+		if category, ok := fieldsMap["category"].(string); ok {
+			metadata.Category = category
+			hasMetadata = true
+		}
+	}
+	if metadata.Trigger == "" {
+		if trigger, ok := fieldsMap["trigger"].(string); ok {
+			metadata.Trigger = trigger
+			hasMetadata = true
+		}
+	}
+	if metadata.Enforcement == "" {
+		switch value := fieldsMap["enforcement"].(type) {
+		case string:
+			metadata.Enforcement = value
+			hasMetadata = true
+		default:
+			if priority, ok := fieldsMap["priority"].(string); ok {
+				metadata.Enforcement = priority
+				hasMetadata = true
+			}
+		}
+	}
+	if len(metadata.Surfaces) == 0 {
+		if surfaces := extractStringList(fieldsMap["surfaces"]); len(surfaces) > 0 {
+			metadata.Surfaces = surfaces
+			hasMetadata = true
+		} else if scope, ok := fieldsMap["scope"].(string); ok && scope != "" {
+			metadata.Surfaces = []string{scope}
+			hasMetadata = true
+		}
+	}
+	if len(metadata.Commands) == 0 {
+		if commands := extractStringList(fieldsMap["commands"]); len(commands) > 0 {
+			metadata.Commands = commands
+			hasMetadata = true
+		}
+	}
+
+	if !hasMetadata {
+		return nil
+	}
+	return normalizeItemConventionMetadata(&metadata)
 }
 
 func ExtractItemImplementationNotes(fieldsJSON string) []ItemImplementationNote {
@@ -227,6 +317,54 @@ func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (stri
 	return marshalItemFields(fieldsMap)
 }
 
+func ApplyItemConventionMetadata(fieldsJSON string, metadata *ItemConventionMetadata) (string, error) {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return "", err
+	}
+
+	normalized := normalizeItemConventionMetadata(metadata)
+	if normalized == nil {
+		delete(fieldsMap, ItemFieldConvention)
+		delete(fieldsMap, "category")
+		delete(fieldsMap, "trigger")
+		delete(fieldsMap, "scope")
+		delete(fieldsMap, "priority")
+		delete(fieldsMap, "enforcement")
+		delete(fieldsMap, "surfaces")
+		delete(fieldsMap, "commands")
+		return marshalItemFields(fieldsMap)
+	}
+
+	fieldsMap[ItemFieldConvention] = normalized
+	fieldsMap["category"] = normalized.Category
+	fieldsMap["trigger"] = normalized.Trigger
+	fieldsMap["enforcement"] = normalized.Enforcement
+	fieldsMap["priority"] = normalized.Enforcement
+	fieldsMap["surfaces"] = normalized.Surfaces
+	fieldsMap["commands"] = normalized.Commands
+	if len(normalized.Surfaces) > 0 {
+		fieldsMap["scope"] = normalized.Surfaces[0]
+	}
+
+	return marshalItemFields(fieldsMap)
+}
+
+func BuildConventionItemFields(status string, metadata *ItemConventionMetadata) (string, error) {
+	fieldsJSON, err := ApplyItemConventionMetadata("{}", metadata)
+	if err != nil {
+		return "", err
+	}
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return "", err
+	}
+	if status != "" {
+		fieldsMap["status"] = status
+	}
+	return marshalItemFields(fieldsMap)
+}
+
 func parseItemFields(fieldsJSON string) (map[string]any, bool) {
 	if fieldsJSON == "" || fieldsJSON == "{}" {
 		return nil, false
@@ -255,6 +393,62 @@ func marshalItemFields(fieldsMap map[string]any) (string, error) {
 		return "", fmt.Errorf("marshal item fields: %w", err)
 	}
 	return string(payload), nil
+}
+
+func normalizeItemConventionMetadata(metadata *ItemConventionMetadata) *ItemConventionMetadata {
+	if metadata == nil {
+		return nil
+	}
+	normalized := &ItemConventionMetadata{
+		Category:    metadata.Category,
+		Trigger:     metadata.Trigger,
+		Enforcement: metadata.Enforcement,
+		Surfaces:    uniqueStrings(metadata.Surfaces),
+		Commands:    uniqueStrings(metadata.Commands),
+	}
+	if normalized.Category == "" && normalized.Trigger == "" && normalized.Enforcement == "" && len(normalized.Surfaces) == 0 && len(normalized.Commands) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func extractStringList(raw any) []string {
+	switch value := raw.(type) {
+	case []string:
+		return uniqueStrings(value)
+	case []any:
+		var out []string
+		for _, entry := range value {
+			if str, ok := entry.(string); ok && str != "" {
+				out = append(out, str)
+			}
+		}
+		return uniqueStrings(out)
+	default:
+		return nil
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 type ItemCreate struct {

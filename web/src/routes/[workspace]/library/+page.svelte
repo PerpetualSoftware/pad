@@ -33,6 +33,10 @@
 		'nice-to-have': 'var(--accent-gray)',
 	};
 
+	function conventionSurfaceLabel(convention: LibraryConvention): string {
+		return convention.surfaces?.join(', ') || 'all';
+	}
+
 	$effect(() => {
 		if (wsSlug) loadData(wsSlug);
 	});
@@ -152,10 +156,13 @@
 									<h3 class="card-title">{convention.title}</h3>
 									<div class="badges">
 										<span class="badge trigger">{convention.trigger}</span>
-										<span class="badge scope">{convention.scope}</span>
-										<span class="badge priority" style="background: {priorityColors[convention.priority] ?? 'var(--accent-gray)'}">
-											{convention.priority}
+										<span class="badge scope">{conventionSurfaceLabel(convention)}</span>
+										<span class="badge priority" style="background: {priorityColors[convention.enforcement] ?? 'var(--accent-gray)'}">
+											{convention.enforcement}
 										</span>
+										{#if convention.commands?.length}
+											<span class="badge scope">{convention.commands.length} cmd{convention.commands.length > 1 ? 's' : ''}</span>
+										{/if}
 									</div>
 									<p class="card-content">{truncate(convention.content, 100)}</p>
 								</div>

@@ -241,12 +241,13 @@ type LibraryCategory struct {
 
 // LibraryConvention holds a pre-built convention definition.
 type LibraryConvention struct {
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Category string `json:"category"`
-	Trigger  string `json:"trigger"`
-	Scope    string `json:"scope"`
-	Priority string `json:"priority"`
+	Title       string   `json:"title"`
+	Content     string   `json:"content"`
+	Category    string   `json:"category"`
+	Trigger     string   `json:"trigger"`
+	Surfaces    []string `json:"surfaces"`
+	Enforcement string   `json:"enforcement"`
+	Commands    []string `json:"commands"`
 }
 
 // GetConventionLibrary fetches the convention library from the server.
