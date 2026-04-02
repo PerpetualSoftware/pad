@@ -10,36 +10,62 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const (
+	ModeLocal  = "local"
+	ModeRemote = "remote"
+	ModeDocker = "docker"
+	ModeCloud  = "cloud"
+)
+
 type Config struct {
+	Mode     string `toml:"mode"`
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
-	URL      string `toml:"url"`      // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	URL      string `toml:"url"` // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
-	DBPath string `toml:"-"` // computed, not from config file
-	DataDir  string `toml:"-"`        // computed
+	DBPath   string `toml:"-"` // computed, not from config file
+	DataDir  string `toml:"-"` // computed
+
+	ConfigPath      string `toml:"-"`
+	LoadedFromFile  bool   `toml:"-"`
+	LoadedFromEnv   bool   `toml:"-"`
+	LoadedFromFlags bool   `toml:"-"`
 
 	// Email (Maileroo)
 	MailerooAPIKey string `toml:"maileroo_api_key"`
 	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
-	EmailFromName  string `toml:"email_from_name"`  // Sender display name (e.g. Pad)
+	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
 }
 
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	dataDir := filepath.Join(homeDir, ".pad")
 	return &Config{
-		Host:     "127.0.0.1",
-		Port:     7777,
-		Editor:   "",
-		LogLevel: "info",
-		DBPath:   filepath.Join(dataDir, "pad.db"),
-		DataDir:  dataDir,
+		Host:       "127.0.0.1",
+		Port:       7777,
+		Editor:     "",
+		LogLevel:   "info",
+		DBPath:     filepath.Join(dataDir, "pad.db"),
+		DataDir:    dataDir,
+		ConfigPath: filepath.Join(dataDir, "config.toml"),
 	}
 }
 
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
+
+	// Data-dir overrides affect where config.toml lives, so apply them first.
+	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
+		cfg.DataDir = v
+		cfg.DBPath = filepath.Join(v, "pad.db")
+		cfg.ConfigPath = filepath.Join(v, "config.toml")
+	}
+	if v := os.Getenv("PAD_DB_PATH"); v != "" {
+		cfg.DBPath = v
+		cfg.DataDir = filepath.Dir(cfg.DBPath)
+		cfg.ConfigPath = filepath.Join(cfg.DataDir, "config.toml")
+	}
 
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
@@ -52,32 +78,34 @@ func Load() (*Config, error) {
 	}
 
 	// Load config file if it exists
-	configPath := filepath.Join(cfg.DataDir, "config.toml")
-	if _, err := os.Stat(configPath); err == nil {
-		if _, err := toml.DecodeFile(configPath, cfg); err != nil {
+	if _, err := os.Stat(cfg.ConfigPath); err == nil {
+		cfg.LoadedFromFile = true
+		if _, err := toml.DecodeFile(cfg.ConfigPath, cfg); err != nil {
 			return nil, err
 		}
 	}
 
 	// Environment variable overrides
+	if v := os.Getenv("PAD_MODE"); v != "" {
+		cfg.Mode = v
+		cfg.LoadedFromEnv = true
+	}
 	if v := os.Getenv("PAD_HOST"); v != "" {
 		cfg.Host = v
+		cfg.LoadedFromEnv = true
 	}
 	if v := os.Getenv("PAD_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
 			cfg.Port = port
+			cfg.LoadedFromEnv = true
 		}
 	}
 	if v := os.Getenv("PAD_URL"); v != "" {
 		cfg.URL = v
-	}
-	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
-		cfg.DataDir = v
-		cfg.DBPath = filepath.Join(v, "pad.db")
-	}
-	if v := os.Getenv("PAD_DB_PATH"); v != "" {
-		cfg.DBPath = v
-		cfg.DataDir = filepath.Dir(cfg.DBPath)
+		cfg.LoadedFromEnv = true
+		if cfg.Mode == "" {
+			cfg.Mode = ModeRemote
+		}
 	}
 
 	// Email (Maileroo)
@@ -92,6 +120,44 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Save writes the persisted Pad config to disk.
+func (c *Config) Save() error {
+	if err := os.MkdirAll(c.DataDir, 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(c.DataDir, "logs"), 0755); err != nil {
+		return err
+	}
+
+	f, err := os.Create(c.ConfigPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := toml.NewEncoder(f).Encode(c); err != nil {
+		return err
+	}
+
+	c.LoadedFromFile = true
+	return nil
+}
+
+// IsConfigured reports whether the client has an explicit global connection
+// configuration, either from config.toml or an environment/flag override.
+func (c *Config) IsConfigured() bool {
+	return c.LoadedFromFile || c.LoadedFromEnv || c.LoadedFromFlags
+}
+
+func ValidMode(mode string) bool {
+	switch mode {
+	case "", ModeLocal, ModeRemote, ModeDocker, ModeCloud:
+		return true
+	default:
+		return false
+	}
 }
 
 // Addr returns the host:port listen address.
