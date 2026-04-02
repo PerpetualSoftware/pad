@@ -1058,18 +1058,19 @@ func printOnboardingHints() {
 func onboardCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "onboard",
-		Short: "Analyze the project and suggest items to populate the workspace",
-		Long: `Analyze the current project directory to detect tooling and suggest
-conventions, then optionally create them in the workspace.
+		Short: "Analyze the project, save workspace context, and suggest items",
+		Long: `Analyze the current project directory to detect tooling, save
+machine-readable workspace context, and suggest conventions.
 
 This scans for build config, CI setup, linters, and project structure to
 recommend conventions from the built-in library.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			client, cfg := getClient()
 			ws := getWorkspace()
 
 			cwd, _ := os.Getwd()
 			info := cli.DetectProject(cwd)
+			context := cli.BuildWorkspaceContext(cwd, info, cfg)
 
 			// Print detection results
 			bold := color.New(color.Bold)
@@ -1093,6 +1094,14 @@ recommend conventions from the built-in library.`,
 			if info.HasLinter {
 				fmt.Printf("  %s     %s\n", dim.Sprint("Linter:"), green.Sprint("detected"))
 			}
+			if context != nil {
+				if context.Paths != nil && context.Paths.Web != "" {
+					fmt.Printf("  %s        %s\n", dim.Sprint("Web:"), context.Paths.Web)
+				}
+				if len(context.Repositories) > 1 {
+					fmt.Printf("  %s  %d repos\n", dim.Sprint("Repos:"), len(context.Repositories))
+				}
+			}
 			if info.Language == "" && info.BuildTool == "" {
 				fmt.Println(dim.Sprint("  Could not detect project type."))
 				fmt.Println()
@@ -1102,6 +1111,13 @@ recommend conventions from the built-in library.`,
 			}
 
 			fmt.Println()
+
+			if _, err := client.UpdateWorkspace(ws, models.WorkspaceUpdate{Context: context}); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to save workspace context: %v\n\n", err)
+			} else {
+				fmt.Println(green.Sprint("Saved machine-readable workspace context."))
+				fmt.Println()
+			}
 
 			// Get suggested conventions
 			suggestions := cli.SuggestedConventions(info)
