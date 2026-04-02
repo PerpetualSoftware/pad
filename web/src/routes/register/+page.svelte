@@ -8,11 +8,16 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let error = $state('');
+	let setupRequired = $state(false);
 	let loading = $state(false);
 
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
+			if (session.setup_required) {
+				setupRequired = true;
+				return;
+			}
 			if (session.authenticated) {
 				goto('/', { replaceState: true });
 				return;
@@ -63,61 +68,66 @@
 <div class="register-page">
 	<div class="register-card">
 		<h1 class="logo">Pad</h1>
-		<p class="subtitle">Create your account</p>
+		{#if setupRequired}
+			<p class="subtitle">This Pad instance has not been initialized yet.</p>
+			<p class="login-link">Run <code>pad setup</code> on the machine or container running the Pad server.</p>
+		{:else}
+			<p class="subtitle">Create your account</p>
 
-		<div class="form">
-			<input
-				type="text"
-				placeholder="Name"
-				bind:value={name}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="name"
-			/>
+			<div class="form">
+				<input
+					type="text"
+					placeholder="Name"
+					bind:value={name}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="name"
+				/>
 
-			<input
-				type="email"
-				placeholder="Email"
-				bind:value={email}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="email"
-			/>
+				<input
+					type="email"
+					placeholder="Email"
+					bind:value={email}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="email"
+				/>
 
-			<input
-				type="password"
-				placeholder="Password"
-				bind:value={password}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="new-password"
-			/>
+				<input
+					type="password"
+					placeholder="Password"
+					bind:value={password}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="new-password"
+				/>
 
-			<input
-				type="password"
-				placeholder="Confirm password"
-				bind:value={confirmPassword}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="new-password"
-			/>
+				<input
+					type="password"
+					placeholder="Confirm password"
+					bind:value={confirmPassword}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="new-password"
+				/>
 
-			{#if error}
-				<p class="error">{error}</p>
-			{/if}
-
-			<button onclick={handleSubmit} disabled={loading}>
-				{#if loading}
-					Creating account...
-				{:else}
-					Create account
+				{#if error}
+					<p class="error">{error}</p>
 				{/if}
-			</button>
-		</div>
 
-		<p class="login-link">
-			Already have an account? <a href="/login">Sign in</a>
-		</p>
+				<button onclick={handleSubmit} disabled={loading}>
+					{#if loading}
+						Creating account...
+					{:else}
+						Create account
+					{/if}
+				</button>
+			</div>
+
+			<p class="login-link">
+				Already have an account? <a href="/login">Sign in</a>
+			</p>
+		{/if}
 	</div>
 </div>
 

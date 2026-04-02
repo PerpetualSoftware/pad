@@ -332,6 +332,11 @@ func setupCmd() *cobra.Command {
 		Short: "Initialize a fresh Pad instance with the first admin account",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
+			if !cfg.IsConfigured() {
+				// Allow host-local bootstrap on a pristine machine before the
+				// client has been explicitly configured.
+				cfg.Mode = config.ModeLocal
+			}
 
 			if cfg.IsConfigured() {
 				switch cfg.Mode {
