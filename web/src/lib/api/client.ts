@@ -1,6 +1,7 @@
 import type {
 	Workspace,
 	WorkspaceCreate,
+	WorkspaceUpdate,
 	Collection,
 	CollectionCreate,
 	CollectionUpdate,
@@ -109,7 +110,7 @@ export const api = {
 
 		get: (slug: string) => request<Workspace>(`/workspaces/${slug}`),
 
-		update: (slug: string, data: Partial<WorkspaceCreate>) =>
+		update: (slug: string, data: WorkspaceUpdate) =>
 			request<Workspace>(`/workspaces/${slug}`, {
 				method: 'PATCH',
 				body: JSON.stringify(data)

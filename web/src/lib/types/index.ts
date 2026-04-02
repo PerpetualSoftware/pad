@@ -101,6 +101,13 @@ export interface WorkspaceCreate {
 	context?: WorkspaceContext;
 }
 
+export interface WorkspaceUpdate {
+	name?: string;
+	description?: string;
+	settings?: string;
+	context?: WorkspaceContext;
+}
+
 export interface WorkspaceTemplate {
 	name: string;
 	description: string;
