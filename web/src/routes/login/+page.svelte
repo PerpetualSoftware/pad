@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
+	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
 	let email = $state('');
 	let password = $state('');
@@ -56,25 +57,16 @@
 			handleSubmit();
 		}
 	}
-
-	function setupHint(method: typeof setupMethod): string {
-		switch (method) {
-			case 'docker_exec':
-				return "Run 'pad setup' inside the container, for example: docker exec -it <container> pad setup";
-			case 'cloud':
-				return 'This Pad Cloud instance must be initialized through the cloud setup flow.';
-			default:
-				return "Run 'pad setup' on the machine or container running the Pad server.";
-		}
-	}
 </script>
 
 <div class="login-page">
 	<div class="login-card">
 		<h1 class="logo">Pad</h1>
 		{#if setupRequired}
-			<p class="subtitle">This Pad instance has not been initialized yet.</p>
-			<p class="register-link">{setupHint(setupMethod)}</p>
+			<SetupRequiredNotice
+				{setupMethod}
+				nextStep="Once setup is complete, return here to sign in."
+			/>
 		{:else}
 			<p class="subtitle">Sign in to continue</p>
 

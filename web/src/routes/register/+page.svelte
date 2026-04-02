@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
+	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
 	let name = $state('');
 	let email = $state('');
@@ -9,6 +10,7 @@
 	let confirmPassword = $state('');
 	let error = $state('');
 	let setupRequired = $state(false);
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
 
 	onMount(async () => {
@@ -16,6 +18,7 @@
 			const session = await api.auth.session();
 			if (session.setup_required) {
 				setupRequired = true;
+				setupMethod = session.setup_method;
 				return;
 			}
 			if (session.authenticated) {
@@ -69,8 +72,12 @@
 	<div class="register-card">
 		<h1 class="logo">Pad</h1>
 		{#if setupRequired}
-			<p class="subtitle">This Pad instance has not been initialized yet.</p>
-			<p class="login-link">Run <code>pad setup</code> on the machine or container running the Pad server.</p>
+			<SetupRequiredNotice
+				{setupMethod}
+				nextStep="After the first admin is created, invitation-based registration will work here."
+				actionHref="/login"
+				actionLabel="Back to login"
+			/>
 		{:else}
 			<p class="subtitle">Create your account</p>
 
