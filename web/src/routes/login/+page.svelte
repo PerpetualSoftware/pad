@@ -11,7 +11,7 @@
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
-			if (session.needs_setup) {
+			if (session.setup_required && session.setup_method === 'open_register') {
 				goto('/register', { replaceState: true });
 				return;
 			}

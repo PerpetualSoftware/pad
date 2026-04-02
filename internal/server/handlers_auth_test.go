@@ -12,18 +12,27 @@ import (
 func TestAuthRegistrationFlow(t *testing.T) {
 	srv := testServer(t)
 
-	// Session check before any users — should indicate needs_setup
+	// Session check before any users — should indicate explicit setup state
 	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("session check: expected 200, got %d", rr.Code)
 	}
 	var session map[string]interface{}
 	parseJSON(t, rr, &session)
-	if session["needs_setup"] != true {
-		t.Error("expected needs_setup=true when no users exist")
+	if session["setup_required"] != true {
+		t.Error("expected setup_required=true when no users exist")
 	}
 	if session["authenticated"] != false {
 		t.Error("expected authenticated=false when no users exist")
+	}
+	if session["setup_method"] != "open_register" {
+		t.Errorf("expected setup_method=open_register, got %v", session["setup_method"])
+	}
+	if session["auth_method"] != "password" {
+		t.Errorf("expected auth_method=password, got %v", session["auth_method"])
+	}
+	if _, ok := session["needs_setup"]; ok {
+		t.Error("did not expect deprecated needs_setup field")
 	}
 
 	// Register first user — should become admin
@@ -62,6 +71,12 @@ func TestAuthRegistrationFlow(t *testing.T) {
 		t.Error("expected user object in authenticated session response")
 	} else if authUser["email"] != "admin@test.com" {
 		t.Errorf("expected email admin@test.com in session user, got %v", authUser["email"])
+	}
+	if session["setup_required"] != false {
+		t.Errorf("expected setup_required=false after registration, got %v", session["setup_required"])
+	}
+	if session["auth_method"] != "password" {
+		t.Errorf("expected auth_method=password after registration, got %v", session["auth_method"])
 	}
 }
 
@@ -107,6 +122,33 @@ func TestAuthLoginFlow(t *testing.T) {
 	})
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("non-existent email: expected 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthLoginReturnsExplicitSetupStateWhenNoUsers(t *testing.T) {
+	srv := testServer(t)
+
+	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
+		"email":    "nobody@test.com",
+		"password": "password123",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login without users: expected 200, got %d", rr.Code)
+	}
+
+	var resp map[string]interface{}
+	parseJSON(t, rr, &resp)
+	if resp["setup_required"] != true {
+		t.Errorf("expected setup_required=true, got %v", resp["setup_required"])
+	}
+	if resp["setup_method"] != "open_register" {
+		t.Errorf("expected setup_method=open_register, got %v", resp["setup_method"])
+	}
+	if resp["auth_method"] != "password" {
+		t.Errorf("expected auth_method=password, got %v", resp["auth_method"])
+	}
+	if _, ok := resp["needs_setup"]; ok {
+		t.Error("did not expect deprecated needs_setup field")
 	}
 }
 

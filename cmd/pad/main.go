@@ -353,7 +353,10 @@ func loginCmd() *cobra.Command {
 				return fmt.Errorf("failed to check server status: %w", err)
 			}
 
-			if session.NeedsSetup {
+			if session.SetupRequired {
+				if session.SetupMethod != "open_register" {
+					return fmt.Errorf("this Pad instance requires setup via %s before login", session.SetupMethod)
+				}
 				fmt.Println("No account found. Let's set you up.")
 				fmt.Println()
 				return doRegister(client, cfg)
@@ -758,7 +761,10 @@ Use --list-templates to see available templates.`,
 			if err != nil {
 				return fmt.Errorf("failed to check auth status: %w", err)
 			}
-			if session.NeedsSetup {
+			if session.SetupRequired {
+				if session.SetupMethod != "open_register" {
+					return fmt.Errorf("this Pad instance requires setup via %s before continuing", session.SetupMethod)
+				}
 				fmt.Println("Welcome to Pad!")
 				fmt.Println()
 				fmt.Println("No account found. Let's set you up.")
@@ -1652,7 +1658,7 @@ Examples:
 
 Run with --help-collections to see available collections and their status values.`,
 		ValidArgsFunction: completeCollectionNames,
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -1703,10 +1709,10 @@ Run with --help-collections to see available collections and their status values
 			}
 
 			input := models.ItemCreate{
-				Title:     title,
-				Content:   body,
-				Fields:    string(fieldsJSON),
-				Tags:      tags,
+				Title:   title,
+				Content: body,
+				Fields:  string(fieldsJSON),
+				Tags:    tags,
 			}
 
 			item, err := client.CreateItem(ws, collSlug, input)
@@ -2091,8 +2097,7 @@ Examples:
 				return err
 			}
 
-			input := models.ItemUpdate{
-			}
+			input := models.ItemUpdate{}
 
 			if title != "" {
 				input.Title = &title
@@ -2195,10 +2200,10 @@ Examples:
 
 func deleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <ref>",
-		Short: "Archive (soft-delete) an item",
+		Use:     "delete <ref>",
+		Short:   "Archive (soft-delete) an item",
 		Aliases: []string{"rm"},
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -2289,7 +2294,7 @@ func commentCmd() *cobra.Command {
 			ws := getWorkspace()
 
 			input := models.CommentCreate{
-				Body:      args[1],
+				Body: args[1],
 			}
 
 			comment, err := client.CreateComment(ws, args[0], input)
@@ -2841,10 +2846,10 @@ func nextCmd() *cobra.Command {
 
 			var dash struct {
 				SuggestedNext []struct {
-					ItemSlug  string `json:"item_slug"`
-					ItemTitle string `json:"item_title"`
+					ItemSlug   string `json:"item_slug"`
+					ItemTitle  string `json:"item_title"`
 					Collection string `json:"collection"`
-					Reason    string `json:"reason"`
+					Reason     string `json:"reason"`
 				} `json:"suggested_next"`
 			}
 
@@ -2957,8 +2962,8 @@ func standupCmd() *cobra.Command {
 				}
 
 				type standupJSON struct {
-					Date          string       `json:"date"`
-					Days          int          `json:"days"`
+					Date          string        `json:"date"`
+					Days          int           `json:"days"`
 					Completed     []standupItem `json:"completed"`
 					InProgress    []standupItem `json:"in_progress"`
 					Blockers      []standupItem `json:"blockers"`
@@ -3344,8 +3349,8 @@ func collectionDefaultIcon(slug string) string {
 
 func collectionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collections",
-		Short: "List and manage collections",
+		Use:     "collections",
+		Short:   "List and manage collections",
 		Aliases: []string{"coll"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -3446,11 +3451,11 @@ Examples:
 			settingsJSON, _ := json.Marshal(settings)
 
 			input := models.CollectionCreate{
-				Name:     name,
-				Icon:     icon,
+				Name:        name,
+				Icon:        icon,
 				Description: description,
-				Schema:   string(schemaJSON),
-				Settings: string(settingsJSON),
+				Schema:      string(schemaJSON),
+				Settings:    string(settingsJSON),
 			}
 
 			coll, err := client.CreateCollection(ws, input)
@@ -3514,7 +3519,7 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 			}
 
 			updated, err := client.UpdateItem(ws, slug, models.ItemUpdate{
-				Content:        &edited,
+				Content: &edited,
 			})
 			if err != nil {
 				return err
@@ -3618,9 +3623,9 @@ func normalizeCollectionSlug(input string) string {
 		"idea": "ideas", "i": "ideas",
 		"phase": "phases", "p": "phases",
 		"doc": "docs", "d": "docs",
-		"bug": "bugs",
+		"bug":        "bugs",
 		"convention": "conventions",
-		"playbook": "playbooks",
+		"playbook":   "playbooks",
 	}
 	if mapped, ok := aliases[input]; ok {
 		return mapped
@@ -3777,9 +3782,9 @@ Examples:
 				fieldsJSON, _ := json.Marshal(fields)
 
 				input := models.ItemCreate{
-					Title:     foundConvention.Title,
-					Content:   foundConvention.Content,
-					Fields:    string(fieldsJSON),
+					Title:   foundConvention.Title,
+					Content: foundConvention.Content,
+					Fields:  string(fieldsJSON),
 				}
 
 				item, err := client.CreateItem(ws, "conventions", input)
@@ -3824,9 +3829,9 @@ Examples:
 				fieldsJSON, _ := json.Marshal(fields)
 
 				input := models.ItemCreate{
-					Title:     foundPlaybook.Title,
-					Content:   foundPlaybook.Content,
-					Fields:    string(fieldsJSON),
+					Title:   foundPlaybook.Title,
+					Content: foundPlaybook.Content,
+					Fields:  string(fieldsJSON),
 				}
 
 				item, err := client.CreateItem(ws, "playbooks", input)
@@ -4396,7 +4401,7 @@ Examples:
 				fieldsStr := string(fieldsJSON)
 
 				input := models.ItemUpdate{
-					Fields:         &fieldsStr,
+					Fields: &fieldsStr,
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)
@@ -4440,8 +4445,8 @@ type GitHubPR struct {
 
 func githubCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "github",
-		Short: "Link GitHub pull requests to Pad items",
+		Use:     "github",
+		Short:   "Link GitHub pull requests to Pad items",
 		Aliases: []string{"gh"},
 		Long: `Link GitHub pull requests to Pad items and view their status.
 
@@ -4607,7 +4612,7 @@ Examples:
 			fields := string(fieldsJSON)
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
+				Fields: &fields,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
@@ -4665,9 +4670,9 @@ Examples:
 
 			if formatFlag == "json" {
 				type prStatus struct {
-					Ref    string    `json:"ref"`
-					Title  string    `json:"title"`
-					PR     GitHubPR  `json:"github_pr"`
+					Ref   string   `json:"ref"`
+					Title string   `json:"title"`
+					PR    GitHubPR `json:"github_pr"`
 				}
 				var results []prStatus
 				for _, item := range items {
@@ -4753,7 +4758,7 @@ func githubUnlinkCmd() *cobra.Command {
 			fields := string(fieldsJSON)
 
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
+				Fields: &fields,
 			})
 			if err != nil {
 				return err

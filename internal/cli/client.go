@@ -361,7 +361,9 @@ type LoginUser struct {
 // SessionResponse is the response from GET /auth/session.
 type SessionResponse struct {
 	Authenticated bool      `json:"authenticated"`
-	NeedsSetup    bool      `json:"needs_setup"`
+	SetupRequired bool      `json:"setup_required"`
+	SetupMethod   string    `json:"setup_method"`
+	AuthMethod    string    `json:"auth_method"`
 	User          LoginUser `json:"user"`
 }
 

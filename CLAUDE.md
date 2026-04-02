@@ -74,7 +74,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
 - `GET /workspaces/{ws}/members` — list members + pending invitations
 - `POST /workspaces/{ws}/members/invite` — invite user to workspace
-- `GET /api/v1/auth/session` — auth status (needs_setup, authenticated, user)
+- `GET /api/v1/auth/session` — auth status (`setup_required`, `setup_method`, `auth_method`, `authenticated`, `user`)
 - `POST /api/v1/auth/register` — create account (first user becomes admin)
 - `POST /api/v1/auth/login` — email/password login (returns session token)
 - `POST /api/v1/auth/logout` — destroy session

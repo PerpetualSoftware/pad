@@ -23,7 +23,7 @@
 			if (session.authenticated) {
 				// Already logged in — try to accept directly
 				await acceptInvitation();
-			} else if (session.needs_setup) {
+			} else if (session.setup_required && session.setup_method === 'open_register') {
 				// No users yet — show register form
 				mode = 'register';
 				status = 'register';
