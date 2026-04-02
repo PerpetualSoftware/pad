@@ -151,6 +151,21 @@ export interface ItemDerivedClosure {
 	related_items?: ItemRelationRef[];
 }
 
+export interface ItemPullRequestMetadata {
+	number: number;
+	url: string;
+	title: string;
+	state: string;
+	updated_at?: string;
+}
+
+export interface ItemCodeContext {
+	provider: string;
+	repo?: string;
+	branch?: string;
+	pull_request?: ItemPullRequestMetadata;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -174,6 +189,7 @@ export interface Item {
 	collection_prefix?: string;
 	item_number?: number;
 	derived_closure?: ItemDerivedClosure;
+	code_context?: ItemCodeContext;
 }
 
 export interface ItemCreate {

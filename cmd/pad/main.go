@@ -2036,31 +2036,22 @@ func showCmd() *cobra.Command {
 				fmt.Println(item.Content)
 			}
 
-			// Show GitHub PR if linked
-			if item.Fields != "" {
-				var fieldsMap map[string]interface{}
-				if err := json.Unmarshal([]byte(item.Fields), &fieldsMap); err == nil {
-					if prRaw, ok := fieldsMap["github_pr"]; ok {
-						if prMap, ok := prRaw.(map[string]interface{}); ok {
-							fmt.Println("\n--- GitHub PR ---")
-							prNum := ""
-							if n, ok := prMap["number"].(float64); ok {
-								prNum = fmt.Sprintf("#%d", int(n))
-							}
-							prState := fmt.Sprintf("%v", prMap["state"])
-							prURL := fmt.Sprintf("%v", prMap["url"])
-							prTitle := fmt.Sprintf("%v", prMap["title"])
-
-							stateColor := color.New(color.FgGreen)
-							switch prState {
-							case "MERGED":
-								stateColor = color.New(color.FgMagenta)
-							case "CLOSED":
-								stateColor = color.New(color.FgRed)
-							}
-							fmt.Printf("PR %-6s  %s  %s\n", prNum, stateColor.Sprint(prState), color.New(color.Faint).Sprint(prURL))
-							fmt.Printf("  %q\n", prTitle)
-						}
+			// Show linked code context if present
+			if pr := extractPRFromItem(item); pr != nil {
+				fmt.Println("\n--- GitHub PR ---")
+				prNum := ""
+				if pr.Number > 0 {
+					prNum = fmt.Sprintf("#%d", pr.Number)
+				}
+				stateColor := prStateColor(pr.State)
+				fmt.Printf("PR %-6s  %s  %s\n", prNum, stateColor.Sprint(pr.State), color.New(color.Faint).Sprint(pr.URL))
+				fmt.Printf("  %q\n", pr.Title)
+				if item.CodeContext != nil {
+					if item.CodeContext.Branch != "" {
+						fmt.Printf("Branch: %s\n", color.New(color.Faint).Sprint(item.CodeContext.Branch))
+					}
+					if item.CodeContext.Repo != "" {
+						fmt.Printf("Repo:   %s\n", color.New(color.Faint).Sprint(item.CodeContext.Repo))
 					}
 				}
 			}
@@ -4740,7 +4731,7 @@ Examples:
 				}
 				var results []prStatus
 				for _, item := range items {
-					pr := extractPRFromFields(item.Fields)
+					pr := extractPRFromItem(&item)
 					if pr != nil {
 						results = append(results, prStatus{
 							Ref:   cli.ItemRef(item),
@@ -4760,7 +4751,7 @@ Examples:
 
 			count := 0
 			for _, item := range items {
-				pr := extractPRFromFields(item.Fields)
+				pr := extractPRFromItem(&item)
 				if pr == nil {
 					continue
 				}
@@ -4838,7 +4829,7 @@ func githubUnlinkCmd() *cobra.Command {
 // Helper functions for GitHub integration
 
 func showItemPRStatus(item *models.Item, bold, dim *color.Color) error {
-	pr := extractPRFromFields(item.Fields)
+	pr := extractPRFromItem(item)
 	if pr == nil {
 		return fmt.Errorf("item %q has no linked PR", item.Slug)
 	}
@@ -4862,31 +4853,20 @@ func showItemPRStatus(item *models.Item, bold, dim *color.Color) error {
 	return nil
 }
 
-func extractPRFromFields(fieldsJSON string) *GitHubPR {
-	if fieldsJSON == "" || fieldsJSON == "{}" {
+func extractPRFromItem(item *models.Item) *GitHubPR {
+	if item == nil || item.CodeContext == nil || item.CodeContext.PullRequest == nil {
 		return nil
 	}
-	var fieldsMap map[string]interface{}
-	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
-		return nil
+	pr := item.CodeContext.PullRequest
+	return &GitHubPR{
+		Number:    pr.Number,
+		URL:       pr.URL,
+		Title:     pr.Title,
+		State:     pr.State,
+		Branch:    item.CodeContext.Branch,
+		Repo:      item.CodeContext.Repo,
+		UpdatedAt: pr.UpdatedAt,
 	}
-	prRaw, ok := fieldsMap["github_pr"]
-	if !ok {
-		return nil
-	}
-	// Re-marshal and unmarshal to properly extract the struct
-	prJSON, err := json.Marshal(prRaw)
-	if err != nil {
-		return nil
-	}
-	var pr GitHubPR
-	if err := json.Unmarshal(prJSON, &pr); err != nil {
-		return nil
-	}
-	if pr.Number == 0 {
-		return nil
-	}
-	return &pr
 }
 
 func prStateColor(state string) *color.Color {

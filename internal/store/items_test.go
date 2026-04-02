@@ -312,6 +312,62 @@ func TestItemCRUD(t *testing.T) {
 	}
 }
 
+func TestItemCodeContextIsHydratedOnRead(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Link PR",
+		Fields: `{"status":"open","github_pr":{"number":7,"url":"https://github.com/xarmian/pad/pull/7","title":"Link PR","state":"OPEN","branch":"feat/link-pr","repo":"xarmian/pad","updated_at":"2026-04-02T14:00:00Z"}}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem error: %v", err)
+	}
+
+	got, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem error: %v", err)
+	}
+	if got == nil || got.CodeContext == nil {
+		t.Fatal("expected code context on item read")
+	}
+	if got.CodeContext.Branch != "feat/link-pr" {
+		t.Fatalf("expected branch feat/link-pr, got %q", got.CodeContext.Branch)
+	}
+	if got.CodeContext.PullRequest == nil || got.CodeContext.PullRequest.Number != 7 {
+		t.Fatalf("expected PR #7, got %#v", got.CodeContext.PullRequest)
+	}
+}
+
+func TestListItemsIncludesCodeContext(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Linked Item",
+		Fields: `{"status":"open","github_pr":{"number":9,"url":"https://github.com/xarmian/pad/pull/9","title":"Linked Item","state":"MERGED","branch":"feat/linked-item","repo":"xarmian/pad","updated_at":"2026-04-02T14:10:00Z"}}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem error: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].CodeContext == nil {
+		t.Fatal("expected list items to include code context")
+	}
+	if items[0].CodeContext.PullRequest == nil || items[0].CodeContext.PullRequest.State != "MERGED" {
+		t.Fatalf("expected merged PR metadata, got %#v", items[0].CodeContext.PullRequest)
+	}
+}
+
 func TestItemListByCollection(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

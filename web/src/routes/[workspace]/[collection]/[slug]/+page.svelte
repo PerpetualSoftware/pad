@@ -77,6 +77,7 @@
 	let itemLinks = $state<ItemLink[]>([]);
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks) : []);
 	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
+	let codeContext = $derived(item?.code_context ?? null);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -494,6 +495,36 @@
 			{/if}
 		</div>
 
+		{#if codeContext}
+			<div class="code-context-section">
+				<h3 class="section-title">Code Context</h3>
+				<div class="code-context-card">
+					<div class="code-context-meta">
+						<span class="code-provider">{formatFieldDisplay(codeContext.provider)}</span>
+						{#if codeContext.repo}
+							<span class="code-chip">{codeContext.repo}</span>
+						{/if}
+						{#if codeContext.branch}
+							<span class="code-chip">{codeContext.branch}</span>
+						{/if}
+					</div>
+					{#if codeContext.pull_request}
+						<div class="code-pr-row">
+							<a href={codeContext.pull_request.url} class="code-pr-link" target="_blank" rel="noreferrer">
+								PR #{codeContext.pull_request.number}: {codeContext.pull_request.title}
+							</a>
+							<span class="code-pr-state">{formatFieldDisplay(codeContext.pull_request.state)}</span>
+						</div>
+						{#if codeContext.pull_request.updated_at}
+							<div class="code-pr-updated">
+								Updated {relativeTime(codeContext.pull_request.updated_at)}
+							</div>
+						{/if}
+					{/if}
+				</div>
+			</div>
+		{/if}
+
 		<!-- Layout wrapper -->
 		<div class="item-body layout-{layout}">
 			<!-- Fields -->
@@ -902,6 +933,69 @@
 		background: var(--bg-secondary);
 		color: var(--text-primary);
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+	}
+
+	/* Code context */
+	.code-context-section {
+		margin-bottom: var(--space-6);
+	}
+	.code-context-card {
+		padding: var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.code-context-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		align-items: center;
+	}
+	.code-provider {
+		font-size: 0.8em;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--accent-blue);
+	}
+	.code-chip {
+		font-family: var(--font-mono);
+		font-size: 0.8em;
+		color: var(--text-secondary);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 999px;
+	}
+	.code-pr-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+	}
+	.code-pr-link {
+		font-weight: 600;
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+	.code-pr-link:hover {
+		color: var(--accent-blue);
+		text-decoration: underline;
+	}
+	.code-pr-state {
+		font-size: 0.75em;
+		font-weight: 600;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 999px;
+	}
+	.code-pr-updated {
+		font-size: 0.8em;
+		color: var(--text-muted);
 	}
 
 	/* Derived closure */
