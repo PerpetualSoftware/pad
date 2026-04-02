@@ -659,6 +659,44 @@ func TestGetItemIncludesCodeContext(t *testing.T) {
 	}
 }
 
+func TestGetItemIncludesStructuredNotes(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Capture reasoning",
+		"fields": `{"status":"open"}`,
+	})
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	fields := `{"status":"open","implementation_notes":[{"id":"note-1","summary":"Add typed item metadata","details":"Expose the new arrays as top-level API fields","created_at":"2026-04-02T16:30:00Z","created_by":"agent"}],"decision_log":[{"id":"decision-1","decision":"Store notes in reserved field keys","rationale":"This keeps the first cut backward-compatible","created_at":"2026-04-02T16:35:00Z","created_by":"agent"}]}`
+	updated, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields})
+	if err != nil {
+		t.Fatalf("update item fields: %v", err)
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+updated.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if len(fetched.ImplementationNotes) != 1 {
+		t.Fatalf("expected 1 implementation note, got %#v", fetched.ImplementationNotes)
+	}
+	if fetched.ImplementationNotes[0].Summary != "Add typed item metadata" {
+		t.Fatalf("expected implementation note summary, got %q", fetched.ImplementationNotes[0].Summary)
+	}
+	if len(fetched.DecisionLog) != 1 {
+		t.Fatalf("expected 1 decision log entry, got %#v", fetched.DecisionLog)
+	}
+	if fetched.DecisionLog[0].Decision != "Store notes in reserved field keys" {
+		t.Fatalf("expected decision log entry, got %q", fetched.DecisionLog[0].Decision)
+	}
+}
+
 func TestItemVersions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

@@ -107,6 +107,8 @@ func main() {
 		libraryCmd(),
 		commentCmd(),
 		commentsCmd(),
+		noteCmd(),
+		decideCmd(),
 		blocksCmd(),
 		blockedByCmd(),
 		splitFromCmd(),
@@ -2024,7 +2026,7 @@ func showCmd() *cobra.Command {
 				var fields map[string]interface{}
 				if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
-						if k == "github_pr" {
+						if k == models.ItemFieldGitHubPR || k == models.ItemFieldImplementationNotes || k == models.ItemFieldDecisionLog {
 							continue // shown in dedicated section below
 						}
 						fmt.Printf("%-12s %v\n", k+":", v)
@@ -2054,6 +2056,20 @@ func showCmd() *cobra.Command {
 					if item.CodeContext.Repo != "" {
 						fmt.Printf("Repo:   %s\n", color.New(color.Faint).Sprint(item.CodeContext.Repo))
 					}
+				}
+			}
+
+			if len(item.ImplementationNotes) > 0 {
+				fmt.Println("\n--- Implementation Notes ---")
+				for _, note := range item.ImplementationNotes {
+					printStructuredTimelineEntry(note.CreatedAt, note.CreatedBy, note.Summary, note.Details)
+				}
+			}
+
+			if len(item.DecisionLog) > 0 {
+				fmt.Println("\n--- Decision Log ---")
+				for _, decision := range item.DecisionLog {
+					printStructuredTimelineEntry(decision.CreatedAt, decision.CreatedBy, decision.Decision, decision.Rationale)
 				}
 			}
 

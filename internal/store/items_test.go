@@ -368,6 +368,37 @@ func TestListItemsIncludesCodeContext(t *testing.T) {
 	}
 }
 
+func TestItemStructuredMetadataIsHydratedOnRead(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Capture reasoning",
+		Fields: `{"status":"open","implementation_notes":[{"id":"note-1","summary":"Added typed metadata","details":"Surface it on item responses","created_at":"2026-04-02T16:00:00Z","created_by":"agent"}],"decision_log":[{"id":"decision-1","decision":"Store notes in reserved field keys","rationale":"Avoid a new table for this first cut","created_at":"2026-04-02T16:05:00Z","created_by":"agent"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem error: %v", err)
+	}
+
+	got, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem error: %v", err)
+	}
+	if len(got.ImplementationNotes) != 1 {
+		t.Fatalf("expected 1 implementation note, got %#v", got.ImplementationNotes)
+	}
+	if got.ImplementationNotes[0].Summary != "Added typed metadata" {
+		t.Fatalf("expected implementation note summary, got %q", got.ImplementationNotes[0].Summary)
+	}
+	if len(got.DecisionLog) != 1 {
+		t.Fatalf("expected 1 decision log entry, got %#v", got.DecisionLog)
+	}
+	if got.DecisionLog[0].Decision != "Store notes in reserved field keys" {
+		t.Fatalf("expected decision log entry, got %q", got.DecisionLog[0].Decision)
+	}
+}
+
 func TestItemListByCollection(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
