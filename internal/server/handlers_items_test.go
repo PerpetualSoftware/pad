@@ -474,6 +474,156 @@ func TestItemLinks(t *testing.T) {
 	}
 }
 
+func TestGetItemIncludesDerivedClosureForSupersededItems(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Replacement Task",
+		"fields": `{"status":"done"}`,
+	})
+	var replacement models.Item
+	parseJSON(t, rr, &replacement)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Legacy Task",
+		"fields": `{"status":"open"}`,
+	})
+	var legacy models.Item
+	parseJSON(t, rr, &legacy)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+replacement.Slug+"/links", map[string]interface{}{
+		"target_id": legacy.ID,
+		"link_type": models.ItemLinkTypeSupersedes,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create supersedes link: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+legacy.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get legacy item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.DerivedClosure == nil {
+		t.Fatal("expected derived closure for superseded item")
+	}
+	if fetched.DerivedClosure.Kind != "superseded_by" {
+		t.Fatalf("expected superseded_by closure, got %q", fetched.DerivedClosure.Kind)
+	}
+	if !fetched.DerivedClosure.IsClosed {
+		t.Fatal("expected derived closure to mark item closed")
+	}
+	if len(fetched.DerivedClosure.RelatedItems) != 1 {
+		t.Fatalf("expected 1 related item, got %d", len(fetched.DerivedClosure.RelatedItems))
+	}
+	if fetched.DerivedClosure.RelatedItems[0].Ref != "TASK-1" {
+		t.Fatalf("expected related ref TASK-1, got %q", fetched.DerivedClosure.RelatedItems[0].Ref)
+	}
+}
+
+func TestGetItemIncludesDerivedClosureWhenSplitChildrenAreDone(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Parent Task",
+		"fields": `{"status":"open"}`,
+	})
+	var parent models.Item
+	parseJSON(t, rr, &parent)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child One",
+		"fields": `{"status":"done"}`,
+	})
+	var childOne models.Item
+	parseJSON(t, rr, &childOne)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child Two",
+		"fields": `{"status":"done"}`,
+	})
+	var childTwo models.Item
+	parseJSON(t, rr, &childTwo)
+
+	for _, child := range []models.Item{childOne, childTwo} {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+child.Slug+"/links", map[string]interface{}{
+			"target_id": parent.ID,
+			"link_type": models.ItemLinkTypeSplitFrom,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create split_from link for %s: expected 201, got %d: %s", child.Title, rr.Code, rr.Body.String())
+		}
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+parent.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get parent item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.DerivedClosure == nil {
+		t.Fatal("expected derived closure for split parent")
+	}
+	if fetched.DerivedClosure.Kind != "split_into" {
+		t.Fatalf("expected split_into closure, got %q", fetched.DerivedClosure.Kind)
+	}
+	if len(fetched.DerivedClosure.RelatedItems) != 2 {
+		t.Fatalf("expected 2 related split children, got %d", len(fetched.DerivedClosure.RelatedItems))
+	}
+}
+
+func TestGetItemIncludesDerivedClosureForImplementedItems(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Implementation Task",
+		"fields": `{"status":"done"}`,
+	})
+	var implementer models.Item
+	parseJSON(t, rr, &implementer)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/ideas/items", map[string]interface{}{
+		"title":  "Search UX Idea",
+		"fields": `{"status":"planned"}`,
+	})
+	var idea models.Item
+	parseJSON(t, rr, &idea)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+implementer.Slug+"/links", map[string]interface{}{
+		"target_id": idea.ID,
+		"link_type": models.ItemLinkTypeImplements,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create implements link: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+idea.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get implemented item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.DerivedClosure == nil {
+		t.Fatal("expected derived closure for implemented item")
+	}
+	if fetched.DerivedClosure.Kind != "implemented_by" {
+		t.Fatalf("expected implemented_by closure, got %q", fetched.DerivedClosure.Kind)
+	}
+	if len(fetched.DerivedClosure.RelatedItems) != 1 {
+		t.Fatalf("expected 1 implementing item, got %d", len(fetched.DerivedClosure.RelatedItems))
+	}
+	if fetched.DerivedClosure.RelatedItems[0].CollectionSlug != "tasks" {
+		t.Fatalf("expected implementing item collection slug tasks, got %q", fetched.DerivedClosure.RelatedItems[0].CollectionSlug)
+	}
+}
+
 func TestItemVersions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

@@ -2065,19 +2065,19 @@ func showCmd() *cobra.Command {
 				}
 			}
 
-			// Show dependencies (blocks / blocked by)
+			// Show dependencies and lineage relationships
 			links, err := client.GetItemLinks(ws, item.Slug)
 			if err == nil && len(links) > 0 {
 				var blocks []string
 				var blockedBy []string
 				for _, link := range links {
-					if link.LinkType != "blocks" {
+					if link.LinkType != models.ItemLinkTypeBlocks {
 						continue
 					}
 					if link.SourceID == item.ID {
-						blocks = append(blocks, link.TargetTitle)
+						blocks = append(blocks, linkEndpointDisplay(link, false))
 					} else if link.TargetID == item.ID {
-						blockedBy = append(blockedBy, link.SourceTitle)
+						blockedBy = append(blockedBy, linkEndpointDisplay(link, true))
 					}
 				}
 				if len(blocks) > 0 || len(blockedBy) > 0 {
@@ -2089,6 +2089,19 @@ func showCmd() *cobra.Command {
 						fmt.Printf("%s %s\n", color.New(color.FgRed, color.Bold).Sprint("Blocked by:"), strings.Join(blockedBy, ", "))
 					}
 				}
+
+				lineageSections := buildLineageSections(item, links)
+				if len(lineageSections) > 0 {
+					fmt.Println("\n--- Lineage ---")
+					for _, section := range lineageSections {
+						fmt.Printf("%s %s\n", color.New(color.FgCyan, color.Bold).Sprint(section.Title+":"), strings.Join(section.Entries, ", "))
+					}
+				}
+			}
+
+			if item.DerivedClosure != nil {
+				fmt.Println("\n--- Derived Closure ---")
+				fmt.Println(item.DerivedClosure.Summary)
 			}
 
 			// Show recent comments

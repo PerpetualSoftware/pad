@@ -135,6 +135,22 @@ export interface CollectionUpdate {
 
 // ─── Items ───────────────────────────────────────────────────────────────────
 
+export interface ItemRelationRef {
+	id: string;
+	slug?: string;
+	ref?: string;
+	title: string;
+	collection_slug?: string;
+	status?: string;
+}
+
+export interface ItemDerivedClosure {
+	is_closed: boolean;
+	kind: string;
+	summary: string;
+	related_items?: ItemRelationRef[];
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -157,6 +173,7 @@ export interface Item {
 	collection_icon?: string;
 	collection_prefix?: string;
 	item_number?: number;
+	derived_closure?: ItemDerivedClosure;
 }
 
 export interface ItemCreate {
@@ -207,6 +224,14 @@ export interface ItemLink {
 	created_at: string;
 	source_title?: string;
 	target_title?: string;
+	source_slug?: string;
+	target_slug?: string;
+	source_ref?: string;
+	target_ref?: string;
+	source_collection_slug?: string;
+	target_collection_slug?: string;
+	source_status?: string;
+	target_status?: string;
 }
 
 export interface ItemLinkCreate {
