@@ -15,15 +15,17 @@ type Workspace struct {
 }
 
 type WorkspaceCreate struct {
-	Name        string `json:"name"`
-	Slug        string `json:"slug,omitempty"` // auto-generated if empty
-	Description string `json:"description,omitempty"`
-	Settings    string `json:"settings,omitempty"`
-	Template    string `json:"template,omitempty"` // workspace template name (e.g. "startup", "scrum", "product")
+	Name        string            `json:"name"`
+	Slug        string            `json:"slug,omitempty"` // auto-generated if empty
+	Description string            `json:"description,omitempty"`
+	Settings    string            `json:"settings,omitempty"`
+	Context     *WorkspaceContext `json:"context,omitempty"`
+	Template    string            `json:"template,omitempty"` // workspace template name (e.g. "startup", "scrum", "product")
 }
 
 type WorkspaceUpdate struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Settings    *string `json:"settings,omitempty"`
+	Name        *string           `json:"name,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Settings    *string           `json:"settings,omitempty"`
+	Context     *WorkspaceContext `json:"context,omitempty"`
 }

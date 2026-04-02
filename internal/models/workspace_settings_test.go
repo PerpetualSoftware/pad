@@ -66,6 +66,35 @@ func TestSerializeWorkspaceSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestApplyWorkspaceContextPreservesUnknownSettings(t *testing.T) {
+	raw, err := ApplyWorkspaceContext(`{"theme":"dark","context":{"assumptions":["old"]}}`, &WorkspaceContext{
+		Assumptions: []string{"new"},
+		Commands:    &WorkspaceCommands{Build: "make install"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyWorkspaceContext error: %v", err)
+	}
+
+	settingsMap, err := parseWorkspaceSettingsMap(raw)
+	if err != nil {
+		t.Fatalf("parseWorkspaceSettingsMap error: %v", err)
+	}
+	if settingsMap["theme"] != "dark" {
+		t.Fatalf("expected unknown settings to be preserved, got %#v", settingsMap)
+	}
+
+	context := ExtractWorkspaceContext(raw)
+	if context == nil || context.Commands == nil || context.Commands.Build != "make install" {
+		t.Fatalf("expected context update to apply, got %#v", context)
+	}
+}
+
+func TestNormalizeWorkspaceSettingsRejectsInvalidJSON(t *testing.T) {
+	if _, err := NormalizeWorkspaceSettings(`{"context":`); err == nil {
+		t.Fatal("expected invalid JSON to fail normalization")
+	}
+}
+
 func TestExtractWorkspaceContextIgnoresInvalidSettings(t *testing.T) {
 	if got := ExtractWorkspaceContext(`{"context":`); got != nil {
 		t.Fatalf("expected invalid settings to return nil context, got %#v", got)

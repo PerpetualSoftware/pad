@@ -41,6 +41,7 @@ func workspaceCmd() *cobra.Command {
 		linkCmd(),
 		switchCmd(),
 		workspacesCmd(),
+		workspaceContextCmd(),
 		onboardCmd(),
 		membersCmd(),
 		inviteCmd(),

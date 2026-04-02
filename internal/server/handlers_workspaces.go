@@ -11,6 +11,53 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
+func normalizeWorkspaceInput(input *models.WorkspaceCreate) error {
+	if input == nil {
+		return nil
+	}
+
+	settings, err := models.NormalizeWorkspaceSettings(input.Settings)
+	if err != nil {
+		return fmt.Errorf("invalid settings JSON: %w", err)
+	}
+	if input.Context != nil {
+		settings, err = models.ApplyWorkspaceContext(settings, input.Context)
+		if err != nil {
+			return fmt.Errorf("invalid workspace context: %w", err)
+		}
+	}
+	input.Settings = settings
+	return nil
+}
+
+func normalizeWorkspaceUpdateInput(input *models.WorkspaceUpdate) error {
+	if input == nil {
+		return nil
+	}
+
+	if input.Settings != nil {
+		settings, err := models.NormalizeWorkspaceSettings(*input.Settings)
+		if err != nil {
+			return fmt.Errorf("invalid settings JSON: %w", err)
+		}
+		input.Settings = &settings
+	}
+
+	if input.Context != nil {
+		base := "{}"
+		if input.Settings != nil {
+			base = *input.Settings
+		}
+		settings, err := models.ApplyWorkspaceContext(base, input.Context)
+		if err != nil {
+			return fmt.Errorf("invalid workspace context: %w", err)
+		}
+		input.Settings = &settings
+	}
+
+	return nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{"status": "ok"}
 	if s.version != "" {
@@ -87,6 +134,10 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Name is required")
 		return
 	}
+	if err := normalizeWorkspaceInput(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 
 	ws, err := s.store.CreateWorkspace(input)
 	if err != nil {
@@ -127,6 +178,10 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	var input models.WorkspaceUpdate
 	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := normalizeWorkspaceUpdateInput(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

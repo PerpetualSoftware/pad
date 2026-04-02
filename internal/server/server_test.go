@@ -87,6 +87,9 @@ func TestWorkspaceEndpoints(t *testing.T) {
 	if ws.Slug != "my-project" {
 		t.Errorf("expected slug 'my-project', got %q", ws.Slug)
 	}
+	if ws.Context != nil {
+		t.Fatalf("did not expect structured context on a default workspace, got %#v", ws.Context)
+	}
 
 	// List
 	rr = doRequest(srv, "GET", "/api/v1/workspaces", nil)
@@ -140,6 +143,68 @@ func TestWorkspaceValidation(t *testing.T) {
 	rr = doRequest(srv, "GET", "/api/v1/workspaces/nonexistent", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rr.Code)
+	}
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces", map[string]interface{}{
+		"name":     "Bad Settings",
+		"settings": `{"context":`,
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid settings JSON, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWorkspaceContextAPI(t *testing.T) {
+	srv := testServer(t)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]interface{}{
+		"name": "Contextual",
+		"context": map[string]interface{}{
+			"repositories": []map[string]string{
+				{"name": "docapp", "role": "primary", "path": ".", "repo": "xarmian/pad"},
+			},
+			"commands": map[string]string{
+				"build": "make install",
+				"test":  "go test ./...",
+			},
+			"deployment": map[string]string{
+				"mode":     "local",
+				"base_url": "http://127.0.0.1:7777",
+			},
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace with context: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+	if ws.Context == nil || ws.Context.Commands == nil {
+		t.Fatalf("expected workspace context in create response, got %#v", ws.Context)
+	}
+	if ws.Context.Commands.Build != "make install" {
+		t.Fatalf("expected build command in context, got %#v", ws.Context.Commands)
+	}
+
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/contextual", map[string]interface{}{
+		"context": map[string]interface{}{
+			"assumptions": []string{"pad-web lives at ../pad-web"},
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update workspace context: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var updated models.Workspace
+	parseJSON(t, rr, &updated)
+	if updated.Context == nil {
+		t.Fatal("expected context after update")
+	}
+	if len(updated.Context.Assumptions) != 1 {
+		t.Fatalf("expected assumptions after update, got %#v", updated.Context.Assumptions)
+	}
+	if updated.Context.Commands != nil {
+		t.Fatalf("expected context replacement semantics on update, got %#v", updated.Context.Commands)
 	}
 }
 
