@@ -388,6 +388,17 @@ func (c *Client) Register(email, name, password string) (*LoginResponse, error) 
 	return &result, err
 }
 
+// Bootstrap creates the first admin account on a fresh instance.
+func (c *Client) Bootstrap(email, name, password string) (*LoginResponse, error) {
+	var result LoginResponse
+	err := c.post("/auth/bootstrap", map[string]string{
+		"email":    email,
+		"name":     name,
+		"password": password,
+	}, &result)
+	return &result, err
+}
+
 // Logout destroys the current session.
 func (c *Client) Logout() error {
 	return c.post("/auth/logout", nil, nil)

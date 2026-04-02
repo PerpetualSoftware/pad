@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -16,12 +17,11 @@ const (
 	webSessionTTL = 7 * 24 * time.Hour  // 7 days for web sessions
 	cliSessionTTL = 30 * 24 * time.Hour // 30 days for CLI tokens
 
-	authMethodPassword      = "password"
-	authMethodCloud         = "cloud"
-	setupMethodOpenRegister = "open_register"
-	setupMethodLocalCLI     = "local_cli"
-	setupMethodDockerExec   = "docker_exec"
-	setupMethodCloud        = "cloud"
+	authMethodPassword    = "password"
+	authMethodCloud       = "cloud"
+	setupMethodLocalCLI   = "local_cli"
+	setupMethodDockerExec = "docker_exec"
+	setupMethodCloud      = "cloud"
 )
 
 var emailRegexp = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -59,11 +59,114 @@ func sessionStatePayload(authenticated bool, user *models.User) map[string]inter
 	return payload
 }
 
+func requestIsLoopback(r *http.Request) bool {
+	host := r.RemoteAddr
+	if parsedHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsedHost
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func (s *Server) createAuthSession(w http.ResponseWriter, user *models.User, ttl time.Duration) (string, error) {
+	token, err := s.store.CreateSession(user.ID, "web", ttl)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
+		return "", err
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	return token, nil
+}
+
+// handleBootstrap creates the first admin account for a fresh instance.
+// It is only allowed from loopback-local requests so setup must happen
+// on the server host or from inside the container.
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if !requestIsLoopback(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost on the server host")
+		return
+	}
+
+	var input struct {
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	input.Email = strings.TrimSpace(input.Email)
+	input.Name = strings.TrimSpace(input.Name)
+
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+		writeError(w, http.StatusBadRequest, "validation_error", "Valid email is required")
+		return
+	}
+	if input.Name == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
+		return
+	}
+	if len(input.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+		return
+	}
+
+	count, err := s.store.UserCount()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
+		return
+	}
+	if count > 0 {
+		writeError(w, http.StatusConflict, "conflict", "This Pad instance has already been initialized")
+		return
+	}
+
+	existing, err := s.store.GetUserByEmail(input.Email)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check email")
+		return
+	}
+	if existing != nil {
+		writeError(w, http.StatusConflict, "conflict", "A user with this email already exists")
+		return
+	}
+
+	user, err := s.store.CreateUser(models.UserCreate{
+		Email:    input.Email,
+		Name:     input.Name,
+		Password: input.Password,
+		Role:     "admin",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
+		return
+	}
+
+	token, err := s.createAuthSession(w, user, cliSessionTTL)
+	if err != nil {
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"user":  sessionUserPayload(user),
+		"token": token,
+	})
+}
+
 // handleRegister creates a new user account.
-// When no users exist, anyone can register (first user becomes admin).
-// When users exist, registration is restricted to admins or users with a
-// valid invitation code (so that invitees can create an account via the
-// /join/[code] flow).
+// Registration is restricted to admins or users with a valid invitation code
+// so invitees can create an account via the /join/[code] flow.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Email          string `json:"email"`
@@ -94,7 +197,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is the first user (becomes admin)
 	count, err := s.store.UserCount()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
@@ -117,19 +219,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		invitation = inv
 	}
 
-	role := "member"
 	if count == 0 {
-		role = "admin"
-	} else {
-		// When users exist, allow registration if:
-		// 1. The requester is an admin, OR
-		// 2. A valid invitation code was provided
-		if invitation == nil {
-			reqUser := currentUser(r)
-			if reqUser == nil || reqUser.Role != "admin" {
-				writeError(w, http.StatusForbidden, "forbidden", "Registration is restricted")
-				return
-			}
+		writeError(w, http.StatusForbidden, "forbidden", "This Pad instance must be initialized with pad setup")
+		return
+	}
+
+	// When users exist, allow registration if:
+	// 1. The requester is an admin, OR
+	// 2. A valid invitation code was provided
+	if invitation == nil {
+		reqUser := currentUser(r)
+		if reqUser == nil || reqUser.Role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden", "Registration is restricted")
+			return
 		}
 	}
 
@@ -149,7 +251,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Email:    input.Email,
 		Name:     input.Name,
 		Password: input.Password,
-		Role:     role,
+		Role:     "member",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
@@ -163,29 +265,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AcceptInvitation(invitation.ID)
 	}
 
-	// Create session and set cookie
-	token, err := s.store.CreateSession(user.ID, "web", webSessionTTL)
+	token, err := s.createAuthSession(w, user, webSessionTTL)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(webSessionTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"user": map[string]interface{}{
-			"id":    user.ID,
-			"email": user.Email,
-			"name":  user.Name,
-			"role":  user.Role,
-		},
+		"user":  sessionUserPayload(user),
 		"token": token,
 	})
 }
@@ -199,7 +285,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if count == 0 {
-		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodOpenRegister))
+		writeError(w, http.StatusConflict, "setup_required", "This Pad instance must be initialized with pad setup")
 		return
 	}
 
@@ -224,21 +310,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create session
-	token, err := s.store.CreateSession(user.ID, "web", webSessionTTL)
+	token, err := s.createAuthSession(w, user, webSessionTTL)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return
 	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(webSessionTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user":  sessionUserPayload(user),
@@ -257,7 +332,7 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 
 	// No users → needs setup (first-time experience)
 	if count == 0 {
-		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodOpenRegister))
+		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodLocalCLI))
 		return
 	}
 

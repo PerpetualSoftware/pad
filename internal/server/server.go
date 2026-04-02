@@ -120,6 +120,7 @@ func (s *Server) setupRouter() {
 		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {
 			r.Get("/session", s.handleSessionCheck)
+			r.Post("/bootstrap", s.handleBootstrap)
 			r.Post("/register", s.handleRegister)
 			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)

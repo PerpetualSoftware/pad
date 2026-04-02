@@ -96,7 +96,7 @@
 			<a href="/forgot-password">Forgot password?</a>
 		</p>
 		<p class="register-link">
-			First time? <a href="/register">Create an account</a>
+			Need an account? Ask your admin for an invitation link.
 		</p>
 	</div>
 </div>

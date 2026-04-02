@@ -7,90 +7,91 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
-func TestAuthRegistrationFlow(t *testing.T) {
+func bootstrapFirstUser(t *testing.T, srv *Server, email, name string) string {
+	t.Helper()
+
+	rr := doLoopbackRequest(srv, "POST", "/api/v1/auth/bootstrap", map[string]string{
+		"email":    email,
+		"name":     name,
+		"password": "password123",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("bootstrap: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	parseJSON(t, rr, &resp)
+	token, _ := resp["token"].(string)
+	if token == "" {
+		t.Fatal("expected bootstrap to return a session token")
+	}
+	return token
+}
+
+func TestAuthBootstrapFlow(t *testing.T) {
 	srv := testServer(t)
 
-	// Session check before any users — should indicate explicit setup state
 	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("session check: expected 200, got %d", rr.Code)
 	}
+
 	var session map[string]interface{}
 	parseJSON(t, rr, &session)
 	if session["setup_required"] != true {
 		t.Error("expected setup_required=true when no users exist")
 	}
-	if session["authenticated"] != false {
-		t.Error("expected authenticated=false when no users exist")
-	}
-	if session["setup_method"] != "open_register" {
-		t.Errorf("expected setup_method=open_register, got %v", session["setup_method"])
-	}
-	if session["auth_method"] != "password" {
-		t.Errorf("expected auth_method=password, got %v", session["auth_method"])
+	if session["setup_method"] != "local_cli" {
+		t.Errorf("expected setup_method=local_cli, got %v", session["setup_method"])
 	}
 	if _, ok := session["needs_setup"]; ok {
 		t.Error("did not expect deprecated needs_setup field")
 	}
 
-	// Register first user — should become admin
-	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+	token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/auth/session", nil, token)
+	parseJSON(t, rr, &session)
+	if session["authenticated"] != true {
+		t.Error("expected authenticated=true after bootstrap")
+	}
+	authUser, ok := session["user"].(map[string]interface{})
+	if !ok || authUser == nil {
+		t.Error("expected authenticated session user payload")
+	} else {
+		if authUser["email"] != "admin@test.com" {
+			t.Errorf("expected email admin@test.com, got %v", authUser["email"])
+		}
+		if authUser["role"] != "admin" {
+			t.Errorf("expected admin role after bootstrap, got %v", authUser["role"])
+		}
+	}
+	if session["setup_required"] != false {
+		t.Errorf("expected setup_required=false after bootstrap, got %v", session["setup_required"])
+	}
+}
+
+func TestAuthBootstrapRequiresLoopback(t *testing.T) {
+	srv := testServer(t)
+
+	rr := doRequest(srv, "POST", "/api/v1/auth/bootstrap", map[string]string{
 		"email":    "admin@test.com",
 		"name":     "Admin",
 		"password": "password123",
 	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("register: expected 201, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	var regResp map[string]interface{}
-	parseJSON(t, rr, &regResp)
-	user := regResp["user"].(map[string]interface{})
-	if user["role"] != "admin" {
-		t.Errorf("first user should be admin, got %v", user["role"])
-	}
-	if user["email"] != "admin@test.com" {
-		t.Errorf("expected email admin@test.com, got %v", user["email"])
-	}
-	token := regResp["token"].(string)
-	if token == "" {
-		t.Error("expected non-empty token")
-	}
-
-	// Session check after registration — should be authenticated (cookie set)
-	// Use the token from registration response via cookie
-	rr = doRequestWithCookie(srv, "GET", "/api/v1/auth/session", nil, token)
-	parseJSON(t, rr, &session)
-	if session["authenticated"] != true {
-		t.Error("expected authenticated=true after registration")
-	}
-	authUser, ok := session["user"].(map[string]interface{})
-	if !ok || authUser == nil {
-		t.Error("expected user object in authenticated session response")
-	} else if authUser["email"] != "admin@test.com" {
-		t.Errorf("expected email admin@test.com in session user, got %v", authUser["email"])
-	}
-	if session["setup_required"] != false {
-		t.Errorf("expected setup_required=false after registration, got %v", session["setup_required"])
-	}
-	if session["auth_method"] != "password" {
-		t.Errorf("expected auth_method=password after registration, got %v", session["auth_method"])
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("remote bootstrap: expected 403, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
 func TestAuthLoginFlow(t *testing.T) {
 	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "user@test.com", "Test User")
 
-	// Register a user first
-	doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
-		"email":    "user@test.com",
-		"name":     "Test User",
-		"password": "password123",
-	})
-
-	// Login with correct credentials
 	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "user@test.com",
 		"password": "password123",
@@ -106,7 +107,6 @@ func TestAuthLoginFlow(t *testing.T) {
 		t.Errorf("expected name 'Test User', got %v", user["name"])
 	}
 
-	// Login with wrong password
 	rr = doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "user@test.com",
 		"password": "wrongpassword",
@@ -115,7 +115,6 @@ func TestAuthLoginFlow(t *testing.T) {
 		t.Errorf("wrong password: expected 401, got %d", rr.Code)
 	}
 
-	// Login with non-existent email
 	rr = doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "nobody@test.com",
 		"password": "anything",
@@ -125,37 +124,89 @@ func TestAuthLoginFlow(t *testing.T) {
 	}
 }
 
-func TestAuthLoginReturnsExplicitSetupStateWhenNoUsers(t *testing.T) {
+func TestAuthLoginRequiresSetupWhenNoUsers(t *testing.T) {
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "nobody@test.com",
 		"password": "password123",
 	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("login without users: expected 200, got %d", rr.Code)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("login without users: expected 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestFreshInstanceRegistrationIsForbidden(t *testing.T) {
+	srv := testServer(t)
+
+	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email":    "admin@test.com",
+		"name":     "Admin",
+		"password": "password123",
+	})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("fresh registration: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestInvitationRegistrationFlow(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Test"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	admin, err := srv.store.GetUserByEmail("admin@test.com")
+	if err != nil || admin == nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "owner"); err != nil {
+		t.Fatalf("add admin workspace membership: %v", err)
+	}
+	inv, err := srv.store.CreateInvitation(ws.ID, "invitee@test.com", "viewer", admin.ID)
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email":           "invitee@test.com",
+		"name":            "Invitee",
+		"password":        "password123",
+		"invitation_code": inv.Code,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("invitation registration: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp map[string]interface{}
 	parseJSON(t, rr, &resp)
-	if resp["setup_required"] != true {
-		t.Errorf("expected setup_required=true, got %v", resp["setup_required"])
+	user := resp["user"].(map[string]interface{})
+	if user["role"] != "member" {
+		t.Errorf("expected invitation signup to create member role, got %v", user["role"])
 	}
-	if resp["setup_method"] != "open_register" {
-		t.Errorf("expected setup_method=open_register, got %v", resp["setup_method"])
+
+	invitee, err := srv.store.GetUserByEmail("invitee@test.com")
+	if err != nil || invitee == nil {
+		t.Fatalf("load invitee: %v", err)
 	}
-	if resp["auth_method"] != "password" {
-		t.Errorf("expected auth_method=password, got %v", resp["auth_method"])
+	member, err := srv.store.GetWorkspaceMember(ws.ID, invitee.ID)
+	if err != nil {
+		t.Fatalf("get workspace member: %v", err)
 	}
-	if _, ok := resp["needs_setup"]; ok {
-		t.Error("did not expect deprecated needs_setup field")
+	if member == nil || member.Role != "viewer" {
+		t.Fatalf("expected invitee to be added to workspace as viewer, got %#v", member)
+	}
+
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/logout", nil, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("logout admin: expected 200, got %d", rr.Code)
 	}
 }
 
 func TestAuthRegistrationValidation(t *testing.T) {
 	srv := testServer(t)
 
-	// Missing email
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"name":     "Test",
 		"password": "password123",
@@ -164,7 +215,6 @@ func TestAuthRegistrationValidation(t *testing.T) {
 		t.Errorf("missing email: expected 400, got %d", rr.Code)
 	}
 
-	// Invalid email
 	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "not-an-email",
 		"name":     "Test",
@@ -174,7 +224,6 @@ func TestAuthRegistrationValidation(t *testing.T) {
 		t.Errorf("invalid email: expected 400, got %d", rr.Code)
 	}
 
-	// Short password
 	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "test@test.com",
 		"name":     "Test",
@@ -184,7 +233,6 @@ func TestAuthRegistrationValidation(t *testing.T) {
 		t.Errorf("short password: expected 400, got %d", rr.Code)
 	}
 
-	// Missing name
 	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "test@test.com",
 		"password": "password123",
@@ -196,24 +244,13 @@ func TestAuthRegistrationValidation(t *testing.T) {
 
 func TestAuthLogout(t *testing.T) {
 	srv := testServer(t)
+	token := bootstrapFirstUser(t, srv, "user@test.com", "Test")
 
-	// Register and get token
-	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
-		"email":    "user@test.com",
-		"name":     "Test",
-		"password": "password123",
-	})
-	var regResp map[string]interface{}
-	parseJSON(t, rr, &regResp)
-	token := regResp["token"].(string)
-
-	// Logout
-	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/logout", nil, token)
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/logout", nil, token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("logout: expected 200, got %d", rr.Code)
 	}
 
-	// Session should no longer be valid
 	rr = doRequestWithCookie(srv, "GET", "/api/v1/auth/session", nil, token)
 	var session map[string]interface{}
 	parseJSON(t, rr, &session)
@@ -225,32 +262,23 @@ func TestAuthLogout(t *testing.T) {
 func TestAuthRequiredWhenUsersExist(t *testing.T) {
 	srv := testServer(t)
 
-	// Before registration — API should work without auth
 	rr := doRequest(srv, "GET", "/api/v1/workspaces", nil)
 	if rr.Code != http.StatusOK {
 		t.Errorf("no users: expected 200, got %d", rr.Code)
 	}
 
-	// Register a user
-	doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
-		"email":    "admin@test.com",
-		"name":     "Admin",
-		"password": "password123",
-	})
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
-	// After registration — unauthenticated API requests should get 401
 	rr = doRequest(srv, "GET", "/api/v1/workspaces", nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("with users: expected 401, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Auth endpoints should still be accessible
 	rr = doRequest(srv, "GET", "/api/v1/auth/session", nil)
 	if rr.Code != http.StatusOK {
 		t.Errorf("auth/session should be exempt: expected 200, got %d", rr.Code)
 	}
 
-	// Health should be accessible
 	rr = doRequest(srv, "GET", "/api/v1/health", nil)
 	if rr.Code != http.StatusOK {
 		t.Errorf("health should be exempt: expected 200, got %d", rr.Code)
@@ -259,19 +287,9 @@ func TestAuthRequiredWhenUsersExist(t *testing.T) {
 
 func TestAuthMeEndpoint(t *testing.T) {
 	srv := testServer(t)
+	token := bootstrapFirstUser(t, srv, "me@test.com", "Me Test")
 
-	// Register
-	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
-		"email":    "me@test.com",
-		"name":     "Me Test",
-		"password": "password123",
-	})
-	var regResp map[string]interface{}
-	parseJSON(t, rr, &regResp)
-	token := regResp["token"].(string)
-
-	// Get current user
-	rr = doRequestWithCookie(srv, "GET", "/api/v1/auth/me", nil, token)
+	rr := doRequestWithCookie(srv, "GET", "/api/v1/auth/me", nil, token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("me: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -288,23 +306,22 @@ func TestAuthMeEndpoint(t *testing.T) {
 
 func TestDuplicateRegistration(t *testing.T) {
 	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
-	// Register first user
-	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "dup@test.com",
 		"name":     "First",
 		"password": "password123",
-	})
+	}, adminToken)
 	if rr.Code != http.StatusCreated {
-		t.Fatalf("first register: expected 201, got %d", rr.Code)
+		t.Fatalf("admin register: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Try to register same email again (unauthenticated — should be forbidden since users exist)
-	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "dup@test.com",
 		"name":     "Second",
 		"password": "password456",
-	})
+	}, adminToken)
 	if rr.Code == http.StatusCreated {
 		t.Error("duplicate registration should not succeed")
 	}
@@ -321,6 +338,7 @@ func doRequestWithCookie(srv *Server, method, path string, body interface{}, tok
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.RemoteAddr = "192.0.2.1:1234"
 	req.AddCookie(&http.Cookie{
 		Name:  "pad_session",
 		Value: token,

@@ -76,6 +76,7 @@ func main() {
 		serveCmd(),
 		stopCmd(),
 		configureCmd(),
+		setupCmd(),
 		openCmd(),
 		loginCmd(),
 		logoutCmd(),
@@ -325,6 +326,61 @@ func openBrowser(url string) error {
 
 // --- auth commands ---
 
+func setupCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "setup",
+		Short: "Initialize a fresh Pad instance with the first admin account",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := getConfig()
+
+			if cfg.IsConfigured() {
+				switch cfg.Mode {
+				case config.ModeDocker:
+					return fmt.Errorf("docker-managed Pad must be initialized from inside the container; run 'docker exec -it <container> pad setup'")
+				case config.ModeRemote, config.ModeCloud:
+					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad setup'")
+				}
+			}
+
+			if err := cli.EnsureServer(cfg); err != nil {
+				return err
+			}
+
+			client := cli.NewClientFromURL(cfg.BaseURL())
+			session, err := client.CheckSession()
+			if err != nil {
+				return fmt.Errorf("failed to check server status: %w", err)
+			}
+			if !session.SetupRequired {
+				if session.Authenticated {
+					fmt.Println("Pad is already initialized and you are logged in.")
+					return nil
+				}
+				fmt.Println("Pad is already initialized. Run 'pad login' to sign in.")
+				return nil
+			}
+
+			email, name, password, err := promptForAccountDetails()
+			if err != nil {
+				return err
+			}
+
+			resp, err := client.Bootstrap(email, name, password)
+			if err != nil {
+				return fmt.Errorf("setup failed: %w", err)
+			}
+			if err := saveCredentials(cfg, resp); err != nil {
+				return err
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s First admin account created\n", green("✓"))
+			fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+			return nil
+		},
+	}
+}
+
 func loginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
@@ -354,12 +410,8 @@ func loginCmd() *cobra.Command {
 			}
 
 			if session.SetupRequired {
-				if session.SetupMethod != "open_register" {
-					return fmt.Errorf("this Pad instance requires setup via %s before login", session.SetupMethod)
-				}
-				fmt.Println("No account found. Let's set you up.")
-				fmt.Println()
-				return doRegister(client, cfg)
+				printSetupRequiredHint(cfg)
+				return fmt.Errorf("this Pad instance has not been initialized yet")
 			}
 
 			// Prompt for login
@@ -387,15 +439,8 @@ func doLogin(client *cli.Client, cfg *config.Config) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
-	// Save credentials
-	if err := cli.SaveCredentials(&cli.Credentials{
-		ServerURL: cfg.BaseURL(),
-		Token:     resp.Token,
-		UserID:    resp.User.ID,
-		Email:     resp.User.Email,
-		Name:      resp.User.Name,
-	}); err != nil {
-		return fmt.Errorf("save credentials: %w", err)
+	if err := saveCredentials(cfg, resp); err != nil {
+		return err
 	}
 
 	green := color.New(color.FgGreen).SprintFunc()
@@ -403,7 +448,7 @@ func doLogin(client *cli.Client, cfg *config.Config) error {
 	return nil
 }
 
-func doRegister(client *cli.Client, cfg *config.Config) error {
+func promptForAccountDetails() (string, string, string, error) {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Print("  Email: ")
@@ -417,27 +462,25 @@ func doRegister(client *cli.Client, cfg *config.Config) error {
 	fmt.Print("  Password: ")
 	password, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("read password: %w", err)
+		return "", "", "", fmt.Errorf("read password: %w", err)
 	}
 	fmt.Println()
 
 	fmt.Print("  Confirm: ")
 	confirm, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("read password confirmation: %w", err)
+		return "", "", "", fmt.Errorf("read password confirmation: %w", err)
 	}
 	fmt.Println()
 
 	if password != confirm {
-		return fmt.Errorf("passwords do not match")
+		return "", "", "", fmt.Errorf("passwords do not match")
 	}
 
-	resp, err := client.Register(email, name, password)
-	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
-	}
+	return email, name, password, nil
+}
 
-	// Save credentials
+func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
 	if err := cli.SaveCredentials(&cli.Credentials{
 		ServerURL: cfg.BaseURL(),
 		Token:     resp.Token,
@@ -447,11 +490,19 @@ func doRegister(client *cli.Client, cfg *config.Config) error {
 	}); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-
-	green := color.New(color.FgGreen).SprintFunc()
-	fmt.Printf("%s Account created\n", green("✓"))
-	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
 	return nil
+}
+
+func printSetupRequiredHint(cfg *config.Config) {
+	fmt.Println("This Pad instance has not been initialized yet.")
+	switch cfg.Mode {
+	case config.ModeDocker:
+		fmt.Println("Run 'pad setup' inside the container, for example: docker exec -it <container> pad setup")
+	case config.ModeRemote, config.ModeCloud:
+		fmt.Println("Run 'pad setup' on the machine or container running the Pad server, then try again.")
+	default:
+		fmt.Println("Run 'pad setup' to create the first admin account, then try again.")
+	}
 }
 
 func readPassword() (string, error) {
@@ -762,19 +813,8 @@ Use --list-templates to see available templates.`,
 				return fmt.Errorf("failed to check auth status: %w", err)
 			}
 			if session.SetupRequired {
-				if session.SetupMethod != "open_register" {
-					return fmt.Errorf("this Pad instance requires setup via %s before continuing", session.SetupMethod)
-				}
-				fmt.Println("Welcome to Pad!")
-				fmt.Println()
-				fmt.Println("No account found. Let's set you up.")
-				fmt.Println()
-				if err := doRegister(client, cfg); err != nil {
-					return err
-				}
-				fmt.Println()
-				// Recreate client so it picks up the new credentials
-				client = cli.NewClientFromURL(cfg.BaseURL())
+				printSetupRequiredHint(cfg)
+				return fmt.Errorf("this Pad instance has not been initialized yet")
 			} else if !session.Authenticated {
 				fmt.Println("Log in to continue.")
 				fmt.Println()
