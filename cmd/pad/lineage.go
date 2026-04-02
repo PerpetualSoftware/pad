@@ -209,3 +209,78 @@ func itemDisplayLabel(item *models.Item) string {
 	}
 	return ref + " " + item.Title
 }
+
+type relationshipSection struct {
+	Title   string
+	Entries []string
+}
+
+func buildLineageSections(item *models.Item, links []models.ItemLink) []relationshipSection {
+	groups := map[string][]string{}
+	order := []string{"Split from", "Split into", "Supersedes", "Superseded by", "Implements", "Implemented by"}
+
+	for _, link := range links {
+		linkType, err := models.NormalizeItemLinkType(link.LinkType)
+		if err != nil {
+			continue
+		}
+		isSource := link.SourceID == item.ID
+		switch linkType {
+		case models.ItemLinkTypeSplitFrom:
+			if isSource {
+				groups["Split from"] = append(groups["Split from"], linkEndpointDisplay(link, false))
+			} else if link.TargetID == item.ID {
+				groups["Split into"] = append(groups["Split into"], linkEndpointDisplay(link, true))
+			}
+		case models.ItemLinkTypeSupersedes:
+			if isSource {
+				groups["Supersedes"] = append(groups["Supersedes"], linkEndpointDisplay(link, false))
+			} else if link.TargetID == item.ID {
+				groups["Superseded by"] = append(groups["Superseded by"], linkEndpointDisplay(link, true))
+			}
+		case models.ItemLinkTypeImplements:
+			if isSource {
+				groups["Implements"] = append(groups["Implements"], linkEndpointDisplay(link, false))
+			} else if link.TargetID == item.ID {
+				groups["Implemented by"] = append(groups["Implemented by"], linkEndpointDisplay(link, true))
+			}
+		}
+	}
+
+	sections := make([]relationshipSection, 0, len(order))
+	for _, title := range order {
+		entries := groups[title]
+		if len(entries) == 0 {
+			continue
+		}
+		sections = append(sections, relationshipSection{Title: title, Entries: entries})
+	}
+	return sections
+}
+
+func linkEndpointDisplay(link models.ItemLink, useSource bool) string {
+	var ref, title, status, id string
+	if useSource {
+		ref = link.SourceRef
+		title = link.SourceTitle
+		status = link.SourceStatus
+		id = link.SourceID
+	} else {
+		ref = link.TargetRef
+		title = link.TargetTitle
+		status = link.TargetStatus
+		id = link.TargetID
+	}
+	label := title
+	if ref != "" && title != "" {
+		label = ref + " " + title
+	} else if ref != "" {
+		label = ref
+	} else if label == "" {
+		label = id
+	}
+	if status != "" {
+		label += " (" + status + ")"
+	}
+	return label
+}

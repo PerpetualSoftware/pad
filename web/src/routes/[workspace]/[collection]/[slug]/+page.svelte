@@ -16,9 +16,22 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
+
+	type RelationshipEntry = {
+		key: string;
+		label: string;
+		href: string | null;
+		status?: string;
+	};
+
+	type RelationshipGroup = {
+		label: string;
+		tone: 'default' | 'blocks' | 'wiki' | 'lineage';
+		entries: RelationshipEntry[];
+	};
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
@@ -61,7 +74,9 @@
 	let rawMode = $state(false);
 	let showMoveMenu = $state(false);
 	let moving = $state(false);
-	let itemLinks = $state<import('$lib/types').ItemLink[]>([]);
+	let itemLinks = $state<ItemLink[]>([]);
+	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks) : []);
+	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
 
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -258,6 +273,98 @@
 	function formatFieldDisplay(value: any): string {
 		if (value === null || value === undefined || value === '') return '—';
 		return String(value).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+	}
+
+	function relationLabel(ref?: string, title?: string, fallback?: string): string {
+		if (ref && title) return `${ref} ${title}`;
+		if (ref) return ref;
+		if (title) return title;
+		return fallback || 'Unknown item';
+	}
+
+	function relationHref(collectionSlug?: string, refOrSlug?: string): string | null {
+		if (!collectionSlug || !refOrSlug) return null;
+		return `/${wsSlug}/${collectionSlug}/${refOrSlug}`;
+	}
+
+	function relationRefEntry(related: ItemRelationRef): RelationshipEntry {
+		return {
+			key: related.id,
+			label: relationLabel(related.ref, related.title, related.id),
+			href: relationHref(related.collection_slug, related.ref ?? related.slug),
+			status: related.status
+		};
+	}
+
+	function linkEntry(link: ItemLink, useSource: boolean): RelationshipEntry {
+		const ref = useSource ? link.source_ref : link.target_ref;
+		const title = useSource ? link.source_title : link.target_title;
+		const status = useSource ? link.source_status : link.target_status;
+		const id = useSource ? link.source_id : link.target_id;
+		const slug = useSource ? link.source_slug : link.target_slug;
+		const collectionSlug = useSource ? link.source_collection_slug : link.target_collection_slug;
+		const href = relationHref(collectionSlug, ref ?? slug);
+		return {
+			key: `${link.id}:${useSource ? 'source' : 'target'}`,
+			label: relationLabel(ref, title, id),
+			href,
+			status
+		};
+	}
+
+	function buildRelationshipGroups(currentItem: Item, links: ItemLink[]): RelationshipGroup[] {
+		const grouped = new Map<string, RelationshipGroup>();
+		const definitions: Record<string, { label: string; tone: RelationshipGroup['tone'] }> = {
+			blocks: { label: 'Blocks', tone: 'blocks' },
+			blocked_by: { label: 'Blocked by', tone: 'blocks' },
+			links_to: { label: 'Links to', tone: 'wiki' },
+			referenced_by: { label: 'Referenced by', tone: 'wiki' },
+			split_from: { label: 'Split from', tone: 'lineage' },
+			split_into: { label: 'Split into', tone: 'lineage' },
+			supersedes: { label: 'Supersedes', tone: 'lineage' },
+			superseded_by: { label: 'Superseded by', tone: 'lineage' },
+			implements: { label: 'Implements', tone: 'lineage' },
+			implemented_by: { label: 'Implemented by', tone: 'lineage' },
+			related: { label: 'Related', tone: 'default' }
+		};
+		const order = ['blocks', 'blocked_by', 'links_to', 'referenced_by', 'split_from', 'split_into', 'supersedes', 'superseded_by', 'implements', 'implemented_by', 'related'];
+
+		function addEntry(groupKey: string, entry: RelationshipEntry) {
+			const definition = definitions[groupKey];
+			if (!definition) return;
+			if (!grouped.has(groupKey)) {
+				grouped.set(groupKey, { label: definition.label, tone: definition.tone, entries: [] });
+			}
+			grouped.get(groupKey)?.entries.push(entry);
+		}
+
+		for (const link of links) {
+			const isSource = link.source_id === currentItem.id;
+			switch (link.link_type) {
+				case 'blocks':
+					addEntry(isSource ? 'blocks' : 'blocked_by', linkEntry(link, !isSource));
+					break;
+				case 'wiki_link':
+					addEntry(isSource ? 'links_to' : 'referenced_by', linkEntry(link, !isSource));
+					break;
+				case 'split_from':
+					addEntry(isSource ? 'split_from' : 'split_into', linkEntry(link, !isSource));
+					break;
+				case 'supersedes':
+					addEntry(isSource ? 'supersedes' : 'superseded_by', linkEntry(link, !isSource));
+					break;
+				case 'implements':
+					addEntry(isSource ? 'implements' : 'implemented_by', linkEntry(link, !isSource));
+					break;
+				default:
+					addEntry('related', linkEntry(link, !isSource));
+					break;
+			}
+		}
+
+		return order
+			.map((key) => grouped.get(key))
+			.filter((group): group is RelationshipGroup => Boolean(group && group.entries.length > 0));
 	}
 
 	function handleVersionRestore(updatedItem: Item) {
@@ -468,21 +575,53 @@
 		</div>
 
 		<!-- Relationships -->
-		{#if itemLinks.length > 0}
+		{#if item.derived_closure}
+			<div class="closure-notice">
+				<div class="closure-notice-header">
+					<h3 class="section-title">Derived Closure</h3>
+					<span class="closure-kind">{formatFieldDisplay(item.derived_closure.kind)}</span>
+				</div>
+				<p class="closure-summary">{item.derived_closure.summary}</p>
+				{#if closureEntries.length > 0}
+					<div class="closure-related-list">
+						{#each closureEntries as related (related.key)}
+							<div class="closure-related-item">
+								{#if related.href}
+									<a href={related.href} class="closure-related-link">{related.label}</a>
+								{:else}
+									<span class="closure-related-link">{related.label}</span>
+								{/if}
+								{#if related.status}
+									<span class="link-status">{formatFieldDisplay(related.status)}</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
-				<div class="links-list">
-					{#each itemLinks as link (link.id)}
-						{@const isSource = link.source_id === item?.id}
-						{@const targetTitle = isSource ? link.target_title : link.source_title}
-						{@const linkLabel = link.link_type === 'blocks'
-							? (isSource ? 'Blocks' : 'Blocked by')
-							: link.link_type === 'wiki_link'
-								? (isSource ? 'Links to' : 'Referenced by')
-								: link.link_type || 'Related to'}
-						<div class="link-row" class:blocking={link.link_type === 'blocks' && !isSource}>
-							<span class="link-type" class:type-blocks={link.link_type === 'blocks'} class:type-wiki={link.link_type === 'wiki_link'}>{linkLabel}</span>
-							<a href="/{wsSlug}/{link.link_type === 'blocks' ? 'tasks' : collSlug}/{isSource ? link.target_title : link.source_title}" class="link-target">{targetTitle || 'Unknown item'}</a>
+				<div class="relationship-groups">
+					{#each relationshipGroups as group (group.label)}
+						<div class="relationship-group">
+							<h4 class="relationship-group-title">{group.label}</h4>
+							<div class="links-list">
+								{#each group.entries as entry (entry.key)}
+									<div class="link-row" class:tone-blocks={group.tone === 'blocks'} class:tone-wiki={group.tone === 'wiki'} class:tone-lineage={group.tone === 'lineage'}>
+										{#if entry.href}
+											<a href={entry.href} class="link-target">{entry.label}</a>
+										{:else}
+											<span class="link-target">{entry.label}</span>
+										{/if}
+										{#if entry.status}
+											<span class="link-status">{formatFieldDisplay(entry.status)}</span>
+										{/if}
+									</div>
+								{/each}
+							</div>
 						</div>
 					{/each}
 				</div>
@@ -765,6 +904,58 @@
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 	}
 
+	/* Derived closure */
+	.closure-notice {
+		margin-top: var(--space-6);
+		padding: var(--space-4);
+		background: color-mix(in srgb, var(--accent-green) 10%, var(--bg-secondary));
+		border: 1px solid color-mix(in srgb, var(--accent-green) 35%, var(--border));
+		border-radius: var(--radius);
+	}
+	.closure-notice-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		margin-bottom: var(--space-2);
+		flex-wrap: wrap;
+	}
+	.closure-kind {
+		font-size: 0.75em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--accent-green);
+	}
+	.closure-summary {
+		margin: 0;
+		color: var(--text-primary);
+	}
+	.closure-related-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-top: var(--space-3);
+	}
+	.closure-related-item {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.closure-related-link {
+		font-weight: 500;
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+	.closure-related-link:hover {
+		color: var(--accent-blue);
+		text-decoration: underline;
+	}
+
 	/* Relationships */
 	.relationships-section {
 		margin-top: var(--space-6);
@@ -784,29 +975,43 @@
 		flex-direction: column;
 		gap: var(--space-2);
 	}
+	.relationship-groups {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+	.relationship-group {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.relationship-group-title {
+		margin: 0;
+		font-size: 0.95em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
 	.link-row {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 		gap: var(--space-3);
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		font-size: 0.9em;
+		flex-wrap: wrap;
 	}
-	.link-row.blocking {
+	.link-row.tone-blocks {
 		border-left: 3px solid var(--accent-orange);
 	}
-	.link-type {
-		font-size: 0.75em;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		min-width: 80px;
+	.link-row.tone-wiki {
+		border-left: 3px solid var(--accent-blue);
 	}
-	.link-type.type-blocks { color: var(--accent-orange); }
-	.link-type.type-wiki { color: var(--accent-blue); }
+	.link-row.tone-lineage {
+		border-left: 3px solid var(--accent-green);
+	}
 	.link-target {
 		font-weight: 500;
 		color: var(--text-primary);
@@ -815,6 +1020,15 @@
 	.link-target:hover {
 		color: var(--accent-blue);
 		text-decoration: underline;
+	}
+	.link-status {
+		font-size: 0.75em;
+		font-weight: 600;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 999px;
+		white-space: nowrap;
 	}
 
 	/* Comments */

@@ -657,17 +657,30 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	var link models.ItemLink
 	var createdAt string
 
+	var sourcePrefix, targetPrefix string
+	var sourceItemNumber, targetItemNumber sql.NullInt64
+	var sourceStatus, targetStatus sql.NullString
+
 	err := s.db.QueryRow(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
-		       s.title, t.title
+		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
+		       s.item_number, t.item_number,
+		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id
 		JOIN items t ON t.id = l.target_id
+		JOIN collections sc ON sc.id = s.collection_id
+		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.id = ?
 	`, id).Scan(
 		&link.ID, &link.WorkspaceID, &link.SourceID, &link.TargetID,
 		&link.LinkType, &link.CreatedBy, &createdAt,
 		&link.SourceTitle, &link.TargetTitle,
+		&link.SourceSlug, &link.TargetSlug,
+		&link.SourceCollectionSlug, &link.TargetCollectionSlug,
+		&sourcePrefix, &targetPrefix,
+		&sourceItemNumber, &targetItemNumber,
+		&sourceStatus, &targetStatus,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -676,16 +689,32 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 		return nil, fmt.Errorf("get item link: %w", err)
 	}
 	link.CreatedAt = parseTime(createdAt)
+	if sourceItemNumber.Valid && sourcePrefix != "" {
+		link.SourceRef = fmt.Sprintf("%s-%d", sourcePrefix, sourceItemNumber.Int64)
+	}
+	if targetItemNumber.Valid && targetPrefix != "" {
+		link.TargetRef = fmt.Sprintf("%s-%d", targetPrefix, targetItemNumber.Int64)
+	}
+	if sourceStatus.Valid {
+		link.SourceStatus = sourceStatus.String
+	}
+	if targetStatus.Valid {
+		link.TargetStatus = targetStatus.String
+	}
 	return &link, nil
 }
 
 func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 	rows, err := s.db.Query(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
-		       s.title, t.title
+		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
+		       s.item_number, t.item_number,
+		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id
 		JOIN items t ON t.id = l.target_id
+		JOIN collections sc ON sc.id = s.collection_id
+		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? OR l.target_id = ?
 		ORDER BY l.created_at DESC
 	`, itemID, itemID)
@@ -698,14 +727,34 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 	for rows.Next() {
 		var link models.ItemLink
 		var createdAt string
+		var sourcePrefix, targetPrefix string
+		var sourceItemNumber, targetItemNumber sql.NullInt64
+		var sourceStatus, targetStatus sql.NullString
 		if err := rows.Scan(
 			&link.ID, &link.WorkspaceID, &link.SourceID, &link.TargetID,
 			&link.LinkType, &link.CreatedBy, &createdAt,
 			&link.SourceTitle, &link.TargetTitle,
+			&link.SourceSlug, &link.TargetSlug,
+			&link.SourceCollectionSlug, &link.TargetCollectionSlug,
+			&sourcePrefix, &targetPrefix,
+			&sourceItemNumber, &targetItemNumber,
+			&sourceStatus, &targetStatus,
 		); err != nil {
 			return nil, err
 		}
 		link.CreatedAt = parseTime(createdAt)
+		if sourceItemNumber.Valid && sourcePrefix != "" {
+			link.SourceRef = fmt.Sprintf("%s-%d", sourcePrefix, sourceItemNumber.Int64)
+		}
+		if targetItemNumber.Valid && targetPrefix != "" {
+			link.TargetRef = fmt.Sprintf("%s-%d", targetPrefix, targetItemNumber.Int64)
+		}
+		if sourceStatus.Valid {
+			link.SourceStatus = sourceStatus.String
+		}
+		if targetStatus.Valid {
+			link.TargetStatus = targetStatus.String
+		}
 		links = append(links, link)
 	}
 	return links, rows.Err()

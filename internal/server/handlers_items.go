@@ -148,6 +148,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
+	if err := s.enrichItemForResponse(item); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -166,6 +171,11 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+
+	if err := s.enrichItemForResponse(item); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
@@ -264,6 +274,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
+	if err := s.enrichItemForResponse(updated); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -331,6 +346,11 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
 	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source)
+
+	if err := s.enrichItemForResponse(restored); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, restored)
 }
@@ -436,6 +456,11 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Publish events for both old and new collections
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
+
+	if err := s.enrichItemForResponse(moved); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, moved)
 }

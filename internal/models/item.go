@@ -29,10 +29,11 @@ type Item struct {
 	ItemNumber *int `json:"item_number,omitempty"`
 
 	// Populated by joins (not stored)
-	CollectionSlug   string `json:"collection_slug,omitempty"`
-	CollectionName   string `json:"collection_name,omitempty"`
-	CollectionIcon   string `json:"collection_icon,omitempty"`
-	CollectionPrefix string `json:"collection_prefix,omitempty"`
+	CollectionSlug   string              `json:"collection_slug,omitempty"`
+	CollectionName   string              `json:"collection_name,omitempty"`
+	CollectionIcon   string              `json:"collection_icon,omitempty"`
+	CollectionPrefix string              `json:"collection_prefix,omitempty"`
+	DerivedClosure   *ItemDerivedClosure `json:"derived_closure,omitempty"`
 }
 
 // ComputeRef sets the Ref field from CollectionPrefix and ItemNumber.
@@ -41,6 +42,22 @@ func (item *Item) ComputeRef() {
 	if item.CollectionPrefix != "" && item.ItemNumber != nil {
 		item.Ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
 	}
+}
+
+type ItemRelationRef struct {
+	ID             string `json:"id"`
+	Slug           string `json:"slug,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	Title          string `json:"title"`
+	CollectionSlug string `json:"collection_slug,omitempty"`
+	Status         string `json:"status,omitempty"`
+}
+
+type ItemDerivedClosure struct {
+	IsClosed     bool              `json:"is_closed"`
+	Kind         string            `json:"kind"`
+	Summary      string            `json:"summary"`
+	RelatedItems []ItemRelationRef `json:"related_items,omitempty"`
 }
 
 type ItemCreate struct {
@@ -90,8 +107,16 @@ type ItemLink struct {
 	CreatedAt   time.Time `json:"created_at"`
 
 	// Populated by joins
-	SourceTitle string `json:"source_title,omitempty"`
-	TargetTitle string `json:"target_title,omitempty"`
+	SourceTitle          string `json:"source_title,omitempty"`
+	TargetTitle          string `json:"target_title,omitempty"`
+	SourceSlug           string `json:"source_slug,omitempty"`
+	TargetSlug           string `json:"target_slug,omitempty"`
+	SourceRef            string `json:"source_ref,omitempty"`
+	TargetRef            string `json:"target_ref,omitempty"`
+	SourceCollectionSlug string `json:"source_collection_slug,omitempty"`
+	TargetCollectionSlug string `json:"target_collection_slug,omitempty"`
+	SourceStatus         string `json:"source_status,omitempty"`
+	TargetStatus         string `json:"target_status,omitempty"`
 }
 
 type ItemLinkCreate struct {
