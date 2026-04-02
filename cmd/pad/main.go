@@ -97,6 +97,7 @@ func main() {
 		deleteCmd(),
 		moveCmd(),
 		searchCmd(),
+		reconcileCmd(),
 		statusCmd(),
 		nextCmd(),
 		standupCmd(),
