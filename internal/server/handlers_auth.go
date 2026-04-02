@@ -220,7 +220,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if count == 0 {
-		writeError(w, http.StatusForbidden, "forbidden", "This Pad instance must be initialized with pad setup")
+		writeError(w, http.StatusForbidden, "forbidden", "This Pad instance must be initialized with pad auth setup")
 		return
 	}
 
@@ -285,7 +285,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if count == 0 {
-		writeError(w, http.StatusConflict, "setup_required", "This Pad instance must be initialized with pad setup")
+		writeError(w, http.StatusConflict, "setup_required", "This Pad instance must be initialized with pad auth setup")
 		return
 	}
 

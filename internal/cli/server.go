@@ -31,7 +31,7 @@ func EnsureServer(cfg *config.Config) error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	cmd := exec.Command(exePath, "serve")
+	cmd := exec.Command(exePath, "server", "start")
 	setSysProcAttr(cmd)
 
 	// Redirect stdout/stderr to log file

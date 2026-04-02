@@ -202,7 +202,7 @@ applyTo: "**"
 	}
 }
 
-// AllToolNames returns all valid names and aliases that can be passed to `pad install`.
+// AllToolNames returns all valid names and aliases that can be passed to `pad agent install`.
 func AllToolNames() []string {
 	var names []string
 	for _, t := range SupportedTools {

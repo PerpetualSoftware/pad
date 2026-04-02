@@ -25,24 +25,24 @@ install: build
 	rm -f ~/.pad/pad.pid
 	@echo "Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY)"
 	@# Trigger server auto-start by running a command
-	@$(INSTALL_DIR)/$(BINARY) status 2>/dev/null || true
+	@$(INSTALL_DIR)/$(BINARY) auth whoami 2>/dev/null || true
 	@echo "Server restarted."
 
 test:
 	go test ./... -v
 
 dev: build-go
-	./$(BINARY) serve --host $(HOST)
+	./$(BINARY) server start --host $(HOST)
 
 serve: build
-	-./$(BINARY) stop 2>/dev/null
+	-./$(BINARY) server stop 2>/dev/null
 	@sleep 1
-	./$(BINARY) serve --host $(HOST)
+	./$(BINARY) server start --host $(HOST)
 
 restart: build-go
-	-./$(BINARY) stop 2>/dev/null
+	-./$(BINARY) server stop 2>/dev/null
 	@sleep 1
-	./$(BINARY) serve --host $(HOST)
+	./$(BINARY) server start --host $(HOST)
 
 web:
 	cd web && npm ci && npm run build

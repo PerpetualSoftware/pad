@@ -45,7 +45,7 @@ func DetectWorkspace(flagOverride string) (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("no workspace linked. Run 'pad init' to create one")
+	return "", fmt.Errorf("no workspace linked. Run 'pad workspace init' to create one")
 }
 
 // LoadPadToml finds and reads the nearest .pad.toml by walking up from cwd.

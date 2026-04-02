@@ -8,7 +8,7 @@ import (
 
 // ProjectInfo holds detected project metadata.
 type ProjectInfo struct {
-	Language    string   // go, node, rust, python, java, etc.
+	Language   string   // go, node, rust, python, java, etc.
 	BuildTool  string   // make, npm, cargo, pip, maven, etc.
 	TestCmd    string   // detected test command
 	HasCI      bool     // CI config detected
@@ -149,7 +149,7 @@ func SuggestedConventions(info ProjectInfo) map[string]string {
 
 	// Always suggest these general ones
 	suggestions["Commit after task completion"] = "Create a git commit with a descriptive message after completing each discrete unit of work. Reference the task slug or item number in the commit message."
-	suggestions["Update task status when starting work"] = "When starting work on a task, update its status to in-progress: `pad update <slug> --status in-progress`"
+	suggestions["Update task status when starting work"] = "When starting work on a task, update its status to in-progress: `pad item update <ref> --status in-progress`"
 
 	return suggestions
 }

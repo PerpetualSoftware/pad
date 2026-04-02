@@ -89,17 +89,17 @@ REST API at `/api/v1/`. Key endpoints:
 
 ## Authentication
 
-User-based authentication with email/password. When no users exist (fresh install), everything works without auth until the instance is initialized with `pad setup`. Once the first admin exists, all API requests require authentication.
+User-based authentication with email/password. When no users exist (fresh install), everything works without auth until the instance is initialized with `pad auth setup`. Once the first admin exists, all API requests require authentication.
 
 ```bash
 # First-time setup
-pad setup              # Create the first admin account on the server host
+pad auth setup         # Create the first admin account on the server host
 
 # Subsequent logins
-pad login              # Email + password prompt
-pad whoami             # Show current user
-pad logout             # Sign out
-pad reset-password user@example.com  # Generate reset link (admin fallback)
+pad auth login         # Email + password prompt
+pad auth whoami        # Show current user
+pad auth logout        # Sign out
+pad auth reset-password user@example.com  # Generate reset link (admin fallback)
 
 # Credentials stored in ~/.pad/credentials.json (0600 permissions)
 # CLI auto-attaches auth token to all API requests
@@ -107,10 +107,10 @@ pad reset-password user@example.com  # Generate reset link (admin fallback)
 
 ### Workspace membership
 ```bash
-pad members                         # List workspace members
-pad invite user@example.com         # Invite (adds directly if user exists, creates join code if not)
-pad invite user@example.com --role viewer  # Invite with specific role
-pad join <code>                     # Accept a workspace invitation
+pad workspace members                         # List workspace members
+pad workspace invite user@example.com         # Invite (adds directly if user exists, creates join code if not)
+pad workspace invite user@example.com --role viewer  # Invite with specific role
+pad workspace join <code>                     # Accept a workspace invitation
 ```
 
 Roles: `owner` (full access), `editor` (CRUD items), `viewer` (read-only).
@@ -132,41 +132,41 @@ Items are referenced by **issue ID** (e.g. `TASK-5`, `BUG-8`) wherever a `<ref>`
 Slugs also work but issue IDs are preferred.
 
 ```bash
-pad create <collection> "title" [--status X] [--priority X]
-pad list [collection] [--status X] [--all]
-pad show <ref>                # e.g. pad show TASK-5
-pad update <ref> [--status X] [--priority X]
-pad delete <ref>
-pad move <ref> <target-collection>
-pad search "query"
-pad status                    # Project dashboard
-pad next                      # Recommended next task
-pad standup [--days N]        # Daily standup report
-pad changelog [--days N]      # Release notes from completed items
-pad blocks <source> <target>  # e.g. pad blocks TASK-5 TASK-8
-pad blocked-by <item> <blocker>
-pad deps <ref>                # Show dependencies
-pad unblock <source> <target>
-pad collections               # List collections
-pad collections create "Name" --fields "key:type[:opts]; ..."
-pad edit <ref>                # Open in $EDITOR
-pad init [--template X]       # Create workspace
-pad install [tool]            # Install /pad skill for AI tools
-pad onboard                   # Analyze codebase, suggest conventions
-pad open                      # Open web UI in browser
-pad watch                     # Real-time activity stream
+pad item create <collection> "title" [--status X] [--priority X]
+pad item list [collection] [--status X] [--all]
+pad item show <ref>           # e.g. pad item show TASK-5
+pad item update <ref> [--status X] [--priority X]
+pad item delete <ref>
+pad item move <ref> <target-collection>
+pad item search "query"
+pad project dashboard         # Project dashboard
+pad project next              # Recommended next task
+pad project standup [--days N]  # Daily standup report
+pad project changelog [--days N]  # Release notes from completed items
+pad item block <source> <target>  # e.g. pad item block TASK-5 TASK-8
+pad item blocked-by <item> <blocker>
+pad item deps <ref>           # Show dependencies
+pad item unblock <source> <target>
+pad collection list           # List collections
+pad collection create "Name" --fields "key:type[:opts]; ..."
+pad item edit <ref>           # Open in $EDITOR
+pad workspace init [--template X]  # Create workspace
+pad agent install [tool]      # Install /pad skill for AI tools
+pad workspace onboard         # Analyze codebase, suggest conventions
+pad server open               # Open web UI in browser
+pad project watch             # Real-time activity stream
 pad github link [item-ref]    # Link current branch's PR to item
 pad github status [item-ref]  # Show PR status for linked items
 pad github unlink <item-ref>  # Remove PR link from item
-pad bulk-update --status done TASK-5 TASK-8  # Batch operations
-pad webhooks list/create/delete/test         # Webhook management
-pad setup                     # Initialize a fresh instance with the first admin
-pad login                     # Log in
-pad logout                    # Sign out
-pad whoami                    # Show current user
-pad members                   # List workspace members
-pad invite <email> [--role X] # Invite user to workspace
-pad join <code>               # Accept workspace invitation
+pad item bulk-update --status done TASK-5 TASK-8  # Batch operations
+pad webhook list/create/delete/test               # Webhook management
+pad auth setup                # Initialize a fresh instance with the first admin
+pad auth login                # Log in
+pad auth logout               # Sign out
+pad auth whoami               # Show current user
+pad workspace members         # List workspace members
+pad workspace invite <email> [--role X] # Invite user to workspace
+pad workspace join <code>     # Accept workspace invitation
 ```
 
 Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc`→`docs`.
@@ -177,7 +177,7 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 - **Items** have structured `fields` JSON + optional rich `content` (markdown)
 - **Wiki-links** `[[Title]]` resolve across all items, rendered as clickable links
 - **Default collections:** Tasks, Ideas, Phases, Docs
-- **Templates:** startup (default), scrum, product — set via `pad init --template`
+- **Templates:** startup (default), scrum, product — set via `pad workspace init --template`
 
 ## Testing
 

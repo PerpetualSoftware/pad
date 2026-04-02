@@ -25,12 +25,12 @@
 ```bash
 brew install xarmian/tap/pad
 cd your-project
-pad configure
-pad init
-pad open
+pad auth configure
+pad workspace init
+pad server open
 ```
 
-For a local install, choose `Local` in `pad configure`. Pad will remember that this client manages a local server, auto-start it when needed, and open the web UI at `localhost:7777`.
+For a local install, choose `Local` in `pad auth configure`. Pad will remember that this client manages a local server, auto-start it when needed, and open the web UI at `localhost:7777`.
 
 ## Why Pad?
 
@@ -38,7 +38,7 @@ Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is bui
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|
-| **Setup** | `pad configure` + `pad init` | Create account, invite team, configure | Create account, pick template |
+| **Setup** | `pad auth configure` + `pad workspace init` | Create account, invite team, configure | Create account, pick template |
 | **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
 | **Data** | Local SQLite, you own it | Their cloud | Their cloud |
 | **Offline** | Full functionality | Read-only cache at best | Limited |
@@ -52,12 +52,12 @@ Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is bui
 **CLI that doesn't get in your way.** Create tasks, search items, check status — without leaving the terminal.
 
 ```bash
-pad create task "Fix OAuth redirect" --priority high
-pad create idea "Real-time collaboration" --category infrastructure
-pad list tasks --status in-progress
-pad search "authentication"
-pad status                              # Project dashboard
-pad next                                # What should I work on?
+pad item create task "Fix OAuth redirect" --priority high
+pad item create idea "Real-time collaboration" --category infrastructure
+pad item list tasks --status in-progress
+pad item search "authentication"
+pad project dashboard                   # Project dashboard
+pad project next                        # What should I work on?
 ```
 
 **Web UI that stays out of your way.** A clean, dark-themed interface at `localhost:7777` with:
@@ -76,7 +76,7 @@ pad next                                # What should I work on?
 **Your agent becomes a project partner.** Install the `/pad` skill once, and your AI coding tool can read, create, and update project items through natural language.
 
 ```bash
-pad install              # Auto-detects your tools and installs the skill
+pad agent install        # Auto-detects your tools and installs the skill
 ```
 
 Works with **Claude Code**, **Cursor**, **Windsurf**, **Codex**, **GitHub Copilot**, **Amazon Q**, and **JetBrains Junie**.
@@ -96,7 +96,7 @@ Then just talk to your project:
 - **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement"
 
 ```bash
-pad create convention "Run tests before completing tasks" \
+pad item create convention "Run tests before completing tasks" \
   --field trigger=on-task-complete \
   --field scope=all \
   --field priority=must
@@ -107,7 +107,7 @@ Agents load relevant conventions automatically. All agent actions are attributed
 **Onboard agents to a new codebase:**
 
 ```bash
-pad onboard              # Analyzes project structure and suggests conventions
+pad workspace onboard    # Analyzes project structure and suggests conventions
 ```
 
 ### Collections & Custom Fields
@@ -128,7 +128,7 @@ Pad organizes work into **collections** — typed containers with structured fie
 **Create your own** with typed fields — select, text, date, number, url, relation, checkbox:
 
 ```bash
-pad collections create "Bug Reports" \
+pad collection create "Bug Reports" \
   --fields "severity:select:low,medium,high,critical; browser:text; reproducible:checkbox"
 ```
 
@@ -180,7 +180,7 @@ Pre-built binaries for macOS, Linux, and Windows are available on the [releases 
 ### 1. Configure this Pad client
 
 ```bash
-pad configure
+pad auth configure
 ```
 
 For most local installs, choose `Local`. If you're connecting to another Pad server, choose `Remote` or `Docker` and enter its base URL.
@@ -189,35 +189,35 @@ For most local installs, choose `Local`. If you're connecting to another Pad ser
 
 ```bash
 cd ~/projects/myapp
-pad init "My App"
+pad workspace init "My App"
 ```
 
 This creates a `.pad.toml` file linking your project directory to a Pad workspace with default collections. Choose a template to start with pre-configured collections:
 
 ```bash
-pad init "My App" --template scrum     # Scrum-style with sprints
-pad init "My App" --template product   # Product management focused
+pad workspace init "My App" --template scrum     # Scrum-style with sprints
+pad workspace init "My App" --template product   # Product management focused
 ```
 
 ### 3. Install the AI skill
 
 ```bash
-pad install                  # Auto-detect and install for all found tools
-pad install claude           # Or install for a specific tool
-pad install cursor
-pad install copilot
+pad agent install            # Auto-detect and install for all found tools
+pad agent install claude     # Or install for a specific tool
+pad agent install cursor
+pad agent install copilot
 ```
 
 ### 4. Start working
 
 ```bash
 # From the CLI
-pad create task "Set up CI pipeline" --priority high
-pad create idea "Add WebSocket support" --category infrastructure
-pad status
+pad item create task "Set up CI pipeline" --priority high
+pad item create idea "Add WebSocket support" --category infrastructure
+pad project dashboard
 
 # From the web UI
-pad open                     # Opens localhost:7777 in your browser
+pad server open              # Opens localhost:7777 in your browser
 
 # From your AI agent
 # Just use /pad in Claude Code, Cursor, etc.
@@ -226,86 +226,101 @@ pad open                     # Opens localhost:7777 in your browser
 ### 5. Teach your agents the rules
 
 ```bash
-pad onboard                  # Auto-analyze project and suggest conventions
+pad workspace onboard        # Auto-analyze project and suggest conventions
 # Or browse the convention library
-pad library conventions      # Pre-built conventions you can adopt
-pad library playbooks        # Pre-built multi-step workflows
+pad library list --type conventions  # Pre-built conventions you can adopt
+pad library list --type playbooks    # Pre-built multi-step workflows
 ```
 
 ## CLI Reference
 
 ```
-pad configure                 Configure how this client connects to Pad
-pad init [name]              Initialize workspace in current directory
-pad open                     Open web UI in browser
-pad install [tool]           Install /pad skill for AI coding tools
-pad onboard                  Analyze project and suggest conventions
+pad auth configure                    Configure how this client connects to Pad
+pad auth setup                        Initialize the first admin account
+pad auth login                        Sign in
+pad auth whoami                       Show current user
 
-pad create <coll> "title"    Create item (task, idea, phase, doc, ...)
-pad list [collection]        List items (filters: --status, --priority, --all)
-pad show <slug>              Show item detail
-pad update <slug>            Update item fields
-pad delete <slug>            Delete item
-pad move <slug> <collection> Move item between collections
-pad edit <slug>              Open item in $EDITOR
-pad search "query"           Full-text search across all items
+pad server start                      Start the Pad API server
+pad server stop                       Stop the Pad server
+pad server open                       Open web UI in browser
 
-pad status                   Project dashboard
-pad next                     Recommended next task
-pad ready                    Query actionable next items
-pad stale                    Query stalled or attention-worthy items
-pad related <ref>            Show direct relationships for an item
-pad implemented-by <ref>     Show incoming implementers for an item
-pad collections              List collections with item counts
-pad comment <slug> "text"    Add comment to an item
-pad comments <slug>          View item comments
-pad note <ref> "summary"     Append an implementation note to an item
-pad decide <ref> "decision"  Append a decision log entry to an item
+pad workspace init [name]             Initialize workspace in current directory
+pad workspace link <workspace>        Link current directory to an existing workspace
+pad workspace list                    List all workspaces
+pad workspace switch <workspace>      Switch active workspace
+pad workspace onboard                 Analyze project and suggest conventions
+pad workspace members                 List workspace members
+pad workspace invite <email>          Invite a workspace member
+pad workspace join <code>             Accept an invitation
+pad workspace export                  Export workspace data
+pad workspace import <file>           Import workspace data
 
-pad standup [--days N]        Daily standup report
-pad changelog [--days N]     Release notes from completed items
-pad watch                    Real-time activity stream
+pad project dashboard                 Project dashboard
+pad project next                      Recommended next task
+pad project ready                     Query actionable next items
+pad project stale                     Query stalled or attention-worthy items
+pad project standup [--days N]        Daily standup report
+pad project changelog [--days N]      Release notes from completed items
+pad project watch                     Real-time activity stream
+pad project reconcile                 Reconcile item and PR state
 
-pad blocks <src> <target>    Create dependency
-pad blocked-by <item> <blk>  Mark item as blocked
-pad deps <slug>              Show dependencies
-pad unblock <src> <target>   Remove dependency
+pad item create <coll> "title"        Create item (task, idea, phase, doc, ...)
+pad item list [collection]            List items (filters: --status, --priority, --all)
+pad item show <ref>                   Show item detail
+pad item update <ref>                 Update item fields
+pad item delete <ref>                 Delete item
+pad item move <ref> <collection>      Move item between collections
+pad item edit <ref>                   Open item in $EDITOR
+pad item search "query"               Full-text search across all items
+pad item comment <ref> "text"         Add comment to an item
+pad item comments <ref>               View item comments
+pad item note <ref> "summary"         Append an implementation note to an item
+pad item decide <ref> "decision"      Append a decision log entry to an item
+pad item block <src> <target>         Create dependency
+pad item blocked-by <item> <blk>      Mark item as blocked
+pad item deps <ref>                   Show dependencies
+pad item unblock <src> <target>       Remove dependency
+pad item related <ref>                Show direct relationships for an item
+pad item implemented-by <ref>         Show incoming implementers for an item
+pad item bulk-update --status X       Batch update multiple items
+
+pad collection list                   List collections with item counts
+pad collection create <name>          Create a custom collection
+
+pad library list                      Browse convention and playbook library
+pad library activate <title>          Activate a convention or playbook
+
+pad agent install [tool]              Install /pad skill for AI coding tools
+pad agent status                      Show supported tools and installation status
+pad agent update                      Update installed tool integrations
 
 pad github link [item-ref]   Link current branch's PR to item
 pad github status [item-ref] Show PR status for linked items
 pad github unlink <item-ref> Remove PR link from item
 
-pad webhooks list            List workspace webhooks
-pad webhooks create <url>    Create webhook
-pad bulk-update --status X   Batch update multiple items
-
-pad export                   Export workspace data
-pad import <file>            Import workspace data
-
-pad workspaces               List all workspaces
-pad switch <workspace>       Switch active workspace
-pad library [type]           Browse convention and playbook library
+pad webhook list             List workspace webhooks
+pad webhook create <url>     Create webhook
 ```
 
 All commands accept `--format json` for machine-readable output and `--workspace` to target a specific workspace.
 
 ### Authentication
 
-Pad runs without authentication by default for frictionless local use. On a fresh instance, run `pad setup` on the server host to create the first admin account:
+Pad runs without authentication by default for frictionless local use. On a fresh instance, run `pad auth setup` on the server host to create the first admin account:
 
 ```bash
-pad setup              # Initialize the first admin account
-pad login              # Sign in
-pad whoami             # Show current user
-pad logout             # Sign out
+pad auth setup         # Initialize the first admin account
+pad auth login         # Sign in
+pad auth whoami        # Show current user
+pad auth logout        # Sign out
 ```
 
 Once a user exists, all API requests and web UI access require authentication. Credentials are stored in `~/.pad/credentials.json`. Multiple users can be invited to workspaces with role-based access control (`owner`, `editor`, `viewer`).
 
 ```bash
-pad members                         # List workspace members
-pad invite user@example.com         # Invite to workspace
-pad join <code>                     # Accept invitation
+pad workspace members               # List workspace members
+pad workspace invite user@example.com
+pad workspace join <code>
 ```
 
 ## Architecture

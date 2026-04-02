@@ -127,7 +127,7 @@
 
 	<div class="onboarding-footer">
 		<p class="footer-instructions">
-			Install the Pad skill in your project with <code>pad init</code>, then paste a prompt above into Claude Code or your favorite AI agent.
+			Install the Pad skill in your project with <code>pad agent install</code>, then paste a prompt above into Claude Code or your favorite AI agent.
 		</p>
 		<a href="/{wsSlug}/library" class="footer-link">Or browse the library for conventions and playbooks</a>
 	</div>

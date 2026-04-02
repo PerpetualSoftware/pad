@@ -22,7 +22,7 @@
 	{:else if workspaceStore.workspaces.length === 0}
 		<h1>Welcome to Pad</h1>
 		<p>Create a workspace to get started.</p>
-		<p class="hint">Run <code>pad init</code> in your project directory, or use the workspace switcher in the sidebar.</p>
+		<p class="hint">Run <code>pad workspace init</code> in your project directory, or use the workspace switcher in the sidebar.</p>
 	{:else}
 		<p>Redirecting...</p>
 	{/if}
