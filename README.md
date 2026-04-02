@@ -285,10 +285,11 @@ All commands accept `--format json` for machine-readable output and `--workspace
 
 ### Authentication
 
-Pad runs without authentication by default for frictionless local use. On first `pad login`, you'll be prompted to create an account:
+Pad runs without authentication by default for frictionless local use. On a fresh instance, run `pad setup` on the server host to create the first admin account:
 
 ```bash
-pad login              # Register (first time) or sign in
+pad setup              # Initialize the first admin account
+pad login              # Sign in
 pad whoami             # Show current user
 pad logout             # Sign out
 ```

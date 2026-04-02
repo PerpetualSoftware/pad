@@ -23,10 +23,9 @@
 			if (session.authenticated) {
 				// Already logged in — try to accept directly
 				await acceptInvitation();
-			} else if (session.setup_required && session.setup_method === 'open_register') {
-				// No users yet — show register form
-				mode = 'register';
-				status = 'register';
+			} else if (session.setup_required) {
+				errorMsg = 'This Pad instance has not been initialized yet. Ask the server admin to run pad setup before accepting invitations.';
+				status = 'error';
 			} else {
 				// Users exist, not logged in — show login (with option to register)
 				mode = 'login';

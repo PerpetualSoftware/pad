@@ -6,13 +6,16 @@
 	let email = $state('');
 	let password = $state('');
 	let error = $state('');
+	let setupRequired = $state(false);
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
 
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
-			if (session.setup_required && session.setup_method === 'open_register') {
-				goto('/register', { replaceState: true });
+			if (session.setup_required) {
+				setupRequired = true;
+				setupMethod = session.setup_method;
 				return;
 			}
 			if (session.authenticated) {
@@ -53,51 +56,67 @@
 			handleSubmit();
 		}
 	}
+
+	function setupHint(method: typeof setupMethod): string {
+		switch (method) {
+			case 'docker_exec':
+				return "Run 'pad setup' inside the container, for example: docker exec -it <container> pad setup";
+			case 'cloud':
+				return 'This Pad Cloud instance must be initialized through the cloud setup flow.';
+			default:
+				return "Run 'pad setup' on the machine or container running the Pad server.";
+		}
+	}
 </script>
 
 <div class="login-page">
 	<div class="login-card">
 		<h1 class="logo">Pad</h1>
-		<p class="subtitle">Sign in to continue</p>
+		{#if setupRequired}
+			<p class="subtitle">This Pad instance has not been initialized yet.</p>
+			<p class="register-link">{setupHint(setupMethod)}</p>
+		{:else}
+			<p class="subtitle">Sign in to continue</p>
 
-		<div class="form">
-			<input
-				type="email"
-				placeholder="Email"
-				bind:value={email}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="email"
-			/>
+			<div class="form">
+				<input
+					type="email"
+					placeholder="Email"
+					bind:value={email}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="email"
+				/>
 
-			<input
-				type="password"
-				placeholder="Password"
-				bind:value={password}
-				onkeydown={handleKeydown}
-				disabled={loading}
-				autocomplete="current-password"
-			/>
+				<input
+					type="password"
+					placeholder="Password"
+					bind:value={password}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="current-password"
+				/>
 
-			{#if error}
-				<p class="error">{error}</p>
-			{/if}
-
-			<button onclick={handleSubmit} disabled={loading}>
-				{#if loading}
-					Signing in...
-				{:else}
-					Sign in
+				{#if error}
+					<p class="error">{error}</p>
 				{/if}
-			</button>
-		</div>
 
-		<p class="register-link">
-			<a href="/forgot-password">Forgot password?</a>
-		</p>
-		<p class="register-link">
-			First time? <a href="/register">Create an account</a>
-		</p>
+				<button onclick={handleSubmit} disabled={loading}>
+					{#if loading}
+						Signing in...
+					{:else}
+						Sign in
+					{/if}
+				</button>
+			</div>
+
+			<p class="register-link">
+				<a href="/forgot-password">Forgot password?</a>
+			</p>
+			<p class="register-link">
+				Need an account? Ask your admin for an invitation link.
+			</p>
+		{/if}
 	</div>
 </div>
 

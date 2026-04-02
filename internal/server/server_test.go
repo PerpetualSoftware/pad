@@ -26,6 +26,14 @@ func testServer(t *testing.T) *Server {
 }
 
 func doRequest(srv *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
+	return doRequestFromRemoteAddr(srv, method, path, body, "192.0.2.1:1234")
+}
+
+func doLoopbackRequest(srv *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
+	return doRequestFromRemoteAddr(srv, method, path, body, "127.0.0.1:1234")
+}
+
+func doRequestFromRemoteAddr(srv *Server, method, path string, body interface{}, remoteAddr string) *httptest.ResponseRecorder {
 	var bodyReader io.Reader
 	if body != nil {
 		data, _ := json.Marshal(body)
@@ -35,6 +43,7 @@ func doRequest(srv *Server, method, path string, body interface{}) *httptest.Res
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.RemoteAddr = remoteAddr
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	return rr

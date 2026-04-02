@@ -75,7 +75,8 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /workspaces/{ws}/members` — list members + pending invitations
 - `POST /workspaces/{ws}/members/invite` — invite user to workspace
 - `GET /api/v1/auth/session` — auth status (`setup_required`, `setup_method`, `auth_method`, `authenticated`, `user`)
-- `POST /api/v1/auth/register` — create account (first user becomes admin)
+- `POST /api/v1/auth/bootstrap` — create the first admin account from localhost on a fresh instance
+- `POST /api/v1/auth/register` — create account (admin-created or invitation-based after setup)
 - `POST /api/v1/auth/login` — email/password login (returns session token)
 - `POST /api/v1/auth/logout` — destroy session
 - `GET/PATCH /api/v1/auth/me` — current user profile (GET) and update name/password (PATCH)
@@ -88,11 +89,11 @@ REST API at `/api/v1/`. Key endpoints:
 
 ## Authentication
 
-User-based authentication with email/password. When no users exist (fresh install), everything works without auth. Once a user registers, all API requests require authentication.
+User-based authentication with email/password. When no users exist (fresh install), everything works without auth until the instance is initialized with `pad setup`. Once the first admin exists, all API requests require authentication.
 
 ```bash
-# First-time setup: register creates the admin account
-pad login              # Prompts to register if no users exist
+# First-time setup
+pad setup              # Create the first admin account on the server host
 
 # Subsequent logins
 pad login              # Email + password prompt
@@ -159,7 +160,8 @@ pad github status [item-ref]  # Show PR status for linked items
 pad github unlink <item-ref>  # Remove PR link from item
 pad bulk-update --status done TASK-5 TASK-8  # Batch operations
 pad webhooks list/create/delete/test         # Webhook management
-pad login                     # Log in (or register if first user)
+pad setup                     # Initialize a fresh instance with the first admin
+pad login                     # Log in
 pad logout                    # Sign out
 pad whoami                    # Show current user
 pad members                   # List workspace members

@@ -80,7 +80,7 @@ export interface HealthResponse {
 export interface AuthSession {
 	authenticated: boolean;
 	setup_required: boolean;
-	setup_method?: 'open_register' | 'local_cli' | 'docker_exec' | 'cloud';
+	setup_method?: 'local_cli' | 'docker_exec' | 'cloud';
 	auth_method: 'password' | 'cloud';
 	user?: { id: string; email: string; name: string; role: string };
 }
