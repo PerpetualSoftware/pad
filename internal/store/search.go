@@ -69,7 +69,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		r.Item.Pinned = pinned == 1
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
-		r.Item.ComputeRef()
+		hydrateItemComputedMetadata(&r.Item)
 		// Don't include full content in search results
 		r.Item.Content = ""
 		results = append(results, r)

@@ -624,6 +624,41 @@ func TestGetItemIncludesDerivedClosureForImplementedItems(t *testing.T) {
 	}
 }
 
+func TestGetItemIncludesCodeContext(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Linked Task",
+		"fields": `{"status":"open"}`,
+	})
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	fields := `{"status":"open","github_pr":{"number":40,"url":"https://github.com/xarmian/pad/pull/40","title":"Surface lineage relationships and derived closure for TASK-122","state":"MERGED","branch":"feat/task-122-lineage-display","repo":"xarmian/pad","updated_at":"2026-04-02T14:46:09Z"}}`
+	updated, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields})
+	if err != nil {
+		t.Fatalf("update item fields: %v", err)
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+updated.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.CodeContext == nil {
+		t.Fatal("expected code context in item response")
+	}
+	if fetched.CodeContext.Branch != "feat/task-122-lineage-display" {
+		t.Fatalf("expected branch metadata, got %q", fetched.CodeContext.Branch)
+	}
+	if fetched.CodeContext.PullRequest == nil || fetched.CodeContext.PullRequest.Number != 40 {
+		t.Fatalf("expected PR metadata, got %#v", fetched.CodeContext.PullRequest)
+	}
+}
+
 func TestItemVersions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

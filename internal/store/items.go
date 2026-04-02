@@ -122,7 +122,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
 	item.DeletedAt = parseTimePtr(deletedAt)
-	item.ComputeRef()
+	hydrateItemComputedMetadata(&item)
 	return &item, nil
 }
 
@@ -230,7 +230,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			item.CreatedAt = parseTime(createdAt)
 			item.UpdatedAt = parseTime(updatedAt)
 			item.DeletedAt = parseTimePtr(deletedAt)
-			item.ComputeRef()
+			hydrateItemComputedMetadata(&item)
 			return &item, nil
 		}
 		if err != sql.ErrNoRows {
@@ -302,7 +302,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
 	item.DeletedAt = parseTimePtr(deletedAt)
-	item.ComputeRef()
+	hydrateItemComputedMetadata(&item)
 	return &item, nil
 }
 
@@ -1036,8 +1036,16 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 		item.Pinned = pinned == 1
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
-		item.ComputeRef()
+		hydrateItemComputedMetadata(&item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func hydrateItemComputedMetadata(item *models.Item) {
+	if item == nil {
+		return
+	}
+	item.ComputeRef()
+	item.CodeContext = models.ExtractItemCodeContext(item.Fields)
 }

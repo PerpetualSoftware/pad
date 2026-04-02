@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -34,6 +35,7 @@ type Item struct {
 	CollectionIcon   string              `json:"collection_icon,omitempty"`
 	CollectionPrefix string              `json:"collection_prefix,omitempty"`
 	DerivedClosure   *ItemDerivedClosure `json:"derived_closure,omitempty"`
+	CodeContext      *ItemCodeContext    `json:"code_context,omitempty"`
 }
 
 // ComputeRef sets the Ref field from CollectionPrefix and ItemNumber.
@@ -58,6 +60,77 @@ type ItemDerivedClosure struct {
 	Kind         string            `json:"kind"`
 	Summary      string            `json:"summary"`
 	RelatedItems []ItemRelationRef `json:"related_items,omitempty"`
+}
+
+type ItemCodeContext struct {
+	Provider    string                   `json:"provider"`
+	Repo        string                   `json:"repo,omitempty"`
+	Branch      string                   `json:"branch,omitempty"`
+	PullRequest *ItemPullRequestMetadata `json:"pull_request,omitempty"`
+}
+
+type ItemPullRequestMetadata struct {
+	Number    int    `json:"number"`
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+type githubPRFields struct {
+	Number    int    `json:"number"`
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	Branch    string `json:"branch"`
+	Repo      string `json:"repo"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return nil
+	}
+
+	var fieldsMap map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
+		return nil
+	}
+
+	raw, ok := fieldsMap["github_pr"]
+	if !ok {
+		return nil
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+
+	var githubPR githubPRFields
+	if err := json.Unmarshal(payload, &githubPR); err != nil {
+		return nil
+	}
+	if githubPR.Number == 0 && githubPR.URL == "" && githubPR.Branch == "" && githubPR.Repo == "" {
+		return nil
+	}
+
+	context := &ItemCodeContext{
+		Provider: "github",
+		Repo:     githubPR.Repo,
+		Branch:   githubPR.Branch,
+	}
+	if githubPR.Number != 0 || githubPR.URL != "" || githubPR.Title != "" || githubPR.State != "" {
+		context.PullRequest = &ItemPullRequestMetadata{
+			Number:    githubPR.Number,
+			URL:       githubPR.URL,
+			Title:     githubPR.Title,
+			State:     githubPR.State,
+			UpdatedAt: githubPR.UpdatedAt,
+		}
+	}
+
+	return context
 }
 
 type ItemCreate struct {
