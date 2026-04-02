@@ -136,6 +136,59 @@ func TestWorkspaceUniqueSlug(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSettingsHydrateStructuredContext(t *testing.T) {
+	s := testStore(t)
+
+	settings, err := models.SerializeWorkspaceSettings(&models.WorkspaceSettings{
+		Context: &models.WorkspaceContext{
+			Repositories: []models.WorkspaceRepository{
+				{Name: "docapp", Role: "primary", Path: ".", Repo: "xarmian/pad"},
+				{Name: "pad-web", Role: "docs", Path: "../pad-web", Repo: "xarmian/pad-web"},
+			},
+			Commands: &models.WorkspaceCommands{
+				Build: "make install",
+				Test:  "go test ./...",
+				Web:   "cd web && npm run build",
+			},
+			Deployment: &models.WorkspaceDeployment{
+				Mode:    "local",
+				BaseURL: "http://127.0.0.1:7777",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SerializeWorkspaceSettings error: %v", err)
+	}
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{
+		Name:     "Machine Readable",
+		Settings: settings,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace error: %v", err)
+	}
+	if ws.Context == nil {
+		t.Fatal("expected created workspace to expose structured context")
+	}
+	if len(ws.Context.Repositories) != 2 {
+		t.Fatalf("expected 2 repositories in context, got %#v", ws.Context.Repositories)
+	}
+
+	got, err := s.GetWorkspaceBySlug(ws.Slug)
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug error: %v", err)
+	}
+	if got.Context == nil || got.Context.Commands == nil {
+		t.Fatalf("expected hydrated commands, got %#v", got.Context)
+	}
+	if got.Context.Commands.Build != "make install" {
+		t.Fatalf("expected build command make install, got %q", got.Context.Commands.Build)
+	}
+	if got.Context.Deployment == nil || got.Context.Deployment.BaseURL != "http://127.0.0.1:7777" {
+		t.Fatalf("expected deployment base URL to round-trip, got %#v", got.Context.Deployment)
+	}
+}
+
 // --- Document Tests ---
 
 func TestDocumentCRUD(t *testing.T) {
@@ -498,8 +551,8 @@ func TestContext(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
-	createTestDoc(t, s, ws.ID, "Active Doc", "content")     // active
-	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Draft Doc", Status: "draft"})  // draft
+	createTestDoc(t, s, ws.ID, "Active Doc", "content")                                 // active
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Draft Doc", Status: "draft"}) // draft
 
 	// Pin one doc
 	draftDocs, _ := s.ListDocuments(ws.ID, models.DocumentListParams{Status: "draft"})

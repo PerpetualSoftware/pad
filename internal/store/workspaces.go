@@ -28,6 +28,7 @@ func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
 		}
 		w.CreatedAt = parseTime(createdAt)
 		w.UpdatedAt = parseTime(updatedAt)
+		w.HydrateDerivedFields()
 		workspaces = append(workspaces, w)
 	}
 	return workspaces, rows.Err()
@@ -104,6 +105,7 @@ func (s *Store) GetWorkspaceBySlug(slug string) (*models.Workspace, error) {
 	w.CreatedAt = parseTime(createdAt)
 	w.UpdatedAt = parseTime(updatedAt)
 	w.DeletedAt = parseTimePtr(deletedAt)
+	w.HydrateDerivedFields()
 	return &w, nil
 }
 
@@ -127,6 +129,7 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 	w.CreatedAt = parseTime(createdAt)
 	w.UpdatedAt = parseTime(updatedAt)
 	w.DeletedAt = parseTimePtr(deletedAt)
+	w.HydrateDerivedFields()
 	return &w, nil
 }
 
