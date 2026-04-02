@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import type { Collection, APIToken } from '$lib/types';
+	import type { Collection, APIToken, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
@@ -21,6 +21,10 @@
 	let theme = $state<'light' | 'dark'>('dark');
 	let showCreateModal = $state(false);
 	let editingCollection = $state<Collection | null>(null);
+	let contextEditor = $state('{}');
+	let savingContext = $state(false);
+	let contextStatus = $state<'idle' | 'saved' | 'error'>('idle');
+	let contextError = $state('');
 
 	// Members
 	let members = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
@@ -97,6 +101,7 @@
 		try {
 			await workspaceStore.setCurrent(slug);
 			wsName = workspaceStore.current?.name ?? '';
+			contextEditor = JSON.stringify(workspaceStore.current?.context ?? {}, null, 2);
 			collections = await api.collections.list(slug);
 			try {
 				const memberData = await api.members.list(slug);
@@ -142,6 +147,76 @@
 			nameStatus = 'error';
 		} finally {
 			savingName = false;
+		}
+	}
+
+	function formatContextEditor(value: WorkspaceContext | null | undefined) {
+		return JSON.stringify(value ?? {}, null, 2);
+	}
+
+	function resetContextEditor() {
+		contextEditor = formatContextEditor(workspaceStore.current?.context);
+		contextError = '';
+		contextStatus = 'idle';
+	}
+
+	function clearContextEditor() {
+		contextEditor = '{}';
+		contextError = '';
+		contextStatus = 'idle';
+	}
+
+	function stripContextFromSettings(raw: string | undefined) {
+		if (!raw) return '{}';
+		try {
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			delete parsed.context;
+			return JSON.stringify(parsed);
+		} catch {
+			return '{}';
+		}
+	}
+
+	async function saveContext() {
+		if (savingContext) return;
+		contextError = '';
+		contextStatus = 'idle';
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(contextEditor.trim() || '{}');
+		} catch {
+			contextError = 'Context must be valid JSON.';
+			contextStatus = 'error';
+			return;
+		}
+
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			contextError = 'Context must be a JSON object.';
+			contextStatus = 'error';
+			return;
+		}
+
+		savingContext = true;
+		try {
+			const hasKeys = Object.keys(parsed as Record<string, unknown>).length > 0;
+			const updated = hasKeys
+				? await api.workspaces.update(wsSlug, { context: parsed as WorkspaceContext })
+				: await api.workspaces.update(wsSlug, {
+					settings: stripContextFromSettings(workspaceStore.current?.settings)
+				});
+
+			await workspaceStore.setCurrent(updated);
+			contextEditor = formatContextEditor(updated.context);
+			contextStatus = 'saved';
+			setTimeout(() => {
+				if (contextStatus === 'saved') contextStatus = 'idle';
+			}, 2000);
+		} catch (err: unknown) {
+			contextError = err instanceof Error ? err.message : 'Failed to save workspace context';
+			contextStatus = 'error';
+		} finally {
+			savingContext = false;
 		}
 	}
 	function toggleTheme() {
@@ -362,6 +437,22 @@
 				})
 			: ''
 	);
+
+	let contextSummary = $derived.by(() => {
+		const context = workspaceStore.current?.context;
+		if (!context) return [] as { label: string; value: string }[];
+
+		const summary: { label: string; value: string }[] = [];
+		if (context.repositories?.length) summary.push({ label: 'Repositories', value: String(context.repositories.length) });
+		if (context.commands) {
+			const configured = Object.entries(context.commands).filter(([, value]) => Boolean(value)).length;
+			if (configured) summary.push({ label: 'Commands', value: String(configured) });
+		}
+		if (context.stack?.languages?.length) summary.push({ label: 'Languages', value: context.stack.languages.join(', ') });
+		if (context.deployment?.mode) summary.push({ label: 'Deployment', value: context.deployment.mode });
+		if (context.assumptions?.length) summary.push({ label: 'Assumptions', value: String(context.assumptions.length) });
+		return summary;
+	});
 </script>
 
 <div class="settings">
@@ -433,6 +524,50 @@
 							<span class="theme-option" class:active={theme === 'light'}>Light</span>
 							<span class="theme-option" class:active={theme === 'dark'}>Dark</span>
 						</button>
+					</div>
+				</div>
+			</section>
+			<section class="section">
+				<h2>Workspace Context</h2>
+				<p class="section-desc">Machine-readable metadata for repos, commands, stack, deployment, and agent-facing assumptions.</p>
+				<div class="card context-card">
+					{#if contextSummary.length > 0}
+						<div class="context-summary">
+							{#each contextSummary as entry (entry.label)}
+								<div class="context-chip">
+									<span class="context-chip-label">{entry.label}</span>
+									<span class="context-chip-value">{entry.value}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					<label class="context-label" for="workspace-context">Context JSON</label>
+					<textarea
+						id="workspace-context"
+						class="context-editor mono"
+						bind:value={contextEditor}
+						spellcheck="false"
+						rows="18"
+					></textarea>
+					<p class="context-help">Use a JSON object with keys like <code>repositories</code>, <code>paths</code>, <code>commands</code>, <code>stack</code>, <code>deployment</code>, and <code>assumptions</code>.</p>
+					{#if contextError}
+						<p class="context-error">{contextError}</p>
+					{/if}
+					<div class="context-actions">
+						<button class="btn btn-primary" onclick={saveContext} disabled={savingContext}>
+							{savingContext ? 'Saving...' : 'Save Context'}
+						</button>
+						<button class="btn" onclick={resetContextEditor} disabled={savingContext}>
+							Reset
+						</button>
+						<button class="btn" onclick={clearContextEditor} disabled={savingContext}>
+							Clear
+						</button>
+						{#if contextStatus === 'saved'}
+							<span class="status-saved">Saved</span>
+						{:else if contextStatus === 'error' && !contextError}
+							<span class="status-error">Error</span>
+						{/if}
 					</div>
 				</div>
 			</section>
@@ -876,6 +1011,18 @@
 	.theme-toggle { display: flex; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; }
 	.theme-option { padding: var(--space-1) var(--space-4); font-size: 0.85em; transition: background 0.15s, color 0.15s; }
 	.theme-option.active { background: var(--accent-blue); color: #fff; }
+	.context-card { display: flex; flex-direction: column; gap: var(--space-3); }
+	.context-summary { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+	.context-chip { display: inline-flex; align-items: center; gap: var(--space-2); background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: 999px; padding: var(--space-1) var(--space-3); font-size: 0.78em; }
+	.context-chip-label { color: var(--text-muted); }
+	.context-chip-value { color: var(--text-primary); font-weight: 600; }
+	.context-label { font-size: 0.82em; color: var(--text-secondary); }
+	.context-editor { width: 100%; min-height: 320px; resize: vertical; padding: var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); line-height: 1.5; }
+	.context-editor:focus { outline: none; border-color: var(--accent-blue); }
+	.context-help { margin: 0; font-size: 0.8em; color: var(--text-muted); }
+	.context-help code { font-family: var(--font-mono); font-size: 0.95em; }
+	.context-error { margin: 0; font-size: 0.82em; color: #ef4444; }
+	.context-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 	/* ── Members ──── */
 	.members-list { display: flex; flex-direction: column; gap: var(--space-3); }
 	.member-row { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); gap: var(--space-3); }
