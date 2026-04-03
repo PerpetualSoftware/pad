@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
@@ -18,10 +18,25 @@
 	let { wsSlug, itemSlug, currentContent, items = [], onRestore }: Props = $props();
 
 	let entries: TimelineEntry[] = $state([]);
-	let total: number = $state(0);
+	let hasMore: boolean = $state(false);
 	let loading: boolean = $state(false);
+	let loadingMore: boolean = $state(false);
 	let error: string = $state('');
 	let newBody: string = $state('');
+
+	// Current user ID for reaction toggle (fetched from auth session).
+	let currentUserId: string = $state('');
+
+	onMount(async () => {
+		try {
+			const session = await api.auth.session();
+			if (session.user?.id) {
+				currentUserId = session.user.id;
+			}
+		} catch {
+			// Auth may not be configured — proceed without user ID.
+		}
+	});
 
 	async function loadTimeline() {
 		loading = true;
@@ -29,11 +44,28 @@
 		try {
 			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
 			entries = resp.entries;
-			total = resp.total;
+			hasMore = resp.has_more;
 		} catch (err: any) {
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadMore() {
+		if (loadingMore || entries.length === 0) return;
+		const oldest = entries[entries.length - 1];
+		loadingMore = true;
+		try {
+			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug, {
+				before: oldest.created_at
+			});
+			entries = [...entries, ...resp.entries];
+			hasMore = resp.has_more;
+		} catch (err: any) {
+			error = err?.message ?? 'Failed to load more';
+		} finally {
+			loadingMore = false;
 		}
 	}
 
@@ -139,8 +171,8 @@
 <section class="timeline">
 	<header class="timeline-header">
 		<h3 class="timeline-title">Timeline</h3>
-		{#if total > 0}
-			<span class="entry-count">{total}</span>
+		{#if entries.length > 0}
+			<span class="entry-count">{entries.length}{hasMore ? '+' : ''}</span>
 		{/if}
 	</header>
 
@@ -191,6 +223,7 @@
 								comment={entry.comment}
 								{wsSlug}
 								{items}
+								{currentUserId}
 								onDelete={handleDelete}
 								onReply={handleReply}
 								onReaction={handleReaction}
@@ -215,6 +248,12 @@
 				<div class="empty">No timeline entries yet.</div>
 			{/if}
 		</div>
+
+		{#if hasMore}
+			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={loadMore}>
+				{loadingMore ? 'Loading...' : 'Load more'}
+			</button>
+		{/if}
 	{/if}
 </section>
 
@@ -421,5 +460,29 @@
 		padding: var(--space-6);
 		color: var(--text-muted);
 		font-size: 0.9em;
+	}
+
+	.load-more-btn {
+		display: block;
+		width: 100%;
+		padding: var(--space-2) var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: center;
+	}
+
+	.load-more-btn:hover:not(:disabled) {
+		color: var(--text-primary);
+		border-color: var(--accent-blue);
+	}
+
+	.load-more-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>

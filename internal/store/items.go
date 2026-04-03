@@ -991,6 +991,36 @@ func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]model
 }
 
 // ListItemVersions returns all versions for an item.
+// ListItemVersionsBeforeTime returns versions for an item created before the given time,
+// ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
+func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, limit int) ([]models.Version, error) {
+	rows, err := s.db.Query(`
+		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
+		FROM item_versions
+		WHERE item_id = ? AND created_at < ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, itemID, before.Format(time.RFC3339Nano), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var versions []models.Version
+	for rows.Next() {
+		var v models.Version
+		var createdAt string
+		var isDiff int
+		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
+			return nil, err
+		}
+		v.IsDiff = isDiff == 1
+		v.CreatedAt = parseTime(createdAt)
+		versions = append(versions, v)
+	}
+	return versions, rows.Err()
+}
+
 func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
 	rows, err := s.db.Query(`
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at

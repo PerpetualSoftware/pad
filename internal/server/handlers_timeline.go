@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -11,7 +12,8 @@ import (
 )
 
 // handleListItemTimeline returns a unified, chronological timeline for an item.
-// It merges comments, activities, and versions into a single stream with deduplication.
+// It uses cursor-based pagination: pass `before=<RFC3339>` to get entries older
+// than that timestamp, and `limit=N` to control page size (default 50).
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -25,27 +27,33 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit := 100
-	offset := 0
+	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
+
+	// Cursor: fetch entries before this timestamp. Defaults to now (first page).
+	before := time.Now().UTC().Add(time.Minute) // slight future to include "just now" entries
+	if v := r.URL.Query().Get("before"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			before = t
 		}
 	}
 
-	// Fetch all three data sources.
-	comments, err := s.store.ListComments(item.ID)
+	// Fetch a window from each source. We fetch `limit` from each, then merge
+	// and take the top `limit` from the merged result. This ensures we get enough
+	// entries even after dedup/filtering removes some.
+	perSource := limit
+
+	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	// Bulk-load reactions for all comments.
+	// Bulk-load reactions for fetched comments.
 	if len(comments) > 0 {
 		commentIDs := make([]string, len(comments))
 		for i, c := range comments {
@@ -61,35 +69,34 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 10000})
+	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	versions, err := s.store.ListItemVersions(item.ID)
+	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
 	entries := buildTimeline(comments, activities, versions)
-	total := len(entries)
 
-	// Apply pagination.
-	if offset >= len(entries) {
-		entries = nil
+	// Determine if there are more entries beyond this page.
+	hasMore := false
+	if len(entries) > limit {
+		entries = entries[:limit]
+		hasMore = true
 	} else {
-		end := offset + limit
-		if end > len(entries) {
-			end = len(entries)
-		}
-		entries = entries[offset:end]
+		// Even if merged result is <= limit, there may be more in individual sources.
+		// If any source returned its full limit, there's likely more data.
+		hasMore = len(comments) >= perSource || len(activities) >= perSource || len(versions) >= perSource
 	}
 
 	writeJSON(w, http.StatusOK, models.TimelineResponse{
 		Entries: entries,
-		Total:   total,
+		HasMore: hasMore,
 	})
 }
 
@@ -196,4 +203,3 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 
 	return entries
 }
-

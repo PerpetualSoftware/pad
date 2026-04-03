@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/xarmian/pad/internal/models"
 )
@@ -79,6 +80,40 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 		ORDER BY c.created_at ASC`, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("list comments: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []models.Comment
+	for rows.Next() {
+		var c models.Comment
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
+			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
+			&createdAt, &updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan comment: %w", err)
+		}
+		c.CreatedAt = parseTime(createdAt)
+		c.UpdatedAt = parseTime(updatedAt)
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+// ListCommentsBeforeTime returns comments for an item created before the given time,
+// ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
+func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, limit int) ([]models.Comment, error) {
+	rows, err := s.db.Query(`
+		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
+		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
+		       c.created_at, c.updated_at
+		FROM comments c
+		WHERE c.item_id = ? AND c.created_at < ?
+		ORDER BY c.created_at DESC
+		LIMIT ?`, itemID, before.Format(time.RFC3339Nano), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list comments before time: %w", err)
 	}
 	defer rows.Close()
 

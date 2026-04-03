@@ -396,7 +396,7 @@ export interface TimelineEntry {
 
 export interface TimelineResponse {
 	entries: TimelineEntry[];
-	total: number;
+	has_more: boolean;
 }
 
 // ─── Views ───────────────────────────────────────────────────────────────────
