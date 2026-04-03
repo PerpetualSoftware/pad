@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
@@ -40,6 +41,7 @@
 		loading = true;
 		try {
 			await api.auth.login(email, password);
+			await authStore.load(); // Refresh global auth state before navigating.
 			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {

@@ -7,13 +7,14 @@
 		comment: Comment;
 		wsSlug: string;
 		items: Item[];
+		currentUserId?: string;
 		onDelete: (commentId: string) => void;
 		onReply: (commentId: string, body: string) => void | Promise<void>;
 		onReaction: (commentId: string, emoji: string) => void;
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, items, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, items, currentUserId = '', onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let replyBody = $state('');
@@ -87,20 +88,30 @@
 		return labels[source] ?? source;
 	}
 
+	function hasMyReaction(reactions: Reaction[] | undefined, emoji: string): boolean {
+		if (!reactions || !currentUserId) return false;
+		return reactions.some((r) => r.emoji === emoji && r.user_id === currentUserId);
+	}
+
 	function toggleReaction(emoji: string) {
-		// Always POST — the server uses ON CONFLICT DO NOTHING if the current user
-		// already reacted with this emoji.  A dedicated "remove my reaction" button
-		// or a second click handled server-side is needed for proper toggle, but
-		// for now adding is safe and idempotent.
-		onReaction(comment.id, emoji);
+		if (hasMyReaction(comment.reactions, emoji)) {
+			onRemoveReaction(comment.id, emoji);
+		} else {
+			onReaction(comment.id, emoji);
+		}
 	}
 
 	function handleAddReaction(emoji: string) {
+		// From the picker — always add.
 		onReaction(comment.id, emoji);
 	}
 
 	function toggleReplyReaction(reply: Comment, emoji: string) {
-		onReaction(reply.id, emoji);
+		if (hasMyReaction(reply.reactions, emoji)) {
+			onRemoveReaction(reply.id, emoji);
+		} else {
+			onReaction(reply.id, emoji);
+		}
 	}
 
 	function handleAddReplyReaction(reply: Comment, emoji: string) {
@@ -145,6 +156,7 @@
 				{#each reactionGroups as group (group.emoji)}
 					<button
 						class="reaction-chip"
+						class:mine={hasMyReaction(comment.reactions, group.emoji)}
 						type="button"
 						title={group.actors.join(', ')}
 						onclick={() => toggleReaction(group.emoji)}
@@ -214,6 +226,7 @@
 							{#each replyReactionGroups as group (group.emoji)}
 								<button
 									class="reaction-chip"
+									class:mine={hasMyReaction(reply.reactions, group.emoji)}
 									type="button"
 									title={group.actors.join(', ')}
 									onclick={() => toggleReplyReaction(reply, group.emoji)}
@@ -381,6 +394,11 @@
 		cursor: pointer;
 		font-size: 0.8em;
 		line-height: 1.5;
+	}
+
+	.reaction-chip.mine {
+		border-color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
 	}
 
 	.reaction-chip:hover {

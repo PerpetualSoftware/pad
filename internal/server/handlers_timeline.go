@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -11,7 +12,8 @@ import (
 )
 
 // handleListItemTimeline returns a unified, chronological timeline for an item.
-// It merges comments, activities, and versions into a single stream with deduplication.
+// It uses cursor-based pagination: pass `before=<RFC3339>` to get entries older
+// than that timestamp, and `limit=N` to control page size (default 50).
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -25,27 +27,39 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit := 100
-	offset := 0
+	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
+
+	// Cursor: fetch entries before this (timestamp, id) pair.
+	// Defaults to now + a future-biased ID to include "just now" entries on first page.
+	before := time.Now().UTC().Add(time.Minute)
+	beforeID := "\xff" // sorts after all UUIDs on first page
+	if v := r.URL.Query().Get("before"); v != "" {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			before = t
+		} else if t, err := time.Parse(time.RFC3339, v); err == nil {
+			before = t
 		}
 	}
+	if v := r.URL.Query().Get("before_id"); v != "" {
+		beforeID = v
+	}
 
-	// Fetch all three data sources.
-	comments, err := s.store.ListComments(item.ID)
+	// Over-fetch per source (3x limit) to compensate for entries removed by
+	// buildTimeline's dedup/filtering (empty-metadata updates, read actions, etc.).
+	perSource := limit * 3
+
+	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	// Bulk-load reactions for all comments.
+	// Bulk-load reactions for fetched comments.
 	if len(comments) > 0 {
 		commentIDs := make([]string, len(comments))
 		for i, c := range comments {
@@ -61,35 +75,34 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 10000})
+	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	versions, err := s.store.ListItemVersions(item.ID)
+	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
 	entries := buildTimeline(comments, activities, versions)
-	total := len(entries)
 
-	// Apply pagination.
-	if offset >= len(entries) {
-		entries = nil
+	// Determine if there are more entries beyond this page.
+	hasMore := false
+	if len(entries) > limit {
+		entries = entries[:limit]
+		hasMore = true
 	} else {
-		end := offset + limit
-		if end > len(entries) {
-			end = len(entries)
-		}
-		entries = entries[offset:end]
+		// Even if merged result is <= limit, there may be more in individual sources.
+		// If any source returned its full limit, there's likely more data.
+		hasMore = len(comments) >= perSource || len(activities) >= perSource || len(versions) >= perSource
 	}
 
 	writeJSON(w, http.StatusOK, models.TimelineResponse{
 		Entries: entries,
-		Total:   total,
+		HasMore: hasMore,
 	})
 }
 
@@ -119,12 +132,15 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	}
 	for i := range comments {
 		c := comments[i]
-		// Skip replies — they'll be nested under their parent.
+		// Nest replies under their parent if the parent was fetched on this page.
+		// If the parent is on a different page, treat the reply as a top-level entry
+		// so it doesn't silently vanish.
 		if c.ParentID != "" {
 			if parent, ok := commentsByID[c.ParentID]; ok {
 				parent.Replies = append(parent.Replies, c)
+				continue
 			}
-			continue
+			// Parent not on this page — fall through and add as top-level.
 		}
 		entry := models.TimelineEntry{
 			ID:        c.ID,
@@ -189,11 +205,14 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		entries = append(entries, entry)
 	}
 
-	// Sort chronologically (newest first).
+	// Sort chronologically (newest first), with ID as tie-breaker for same-second entries.
+	// This must match the SQL ORDER BY (created_at DESC, id DESC) used by the cursor queries.
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].CreatedAt.Equal(entries[j].CreatedAt) {
+			return entries[i].ID > entries[j].ID
+		}
 		return entries[i].CreatedAt.After(entries[j].CreatedAt)
 	})
 
 	return entries
 }
-

@@ -50,5 +50,5 @@ type TimelineEntry struct {
 // TimelineResponse is the paginated response from the timeline endpoint.
 type TimelineResponse struct {
 	Entries []TimelineEntry `json:"entries"`
-	Total   int             `json:"total"`
+	HasMore bool            `json:"has_more"`
 }

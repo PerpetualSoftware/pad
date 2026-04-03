@@ -279,10 +279,11 @@ export const api = {
 	// ── Timeline ──────────────────────────────────────────────────────────────
 
 	timeline: {
-		list: (ws: string, itemSlug: string, params?: { limit?: number; offset?: number }) => {
+		list: (ws: string, itemSlug: string, params?: { limit?: number; before?: string; before_id?: string }) => {
 			const qs = new URLSearchParams();
 			if (params?.limit != null) qs.set('limit', String(params.limit));
-			if (params?.offset != null) qs.set('offset', String(params.offset));
+			if (params?.before) qs.set('before', params.before);
+			if (params?.before_id) qs.set('before_id', params.before_id);
 			const suffix = qs.toString() ? `?${qs}` : '';
 			return request<TimelineResponse>(`/workspaces/${ws}/items/${itemSlug}/timeline${suffix}`);
 		}

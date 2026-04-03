@@ -6,6 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
@@ -130,12 +131,10 @@
 		}
 		document.documentElement.setAttribute('data-theme', currentTheme);
 
-		try {
-			const session = await api.auth.session();
-			if (session.authenticated && session.user) {
-				currentAuthUser = session.user;
-			}
-		} catch {}
+		// Read from the global auth store (populated by root layout).
+		if (authStore.authenticated && authStore.user) {
+			currentAuthUser = authStore.user;
+		}
 
 		try {
 			const health = await api.health();
