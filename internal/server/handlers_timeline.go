@@ -205,8 +205,12 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		entries = append(entries, entry)
 	}
 
-	// Sort chronologically (newest first).
+	// Sort chronologically (newest first), with ID as tie-breaker for same-second entries.
+	// This must match the SQL ORDER BY (created_at DESC, id DESC) used by the cursor queries.
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].CreatedAt.Equal(entries[j].CreatedAt) {
+			return entries[i].ID > entries[j].ID
+		}
 		return entries[i].CreatedAt.After(entries[j].CreatedAt)
 	})
 

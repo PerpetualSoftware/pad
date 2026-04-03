@@ -28,6 +28,10 @@
 	// Current user ID for reaction toggle — read from the global auth store.
 	let currentUserId = $derived(authStore.userId);
 
+	// Track IDs from the most recent first-page fetch, used by SSE merge
+	// to detect deletions without incorrectly removing older-page entries.
+	let firstPageIds = $state<Set<string>>(new Set());
+
 	async function loadTimeline() {
 		loading = true;
 		error = '';
@@ -35,6 +39,7 @@
 			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
 			entries = resp.entries;
 			hasMore = resp.has_more;
+			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
@@ -88,31 +93,26 @@
 				// Prepend genuinely new entries.
 				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
-				// Update existing entries that are in the fresh response (e.g., reaction changes).
-				// Remove entries from the first page window that no longer appear (e.g., deleted comments).
+				// Update existing entries from the fresh response (e.g., reaction changes).
+				// Remove entries that were previously on the first page but are now gone (deleted).
+				// Keep all entries from older pages (loaded via "Load more") untouched.
 				const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 				const updatedExisting = entries
 					.filter((e) => {
-						// Keep entries that are still in the fresh page, OR that are from older pages
-						// (not in the fresh page's time window at all).
-						return freshById.has(e.id) || !isInFirstPageWindow(e, resp.entries);
+						// If this entry was in the previous first page and is no longer in
+						// the fresh response, it was deleted — remove it.
+						if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
+						return true;
 					})
 					.map((e) => freshById.get(e.id) ?? e);
 
 				entries = [...newEntries, ...updatedExisting];
+				firstPageIds = freshIds;
 			} catch {
 				// Silently ignore SSE refresh failures.
 			}
 		}
 	});
-
-	/** Check if an entry falls within the time window of the first-page response. */
-	function isInFirstPageWindow(entry: TimelineEntry, firstPage: TimelineEntry[]): boolean {
-		if (firstPage.length === 0) return false;
-		const newest = firstPage[0].created_at;
-		const oldest = firstPage[firstPage.length - 1].created_at;
-		return entry.created_at <= newest && entry.created_at >= oldest;
-	}
 
 	onDestroy(() => {
 		unsubscribe();
