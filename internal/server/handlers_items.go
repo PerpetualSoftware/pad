@@ -24,6 +24,10 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
+	if err := s.resolveRelationFieldFiltersForWorkspace(workspaceID, &params); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -56,6 +60,10 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
+	if err := s.resolveRelationFieldFilters(workspaceID, &params, coll.Schema); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
@@ -563,6 +571,110 @@ func (s *Server) resolveRelationFields(workspaceID string, fields map[string]any
 		fields[def.Key] = item.ID
 	}
 	return nil
+}
+
+func (s *Server) resolveRelationFieldFiltersForWorkspace(workspaceID string, params *models.ItemListParams) error {
+	if len(params.Fields) == 0 {
+		return nil
+	}
+
+	colls, err := s.store.ListCollections(workspaceID)
+	if err != nil {
+		return fmt.Errorf("list collections: %w", err)
+	}
+
+	schemas := make([]string, 0, len(colls))
+	for _, coll := range colls {
+		schemas = append(schemas, coll.Schema)
+	}
+
+	return s.resolveRelationFieldFilters(workspaceID, params, schemas...)
+}
+
+func (s *Server) resolveRelationFieldFilters(workspaceID string, params *models.ItemListParams, schemaJSONs ...string) error {
+	if len(params.Fields) == 0 || len(schemaJSONs) == 0 {
+		return nil
+	}
+
+	relationKeys := relationFilterKeys(schemaJSONs...)
+	if len(relationKeys) == 0 {
+		return nil
+	}
+
+	for key, rawValue := range params.Fields {
+		if !relationKeys[key] {
+			continue
+		}
+		resolvedValue, err := s.resolveRelationFilterValue(workspaceID, key, rawValue)
+		if err != nil {
+			return err
+		}
+		params.Fields[key] = resolvedValue
+	}
+
+	return nil
+}
+
+func relationFilterKeys(schemaJSONs ...string) map[string]bool {
+	type fieldState struct {
+		relation    bool
+		nonRelation bool
+	}
+
+	states := make(map[string]*fieldState)
+	for _, schemaJSON := range schemaJSONs {
+		if strings.TrimSpace(schemaJSON) == "" {
+			continue
+		}
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+			continue
+		}
+		for _, def := range schema.Fields {
+			state := states[def.Key]
+			if state == nil {
+				state = &fieldState{}
+				states[def.Key] = state
+			}
+			if def.Type == "relation" {
+				state.relation = true
+			} else {
+				state.nonRelation = true
+			}
+		}
+	}
+
+	result := make(map[string]bool)
+	for key, state := range states {
+		if state.relation && !state.nonRelation {
+			result[key] = true
+		}
+	}
+	return result
+}
+
+func (s *Server) resolveRelationFilterValue(workspaceID, key, rawValue string) (string, error) {
+	parts := strings.Split(rawValue, ",")
+	resolved := make([]string, 0, len(parts))
+	for _, part := range parts {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			continue
+		}
+		if isUUID(candidate) {
+			resolved = append(resolved, candidate)
+			continue
+		}
+		item, err := s.store.ResolveItem(workspaceID, candidate)
+		if err != nil {
+			return "", fmt.Errorf("field %q: failed to resolve %q: %w", key, candidate, err)
+		}
+		if item == nil {
+			return "", fmt.Errorf("field %q: item %q not found", key, candidate)
+		}
+		resolved = append(resolved, item.ID)
+	}
+	return strings.Join(resolved, ","), nil
 }
 
 // isUUID checks if a string looks like a UUID (8-4-4-4-12 hex).
