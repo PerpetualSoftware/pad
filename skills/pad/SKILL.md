@@ -51,6 +51,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Querying:**
 - "what's on my plate?" / "what should I work on?" → `pad project next --format json`
 - "how far along are we?" / "show me status" → `pad project dashboard --format json`
+- "what server am I connected to?" / "show my Pad connection info" → `pad server info --format json`
 - "show me all tasks" / "list bugs" → `pad item list <collection> --format json`
 - "find anything about OAuth" → `pad item search "OAuth" --format json`
 
@@ -157,6 +158,12 @@ pad project dashboard [--format json]  # Project dashboard
 pad project next [--format json]       # Recommended next task
 pad project standup [--days N] [--format json]  # Daily standup report (completed/in-progress/blockers)
 pad project changelog [--days N] [--since DATE] [--phase PHASE-2] [--format json|markdown]  # Release notes
+```
+
+### Server
+```bash
+pad server info [--format json]        # Show local client, connection, and local server status
+pad server open                        # Open the Pad web UI in your browser
 ```
 
 ### Dependencies

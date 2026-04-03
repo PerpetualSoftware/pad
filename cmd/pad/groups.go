@@ -26,6 +26,7 @@ func serverCmd() *cobra.Command {
 	cmd.AddCommand(
 		serveCmd(),
 		stopCmd(),
+		infoCmd(),
 		openCmd(),
 	)
 	return cmd
