@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
-	import { SvelteMap } from 'svelte/reactivity';
 	import ReactionPicker from './ReactionPicker.svelte';
 
 	interface Props {
@@ -54,7 +53,7 @@
 
 	function groupReactions(reactions: Reaction[] | undefined): ReactionGroup[] {
 		if (!reactions || reactions.length === 0) return [];
-		const map = new SvelteMap<string, ReactionGroup>();
+		const map = new Map<string, ReactionGroup>();
 		for (const r of reactions) {
 			const existing = map.get(r.emoji);
 			if (existing) {
@@ -142,8 +141,7 @@
 	</div>
 
 	<div class="comment-footer">
-		{#if reactionGroups.length > 0 || true}
-			<div class="reactions-row">
+		<div class="reactions-row">
 				{#each reactionGroups as group (group.emoji)}
 					<button
 						class="reaction-chip"
@@ -156,8 +154,7 @@
 					</button>
 				{/each}
 				<ReactionPicker onSelect={handleAddReaction} />
-			</div>
-		{/if}
+		</div>
 		<button class="reply-btn" type="button" onclick={() => { showReplyForm = !showReplyForm; }}>
 			Reply
 		</button>
@@ -213,7 +210,6 @@
 						{@html renderMarkdown(reply.body, items, wsSlug)}
 					</div>
 
-					{#if replyReactionGroups.length > 0 || true}
 						<div class="reactions-row">
 							{#each replyReactionGroups as group (group.emoji)}
 								<button
@@ -228,7 +224,6 @@
 							{/each}
 							<ReactionPicker onSelect={(emoji) => handleAddReplyReaction(reply, emoji)} />
 						</div>
-					{/if}
 				</div>
 			{/each}
 		</div>

@@ -119,12 +119,20 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteComment removes a comment.
 func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	commentID := chi.URLParam(r, "commentID")
+
+	// Verify the comment belongs to this workspace.
+	comment, cerr := s.store.GetComment(commentID)
+	if cerr != nil || comment == nil || comment.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
+
 	if err := s.store.DeleteComment(commentID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Comment not found")

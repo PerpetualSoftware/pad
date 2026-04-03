@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -295,6 +296,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		commentInput.CreatedBy = actor
 		commentInput.Source = source
 		comment, cerr := s.store.CreateComment(workspaceID, updated.ID, commentInput)
+		if cerr != nil {
+			log.Printf("WARNING: failed to create comment on item update %s: %v", updated.ID, cerr)
+		}
 		if cerr == nil && comment != nil {
 			s.publishCommentEvent(events.CommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
 			s.dispatchWebhook(workspaceID, "item.updated_with_comment", map[string]interface{}{

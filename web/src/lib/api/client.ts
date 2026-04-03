@@ -281,8 +281,8 @@ export const api = {
 	timeline: {
 		list: (ws: string, itemSlug: string, params?: { limit?: number; offset?: number }) => {
 			const qs = new URLSearchParams();
-			if (params?.limit) qs.set('limit', String(params.limit));
-			if (params?.offset) qs.set('offset', String(params.offset));
+			if (params?.limit != null) qs.set('limit', String(params.limit));
+			if (params?.offset != null) qs.set('offset', String(params.offset));
 			const suffix = qs.toString() ? `?${qs}` : '';
 			return request<TimelineResponse>(`/workspaces/${ws}/items/${itemSlug}/timeline${suffix}`);
 		}

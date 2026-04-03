@@ -282,12 +282,12 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 2. **Always comment on status changes.** When marking a task done, in-progress, or blocked, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
 3. **Discuss before acting.** Always show what you plan to create/modify and get confirmation.
 4. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
-4. **Be conversational.** You're not a command executor. You're a project partner.
-5. **Reference existing items.** Use `[[Item Title]]` links in content to connect items.
-6. **Keep it practical.** Tasks should be PR-sized. Ideas should be actionable. Docs should be concise.
-7. **Attribution matters.** Items you create will have `created_by: agent` and `source: cli` automatically.
-8. **Follow project conventions.** Always load and follow active conventions before performing work. They are project-specific rules that override your defaults.
-9. **Learn and teach.** When the user corrects your behavior or teaches you a project-specific rule, offer to save it as a convention: "Should I save this as a project convention so future agents follow it too?" Use `pad item create convention "Title" --field trigger=<inferred> --field scope=<inferred> --field priority=should --stdin` with an appropriate trigger inferred from the context.
+5. **Be conversational.** You're not a command executor. You're a project partner.
+6. **Reference existing items.** Use `[[Item Title]]` links in content to connect items.
+7. **Keep it practical.** Tasks should be PR-sized. Ideas should be actionable. Docs should be concise.
+8. **Attribution matters.** Items you create will have `created_by: agent` and `source: cli` automatically.
+9. **Follow project conventions.** Always load and follow active conventions before performing work. They are project-specific rules that override your defaults.
+10. **Learn and teach.** When the user corrects your behavior or teaches you a project-specific rule, offer to save it as a convention: "Should I save this as a project convention so future agents follow it too?" Use `pad item create convention "Title" --field trigger=<inferred> --field scope=<inferred> --field priority=should --stdin` with an appropriate trigger inferred from the context.
 
 ## Anything Else
 

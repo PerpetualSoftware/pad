@@ -12,11 +12,13 @@ func (s *Store) AddReaction(commentID, userID, actor, emoji string) (*models.Rea
 	id := newID()
 	ts := now()
 
+	// Store empty string (not NULL) for anonymous users so the UNIQUE constraint
+	// on (comment_id, user_id, emoji) works correctly — SQLite treats NULL != NULL.
 	_, err := s.db.Exec(`
 		INSERT INTO comment_reactions (id, comment_id, user_id, actor, emoji, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(comment_id, user_id, emoji) DO NOTHING`,
-		id, commentID, nilIfEmpty(userID), actor, emoji, ts,
+		id, commentID, userID, actor, emoji, ts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add reaction: %w", err)
@@ -32,8 +34,8 @@ func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, 
 	err := s.db.QueryRow(`
 		SELECT id, comment_id, COALESCE(user_id, ''), actor, emoji, created_at
 		FROM comment_reactions
-		WHERE comment_id = ? AND (user_id = ? OR (user_id IS NULL AND ? = '')) AND emoji = ?`,
-		commentID, userID, userID, emoji,
+		WHERE comment_id = ? AND user_id = ? AND emoji = ?`,
+		commentID, userID, emoji,
 	).Scan(&r.ID, &r.CommentID, &r.UserID, &r.Actor, &r.Emoji, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("get reaction: %w", err)
@@ -46,8 +48,8 @@ func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, 
 func (s *Store) RemoveReaction(commentID, userID, emoji string) error {
 	result, err := s.db.Exec(`
 		DELETE FROM comment_reactions
-		WHERE comment_id = ? AND (user_id = ? OR (user_id IS NULL AND ? = '')) AND emoji = ?`,
-		commentID, userID, userID, emoji,
+		WHERE comment_id = ? AND user_id = ? AND emoji = ?`,
+		commentID, userID, emoji,
 	)
 	if err != nil {
 		return fmt.Errorf("remove reaction: %w", err)
