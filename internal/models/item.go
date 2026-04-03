@@ -473,6 +473,7 @@ type ItemUpdate struct {
 	LastModifiedBy string  `json:"last_modified_by,omitempty"`
 	Source         string  `json:"source,omitempty"`
 	ChangeSummary  string  `json:"change_summary,omitempty"`
+	Comment        *string `json:"comment,omitempty"`
 }
 
 type ItemListParams struct {

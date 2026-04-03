@@ -576,14 +576,14 @@ func TestActivity(t *testing.T) {
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
-	s.CreateActivity(models.Activity{
+	_, _ = s.CreateActivity(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "created",
 		Actor:       "user",
 		Source:      "web",
 	})
-	s.CreateActivity(models.Activity{
+	_, _ = s.CreateActivity(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",

@@ -278,9 +278,32 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	actor, source := actorFromRequest(r)
-	s.logActivityWithMeta(workspaceID, updated.ID, "updated", r, meta)
+	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
+
+	// If a comment was attached to this update (e.g. explaining a status change),
+	// create a comment linked to the activity entry.
+	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
+		commentInput := models.CommentCreate{
+			Body:       strings.TrimSpace(*input.Comment),
+			ActivityID: activityID,
+		}
+		if u := currentUser(r); u != nil {
+			commentInput.Author = u.Name
+		}
+		commentInput.CreatedBy = actor
+		commentInput.Source = source
+		comment, cerr := s.store.CreateComment(workspaceID, updated.ID, commentInput)
+		if cerr == nil && comment != nil {
+			s.publishCommentEvent(events.CommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
+			s.dispatchWebhook(workspaceID, "item.updated_with_comment", map[string]interface{}{
+				"item":    updated,
+				"comment": comment,
+				"changes": meta,
+			})
+		}
+	}
 
 	if err := s.enrichItemForResponse(updated); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())

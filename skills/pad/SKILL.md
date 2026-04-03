@@ -56,9 +56,11 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "find anything about OAuth" → `pad item search "OAuth" --format json`
 
 **Updating:**
-- "I finished the OAuth fix" / "mark TASK-5 as done" → `pad item update TASK-5 --status done`
-- "I'm starting on TASK-3" → `pad item update TASK-3 --status in-progress`
-- "deprioritize IDEA-7" → `pad item update IDEA-7 --priority low`
+- "I finished the OAuth fix" / "mark TASK-5 as done" → `pad item update TASK-5 --status done --comment "OAuth redirect fix verified and deployed"`
+- "I'm starting on TASK-3" → `pad item update TASK-3 --status in-progress --comment "Beginning implementation"`
+- "deprioritize IDEA-7" → `pad item update IDEA-7 --priority low --comment "Deprioritized per team discussion"`
+
+**Best practice:** Always use `--comment` when changing status to explain *why*. This creates an audit trail linking each status change to a reason.
 
 **Planning:**
 - "let's plan the next phase" → Multi-step planning workflow (see below)
@@ -140,10 +142,15 @@ pad item list --all                   # everything across all collections
 # Show item detail — use the issue ID (e.g. TASK-5, BUG-8)
 pad item show TASK-5 [--format json|markdown]
 
-# Update items — use the issue ID
-pad item update TASK-5 --status done
+# Update items — use the issue ID (--comment adds an audit note)
+pad item update TASK-5 --status done --comment "Fixed login bug, tests passing"
 pad item update IDEA-3 --priority high --assignee dave
 pad item update DOC-1 --stdin < updated-doc.md
+
+# Comments — add notes, reply to threads
+pad item comment TASK-5 "Investigated the race condition, root cause is in mutex handler"
+pad item comment TASK-5 "Good catch, fixed in commit abc123" --reply-to <comment-id>
+pad item comments TASK-5               # List all comments
 
 # Delete (archive) — use the issue ID
 pad item delete TASK-5
@@ -272,8 +279,9 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 ## Key Principles
 
 1. **Use issue IDs, not slugs.** Every item has an ID like `TASK-5` or `BUG-8`. Use these in all commands: `pad item show TASK-5`, `pad item update BUG-8 --status done`. The CLI prints issue IDs in all output — look for them.
-2. **Discuss before acting.** Always show what you plan to create/modify and get confirmation.
-3. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
+2. **Always comment on status changes.** When marking a task done, in-progress, or blocked, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
+3. **Discuss before acting.** Always show what you plan to create/modify and get confirmation.
+4. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
 4. **Be conversational.** You're not a command executor. You're a project partner.
 5. **Reference existing items.** Use `[[Item Title]]` links in content to connect items.
 6. **Keep it practical.** Tasks should be PR-sized. Ideas should be actionable. Docs should be concise.

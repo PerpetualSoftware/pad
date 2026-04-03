@@ -32,3 +32,23 @@ type ActivityListParams struct {
 	Limit  int
 	Offset int
 }
+
+// TimelineEntry represents a single entry in the unified item timeline.
+// It wraps one of: a comment, an activity, or a version.
+type TimelineEntry struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"` // "comment", "activity", "version"
+	CreatedAt time.Time `json:"created_at"`
+	Actor     string    `json:"actor"`
+	ActorName string    `json:"actor_name,omitempty"`
+	Source    string    `json:"source"`
+	Comment   *Comment  `json:"comment,omitempty"`
+	Activity  *Activity `json:"activity,omitempty"`
+	Version   *Version  `json:"version,omitempty"`
+}
+
+// TimelineResponse is the paginated response from the timeline endpoint.
+type TimelineResponse struct {
+	Entries []TimelineEntry `json:"entries"`
+	Total   int             `json:"total"`
+}

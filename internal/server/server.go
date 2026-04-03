@@ -232,6 +232,7 @@ func (s *Server) setupRouter() {
 					r.Post("/links", s.handleCreateItemLink)
 					r.Get("/comments", s.handleListComments)
 					r.Post("/comments", s.handleCreateComment)
+					r.Get("/timeline", s.handleListItemTimeline)
 					r.Get("/tasks", s.handleGetItemTasks)
 				})
 
@@ -239,7 +240,12 @@ func (s *Server) setupRouter() {
 				r.Delete("/links/{linkID}", s.handleDeleteItemLink)
 
 				// Comments (v2)
-				r.Delete("/comments/{commentID}", s.handleDeleteComment)
+				r.Route("/comments/{commentID}", func(r chi.Router) {
+					r.Delete("/", s.handleDeleteComment)
+					r.Post("/replies", s.handleCreateReply)
+					r.Post("/reactions", s.handleAddReaction)
+					r.Delete("/reactions/{emoji}", s.handleRemoveReaction)
+				})
 
 				// Webhooks
 				r.Route("/webhooks", func(r chi.Router) {
