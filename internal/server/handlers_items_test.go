@@ -230,6 +230,101 @@ func TestItemCRUD(t *testing.T) {
 	}
 }
 
+func TestListCollectionItemsResolvesRelationFieldFilterRefs(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	phaseResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/phases/items", map[string]interface{}{
+		"title":  "Agent Workflow Intelligence",
+		"fields": `{"status":"active"}`,
+	})
+	if phaseResp.Code != http.StatusCreated {
+		t.Fatalf("create phase: expected 201, got %d: %s", phaseResp.Code, phaseResp.Body.String())
+	}
+
+	var phase models.Item
+	parseJSON(t, phaseResp, &phase)
+	if phase.Ref == "" {
+		t.Fatal("expected phase ref to be populated")
+	}
+
+	taskResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Add relation filter resolution",
+		"fields": `{"status":"open","phase":"` + phase.Ref + `"}`,
+	})
+	if taskResp.Code != http.StatusCreated {
+		t.Fatalf("create task: expected 201, got %d: %s", taskResp.Code, taskResp.Body.String())
+	}
+
+	otherTaskResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Unrelated task",
+		"fields": `{"status":"open"}`,
+	})
+	if otherTaskResp.Code != http.StatusCreated {
+		t.Fatalf("create unrelated task: expected 201, got %d: %s", otherTaskResp.Code, otherTaskResp.Body.String())
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/items?phase="+phase.Ref, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list tasks by phase ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var items []models.Item
+	parseJSON(t, rr, &items)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 task for phase ref filter, got %d", len(items))
+	}
+	if items[0].Title != "Add relation filter resolution" {
+		t.Fatalf("unexpected task returned: %q", items[0].Title)
+	}
+}
+
+func TestListItemsResolvesRelationFieldFilterRefsAcrossCollections(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	phaseResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/phases/items", map[string]interface{}{
+		"title":  "Open Source Launch",
+		"fields": `{"status":"active"}`,
+	})
+	if phaseResp.Code != http.StatusCreated {
+		t.Fatalf("create phase: expected 201, got %d: %s", phaseResp.Code, phaseResp.Body.String())
+	}
+
+	var phase models.Item
+	parseJSON(t, phaseResp, &phase)
+
+	taskResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Document release filters",
+		"fields": `{"status":"open","phase":"` + phase.Ref + `"}`,
+	})
+	if taskResp.Code != http.StatusCreated {
+		t.Fatalf("create task: expected 201, got %d: %s", taskResp.Code, taskResp.Body.String())
+	}
+
+	docResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/docs/items", map[string]interface{}{
+		"title":  "Release Notes",
+		"fields": `{"status":"draft","category":"launch"}`,
+	})
+	if docResp.Code != http.StatusCreated {
+		t.Fatalf("create doc: expected 201, got %d: %s", docResp.Code, docResp.Body.String())
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items?phase="+phase.Ref, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list items by phase ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var items []models.Item
+	parseJSON(t, rr, &items)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item for cross-collection phase ref filter, got %d", len(items))
+	}
+	if items[0].CollectionSlug != "tasks" {
+		t.Fatalf("expected task item, got collection %q", items[0].CollectionSlug)
+	}
+}
+
 func TestItemCreateValidation(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
