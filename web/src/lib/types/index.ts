@@ -298,6 +298,7 @@ export interface ItemUpdate {
 	parent_id?: string;
 	last_modified_by?: string;
 	source?: string;
+	comment?: string;
 }
 
 // ─── Versions ────────────────────────────────────────────────────────────────
@@ -351,10 +352,14 @@ export interface Comment {
 	body: string;
 	created_by: string;
 	source: string;
+	activity_id?: string;
+	parent_id?: string;
 	created_at: string;
 	updated_at: string;
 	item_title?: string;
 	item_slug?: string;
+	replies?: Comment[];
+	reactions?: Reaction[];
 }
 
 export interface CommentCreate {
@@ -362,6 +367,36 @@ export interface CommentCreate {
 	body: string;
 	created_by?: string;
 	source?: string;
+	parent_id?: string;
+}
+
+export interface Reaction {
+	id: string;
+	comment_id: string;
+	user_id?: string;
+	actor: string;
+	emoji: string;
+	created_at: string;
+	actor_name?: string;
+}
+
+// ─── Timeline ────────────────────────────────────────────────────────────────
+
+export interface TimelineEntry {
+	id: string;
+	kind: 'comment' | 'activity' | 'version';
+	created_at: string;
+	actor: string;
+	actor_name?: string;
+	source: string;
+	comment?: Comment;
+	activity?: Activity;
+	version?: Version;
+}
+
+export interface TimelineResponse {
+	entries: TimelineEntry[];
+	total: number;
 }
 
 // ─── Views ───────────────────────────────────────────────────────────────────

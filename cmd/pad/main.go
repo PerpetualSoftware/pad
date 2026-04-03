@@ -2101,6 +2101,7 @@ func updateCmd() *cobra.Command {
 		category   string
 		tags       string
 		fieldFlags []string
+		comment    string
 	)
 
 	cmd := &cobra.Command{
@@ -2112,6 +2113,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
   pad item update TASK-5 --status done
+  pad item update TASK-5 --status done --comment "Fixed the login bug"
   pad item update PHASE-2 --status active --priority high
   pad item update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
@@ -2146,6 +2148,9 @@ Examples:
 
 			if tags != "" {
 				input.Tags = &tags
+			}
+			if comment != "" {
+				input.Comment = &comment
 			}
 
 			// Merge field changes with existing fields
@@ -2221,6 +2226,7 @@ Examples:
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
+	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 
 	return cmd
 }
@@ -2314,7 +2320,9 @@ Examples:
 // --- comments ---
 
 func commentCmd() *cobra.Command {
-	return &cobra.Command{
+	var replyTo string
+
+	cmd := &cobra.Command{
 		Use:   "comment <ref> <message>",
 		Short: "Add a comment to an item",
 		Args:  cobra.ExactArgs(2),
@@ -2323,7 +2331,8 @@ func commentCmd() *cobra.Command {
 			ws := getWorkspace()
 
 			input := models.CommentCreate{
-				Body: args[1],
+				Body:     args[1],
+				ParentID: replyTo,
 			}
 
 			comment, err := client.CreateComment(ws, args[0], input)
@@ -2339,6 +2348,9 @@ func commentCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&replyTo, "reply-to", "", "reply to a specific comment ID")
+	return cmd
 }
 
 func commentsCmd() *cobra.Command {

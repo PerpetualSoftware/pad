@@ -14,7 +14,7 @@ func TestCreateActivityDebounced_NonUpdateActions(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// "created" should always produce a new row, never debounce
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "created",
@@ -25,7 +25,7 @@ func TestCreateActivityDebounced_NonUpdateActions(t *testing.T) {
 		t.Fatalf("first CreateActivityDebounced error: %v", err)
 	}
 
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "created",
@@ -48,7 +48,7 @@ func TestCreateActivityDebounced_CoalescesUpdates(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// First "updated" activity
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -61,7 +61,7 @@ func TestCreateActivityDebounced_CoalescesUpdates(t *testing.T) {
 	}
 
 	// Second "updated" activity within cooldown — should coalesce
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -105,7 +105,7 @@ func TestCreateActivityDebounced_DifferentUsersDontCoalesce(t *testing.T) {
 	}
 
 	// First update by user A
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -118,7 +118,7 @@ func TestCreateActivityDebounced_DifferentUsersDontCoalesce(t *testing.T) {
 	}
 
 	// Second update by user B — should NOT coalesce
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -142,7 +142,7 @@ func TestCreateActivityDebounced_DifferentDocsDontCoalesce(t *testing.T) {
 	doc1 := createTestDoc(t, s, ws.ID, "Doc 1", "content 1")
 	doc2 := createTestDoc(t, s, ws.ID, "Doc 2", "content 2")
 
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc1.ID,
 		Action:      "updated",
@@ -153,7 +153,7 @@ func TestCreateActivityDebounced_DifferentDocsDontCoalesce(t *testing.T) {
 		t.Fatalf("doc1 update error: %v", err)
 	}
 
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc2.ID,
 		Action:      "updated",
@@ -178,7 +178,7 @@ func TestCreateActivityDebounced_TimestampBumped(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// First update
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -196,7 +196,7 @@ func TestCreateActivityDebounced_TimestampBumped(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	// Second update — should bump timestamp
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -224,7 +224,7 @@ func TestCreateActivityDebounced_MetadataMerge(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// Update with no changes metadata
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -237,7 +237,7 @@ func TestCreateActivityDebounced_MetadataMerge(t *testing.T) {
 	}
 
 	// Update with changes metadata — should add changes
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -268,7 +268,7 @@ func TestCreateActivityDebounced_AgentMetaPreserved(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// First update with agent metadata
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -281,7 +281,7 @@ func TestCreateActivityDebounced_AgentMetaPreserved(t *testing.T) {
 	}
 
 	// Second update with agent metadata
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -316,7 +316,7 @@ func TestCreateActivityDebounced_MultipleRapidSaves(t *testing.T) {
 
 	// Simulate 10 rapid autosaves
 	for i := 0; i < 10; i++ {
-		err := s.CreateActivityDebounced(models.Activity{
+		_, err := s.CreateActivityDebounced(models.Activity{
 			WorkspaceID: ws.ID,
 			DocumentID:  doc.ID,
 			Action:      "updated",
@@ -340,7 +340,7 @@ func TestCreateActivityDebounced_NoUserID(t *testing.T) {
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
 
 	// Two updates with no user ID (pre-auth mode)
-	err := s.CreateActivityDebounced(models.Activity{
+	_, err := s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",
@@ -352,7 +352,7 @@ func TestCreateActivityDebounced_NoUserID(t *testing.T) {
 		t.Fatalf("first update error: %v", err)
 	}
 
-	err = s.CreateActivityDebounced(models.Activity{
+	_, err = s.CreateActivityDebounced(models.Activity{
 		WorkspaceID: ws.ID,
 		DocumentID:  doc.ID,
 		Action:      "updated",

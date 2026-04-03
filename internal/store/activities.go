@@ -13,7 +13,7 @@ import (
 // on the same item by the same user are coalesced into a single activity entry.
 const ActivityDebounceCooldown = 5 * time.Minute
 
-func (s *Store) CreateActivity(a models.Activity) error {
+func (s *Store) CreateActivity(a models.Activity) (string, error) {
 	a.ID = newID()
 	if a.Metadata == "" {
 		a.Metadata = "{}"
@@ -24,7 +24,7 @@ func (s *Store) CreateActivity(a models.Activity) error {
 		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), ts)
-	return err
+	return a.ID, err
 }
 
 // CreateActivityDebounced creates a new activity or updates an existing one if a
@@ -35,7 +35,7 @@ func (s *Store) CreateActivity(a models.Activity) error {
 // When merging, the existing activity's timestamp is bumped to now and its
 // metadata changes are accumulated (so a rapid sequence of field edits produces
 // a single activity whose metadata lists all changed fields).
-func (s *Store) CreateActivityDebounced(a models.Activity) error {
+func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	if a.Metadata == "" {
 		a.Metadata = "{}"
 	}
@@ -72,7 +72,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) error {
 	_, err = s.db.Exec(`
 		UPDATE activities SET metadata = ?, created_at = ? WHERE id = ?
 	`, merged, ts, existingID)
-	return err
+	return existingID, err
 }
 
 // mergeActivityMeta combines two activity metadata JSON strings, accumulating

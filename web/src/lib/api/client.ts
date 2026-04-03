@@ -26,7 +26,9 @@ import type {
 	User,
 	UserProfileUpdate,
 	APIToken,
-	APITokenWithSecret
+	APITokenWithSecret,
+	Reaction,
+	TimelineResponse
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -254,7 +256,36 @@ export const api = {
 		delete: (ws: string, commentId: string) =>
 			request<void>(`/workspaces/${ws}/comments/${commentId}`, {
 				method: 'DELETE'
+			}),
+
+		reply: (ws: string, commentId: string, data: CommentCreate) =>
+			request<Comment>(`/workspaces/${ws}/comments/${commentId}/replies`, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			}),
+
+		addReaction: (ws: string, commentId: string, emoji: string) =>
+			request<Reaction>(`/workspaces/${ws}/comments/${commentId}/reactions`, {
+				method: 'POST',
+				body: JSON.stringify({ emoji })
+			}),
+
+		removeReaction: (ws: string, commentId: string, emoji: string) =>
+			request<void>(`/workspaces/${ws}/comments/${commentId}/reactions/${encodeURIComponent(emoji)}`, {
+				method: 'DELETE'
 			})
+	},
+
+	// ── Timeline ──────────────────────────────────────────────────────────────
+
+	timeline: {
+		list: (ws: string, itemSlug: string, params?: { limit?: number; offset?: number }) => {
+			const qs = new URLSearchParams();
+			if (params?.limit != null) qs.set('limit', String(params.limit));
+			if (params?.offset != null) qs.set('offset', String(params.offset));
+			const suffix = qs.toString() ? `?${qs}` : '';
+			return request<TimelineResponse>(`/workspaces/${ws}/items/${itemSlug}/timeline${suffix}`);
+		}
 	},
 
 	// ── Views ─────────────────────────────────────────────────────────────────

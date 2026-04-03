@@ -417,9 +417,15 @@ func (s *Server) logActivity(workspaceID, documentID, action string, r *http.Req
 // For "updated" actions, uses debouncing to coalesce rapid successive saves
 // (e.g., autosave) into a single activity entry within a cooldown window.
 func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *http.Request, metadata string) {
+	_, _ = s.logActivityWithMetaReturningID(workspaceID, documentID, action, r, metadata)
+}
+
+// logActivityWithMetaReturningID is like logActivityWithMeta but returns the activity ID.
+// The ID is either newly created or the coalesced existing activity's ID (for debounced updates).
+func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action string, r *http.Request, metadata string) (string, error) {
 	actor, source := actorFromRequest(r)
 	metadata = agentMeta(r, metadata)
-	_ = s.store.CreateActivityDebounced(models.Activity{
+	return s.store.CreateActivityDebounced(models.Activity{
 		WorkspaceID: workspaceID,
 		DocumentID:  documentID,
 		Action:      action,

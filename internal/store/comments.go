@@ -26,9 +26,10 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, itemID, workspaceID, author, input.Body, createdBy, source, ts, ts,
+		INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, activity_id, parent_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, itemID, workspaceID, author, input.Body, createdBy, source,
+		nilIfEmpty(input.ActivityID), nilIfEmpty(input.ParentID), ts, ts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert comment: %w", err)
@@ -41,7 +42,8 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 func (s *Store) GetComment(id string) (*models.Comment, error) {
 	row := s.db.QueryRow(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
-		       c.created_by, c.source, c.created_at, c.updated_at,
+		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
+		       c.created_at, c.updated_at,
 		       i.title, i.slug
 		FROM comments c
 		JOIN items i ON i.id = c.item_id
@@ -51,7 +53,8 @@ func (s *Store) GetComment(id string) (*models.Comment, error) {
 	var createdAt, updatedAt string
 	err := row.Scan(
 		&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
-		&c.CreatedBy, &c.Source, &createdAt, &updatedAt,
+		&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
+		&createdAt, &updatedAt,
 		&c.ItemTitle, &c.ItemSlug,
 	)
 	if err == sql.ErrNoRows {
@@ -69,7 +72,8 @@ func (s *Store) GetComment(id string) (*models.Comment, error) {
 func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 	rows, err := s.db.Query(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
-		       c.created_by, c.source, c.created_at, c.updated_at
+		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
+		       c.created_at, c.updated_at
 		FROM comments c
 		WHERE c.item_id = ?
 		ORDER BY c.created_at ASC`, itemID)
@@ -84,7 +88,8 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 		var createdAt, updatedAt string
 		if err := rows.Scan(
 			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
-			&c.CreatedBy, &c.Source, &createdAt, &updatedAt,
+			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
+			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
 		}

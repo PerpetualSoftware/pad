@@ -23,6 +23,13 @@ const (
 	// Comment events
 	CommentCreated = "comment_created"
 	CommentDeleted = "comment_deleted"
+
+	// Reaction events
+	ReactionAdded   = "reaction_added"
+	ReactionRemoved = "reaction_removed"
+
+	// Composite events
+	ItemUpdatedWithComment = "item_updated_with_comment"
 )
 
 // Event represents a real-time event published when state changes occur.

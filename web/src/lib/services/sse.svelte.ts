@@ -23,7 +23,9 @@ const ITEM_EVENTS = [
 	'item_restored',
 	'workspace_updated',
 	'comment_created',
-	'comment_deleted'
+	'comment_deleted',
+	'reaction_added',
+	'reaction_removed'
 ] as const;
 
 function createSSEService() {
