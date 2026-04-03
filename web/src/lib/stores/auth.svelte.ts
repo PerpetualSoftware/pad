@@ -1,0 +1,28 @@
+import { api, type AuthSession } from '$lib/api/client';
+
+let session = $state<AuthSession | null>(null);
+let loading = $state(false);
+
+export const authStore = {
+	get session() { return session; },
+	get user() { return session?.user ?? null; },
+	get userId() { return session?.user?.id ?? ''; },
+	get authenticated() { return session?.authenticated ?? false; },
+	get loading() { return loading; },
+
+	async load() {
+		loading = true;
+		try {
+			session = await api.auth.session();
+		} catch {
+			session = null;
+		} finally {
+			loading = false;
+		}
+		return session;
+	},
+
+	clear() {
+		session = null;
+	}
+};

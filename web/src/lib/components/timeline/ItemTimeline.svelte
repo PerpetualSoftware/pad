@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -24,19 +25,8 @@
 	let error: string = $state('');
 	let newBody: string = $state('');
 
-	// Current user ID for reaction toggle (fetched from auth session).
-	let currentUserId: string = $state('');
-
-	onMount(async () => {
-		try {
-			const session = await api.auth.session();
-			if (session.user?.id) {
-				currentUserId = session.user.id;
-			}
-		} catch {
-			// Auth may not be configured — proceed without user ID.
-		}
-	});
+	// Current user ID for reaction toggle — read from the global auth store.
+	let currentUserId = $derived(authStore.userId);
 
 	async function loadTimeline() {
 		loading = true;

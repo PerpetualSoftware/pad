@@ -3,8 +3,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
@@ -22,7 +22,14 @@
 	onMount(async () => {
 		// Check auth status before loading the app
 		try {
-			const auth = await api.auth.session();
+			const auth = await authStore.load();
+			if (!auth) {
+				if (!isAuthPage) {
+					goto('/login', { replaceState: true });
+				}
+				authReady = true;
+				return;
+			}
 			if (auth.setup_required) {
 				if (!isAuthPage) {
 					goto('/login', { replaceState: true });
