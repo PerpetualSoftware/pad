@@ -58,6 +58,7 @@ pad item list tasks --status in-progress
 pad item search "authentication"
 pad project dashboard                   # Project dashboard
 pad project next                        # What should I work on?
+pad server info                         # How this client is connected to Pad
 ```
 
 **Web UI that stays out of your way.** A clean, dark-themed interface at `localhost:7777` with:
@@ -242,6 +243,7 @@ pad auth whoami                       Show current user
 
 pad server start                      Start the Pad API server
 pad server stop                       Stop the Pad server
+pad server info                       Show client, connection, and local server status
 pad server open                       Open web UI in browser
 
 pad workspace init [name]             Initialize workspace in current directory

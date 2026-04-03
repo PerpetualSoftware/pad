@@ -16,13 +16,18 @@ type Credentials struct {
 	Name      string `json:"name"`
 }
 
-// credentialsPath returns ~/.pad/credentials.json.
-func credentialsPath() (string, error) {
+// CredentialsPath returns ~/.pad/credentials.json.
+func CredentialsPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home directory: %w", err)
 	}
 	return filepath.Join(homeDir, ".pad", "credentials.json"), nil
+}
+
+// credentialsPath is retained for internal call sites.
+func credentialsPath() (string, error) {
+	return CredentialsPath()
 }
 
 // LoadCredentials reads the credentials file. Returns nil if the file
