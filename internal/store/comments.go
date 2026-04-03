@@ -109,9 +109,9 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, limit in
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at
 		FROM comments c
-		WHERE c.item_id = ? AND c.created_at < ?
-		ORDER BY c.created_at DESC
-		LIMIT ?`, itemID, before.Format(time.RFC3339Nano), limit)
+		WHERE c.item_id = ? AND c.created_at <= ?
+		ORDER BY c.created_at DESC, c.id DESC
+		LIMIT ?`, itemID, before.Format(time.RFC3339), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list comments before time: %w", err)
 	}

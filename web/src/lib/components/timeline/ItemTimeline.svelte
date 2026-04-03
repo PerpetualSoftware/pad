@@ -60,7 +60,10 @@
 			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug, {
 				before: oldest.created_at
 			});
-			entries = [...entries, ...resp.entries];
+			// Deduplicate by ID to handle boundary overlap from <= queries.
+			const existingIds = new Set(entries.map((e) => e.id));
+			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+			entries = [...entries, ...newEntries];
 			hasMore = resp.has_more;
 		} catch (err: any) {
 			error = err?.message ?? 'Failed to load more';
@@ -83,9 +86,22 @@
 		'reaction_removed'
 	]);
 
-	const unsubscribe = sseService.onItemEvent((event) => {
+	const unsubscribe = sseService.onItemEvent(async (event) => {
 		if (relevantEvents.has(event.type)) {
-			loadTimeline();
+			// Fetch only the newest entries and prepend, preserving paginated state.
+			try {
+				const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
+				const existingIds = new Set(entries.map((e) => e.id));
+				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+				if (newEntries.length > 0) {
+					entries = [...newEntries, ...entries];
+				}
+				// Also update existing entries (e.g., reaction changes on existing comments).
+				const newById = new Map(resp.entries.map((e) => [e.id, e]));
+				entries = entries.map((e) => newById.get(e.id) ?? e);
+			} catch {
+				// Silently ignore SSE refresh failures.
+			}
 		}
 	});
 

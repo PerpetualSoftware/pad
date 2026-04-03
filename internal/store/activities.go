@@ -203,8 +203,8 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
-		WHERE a.document_id = ? AND a.created_at < ?
-		ORDER BY a.created_at DESC
+		WHERE a.document_id = ? AND a.created_at <= ?
+		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT ?
 	`, documentID, before.Format(time.RFC3339), limit)
 	if err != nil {

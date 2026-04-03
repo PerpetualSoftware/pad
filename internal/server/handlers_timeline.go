@@ -37,7 +37,10 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// Cursor: fetch entries before this timestamp. Defaults to now (first page).
 	before := time.Now().UTC().Add(time.Minute) // slight future to include "just now" entries
 	if v := r.URL.Query().Get("before"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
+		// Try RFC3339Nano first (sub-second precision), fall back to RFC3339.
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			before = t
+		} else if t, err := time.Parse(time.RFC3339, v); err == nil {
 			before = t
 		}
 	}
@@ -126,12 +129,15 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	}
 	for i := range comments {
 		c := comments[i]
-		// Skip replies — they'll be nested under their parent.
+		// Nest replies under their parent if the parent was fetched on this page.
+		// If the parent is on a different page, treat the reply as a top-level entry
+		// so it doesn't silently vanish.
 		if c.ParentID != "" {
 			if parent, ok := commentsByID[c.ParentID]; ok {
 				parent.Replies = append(parent.Replies, c)
+				continue
 			}
-			continue
+			// Parent not on this page — fall through and add as top-level.
 		}
 		entry := models.TimelineEntry{
 			ID:        c.ID,
