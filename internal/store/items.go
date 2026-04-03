@@ -992,14 +992,15 @@ func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]model
 
 // ListItemVersionsBeforeTime returns versions for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
-func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, limit int) ([]models.Version, error) {
+func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
+	ts := before.Format(time.RFC3339)
 	rows, err := s.db.Query(`
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM item_versions
-		WHERE item_id = ? AND created_at <= ?
+		WHERE item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?
-	`, itemID, before.Format(time.RFC3339), limit)
+	`, itemID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}

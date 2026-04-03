@@ -34,23 +34,26 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Cursor: fetch entries before this timestamp. Defaults to now (first page).
-	before := time.Now().UTC().Add(time.Minute) // slight future to include "just now" entries
+	// Cursor: fetch entries before this (timestamp, id) pair.
+	// Defaults to now + a future-biased ID to include "just now" entries on first page.
+	before := time.Now().UTC().Add(time.Minute)
+	beforeID := "\xff" // sorts after all UUIDs on first page
 	if v := r.URL.Query().Get("before"); v != "" {
-		// Try RFC3339Nano first (sub-second precision), fall back to RFC3339.
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			before = t
 		} else if t, err := time.Parse(time.RFC3339, v); err == nil {
 			before = t
 		}
 	}
+	if v := r.URL.Query().Get("before_id"); v != "" {
+		beforeID = v
+	}
 
-	// Fetch a window from each source. We fetch `limit` from each, then merge
-	// and take the top `limit` from the merged result. This ensures we get enough
-	// entries even after dedup/filtering removes some.
-	perSource := limit
+	// Over-fetch per source (3x limit) to compensate for entries removed by
+	// buildTimeline's dedup/filtering (empty-metadata updates, read actions, etc.).
+	perSource := limit * 3
 
-	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, perSource)
+	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -72,13 +75,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, perSource)
+	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, perSource)
+	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

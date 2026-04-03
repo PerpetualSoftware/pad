@@ -48,7 +48,8 @@
 		loadingMore = true;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug, {
-				before: oldest.created_at
+				before: oldest.created_at,
+				before_id: oldest.id
 			});
 			// Deduplicate by ID to handle boundary overlap from <= queries.
 			const existingIds = new Set(entries.map((e) => e.id));
@@ -78,22 +79,40 @@
 
 	const unsubscribe = sseService.onItemEvent(async (event) => {
 		if (relevantEvents.has(event.type)) {
-			// Fetch only the newest entries and prepend, preserving paginated state.
+			// Fetch the newest page and merge with existing entries, preserving paginated state.
 			try {
 				const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
+				const freshIds = new Set(resp.entries.map((e) => e.id));
 				const existingIds = new Set(entries.map((e) => e.id));
+
+				// Prepend genuinely new entries.
 				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
-				if (newEntries.length > 0) {
-					entries = [...newEntries, ...entries];
-				}
-				// Also update existing entries (e.g., reaction changes on existing comments).
-				const newById = new Map(resp.entries.map((e) => [e.id, e]));
-				entries = entries.map((e) => newById.get(e.id) ?? e);
+
+				// Update existing entries that are in the fresh response (e.g., reaction changes).
+				// Remove entries from the first page window that no longer appear (e.g., deleted comments).
+				const freshById = new Map(resp.entries.map((e) => [e.id, e]));
+				const updatedExisting = entries
+					.filter((e) => {
+						// Keep entries that are still in the fresh page, OR that are from older pages
+						// (not in the fresh page's time window at all).
+						return freshById.has(e.id) || !isInFirstPageWindow(e, resp.entries);
+					})
+					.map((e) => freshById.get(e.id) ?? e);
+
+				entries = [...newEntries, ...updatedExisting];
 			} catch {
 				// Silently ignore SSE refresh failures.
 			}
 		}
 	});
+
+	/** Check if an entry falls within the time window of the first-page response. */
+	function isInFirstPageWindow(entry: TimelineEntry, firstPage: TimelineEntry[]): boolean {
+		if (firstPage.length === 0) return false;
+		const newest = firstPage[0].created_at;
+		const oldest = firstPage[firstPage.length - 1].created_at;
+		return entry.created_at <= newest && entry.created_at >= oldest;
+	}
 
 	onDestroy(() => {
 		unsubscribe();

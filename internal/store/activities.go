@@ -198,15 +198,16 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 
 // ListDocumentActivityBeforeTime returns activities for a document created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
-func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, limit int) ([]models.Activity, error) {
+func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
+	ts := before.Format(time.RFC3339)
 	rows, err := s.db.Query(`
 		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
-		WHERE a.document_id = ? AND a.created_at <= ?
+		WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT ?
-	`, documentID, before.Format(time.RFC3339), limit)
+	`, documentID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}

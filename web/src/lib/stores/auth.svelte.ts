@@ -14,8 +14,10 @@ export const authStore = {
 		loading = true;
 		try {
 			session = await api.auth.session();
-		} catch {
+		} catch (err) {
 			session = null;
+			loading = false;
+			throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
 		} finally {
 			loading = false;
 		}

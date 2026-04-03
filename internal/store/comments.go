@@ -103,15 +103,16 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 
 // ListCommentsBeforeTime returns comments for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
-func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, limit int) ([]models.Comment, error) {
+func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
+	ts := before.Format(time.RFC3339)
 	rows, err := s.db.Query(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at
 		FROM comments c
-		WHERE c.item_id = ? AND c.created_at <= ?
+		WHERE c.item_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
 		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT ?`, itemID, before.Format(time.RFC3339), limit)
+		LIMIT ?`, itemID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list comments before time: %w", err)
 	}
