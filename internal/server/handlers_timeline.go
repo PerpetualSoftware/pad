@@ -61,13 +61,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 500})
+	activities, err := s.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 10000})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	versions, err := s.store.ListVersions(item.ID)
+	versions, err := s.store.ListItemVersions(item.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

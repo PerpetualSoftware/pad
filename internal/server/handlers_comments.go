@@ -146,7 +146,11 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 	commentID := chi.URLParam(r, "commentID")
 	parentComment, err := s.store.GetComment(commentID)
-	if err != nil {
+	if err != nil || parentComment == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Parent comment not found")
+		return
+	}
+	if parentComment.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Parent comment not found")
 		return
 	}
@@ -190,12 +194,19 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 // handleAddReaction adds an emoji reaction to a comment.
 func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	commentID := chi.URLParam(r, "commentID")
+
+	// Verify the comment belongs to this workspace.
+	comment, err := s.store.GetComment(commentID)
+	if err != nil || comment == nil || comment.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
 
 	var input struct {
 		Emoji string `json:"emoji"`
@@ -228,13 +239,20 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 
 // handleRemoveReaction removes an emoji reaction from a comment.
 func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	commentID := chi.URLParam(r, "commentID")
 	emoji := chi.URLParam(r, "emoji")
+
+	// Verify the comment belongs to this workspace.
+	commentObj, cerr := s.store.GetComment(commentID)
+	if cerr != nil || commentObj == nil || commentObj.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
 
 	userID := currentUserID(r)
 

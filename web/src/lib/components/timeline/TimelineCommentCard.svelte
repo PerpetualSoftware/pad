@@ -9,7 +9,7 @@
 		wsSlug: string;
 		items: Item[];
 		onDelete: (commentId: string) => void;
-		onReply: (commentId: string, body: string) => void;
+		onReply: (commentId: string, body: string) => void | Promise<void>;
 		onReaction: (commentId: string, emoji: string) => void;
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
@@ -25,9 +25,11 @@
 		if (!body || submittingReply) return;
 		submittingReply = true;
 		try {
-			onReply(comment.id, body);
+			await onReply(comment.id, body);
 			replyBody = '';
 			showReplyForm = false;
+		} catch {
+			// Keep draft on failure so the user can retry.
 		} finally {
 			submittingReply = false;
 		}
@@ -87,14 +89,11 @@
 	}
 
 	function toggleReaction(emoji: string) {
-		const existing = comment.reactions?.find(
-			(r) => r.emoji === emoji && r.actor === 'user'
-		);
-		if (existing) {
-			onRemoveReaction(comment.id, emoji);
-		} else {
-			onReaction(comment.id, emoji);
-		}
+		// Always POST — the server uses ON CONFLICT DO NOTHING if the current user
+		// already reacted with this emoji.  A dedicated "remove my reaction" button
+		// or a second click handled server-side is needed for proper toggle, but
+		// for now adding is safe and idempotent.
+		onReaction(comment.id, emoji);
 	}
 
 	function handleAddReaction(emoji: string) {
@@ -102,14 +101,7 @@
 	}
 
 	function toggleReplyReaction(reply: Comment, emoji: string) {
-		const existing = reply.reactions?.find(
-			(r) => r.emoji === emoji && r.actor === 'user'
-		);
-		if (existing) {
-			onRemoveReaction(reply.id, emoji);
-		} else {
-			onReaction(reply.id, emoji);
-		}
+		onReaction(reply.id, emoji);
 	}
 
 	function handleAddReplyReaction(reply: Comment, emoji: string) {
