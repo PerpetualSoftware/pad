@@ -99,19 +99,20 @@
 	async function handleDndFinalize(key: string, e: CustomEvent<DndEvent<Item>>) {
 		const finalItems = e.detail.items.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
 		laneData[key] = finalItems;
-		isDragging = false;
+
+		// Keep isDragging true until lanes state is updated,
+		// so the $effect doesn't overwrite laneData from stale orderedLanes.
 
 		const { id: itemId, trigger } = e.detail.info;
 
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			// Cross-lane move — update the item's role
 			const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
-			if (!originalItem) return;
+			if (!originalItem) { isDragging = false; return; }
 
 			const oldKey = originalItem.agent_role_id ?? '__unassigned';
-			if (oldKey === key) return;
+			if (oldKey === key) { isDragging = false; return; }
 
-			// Optimistic update: move item in `lanes`
 			const newRoleId = key === '__unassigned' ? null : key;
 			const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
 
@@ -151,6 +152,7 @@
 			} catch (err) {
 				console.error('Failed to update role:', err);
 				await loadData();
+				isDragging = false;
 				return;
 			}
 		}
@@ -161,11 +163,14 @@
 			role_sort_order: index
 		}));
 
-		// Optimistic: update lanes state with new sort orders
+		// Optimistic: update lanes state with new sort orders BEFORE releasing isDragging
 		lanes = lanes.map((lane) => {
 			if (laneKey(lane) !== key) return lane;
 			return { ...lane, items: finalItems.map((item, index) => ({ ...item, role_sort_order: index })) };
 		});
+
+		// Now safe to release — lanes has the correct data for the $effect to sync from
+		isDragging = false;
 
 		try {
 			await api.agentRoles.reorder(wsSlug, reorderUpdates);
