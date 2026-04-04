@@ -18,7 +18,36 @@ type ItemSearchResult struct {
 	Rank    float64     `json:"rank"`
 }
 
+// validateAssignmentScope checks that the assigned user and agent role belong to the
+// same workspace as the item. This prevents cross-workspace assignment leaks.
+func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agentRoleID *string) error {
+	if assignedUserID != nil && *assignedUserID != "" {
+		isMember, err := s.IsWorkspaceMember(workspaceID, *assignedUserID)
+		if err != nil {
+			return fmt.Errorf("validate assigned user: %w", err)
+		}
+		if !isMember {
+			return fmt.Errorf("assigned user is not a member of this workspace")
+		}
+	}
+	if agentRoleID != nil && *agentRoleID != "" {
+		role, err := s.GetAgentRole(workspaceID, *agentRoleID)
+		if err != nil {
+			return fmt.Errorf("validate agent role: %w", err)
+		}
+		if role == nil {
+			return fmt.Errorf("agent role does not belong to this workspace")
+		}
+	}
+	return nil
+}
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	// Validate assignment scope before writing
+	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
+		return nil, err
+	}
+
 	id := newID()
 	ts := now()
 
@@ -469,6 +498,11 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	}
 	if existing == nil {
 		return nil, nil
+	}
+
+	// Validate assignment scope before writing
+	if err := s.validateAssignmentScope(existing.WorkspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.Begin()

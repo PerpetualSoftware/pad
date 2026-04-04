@@ -1844,13 +1844,19 @@ Examples:
 			if assigneeFilter != "" {
 				// Resolve user name to ID for the API filter
 				members, merr := client.ListWorkspaceMembers(ws)
-				if merr == nil {
-					for _, m := range members {
-						if strings.EqualFold(m.UserName, assigneeFilter) || strings.EqualFold(m.UserEmail, assigneeFilter) {
-							params.Set("assigned_user_id", m.UserID)
-							break
-						}
+				if merr != nil {
+					return fmt.Errorf("failed to resolve --assign filter: %w", merr)
+				}
+				var resolved bool
+				for _, m := range members {
+					if strings.EqualFold(m.UserName, assigneeFilter) || strings.EqualFold(m.UserEmail, assigneeFilter) {
+						params.Set("assigned_user_id", m.UserID)
+						resolved = true
+						break
 					}
+				}
+				if !resolved {
+					return fmt.Errorf("no workspace member matches --assign %q", assigneeFilter)
 				}
 			}
 			if roleFilter != "" {
