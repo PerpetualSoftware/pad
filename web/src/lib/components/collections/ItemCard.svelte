@@ -23,8 +23,6 @@
 
 	let statusField = $derived(schema.fields.find((f) => f.key === 'status'));
 	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
-	let assigneeField = $derived(schema.fields.find((f) => f.key === 'assignee'));
-
 	let itemUrl = $derived(`/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
 
@@ -121,6 +119,11 @@
 				{relationLabels[fields.phase]}
 			</span>
 		{/if}
+		{#if item.agent_role_name}
+			<span class="badge role-badge">
+				{#if item.agent_role_icon}{item.agent_role_icon} {/if}{item.agent_role_name}
+			</span>
+		{/if}
 	</div>
 
 	{#if progress && progress.total > 0}
@@ -133,8 +136,8 @@
 	{/if}
 
 	<div class="card-footer">
-		{#if assigneeField && fields.assignee}
-			<span class="assignee">{fields.assignee}</span>
+		{#if item.assigned_user_name}
+			<span class="assignee">{item.assigned_user_name}</span>
 		{/if}
 		<span class="updated" title={new Date(item.updated_at).toLocaleString()}>{relativeTime(item.updated_at)}</span>
 	</div>
@@ -238,6 +241,15 @@
 		100% {
 			box-shadow: 0 0 0 0 color-mix(in srgb, var(--badge-color) 0%, transparent);
 		}
+	}
+
+	.role-badge {
+		font-size: 0.8em;
+		color: var(--accent-teal, var(--accent-blue));
+		background: color-mix(in srgb, var(--accent-teal, var(--accent-blue)) 12%, transparent);
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
+		white-space: nowrap;
 	}
 
 	.phase-badge {

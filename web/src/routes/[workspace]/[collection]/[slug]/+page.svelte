@@ -563,6 +563,29 @@
 						</div>
 					{/if}
 				{/each}
+
+				<!-- Assignment: user + role -->
+				{#if item.assigned_user_name || item.agent_role_name}
+					<div class="fields-header" style="margin-top: var(--space-4)">Assignment</div>
+				{/if}
+				{#if item.assigned_user_name}
+					<div class="field-row">
+						<span class="field-label">Assigned to</span>
+						<div class="field-value">
+							<span class="assignment-value">{item.assigned_user_name}</span>
+						</div>
+					</div>
+				{/if}
+				{#if item.agent_role_name}
+					<div class="field-row">
+						<span class="field-label">Role</span>
+						<div class="field-value">
+							<span class="assignment-value">
+								{#if item.agent_role_icon}{item.agent_role_icon} {/if}{item.agent_role_name}
+							</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Content editor -->

@@ -191,6 +191,36 @@ export interface CollectionUpdate {
 	migrations?: FieldMigration[];
 }
 
+// ─── Agent Roles ─────────────────────────────────────────────────────────────
+
+export interface AgentRole {
+	id: string;
+	workspace_id: string;
+	slug: string;
+	name: string;
+	description: string;
+	icon: string;
+	sort_order: number;
+	created_at: string;
+	updated_at: string;
+	item_count?: number;
+}
+
+export interface AgentRoleCreate {
+	name: string;
+	slug?: string;
+	description?: string;
+	icon?: string;
+}
+
+export interface AgentRoleUpdate {
+	name?: string;
+	slug?: string;
+	description?: string;
+	icon?: string;
+	sort_order?: number;
+}
+
 // ─── Items ───────────────────────────────────────────────────────────────────
 
 export interface ItemRelationRef {
@@ -260,6 +290,13 @@ export interface Item {
 	pinned: boolean;
 	sort_order: number;
 	parent_id?: string;
+	assigned_user_id?: string | null;
+	agent_role_id?: string | null;
+	assigned_user_name?: string;
+	assigned_user_email?: string;
+	agent_role_name?: string;
+	agent_role_slug?: string;
+	agent_role_icon?: string;
 	created_by: string;
 	last_modified_by: string;
 	source: string;

@@ -28,7 +28,10 @@ import type {
 	APIToken,
 	APITokenWithSecret,
 	Reaction,
-	TimelineResponse
+	TimelineResponse,
+	AgentRole,
+	AgentRoleCreate,
+	AgentRoleUpdate
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -145,6 +148,33 @@ export const api = {
 
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/collections/${slug}`, {
+				method: 'DELETE'
+			})
+	},
+
+	// ── Agent Roles ──────────────────────────────────────────────────────────
+
+	agentRoles: {
+		list: (ws: string) =>
+			request<AgentRole[]>(`/workspaces/${ws}/agent-roles`),
+
+		create: (ws: string, data: AgentRoleCreate) =>
+			request<AgentRole>(`/workspaces/${ws}/agent-roles`, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			}),
+
+		get: (ws: string, idOrSlug: string) =>
+			request<AgentRole>(`/workspaces/${ws}/agent-roles/${idOrSlug}`),
+
+		update: (ws: string, idOrSlug: string, data: AgentRoleUpdate) =>
+			request<AgentRole>(`/workspaces/${ws}/agent-roles/${idOrSlug}`, {
+				method: 'PATCH',
+				body: JSON.stringify(data)
+			}),
+
+		delete: (ws: string, idOrSlug: string) =>
+			request<void>(`/workspaces/${ws}/agent-roles/${idOrSlug}`, {
 				method: 'DELETE'
 			})
 	},

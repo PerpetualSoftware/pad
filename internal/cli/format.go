@@ -250,6 +250,27 @@ func PrintItemMeta(item *models.Item) {
 		}
 		fmt.Printf("%s %s\n", label.Sprint("Collection:"), collLabel)
 	}
+	// Assignment: user + role
+	if item.AssignedUserName != "" || item.AgentRoleName != "" {
+		assignStr := ""
+		if item.AssignedUserName != "" && item.AgentRoleName != "" {
+			roleLabel := item.AgentRoleName
+			if item.AgentRoleIcon != "" {
+				roleLabel = item.AgentRoleIcon + " " + roleLabel
+			}
+			assignStr = fmt.Sprintf("%s (%s)", item.AssignedUserName, roleLabel)
+		} else if item.AssignedUserName != "" {
+			assignStr = item.AssignedUserName
+		} else {
+			roleLabel := item.AgentRoleName
+			if item.AgentRoleIcon != "" {
+				roleLabel = item.AgentRoleIcon + " " + roleLabel
+			}
+			assignStr = roleLabel
+		}
+		fmt.Printf("%s %s\n", label.Sprint("Assigned:  "), assignStr)
+	}
+
 	tags := item.Tags
 	if tags == "[]" || tags == "" || tags == "null" {
 		tags = Dim.Sprint("(none)")

@@ -309,6 +309,50 @@ func (c *Client) TestWebhook(wsSlug, webhookID string) error {
 	return c.post("/workspaces/"+wsSlug+"/webhooks/"+webhookID+"/test", nil, nil)
 }
 
+// --- Workspace Members ---
+
+// ListWorkspaceMembers returns all members of a workspace.
+func (c *Client) ListWorkspaceMembers(wsSlug string) ([]models.WorkspaceMember, error) {
+	var result struct {
+		Members []models.WorkspaceMember `json:"members"`
+	}
+	if err := c.get("/workspaces/"+wsSlug+"/members", &result); err != nil {
+		return nil, err
+	}
+	return result.Members, nil
+}
+
+// --- Agent Roles ---
+
+// ListAgentRoles returns all agent roles for a workspace.
+func (c *Client) ListAgentRoles(wsSlug string) ([]models.AgentRole, error) {
+	var result []models.AgentRole
+	return result, c.get("/workspaces/"+wsSlug+"/agent-roles", &result)
+}
+
+// CreateAgentRole creates a new agent role in a workspace.
+func (c *Client) CreateAgentRole(wsSlug string, input models.AgentRoleCreate) (*models.AgentRole, error) {
+	var result models.AgentRole
+	return &result, c.post("/workspaces/"+wsSlug+"/agent-roles", input, &result)
+}
+
+// GetAgentRole gets a single agent role by ID or slug.
+func (c *Client) GetAgentRole(wsSlug, idOrSlug string) (*models.AgentRole, error) {
+	var result models.AgentRole
+	return &result, c.get("/workspaces/"+wsSlug+"/agent-roles/"+idOrSlug, &result)
+}
+
+// UpdateAgentRole updates an existing agent role.
+func (c *Client) UpdateAgentRole(wsSlug, idOrSlug string, input models.AgentRoleUpdate) (*models.AgentRole, error) {
+	var result models.AgentRole
+	return &result, c.patch("/workspaces/"+wsSlug+"/agent-roles/"+idOrSlug, input, &result)
+}
+
+// DeleteAgentRole removes an agent role from a workspace.
+func (c *Client) DeleteAgentRole(wsSlug, idOrSlug string) error {
+	return c.delete("/workspaces/" + wsSlug + "/agent-roles/" + idOrSlug)
+}
+
 // --- Export / Import ---
 
 // RawGet fetches raw bytes from the API.

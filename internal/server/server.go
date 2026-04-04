@@ -247,6 +247,17 @@ func (s *Server) setupRouter() {
 					r.Delete("/reactions/{emoji}", s.handleRemoveReaction)
 				})
 
+				// Agent Roles
+				r.Route("/agent-roles", func(r chi.Router) {
+					r.Get("/", s.handleListAgentRoles)
+					r.Post("/", s.handleCreateAgentRole)
+					r.Route("/{roleID}", func(r chi.Router) {
+						r.Get("/", s.handleGetAgentRole)
+						r.Patch("/", s.handleUpdateAgentRole)
+						r.Delete("/", s.handleDeleteAgentRole)
+					})
+				})
+
 				// Webhooks
 				r.Route("/webhooks", func(r chi.Router) {
 					r.Get("/", s.handleListWebhooks)

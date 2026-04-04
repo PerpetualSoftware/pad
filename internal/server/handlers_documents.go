@@ -438,6 +438,33 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 
 // diffFields compares old and new field JSON strings and returns a human-readable
 // summary of changes (e.g. "status: open → done, priority: medium → high").
+// valueOrEmpty returns the string or "(none)" if empty.
+func valueOrEmpty(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// appendChange adds a change description to existing metadata JSON.
+func appendChange(meta, change string) string {
+	if meta == "" {
+		return fmt.Sprintf(`{"changes":%q}`, change)
+	}
+	// Parse existing changes and append
+	var m map[string]string
+	if err := json.Unmarshal([]byte(meta), &m); err != nil {
+		return fmt.Sprintf(`{"changes":%q}`, change)
+	}
+	if existing, ok := m["changes"]; ok {
+		m["changes"] = existing + "; " + change
+	} else {
+		m["changes"] = change
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
 func diffFields(oldFields, newFields string) string {
 	var oldMap, newMap map[string]any
 	if err := json.Unmarshal([]byte(oldFields), &oldMap); err != nil {

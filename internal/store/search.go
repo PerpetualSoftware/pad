@@ -20,14 +20,19 @@ type SearchParams struct {
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
 		       snippet(items_fts, 1, '<mark>', '</mark>', '...', 32) as snippet,
 		       rank
 		FROM items_fts fts
 		JOIN items i ON i.rowid = fts.rowid
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE items_fts MATCH ?
 		AND i.deleted_at IS NULL
 	`
@@ -59,9 +64,12 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
-			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.CreatedBy, &r.Item.LastModifiedBy,
+			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID,
+			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
+			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
+			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
 			&r.Snippet, &r.Rank,
 		); err != nil {
 			return nil, err
