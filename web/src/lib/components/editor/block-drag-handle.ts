@@ -276,10 +276,34 @@ export const BlockDragHandle = Extension.create({
 					function positionHandle(blockDOM: HTMLElement) {
 						const wrapperRect = wrapper.getBoundingClientRect();
 						const blockRect = blockDOM.getBoundingClientRect();
-						const firstLineH = Math.min(blockRect.height, 24);
+						const handleH = handle.offsetHeight || 32;
+
+						// Determine the vertical center of the first line of content.
+						// For flex/grid containers (e.g. task list <li> with checkbox + text),
+						// the block itself may be taller than one text line, so we measure
+						// the first child element to align with the actual content row.
+						let anchorTop = blockRect.top;
+						let anchorH: number;
+
+						const display = getComputedStyle(blockDOM).display;
+						const isFlexOrGrid = display === 'flex' || display === 'inline-flex'
+							|| display === 'grid' || display === 'inline-grid';
+						const firstChild = isFlexOrGrid
+							? blockDOM.firstElementChild as HTMLElement | null
+							: null;
+
+						if (firstChild) {
+							const childRect = firstChild.getBoundingClientRect();
+							anchorTop = childRect.top;
+							anchorH = childRect.height;
+						} else {
+							const lineH = parseFloat(getComputedStyle(blockDOM).lineHeight);
+							anchorH = Math.min(blockRect.height, isNaN(lineH) ? 24 : lineH);
+						}
+
 						handle.style.display = 'flex';
-						handle.style.top = `${blockRect.top - wrapperRect.top + (firstLineH / 2) - 12}px`;
-						handle.style.left = '-14px';
+						handle.style.top = `${anchorTop - wrapperRect.top + (anchorH - handleH) / 2}px`;
+						handle.style.left = '-12px';
 					}
 
 					function hideHandle() {
