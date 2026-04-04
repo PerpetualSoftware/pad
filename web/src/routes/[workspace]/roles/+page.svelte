@@ -5,7 +5,9 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { parseFields, formatItemRef, itemUrlId } from '$lib/types';
-	import type { RoleBoardLane, AgentRole } from '$lib/types';
+	import type { Item, RoleBoardLane, AgentRole } from '$lib/types';
+	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import type { DndEvent } from 'svelte-dnd-action';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 
@@ -62,6 +64,71 @@
 
 	// Total item count
 	let totalItems = $derived(filteredLanes.reduce((sum, lane) => sum + lane.items.length, 0));
+
+	// Drag-and-drop state
+	const flipDurationMs = 200;
+	const touchDragDelayMs = 500;
+	let isDragging = $state(false);
+
+	// Mutable lane data for DnD — keyed by role ID (or '__unassigned')
+	let laneData = $state<Record<string, Item[]>>({});
+
+	// Sync from filteredLanes when not dragging
+	$effect(() => {
+		if (!isDragging) {
+			const data: Record<string, Item[]> = {};
+			for (const lane of filteredLanes) {
+				const key = lane.role?.id ?? '__unassigned';
+				data[key] = [...lane.items];
+			}
+			laneData = data;
+		}
+	});
+
+	function laneKey(lane: RoleBoardLane): string {
+		return lane.role?.id ?? '__unassigned';
+	}
+
+	function handleDndConsider(key: string, e: CustomEvent<DndEvent<Item>>) {
+		laneData[key] = e.detail.items;
+		if (!isDragging && e.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
+			if (typeof navigator !== 'undefined' && navigator.vibrate) {
+				navigator.vibrate(50);
+			}
+		}
+		isDragging = true;
+	}
+
+	async function handleDndFinalize(key: string, e: CustomEvent<DndEvent<Item>>) {
+		laneData[key] = e.detail.items;
+		isDragging = false;
+
+		const { id: itemId, trigger } = e.detail.info;
+
+		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
+			// Item was dropped into a different lane — update its role
+			const originalItem = filteredLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
+			if (originalItem) {
+				const oldKey = originalItem.agent_role_id ?? '__unassigned';
+				if (oldKey !== key) {
+					try {
+						const update: Record<string, any> = {};
+						if (key === '__unassigned') {
+							update.clear_agent_role = true;
+						} else {
+							update.agent_role_id = key;
+						}
+						await api.items.update(wsSlug, originalItem.id, update);
+						// Refresh board data
+						await loadBoard();
+					} catch (err) {
+						console.error('Failed to update role:', err);
+						await loadBoard();
+					}
+				}
+			}
+		}
+	}
 
 	onMount(() => {
 		workspaceStore.setCurrent(wsSlug);
@@ -363,48 +430,63 @@
 						{/if}
 					</div>
 
-					<div class="lane-items">
-						{#each lane.items as item (item.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="lane-items"
+						use:dndzone={{
+							items: laneData[laneKey(lane)] ?? [],
+							flipDurationMs,
+							type: 'role-board-card',
+							dropTargetClasses: ['drop-target'],
+							delayTouchStart: touchDragDelayMs
+						}}
+						onconsider={(e) => handleDndConsider(laneKey(lane), e)}
+						onfinalize={(e) => handleDndFinalize(laneKey(lane), e)}
+						oncontextmenu={(e) => e.preventDefault()}
+					>
+						{#each (laneData[laneKey(lane)] ?? []) as item (item.id)}
 							{@const fields = parseFields(item)}
 							{@const ref = formatItemRef(item)}
 							{@const status = fields.status ?? ''}
 							{@const priority = fields.priority ?? ''}
-							<a
-								href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}"
-								class="item-card"
-							>
-								<div class="card-top-row">
-									{#if item.collection_icon || item.collection_name}
-										<span class="collection-badge">
-											{#if item.collection_icon}<span class="coll-icon">{item.collection_icon}</span>{/if}
-											{#if item.collection_name}<span class="coll-name">{item.collection_name}</span>{/if}
-										</span>
-									{/if}
-									{#if ref}
-										<span class="item-ref">{ref}</span>
-									{/if}
-								</div>
+							<div class="card-wrapper">
+								<a
+									href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}"
+									class="item-card"
+								>
+									<div class="card-top-row">
+										{#if item.collection_icon || item.collection_name}
+											<span class="collection-badge">
+												{#if item.collection_icon}<span class="coll-icon">{item.collection_icon}</span>{/if}
+												{#if item.collection_name}<span class="coll-name">{item.collection_name}</span>{/if}
+											</span>
+										{/if}
+										{#if ref}
+											<span class="item-ref">{ref}</span>
+										{/if}
+									</div>
 
-								<div class="card-title">{item.title}</div>
+									<div class="card-title">{item.title}</div>
 
-								<div class="card-meta">
-									{#if status}
-										<span class="status-badge" style="color: {statusColor(status)}">
-											{status}
-										</span>
-									{/if}
-									{#if priority}
-										<span class="priority-badge" style="color: {priorityColor(priority)}">
-											{priority}
-										</span>
-									{/if}
-									{#if item.assigned_user_name}
-										<span class="assigned-user">{item.assigned_user_name}</span>
-									{/if}
-								</div>
-							</a>
+									<div class="card-meta">
+										{#if status}
+											<span class="status-badge" style="color: {statusColor(status)}">
+												{status}
+											</span>
+										{/if}
+										{#if priority}
+											<span class="priority-badge" style="color: {priorityColor(priority)}">
+												{priority}
+											</span>
+										{/if}
+										{#if item.assigned_user_name}
+											<span class="assigned-user">{item.assigned_user_name}</span>
+										{/if}
+									</div>
+								</a>
+							</div>
 						{/each}
-						{#if lane.items.length === 0}
+						{#if (laneData[laneKey(lane)] ?? []).length === 0 && !isDragging}
 							<div class="lane-empty">No items</div>
 						{/if}
 					</div>
@@ -578,6 +660,18 @@
 		flex: 1;
 	}
 
+	.lane-items:global(.drop-target) {
+		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+	}
+	.card-wrapper {
+		cursor: grab;
+		-webkit-touch-callout: none;
+		-webkit-user-select: none;
+		user-select: none;
+	}
+	.card-wrapper:active {
+		cursor: grabbing;
+	}
 	.lane-empty {
 		text-align: center;
 		padding: var(--space-4);
