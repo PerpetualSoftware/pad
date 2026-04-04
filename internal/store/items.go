@@ -92,9 +92,9 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 
 	_, err = tx.Exec(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
-		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id,
+		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
 	`, id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		boolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
 		createdBy, createdBy, source, nextNum, ts, ts)
@@ -129,7 +129,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 
 	err := s.db.QueryRow(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -143,7 +143,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 	`, id).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
@@ -251,7 +251,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 
 		err := s.db.QueryRow(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.created_at, i.updated_at, i.deleted_at,
 			       c.slug, c.name, c.icon, c.prefix,
@@ -265,7 +265,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		`, workspaceID, prefix, number).Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
-			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
@@ -325,7 +325,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 
 	err := s.db.QueryRow(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -339,7 +339,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 	`, workspaceID, slug).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
@@ -369,7 +369,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -454,7 +454,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -665,7 +665,7 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
 	sqlQuery := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -704,7 +704,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
-			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID,
+			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
@@ -938,7 +938,7 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -1163,7 +1163,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
-			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &createdAt, &updatedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,

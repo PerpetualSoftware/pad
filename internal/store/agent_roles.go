@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/xarmian/pad/internal/models"
@@ -347,7 +348,7 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 		}
 	}
 
-	// Build result in role order
+	// Build result in role order, sorting items within each lane by role_sort_order
 	var result []RoleBoardLane
 	for _, role := range roles {
 		lane := roleMap[role.ID]
@@ -356,10 +357,16 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 				lane.Users = append(lane.Users, u)
 			}
 		}
+		sort.Slice(lane.Items, func(i, j int) bool {
+			return lane.Items[i].RoleSortOrder < lane.Items[j].RoleSortOrder
+		})
 		result = append(result, *lane)
 	}
 
-	// Add unassigned lane
+	// Add unassigned lane (sorted by role_sort_order)
+	sort.Slice(unassignedLane.Items, func(i, j int) bool {
+		return unassignedLane.Items[i].RoleSortOrder < unassignedLane.Items[j].RoleSortOrder
+	})
 	if len(unassignedLane.Items) > 0 {
 		// Dedupe users
 		userSet := make(map[string]bool)
@@ -376,6 +383,35 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 	}
 
 	return result, nil
+}
+
+// RoleSortUpdate represents a single item's role_sort_order update.
+type RoleSortUpdate struct {
+	ItemID        string `json:"item_id"`
+	RoleSortOrder int    `json:"role_sort_order"`
+}
+
+// UpdateRoleSortOrder batch-updates role_sort_order for a list of items.
+func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?")
+	if err != nil {
+		return fmt.Errorf("prepare role sort update: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, u := range updates {
+		if _, err := stmt.Exec(u.RoleSortOrder, u.ItemID, workspaceID); err != nil {
+			return fmt.Errorf("update role sort for %s: %w", u.ItemID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // isDoneStatus returns true if the status indicates a terminal/completed item.

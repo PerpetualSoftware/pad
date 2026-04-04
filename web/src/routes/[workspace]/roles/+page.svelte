@@ -97,65 +97,80 @@
 	}
 
 	async function handleDndFinalize(key: string, e: CustomEvent<DndEvent<Item>>) {
-		laneData[key] = e.detail.items;
+		const finalItems = e.detail.items.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
+		laneData[key] = finalItems;
 		isDragging = false;
 
 		const { id: itemId, trigger } = e.detail.info;
 
-		if (trigger !== TRIGGERS.DROPPED_INTO_ZONE) return;
+		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
+			// Cross-lane move — update the item's role
+			const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
+			if (!originalItem) return;
 
-		// Item was dropped into a different lane — update its role
-		const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
-		if (!originalItem) return;
+			const oldKey = originalItem.agent_role_id ?? '__unassigned';
+			if (oldKey === key) return;
 
-		const oldKey = originalItem.agent_role_id ?? '__unassigned';
-		if (oldKey === key) return;
+			// Optimistic update: move item in `lanes`
+			const newRoleId = key === '__unassigned' ? null : key;
+			const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
 
-		// Optimistic update: move item in `lanes` so orderedLanes + laneData stay consistent
-		const newRoleId = key === '__unassigned' ? null : key;
-		const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
+			const updatedItem = { ...originalItem,
+				agent_role_id: newRoleId,
+				agent_role_name: targetRole?.name ?? '',
+				agent_role_slug: targetRole?.slug ?? '',
+				agent_role_icon: targetRole?.icon ?? '',
+			};
 
-		// Update the item's role fields in-place
-		const updatedItem = { ...originalItem,
-			agent_role_id: newRoleId,
-			agent_role_name: targetRole?.name ?? '',
-			agent_role_slug: targetRole?.slug ?? '',
-			agent_role_icon: targetRole?.icon ?? '',
-		};
+			if (!originalItem.assigned_user_id && currentUserId && newRoleId) {
+				updatedItem.assigned_user_id = currentUserId;
+			}
 
-		// Auto-assign current user if unassigned
-		if (!originalItem.assigned_user_id && currentUserId && newRoleId) {
-			updatedItem.assigned_user_id = currentUserId;
+			lanes = lanes.map((lane) => {
+				const lk = lane.role?.id ?? '__unassigned';
+				if (lk === oldKey) {
+					return { ...lane, items: lane.items.filter((i) => i.id !== itemId) };
+				}
+				if (lk === key) {
+					return { ...lane, items: [...lane.items.filter((i) => i.id !== itemId), updatedItem] };
+				}
+				return lane;
+			});
+
+			try {
+				const update: Record<string, any> = {};
+				if (key === '__unassigned') {
+					update.clear_agent_role = true;
+				} else {
+					update.agent_role_id = key;
+					if (!originalItem.assigned_user_id && currentUserId) {
+						update.assigned_user_id = currentUserId;
+					}
+				}
+				await api.items.update(wsSlug, originalItem.id, update);
+			} catch (err) {
+				console.error('Failed to update role:', err);
+				await loadData();
+				return;
+			}
 		}
 
-		// Remove from old lane, add to new lane
+		// Persist sort order for all items in this lane
+		const reorderUpdates = finalItems.map((item, index) => ({
+			item_id: item.id,
+			role_sort_order: index
+		}));
+
+		// Optimistic: update lanes state with new sort orders
 		lanes = lanes.map((lane) => {
-			const lk = lane.role?.id ?? '__unassigned';
-			if (lk === oldKey) {
-				return { ...lane, items: lane.items.filter((i) => i.id !== itemId) };
-			}
-			if (lk === key) {
-				return { ...lane, items: [...lane.items.filter((i) => i.id !== itemId), updatedItem] };
-			}
-			return lane;
+			if (laneKey(lane) !== key) return lane;
+			return { ...lane, items: finalItems.map((item, index) => ({ ...item, role_sort_order: index })) };
 		});
 
-		// Fire-and-forget API call
 		try {
-			const update: Record<string, any> = {};
-			if (key === '__unassigned') {
-				update.clear_agent_role = true;
-			} else {
-				update.agent_role_id = key;
-				if (!originalItem.assigned_user_id && currentUserId) {
-					update.assigned_user_id = currentUserId;
-				}
-			}
-			await api.items.update(wsSlug, originalItem.id, update);
+			await api.agentRoles.reorder(wsSlug, reorderUpdates);
 		} catch (err) {
-			console.error('Failed to update role:', err);
-			// Revert on error by reloading
-			await loadData();
+			console.error('Failed to persist sort order:', err);
 		}
 	}
 

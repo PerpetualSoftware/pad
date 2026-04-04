@@ -182,7 +182,13 @@ export const api = {
 		board: (ws: string, assignedUserId?: string) => {
 			const params = assignedUserId ? `?assigned_user_id=${assignedUserId}` : '';
 			return request<{ lanes: RoleBoardLane[] }>(`/workspaces/${ws}/roles/board${params}`);
-		}
+		},
+
+		reorder: (ws: string, updates: { item_id: string; role_sort_order: number }[]) =>
+			request<void>(`/workspaces/${ws}/roles/board/reorder`, {
+				method: 'PUT',
+				body: JSON.stringify(updates)
+			})
 	},
 
 	// ── Items ─────────────────────────────────────────────────────────────────

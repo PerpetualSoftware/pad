@@ -306,6 +306,7 @@ export interface Item {
 	agent_role_name?: string;
 	agent_role_slug?: string;
 	agent_role_icon?: string;
+	role_sort_order?: number;
 	created_by: string;
 	last_modified_by: string;
 	source: string;

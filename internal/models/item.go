@@ -36,6 +36,7 @@ type Item struct {
 	// Assignment: (user, role) pair
 	AssignedUserID *string `json:"assigned_user_id,omitempty"`
 	AgentRoleID    *string `json:"agent_role_id,omitempty"`
+	RoleSortOrder  int     `json:"role_sort_order"`
 
 	// Auto-assigned sequential number within collection
 	ItemNumber *int `json:"item_number,omitempty"`

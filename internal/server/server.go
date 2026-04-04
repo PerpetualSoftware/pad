@@ -249,6 +249,7 @@ func (s *Server) setupRouter() {
 
 				// Role Board (cross-collection role-based view)
 				r.Get("/roles/board", s.handleRoleBoard)
+				r.Put("/roles/board/reorder", s.handleRoleBoardReorder)
 
 				// Agent Roles
 				r.Route("/agent-roles", func(r chi.Router) {

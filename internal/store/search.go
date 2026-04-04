@@ -20,7 +20,7 @@ type SearchParams struct {
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
@@ -64,7 +64,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
-			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID,
+			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
