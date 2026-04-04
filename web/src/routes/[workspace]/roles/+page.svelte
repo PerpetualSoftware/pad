@@ -546,7 +546,7 @@
 							{/if}
 							<span class="lane-count">{lane.items.length}</span>
 							{#if lane.role}
-								<button class="lane-edit-btn" title="Edit role" onclick={() => openEditModal(lane.role)}>✎</button>
+								<button class="lane-edit-btn" title="Edit role" onclick={() => lane.role && openEditModal(lane.role)}>✎</button>
 							{/if}
 						</div>
 						{#if lane.role?.tools}
@@ -1203,10 +1203,6 @@
 		flex-shrink: 0;
 		text-align: center;
 	}
-	.role-edit-actions {
-		display: flex;
-		gap: var(--space-2);
-	}
 	.role-btn {
 		padding: 5px 12px;
 		font-size: 0.82em;
@@ -1228,24 +1224,6 @@
 	}
 	.role-btn-save:hover {
 		filter: brightness(1.1);
-	}
-	.role-btn-create {
-		width: 100%;
-		padding: 8px;
-		background: var(--accent-blue);
-		color: white;
-		border-color: var(--accent-blue);
-		font-weight: 500;
-	}
-	.role-btn-create:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-	.role-btn-create:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.role-btn-cancel {
-		color: var(--text-muted);
 	}
 	.role-btn-danger {
 		color: var(--accent-orange);
