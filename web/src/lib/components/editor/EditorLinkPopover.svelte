@@ -144,16 +144,17 @@
 		if (!editor) return;
 
 		const onSelectionUpdate = handleUpdate;
-		const onTransaction = handleUpdate;
 		const onBlur = handleBlur;
 
+		// Only listen for selectionUpdate (user-initiated cursor changes), not
+		// transaction — the transaction event fires during initial document load
+		// and programmatic edits, causing the popover to appear without user
+		// interaction when the cursor lands inside a link.
 		editor.on('selectionUpdate', onSelectionUpdate);
-		editor.on('transaction', onTransaction);
 		editor.on('blur', onBlur);
 
 		return () => {
 			editor.off('selectionUpdate', onSelectionUpdate);
-			editor.off('transaction', onTransaction);
 			editor.off('blur', onBlur);
 		};
 	});
