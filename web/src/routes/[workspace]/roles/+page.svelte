@@ -18,17 +18,28 @@
 	let myWorkOnly = $state(false);
 
 	// Role management state
-	let showManageRoles = $state(false);
 	let allRoles = $state<AgentRole[]>([]);
 	let newRoleName = $state('');
 	let newRoleDescription = $state('');
 	let newRoleIcon = $state('');
 	let newRoleTools = $state('');
+	let dialogEl = $state<HTMLDialogElement | null>(null);
 	let editingRoleId = $state<string | null>(null);
 	let editName = $state('');
 	let editDescription = $state('');
 	let editIcon = $state('');
 	let editTools = $state('');
+
+	function openManageModal() {
+		loadRoles();
+		dialogEl?.showModal();
+	}
+
+	function closeManageModal() {
+		editingRoleId = null;
+		dialogEl?.close();
+		loadBoard();
+	}
 	let currentUserId = $state('');
 
 	// Filtered lanes based on "My Work" toggle
@@ -176,63 +187,100 @@
 			>
 				My Work
 			</button>
-			<button
-				class="toggle-btn"
-				class:active={showManageRoles}
-				onclick={() => (showManageRoles = !showManageRoles)}
-			>
+			<button class="toggle-btn" onclick={openManageModal}>
 				⚙ Manage
 			</button>
 		</div>
 	</header>
 
-	{#if showManageRoles}
-		<div class="manage-roles-panel">
-			<div class="manage-roles-grid">
+	<!-- Role management modal -->
+	<dialog class="roles-dialog" bind:this={dialogEl} onclick={(e) => { if (e.target === dialogEl) closeManageModal(); }}>
+		<div class="dialog-content">
+			<div class="dialog-header">
+				<h2>Manage Roles</h2>
+				<button class="dialog-close" onclick={closeManageModal}>✕</button>
+			</div>
+
+			<div class="dialog-body">
+				<!-- Existing roles -->
 				{#each allRoles as role (role.id)}
-					<div class="role-card">
+					<div class="role-row">
 						{#if editingRoleId === role.id}
 							<div class="role-edit-form">
-								<div class="role-edit-row">
-									<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
-									<input class="role-input role-input-name" type="text" bind:value={editName} placeholder="Name" />
+								<div class="role-field-group">
+									<label class="role-field-label">Icon & Name</label>
+									<div class="role-edit-row">
+										<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
+										<input class="role-input" type="text" bind:value={editName} placeholder="Name" />
+									</div>
 								</div>
-								<input class="role-input" type="text" bind:value={editDescription} placeholder="Description" />
-								<input class="role-input" type="text" bind:value={editTools} placeholder="Tools (e.g. Claude Code + Sonnet 4.6)" />
+								<div class="role-field-group">
+									<label class="role-field-label">Description</label>
+									<input class="role-input" type="text" bind:value={editDescription} placeholder="What does this role do?" />
+								</div>
+								<div class="role-field-group">
+									<label class="role-field-label">Tools</label>
+									<input class="role-input" type="text" bind:value={editTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
+								</div>
 								<div class="role-edit-actions">
 									<button class="role-btn role-btn-save" onclick={saveEdit}>Save</button>
 									<button class="role-btn role-btn-cancel" onclick={cancelEdit}>Cancel</button>
 								</div>
 							</div>
 						{:else}
-							<div class="role-card-header">
-								<span class="role-card-icon">{role.icon || '🎭'}</span>
-								<span class="role-card-name">{role.name}</span>
-								<span class="role-card-count">{role.item_count ?? 0}</span>
-							</div>
-							{#if role.description}
-								<div class="role-card-desc">{role.description}</div>
-							{/if}
-							{#if role.tools}
-								<div class="role-card-tools">{role.tools}</div>
-							{/if}
-							<div class="role-card-actions">
-								<button class="role-btn" onclick={() => startEdit(role)}>Edit</button>
-								<button class="role-btn role-btn-danger" onclick={() => deleteRole(role.id, role.name)}>Delete</button>
+							<div class="role-row-display">
+								<div class="role-row-info">
+									<span class="role-row-icon">{role.icon || '🎭'}</span>
+									<div class="role-row-details">
+										<div class="role-row-name">
+											{role.name}
+											<span class="role-row-count">{role.item_count ?? 0} items</span>
+										</div>
+										{#if role.description}
+											<div class="role-row-desc">{role.description}</div>
+										{/if}
+										{#if role.tools}
+											<div class="role-row-tools">{role.tools}</div>
+										{/if}
+									</div>
+								</div>
+								<div class="role-row-actions">
+									<button class="role-btn" onclick={() => startEdit(role)}>Edit</button>
+									<button class="role-btn role-btn-danger" onclick={() => deleteRole(role.id, role.name)}>Delete</button>
+								</div>
 							</div>
 						{/if}
 					</div>
 				{/each}
 
-				<!-- New role form -->
-				<div class="role-card role-card-new">
+				{#if allRoles.length === 0}
+					<div class="dialog-empty">
+						No roles yet. Create your first role below.
+					</div>
+				{/if}
+
+				<!-- Divider -->
+				<div class="dialog-divider"></div>
+
+				<!-- Create new role form -->
+				<div class="role-create-section">
+					<h3 class="role-create-heading">Create a new role</h3>
 					<div class="role-edit-form">
-						<div class="role-edit-row">
-							<input class="role-input role-input-icon" type="text" bind:value={newRoleIcon} placeholder="🔨" />
-							<input class="role-input role-input-name" type="text" bind:value={newRoleName} placeholder="Role name" />
+						<div class="role-field-group">
+							<label class="role-field-label">Icon & Name</label>
+							<div class="role-edit-row">
+								<input class="role-input role-input-icon" type="text" bind:value={newRoleIcon} placeholder="🔨" />
+								<input class="role-input" type="text" bind:value={newRoleName} placeholder="Role name" />
+							</div>
 						</div>
-						<input class="role-input" type="text" bind:value={newRoleDescription} placeholder="Description" />
-						<input class="role-input" type="text" bind:value={newRoleTools} placeholder="Tools (e.g. Claude Code + Sonnet 4.6)" />
+						<div class="role-field-group">
+							<label class="role-field-label">Description</label>
+							<input class="role-input" type="text" bind:value={newRoleDescription} placeholder="What does this role do?" />
+						</div>
+						<div class="role-field-group">
+							<label class="role-field-label">Tools</label>
+							<input class="role-input" type="text" bind:value={newRoleTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
+						</div>
 						<button
 							class="role-btn role-btn-create"
 							disabled={!newRoleName.trim()}
@@ -244,7 +292,7 @@
 				</div>
 			</div>
 		</div>
-	{/if}
+	</dialog>
 
 	{#if loading}
 		<div class="skeleton-board">
@@ -717,72 +765,156 @@
 		}
 	}
 
-	/* ── Manage Roles Panel ─────────────────────────────────── */
-	.manage-roles-panel {
-		padding: 0 var(--space-5) var(--space-4);
-		border-bottom: 1px solid var(--border);
-		background: var(--bg-secondary);
-	}
-	.manage-roles-grid {
-		display: flex;
-		gap: var(--space-3);
-		overflow-x: auto;
-		padding: var(--space-2) 0;
-	}
-	.role-card {
-		flex-shrink: 0;
-		width: 220px;
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
+	/* ── Roles Dialog ─────────────────────────────────── */
+	.roles-dialog {
+		border: none;
 		border-radius: var(--radius-lg);
-		padding: var(--space-3);
+		padding: 0;
+		max-width: 520px;
+		width: 90vw;
+		max-height: 80vh;
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+	}
+	.roles-dialog::backdrop {
+		background: rgba(0, 0, 0, 0.5);
+	}
+	.dialog-content {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		max-height: 80vh;
 	}
-	.role-card-new {
-		border-style: dashed;
-		border-color: var(--text-muted);
+	.dialog-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-4) var(--space-5);
+		border-bottom: 1px solid var(--border);
 	}
-	.role-card-header {
+	.dialog-header h2 {
+		margin: 0;
+		font-size: 1.1em;
+		font-weight: 600;
+	}
+	.dialog-close {
+		background: none;
+		border: none;
+		font-size: 1.2em;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 4px 8px;
+		border-radius: var(--radius-sm);
+	}
+	.dialog-close:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.dialog-body {
+		padding: var(--space-4) var(--space-5);
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.dialog-empty {
+		text-align: center;
+		color: var(--text-muted);
+		padding: var(--space-4) 0;
+		font-size: 0.9em;
+	}
+	.dialog-divider {
+		border-top: 1px solid var(--border);
+		margin: var(--space-2) 0;
+	}
+
+	/* ── Role rows ─────────────────────────────────── */
+	.role-row {
+		padding: var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.role-row-display {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-3);
+	}
+	.role-row-info {
+		display: flex;
+		gap: var(--space-3);
+		flex: 1;
+		min-width: 0;
+	}
+	.role-row-icon {
+		font-size: 1.3em;
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+	.role-row-details {
+		flex: 1;
+		min-width: 0;
+	}
+	.role-row-name {
+		font-weight: 600;
+		font-size: 0.95em;
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
 	}
-	.role-card-icon {
-		font-size: 1.2em;
-	}
-	.role-card-name {
-		font-weight: 600;
-		font-size: 0.92em;
-		flex: 1;
-	}
-	.role-card-count {
-		font-size: 0.75em;
+	.role-row-count {
+		font-weight: 400;
+		font-size: 0.8em;
 		color: var(--text-muted);
-		background: var(--bg-tertiary);
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
 	}
-	.role-card-desc {
-		font-size: 0.82em;
+	.role-row-desc {
+		font-size: 0.85em;
 		color: var(--text-secondary);
-		line-height: 1.3;
+		margin-top: 2px;
 	}
-	.role-card-tools {
-		font-size: 0.78em;
+	.role-row-tools {
+		font-size: 0.8em;
 		color: var(--text-muted);
 		font-style: italic;
+		margin-top: 2px;
 	}
-	.role-card-actions {
+	.role-row-actions {
 		display: flex;
 		gap: var(--space-2);
-		margin-top: auto;
+		flex-shrink: 0;
 	}
+
+	/* ── Create section ─────────────────────────────── */
+	.role-create-section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.role-create-heading {
+		margin: 0;
+		font-size: 0.92em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	/* ── Shared form elements ─────────────────────────── */
 	.role-edit-form {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
+	}
+	.role-field-group {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.role-field-label {
+		font-size: 0.78em;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
 	}
 	.role-edit-row {
 		display: flex;
@@ -790,8 +922,8 @@
 	}
 	.role-input {
 		width: 100%;
-		padding: 4px 8px;
-		font-size: 0.85em;
+		padding: 7px 10px;
+		font-size: 0.88em;
 		font-family: inherit;
 		color: var(--text-primary);
 		background: var(--bg-tertiary);
@@ -803,20 +935,17 @@
 		outline-offset: -1px;
 	}
 	.role-input-icon {
-		width: 40px;
+		width: 48px;
 		flex-shrink: 0;
 		text-align: center;
-	}
-	.role-input-name {
-		flex: 1;
 	}
 	.role-edit-actions {
 		display: flex;
 		gap: var(--space-2);
 	}
 	.role-btn {
-		padding: 4px 10px;
-		font-size: 0.8em;
+		padding: 5px 12px;
+		font-size: 0.82em;
 		font-family: inherit;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -838,9 +967,11 @@
 	}
 	.role-btn-create {
 		width: 100%;
+		padding: 8px;
 		background: var(--accent-blue);
 		color: white;
 		border-color: var(--accent-blue);
+		font-weight: 500;
 	}
 	.role-btn-create:hover:not(:disabled) {
 		filter: brightness(1.1);
