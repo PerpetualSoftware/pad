@@ -105,59 +105,60 @@
 
 		const { id: itemId, trigger } = e.detail.info;
 
+		// Check for cross-lane move
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
-			// Cross-lane move — update the item's role
 			const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
-			if (!originalItem) { isDragging = false; return; }
+			const oldKey = originalItem ? (originalItem.agent_role_id ?? '__unassigned') : key;
 
-			const oldKey = originalItem.agent_role_id ?? '__unassigned';
-			if (oldKey === key) { isDragging = false; return; }
+			if (originalItem && oldKey !== key) {
+				// Cross-lane: update the item's role
+				const newRoleId = key === '__unassigned' ? null : key;
+				const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
 
-			const newRoleId = key === '__unassigned' ? null : key;
-			const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
+				const updatedItem = { ...originalItem,
+					agent_role_id: newRoleId,
+					agent_role_name: targetRole?.name ?? '',
+					agent_role_slug: targetRole?.slug ?? '',
+					agent_role_icon: targetRole?.icon ?? '',
+				};
 
-			const updatedItem = { ...originalItem,
-				agent_role_id: newRoleId,
-				agent_role_name: targetRole?.name ?? '',
-				agent_role_slug: targetRole?.slug ?? '',
-				agent_role_icon: targetRole?.icon ?? '',
-			};
-
-			if (!originalItem.assigned_user_id && currentUserId && newRoleId) {
-				updatedItem.assigned_user_id = currentUserId;
-			}
-
-			lanes = lanes.map((lane) => {
-				const lk = lane.role?.id ?? '__unassigned';
-				if (lk === oldKey) {
-					return { ...lane, items: lane.items.filter((i) => i.id !== itemId) };
+				if (!originalItem.assigned_user_id && currentUserId && newRoleId) {
+					updatedItem.assigned_user_id = currentUserId;
 				}
-				if (lk === key) {
-					return { ...lane, items: [...lane.items.filter((i) => i.id !== itemId), updatedItem] };
-				}
-				return lane;
-			});
 
-			try {
-				const update: Record<string, any> = {};
-				if (key === '__unassigned') {
-					update.clear_agent_role = true;
-				} else {
-					update.agent_role_id = key;
-					if (!originalItem.assigned_user_id && currentUserId) {
-						update.assigned_user_id = currentUserId;
+				lanes = lanes.map((lane) => {
+					const lk = lane.role?.id ?? '__unassigned';
+					if (lk === oldKey) {
+						return { ...lane, items: lane.items.filter((i) => i.id !== itemId) };
 					}
+					if (lk === key) {
+						return { ...lane, items: [...lane.items.filter((i) => i.id !== itemId), updatedItem] };
+					}
+					return lane;
+				});
+
+				try {
+					const update: Record<string, any> = {};
+					if (key === '__unassigned') {
+						update.clear_agent_role = true;
+					} else {
+						update.agent_role_id = key;
+						if (!originalItem.assigned_user_id && currentUserId) {
+							update.assigned_user_id = currentUserId;
+						}
+					}
+					await api.items.update(wsSlug, originalItem.id, update);
+				} catch (err) {
+					console.error('Failed to update role:', err);
+					await loadData();
+					isDragging = false;
+					return;
 				}
-				await api.items.update(wsSlug, originalItem.id, update);
-			} catch (err) {
-				console.error('Failed to update role:', err);
-				await loadData();
-				isDragging = false;
-				return;
 			}
 		}
 
-		// Persist sort order for all items in this lane
+		// Always persist sort order for all items in this lane (covers both
+		// within-lane reorder and cross-lane moves)
 		const reorderUpdates = finalItems.map((item, index) => ({
 			item_id: item.id,
 			role_sort_order: index
