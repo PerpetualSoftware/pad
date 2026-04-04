@@ -22,7 +22,6 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
-		relationLabels?: Record<string, string>;
 	}
 
 	let {
@@ -38,8 +37,7 @@
 		onGroupReorder,
 		oncreate,
 		itemProgress,
-		progressLabel = 'tasks',
-		relationLabels
+		progressLabel = 'tasks'
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -275,7 +273,6 @@
 									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
-									{relationLabels}
 								/>
 							</div>
 						{/each}

@@ -856,7 +856,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -867,7 +866,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{:else}
 			<ListView
@@ -884,7 +882,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{/if}
 	{/if}

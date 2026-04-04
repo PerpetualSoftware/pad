@@ -12,7 +12,6 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
-		relationLabels?: Record<string, string>;
 	}
 
 	let {
@@ -22,8 +21,7 @@
 		onStatusChange,
 		oncreate,
 		itemProgress,
-		progressLabel,
-		relationLabels
+		progressLabel
 	}: Props = $props();
 
 	let resolvedWsSlug = $derived(wsSlug || page.params.workspace || '');
@@ -248,11 +246,6 @@
 	.cell-status:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
-	}
-
-	.cell-relation {
-		font-size: 0.85em;
-		color: var(--accent-purple, var(--text-secondary));
 	}
 
 	.cell-date {
