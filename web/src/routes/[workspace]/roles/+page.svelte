@@ -5,7 +5,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { parseFields, formatItemRef, itemUrlId } from '$lib/types';
-	import type { RoleBoardLane } from '$lib/types';
+	import type { RoleBoardLane, AgentRole } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 
@@ -16,6 +16,19 @@
 
 	// Filter: "My Work" toggle
 	let myWorkOnly = $state(false);
+
+	// Role management state
+	let showManageRoles = $state(false);
+	let allRoles = $state<AgentRole[]>([]);
+	let newRoleName = $state('');
+	let newRoleDescription = $state('');
+	let newRoleIcon = $state('');
+	let newRoleTools = $state('');
+	let editingRoleId = $state<string | null>(null);
+	let editName = $state('');
+	let editDescription = $state('');
+	let editIcon = $state('');
+	let editTools = $state('');
 	let currentUserId = $state('');
 
 	// Filtered lanes based on "My Work" toggle
@@ -36,6 +49,7 @@
 		workspaceStore.setCurrent(wsSlug);
 		uiStore.onNavigate();
 		loadData();
+		loadRoles();
 	});
 
 	async function loadData() {
@@ -54,6 +68,72 @@
 			error = err instanceof Error ? err.message : 'Failed to load role board';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadRoles() {
+		try {
+			allRoles = await api.agentRoles.list(wsSlug);
+		} catch { allRoles = []; }
+	}
+
+	async function createRole() {
+		if (!newRoleName.trim()) return;
+		try {
+			await api.agentRoles.create(wsSlug, {
+				name: newRoleName.trim(),
+				description: newRoleDescription.trim(),
+				icon: newRoleIcon.trim(),
+				tools: newRoleTools.trim()
+			});
+			newRoleName = '';
+			newRoleDescription = '';
+			newRoleIcon = '';
+			newRoleTools = '';
+			await loadRoles();
+			await loadBoard();
+		} catch (e) {
+			console.error('Failed to create role:', e);
+		}
+	}
+
+	function startEdit(role: AgentRole) {
+		editingRoleId = role.id;
+		editName = role.name;
+		editDescription = role.description;
+		editIcon = role.icon;
+		editTools = role.tools;
+	}
+
+	async function saveEdit() {
+		if (!editingRoleId || !editName.trim()) return;
+		try {
+			await api.agentRoles.update(wsSlug, editingRoleId, {
+				name: editName.trim(),
+				description: editDescription.trim(),
+				icon: editIcon.trim(),
+				tools: editTools.trim()
+			});
+			editingRoleId = null;
+			await loadRoles();
+			await loadBoard();
+		} catch (e) {
+			console.error('Failed to update role:', e);
+		}
+	}
+
+	function cancelEdit() {
+		editingRoleId = null;
+	}
+
+	async function deleteRole(roleId: string, roleName: string) {
+		if (!confirm(`Delete role "${roleName}"? Items assigned to this role will become unassigned.`)) return;
+		try {
+			await api.agentRoles.delete(wsSlug, roleId);
+			await loadRoles();
+			await loadBoard();
+		} catch (e) {
+			console.error('Failed to delete role:', e);
 		}
 	}
 
@@ -96,8 +176,75 @@
 			>
 				My Work
 			</button>
+			<button
+				class="toggle-btn"
+				class:active={showManageRoles}
+				onclick={() => (showManageRoles = !showManageRoles)}
+			>
+				⚙ Manage
+			</button>
 		</div>
 	</header>
+
+	{#if showManageRoles}
+		<div class="manage-roles-panel">
+			<div class="manage-roles-grid">
+				{#each allRoles as role (role.id)}
+					<div class="role-card">
+						{#if editingRoleId === role.id}
+							<div class="role-edit-form">
+								<div class="role-edit-row">
+									<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
+									<input class="role-input role-input-name" type="text" bind:value={editName} placeholder="Name" />
+								</div>
+								<input class="role-input" type="text" bind:value={editDescription} placeholder="Description" />
+								<input class="role-input" type="text" bind:value={editTools} placeholder="Tools (e.g. Claude Code + Sonnet 4.6)" />
+								<div class="role-edit-actions">
+									<button class="role-btn role-btn-save" onclick={saveEdit}>Save</button>
+									<button class="role-btn role-btn-cancel" onclick={cancelEdit}>Cancel</button>
+								</div>
+							</div>
+						{:else}
+							<div class="role-card-header">
+								<span class="role-card-icon">{role.icon || '🎭'}</span>
+								<span class="role-card-name">{role.name}</span>
+								<span class="role-card-count">{role.item_count ?? 0}</span>
+							</div>
+							{#if role.description}
+								<div class="role-card-desc">{role.description}</div>
+							{/if}
+							{#if role.tools}
+								<div class="role-card-tools">{role.tools}</div>
+							{/if}
+							<div class="role-card-actions">
+								<button class="role-btn" onclick={() => startEdit(role)}>Edit</button>
+								<button class="role-btn role-btn-danger" onclick={() => deleteRole(role.id, role.name)}>Delete</button>
+							</div>
+						{/if}
+					</div>
+				{/each}
+
+				<!-- New role form -->
+				<div class="role-card role-card-new">
+					<div class="role-edit-form">
+						<div class="role-edit-row">
+							<input class="role-input role-input-icon" type="text" bind:value={newRoleIcon} placeholder="🔨" />
+							<input class="role-input role-input-name" type="text" bind:value={newRoleName} placeholder="Role name" />
+						</div>
+						<input class="role-input" type="text" bind:value={newRoleDescription} placeholder="Description" />
+						<input class="role-input" type="text" bind:value={newRoleTools} placeholder="Tools (e.g. Claude Code + Sonnet 4.6)" />
+						<button
+							class="role-btn role-btn-create"
+							disabled={!newRoleName.trim()}
+							onclick={createRole}
+						>
+							+ Create Role
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if loading}
 		<div class="skeleton-board">
@@ -568,5 +715,147 @@
 			width: 100%;
 			max-height: none;
 		}
+	}
+
+	/* ── Manage Roles Panel ─────────────────────────────────── */
+	.manage-roles-panel {
+		padding: 0 var(--space-5) var(--space-4);
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-secondary);
+	}
+	.manage-roles-grid {
+		display: flex;
+		gap: var(--space-3);
+		overflow-x: auto;
+		padding: var(--space-2) 0;
+	}
+	.role-card {
+		flex-shrink: 0;
+		width: 220px;
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		padding: var(--space-3);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.role-card-new {
+		border-style: dashed;
+		border-color: var(--text-muted);
+	}
+	.role-card-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.role-card-icon {
+		font-size: 1.2em;
+	}
+	.role-card-name {
+		font-weight: 600;
+		font-size: 0.92em;
+		flex: 1;
+	}
+	.role-card-count {
+		font-size: 0.75em;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 1px 6px;
+		border-radius: var(--radius-sm);
+	}
+	.role-card-desc {
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		line-height: 1.3;
+	}
+	.role-card-tools {
+		font-size: 0.78em;
+		color: var(--text-muted);
+		font-style: italic;
+	}
+	.role-card-actions {
+		display: flex;
+		gap: var(--space-2);
+		margin-top: auto;
+	}
+	.role-edit-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.role-edit-row {
+		display: flex;
+		gap: var(--space-2);
+	}
+	.role-input {
+		width: 100%;
+		padding: 4px 8px;
+		font-size: 0.85em;
+		font-family: inherit;
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+	}
+	.role-input:focus {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -1px;
+	}
+	.role-input-icon {
+		width: 40px;
+		flex-shrink: 0;
+		text-align: center;
+	}
+	.role-input-name {
+		flex: 1;
+	}
+	.role-edit-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+	.role-btn {
+		padding: 4px 10px;
+		font-size: 0.8em;
+		font-family: inherit;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--bg-tertiary);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+	.role-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.role-btn-save {
+		background: var(--accent-blue);
+		color: white;
+		border-color: var(--accent-blue);
+	}
+	.role-btn-save:hover {
+		filter: brightness(1.1);
+	}
+	.role-btn-create {
+		width: 100%;
+		background: var(--accent-blue);
+		color: white;
+		border-color: var(--accent-blue);
+	}
+	.role-btn-create:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+	.role-btn-create:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.role-btn-cancel {
+		color: var(--text-muted);
+	}
+	.role-btn-danger {
+		color: var(--accent-orange);
+	}
+	.role-btn-danger:hover {
+		background: color-mix(in srgb, var(--accent-orange) 15%, transparent);
 	}
 </style>
