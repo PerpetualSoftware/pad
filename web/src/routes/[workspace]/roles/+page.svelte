@@ -19,28 +19,37 @@
 	// Highlight: dim cards not assigned to current user
 	let highlightMine = $state(false);
 
-	// Role management state
-	let allRoles = $state<AgentRole[]>([]);
-	let newRoleName = $state('');
-	let newRoleDescription = $state('');
-	let newRoleIcon = $state('');
-	let newRoleTools = $state('');
+	// Role editing modal state
 	let dialogEl = $state<HTMLDialogElement | null>(null);
+	let dialogMode = $state<'edit' | 'create'>('create');
 	let editingRoleId = $state<string | null>(null);
 	let editName = $state('');
 	let editDescription = $state('');
 	let editIcon = $state('');
 	let editTools = $state('');
 
-	function openManageModal() {
-		loadRoles();
+	function openEditModal(role: AgentRole) {
+		dialogMode = 'edit';
+		editingRoleId = role.id;
+		editName = role.name;
+		editDescription = role.description;
+		editIcon = role.icon;
+		editTools = role.tools;
 		dialogEl?.showModal();
 	}
 
-	function closeManageModal() {
+	function openCreateModal() {
+		dialogMode = 'create';
 		editingRoleId = null;
+		editName = '';
+		editDescription = '';
+		editIcon = '';
+		editTools = '';
+		dialogEl?.showModal();
+	}
+
+	function closeModal() {
 		dialogEl?.close();
-		loadData();
 	}
 	let currentUserId = $state('');
 
@@ -154,7 +163,6 @@
 		workspaceStore.setCurrent(wsSlug);
 		uiStore.onNavigate();
 		loadData();
-		loadRoles();
 	});
 
 	async function loadData() {
@@ -176,66 +184,37 @@
 		}
 	}
 
-	async function loadRoles() {
+	async function saveRole() {
+		if (!editName.trim()) return;
 		try {
-			allRoles = await api.agentRoles.list(wsSlug);
-		} catch { allRoles = []; }
-	}
-
-	async function createRole() {
-		if (!newRoleName.trim()) return;
-		try {
-			await api.agentRoles.create(wsSlug, {
-				name: newRoleName.trim(),
-				description: newRoleDescription.trim(),
-				icon: newRoleIcon.trim(),
-				tools: newRoleTools.trim()
-			});
-			newRoleName = '';
-			newRoleDescription = '';
-			newRoleIcon = '';
-			newRoleTools = '';
-			await loadRoles();
+			if (dialogMode === 'edit' && editingRoleId) {
+				await api.agentRoles.update(wsSlug, editingRoleId, {
+					name: editName.trim(),
+					description: editDescription.trim(),
+					icon: editIcon.trim(),
+					tools: editTools.trim()
+				});
+			} else {
+				await api.agentRoles.create(wsSlug, {
+					name: editName.trim(),
+					description: editDescription.trim(),
+					icon: editIcon.trim(),
+					tools: editTools.trim()
+				});
+			}
+			closeModal();
 			await loadData();
 		} catch (e) {
-			console.error('Failed to create role:', e);
+			console.error('Failed to save role:', e);
 		}
 	}
 
-	function startEdit(role: AgentRole) {
-		editingRoleId = role.id;
-		editName = role.name;
-		editDescription = role.description;
-		editIcon = role.icon;
-		editTools = role.tools;
-	}
-
-	async function saveEdit() {
-		if (!editingRoleId || !editName.trim()) return;
+	async function deleteRole() {
+		if (!editingRoleId) return;
+		if (!confirm(`Delete role "${editName}"? Items assigned to this role will become unassigned.`)) return;
 		try {
-			await api.agentRoles.update(wsSlug, editingRoleId, {
-				name: editName.trim(),
-				description: editDescription.trim(),
-				icon: editIcon.trim(),
-				tools: editTools.trim()
-			});
-			editingRoleId = null;
-			await loadRoles();
-			await loadData();
-		} catch (e) {
-			console.error('Failed to update role:', e);
-		}
-	}
-
-	function cancelEdit() {
-		editingRoleId = null;
-	}
-
-	async function deleteRole(roleId: string, roleName: string) {
-		if (!confirm(`Delete role "${roleName}"? Items assigned to this role will become unassigned.`)) return;
-		try {
-			await api.agentRoles.delete(wsSlug, roleId);
-			await loadRoles();
+			await api.agentRoles.delete(wsSlug, editingRoleId);
+			closeModal();
 			await loadData();
 		} catch (e) {
 			console.error('Failed to delete role:', e);
@@ -281,112 +260,54 @@
 			>
 				Highlight Mine
 			</button>
-			<button class="toggle-btn" onclick={openManageModal}>
-				⚙ Manage
-			</button>
 		</div>
 	</header>
 
-	<!-- Role management modal -->
-	<dialog class="roles-dialog" bind:this={dialogEl} onclick={(e) => { if (e.target === dialogEl) closeManageModal(); }}>
-		<div class="dialog-content">
-			<div class="dialog-header">
-				<h2>Manage Roles</h2>
-				<button class="dialog-close" onclick={closeManageModal}>✕</button>
-			</div>
+	<!-- Role edit/create modal -->
+<dialog class="roles-dialog" bind:this={dialogEl} onclick={(e) => { if (e.target === dialogEl) closeModal(); }}>
+	<div class="dialog-content">
+		<div class="dialog-header">
+			<h2>{dialogMode === 'edit' ? 'Edit Role' : 'New Role'}</h2>
+			<button class="dialog-close" onclick={closeModal}>✕</button>
+		</div>
 
-			<div class="dialog-body">
-				<!-- Existing roles -->
-				{#each allRoles as role (role.id)}
-					<div class="role-row">
-						{#if editingRoleId === role.id}
-							<div class="role-edit-form">
-								<div class="role-field-group">
-									<label class="role-field-label">Icon & Name</label>
-									<div class="role-edit-row">
-										<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
-										<input class="role-input" type="text" bind:value={editName} placeholder="Name" />
-									</div>
-								</div>
-								<div class="role-field-group">
-									<label class="role-field-label">Description</label>
-									<input class="role-input" type="text" bind:value={editDescription} placeholder="What does this role do?" />
-								</div>
-								<div class="role-field-group">
-									<label class="role-field-label">Tools</label>
-									<input class="role-input" type="text" bind:value={editTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
-								</div>
-								<div class="role-edit-actions">
-									<button class="role-btn role-btn-save" onclick={saveEdit}>Save</button>
-									<button class="role-btn role-btn-cancel" onclick={cancelEdit}>Cancel</button>
-								</div>
-							</div>
-						{:else}
-							<div class="role-row-display">
-								<div class="role-row-info">
-									<span class="role-row-icon">{role.icon || '🎭'}</span>
-									<div class="role-row-details">
-										<div class="role-row-name">
-											{role.name}
-											<span class="role-row-count">{role.item_count ?? 0} items</span>
-										</div>
-										{#if role.description}
-											<div class="role-row-desc">{role.description}</div>
-										{/if}
-										{#if role.tools}
-											<div class="role-row-tools">{role.tools}</div>
-										{/if}
-									</div>
-								</div>
-								<div class="role-row-actions">
-									<button class="role-btn" onclick={() => startEdit(role)}>Edit</button>
-									<button class="role-btn role-btn-danger" onclick={() => deleteRole(role.id, role.name)}>Delete</button>
-								</div>
-							</div>
-						{/if}
+		<div class="dialog-body">
+			<div class="role-edit-form">
+				<div class="role-field-group">
+					<label class="role-field-label">Icon & Name</label>
+					<div class="role-edit-row">
+						<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
+						<input class="role-input" type="text" bind:value={editName} placeholder="Role name" />
 					</div>
-				{/each}
-
-				{#if allRoles.length === 0}
-					<div class="dialog-empty">
-						No roles yet. Create your first role below.
-					</div>
-				{/if}
-
-				<!-- Divider -->
-				<div class="dialog-divider"></div>
-
-				<!-- Create new role form -->
-				<div class="role-create-section">
-					<h3 class="role-create-heading">Create a new role</h3>
-					<div class="role-edit-form">
-						<div class="role-field-group">
-							<label class="role-field-label">Icon & Name</label>
-							<div class="role-edit-row">
-								<input class="role-input role-input-icon" type="text" bind:value={newRoleIcon} placeholder="🔨" />
-								<input class="role-input" type="text" bind:value={newRoleName} placeholder="Role name" />
-							</div>
-						</div>
-						<div class="role-field-group">
-							<label class="role-field-label">Description</label>
-							<input class="role-input" type="text" bind:value={newRoleDescription} placeholder="What does this role do?" />
-						</div>
-						<div class="role-field-group">
-							<label class="role-field-label">Tools</label>
-							<input class="role-input" type="text" bind:value={newRoleTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
-						</div>
-						<button
-							class="role-btn role-btn-create"
-							disabled={!newRoleName.trim()}
-							onclick={createRole}
-						>
-							+ Create Role
-						</button>
-					</div>
+				</div>
+				<div class="role-field-group">
+					<label class="role-field-label">Description</label>
+					<input class="role-input" type="text" bind:value={editDescription} placeholder="What does this role do?" />
+				</div>
+				<div class="role-field-group">
+					<label class="role-field-label">Tools</label>
+					<input class="role-input" type="text" bind:value={editTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
 				</div>
 			</div>
 		</div>
-	</dialog>
+
+		<div class="dialog-footer">
+			{#if dialogMode === 'edit'}
+				<button class="role-btn role-btn-danger" onclick={deleteRole}>Delete Role</button>
+				<div class="dialog-footer-right">
+					<button class="role-btn" onclick={closeModal}>Cancel</button>
+					<button class="role-btn role-btn-save" disabled={!editName.trim()} onclick={saveRole}>Save</button>
+				</div>
+			{:else}
+				<div></div>
+				<div class="dialog-footer-right">
+					<button class="role-btn" onclick={closeModal}>Cancel</button>
+					<button class="role-btn role-btn-save" disabled={!editName.trim()} onclick={saveRole}>Create</button>
+				</div>
+			{/if}
+		</div>
+	</div>
+</dialog>
 
 	{#if loading}
 		<div class="skeleton-board">
@@ -418,9 +339,9 @@
 				<div class="empty-icon">&#127917;</div>
 				<p class="empty-title">No roles configured</p>
 				<p class="empty-desc">
-					Agent roles let you partition work across different AI agents or team members.
-					Create roles in workspace settings, then assign items to roles from the item detail page.
+					Agent roles let you organize work by what kind of thinking it requires — planning, implementing, reviewing, etc.
 				</p>
+				<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
 			{/if}
 		</div>
 	{:else}
@@ -437,6 +358,9 @@
 								<span class="lane-name unassigned-name">Unassigned</span>
 							{/if}
 							<span class="lane-count">{lane.items.length}</span>
+							{#if lane.role}
+								<button class="lane-edit-btn" title="Edit role" onclick={() => openEditModal(lane.role)}>✎</button>
+							{/if}
 						</div>
 						{#if lane.role?.tools}
 							<div class="lane-tools">{lane.role.tools}</div>
@@ -512,6 +436,14 @@
 					</div>
 				</div>
 			{/each}
+
+			<!-- Add role column -->
+			<div class="lane lane-add">
+				<button class="add-role-btn" onclick={openCreateModal}>
+					<span class="add-role-icon">+</span>
+					<span class="add-role-label">Add Role</span>
+				</button>
+			</div>
 		</div>
 	{/if}
 </div>
@@ -901,6 +833,63 @@
 		}
 	}
 
+	/* ── Lane edit button ─────────────────────────────── */
+	.lane-edit-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.85em;
+		cursor: pointer;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+		opacity: 0;
+		transition: opacity 0.15s;
+		margin-left: auto;
+	}
+	.lane-title-row:hover .lane-edit-btn {
+		opacity: 1;
+	}
+	.lane-edit-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	/* ── Add role column ─────────────────────────────── */
+	.lane-add {
+		background: transparent;
+		border: 2px dashed var(--border);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 200px;
+	}
+	.add-role-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-2);
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: var(--space-4);
+		border-radius: var(--radius);
+		transition: color 0.15s, background 0.15s;
+	}
+	.add-role-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+	.add-role-icon {
+		font-size: 1.8em;
+		font-weight: 300;
+		line-height: 1;
+	}
+	.add-role-label {
+		font-size: 0.85em;
+		font-weight: 500;
+	}
+
 	/* ── Roles Dialog ─────────────────────────────────── */
 	.roles-dialog {
 		border: none;
@@ -949,89 +938,17 @@
 	.dialog-body {
 		padding: var(--space-4) var(--space-5);
 		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
 	}
-	.dialog-empty {
-		text-align: center;
-		color: var(--text-muted);
-		padding: var(--space-4) 0;
-		font-size: 0.9em;
-	}
-	.dialog-divider {
-		border-top: 1px solid var(--border);
-		margin: var(--space-2) 0;
-	}
-
-	/* ── Role rows ─────────────────────────────────── */
-	.role-row {
-		padding: var(--space-3);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-	}
-	.role-row-display {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: var(--space-3);
-	}
-	.role-row-info {
-		display: flex;
-		gap: var(--space-3);
-		flex: 1;
-		min-width: 0;
-	}
-	.role-row-icon {
-		font-size: 1.3em;
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-	.role-row-details {
-		flex: 1;
-		min-width: 0;
-	}
-	.role-row-name {
-		font-weight: 600;
-		font-size: 0.95em;
+	.dialog-footer {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
+		justify-content: space-between;
+		padding: var(--space-3) var(--space-5);
+		border-top: 1px solid var(--border);
 	}
-	.role-row-count {
-		font-weight: 400;
-		font-size: 0.8em;
-		color: var(--text-muted);
-	}
-	.role-row-desc {
-		font-size: 0.85em;
-		color: var(--text-secondary);
-		margin-top: 2px;
-	}
-	.role-row-tools {
-		font-size: 0.8em;
-		color: var(--text-muted);
-		font-style: italic;
-		margin-top: 2px;
-	}
-	.role-row-actions {
+	.dialog-footer-right {
 		display: flex;
 		gap: var(--space-2);
-		flex-shrink: 0;
-	}
-
-	/* ── Create section ─────────────────────────────── */
-	.role-create-section {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
-	}
-	.role-create-heading {
-		margin: 0;
-		font-size: 0.92em;
-		font-weight: 600;
-		color: var(--text-secondary);
 	}
 
 	/* ── Shared form elements ─────────────────────────── */
