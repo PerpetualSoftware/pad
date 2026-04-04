@@ -211,6 +211,35 @@ func TestSeedDefaultCollections(t *testing.T) {
 	}
 }
 
+func TestSeedCollectionsFromTemplateAddsConventionsRoleField(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Template Test")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "scrum"); err != nil {
+		t.Fatalf("SeedCollectionsFromTemplate error: %v", err)
+	}
+
+	coll, err := s.GetCollectionBySlug(ws.ID, "conventions")
+	if err != nil {
+		t.Fatalf("GetCollectionBySlug error: %v", err)
+	}
+	if coll == nil {
+		t.Fatal("expected conventions collection")
+	}
+
+	keys := schemaFieldKeys(t, coll.Schema)
+	foundRole := false
+	for _, key := range keys {
+		if key == "role" {
+			foundRole = true
+			break
+		}
+	}
+	if !foundRole {
+		t.Fatalf("expected conventions schema to include role field, got %v", keys)
+	}
+}
+
 // --- Item Tests ---
 
 func TestItemCRUD(t *testing.T) {

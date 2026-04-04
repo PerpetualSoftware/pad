@@ -89,6 +89,11 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 					Type:    "select",
 					Options: []string{"must", "should", "nice-to-have"},
 				},
+				{
+					Key:   "role",
+					Label: "Role",
+					Type:  "text",
+				},
 			},
 		},
 		Settings: models.CollectionSettings{

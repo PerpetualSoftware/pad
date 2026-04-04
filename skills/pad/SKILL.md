@@ -25,22 +25,88 @@ On every `/pad` invocation, start by loading workspace context:
 
 ```bash
 pad project dashboard --format json    # Project overview: collections, phases, attention, suggestions
-pad collection list --format json  # Available collections with schemas
+pad collection list --format json      # Available collections with schemas
 pad item list conventions --field status=active --field trigger=always --format json  # Always-on project conventions
+pad role list --format json            # Agent roles configured in workspace
 ```
 
-This tells you: what collections exist, what items are in them, what's active, what needs attention, and what project conventions to always follow.
+This tells you: what collections exist, what items are in them, what's active, what needs attention, what project conventions to always follow, and what agent roles are available.
 
 If the conventions list includes items, treat them as project rules you must follow. They are short instructions like "run make install after code changes" or "use conventional commit format."
+
+## Role Awareness
+
+Agent roles let users organize work by **what kind of thinking it requires** — planning, implementing, reviewing, researching, etc. Each role is a named capability profile. Items can be assigned to a (user, role) pair.
+
+### How role context works
+
+Role context lives **in the conversation**. Each agent session (Claude Code, Cursor, etc.) is its own conversation with its own role. No server state, no files — the skill simply remembers the role for the session.
+
+### Setting the role
+
+On context load, after running `pad role list --format json`:
+
+- **If roles exist and the user hasn't declared a role yet in this conversation:** Ask the user which role they're working as. Present the available roles and ask them to pick one.
+  - Example: *"This workspace has 4 roles: 🧠 Planner, 🔨 Implementer, 👁️ Reviewer, 🔍 Researcher. Which role are you working as? (Or say 'no role' to skip.)"*
+- **If no roles exist:** Skip role awareness entirely. Behave normally — everything is backward compatible.
+- **If the user says "no role" or declines:** Work without role filtering for this session.
+
+### Inline role declaration
+
+The user can declare or switch roles at any time via natural language:
+
+- `/pad as implementer` — set role, show role queue
+- `/pad what's next as reviewer` — set role + execute query
+- `/pad switch to planner` / `/pad change role to researcher` — change role mid-session
+- `/pad drop role` / `/pad no role` — clear role, return to unfiltered view
+
+Parse "as <role-slug>" anywhere in the input. Match against known role slugs from `pad role list`.
+
+### Role-aware behavior
+
+Once a role is active, adjust your behavior:
+
+**Greeting:** When presenting status or responding to queries, lead with the role context:
+- *"Working as 🔨 Implementer. You have 3 items in your queue."*
+
+**Querying "what's on my plate" / "what should I work on":**
+```bash
+# Get the current user's name
+pad auth whoami --format json
+# Filter items by role (and optionally by assigned user)
+pad item list tasks --role <slug> --assign <user-name> --format json
+```
+Show the role-filtered queue prominently. If the queue is empty, fall back to general suggestions.
+
+**Creating items:** When creating tasks or actionable items, offer to assign to the current (user, role) pair:
+- *"Want me to assign this to you as Implementer?"*
+- If yes: `pad item create task "Title" --role <slug> --assign <user-name> --priority medium`
+
+**Updating items:** When marking items done or changing status, include the role context in the comment:
+- `pad item update TASK-5 --status done --comment "Completed (Implementer)"`
+
+**Assignment:** When the user says "assign TASK-5 to Dave as reviewer":
+- `pad item update TASK-5 --role reviewer --assign Dave`
 
 ## Parse $ARGUMENTS
 
 ### No arguments
-Show project status conversationally. Run `pad project dashboard --format json`, and present the dashboard in a friendly, readable way — highlight what's active, what needs attention, and suggest what to work on next.
+Show project status conversationally. Run `pad project dashboard --format json`, and present the dashboard in a friendly, readable way — highlight what's active, what needs attention, and suggest what to work on next. If a role is active, highlight the role queue first.
 
 ### Natural Language Routing
 
 Interpret the user's intent and route to the appropriate action. Here are common patterns:
+
+**Role management:**
+- "as implementer" / "I'm the implementer" → Set role for this session
+- "switch to reviewer" / "change role" → Switch role
+- "drop role" / "no role" → Clear role context
+- "what role am I?" / "who am I?" → Show current user + role
+- "what roles exist?" → `pad role list --format json`
+- "create a role called Designer" → `pad role create "Designer" --description "..." --icon "🎨"`
+- "assign TASK-5 to Dave as reviewer" → `pad item update TASK-5 --role reviewer --assign Dave`
+- "what's on Dave's plate as implementer?" → `pad item list tasks --role implementer --assign Dave --format json`
+- "who's working on what?" → Show items grouped by role assignment
 
 **Creating items:**
 - "I have an idea for X" → Create an Idea item
@@ -49,7 +115,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "document the auth architecture" → Create a Doc item
 
 **Querying:**
-- "what's on my plate?" / "what should I work on?" → `pad project next --format json`
+- "what's on my plate?" / "what should I work on?" → Role-filtered queue if role is active, otherwise `pad project next --format json`
 - "how far along are we?" / "show me status" → `pad project dashboard --format json`
 - "what server am I connected to?" / "show my Pad connection info" → `pad server info --format json`
 - "show me all tasks" / "list bugs" → `pad item list <collection> --format json`
@@ -92,14 +158,18 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 ## Before Performing Work
 
-When you are about to take action (implement code, complete a task, create a PR, etc.), load the relevant conventions and playbooks FIRST:
+When you are about to take action (implement code, complete a task, create a PR, etc.), load the relevant conventions and playbooks FIRST.
+
+If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone):
 
 ```bash
-# Before implementing code:
-pad item list conventions --field trigger=on-implement --field status=active --format json
+# Example: before implementing code, with role "implementer" active:
+pad item list conventions --field trigger=on-implement --field status=active --field role=implementer --format json  # Role-specific
+pad item list conventions --field trigger=on-implement --field status=active --format json  # All (includes global)
 pad item list playbooks --field trigger=on-implement --field status=active --format json
 
 # Before completing a task:
+pad item list conventions --field trigger=on-task-complete --field status=active --field role=<active-role> --format json
 pad item list conventions --field trigger=on-task-complete --field status=active --format json
 
 # Before creating a PR:
@@ -112,39 +182,51 @@ pad item list conventions --field trigger=on-commit --field status=active --form
 pad item list conventions --field trigger=on-plan --field status=active --format json
 ```
 
+When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
+
 Follow ALL returned conventions. If a playbook exists for the action, follow its steps in order. Conventions are project-specific rules the team has established — they override your defaults.
 
 ## CLI Reference
 
 **IMPORTANT:** All commands that take an item reference accept issue IDs (e.g. `TASK-5`, `BUG-8`). Always prefer issue IDs over slugs. When you create an item, the CLI prints its issue ID — use that for subsequent commands.
 
+### Agent Roles
+```bash
+pad role list [--format json]                                      # List workspace roles
+pad role create "Name" [--description "..."] [--icon "🔨"]         # Create a role
+pad role delete <slug>                                              # Delete a role
+```
+
 ### Item CRUD
 ```bash
 # Create items (collection accepts singular or plural: task/tasks, idea/ideas, etc.)
 # The CLI prints the new item's issue ID (e.g. "Created TASK-5: ...") — use it for subsequent commands
-pad item create <collection> "title" [--status X] [--priority X] [--assignee X] [--category X] [--content "..."] [--stdin]
-pad item create task "Fix OAuth redirect" --priority high
+pad item create <collection> "title" [--status X] [--priority X] [--role X] [--assign X] [--category X] [--content "..."] [--stdin]
+pad item create task "Fix OAuth redirect" --priority high --role implementer --assign Dave
 pad item create idea "Real-time collaboration" --category infrastructure
 pad item create phase "API Redesign" --status active
 pad item create doc "Auth Architecture" --category architecture --stdin <<< "# Auth Architecture\n\n..."
 
 # Custom fields via --field flag (works for any collection's fields)
 pad item create convention "Run tests" --field trigger=on-task-complete --field scope=all --field priority=must
+pad item create convention "Always review with linter" --field trigger=on-implement --field role=implementer --field priority=should
 pad item create roadmap "Feature X" --field quarter=2026-Q3
 
 # List items (defaults to non-done items)
-pad item list [collection] [--status X] [--priority X] [--all] [--field key=value] [--format json]
-pad item list tasks                   # open + in_progress tasks
-pad item list tasks --status done     # completed tasks
+pad item list [collection] [--status X] [--priority X] [--role X] [--assign X] [--all] [--field key=value] [--format json]
+pad item list tasks                            # open + in_progress tasks
+pad item list tasks --role implementer         # tasks assigned to the implementer role
+pad item list tasks --role implementer --assign Dave  # Dave's implementer queue
+pad item list tasks --status done              # completed tasks
 pad item list conventions --field trigger=always --field status=active  # filtered by custom fields
-pad item list --all                   # everything across all collections
+pad item list --all                            # everything across all collections
 
 # Show item detail — use the issue ID (e.g. TASK-5, BUG-8)
 pad item show TASK-5 [--format json|markdown]
 
 # Update items — use the issue ID (--comment adds an audit note)
 pad item update TASK-5 --status done --comment "Fixed login bug, tests passing"
-pad item update IDEA-3 --priority high --assignee dave
+pad item update TASK-5 --role reviewer --assign Alice --comment "Ready for review"
 pad item update DOC-1 --stdin < updated-doc.md
 
 # Comments — add notes, reply to threads
@@ -221,26 +303,29 @@ All commands support `--format json` (for parsing) or `--format table` (default,
    ```bash
    pad item create task "Task description" --phase PHASE-3 --priority medium
    ```
-6. **Each task should be PR-sized** — small enough for one branch, large enough to be meaningful.
-7. **Ask before creating each item.** Don't bulk-create without approval.
+6. **If roles exist, suggest role assignments** for each task: "This looks like Implementer work — assign to Implementer?"
+7. **Each task should be PR-sized** — small enough for one branch, large enough to be meaningful.
+8. **Ask before creating each item.** Don't bulk-create without approval.
 
 ### Decomposition: "Break phase X into tasks"
 
 1. **Load the phase:** `pad item show PHASE-2 --format markdown`
 2. **Analyze the content** for actionable work items
-3. **Propose task list** with titles and priorities
+3. **Propose task list** with titles, priorities, and suggested role assignments
 4. **Create approved tasks:** One `pad item create task` per approved item
 5. **Link tasks to phase** using `--phase PHASE-2` flag (if the phase collection has a relation field)
 
 ### Status Check: "How are we doing?"
 
 1. Run `pad project dashboard --format json`
-2. Present conversationally:
+2. If a role is active, also run `pad item list tasks --role <slug> --assign <user> --format json` for the role queue
+3. Present conversationally:
+   - If role active: role queue first ("Your Implementer queue: 3 items")
    - Collection summaries (Tasks: 5 open, 2 in progress, 12 done)
    - Active phase progress with bars
    - Attention items (stalled, overdue)
    - Suggested next actions
-3. Offer follow-up: "Want me to dig into any of these?"
+4. Offer follow-up: "Want me to dig into any of these?"
 
 ### Daily Standup: "Prep for standup"
 
@@ -266,7 +351,8 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 4. **Suggest conventions:** Based on the detected tooling, suggest conventions from the library. Customize the content with the actual commands found in the project (e.g., "Run `make test`" not just "Run the test suite"). Present as a checklist and ask which to activate.
 5. **Draft an architecture doc:** Summarize the project structure, tech stack, key directories, and how the pieces fit together. Offer to save as a Doc item.
 6. **Propose an initial phase:** Based on recent git activity (`git log --oneline -20`) and any open TODOs, suggest a phase name and a few starter tasks. Ask before creating.
-7. **Always confirm before creating each item.** Show what will be created, get approval, then create.
+7. **Suggest agent roles:** If no roles exist yet, suggest creating roles based on the project type. For a typical dev project: Planner, Implementer, Reviewer. Don't auto-create — ask first.
+8. **Always confirm before creating each item.** Show what will be created, get approval, then create.
 
 ### Retrospective: "Phase X is done, let's retro"
 
@@ -286,8 +372,9 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 6. **Reference existing items.** Use `[[Item Title]]` links in content to connect items.
 7. **Keep it practical.** Tasks should be PR-sized. Ideas should be actionable. Docs should be concise.
 8. **Attribution matters.** Items you create will have `created_by: agent` and `source: cli` automatically.
-9. **Follow project conventions.** Always load and follow active conventions before performing work. They are project-specific rules that override your defaults.
-10. **Learn and teach.** When the user corrects your behavior or teaches you a project-specific rule, offer to save it as a convention: "Should I save this as a project convention so future agents follow it too?" Use `pad item create convention "Title" --field trigger=<inferred> --field scope=<inferred> --field priority=should --stdin` with an appropriate trigger inferred from the context.
+9. **Follow project conventions.** Always load and follow active conventions before performing work. They are project-specific rules that override your defaults. When a role is active, load both role-specific and global conventions.
+10. **Learn and teach.** When the user corrects your behavior or teaches you a project-specific rule, offer to save it as a convention: "Should I save this as a project convention so future agents follow it too?" Use `pad item create convention "Title" --field trigger=<inferred> --field scope=<inferred> --field priority=should --stdin` with an appropriate trigger inferred from the context. If the correction is role-specific, add `--field role=<slug>`.
+11. **Role context is per-conversation.** If roles exist, ask which role the user is working as on first invocation. Remember it for the session. Auto-filter queries and suggest assignments accordingly. Never block on role — if the user says "no role" or the workspace has no roles, work normally.
 
 ## Anything Else
 

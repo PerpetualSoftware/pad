@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,21 @@ func createTestDoc(t *testing.T, s *Store, workspaceID, title, content string) *
 		t.Fatalf("failed to create document: %v", err)
 	}
 	return doc
+}
+
+func schemaFieldKeys(t *testing.T, schemaJSON string) []string {
+	t.Helper()
+
+	var schema models.CollectionSchema
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatalf("unmarshal collection schema: %v", err)
+	}
+
+	keys := make([]string, 0, len(schema.Fields))
+	for _, field := range schema.Fields {
+		keys = append(keys, field.Key)
+	}
+	return keys
 }
 
 func TestNewStore(t *testing.T) {
