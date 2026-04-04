@@ -89,43 +89,65 @@
 
 	async function handleDndFinalize(key: string, e: CustomEvent<DndEvent<Item>>) {
 		laneData[key] = e.detail.items;
+		isDragging = false;
 
 		const { id: itemId, trigger } = e.detail.info;
 
-		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
-			// Item was dropped into a different lane — update its role
-			const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
-			if (originalItem) {
-				const oldKey = originalItem.agent_role_id ?? '__unassigned';
-				if (oldKey !== key) {
-					// Keep isDragging true to prevent the $effect from reverting
-					// laneData while we wait for the API
-					try {
-						const update: Record<string, any> = {};
-						if (key === '__unassigned') {
-							update.clear_agent_role = true;
-						} else {
-							update.agent_role_id = key;
-							// Auto-assign current user if the item has no user assignment
-							if (!originalItem.assigned_user_id && currentUserId) {
-								update.assigned_user_id = currentUserId;
-							}
-						}
-						await api.items.update(wsSlug, originalItem.id, update);
-						await loadData();
-					} catch (err) {
-						console.error('Failed to update role:', err);
-						await loadData();
-					}
-					// Now let the $effect sync from the fresh server data
-					isDragging = false;
-					return;
-				}
-			}
+		if (trigger !== TRIGGERS.DROPPED_INTO_ZONE) return;
+
+		// Item was dropped into a different lane — update its role
+		const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
+		if (!originalItem) return;
+
+		const oldKey = originalItem.agent_role_id ?? '__unassigned';
+		if (oldKey === key) return;
+
+		// Optimistic update: move item in `lanes` so orderedLanes + laneData stay consistent
+		const newRoleId = key === '__unassigned' ? null : key;
+		const targetRole = orderedLanes.find((l) => laneKey(l) === key)?.role ?? null;
+
+		// Update the item's role fields in-place
+		const updatedItem = { ...originalItem,
+			agent_role_id: newRoleId,
+			agent_role_name: targetRole?.name ?? '',
+			agent_role_slug: targetRole?.slug ?? '',
+			agent_role_icon: targetRole?.icon ?? '',
+		};
+
+		// Auto-assign current user if unassigned
+		if (!originalItem.assigned_user_id && currentUserId && newRoleId) {
+			updatedItem.assigned_user_id = currentUserId;
 		}
 
-		// No cross-lane move — safe to release immediately
-		isDragging = false;
+		// Remove from old lane, add to new lane
+		lanes = lanes.map((lane) => {
+			const lk = lane.role?.id ?? '__unassigned';
+			if (lk === oldKey) {
+				return { ...lane, items: lane.items.filter((i) => i.id !== itemId) };
+			}
+			if (lk === key) {
+				return { ...lane, items: [...lane.items.filter((i) => i.id !== itemId), updatedItem] };
+			}
+			return lane;
+		});
+
+		// Fire-and-forget API call
+		try {
+			const update: Record<string, any> = {};
+			if (key === '__unassigned') {
+				update.clear_agent_role = true;
+			} else {
+				update.agent_role_id = key;
+				if (!originalItem.assigned_user_id && currentUserId) {
+					update.assigned_user_id = currentUserId;
+				}
+			}
+			await api.items.update(wsSlug, originalItem.id, update);
+		} catch (err) {
+			console.error('Failed to update role:', err);
+			// Revert on error by reloading
+			await loadData();
+		}
 	}
 
 	onMount(() => {
