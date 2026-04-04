@@ -565,7 +565,7 @@
 		gap: var(--space-4);
 		overflow-x: auto;
 		flex: 1;
-		align-items: flex-start;
+		align-items: stretch;
 		padding-bottom: var(--space-4);
 	}
 
