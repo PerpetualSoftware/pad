@@ -861,7 +861,12 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 200px;
+		align-self: flex-start;
+		min-height: 0;
+		flex: 0 0 auto;
+		min-width: auto;
+		width: auto;
+		padding: var(--space-3);
 	}
 	.add-role-btn {
 		display: flex;
@@ -901,6 +906,11 @@
 		background: var(--bg-primary);
 		color: var(--text-primary);
 		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+		position: fixed;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		margin: 0;
 	}
 	.roles-dialog::backdrop {
 		background: rgba(0, 0, 0, 0.5);
