@@ -89,7 +89,6 @@
 
 	async function handleDndFinalize(key: string, e: CustomEvent<DndEvent<Item>>) {
 		laneData[key] = e.detail.items;
-		isDragging = false;
 
 		const { id: itemId, trigger } = e.detail.info;
 
@@ -99,6 +98,8 @@
 			if (originalItem) {
 				const oldKey = originalItem.agent_role_id ?? '__unassigned';
 				if (oldKey !== key) {
+					// Keep isDragging true to prevent the $effect from reverting
+					// laneData while we wait for the API
 					try {
 						const update: Record<string, any> = {};
 						if (key === '__unassigned') {
@@ -111,15 +112,20 @@
 							}
 						}
 						await api.items.update(wsSlug, originalItem.id, update);
-						// Refresh board data
 						await loadData();
 					} catch (err) {
 						console.error('Failed to update role:', err);
 						await loadData();
 					}
+					// Now let the $effect sync from the fresh server data
+					isDragging = false;
+					return;
 				}
 			}
 		}
+
+		// No cross-lane move — safe to release immediately
+		isDragging = false;
 	}
 
 	onMount(() => {
