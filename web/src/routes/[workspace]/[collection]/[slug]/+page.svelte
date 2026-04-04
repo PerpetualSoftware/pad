@@ -15,7 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 
@@ -73,6 +73,8 @@
 	let showMoveMenu = $state(false);
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
+	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string }[]>([]);
+	let agentRoles = $state<AgentRole[]>([]);
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks) : []);
 	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
 	let codeContext = $derived(item?.code_context ?? null);
@@ -148,6 +150,15 @@
 			try {
 				itemLinks = await api.links.list(wsSlug, itemData.slug);
 			} catch { itemLinks = []; }
+
+			// Load workspace members and agent roles for assignment picker
+			try {
+				const membersData = await api.members.list(wsSlug);
+				workspaceMembers = membersData.members ?? [];
+			} catch { workspaceMembers = []; }
+			try {
+				agentRoles = await api.agentRoles.list(wsSlug);
+			} catch { agentRoles = []; }
 		} catch (e: any) {
 			error = e.message ?? 'Failed to load item';
 		} finally {
@@ -212,6 +223,42 @@
 		} catch {
 			saveStatus = 'idle';
 			toastStore.show('Failed to save', 'error');
+		}
+	}
+
+	async function updateAssignedUser(userId: string | null) {
+		if (!item) return;
+		saveStatus = 'saving';
+		try {
+			const update: Record<string, any> = {};
+			if (userId) {
+				update.assigned_user_id = userId;
+			} else {
+				update.clear_assigned_user = true;
+			}
+			item = await api.items.update(wsSlug, item.id, update);
+			showSaved();
+		} catch {
+			saveStatus = 'idle';
+			toastStore.show('Failed to update assignment', 'error');
+		}
+	}
+
+	async function updateAgentRole(roleId: string | null) {
+		if (!item) return;
+		saveStatus = 'saving';
+		try {
+			const update: Record<string, any> = {};
+			if (roleId) {
+				update.agent_role_id = roleId;
+			} else {
+				update.clear_agent_role = true;
+			}
+			item = await api.items.update(wsSlug, item.id, update);
+			showSaved();
+		} catch {
+			saveStatus = 'idle';
+			toastStore.show('Failed to update role', 'error');
 		}
 	}
 
@@ -565,24 +612,46 @@
 				{/each}
 
 				<!-- Assignment: user + role -->
-				{#if item.assigned_user_name || item.agent_role_name}
+				{#if workspaceMembers.length > 0 || agentRoles.length > 0}
 					<div class="fields-header" style="margin-top: var(--space-4)">Assignment</div>
 				{/if}
-				{#if item.assigned_user_name}
+				{#if workspaceMembers.length > 0}
 					<div class="field-row">
 						<span class="field-label">Assigned to</span>
 						<div class="field-value">
-							<span class="assignment-value">{item.assigned_user_name}</span>
+							<select
+								class="assignment-select"
+								value={item.assigned_user_id ?? ''}
+								onchange={(e) => {
+									const val = (e.target as HTMLSelectElement).value;
+									updateAssignedUser(val || null);
+								}}
+							>
+								<option value="">Unassigned</option>
+								{#each workspaceMembers as member (member.user_id)}
+									<option value={member.user_id}>{member.user_name}</option>
+								{/each}
+							</select>
 						</div>
 					</div>
 				{/if}
-				{#if item.agent_role_name}
+				{#if agentRoles.length > 0}
 					<div class="field-row">
 						<span class="field-label">Role</span>
 						<div class="field-value">
-							<span class="assignment-value">
-								{#if item.agent_role_icon}{item.agent_role_icon} {/if}{item.agent_role_name}
-							</span>
+							<select
+								class="assignment-select"
+								value={item.agent_role_id ?? ''}
+								onchange={(e) => {
+									const val = (e.target as HTMLSelectElement).value;
+									updateAgentRole(val || null);
+								}}
+							>
+								<option value="">No role</option>
+								{#each agentRoles as role (role.id)}
+									<option value={role.id}>{role.icon ? role.icon + ' ' : ''}{role.name}</option>
+								{/each}
+							</select>
 						</div>
 					</div>
 				{/if}
@@ -878,6 +947,25 @@
 	.computed-value {
 		font-size: 0.88em;
 		color: var(--text-secondary);
+	}
+	.assignment-select {
+		width: 100%;
+		padding: 5px 8px;
+		font-size: 0.88em;
+		font-family: inherit;
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		appearance: auto;
+	}
+	.assignment-select:hover {
+		border-color: var(--accent-blue);
+	}
+	.assignment-select:focus {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -1px;
 	}
 	.progress-bar {
 		position: relative;

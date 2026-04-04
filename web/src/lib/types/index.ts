@@ -342,6 +342,10 @@ export interface ItemUpdate {
 	pinned?: boolean;
 	sort_order?: number;
 	parent_id?: string;
+	assigned_user_id?: string;
+	agent_role_id?: string;
+	clear_assigned_user?: boolean;
+	clear_agent_role?: boolean;
 	last_modified_by?: string;
 	source?: string;
 	comment?: string;
