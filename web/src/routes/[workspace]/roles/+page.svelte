@@ -365,14 +365,7 @@
 						{#if lane.role?.tools}
 							<div class="lane-tools">{lane.role.tools}</div>
 						{/if}
-						{#if lane.assigned_users.length > 0}
-							<div class="lane-users">
-								{#each lane.assigned_users as user (user)}
-									<span class="user-pill">{user}</span>
-								{/each}
-							</div>
-						{/if}
-					</div>
+						</div>
 
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
@@ -583,22 +576,6 @@
 		margin-top: var(--space-1);
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.lane-users {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-1);
-		margin-top: var(--space-2);
-	}
-	.user-pill {
-		font-size: 0.7em;
-		font-weight: 600;
-		background: color-mix(in srgb, var(--accent-teal) 15%, transparent);
-		color: var(--accent-teal);
-		padding: 1px 8px;
-		border-radius: 10px;
 		white-space: nowrap;
 	}
 
