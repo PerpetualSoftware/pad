@@ -45,31 +45,36 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			refArgs = append(refArgs, params.Workspace)
 		}
 
-		row := s.db.QueryRow(refQuery, refArgs...)
-		var r SearchResult
-		var createdAt, updatedAt string
-		var pinned int
-		err := row.Scan(
-			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
-			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
-			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
-			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
-			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
-			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
-			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
-			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
-		)
+		refRows, err := s.db.Query(refQuery, refArgs...)
 		if err == nil {
-			r.Item.Pinned = pinned == 1
-			r.Item.CreatedAt = parseTime(createdAt)
-			r.Item.UpdatedAt = parseTime(updatedAt)
-			hydrateItemComputedMetadata(&r.Item)
-			r.Item.Content = ""
-			r.Snippet = r.Item.Title
-			r.Rank = -1000 // Best possible rank so it sorts first
-			results = append(results, r)
+			defer refRows.Close()
+			for refRows.Next() {
+				var r SearchResult
+				var createdAt, updatedAt string
+				var pinned int
+				if err := refRows.Scan(
+					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
+					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+					&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
+					&r.Item.CreatedBy, &r.Item.LastModifiedBy,
+					&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
+					&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
+					&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
+					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+				); err != nil {
+					continue
+				}
+				r.Item.Pinned = pinned == 1
+				r.Item.CreatedAt = parseTime(createdAt)
+				r.Item.UpdatedAt = parseTime(updatedAt)
+				hydrateItemComputedMetadata(&r.Item)
+				r.Item.Content = ""
+				r.Snippet = r.Item.Title
+				r.Rank = -1000 // Best possible rank so it sorts first
+				results = append(results, r)
+			}
 		}
-		// If no ref match, fall through to FTS below
+		// If no ref matches, fall through to FTS below
 	}
 
 	query := `
