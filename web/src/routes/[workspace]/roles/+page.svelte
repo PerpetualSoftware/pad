@@ -40,7 +40,7 @@
 	function closeManageModal() {
 		editingRoleId = null;
 		dialogEl?.close();
-		loadBoard();
+		loadData();
 	}
 	let currentUserId = $state('');
 
@@ -112,10 +112,10 @@
 						}
 						await api.items.update(wsSlug, originalItem.id, update);
 						// Refresh board data
-						await loadBoard();
+						await loadData();
 					} catch (err) {
 						console.error('Failed to update role:', err);
-						await loadBoard();
+						await loadData();
 					}
 				}
 			}
@@ -168,7 +168,7 @@
 			newRoleIcon = '';
 			newRoleTools = '';
 			await loadRoles();
-			await loadBoard();
+			await loadData();
 		} catch (e) {
 			console.error('Failed to create role:', e);
 		}
@@ -193,7 +193,7 @@
 			});
 			editingRoleId = null;
 			await loadRoles();
-			await loadBoard();
+			await loadData();
 		} catch (e) {
 			console.error('Failed to update role:', e);
 		}
@@ -208,7 +208,7 @@
 		try {
 			await api.agentRoles.delete(wsSlug, roleId);
 			await loadRoles();
-			await loadBoard();
+			await loadData();
 		} catch (e) {
 			console.error('Failed to delete role:', e);
 		}
@@ -380,7 +380,7 @@
 		</div>
 	{:else if orderedLanes.length === 0}
 		<div class="empty-state">
-			{#if myWorkOnly}
+			{#if highlightMine}
 				<div class="empty-icon">&#128100;</div>
 				<p class="empty-title">No items assigned to you</p>
 				<p class="empty-desc">
