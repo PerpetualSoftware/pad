@@ -260,6 +260,10 @@
 		// Apply field filters
 		for (const [key, value] of Object.entries(activeFilters)) {
 			result = result.filter((item) => {
+				// Phase filter uses the phase link, not fields JSON
+				if (key === 'phase') {
+					return item.phase_id === value;
+				}
 				const fields = parseFields(item);
 				return fields[key] === value;
 			});
@@ -852,7 +856,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -863,7 +866,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{:else}
 			<ListView
@@ -880,7 +882,6 @@
 				oncreate={openQuickCreate}
 				{itemProgress}
 				{progressLabel}
-				{relationLabels}
 			/>
 		{/if}
 	{/if}

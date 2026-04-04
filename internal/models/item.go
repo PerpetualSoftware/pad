@@ -51,6 +51,12 @@ type Item struct {
 	CollectionName      string                   `json:"collection_name,omitempty"`
 	CollectionIcon      string                   `json:"collection_icon,omitempty"`
 	CollectionPrefix    string                   `json:"collection_prefix,omitempty"`
+
+	// Phase link (populated by enrichItemForResponse)
+	PhaseID    string `json:"phase_id,omitempty"`
+	PhaseRef   string `json:"phase_ref,omitempty"`
+	PhaseTitle string `json:"phase_title,omitempty"`
+
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
@@ -504,6 +510,7 @@ type ItemListParams struct {
 	Tag             string
 	AssignedUserID  string // filter by assigned user
 	AgentRoleID     string // filter by agent role (ID or slug)
+	PhaseID         string // filter by phase link (item ID of the phase)
 	IncludeArchived bool
 	Limit           int
 	Offset          int

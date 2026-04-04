@@ -20,10 +20,9 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
-		relationLabels?: Record<string, string>;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', relationLabels }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks' }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 
@@ -244,7 +243,6 @@
 							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
-							{relationLabels}
 						/>
 					</div>
 				{/each}

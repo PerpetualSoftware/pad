@@ -13,10 +13,9 @@
 		onStatusClick?: (item: Item, newStatus: string) => void;
 		progress?: { total: number; done: number } | null;
 		progressLabel?: string;
-		relationLabels?: Record<string, string>;
 	}
 
-	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', relationLabels = {} }: Props = $props();
+	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks' }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let fields = $derived(parseFields(item));
@@ -110,9 +109,9 @@
 				{formatLabel(fields.priority)}
 			</span>
 		{/if}
-		{#if fields.phase && relationLabels[fields.phase]}
+		{#if item.phase_title}
 			<span class="meta-sep">&middot;</span>
-			<span class="meta-phase">{relationLabels[fields.phase]}</span>
+			<span class="meta-phase">{item.phase_ref ? `${item.phase_ref}: ${item.phase_title}` : item.phase_title}</span>
 		{/if}
 		{#if item.agent_role_name}
 			<span class="meta-sep">&middot;</span>

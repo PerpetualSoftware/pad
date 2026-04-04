@@ -91,6 +91,19 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Phase links enforce single-phase: an item can only belong to one phase.
+	// Use SetPhaseLink which handles the upsert automatically.
+	if input.LinkType == models.ItemLinkTypePhase {
+		actor, _ := actorFromRequest(r)
+		link, err := s.store.SetPhaseLink(workspaceID, item.ID, target.ID, actor)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, link)
+		return
+	}
+
 	link, err := s.store.CreateItemLink(workspaceID, input, item.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {

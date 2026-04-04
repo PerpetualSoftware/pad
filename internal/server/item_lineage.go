@@ -7,6 +7,52 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
+// enrichItemsWithPhase batch-populates phase link info on a slice of items.
+// Used by list endpoints where calling enrichItemForResponse per-item is too expensive.
+func (s *Server) enrichItemsWithPhase(workspaceID string, items []models.Item) {
+	if len(items) == 0 {
+		return
+	}
+	phaseMap, err := s.store.GetTaskPhaseMap(workspaceID)
+	if err != nil || len(phaseMap) == 0 {
+		return
+	}
+	// Collect unique phase IDs
+	phaseIDs := make(map[string]bool)
+	for _, pid := range phaseMap {
+		phaseIDs[pid] = true
+	}
+	// Fetch phase item details (title, ref) in bulk
+	type phaseInfo struct {
+		title string
+		ref   string
+	}
+	phases := make(map[string]phaseInfo)
+	for pid := range phaseIDs {
+		item, err := s.store.GetItem(pid)
+		if err != nil || item == nil {
+			continue
+		}
+		ref := ""
+		if item.CollectionPrefix != "" && item.ItemNumber != nil {
+			ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
+		}
+		phases[pid] = phaseInfo{title: item.Title, ref: ref}
+	}
+	// Populate items
+	for i := range items {
+		pid, ok := phaseMap[items[i].ID]
+		if !ok {
+			continue
+		}
+		items[i].PhaseID = pid
+		if info, ok := phases[pid]; ok {
+			items[i].PhaseTitle = info.title
+			items[i].PhaseRef = info.ref
+		}
+	}
+}
+
 func (s *Server) enrichItemForResponse(item *models.Item) error {
 	if item == nil {
 		return nil
@@ -16,6 +62,18 @@ func (s *Server) enrichItemForResponse(item *models.Item) error {
 		return err
 	}
 	item.DerivedClosure = closure
+
+	// Populate phase link info
+	phaseLink, err := s.store.GetPhaseForItem(item.ID)
+	if err != nil {
+		return err
+	}
+	if phaseLink != nil {
+		item.PhaseID = phaseLink.TargetID
+		item.PhaseRef = phaseLink.TargetRef
+		item.PhaseTitle = phaseLink.TargetTitle
+	}
+
 	return nil
 }
 

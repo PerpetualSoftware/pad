@@ -52,13 +52,7 @@ func Defaults() []DefaultCollection {
 						Type:    "select",
 						Options: []string{"xs", "s", "m", "l", "xl"},
 					},
-					{
-						Key:        "phase",
-						Label:      "Phase",
-						Type:       "relation",
-						Collection: "phases",
 					},
-				},
 			},
 			Settings: models.CollectionSettings{
 				Layout:       "fields-primary",

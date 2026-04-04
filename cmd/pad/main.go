@@ -3322,8 +3322,10 @@ func changelogCmd() *cobra.Command {
 			if phase != "" {
 				var filtered []models.Item
 				for _, item := range allItems {
-					itemPhase := extractFieldFromJSON(item.Fields, "phase")
-					if strings.EqualFold(itemPhase, phase) {
+					// Check phase link (populated by API enrichment)
+					if strings.EqualFold(item.PhaseID, phase) ||
+						strings.EqualFold(item.PhaseRef, phase) ||
+						strings.EqualFold(item.PhaseTitle, phase) {
 						filtered = append(filtered, item)
 					}
 				}

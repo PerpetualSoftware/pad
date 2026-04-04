@@ -24,6 +24,7 @@
 		label: string;
 		href: string | null;
 		status?: string;
+		linkId?: string;
 	};
 
 	type RelationshipGroup = {
@@ -355,13 +356,16 @@
 			key: `${link.id}:${useSource ? 'source' : 'target'}`,
 			label: relationLabel(ref, title, id),
 			href,
-			status
+			status,
+			linkId: link.id
 		};
 	}
 
 	function buildRelationshipGroups(currentItem: Item, links: ItemLink[]): RelationshipGroup[] {
 		const grouped = new Map<string, RelationshipGroup>();
 		const definitions: Record<string, { label: string; tone: RelationshipGroup['tone'] }> = {
+			phase: { label: 'Phase', tone: 'default' },
+			in_phase: { label: 'In phase', tone: 'default' },
 			blocks: { label: 'Blocks', tone: 'blocks' },
 			blocked_by: { label: 'Blocked by', tone: 'blocks' },
 			links_to: { label: 'Links to', tone: 'wiki' },
@@ -374,7 +378,7 @@
 			implemented_by: { label: 'Implemented by', tone: 'lineage' },
 			related: { label: 'Related', tone: 'default' }
 		};
-		const order = ['blocks', 'blocked_by', 'links_to', 'referenced_by', 'split_from', 'split_into', 'supersedes', 'superseded_by', 'implements', 'implemented_by', 'related'];
+		const order = ['phase', 'in_phase', 'blocks', 'blocked_by', 'links_to', 'referenced_by', 'split_from', 'split_into', 'supersedes', 'superseded_by', 'implements', 'implemented_by', 'related'];
 
 		function addEntry(groupKey: string, entry: RelationshipEntry) {
 			const definition = definitions[groupKey];
@@ -388,6 +392,9 @@
 		for (const link of links) {
 			const isSource = link.source_id === currentItem.id;
 			switch (link.link_type) {
+				case 'phase':
+					addEntry(isSource ? 'in_phase' : 'phase', linkEntry(link, !isSource));
+					break;
 				case 'blocks':
 					addEntry(isSource ? 'blocks' : 'blocked_by', linkEntry(link, !isSource));
 					break;
@@ -434,6 +441,68 @@
 
 	let allCollections = $derived(collectionStore.collections ?? []);
 	let moveTargets = $derived(allCollections.filter(c => c.slug !== collSlug));
+
+	async function handleDeleteLink(linkId?: string) {
+		if (!linkId || !item) return;
+		try {
+			await api.links.delete(wsSlug, linkId);
+			itemLinks = itemLinks.filter(l => l.id !== linkId);
+			// Refresh item to update phase info
+			const refreshed = await api.items.get(wsSlug, itemSlug);
+			item = { ...refreshed, content: item.content };
+			toastStore.show('Relationship removed', 'success');
+		} catch (e: any) {
+			toastStore.show(e.message ?? 'Failed to remove relationship', 'error');
+		}
+	}
+
+	// ── Add Relationship ─────────────────────────────────────────────────────
+	let showAddLink = $state(false);
+	let addLinkType = $state('related');
+	let addLinkSearch = $state('');
+	let addLinkResults = $state<Item[]>([]);
+	let addLinkLoading = $state(false);
+
+	async function searchItemsForLink() {
+		if (!addLinkSearch.trim()) {
+			addLinkResults = [];
+			return;
+		}
+		addLinkLoading = true;
+		try {
+			const results = await api.search(addLinkSearch, wsSlug);
+			// Filter out self and items already linked
+			const linkedIds = new Set(itemLinks.flatMap(l => [l.source_id, l.target_id]));
+			addLinkResults = (results.results || [])
+				.map((r) => r.item)
+				.filter((i: Item) => i.id !== item?.id && !linkedIds.has(i.id))
+				.slice(0, 10);
+		} catch {
+			addLinkResults = [];
+		} finally {
+			addLinkLoading = false;
+		}
+	}
+
+	async function handleCreateLink(targetItem: Item) {
+		if (!item) return;
+		try {
+			const newLink = await api.links.create(wsSlug, item.slug, {
+				target_id: targetItem.id,
+				link_type: addLinkType
+			});
+			itemLinks = [...itemLinks, newLink];
+			showAddLink = false;
+			addLinkSearch = '';
+			addLinkResults = [];
+			// Refresh item to update phase info
+			const refreshed = await api.items.get(wsSlug, itemSlug);
+			item = { ...refreshed, content: item.content };
+			toastStore.show('Relationship added', 'success');
+		} catch (e: any) {
+			toastStore.show(e.message ?? 'Failed to add relationship', 'error');
+		}
+	}
 
 	async function handleMove(targetSlug: string) {
 		if (!item || moving) return;
@@ -606,7 +675,6 @@
 									{field}
 									value={fieldValue(field.key)}
 									onchange={(v) => updateField(field.key, v)}
-									{wsSlug}
 								/>
 							</div>
 						</div>
@@ -736,15 +804,71 @@
 										{:else}
 											<span class="link-target">{entry.label}</span>
 										{/if}
-										{#if entry.status}
-											<span class="link-status">{formatFieldDisplay(entry.status)}</span>
-										{/if}
+										<span class="link-row-actions">
+											{#if entry.status}
+												<span class="link-status">{formatFieldDisplay(entry.status)}</span>
+											{/if}
+											{#if entry.linkId}
+												<button class="link-delete-btn" title="Remove relationship" onclick={() => handleDeleteLink(entry.linkId)}>×</button>
+											{/if}
+										</span>
 									</div>
 								{/each}
 							</div>
 						</div>
 					{/each}
 				</div>
+			</div>
+		{/if}
+
+		<!-- Add Relationship -->
+		{#if item}
+			<div class="add-relationship-section">
+				{#if !showAddLink}
+					<button class="add-relationship-btn" onclick={() => { showAddLink = true; }}>
+						+ Add relationship
+					</button>
+				{:else}
+					<div class="add-link-form">
+						<div class="add-link-header">
+							<h4>Add Relationship</h4>
+							<button class="add-link-close" onclick={() => { showAddLink = false; addLinkSearch = ''; addLinkResults = []; }}>×</button>
+						</div>
+						<div class="add-link-controls">
+							<select bind:value={addLinkType} class="add-link-type-select">
+								<option value="related">Related</option>
+								<option value="blocks">Blocks</option>
+								<option value="implements">Implements</option>
+								<option value="split_from">Split from</option>
+								<option value="supersedes">Supersedes</option>
+								<option value="phase">Phase</option>
+							</select>
+							<input
+								type="text"
+								class="add-link-search"
+								placeholder="Search items..."
+								bind:value={addLinkSearch}
+								oninput={() => searchItemsForLink()}
+							/>
+						</div>
+						{#if addLinkLoading}
+							<div class="add-link-loading">Searching...</div>
+						{:else if addLinkResults.length > 0}
+							<div class="add-link-results">
+								{#each addLinkResults as result (result.id)}
+									<button class="add-link-result" onclick={() => handleCreateLink(result)}>
+										{#if formatItemRef(result)}
+											<span class="add-link-ref">{formatItemRef(result)}</span>
+										{/if}
+										<span class="add-link-title">{result.title}</span>
+									</button>
+								{/each}
+							</div>
+						{:else if addLinkSearch.trim().length > 0}
+							<div class="add-link-loading">No results</div>
+						{/if}
+					</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -1220,6 +1344,135 @@
 		padding: 2px 8px;
 		border-radius: 999px;
 		white-space: nowrap;
+	}
+	.link-row-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.link-delete-btn {
+		display: none;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 var(--space-1);
+		font-size: 1rem;
+		line-height: 1;
+	}
+	.link-delete-btn:hover {
+		color: var(--danger);
+	}
+	.link-row:hover .link-delete-btn {
+		display: inline;
+	}
+
+	/* Add Relationship */
+	.add-relationship-section {
+		margin-top: var(--space-4);
+	}
+	.add-relationship-btn {
+		background: none;
+		border: 1px dashed var(--border-color);
+		color: var(--text-muted);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-md);
+		cursor: pointer;
+		font-size: 0.85rem;
+		width: 100%;
+		text-align: left;
+	}
+	.add-relationship-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
+	}
+	.add-link-form {
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md);
+		padding: var(--space-3);
+		background: var(--bg-secondary);
+	}
+	.add-link-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: var(--space-2);
+	}
+	.add-link-header h4 {
+		margin: 0;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+	.add-link-close {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 1.2rem;
+		padding: 0;
+		line-height: 1;
+	}
+	.add-link-controls {
+		display: flex;
+		gap: var(--space-2);
+		margin-bottom: var(--space-2);
+	}
+	.add-link-type-select {
+		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-sm);
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		min-width: 120px;
+	}
+	.add-link-search {
+		flex: 1;
+		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-sm);
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		font-size: 0.8rem;
+	}
+	.add-link-results {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		max-height: 200px;
+		overflow-y: auto;
+	}
+	.add-link-result {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2);
+		background: var(--bg-primary);
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		text-align: left;
+		color: var(--text-primary);
+		font-size: 0.8rem;
+	}
+	.add-link-result:hover {
+		background: var(--bg-hover);
+	}
+	.add-link-ref {
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		flex-shrink: 0;
+	}
+	.add-link-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.add-link-loading {
+		padding: var(--space-2);
+		color: var(--text-muted);
+		font-size: 0.8rem;
 	}
 
 	/* Timeline */
