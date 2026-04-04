@@ -157,7 +157,9 @@
 
 		if (srcIdx >= 0 && dstIdx >= 0 && srcIdx !== dstIdx) {
 			const [moved] = assignedLanes.splice(srcIdx, 1);
-			assignedLanes.splice(dstIdx, 0, moved);
+			// After removing from srcIdx, indices shift left — adjust if moving forward
+			const insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx;
+			assignedLanes.splice(insertIdx, 0, moved);
 
 			// Rebuild lanes with new order
 			const unassigned = lanes.filter((l) => !l.role);
