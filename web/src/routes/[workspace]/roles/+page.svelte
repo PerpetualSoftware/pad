@@ -42,10 +42,17 @@
 	}
 	let currentUserId = $state('');
 
+	// Reorder lanes: unassigned first, then roles in order
+	let orderedLanes = $derived.by(() => {
+		const unassigned = lanes.filter((l) => !l.role);
+		const assigned = lanes.filter((l) => l.role);
+		return [...unassigned, ...assigned];
+	});
+
 	// Filtered lanes based on "My Work" toggle
 	let filteredLanes = $derived.by(() => {
-		if (!myWorkOnly || !currentUserId) return lanes;
-		return lanes
+		if (!myWorkOnly || !currentUserId) return orderedLanes;
+		return orderedLanes
 			.map((lane) => ({
 				...lane,
 				items: lane.items.filter((item) => item.assigned_user_id === currentUserId)
@@ -752,15 +759,23 @@
 	/* ── Responsive ───────────────────────────────────────────────────── */
 	@media (max-width: 768px) {
 		.role-board-page {
-			padding: var(--space-4);
+			padding: 0;
+		}
+		.page-header {
+			padding: var(--space-3) var(--space-4);
 		}
 		.lanes-container {
-			flex-direction: column;
+			overflow-x: auto;
+			scroll-snap-type: x proximity;
+			-webkit-overflow-scrolling: touch;
+			gap: var(--space-3);
+			padding: 0 var(--space-4) var(--space-3);
 		}
 		.lane {
-			flex: 0 0 auto;
-			min-width: unset;
-			width: 100%;
+			min-width: 75vw;
+			max-width: 75vw;
+			scroll-snap-align: center;
+			flex-shrink: 0;
 			max-height: none;
 		}
 	}
