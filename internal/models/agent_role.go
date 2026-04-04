@@ -12,6 +12,7 @@ type AgentRole struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	Icon        string    `json:"icon"`
+	Tools       string    `json:"tools"`
 	SortOrder   int       `json:"sort_order"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -26,6 +27,7 @@ type AgentRoleCreate struct {
 	Slug        string `json:"slug,omitempty"`        // auto-generated from name if empty
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
+	Tools       string `json:"tools,omitempty"`
 }
 
 // AgentRoleUpdate is the input for updating an existing agent role.
@@ -34,5 +36,6 @@ type AgentRoleUpdate struct {
 	Slug        *string `json:"slug,omitempty"`
 	Description *string `json:"description,omitempty"`
 	Icon        *string `json:"icon,omitempty"`
+	Tools       *string `json:"tools,omitempty"`
 	SortOrder   *int    `json:"sort_order,omitempty"`
 }

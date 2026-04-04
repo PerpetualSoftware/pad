@@ -200,6 +200,7 @@ export interface AgentRole {
 	name: string;
 	description: string;
 	icon: string;
+	tools: string;
 	sort_order: number;
 	created_at: string;
 	updated_at: string;
@@ -211,6 +212,7 @@ export interface AgentRoleCreate {
 	slug?: string;
 	description?: string;
 	icon?: string;
+	tools?: string;
 }
 
 export interface AgentRoleUpdate {
@@ -218,7 +220,14 @@ export interface AgentRoleUpdate {
 	slug?: string;
 	description?: string;
 	icon?: string;
+	tools?: string;
 	sort_order?: number;
+}
+
+export interface RoleBoardLane {
+	role: AgentRole | null;
+	items: Item[];
+	assigned_users: string[];
 }
 
 // ─── Items ───────────────────────────────────────────────────────────────────

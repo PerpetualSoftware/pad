@@ -68,6 +68,7 @@ Once a role is active, adjust your behavior:
 
 **Greeting:** When presenting status or responding to queries, lead with the role context:
 - *"Working as 🔨 Implementer. You have 3 items in your queue."*
+- Mention the role board for visual overview: *"See the full role board at the web UI → Roles page, or run `pad server open`."*
 
 **Querying "what's on my plate" / "what should I work on":**
 ```bash
@@ -106,7 +107,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "create a role called Designer" → `pad role create "Designer" --description "..." --icon "🎨"`
 - "assign TASK-5 to Dave as reviewer" → `pad item update TASK-5 --role reviewer --assign Dave`
 - "what's on Dave's plate as implementer?" → `pad item list tasks --role implementer --assign Dave --format json`
-- "who's working on what?" → Show items grouped by role assignment
+- "who's working on what?" → Show items grouped by role assignment, or suggest the role board: *"Check the role board in the web UI for a visual overview — `pad server open`"*
+- "show me the role board" → Suggest opening the web UI: `pad server open` (the role board is at /{workspace}/roles)
 
 **Creating items:**
 - "I have an idea for X" → Create an Idea item

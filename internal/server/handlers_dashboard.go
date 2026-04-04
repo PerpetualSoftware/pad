@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/store"
 )
 
 // Dashboard response types
@@ -17,6 +18,7 @@ type DashboardResponse struct {
 	Summary        DashboardSummary       `json:"summary"`
 	ActiveItems    []DashboardActiveItem  `json:"active_items"`
 	ActivePhases   []DashboardPhase       `json:"active_phases"`
+	ByRole         []store.RoleBreakdown  `json:"by_role,omitempty"`
 	Attention      []DashboardAttention   `json:"attention"`
 	RecentActivity []DashboardActivity    `json:"recent_activity"`
 	SuggestedNext  []DashboardSuggestion  `json:"suggested_next"`
@@ -447,6 +449,12 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			Collection: "tasks",
 			Reason:     reason,
 		})
+	}
+
+	// Role breakdown: items per role with assigned users
+	roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
+	if err == nil && len(roleBreakdown) > 0 {
+		resp.ByRole = roleBreakdown
 	}
 
 	writeJSON(w, http.StatusOK, resp)

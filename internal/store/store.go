@@ -84,6 +84,7 @@ func (s *Store) migrate() error {
 		"016_timeline.sql",
 		"017_agent_roles.sql",
 		"018_conventions_role_field.sql",
+		"019_agent_roles_tools.sql",
 	}
 
 	for _, name := range migrations {

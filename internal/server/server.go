@@ -247,6 +247,9 @@ func (s *Server) setupRouter() {
 					r.Delete("/reactions/{emoji}", s.handleRemoveReaction)
 				})
 
+				// Role Board (cross-collection role-based view)
+				r.Get("/roles/board", s.handleRoleBoard)
+
 				// Agent Roles
 				r.Route("/agent-roles", func(r chi.Router) {
 					r.Get("/", s.handleListAgentRoles)
