@@ -52,12 +52,13 @@
 	});
 
 	// Filtered lanes based on "My Work" toggle
+	// Shows items assigned to me OR items with no user assignment (so you can claim them)
 	let filteredLanes = $derived.by(() => {
 		if (!myWorkOnly || !currentUserId) return orderedLanes;
 		return orderedLanes
 			.map((lane) => ({
 				...lane,
-				items: lane.items.filter((item) => item.assigned_user_id === currentUserId)
+				items: lane.items.filter((item) => item.assigned_user_id === currentUserId || !item.assigned_user_id)
 			}))
 			.filter((lane) => lane.items.length > 0);
 	});
@@ -117,6 +118,10 @@
 							update.clear_agent_role = true;
 						} else {
 							update.agent_role_id = key;
+							// Auto-assign current user if the item has no user assignment
+							if (!originalItem.assigned_user_id && currentUserId) {
+								update.assigned_user_id = currentUserId;
+							}
 						}
 						await api.items.update(wsSlug, originalItem.id, update);
 						// Refresh board data
