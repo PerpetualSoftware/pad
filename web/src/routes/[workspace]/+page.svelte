@@ -332,7 +332,7 @@
 							<span class="section-badge">{dashboard.attention.length}</span>
 						</div>
 						<div class="attention-list">
-							{#each dashboard.attention as alert (alert.item_slug)}
+							{#each dashboard.attention as alert (`${alert.type}:${alert.item_slug}`)}
 								<div class="attention-card">
 									<span class="attention-icon">{attentionIcon(alert.type)}</span>
 									<div class="attention-content">

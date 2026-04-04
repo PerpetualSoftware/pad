@@ -413,6 +413,12 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
+	// Phase filter via item_links
+	if params.PhaseID != "" {
+		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?)"
+		args = append(args, params.PhaseID)
+	}
+
 	// Field filters using json_extract — supports comma-separated values as OR
 	for key, value := range params.Fields {
 		if strings.Contains(value, ",") {
@@ -873,10 +879,113 @@ func (s *Store) DeleteItemLink(id string) error {
 	return nil
 }
 
+// --- Phase Links ---
+
+// SetPhaseLink sets the phase for an item. Since an item can belong to at most
+// one phase, this deletes any existing phase link for the item first.
+func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*models.ItemLink, error) {
+	// Delete existing phase link for this item (if any)
+	_, _ = s.db.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID)
+
+	// Create new phase link
+	return s.CreateItemLink(workspaceID, models.ItemLinkCreate{
+		TargetID:  phaseID,
+		LinkType:  models.ItemLinkTypePhase,
+		CreatedBy: createdBy,
+	}, itemID)
+}
+
+// ClearPhaseLink removes the phase link for an item.
+func (s *Store) ClearPhaseLink(itemID string) error {
+	_, err := s.db.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID)
+	if err != nil {
+		return fmt.Errorf("clear phase link: %w", err)
+	}
+	return nil
+}
+
+// GetPhaseForItem returns the phase link for an item, or nil if not in a phase.
+func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
+	rows, err := s.db.Query(`
+		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
+		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
+		       s.item_number, t.item_number,
+		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
+		FROM item_links l
+		JOIN items s ON s.id = l.source_id
+		JOIN items t ON t.id = l.target_id
+		JOIN collections sc ON sc.id = s.collection_id
+		JOIN collections tc ON tc.id = t.collection_id
+		WHERE l.source_id = ? AND l.link_type = 'phase'
+	`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("get phase for item: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, nil
+	}
+
+	var link models.ItemLink
+	var createdAt string
+	var sourcePrefix, targetPrefix string
+	var sourceItemNumber, targetItemNumber sql.NullInt64
+	var sourceStatus, targetStatus sql.NullString
+	if err := rows.Scan(
+		&link.ID, &link.WorkspaceID, &link.SourceID, &link.TargetID,
+		&link.LinkType, &link.CreatedBy, &createdAt,
+		&link.SourceTitle, &link.TargetTitle,
+		&link.SourceSlug, &link.TargetSlug,
+		&link.SourceCollectionSlug, &link.TargetCollectionSlug,
+		&sourcePrefix, &targetPrefix,
+		&sourceItemNumber, &targetItemNumber,
+		&sourceStatus, &targetStatus,
+	); err != nil {
+		return nil, fmt.Errorf("scan phase link: %w", err)
+	}
+	link.CreatedAt = parseTime(createdAt)
+	if sourceItemNumber.Valid && sourcePrefix != "" {
+		link.SourceRef = fmt.Sprintf("%s-%d", sourcePrefix, sourceItemNumber.Int64)
+	}
+	if targetItemNumber.Valid && targetPrefix != "" {
+		link.TargetRef = fmt.Sprintf("%s-%d", targetPrefix, targetItemNumber.Int64)
+	}
+	if sourceStatus.Valid {
+		link.SourceStatus = sourceStatus.String
+	}
+	if targetStatus.Valid {
+		link.TargetStatus = targetStatus.String
+	}
+	return &link, nil
+}
+
+// GetTaskPhaseMap returns a map of item ID -> phase item ID for all phase links
+// in a workspace. Used for efficient batch lookups (e.g., dashboard).
+func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
+	rows, err := s.db.Query(`
+		SELECT source_id, target_id FROM item_links
+		WHERE workspace_id = ? AND link_type = 'phase'
+	`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("get task phase map: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]string)
+	for rows.Next() {
+		var sourceID, targetID string
+		if err := rows.Scan(&sourceID, &targetID); err != nil {
+			return nil, err
+		}
+		m[sourceID] = targetID
+	}
+	return m, rows.Err()
+}
+
 // --- Phase Progress ---
 
-// GetPhaseProgress counts total and done tasks linked to a phase via the
-// relation field json_extract(fields, '$.phase') = phaseItemID.
+// GetPhaseProgress counts total and done tasks linked to a phase via item_links.
 // "Done" means any terminal status as defined by the tasks collection's schema.
 func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err error) {
 	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
@@ -886,9 +995,9 @@ func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err e
 		       COUNT(CASE WHEN LOWER(json_extract(i.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
-		  AND json_extract(i.fields, '$.phase') = ?
 	`, args...).Scan(&total, &done)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get phase progress: %w", err)
@@ -929,7 +1038,8 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 		       COUNT(CASE WHEN LOWER(json_extract(t.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = 'phases'
-		LEFT JOIN items t ON json_extract(t.fields, '$.phase') = p.id
+		LEFT JOIN item_links il ON il.link_type = 'phase' AND il.target_id = p.id
+		LEFT JOIN items t ON t.id = il.source_id
 		                  AND t.deleted_at IS NULL
 		LEFT JOIN collections tc ON tc.id = t.collection_id AND tc.slug = 'tasks'
 		WHERE p.workspace_id = ?
@@ -955,8 +1065,7 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 	return result, rows.Err()
 }
 
-// GetTasksForPhase returns all non-deleted tasks whose phase relation field
-// points to the given phase item ID.
+// GetTasksForPhase returns all non-deleted tasks linked to the given phase via item_links.
 func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
@@ -968,11 +1077,11 @@ func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
-		  AND json_extract(i.fields, '$.phase') = ?
 		ORDER BY i.sort_order ASC, i.created_at ASC
 	`, phaseItemID)
 	if err != nil {

@@ -314,7 +314,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// (d) Orphaned tasks: tasks with no phase relation set
+	// (d) Orphaned tasks: tasks with no phase link set
 	//     Only flag these if the workspace actually has phases with tasks linked to them.
 	hasPhaseWithTasks := false
 	for _, dp := range resp.ActivePhases {
@@ -324,6 +324,11 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPhaseWithTasks {
+		// Batch-fetch all task→phase mappings for efficiency
+		taskPhaseMap, err := s.store.GetTaskPhaseMap(workspaceID)
+		if err != nil {
+			taskPhaseMap = map[string]string{}
+		}
 		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
 		})
@@ -333,8 +338,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				if isItemTerminal(status, task.CollectionID, schemaMap) {
 					continue
 				}
-				phaseRef := extractFieldValue(task.Fields, "phase")
-				if phaseRef == "" {
+				if _, hasPhase := taskPhaseMap[task.ID]; !hasPhase {
 					resp.Attention = append(resp.Attention, DashboardAttention{
 						Type:       "orphaned_task",
 						ItemSlug:   task.Slug,

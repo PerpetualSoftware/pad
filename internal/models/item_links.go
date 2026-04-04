@@ -12,6 +12,7 @@ const (
 	ItemLinkTypeSplitFrom  = "split_from"
 	ItemLinkTypeSupersedes = "supersedes"
 	ItemLinkTypeImplements = "implements"
+	ItemLinkTypePhase     = "phase"
 )
 
 var itemLinkTypeAliases = map[string]string{
@@ -24,6 +25,7 @@ var itemLinkTypeAliases = map[string]string{
 	"split-from": ItemLinkTypeSplitFrom,
 	"supersedes": ItemLinkTypeSupersedes,
 	"implements": ItemLinkTypeImplements,
+	"phase":      ItemLinkTypePhase,
 }
 
 // NormalizeItemLinkType canonicalizes supported link types and returns an error

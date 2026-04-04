@@ -318,6 +318,9 @@ export interface Item {
 	collection_icon?: string;
 	collection_prefix?: string;
 	item_number?: number;
+	phase_id?: string;
+	phase_ref?: string;
+	phase_title?: string;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;

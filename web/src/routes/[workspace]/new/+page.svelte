@@ -114,7 +114,6 @@
 					{field}
 					value={extraFields[field.key] ?? ''}
 					onchange={(v) => { extraFields[field.key] = v; }}
-					wsSlug={wsSlug}
 				/>
 			</label>
 		{/each}

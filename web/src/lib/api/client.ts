@@ -285,6 +285,11 @@ export const api = {
 			request<ItemLink>(`/workspaces/${ws}/items/${itemSlug}/links`, {
 				method: 'POST',
 				body: JSON.stringify(data)
+			}),
+
+		delete: (ws: string, linkId: string) =>
+			request<void>(`/workspaces/${ws}/links/${linkId}`, {
+				method: 'DELETE'
 			})
 	},
 

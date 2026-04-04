@@ -144,8 +144,6 @@
 								<button class="cell-status" onclick={() => cycleStatus(item, field.options!)} title="Click to cycle">
 									{formatLabel(fields[field.key] ?? '')}
 								</button>
-							{:else if field.key === 'phase' && fields[field.key] && relationLabels?.[fields[field.key]]}
-								<span class="cell-relation">{relationLabels[fields[field.key]]}</span>
 							{:else}
 								<span class="cell-value">{fields[field.key] ?? ''}</span>
 							{/if}

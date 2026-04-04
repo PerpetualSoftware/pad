@@ -1,27 +1,23 @@
 <!--
 @component
 Custom-styled field editor for item detail pages.
-Supports text, number, select, multi_select, date, checkbox, url, and relation field types.
+Supports text, number, select, multi_select, date, checkbox, and url field types.
 
 Usage:
 ```svelte
-<FieldEditor {field} {value} onchange={(v) => handleChange(v)} wsSlug="my-workspace" />
+<FieldEditor {field} {value} onchange={(v) => handleChange(v)} />
 ```
 -->
 <script lang="ts">
 	import type { FieldDef } from '$lib/types';
-	import { api } from '$lib/api/client';
-	import { formatItemRef } from '$lib/types';
-	import type { Item } from '$lib/types';
 
 	interface Props {
 		field: FieldDef;
 		value: any;
 		onchange: (value: any) => void;
-		wsSlug?: string;
 	}
 
-	let { field, value, onchange, wsSlug }: Props = $props();
+	let { field, value, onchange }: Props = $props();
 
 	// ── Date input state ──────────────────────────────────────────────────
 
@@ -42,94 +38,6 @@ Usage:
 	let focusedIndex = $state(-1);
 	let triggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let dropdownEl: HTMLDivElement | undefined = $state(undefined);
-
-	// ── Relation picker state ─────────────────────────────────────────────
-
-	let relationOpen = $state(false);
-	let relationItems = $state<Item[]>([]);
-	let relationLoading = $state(false);
-	let relationSearch = $state('');
-	let relationFocusedIndex = $state(-1);
-	let relationTriggerEl: HTMLButtonElement | undefined = $state(undefined);
-	let relationDropdownEl: HTMLDivElement | undefined = $state(undefined);
-
-	let selectedRelationItem = $derived(
-		value ? relationItems.find((i) => i.id === value) : null
-	);
-
-	let filteredRelationItems = $derived.by(() => {
-		if (!relationSearch.trim()) return relationItems;
-		const q = relationSearch.toLowerCase();
-		return relationItems.filter(
-			(i) =>
-				i.title.toLowerCase().includes(q) ||
-				(formatItemRef(i) ?? '').toLowerCase().includes(q)
-		);
-	});
-
-	// Eagerly load relation items when the field has a value so we can
-	// display the title instead of a raw UUID on initial render.
-	$effect(() => {
-		if (field.type === 'relation' && value && relationItems.length === 0 && wsSlug && field.collection) {
-			loadRelationItems();
-		}
-	});
-
-	async function loadRelationItems() {
-		if (relationItems.length > 0 || !wsSlug || !field.collection) return;
-		relationLoading = true;
-		try {
-			relationItems = await api.items.listByCollection(wsSlug, field.collection);
-		} catch {
-			relationItems = [];
-		} finally {
-			relationLoading = false;
-		}
-	}
-
-	async function openRelationPicker() {
-		relationOpen = true;
-		relationSearch = '';
-		relationFocusedIndex = -1;
-		await loadRelationItems();
-	}
-
-	function selectRelation(item: Item) {
-		onchange(item.id);
-		relationOpen = false;
-		relationTriggerEl?.focus();
-	}
-
-	function clearRelation() {
-		onchange('');
-		relationOpen = false;
-	}
-
-	function handleRelationKeydown(e: KeyboardEvent) {
-		if (!relationOpen) return;
-		const items = filteredRelationItems;
-
-		if (e.key === 'ArrowDown') {
-			e.preventDefault();
-			relationFocusedIndex =
-				items.length > 0 ? (relationFocusedIndex + 1) % items.length : -1;
-		} else if (e.key === 'ArrowUp') {
-			e.preventDefault();
-			relationFocusedIndex =
-				items.length > 0
-					? (relationFocusedIndex - 1 + items.length) % items.length
-					: -1;
-		} else if (e.key === 'Enter') {
-			e.preventDefault();
-			if (relationFocusedIndex >= 0 && relationFocusedIndex < items.length) {
-				selectRelation(items[relationFocusedIndex]);
-			}
-		} else if (e.key === 'Escape') {
-			e.preventDefault();
-			relationOpen = false;
-			relationTriggerEl?.focus();
-		}
-	}
 
 	const STATUS_COLORS: Record<string, string> = {
 		open: 'var(--accent-blue)',
@@ -205,15 +113,6 @@ Usage:
 		) {
 			dropdownOpen = false;
 		}
-		if (
-			relationOpen &&
-			relationTriggerEl &&
-			relationDropdownEl &&
-			!relationTriggerEl.contains(e.target as Node) &&
-			!relationDropdownEl.contains(e.target as Node)
-		) {
-			relationOpen = false;
-		}
 	}
 
 	// ── Input handlers ─────────────────────────────────────────────────────
@@ -249,13 +148,6 @@ Usage:
 		}
 	});
 
-	$effect(() => {
-		if (relationOpen && relationFocusedIndex >= 0 && relationDropdownEl) {
-			const items = relationDropdownEl.querySelectorAll('[role="option"]');
-			const item = items[relationFocusedIndex] as HTMLElement | undefined;
-			item?.scrollIntoView({ block: 'nearest' });
-		}
-	});
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -400,97 +292,6 @@ Usage:
 				<line x1="5" y1="2" x2="5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
 			</svg>
 		</button>
-	</div>
-
-{:else if field.type === 'relation'}
-	<!-- Relation picker dropdown -->
-	<div class="select-wrapper">
-		<button
-			bind:this={relationTriggerEl}
-			class="select-trigger"
-			type="button"
-			aria-haspopup="listbox"
-			aria-expanded={relationOpen}
-			onclick={openRelationPicker}
-			onkeydown={handleRelationKeydown}
-		>
-			<span class="select-label">
-				{#if selectedRelationItem}
-					{#if formatItemRef(selectedRelationItem)}
-						<span class="relation-ref">{formatItemRef(selectedRelationItem)}</span>
-					{/if}
-					{selectedRelationItem.title}
-				{:else if value && relationLoading}
-					<span style="color: var(--text-muted)">Loading...</span>
-				{:else if value}
-					{value}
-				{:else}
-					<span style="color: var(--text-muted)">Select {field.label}...</span>
-				{/if}
-			</span>
-			{#if value}
-				<!-- Use span instead of button to avoid nesting <button> inside <button> -->
-				<span
-					class="clear-btn"
-					role="button"
-					tabindex="0"
-					onclick={(e) => {
-						e.stopPropagation();
-						clearRelation();
-					}}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							e.stopPropagation();
-							clearRelation();
-						}
-					}}
-				>&#x2715;</span>
-			{/if}
-			<svg class="select-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-				<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-			</svg>
-		</button>
-
-		{#if relationOpen}
-			<div
-				bind:this={relationDropdownEl}
-				class="select-dropdown relation-dropdown"
-				role="listbox"
-				aria-label="{field.label} options"
-			>
-				<input
-					class="relation-search"
-					type="text"
-					placeholder="Search..."
-					bind:value={relationSearch}
-					onkeydown={handleRelationKeydown}
-				/>
-				{#if relationLoading}
-					<div class="relation-loading">Loading...</div>
-				{:else if filteredRelationItems.length === 0}
-					<div class="relation-empty">No items found</div>
-				{:else}
-					{#each filteredRelationItems as item, i (item.id)}
-						<button
-							class="select-option"
-							class:selected={item.id === value}
-							class:focused={i === relationFocusedIndex}
-							type="button"
-							role="option"
-							aria-selected={item.id === value}
-							onclick={() => selectRelation(item)}
-							onmouseenter={() => (relationFocusedIndex = i)}
-						>
-							{#if formatItemRef(item)}
-								<span class="relation-ref">{formatItemRef(item)}</span>
-							{/if}
-							<span>{item.title}</span>
-						</button>
-					{/each}
-				{/if}
-			</div>
-		{/if}
 	</div>
 
 {:else if field.type === 'url'}
@@ -795,45 +596,6 @@ Usage:
 
 	.toggle.on .toggle-knob {
 		transform: translateX(16px);
-	}
-
-	/* ── Relation picker ──────────────────────────────────────────────── */
-
-	.relation-dropdown {
-		max-height: 280px;
-	}
-
-	.relation-search {
-		width: 100%;
-		padding: var(--space-1) var(--space-2);
-		font-size: 0.85em;
-		font-family: inherit;
-		color: var(--text-primary);
-		background: var(--bg-tertiary);
-		border: none;
-		border-bottom: 1px solid var(--border);
-		outline: none;
-		box-sizing: border-box;
-	}
-
-	.relation-search:focus {
-		background: var(--bg-primary);
-	}
-
-	.relation-ref {
-		font-family: var(--font-mono);
-		font-size: 0.85em;
-		color: var(--text-muted);
-		margin-right: 4px;
-		flex-shrink: 0;
-	}
-
-	.relation-loading,
-	.relation-empty {
-		padding: var(--space-2) var(--space-3);
-		font-size: 0.85em;
-		color: var(--text-muted);
-		text-align: center;
 	}
 
 	.clear-btn {

@@ -25,7 +25,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
-	if err := s.resolveRelationFieldFiltersForWorkspace(workspaceID, &params); err != nil {
+	if err := s.resolvePhaseFilter(workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -37,6 +37,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []models.Item{}
 	}
+	s.enrichItemsWithPhase(workspaceID, result)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -61,7 +62,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
-	if err := s.resolveRelationFieldFilters(workspaceID, &params, coll.Schema); err != nil {
+	if err := s.resolvePhaseFilter(workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -74,6 +75,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if result == nil {
 		result = []models.Item{}
 	}
+	s.enrichItemsWithPhase(workspaceID, result)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -123,10 +125,23 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve relation fields (slugs/refs → UUIDs) before validation
-	if err := s.resolveRelationFields(workspaceID, fieldMap, schema); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
+	// Extract phase from fields — it's managed via item_links, not stored in fields JSON
+	var phaseValue string
+	if pv, ok := fieldMap["phase"]; ok && pv != nil {
+		if pvStr, ok := pv.(string); ok && pvStr != "" {
+			// Resolve slug/ref to UUID if needed
+			if !isUUID(pvStr) {
+				resolved, err := s.store.ResolveItem(workspaceID, pvStr)
+				if err != nil || resolved == nil {
+					writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("phase %q not found", pvStr))
+					return
+				}
+				phaseValue = resolved.ID
+			} else {
+				phaseValue = pvStr
+			}
+		}
+		delete(fieldMap, "phase")
 	}
 
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
@@ -150,6 +165,15 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+
+	// Create phase link if specified
+	if phaseValue != "" {
+		actor, _ := actorFromRequest(r)
+		if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
+			// Item was created but phase link failed — log but don't fail the whole request
+			fmt.Printf("warning: failed to create phase link for %s: %v\n", item.ID, err)
+		}
 	}
 
 	actor, source := actorFromRequest(r)
@@ -235,10 +259,26 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Resolve relation fields (slugs/refs → UUIDs) before validation
-		if err := s.resolveRelationFields(workspaceID, fieldMap, schema); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
+		// Extract phase from fields — it's managed via item_links, not stored in fields JSON
+		var phaseValue string
+		var phaseProvided bool
+		if pv, ok := fieldMap["phase"]; ok {
+			phaseProvided = true
+			if pv != nil {
+				if pvStr, ok := pv.(string); ok && pvStr != "" {
+					if !isUUID(pvStr) {
+						resolved, err := s.store.ResolveItem(workspaceID, pvStr)
+						if err != nil || resolved == nil {
+							writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("phase %q not found", pvStr))
+							return
+						}
+						phaseValue = resolved.ID
+					} else {
+						phaseValue = pvStr
+					}
+				}
+			}
+			delete(fieldMap, "phase")
 		}
 
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
@@ -256,6 +296,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		validated := string(validatedFields)
 		input.Fields = &validated
+
+		// Update phase link if phase was provided in the update
+		if phaseProvided {
+			if phaseValue != "" {
+				actor, _ := actorFromRequest(r)
+				if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
+					fmt.Printf("warning: failed to update phase link for %s: %v\n", item.ID, err)
+				}
+			} else {
+				// Phase was explicitly set to empty/null — clear the link
+				if err := s.store.ClearPhaseLink(item.ID); err != nil {
+					fmt.Printf("warning: failed to clear phase link for %s: %v\n", item.ID, err)
+				}
+			}
+		}
 	}
 
 	updated, err := s.store.UpdateItem(item.ID, input)
@@ -572,7 +627,33 @@ func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
 	if tasks == nil {
 		tasks = []models.Item{}
 	}
+	s.enrichItemsWithPhase(workspaceID, tasks)
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// resolvePhaseFilter extracts a "phase" key from the field filters and converts
+// it to a PhaseID filter (which uses item_links instead of json_extract).
+func (s *Server) resolvePhaseFilter(workspaceID string, params *models.ItemListParams) error {
+	if params.Fields == nil {
+		return nil
+	}
+	phaseVal, ok := params.Fields["phase"]
+	if !ok || phaseVal == "" {
+		return nil
+	}
+	delete(params.Fields, "phase")
+
+	// Resolve slug/ref to UUID
+	if !isUUID(phaseVal) {
+		resolved, err := s.store.ResolveItem(workspaceID, phaseVal)
+		if err != nil || resolved == nil {
+			return fmt.Errorf("phase %q not found", phaseVal)
+		}
+		params.PhaseID = resolved.ID
+	} else {
+		params.PhaseID = phaseVal
+	}
+	return nil
 }
 
 // resolveRelationFields resolves slugs, PREFIX-NUMBER refs, and other identifiers
