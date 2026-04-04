@@ -200,6 +200,7 @@ export interface AgentRole {
 	name: string;
 	description: string;
 	icon: string;
+	tools: string;
 	sort_order: number;
 	created_at: string;
 	updated_at: string;
@@ -211,6 +212,7 @@ export interface AgentRoleCreate {
 	slug?: string;
 	description?: string;
 	icon?: string;
+	tools?: string;
 }
 
 export interface AgentRoleUpdate {
@@ -218,7 +220,14 @@ export interface AgentRoleUpdate {
 	slug?: string;
 	description?: string;
 	icon?: string;
+	tools?: string;
 	sort_order?: number;
+}
+
+export interface RoleBoardLane {
+	role: AgentRole | null;
+	items: Item[];
+	assigned_users: string[];
 }
 
 // ─── Items ───────────────────────────────────────────────────────────────────
@@ -333,6 +342,10 @@ export interface ItemUpdate {
 	pinned?: boolean;
 	sort_order?: number;
 	parent_id?: string;
+	assigned_user_id?: string;
+	agent_role_id?: string;
+	clear_assigned_user?: boolean;
+	clear_agent_role?: boolean;
 	last_modified_by?: string;
 	source?: string;
 	comment?: string;

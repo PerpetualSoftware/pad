@@ -31,7 +31,8 @@ import type {
 	TimelineResponse,
 	AgentRole,
 	AgentRoleCreate,
-	AgentRoleUpdate
+	AgentRoleUpdate,
+	RoleBoardLane
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -176,7 +177,12 @@ export const api = {
 		delete: (ws: string, idOrSlug: string) =>
 			request<void>(`/workspaces/${ws}/agent-roles/${idOrSlug}`, {
 				method: 'DELETE'
-			})
+			}),
+
+		board: (ws: string, assignedUserId?: string) => {
+			const params = assignedUserId ? `?assigned_user_id=${assignedUserId}` : '';
+			return request<{ lanes: RoleBoardLane[] }>(`/workspaces/${ws}/roles/board${params}`);
+		}
 	},
 
 	// ── Items ─────────────────────────────────────────────────────────────────

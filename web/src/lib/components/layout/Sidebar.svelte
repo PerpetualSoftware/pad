@@ -20,6 +20,7 @@
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
+	let isRolesPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}/roles` : false);
 	let isActivityPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}/activity` : false);
 
 	let activeCollectionSlug = $derived.by(() => {
@@ -273,6 +274,15 @@
 				>
 					<span class="nav-icon">📊</span>
 					<span class="nav-label">Dashboard</span>
+				</a>
+				<a
+					href="/{wsSlug}/roles"
+					class="nav-item"
+					class:active={isRolesPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">🎭</span>
+					<span class="nav-label">Roles</span>
 				</a>
 				<a
 					href="/{wsSlug}/activity"

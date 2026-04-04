@@ -2841,6 +2841,14 @@ func statusCmd() *cobra.Command {
 					TaskCount int    `json:"task_count"`
 					DoneCount int    `json:"done_count"`
 				} `json:"active_phases"`
+				ByRole []struct {
+					RoleName  string   `json:"role_name"`
+					RoleSlug  string   `json:"role_slug"`
+					RoleIcon  string   `json:"role_icon"`
+					Tools     string   `json:"tools"`
+					ItemCount int      `json:"item_count"`
+					Users     []string `json:"assigned_users"`
+				} `json:"by_role"`
 				Attention []struct {
 					Type      string `json:"type"`
 					ItemSlug  string `json:"item_slug"`
@@ -2912,6 +2920,31 @@ func statusCmd() *cobra.Command {
 						color.New(color.FgGreen).Sprintf("%d%%", p.Progress),
 						dim.Sprintf("(%d/%d tasks)", p.DoneCount, p.TaskCount),
 					)
+				}
+			}
+
+			// Role breakdown
+			if len(dash.ByRole) > 0 {
+				fmt.Println()
+				bold.Println("🎭 Roles")
+				for _, r := range dash.ByRole {
+					icon := r.RoleIcon
+					if icon != "" {
+						icon += " "
+					}
+					name := r.RoleName
+					if name == "" {
+						name = "Unassigned"
+					}
+					users := ""
+					if len(r.Users) > 0 {
+						users = "  (" + strings.Join(r.Users, ", ") + ")"
+					}
+					tools := ""
+					if r.Tools != "" {
+						tools = "  [" + r.Tools + "]"
+					}
+					fmt.Printf("  %s%-14s %d items%s%s\n", icon, name, r.ItemCount, users, tools)
 				}
 			}
 
@@ -4303,13 +4336,13 @@ func roleListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SLUG\tNAME\tDESCRIPTION\tITEMS")
+			fmt.Fprintln(w, "SLUG\tNAME\tDESCRIPTION\tTOOLS\tITEMS")
 			for _, r := range roles {
 				icon := r.Icon
 				if icon != "" {
 					icon += " "
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%d\n", r.Slug, icon, r.Name, r.Description, r.ItemCount)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\n", r.Slug, icon, r.Name, r.Description, r.Tools, r.ItemCount)
 			}
 			w.Flush()
 			return nil
@@ -4318,7 +4351,7 @@ func roleListCmd() *cobra.Command {
 }
 
 func roleCreateCmd() *cobra.Command {
-	var description, icon string
+	var description, icon, tools string
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -4331,6 +4364,7 @@ func roleCreateCmd() *cobra.Command {
 				Name:        args[0],
 				Description: description,
 				Icon:        icon,
+				Tools:       tools,
 			}
 			role, err := client.CreateAgentRole(ws, input)
 			if err != nil {
@@ -4349,6 +4383,7 @@ func roleCreateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&description, "description", "", "role description")
 	cmd.Flags().StringVar(&icon, "icon", "", "role icon (emoji)")
+	cmd.Flags().StringVar(&tools, "tools", "", "preferred tools/models (e.g. 'Claude Code + Sonnet 4.6')")
 	return cmd
 }
 

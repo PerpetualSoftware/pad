@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -25,9 +26,9 @@ func (s *Store) CreateAgentRole(workspaceID string, input models.AgentRoleCreate
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO agent_roles (id, workspace_id, slug, name, description, icon, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-	`, id, workspaceID, slug, input.Name, input.Description, input.Icon, ts, ts)
+		INSERT INTO agent_roles (id, workspace_id, slug, name, description, icon, tools, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+	`, id, workspaceID, slug, input.Name, input.Description, input.Icon, input.Tools, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("create agent role: %w", err)
 	}
@@ -40,12 +41,12 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRow(`
-		SELECT id, workspace_id, slug, name, description, icon, sort_order, created_at, updated_at
+		SELECT id, workspace_id, slug, name, description, icon, tools, sort_order, created_at, updated_at
 		FROM agent_roles
 		WHERE workspace_id = ? AND (id = ? OR slug = ?)
 	`, workspaceID, idOrSlug, idOrSlug).Scan(
 		&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
-		&role.Icon, &role.SortOrder, &createdAt, &updatedAt,
+		&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -61,7 +62,7 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 
 func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 	rows, err := s.db.Query(`
-		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.sort_order,
+		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
 		       COUNT(i.id) as item_count
 		FROM agent_roles r
@@ -81,7 +82,7 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 		var createdAt, updatedAt string
 		if err := rows.Scan(
 			&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
-			&role.Icon, &role.SortOrder, &createdAt, &updatedAt, &role.ItemCount,
+			&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt, &role.ItemCount,
 		); err != nil {
 			return nil, err
 		}
@@ -124,6 +125,10 @@ func (s *Store) UpdateAgentRole(workspaceID, id string, input models.AgentRoleUp
 		sets = append(sets, "icon = ?")
 		args = append(args, *input.Icon)
 	}
+	if input.Tools != nil {
+		sets = append(sets, "tools = ?")
+		args = append(args, *input.Tools)
+	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
 		args = append(args, *input.SortOrder)
@@ -151,6 +156,236 @@ func (s *Store) DeleteAgentRole(workspaceID, id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// RoleBreakdown is a summary of items per role for the dashboard.
+type RoleBreakdown struct {
+	RoleID    *string  `json:"role_id"`
+	RoleName  string   `json:"role_name"`
+	RoleSlug  string   `json:"role_slug"`
+	RoleIcon  string   `json:"role_icon"`
+	Tools     string   `json:"tools"`
+	ItemCount int      `json:"item_count"`
+	Users     []string `json:"assigned_users"`
+}
+
+// GetRoleBreakdown returns item counts and assigned users grouped by agent role.
+// Includes an entry for unassigned items (role_id = nil).
+func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
+	// Get all roles first (even those with 0 items)
+	roles, err := s.ListAgentRoles(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Count non-terminal items per role (exclude done/completed/etc. to match board view)
+	rows, err := s.db.Query(`
+		SELECT i.agent_role_id, COUNT(*) as cnt, GROUP_CONCAT(DISTINCT u.name) as users
+		FROM items i
+		LEFT JOIN users u ON u.id = i.assigned_user_id
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND LOWER(COALESCE(json_extract(i.fields, '$.status'), '')) NOT IN
+		      ('done','completed','resolved','cancelled','rejected','wontfix','fixed','implemented','archived','disabled')
+		GROUP BY i.agent_role_id
+	`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("role breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	type countRow struct {
+		roleID *string
+		count  int
+		users  string
+	}
+	counts := make(map[string]countRow) // key: role ID or ""
+	var unassigned countRow
+
+	for rows.Next() {
+		var roleID *string
+		var cnt int
+		var users *string
+		if err := rows.Scan(&roleID, &cnt, &users); err != nil {
+			return nil, err
+		}
+		u := ""
+		if users != nil {
+			u = *users
+		}
+		if roleID == nil {
+			unassigned = countRow{nil, cnt, u}
+		} else {
+			counts[*roleID] = countRow{roleID, cnt, u}
+		}
+	}
+
+	var result []RoleBreakdown
+	for _, role := range roles {
+		cr := counts[role.ID]
+		var userList []string
+		if cr.users != "" {
+			userList = strings.Split(cr.users, ",")
+		}
+		roleID := role.ID // local copy to avoid pointer to range variable
+		result = append(result, RoleBreakdown{
+			RoleID:    &roleID,
+			RoleName:  role.Name,
+			RoleSlug:  role.Slug,
+			RoleIcon:  role.Icon,
+			Tools:     role.Tools,
+			ItemCount: cr.count,
+			Users:     userList,
+		})
+	}
+
+	// Add unassigned
+	if unassigned.count > 0 {
+		var userList []string
+		if unassigned.users != "" {
+			userList = strings.Split(unassigned.users, ",")
+		}
+		result = append(result, RoleBreakdown{
+			RoleID:    nil,
+			RoleName:  "",
+			RoleSlug:  "",
+			RoleIcon:  "",
+			ItemCount: unassigned.count,
+			Users:     userList,
+		})
+	}
+
+	return result, rows.Err()
+}
+
+// RoleBoardLane represents a single lane in the role board view.
+type RoleBoardLane struct {
+	Role  *models.AgentRole `json:"role"` // nil for unassigned
+	Items []models.Item     `json:"items"`
+	Users []string          `json:"assigned_users"`
+}
+
+// RoleBoardParams configures the role board query.
+type RoleBoardParams struct {
+	AssignedUserID string
+}
+
+// GetRoleBoardItems returns non-terminal items across all collections, grouped by role.
+func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([]RoleBoardLane, error) {
+	// Get all roles
+	roles, err := s.ListAgentRoles(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch all non-archived items
+	listParams := models.ItemListParams{
+		IncludeArchived: false,
+	}
+	if params.AssignedUserID != "" {
+		listParams.AssignedUserID = params.AssignedUserID
+	}
+	allItems, err := s.ListItems(workspaceID, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter out terminal-status items
+	var activeItems []models.Item
+	for _, item := range allItems {
+		status := ""
+		if item.Fields != "" && item.Fields != "{}" {
+			var fields map[string]interface{}
+			if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
+				if v, ok := fields["status"].(string); ok {
+					status = v
+				}
+			}
+		}
+		if !isDoneStatus(status) {
+			activeItems = append(activeItems, item)
+		}
+	}
+
+	// Group by role
+	roleMap := make(map[string]*RoleBoardLane) // role ID → lane
+	var unassignedLane RoleBoardLane
+
+	for _, role := range roles {
+		r := role // copy
+		roleMap[role.ID] = &RoleBoardLane{
+			Role:  &r,
+			Items: []models.Item{},
+			Users: []string{},
+		}
+	}
+
+	userSets := make(map[string]map[string]bool) // role ID → set of user names
+
+	for _, item := range activeItems {
+		var lane *RoleBoardLane
+		roleKey := ""
+		if item.AgentRoleID != nil && *item.AgentRoleID != "" {
+			roleKey = *item.AgentRoleID
+			lane = roleMap[roleKey]
+		}
+		if lane == nil {
+			roleKey = ""
+			unassignedLane.Items = append(unassignedLane.Items, item)
+			if item.AssignedUserName != "" {
+				if unassignedLane.Users == nil {
+					unassignedLane.Users = []string{}
+				}
+			}
+			continue
+		}
+		lane.Items = append(lane.Items, item)
+		if item.AssignedUserName != "" {
+			if userSets[roleKey] == nil {
+				userSets[roleKey] = make(map[string]bool)
+			}
+			userSets[roleKey][item.AssignedUserName] = true
+		}
+	}
+
+	// Build result in role order
+	var result []RoleBoardLane
+	for _, role := range roles {
+		lane := roleMap[role.ID]
+		if us, ok := userSets[role.ID]; ok {
+			for u := range us {
+				lane.Users = append(lane.Users, u)
+			}
+		}
+		result = append(result, *lane)
+	}
+
+	// Add unassigned lane
+	if len(unassignedLane.Items) > 0 {
+		// Dedupe users
+		userSet := make(map[string]bool)
+		for _, item := range unassignedLane.Items {
+			if item.AssignedUserName != "" {
+				userSet[item.AssignedUserName] = true
+			}
+		}
+		unassignedLane.Users = []string{}
+		for u := range userSet {
+			unassignedLane.Users = append(unassignedLane.Users, u)
+		}
+		result = append(result, unassignedLane)
+	}
+
+	return result, nil
+}
+
+// isDoneStatus returns true if the status indicates a terminal/completed item.
+func isDoneStatus(status string) bool {
+	switch strings.ToLower(status) {
+	case "done", "completed", "resolved", "cancelled", "rejected", "wontfix", "fixed", "implemented", "archived", "disabled":
+		return true
+	default:
+		return false
+	}
 }
 
 // ResolveAgentRoleID resolves a role identifier (ID or slug) to its UUID.
