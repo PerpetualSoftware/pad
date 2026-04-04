@@ -178,12 +178,14 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		return nil, err
 	}
 
-	// Count non-terminal items per role
+	// Count non-terminal items per role (exclude done/completed/etc. to match board view)
 	rows, err := s.db.Query(`
 		SELECT i.agent_role_id, COUNT(*) as cnt, GROUP_CONCAT(DISTINCT u.name) as users
 		FROM items i
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND LOWER(COALESCE(json_extract(i.fields, '$.status'), '')) NOT IN
+		      ('done','completed','resolved','cancelled','rejected','wontfix','fixed','implemented','archived','disabled')
 		GROUP BY i.agent_role_id
 	`, workspaceID)
 	if err != nil {
@@ -224,8 +226,9 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		if cr.users != "" {
 			userList = strings.Split(cr.users, ",")
 		}
+		roleID := role.ID // local copy to avoid pointer to range variable
 		result = append(result, RoleBreakdown{
-			RoleID:    &role.ID,
+			RoleID:    &roleID,
 			RoleName:  role.Name,
 			RoleSlug:  role.Slug,
 			RoleIcon:  role.Icon,
