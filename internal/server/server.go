@@ -250,6 +250,7 @@ func (s *Server) setupRouter() {
 				// Role Board (cross-collection role-based view)
 				r.Get("/roles/board", s.handleRoleBoard)
 				r.Put("/roles/board/reorder", s.handleRoleBoardReorder)
+				r.Put("/roles/board/lane-order", s.handleRoleBoardLaneReorder)
 
 				// Agent Roles
 				r.Route("/agent-roles", func(r chi.Router) {

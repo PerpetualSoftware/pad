@@ -8,6 +8,7 @@
 		collection: Collection;
 		compact?: boolean;
 		focused?: boolean;
+		showCollection?: boolean;
 		statusOptions?: string[];
 		onStatusClick?: (item: Item, newStatus: string) => void;
 		progress?: { total: number; done: number } | null;
@@ -15,7 +16,7 @@
 		relationLabels?: Record<string, string>;
 	}
 
-	let { item, collection, compact = false, focused = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', relationLabels = {} }: Props = $props();
+	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', relationLabels = {} }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let fields = $derived(parseFields(item));
@@ -46,20 +47,6 @@
 		onStatusClick(item, nextStatus);
 	}
 
-	function relativeTime(dateStr: string): string {
-		const now = Date.now();
-		const then = new Date(dateStr).getTime();
-		const diff = now - then;
-		const minutes = Math.floor(diff / 60000);
-		if (minutes < 1) return 'just now';
-		if (minutes < 60) return `${minutes}m ago`;
-		const hours = Math.floor(minutes / 60);
-		if (hours < 24) return `${hours}h ago`;
-		const days = Math.floor(hours / 24);
-		if (days < 30) return `${days}d ago`;
-		return new Date(dateStr).toLocaleDateString();
-	}
-
 	function statusColor(status: string): string {
 		switch (status) {
 			case 'open': return 'var(--text-secondary)';
@@ -86,43 +73,55 @@
 </script>
 
 <a href={itemUrl} class="item-card" class:compact class:focused>
-	<div class="card-title">
+	<div class="card-top-row">
+		{#if showCollection && item.collection_name}
+			<span class="collection-badge">
+				{#if item.collection_icon}{item.collection_icon} {/if}{item.collection_name}
+			</span>
+		{/if}
 		{#if itemRef}<span class="item-ref">{itemRef}</span>{/if}
+	</div>
+
+	<div class="card-title">
 		{item.title}
 	</div>
 
-	<div class="card-badges">
+	<div class="card-meta">
 		{#if statusField && fields.status}
 			{#if statusCyclable}
 				<button
-					class="badge status-badge status-btn"
+					class="meta-status meta-status-btn"
 					class:pulsing
-					style:--badge-color={statusColor(fields.status)}
+					style:color={statusColor(fields.status)}
 					onclick={cycleStatus}
 					title="Click to cycle status"
 				>
-					{formatLabel(fields.status)}
+					{formatLabel(fields.status).toUpperCase()}
 				</button>
 			{:else}
-				<span class="badge status-badge" style:--badge-color={statusColor(fields.status)}>
-					{formatLabel(fields.status)}
+				<span class="meta-status" style:color={statusColor(fields.status)}>
+					{formatLabel(fields.status).toUpperCase()}
 				</span>
 			{/if}
 		{/if}
 		{#if priorityField && fields.priority}
-			<span class="badge priority-badge" style:--badge-color={priorityColor(fields.priority)}>
+			{#if statusField && fields.status}<span class="meta-sep">&middot;</span>{/if}
+			<span class="meta-priority" style:color={priorityColor(fields.priority)}>
 				{formatLabel(fields.priority)}
 			</span>
 		{/if}
 		{#if fields.phase && relationLabels[fields.phase]}
-			<span class="badge phase-badge">
-				{relationLabels[fields.phase]}
-			</span>
+			<span class="meta-sep">&middot;</span>
+			<span class="meta-phase">{relationLabels[fields.phase]}</span>
 		{/if}
 		{#if item.agent_role_name}
-			<span class="badge role-badge">
+			<span class="meta-sep">&middot;</span>
+			<span class="meta-role">
 				{#if item.agent_role_icon}{item.agent_role_icon} {/if}{item.agent_role_name}
 			</span>
+		{/if}
+		{#if item.assigned_user_name}
+			<span class="meta-assignee">{item.assigned_user_name}</span>
 		{/if}
 	</div>
 
@@ -134,23 +133,16 @@
 			<span class="card-progress-text">{progress.done}/{progress.total} {progressLabel}</span>
 		</div>
 	{/if}
-
-	<div class="card-footer">
-		{#if item.assigned_user_name}
-			<span class="assignee">{item.assigned_user_name}</span>
-		{/if}
-		<span class="updated" title={new Date(item.updated_at).toLocaleString()}>{relativeTime(item.updated_at)}</span>
-	</div>
 </a>
 
 <style>
 	.item-card {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
-		background: var(--bg-secondary);
+		gap: var(--space-2);
+		background: var(--bg-primary);
 		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
+		border-radius: var(--radius);
 		padding: var(--space-4) var(--space-5);
 		text-decoration: none;
 		color: inherit;
@@ -172,92 +164,120 @@
 		padding: var(--space-3) var(--space-4);
 	}
 
-	.card-title {
-		font-size: 0.95em;
-		color: var(--text-primary);
-		line-height: 1.45;
-		font-weight: 500;
+	.card-top-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.collection-badge {
+		background: var(--bg-tertiary);
+		padding: 1px 7px;
+		border-radius: 10px;
+		font-size: 0.7em;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.item-ref {
 		font-family: var(--font-mono);
-		font-size: 0.8em;
+		font-size: 0.75em;
 		color: var(--text-muted);
 		font-weight: 400;
-		margin-right: 4px;
 		white-space: nowrap;
+	}
+
+	.card-title {
+		font-size: 0.95em;
+		color: var(--text-primary);
+		line-height: 1.45;
+		font-weight: 600;
 	}
 
 	.compact .card-title {
 		font-size: 0.92em;
 	}
 
-	.card-badges {
+	.card-meta {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
-		row-gap: var(--space-2);
+		gap: 5px;
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		font-size: 0.8em;
-		padding: 3px 10px;
-		border-radius: var(--radius-sm);
+	.meta-status {
+		font-size: 0.7em;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.02em;
 		white-space: nowrap;
-		font-weight: 500;
-		color: var(--badge-color);
-		background: color-mix(in srgb, var(--badge-color) 15%, transparent);
 	}
 
-	.status-btn {
+	.meta-status-btn {
 		border: none;
+		background: none;
 		cursor: pointer;
-		line-height: inherit;
+		padding: 0;
 		font-family: inherit;
+		line-height: inherit;
 		transition: filter 0.1s, transform 0.1s;
 	}
 
-	.status-btn:hover {
+	.meta-status-btn:hover {
 		filter: brightness(1.3);
 		transform: scale(1.05);
 	}
 
-	.status-btn:active {
+	.meta-status-btn:active {
 		transform: scale(0.95);
 	}
 
-	.status-btn.pulsing {
+	.meta-status-btn.pulsing {
 		animation: status-pulse 0.3s ease-out;
 	}
 
 	@keyframes status-pulse {
 		0% {
-			box-shadow: 0 0 0 0 color-mix(in srgb, var(--badge-color) 50%, transparent);
+			text-shadow: 0 0 0 currentColor;
 		}
 		70% {
-			box-shadow: 0 0 0 6px color-mix(in srgb, var(--badge-color) 0%, transparent);
+			text-shadow: 0 0 8px currentColor;
 		}
 		100% {
-			box-shadow: 0 0 0 0 color-mix(in srgb, var(--badge-color) 0%, transparent);
+			text-shadow: 0 0 0 currentColor;
 		}
 	}
 
-	.role-badge {
-		font-size: 0.8em;
-		color: var(--accent-teal, var(--accent-blue));
-		background: color-mix(in srgb, var(--accent-teal, var(--accent-blue)) 12%, transparent);
-		padding: 3px 10px;
-		border-radius: var(--radius-sm);
+	.meta-sep {
+		font-size: 0.7em;
+		color: var(--text-muted);
+	}
+
+	.meta-priority {
+		font-size: 0.7em;
+		font-weight: 600;
 		white-space: nowrap;
 	}
 
-	.phase-badge {
-		font-size: 0.8em;
+	.meta-phase {
+		font-size: 0.7em;
+		font-weight: 500;
 		color: var(--accent-purple, var(--text-secondary));
-		background: color-mix(in srgb, var(--accent-purple, var(--text-secondary)) 12%, transparent);
-		padding: 3px 10px;
-		border-radius: var(--radius-sm);
+		white-space: nowrap;
+	}
+
+	.meta-role {
+		font-size: 0.7em;
+		font-weight: 500;
+		color: var(--accent-teal, var(--accent-blue));
+		white-space: nowrap;
+	}
+
+	.meta-assignee {
+		font-size: 0.7em;
+		font-weight: 500;
+		color: var(--accent-blue);
+		margin-left: auto;
 		white-space: nowrap;
 	}
 
@@ -284,27 +304,5 @@
 		color: var(--text-muted);
 		white-space: nowrap;
 		flex-shrink: 0;
-	}
-
-	.card-footer {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
-	}
-
-	.assignee {
-		font-size: 0.8em;
-		color: var(--accent-blue);
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		white-space: nowrap;
-	}
-
-	.updated {
-		font-size: 0.75em;
-		color: var(--text-muted);
-		margin-left: auto;
 	}
 </style>

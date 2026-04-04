@@ -385,6 +385,36 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 	return result, nil
 }
 
+// RoleOrderUpdate represents a single role's sort_order update for lane reordering.
+type RoleOrderUpdate struct {
+	RoleID    string `json:"role_id"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// UpdateAgentRoleOrder batch-updates sort_order for a list of roles.
+func (s *Store) UpdateAgentRoleOrder(workspaceID string, updates []RoleOrderUpdate) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("UPDATE agent_roles SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ?")
+	if err != nil {
+		return fmt.Errorf("prepare role order update: %w", err)
+	}
+	defer stmt.Close()
+
+	ts := now()
+	for _, u := range updates {
+		if _, err := stmt.Exec(u.SortOrder, ts, u.RoleID, workspaceID); err != nil {
+			return fmt.Errorf("update sort order for role %s: %w", u.RoleID, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // RoleSortUpdate represents a single item's role_sort_order update.
 type RoleSortUpdate struct {
 	ItemID        string `json:"item_id"`

@@ -188,6 +188,11 @@ export const api = {
 			request<void>(`/workspaces/${ws}/roles/board/reorder`, {
 				method: 'PUT',
 				body: JSON.stringify(updates)
+			}),
+		reorderLanes: (ws: string, updates: { role_id: string; sort_order: number }[]) =>
+			request<void>(`/workspaces/${ws}/roles/board/lane-order`, {
+				method: 'PUT',
+				body: JSON.stringify(updates)
 			})
 	},
 

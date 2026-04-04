@@ -177,7 +177,7 @@
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
-<div class="board-view" style:--col-count={columnOrder.length}>
+<div class="board-view">
 	{#each columnOrder as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
 		<div
@@ -259,15 +259,18 @@
 
 <style>
 	.board-view {
-		display: grid;
-		grid-template-columns: repeat(var(--col-count, 3), 1fr);
+		display: flex;
 		gap: var(--space-5);
+		flex: 1;
+		min-height: 0;
+		overflow-x: auto;
 	}
 
 	.kanban-column {
 		display: flex;
 		flex-direction: column;
-		min-width: 0;
+		flex: 1 0 0;
+		min-width: 220px;
 		transition: transform 0.15s ease;
 	}
 
@@ -289,6 +292,7 @@
 		font-weight: 600;
 		font-size: 0.9em;
 		cursor: grab;
+		flex-shrink: 0;
 	}
 
 	.column-header:active {
@@ -413,6 +417,8 @@
 		border-radius: var(--radius);
 		padding: var(--space-2);
 		transition: background 0.15s ease;
+		overflow-y: auto;
+		min-height: 0;
 	}
 
 	.column-cards:global(.drop-target) {

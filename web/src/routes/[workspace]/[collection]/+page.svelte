@@ -896,6 +896,13 @@
 	.collection-page.board-active {
 		max-width: none;
 		padding: var(--space-6) var(--space-6);
+		height: 100vh;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	.board-active .page-header {
+		flex-shrink: 0;
 	}
 
 	.loading {
