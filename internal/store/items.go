@@ -18,7 +18,36 @@ type ItemSearchResult struct {
 	Rank    float64     `json:"rank"`
 }
 
+// validateAssignmentScope checks that the assigned user and agent role belong to the
+// same workspace as the item. This prevents cross-workspace assignment leaks.
+func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agentRoleID *string) error {
+	if assignedUserID != nil && *assignedUserID != "" {
+		isMember, err := s.IsWorkspaceMember(workspaceID, *assignedUserID)
+		if err != nil {
+			return fmt.Errorf("validate assigned user: %w", err)
+		}
+		if !isMember {
+			return fmt.Errorf("assigned user is not a member of this workspace")
+		}
+	}
+	if agentRoleID != nil && *agentRoleID != "" {
+		role, err := s.GetAgentRole(workspaceID, *agentRoleID)
+		if err != nil {
+			return fmt.Errorf("validate agent role: %w", err)
+		}
+		if role == nil {
+			return fmt.Errorf("agent role does not belong to this workspace")
+		}
+	}
+	return nil
+}
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	// Validate assignment scope before writing
+	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
+		return nil, err
+	}
+
 	id := newID()
 	ts := now()
 
@@ -63,10 +92,12 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 
 	_, err = tx.Exec(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
-		                   pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id,
+		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		boolToInt(input.Pinned), input.ParentID, createdBy, createdBy, source, nextNum, ts, ts)
+		boolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
+		createdBy, createdBy, source, nextNum, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert item: %w", err)
 	}
@@ -98,18 +129,26 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 
 	err := s.db.QueryRow(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
-		       c.slug, c.name, c.icon, c.prefix
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.id = ? AND i.deleted_at IS NULL
 	`, id).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.CreatedBy, &item.LastModifiedBy, &item.Source,
+		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+		&item.AssignedUserName, &item.AssignedUserEmail,
+		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -212,18 +251,26 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 
 		err := s.db.QueryRow(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-			       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.created_at, i.updated_at, i.deleted_at,
-			       c.slug, c.name, c.icon, c.prefix
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
 		`, workspaceID, prefix, number).Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
-			&pinned, &item.SortOrder, &item.ParentID, &item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
 		)
 		if err == nil {
 			item.Pinned = pinned == 1
@@ -278,18 +325,26 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 
 	err := s.db.QueryRow(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
-		       c.slug, c.name, c.icon, c.prefix
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.workspace_id = ? AND i.slug = ?
 	`, workspaceID, slug).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.CreatedBy, &item.LastModifiedBy, &item.Source,
+		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+		&item.AssignedUserName, &item.AssignedUserEmail,
+		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -314,11 +369,16 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.workspace_id = ?
 	`
 	args := []interface{}{workspaceID}
@@ -340,6 +400,16 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	if params.ParentID != "" {
 		query += " AND i.parent_id = ?"
 		args = append(args, params.ParentID)
+	}
+
+	if params.AssignedUserID != "" {
+		query += " AND i.assigned_user_id = ?"
+		args = append(args, params.AssignedUserID)
+	}
+
+	if params.AgentRoleID != "" {
+		query += " AND (i.agent_role_id = ? OR ar.slug = ?)"
+		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
 	// Field filters using json_extract — supports comma-separated values as OR
@@ -384,12 +454,17 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN items_fts fts ON i.rowid = fts.rowid
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		AND items_fts MATCH ?
 	`
@@ -423,6 +498,11 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	}
 	if existing == nil {
 		return nil, nil
+	}
+
+	// Validate assignment scope before writing
+	if err := s.validateAssignmentScope(existing.WorkspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.Begin()
@@ -515,6 +595,18 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		sets = append(sets, "parent_id = ?")
 		args = append(args, *input.ParentID)
 	}
+	if input.AssignedUserID != nil {
+		sets = append(sets, "assigned_user_id = ?")
+		args = append(args, *input.AssignedUserID)
+	} else if input.ClearAssignedUser {
+		sets = append(sets, "assigned_user_id = NULL")
+	}
+	if input.AgentRoleID != nil {
+		sets = append(sets, "agent_role_id = ?")
+		args = append(args, *input.AgentRoleID)
+	} else if input.ClearAgentRole {
+		sets = append(sets, "agent_role_id = NULL")
+	}
 	if input.LastModifiedBy != "" {
 		sets = append(sets, "last_modified_by = ?")
 		args = append(args, input.LastModifiedBy)
@@ -573,14 +665,19 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
 	sqlQuery := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
 		       snippet(items_fts, 1, '<mark>', '</mark>', '...', 32) as snippet,
 		       rank
 		FROM items_fts fts
 		JOIN items i ON i.rowid = fts.rowid
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE items_fts MATCH ?
 		AND i.deleted_at IS NULL
 	`
@@ -607,9 +704,12 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
-			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.CreatedBy, &r.Item.LastModifiedBy,
+			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID,
+			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
+			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
+			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
 			&r.Snippet, &r.Rank,
 		); err != nil {
 			return nil, err
@@ -838,11 +938,16 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.created_by, i.last_modified_by, i.source,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id,
+		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
 		  AND json_extract(i.fields, '$.phase') = ?
@@ -1058,9 +1163,12 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
-			&pinned, &item.SortOrder, &item.ParentID, &item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &createdAt, &updatedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
 		); err != nil {
 			return nil, err
 		}

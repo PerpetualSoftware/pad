@@ -33,10 +33,19 @@ type Item struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
 
+	// Assignment: (user, role) pair
+	AssignedUserID *string `json:"assigned_user_id,omitempty"`
+	AgentRoleID    *string `json:"agent_role_id,omitempty"`
+
 	// Auto-assigned sequential number within collection
 	ItemNumber *int `json:"item_number,omitempty"`
 
 	// Populated by joins (not stored)
+	AssignedUserName  string `json:"assigned_user_name,omitempty"`
+	AssignedUserEmail string `json:"assigned_user_email,omitempty"`
+	AgentRoleName     string `json:"agent_role_name,omitempty"`
+	AgentRoleSlug     string `json:"agent_role_slug,omitempty"`
+	AgentRoleIcon     string `json:"agent_role_icon,omitempty"`
 	CollectionSlug      string                   `json:"collection_slug,omitempty"`
 	CollectionName      string                   `json:"collection_name,omitempty"`
 	CollectionIcon      string                   `json:"collection_icon,omitempty"`
@@ -452,14 +461,16 @@ func uniqueStrings(values []string) []string {
 }
 
 type ItemCreate struct {
-	Title     string  `json:"title"`
-	Content   string  `json:"content,omitempty"`
-	Fields    string  `json:"fields,omitempty"`
-	Tags      string  `json:"tags,omitempty"`
-	Pinned    bool    `json:"pinned,omitempty"`
-	ParentID  *string `json:"parent_id,omitempty"`
-	CreatedBy string  `json:"created_by,omitempty"`
-	Source    string  `json:"source,omitempty"`
+	Title          string  `json:"title"`
+	Content        string  `json:"content,omitempty"`
+	Fields         string  `json:"fields,omitempty"`
+	Tags           string  `json:"tags,omitempty"`
+	Pinned         bool    `json:"pinned,omitempty"`
+	ParentID       *string `json:"parent_id,omitempty"`
+	AssignedUserID *string `json:"assigned_user_id,omitempty"`
+	AgentRoleID    *string `json:"agent_role_id,omitempty"`
+	CreatedBy      string  `json:"created_by,omitempty"`
+	Source         string  `json:"source,omitempty"`
 }
 
 type ItemUpdate struct {
@@ -470,10 +481,16 @@ type ItemUpdate struct {
 	Pinned         *bool   `json:"pinned,omitempty"`
 	SortOrder      *int    `json:"sort_order,omitempty"`
 	ParentID       *string `json:"parent_id,omitempty"`
+	AssignedUserID *string `json:"assigned_user_id,omitempty"`
+	AgentRoleID    *string `json:"agent_role_id,omitempty"`
 	LastModifiedBy string  `json:"last_modified_by,omitempty"`
 	Source         string  `json:"source,omitempty"`
 	ChangeSummary  string  `json:"change_summary,omitempty"`
 	Comment        *string `json:"comment,omitempty"`
+	// ClearAssignedUser / ClearAgentRole allow explicitly setting to NULL
+	// (since nil pointer means "don't change" in partial updates)
+	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`
+	ClearAgentRole    bool `json:"clear_agent_role,omitempty"`
 }
 
 type ItemListParams struct {
@@ -484,6 +501,8 @@ type ItemListParams struct {
 	Search          string // FTS query
 	ParentID        string
 	Tag             string
+	AssignedUserID  string // filter by assigned user
+	AgentRoleID     string // filter by agent role (ID or slug)
 	IncludeArchived bool
 	Limit           int
 	Offset          int

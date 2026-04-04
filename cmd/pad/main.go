@@ -82,6 +82,7 @@ func main() {
 		libraryGroupCmd(),
 		agentCmd(),
 		githubCmd(),
+		roleCmd(),
 		webhooksCmd(),
 		completionCmd(),
 	)
@@ -1623,6 +1624,7 @@ func createCmd() *cobra.Command {
 		priority   string
 		status     string
 		assignee   string
+		roleFlag   string
 		phase      string
 		category   string
 		parentSlug string
@@ -1659,9 +1661,6 @@ Run with --help-collections to see available collections and their status values
 			}
 			if priority != "" {
 				fields["priority"] = priority
-			}
-			if assignee != "" {
-				fields["assignee"] = assignee
 			}
 			if phase != "" {
 				// Resolve phase slug to item ID
@@ -1701,6 +1700,42 @@ Run with --help-collections to see available collections and their status values
 				Tags:    tags,
 			}
 
+			// Resolve --assign (user name/email → user ID)
+			if assignee != "" {
+				members, merr := client.ListWorkspaceMembers(ws)
+				if merr != nil {
+					return fmt.Errorf("resolve assignee: %w", merr)
+				}
+				var found bool
+				for _, m := range members {
+					if strings.EqualFold(m.UserName, assignee) || strings.EqualFold(m.UserEmail, assignee) {
+						input.AssignedUserID = &m.UserID
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("user %q not found in workspace members", assignee)
+				}
+			}
+
+			// Resolve --role (role slug → role ID)
+			if roleFlag != "" {
+				role, rerr := client.GetAgentRole(ws, roleFlag)
+				if rerr != nil {
+					return fmt.Errorf("resolve role: %w", rerr)
+				}
+				if role == nil || role.ID == "" {
+					// Check if any roles exist
+					roles, _ := client.ListAgentRoles(ws)
+					if len(roles) == 0 {
+						fmt.Fprintf(os.Stderr, "No roles found. Create one with: pad role create 'Implementer' --description 'Writes code, builds features'\n")
+					}
+					return fmt.Errorf("role %q not found", roleFlag)
+				}
+				input.AgentRoleID = &role.ID
+			}
+
 			item, err := client.CreateItem(ws, collSlug, input)
 			if err != nil {
 				return err
@@ -1731,7 +1766,8 @@ Run with --help-collections to see available collections and their status values
 	cmd.Flags().BoolVar(&useStdin, "stdin", false, "read content from stdin")
 	cmd.Flags().StringVar(&priority, "priority", "", "priority field value")
 	cmd.Flags().StringVar(&status, "status", "", "status field value")
-	cmd.Flags().StringVar(&assignee, "assignee", "", "assignee field value")
+	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
+	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
 	cmd.Flags().StringVar(&phase, "phase", "", "phase relation (slug or ID)")
 	cmd.Flags().StringVar(&category, "category", "", "category field value")
 	cmd.Flags().StringVar(&parentSlug, "parent", "", "parent item slug for nesting")
@@ -1763,6 +1799,7 @@ func listCmd() *cobra.Command {
 		statusFilter   string
 		priorityFilter string
 		assigneeFilter string
+		roleFilter     string
 		sortBy         string
 		groupBy        string
 		limitNum       int
@@ -1805,7 +1842,25 @@ Examples:
 				params.Set("priority", priorityFilter)
 			}
 			if assigneeFilter != "" {
-				params.Set("assignee", assigneeFilter)
+				// Resolve user name to ID for the API filter
+				members, merr := client.ListWorkspaceMembers(ws)
+				if merr != nil {
+					return fmt.Errorf("failed to resolve --assign filter: %w", merr)
+				}
+				var resolved bool
+				for _, m := range members {
+					if strings.EqualFold(m.UserName, assigneeFilter) || strings.EqualFold(m.UserEmail, assigneeFilter) {
+						params.Set("assigned_user_id", m.UserID)
+						resolved = true
+						break
+					}
+				}
+				if !resolved {
+					return fmt.Errorf("no workspace member matches --assign %q", assigneeFilter)
+				}
+			}
+			if roleFilter != "" {
+				params.Set("agent_role_id", roleFilter)
 			}
 			if sortBy != "" {
 				params.Set("sort", sortBy)
@@ -1857,7 +1912,8 @@ Examples:
 
 	cmd.Flags().StringVar(&statusFilter, "status", "", "filter by status (comma-separated)")
 	cmd.Flags().StringVar(&priorityFilter, "priority", "", "filter by priority")
-	cmd.Flags().StringVar(&assigneeFilter, "assignee", "", "filter by assignee")
+	cmd.Flags().StringVar(&assigneeFilter, "assign", "", "filter by assigned user (name or email)")
+	cmd.Flags().StringVar(&roleFilter, "role", "", "filter by agent role (slug)")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
 	cmd.Flags().IntVar(&limitNum, "limit", 0, "max number of items to return")
@@ -2097,6 +2153,7 @@ func updateCmd() *cobra.Command {
 		status     string
 		priority   string
 		assignee   string
+		roleFlag   string
 		phase      string
 		category   string
 		tags       string
@@ -2167,9 +2224,6 @@ Examples:
 				if priority != "" {
 					existingFields["priority"] = priority
 				}
-				if assignee != "" {
-					existingFields["assignee"] = assignee
-				}
 				if phase != "" {
 					// Resolve phase slug to item ID
 					phaseItem, err := client.GetItem(ws, phase)
@@ -2192,6 +2246,41 @@ Examples:
 				fieldsJSON, _ := json.Marshal(existingFields)
 				fieldsStr := string(fieldsJSON)
 				input.Fields = &fieldsStr
+			}
+
+			// Resolve --assign (user name/email → user ID)
+			if assignee != "" {
+				members, merr := client.ListWorkspaceMembers(ws)
+				if merr != nil {
+					return fmt.Errorf("resolve assignee: %w", merr)
+				}
+				var found bool
+				for _, m := range members {
+					if strings.EqualFold(m.UserName, assignee) || strings.EqualFold(m.UserEmail, assignee) {
+						input.AssignedUserID = &m.UserID
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("user %q not found in workspace members", assignee)
+				}
+			}
+
+			// Resolve --role (role slug → role ID)
+			if roleFlag != "" {
+				role, rerr := client.GetAgentRole(ws, roleFlag)
+				if rerr != nil {
+					return fmt.Errorf("resolve role: %w", rerr)
+				}
+				if role == nil || role.ID == "" {
+					roles, _ := client.ListAgentRoles(ws)
+					if len(roles) == 0 {
+						fmt.Fprintf(os.Stderr, "No roles found. Create one with: pad role create 'Implementer' --description 'Writes code, builds features'\n")
+					}
+					return fmt.Errorf("role %q not found", roleFlag)
+				}
+				input.AgentRoleID = &role.ID
 			}
 
 			updated, err := client.UpdateItem(ws, slug, input)
@@ -2221,7 +2310,8 @@ Examples:
 	cmd.Flags().BoolVar(&useStdin, "stdin", false, "read content from stdin")
 	cmd.Flags().StringVar(&status, "status", "", "update status field")
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
-	cmd.Flags().StringVar(&assignee, "assignee", "", "update assignee field")
+	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
+	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
 	cmd.Flags().StringVar(&phase, "phase", "", "update phase relation")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
@@ -4176,6 +4266,104 @@ func watchCmd() *cobra.Command {
 				return fmt.Errorf("reading event stream: %w", err)
 			}
 
+			return nil
+		},
+	}
+}
+
+// --- agent roles ---
+
+func roleCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "role",
+		Short: "Manage agent roles",
+		Long:  "Agent roles define capability specializations (e.g. Planner, Implementer, Reviewer) for human-agent work assignment.",
+	}
+	cmd.AddCommand(roleListCmd(), roleCreateCmd(), roleDeleteCmd())
+	return cmd
+}
+
+func roleListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List agent roles in the workspace",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			roles, err := client.ListAgentRoles(ws)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(roles)
+			}
+			if len(roles) == 0 {
+				fmt.Println("No roles defined yet.")
+				fmt.Println("Create one with: pad role create 'Implementer' --description 'Writes code, builds features'")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "SLUG\tNAME\tDESCRIPTION\tITEMS")
+			for _, r := range roles {
+				icon := r.Icon
+				if icon != "" {
+					icon += " "
+				}
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%d\n", r.Slug, icon, r.Name, r.Description, r.ItemCount)
+			}
+			w.Flush()
+			return nil
+		},
+	}
+}
+
+func roleCreateCmd() *cobra.Command {
+	var description, icon string
+
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create a new agent role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			input := models.AgentRoleCreate{
+				Name:        args[0],
+				Description: description,
+				Icon:        icon,
+			}
+			role, err := client.CreateAgentRole(ws, input)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(role)
+			}
+			iconStr := ""
+			if role.Icon != "" {
+				iconStr = role.Icon + " "
+			}
+			fmt.Printf("Created role %s%s (%s)\n", iconStr, role.Name, role.Slug)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&description, "description", "", "role description")
+	cmd.Flags().StringVar(&icon, "icon", "", "role icon (emoji)")
+	return cmd
+}
+
+func roleDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <slug>",
+		Short: "Delete an agent role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			if err := client.DeleteAgentRole(ws, args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted role %s\n", args[0])
 			return nil
 		},
 	}

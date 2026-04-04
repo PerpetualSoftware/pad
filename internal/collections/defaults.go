@@ -41,11 +41,6 @@ func Defaults() []DefaultCollection {
 						Default: "medium",
 					},
 					{
-						Key:   "assignee",
-						Label: "Assignee",
-						Type:  "text",
-					},
-					{
 						Key:   "due_date",
 						Label: "Due Date",
 						Type:  "date",

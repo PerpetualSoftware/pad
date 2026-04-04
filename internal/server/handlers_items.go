@@ -278,6 +278,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			meta = fmt.Sprintf(`{"changes":"title: %s → %s"}`, item.Title, *input.Title)
 		}
 	}
+	// Track role and assignment changes
+	if updated.AgentRoleSlug != item.AgentRoleSlug {
+		roleChange := fmt.Sprintf("role: %s → %s", valueOrEmpty(item.AgentRoleName), valueOrEmpty(updated.AgentRoleName))
+		meta = appendChange(meta, roleChange)
+	}
+	if updated.AssignedUserName != item.AssignedUserName {
+		assignChange := fmt.Sprintf("assigned: %s → %s", valueOrEmpty(item.AssignedUserName), valueOrEmpty(updated.AssignedUserName))
+		meta = appendChange(meta, assignChange)
+	}
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source)
@@ -777,11 +786,13 @@ func autoPopulateDates(newFields map[string]any, existingFieldsJSON string, sche
 // parseItemListParams extracts item list parameters from the request query string.
 func parseItemListParams(r *http.Request) models.ItemListParams {
 	params := models.ItemListParams{
-		Sort:     r.URL.Query().Get("sort"),
-		GroupBy:  r.URL.Query().Get("group_by"),
-		Search:   r.URL.Query().Get("search"),
-		ParentID: r.URL.Query().Get("parent_id"),
-		Tag:      r.URL.Query().Get("tag"),
+		Sort:           r.URL.Query().Get("sort"),
+		GroupBy:        r.URL.Query().Get("group_by"),
+		Search:         r.URL.Query().Get("search"),
+		ParentID:       r.URL.Query().Get("parent_id"),
+		Tag:            r.URL.Query().Get("tag"),
+		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
+		AgentRoleID:    r.URL.Query().Get("agent_role_id"),
 	}
 
 	if r.URL.Query().Get("include_archived") == "true" {
@@ -803,6 +814,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	knownParams := map[string]bool{
 		"sort": true, "group_by": true, "search": true, "parent_id": true,
 		"tag": true, "include_archived": true, "limit": true, "offset": true,
+		"assigned_user_id": true, "agent_role_id": true,
 	}
 
 	fields := make(map[string]string)
