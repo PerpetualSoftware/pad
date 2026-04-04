@@ -180,15 +180,17 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 	}
 
 	// Count non-terminal items per role (exclude done/completed/etc. to match board view)
+	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
+	roleCountArgs := append([]any{workspaceID}, termArgs...)
 	rows, err := s.db.Query(`
 		SELECT i.agent_role_id, COUNT(*) as cnt, GROUP_CONCAT(DISTINCT u.name) as users
 		FROM items i
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		  AND LOWER(COALESCE(json_extract(i.fields, '$.status'), '')) NOT IN
-		      ('done','completed','resolved','cancelled','rejected','wontfix','fixed','implemented','archived','disabled')
+		      (`+termPlaceholders+`)
 		GROUP BY i.agent_role_id
-	`, workspaceID)
+	`, roleCountArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("role breakdown: %w", err)
 	}
@@ -302,7 +304,7 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 				}
 			}
 		}
-		if !isDoneStatus(status) {
+		if !models.IsTerminalStatusDefault(status) {
 			activeItems = append(activeItems, item)
 		}
 	}
@@ -442,16 +444,6 @@ func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate
 	}
 
 	return tx.Commit()
-}
-
-// isDoneStatus returns true if the status indicates a terminal/completed item.
-func isDoneStatus(status string) bool {
-	switch strings.ToLower(status) {
-	case "done", "completed", "resolved", "cancelled", "rejected", "wontfix", "fixed", "implemented", "archived", "disabled":
-		return true
-	default:
-		return false
-	}
 }
 
 // ResolveAgentRoleID resolves a role identifier (ID or slug) to its UUID.

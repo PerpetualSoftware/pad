@@ -26,12 +26,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"open", "in-progress", "done", "cancelled"},
-						Default:  "open",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"open", "in-progress", "done", "cancelled"},
+						TerminalOptions: []string{"done", "cancelled"},
+						Default:         "open",
+						Required:        true,
 					},
 					{
 						Key:     "priority",
@@ -82,12 +83,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"new", "exploring", "planned", "implemented", "rejected"},
-						Default:  "new",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"new", "exploring", "planned", "implemented", "rejected"},
+						TerminalOptions: []string{"implemented", "rejected"},
+						Default:         "new",
+						Required:        true,
 					},
 					{
 						Key:     "impact",
@@ -124,12 +126,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"planned", "active", "completed", "paused"},
-						Default:  "planned",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"planned", "active", "completed", "paused"},
+						TerminalOptions: []string{"completed"},
+						Default:         "planned",
+						Required:        true,
 					},
 					{
 						Key:   "start_date",
@@ -171,12 +174,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"draft", "published", "archived"},
-						Default:  "draft",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"draft", "published", "archived"},
+						TerminalOptions: []string{"archived"},
+						Default:         "draft",
+						Required:        true,
 					},
 					{
 						Key:   "category",
@@ -207,12 +211,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"active", "draft", "disabled"},
-						Default:  "active",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"active", "draft", "disabled"},
+						TerminalOptions: []string{"disabled"},
+						Default:         "active",
+						Required:        true,
 					},
 					{
 						Key:     "trigger",
@@ -255,12 +260,13 @@ func Defaults() []DefaultCollection {
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
-						Key:      "status",
-						Label:    "Status",
-						Type:     "select",
-						Options:  []string{"active", "draft", "deprecated"},
-						Default:  "draft",
-						Required: true,
+						Key:             "status",
+						Label:           "Status",
+						Type:            "select",
+						Options:         []string{"active", "draft", "deprecated"},
+						TerminalOptions: []string{"deprecated"},
+						Default:         "draft",
+						Required:        true,
 					},
 					{
 						Key:     "trigger",

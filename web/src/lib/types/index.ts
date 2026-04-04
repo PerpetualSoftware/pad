@@ -121,6 +121,7 @@ export interface FieldDef {
 	label: string;
 	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation';
 	options?: string[];
+	terminal_options?: string[];
 	default?: any;
 	required?: boolean;
 	computed?: boolean;
@@ -639,6 +640,32 @@ export function getStatusOptions(collection: Collection): string[] {
 	const schema = parseSchema(collection);
 	const statusField = schema.fields.find((f) => f.key === 'status');
 	return statusField?.options ?? [];
+}
+
+/** Default terminal statuses used as a fallback when a collection's schema
+ * doesn't declare terminal_options. */
+const DEFAULT_TERMINAL_STATUSES = [
+	'done', 'completed', 'resolved', 'cancelled', 'rejected',
+	'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'
+];
+
+/** Get the terminal status options for a collection. Uses the schema's
+ * terminal_options if defined, otherwise falls back to defaults. */
+export function getTerminalOptions(collection: Collection): string[] {
+	const schema = parseSchema(collection);
+	const statusField = schema.fields.find((f) => f.key === 'status');
+	return statusField?.terminal_options ?? DEFAULT_TERMINAL_STATUSES;
+}
+
+/** Check if a status value is terminal (finalized) for a given collection. */
+export function isTerminalStatus(status: string, collection: Collection): boolean {
+	return getTerminalOptions(collection).includes(status);
+}
+
+/** Check if a status value is terminal using the default fallback list.
+ * Use when no collection context is available. */
+export function isTerminalStatusDefault(status: string): boolean {
+	return DEFAULT_TERMINAL_STATUSES.includes(status);
 }
 
 export function formatItemRef(item: Item): string | null {

@@ -37,17 +37,17 @@ func (s *Server) deriveItemClosure(item *models.Item) (*models.ItemDerivedClosur
 		}
 		switch linkType {
 		case models.ItemLinkTypeSupersedes:
-			if link.TargetID == item.ID && isDoneStatus(link.SourceStatus) {
+			if link.TargetID == item.ID && models.IsTerminalStatusDefault(link.SourceStatus) {
 				supersededBy = append(supersededBy, relationRefFromLink(link, true))
 			}
 		case models.ItemLinkTypeImplements:
-			if link.TargetID == item.ID && isDoneStatus(link.SourceStatus) {
+			if link.TargetID == item.ID && models.IsTerminalStatusDefault(link.SourceStatus) {
 				implementedBy = append(implementedBy, relationRefFromLink(link, true))
 			}
 		case models.ItemLinkTypeSplitFrom:
 			if link.TargetID == item.ID {
 				splitChildren = append(splitChildren, relationRefFromLink(link, true))
-				if !isDoneStatus(link.SourceStatus) {
+				if !models.IsTerminalStatusDefault(link.SourceStatus) {
 					allSplitChildrenDone = false
 				}
 			}

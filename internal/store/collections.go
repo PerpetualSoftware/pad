@@ -101,19 +101,21 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 }
 
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
+	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
+	queryArgs := append(termArgs, workspaceID)
 	rows, err := s.db.Query(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
 		       c.schema, c.settings, c.sort_order, c.is_default, c.created_at, c.updated_at,
 		       COUNT(i.id) as item_count,
 		       COUNT(CASE WHEN LOWER(json_extract(i.fields, '$.status')) NOT IN
-		           ('done','completed','resolved','cancelled','rejected','wontfix','fixed','implemented','archived','disabled','deprecated')
+		           (`+termPlaceholders+`)
 		           THEN i.id END) as active_item_count
 		FROM collections c
 		LEFT JOIN items i ON i.collection_id = c.id AND i.deleted_at IS NULL
 		WHERE c.workspace_id = ? AND c.deleted_at IS NULL
 		GROUP BY c.id
 		ORDER BY c.sort_order ASC, c.created_at ASC
-	`, workspaceID)
+	`, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}

@@ -15,10 +15,14 @@
 		itemSlug: string;
 		itemId: string;
 		phaseFields?: Record<string, any>;
+		terminalStatuses?: string[];
 		onTasksChange?: (tasks: Item[]) => void;
 	}
 
-	let { wsSlug, itemSlug, itemId, phaseFields, onTasksChange }: Props = $props();
+	let { wsSlug, itemSlug, itemId, phaseFields, terminalStatuses, onTasksChange }: Props = $props();
+
+	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
+	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
 	let tasks = $state<Item[]>([]);
 	let loading = $state(true);
@@ -30,7 +34,7 @@
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
 
-	let doneCount = $derived(tasks.filter((t) => parseFields(t).status === 'done').length);
+	let doneCount = $derived(tasks.filter((t) => terminal.includes(parseFields(t).status)).length);
 	let totalCount = $derived(tasks.length);
 	let percentage = $derived(totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0);
 
@@ -159,7 +163,7 @@
 	</div>
 
 	{#if !loading && tasks.length > 0 && phaseFields?.start_date}
-		<PhaseChart {tasks} startDate={phaseFields.start_date} endDate={phaseFields.end_date} />
+		<PhaseChart {tasks} startDate={phaseFields.start_date} endDate={phaseFields.end_date} {terminalStatuses} />
 	{/if}
 
 	{#if loading}
@@ -187,7 +191,7 @@
 				>
 					{#each groupData[status] ?? [] as task (task.id)}
 						{@const fields = parseFields(task)}
-						{@const isDone = fields.status === 'done'}
+						{@const isDone = terminal.includes(fields.status)}
 						<a href="/{wsSlug}/tasks/{task.slug}" class="task-row">
 							<span class="task-ref">{formatItemRef(task) ?? ''}</span>
 							<span class="task-title" class:done={isDone}>{task.title}</span>

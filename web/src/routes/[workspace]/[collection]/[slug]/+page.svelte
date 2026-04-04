@@ -16,7 +16,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef, AgentRole } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, formatItemRef } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 
 	type RelationshipEntry = {
@@ -305,7 +305,9 @@
 	function handlePhaseTasksChange(tasks: Item[]) {
 		if (collSlug !== 'phases') return;
 		const total = tasks.length;
-		const done = tasks.filter((task) => parseFields(task).status === 'done').length;
+		const tasksCollection = (collectionStore.collections ?? []).find(c => c.slug === 'tasks');
+		const termOpts = tasksCollection ? getTerminalOptions(tasksCollection) : ['done', 'cancelled'];
+		const done = tasks.filter((task) => termOpts.includes(parseFields(task).status)).length;
 		const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 		computedOverrides = { progress, _progressDone: done, _progressTotal: total };
 	}
@@ -748,7 +750,8 @@
 
 		<!-- Phase Tasks (shown only for phases collection) -->
 		{#if collSlug === 'phases' && item}
-			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} onTasksChange={handlePhaseTasksChange} />
+			{@const tasksCol = (collectionStore.collections ?? []).find(c => c.slug === 'tasks')}
+			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} terminalStatuses={tasksCol ? getTerminalOptions(tasksCol) : undefined} onTasksChange={handlePhaseTasksChange} />
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->

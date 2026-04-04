@@ -6,9 +6,12 @@
 		tasks: Item[];
 		startDate: string;
 		endDate?: string;
+		terminalStatuses?: string[];
 	}
 
-	let { tasks, startDate, endDate }: Props = $props();
+	let { tasks, startDate, endDate, terminalStatuses }: Props = $props();
+	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
+	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
 	// Chart dimensions
 	const padding = { top: 20, right: 20, bottom: 30, left: 40 };
@@ -39,7 +42,7 @@
 		const completions: { date: Date; count: number }[] = [];
 		for (const task of tasks) {
 			const f = parseFields(task);
-			if (f.status === 'done') {
+			if (terminal.includes(f.status)) {
 				const completedAt = new Date(task.updated_at);
 				completions.push({ date: completedAt, count: 1 });
 			}

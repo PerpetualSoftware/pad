@@ -3,15 +3,16 @@ package models
 import "time"
 
 type FieldDef struct {
-	Key        string   `json:"key"`
-	Label      string   `json:"label"`
-	Type       string   `json:"type"`                 // text, number, select, multi_select, date, checkbox, url, relation
-	Options    []string `json:"options,omitempty"`
-	Default    any      `json:"default,omitempty"`
-	Required   bool     `json:"required,omitempty"`
-	Computed   bool     `json:"computed,omitempty"`
-	Collection string   `json:"collection,omitempty"` // for relation type
-	Suffix     string   `json:"suffix,omitempty"`     // for number type display
+	Key             string   `json:"key"`
+	Label           string   `json:"label"`
+	Type            string   `json:"type"`                      // text, number, select, multi_select, date, checkbox, url, relation
+	Options         []string `json:"options,omitempty"`
+	TerminalOptions []string `json:"terminal_options,omitempty"` // for select fields: which options represent a terminal/finalized state
+	Default         any      `json:"default,omitempty"`
+	Required        bool     `json:"required,omitempty"`
+	Computed        bool     `json:"computed,omitempty"`
+	Collection      string   `json:"collection,omitempty"`      // for relation type
+	Suffix          string   `json:"suffix,omitempty"`          // for number type display
 }
 
 type CollectionSchema struct {
