@@ -5,7 +5,7 @@
 -- the item_links table with link_type='phase', unifying all item relationships
 -- under one system.
 
--- 1. Migrate existing phase field values to item_links
+-- 1. Migrate existing phase field values to item_links (including archived tasks/phases)
 INSERT OR IGNORE INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
 SELECT
   lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))),
@@ -17,10 +17,9 @@ SELECT
   COALESCE(i.updated_at, i.created_at)
 FROM items i
 JOIN collections c ON c.id = i.collection_id AND c.slug = 'tasks'
-WHERE i.deleted_at IS NULL
-  AND json_extract(i.fields, '$.phase') IS NOT NULL
+WHERE json_extract(i.fields, '$.phase') IS NOT NULL
   AND json_extract(i.fields, '$.phase') != ''
-  AND json_extract(i.fields, '$.phase') IN (SELECT id FROM items WHERE deleted_at IS NULL);
+  AND json_extract(i.fields, '$.phase') IN (SELECT id FROM items);
 
 -- 2. Strip the phase key from task fields JSON
 UPDATE items SET fields = json_remove(fields, '$.phase')

@@ -171,8 +171,8 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	if phaseValue != "" {
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
-			// Item was created but phase link failed — log but don't fail the whole request
-			fmt.Printf("warning: failed to create phase link for %s: %v\n", item.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but phase link failed: %v", err))
+			return
 		}
 	}
 
@@ -302,12 +302,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			if phaseValue != "" {
 				actor, _ := actorFromRequest(r)
 				if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
-					fmt.Printf("warning: failed to update phase link for %s: %v\n", item.ID, err)
+					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update phase link: %v", err))
+					return
 				}
 			} else {
 				// Phase was explicitly set to empty/null — clear the link
 				if err := s.store.ClearPhaseLink(item.ID); err != nil {
-					fmt.Printf("warning: failed to clear phase link for %s: %v\n", item.ID, err)
+					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear phase link: %v", err))
+					return
 				}
 			}
 		}

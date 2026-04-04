@@ -884,15 +884,42 @@ func (s *Store) DeleteItemLink(id string) error {
 // SetPhaseLink sets the phase for an item. Since an item can belong to at most
 // one phase, this deletes any existing phase link for the item first.
 func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*models.ItemLink, error) {
-	// Delete existing phase link for this item (if any)
-	_, _ = s.db.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
 
-	// Create new phase link
-	return s.CreateItemLink(workspaceID, models.ItemLinkCreate{
-		TargetID:  phaseID,
-		LinkType:  models.ItemLinkTypePhase,
-		CreatedBy: createdBy,
-	}, itemID)
+	// Delete existing phase link for this item (if any)
+	if _, err := tx.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID); err != nil {
+		return nil, fmt.Errorf("delete existing phase link: %w", err)
+	}
+
+	// Insert new phase link
+	id := newID()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(`
+		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
+		VALUES (?, ?, ?, ?, 'phase', ?, ?)
+	`, id, workspaceID, itemID, phaseID, createdBy, now); err != nil {
+		return nil, fmt.Errorf("insert phase link: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit phase link: %w", err)
+	}
+
+	// Return the full link with enriched fields
+	links, err := s.GetItemLinks(itemID)
+	if err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		if link.ID == id {
+			return &link, nil
+		}
+	}
+	return nil, fmt.Errorf("phase link created but not found")
 }
 
 // ClearPhaseLink removes the phase link for an item.
