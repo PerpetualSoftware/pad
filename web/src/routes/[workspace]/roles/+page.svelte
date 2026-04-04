@@ -16,8 +16,8 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	// Filter: "My Work" toggle
-	let myWorkOnly = $state(false);
+	// Filter: 'all' | 'mine' | 'unassigned'
+	let filterMode = $state<'all' | 'mine' | 'unassigned'>('all');
 
 	// Role management state
 	let allRoles = $state<AgentRole[]>([]);
@@ -51,14 +51,17 @@
 		return [...unassigned, ...assigned];
 	});
 
-	// Filtered lanes based on "My Work" toggle
-	// Shows items assigned to me OR items with no user assignment (so you can claim them)
+	// Filtered lanes based on filter mode
 	let filteredLanes = $derived.by(() => {
-		if (!myWorkOnly || !currentUserId) return orderedLanes;
+		if (filterMode === 'all') return orderedLanes;
 		return orderedLanes
 			.map((lane) => ({
 				...lane,
-				items: lane.items.filter((item) => item.assigned_user_id === currentUserId || !item.assigned_user_id)
+				items: lane.items.filter((item) => {
+					if (filterMode === 'mine') return item.assigned_user_id === currentUserId;
+					if (filterMode === 'unassigned') return !item.assigned_user_id;
+					return true;
+				})
 			}))
 			.filter((lane) => lane.items.length > 0);
 	});
@@ -259,13 +262,11 @@
 			{/if}
 		</div>
 		<div class="page-header-right">
-			<button
-				class="toggle-btn"
-				class:active={myWorkOnly}
-				onclick={() => (myWorkOnly = !myWorkOnly)}
-			>
-				My Work
-			</button>
+			<div class="filter-group">
+				<button class="toggle-btn" class:active={filterMode === 'all'} onclick={() => filterMode = 'all'}>All</button>
+				<button class="toggle-btn" class:active={filterMode === 'mine'} onclick={() => filterMode = 'mine'}>My Work</button>
+				<button class="toggle-btn" class:active={filterMode === 'unassigned'} onclick={() => filterMode = 'unassigned'}>Unassigned</button>
+			</div>
 			<button class="toggle-btn" onclick={openManageModal}>
 				⚙ Manage
 			</button>
@@ -542,6 +543,23 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
+	}
+	.filter-group {
+		display: flex;
+		gap: 1px;
+		background: var(--border);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.filter-group .toggle-btn {
+		border-radius: 0;
+		border: none;
+	}
+	.filter-group .toggle-btn:first-child {
+		border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+	}
+	.filter-group .toggle-btn:last-child {
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 	}
 
 	/* ── Toggle Button ────────────────────────────────────────────────── */
