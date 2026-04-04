@@ -1,14 +1,20 @@
 -- Add optional "role" field to the Conventions collection schema.
 -- This allows conventions to be scoped to a specific agent role (e.g. "implementer").
 -- Conventions without a role value apply to all roles (backward compatible).
-
--- Add the role field to existing conventions schemas (insert before the closing ])
+--
+-- Use JSON-aware mutation so customized schemas still receive the new field even if
+-- their field order differs or additional fields have been added.
 UPDATE collections
-SET schema = REPLACE(
+SET schema = json_insert(
     schema,
-    '{"key":"priority","label":"Priority","type":"select","options":["must","should","nice-to-have"]}]',
-    '{"key":"priority","label":"Priority","type":"select","options":["must","should","nice-to-have"]},{"key":"role","label":"Role","type":"text"}]'
+    '$.fields[#]',
+    json('{"key":"role","label":"Role","type":"text"}')
 )
 WHERE slug = 'conventions'
-  AND schema LIKE '%"priority"%'
-  AND schema NOT LIKE '%"role"%';
+  AND json_valid(schema)
+  AND json_type(schema, '$.fields') = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM json_each(collections.schema, '$.fields')
+      WHERE json_extract(json_each.value, '$.key') = 'role'
+  );
