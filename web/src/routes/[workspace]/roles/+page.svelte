@@ -16,8 +16,8 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	// Filter: 'all' | 'mine' | 'unassigned'
-	let filterMode = $state<'all' | 'mine' | 'unassigned'>('all');
+	// Highlight: dim cards not assigned to current user
+	let highlightMine = $state(false);
 
 	// Role management state
 	let allRoles = $state<AgentRole[]>([]);
@@ -51,23 +51,7 @@
 		return [...unassigned, ...assigned];
 	});
 
-	// Filtered lanes based on filter mode
-	let filteredLanes = $derived.by(() => {
-		if (filterMode === 'all') return orderedLanes;
-		return orderedLanes
-			.map((lane) => ({
-				...lane,
-				items: lane.items.filter((item) => {
-					if (filterMode === 'mine') return item.assigned_user_id === currentUserId;
-					if (filterMode === 'unassigned') return !item.assigned_user_id;
-					return true;
-				})
-			}))
-			.filter((lane) => lane.items.length > 0);
-	});
-
-	// Total item count
-	let totalItems = $derived(filteredLanes.reduce((sum, lane) => sum + lane.items.length, 0));
+	let totalItems = $derived(orderedLanes.reduce((sum, lane) => sum + lane.items.length, 0));
 
 	// Drag-and-drop state
 	const flipDurationMs = 200;
@@ -77,11 +61,11 @@
 	// Mutable lane data for DnD — keyed by role ID (or '__unassigned')
 	let laneData = $state<Record<string, Item[]>>({});
 
-	// Sync from filteredLanes when not dragging
+	// Sync from orderedLanes when not dragging
 	$effect(() => {
 		if (!isDragging) {
 			const data: Record<string, Item[]> = {};
-			for (const lane of filteredLanes) {
+			for (const lane of orderedLanes) {
 				const key = lane.role?.id ?? '__unassigned';
 				data[key] = [...lane.items];
 			}
@@ -111,7 +95,7 @@
 
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			// Item was dropped into a different lane — update its role
-			const originalItem = filteredLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
+			const originalItem = orderedLanes.flatMap((l) => l.items).find((i) => i.id === itemId);
 			if (originalItem) {
 				const oldKey = originalItem.agent_role_id ?? '__unassigned';
 				if (oldKey !== key) {
@@ -262,11 +246,13 @@
 			{/if}
 		</div>
 		<div class="page-header-right">
-			<div class="filter-group">
-				<button class="toggle-btn" class:active={filterMode === 'all'} onclick={() => filterMode = 'all'}>All</button>
-				<button class="toggle-btn" class:active={filterMode === 'mine'} onclick={() => filterMode = 'mine'}>My Work</button>
-				<button class="toggle-btn" class:active={filterMode === 'unassigned'} onclick={() => filterMode = 'unassigned'}>Unassigned</button>
-			</div>
+			<button
+				class="toggle-btn"
+				class:active={highlightMine}
+				onclick={() => highlightMine = !highlightMine}
+			>
+				Highlight Mine
+			</button>
 			<button class="toggle-btn" onclick={openManageModal}>
 				⚙ Manage
 			</button>
@@ -392,7 +378,7 @@
 			<p class="empty-desc">{error}</p>
 			<button class="retry-btn" onclick={loadData}>Retry</button>
 		</div>
-	{:else if filteredLanes.length === 0}
+	{:else if orderedLanes.length === 0}
 		<div class="empty-state">
 			{#if myWorkOnly}
 				<div class="empty-icon">&#128100;</div>
@@ -411,7 +397,7 @@
 		</div>
 	{:else}
 		<div class="lanes-container">
-			{#each filteredLanes as lane (lane.role?.id ?? '__unassigned')}
+			{#each orderedLanes as lane (lane.role?.id ?? '__unassigned')}
 				{@const isUnassigned = !lane.role}
 				<div class="lane" class:unassigned={isUnassigned}>
 					<div class="lane-header">
@@ -455,7 +441,7 @@
 							{@const ref = formatItemRef(item)}
 							{@const status = fields.status ?? ''}
 							{@const priority = fields.priority ?? ''}
-							<div class="card-wrapper">
+							<div class="card-wrapper" class:dimmed={highlightMine && currentUserId && item.assigned_user_id !== currentUserId}>
 								<a
 									href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}"
 									class="item-card"
@@ -543,23 +529,6 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
-	}
-	.filter-group {
-		display: flex;
-		gap: 1px;
-		background: var(--border);
-		border-radius: var(--radius-sm);
-		overflow: hidden;
-	}
-	.filter-group .toggle-btn {
-		border-radius: 0;
-		border: none;
-	}
-	.filter-group .toggle-btn:first-child {
-		border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-	}
-	.filter-group .toggle-btn:last-child {
-		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 	}
 
 	/* ── Toggle Button ────────────────────────────────────────────────── */
@@ -694,6 +663,13 @@
 	}
 	.card-wrapper:active {
 		cursor: grabbing;
+	}
+	.card-wrapper.dimmed {
+		opacity: 0.35;
+		transition: opacity 0.15s;
+	}
+	.card-wrapper.dimmed:hover {
+		opacity: 0.7;
 	}
 	.lane-empty {
 		text-align: center;
