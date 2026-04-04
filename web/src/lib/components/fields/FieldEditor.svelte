@@ -67,22 +67,31 @@ Usage:
 		);
 	});
 
+	// Eagerly load relation items when the field has a value so we can
+	// display the title instead of a raw UUID on initial render.
+	$effect(() => {
+		if (field.type === 'relation' && value && relationItems.length === 0 && wsSlug && field.collection) {
+			loadRelationItems();
+		}
+	});
+
+	async function loadRelationItems() {
+		if (relationItems.length > 0 || !wsSlug || !field.collection) return;
+		relationLoading = true;
+		try {
+			relationItems = await api.items.listByCollection(wsSlug, field.collection);
+		} catch {
+			relationItems = [];
+		} finally {
+			relationLoading = false;
+		}
+	}
+
 	async function openRelationPicker() {
 		relationOpen = true;
 		relationSearch = '';
 		relationFocusedIndex = -1;
-		if (relationItems.length === 0 && field.collection) {
-			relationLoading = true;
-			try {
-				if (wsSlug && field.collection) {
-					relationItems = await api.items.listByCollection(wsSlug, field.collection);
-				}
-			} catch {
-				relationItems = [];
-			} finally {
-				relationLoading = false;
-			}
-		}
+		await loadRelationItems();
 	}
 
 	function selectRelation(item: Item) {
@@ -411,6 +420,8 @@ Usage:
 						<span class="relation-ref">{formatItemRef(selectedRelationItem)}</span>
 					{/if}
 					{selectedRelationItem.title}
+				{:else if value && relationLoading}
+					<span style="color: var(--text-muted)">Loading...</span>
 				{:else if value}
 					{value}
 				{:else}
