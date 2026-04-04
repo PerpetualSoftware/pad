@@ -3,9 +3,11 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { parseFields, formatItemRef, itemUrlId } from '$lib/types';
-	import type { Item, RoleBoardLane, AgentRole } from '$lib/types';
+	import { itemUrlId } from '$lib/types';
+	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
+	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 
@@ -18,6 +20,60 @@
 
 	// Highlight: dim cards not assigned to current user
 	let highlightMine = $state(false);
+
+	// New item modal state
+	let newItemDialogEl = $state<HTMLDialogElement | null>(null);
+	let newItemCollectionSlug = $state('');
+	let newItemTitle = $state('');
+	let newItemSaving = $state(false);
+
+	let eligibleCollections = $derived(
+		collectionStore.collections.filter(c => !['conventions', 'playbooks'].includes(c.slug))
+	);
+
+	function openNewItem() {
+		newItemCollectionSlug = '';
+		newItemTitle = '';
+		newItemDialogEl?.showModal();
+	}
+
+	function closeNewItem() {
+		newItemDialogEl?.close();
+		newItemCollectionSlug = '';
+		newItemTitle = '';
+	}
+
+	function selectCollection(slug: string) {
+		newItemCollectionSlug = slug;
+		// Focus the title input after selection
+		requestAnimationFrame(() => {
+			const input = newItemDialogEl?.querySelector<HTMLInputElement>('.new-item-title-input');
+			input?.focus();
+		});
+	}
+
+	async function submitNewItem() {
+		if (!newItemTitle.trim() || !newItemCollectionSlug || newItemSaving) return;
+		newItemSaving = true;
+		try {
+			await api.items.create(wsSlug, newItemCollectionSlug, {
+				title: newItemTitle.trim()
+			});
+			closeNewItem();
+			await loadData();
+		} catch (err) {
+			console.error('Failed to create item:', err);
+		} finally {
+			newItemSaving = false;
+		}
+	}
+
+	function handleNewItemKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			submitNewItem();
+		}
+	}
 
 	// Role editing modal state
 	let dialogEl = $state<HTMLDialogElement | null>(null);
@@ -66,6 +122,71 @@
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
 	let isDragging = $state(false);
+
+	// Lane (header) drag-and-drop state
+	let draggedLaneKey = $state<string | null>(null);
+	let dragOverLaneKey = $state<string | null>(null);
+
+	function handleLaneDragStart(e: DragEvent, key: string) {
+		if (key === '__unassigned') { e.preventDefault(); return; }
+		draggedLaneKey = key;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', key);
+		}
+	}
+
+	function handleLaneDragOver(e: DragEvent, key: string) {
+		if (!draggedLaneKey || key === draggedLaneKey || key === '__unassigned') return;
+		e.preventDefault();
+		dragOverLaneKey = key;
+	}
+
+	function handleLaneDragLeave() {
+		dragOverLaneKey = null;
+	}
+
+	async function handleLaneDrop(e: DragEvent, key: string) {
+		e.preventDefault();
+		if (!draggedLaneKey || key === '__unassigned') { draggedLaneKey = null; dragOverLaneKey = null; return; }
+
+		// Reorder the assigned lanes (skip unassigned)
+		const assignedLanes = lanes.filter((l) => l.role);
+		const srcIdx = assignedLanes.findIndex((l) => l.role!.id === draggedLaneKey);
+		const dstIdx = assignedLanes.findIndex((l) => l.role!.id === key);
+
+		if (srcIdx >= 0 && dstIdx >= 0 && srcIdx !== dstIdx) {
+			const [moved] = assignedLanes.splice(srcIdx, 1);
+			// After removing from srcIdx, indices shift left — adjust if moving forward
+			const insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx;
+			assignedLanes.splice(insertIdx, 0, moved);
+
+			// Rebuild lanes with new order
+			const unassigned = lanes.filter((l) => !l.role);
+			lanes = [...unassigned, ...assignedLanes];
+
+			// Persist new sort order
+			const updates = assignedLanes.map((lane, i) => ({
+				role_id: lane.role!.id,
+				sort_order: i
+			}));
+
+			try {
+				await api.agentRoles.reorderLanes(wsSlug, updates);
+			} catch (err) {
+				console.error('Failed to persist lane order:', err);
+				await loadData();
+			}
+		}
+
+		draggedLaneKey = null;
+		dragOverLaneKey = null;
+	}
+
+	function handleLaneDragEnd() {
+		draggedLaneKey = null;
+		dragOverLaneKey = null;
+	}
 
 	// Mutable lane data for DnD — keyed by role ID (or '__unassigned')
 	let laneData = $state<Record<string, Item[]>>({});
@@ -242,22 +363,8 @@
 		}
 	}
 
-	function statusColor(status: string): string {
-		const s = status.toLowerCase();
-		if (s === 'done' || s === 'completed' || s === 'closed') return 'var(--accent-green)';
-		if (s === 'in progress' || s === 'in_progress' || s === 'active') return 'var(--accent-blue)';
-		if (s === 'blocked') return 'var(--accent-orange)';
-		if (s === 'todo' || s === 'open' || s === 'backlog') return 'var(--text-muted)';
-		return 'var(--text-secondary)';
-	}
-
-	function priorityColor(priority: string): string {
-		const p = priority.toLowerCase();
-		if (p === 'critical' || p === 'urgent') return 'var(--accent-orange)';
-		if (p === 'high') return 'var(--accent-amber)';
-		if (p === 'medium') return 'var(--accent-blue)';
-		if (p === 'low') return 'var(--accent-teal)';
-		return 'var(--text-muted)';
+	function collectionForItem(item: Item): Collection | undefined {
+		return collectionStore.collections.find(c => c.slug === item.collection_slug);
 	}
 </script>
 
@@ -279,12 +386,57 @@
 				class:active={highlightMine}
 				onclick={() => highlightMine = !highlightMine}
 			>
-				Highlight Mine
+				Mine
 			</button>
+			<button class="new-item-btn" onclick={openNewItem}>+ New</button>
 		</div>
 	</header>
 
+
 	<!-- Role edit/create modal -->
+<!-- New Item Modal -->
+<dialog class="new-item-dialog" bind:this={newItemDialogEl} onclick={(e) => { if (e.target === newItemDialogEl) closeNewItem(); }}>
+	<div class="dialog-content new-item-content">
+		{#if !newItemCollectionSlug}
+			<div class="dialog-header">
+				<h2>New Item</h2>
+				<button class="dialog-close" onclick={closeNewItem}>✕</button>
+			</div>
+			<div class="collection-grid">
+				{#each eligibleCollections as coll}
+					<button class="collection-pick" onclick={() => selectCollection(coll.slug)}>
+						<span class="collection-pick-icon">{coll.icon || '📦'}</span>
+						<span class="collection-pick-name">{coll.name}</span>
+					</button>
+				{/each}
+			</div>
+		{:else}
+			{@const selectedColl = eligibleCollections.find(c => c.slug === newItemCollectionSlug)}
+			<div class="dialog-header">
+				<button class="back-btn" onclick={() => { newItemCollectionSlug = ''; newItemTitle = ''; }} title="Back">←</button>
+				<h2>New {selectedColl?.icon} {selectedColl?.name?.replace(/s$/, '') ?? 'Item'}</h2>
+				<button class="dialog-close" onclick={closeNewItem}>✕</button>
+			</div>
+			<div class="new-item-form">
+				<input
+					class="new-item-title-input"
+					type="text"
+					placeholder="Title…"
+					bind:value={newItemTitle}
+					onkeydown={handleNewItemKeydown}
+				/>
+				<button
+					class="new-item-create-btn"
+					disabled={!newItemTitle.trim() || newItemSaving}
+					onclick={submitNewItem}
+				>
+					{newItemSaving ? 'Creating…' : 'Create'}
+				</button>
+			</div>
+		{/if}
+	</div>
+</dialog>
+
 <dialog class="roles-dialog" bind:this={dialogEl} onclick={(e) => { if (e.target === dialogEl) closeModal(); }}>
 	<div class="dialog-content">
 		<div class="dialog-header">
@@ -369,10 +521,26 @@
 		<div class="lanes-container">
 			{#each orderedLanes as lane (lane.role?.id ?? '__unassigned')}
 				{@const isUnassigned = !lane.role}
-				<div class="lane" class:unassigned={isUnassigned}>
-					<div class="lane-header">
+				{@const laneId = lane.role?.id ?? '__unassigned'}
+				<div
+					class="lane"
+					class:unassigned={isUnassigned}
+					class:dragging-source={draggedLaneKey === laneId}
+					class:drag-over-left={dragOverLaneKey === laneId}
+				>
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="lane-header"
+						draggable={!isUnassigned}
+						ondragstart={(e) => handleLaneDragStart(e, laneId)}
+						ondragover={(e) => handleLaneDragOver(e, laneId)}
+						ondragleave={handleLaneDragLeave}
+						ondrop={(e) => handleLaneDrop(e, laneId)}
+						ondragend={handleLaneDragEnd}
+					>
 						<div class="lane-title-row">
 							{#if lane.role}
+								<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
 								<span class="lane-icon">{lane.role.icon || '&#129302;'}</span>
 								<span class="lane-name">{lane.role.name}</span>
 							{:else}
@@ -380,7 +548,7 @@
 							{/if}
 							<span class="lane-count">{lane.items.length}</span>
 							{#if lane.role}
-								<button class="lane-edit-btn" title="Edit role" onclick={() => openEditModal(lane.role)}>✎</button>
+								<button class="lane-edit-btn" title="Edit role" onclick={() => lane.role && openEditModal(lane.role)}>✎</button>
 							{/if}
 						</div>
 						{#if lane.role?.tools}
@@ -403,45 +571,15 @@
 						oncontextmenu={(e) => e.preventDefault()}
 					>
 						{#each (laneData[laneKey(lane)] ?? []) as item (item.id)}
-							{@const fields = parseFields(item)}
-							{@const ref = formatItemRef(item)}
-							{@const status = fields.status ?? ''}
-							{@const priority = fields.priority ?? ''}
+							{@const coll = collectionForItem(item)}
 							<div class="card-wrapper" class:dimmed={highlightMine && currentUserId && item.assigned_user_id !== currentUserId}>
-								<a
-									href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}"
-									class="item-card"
-								>
-									<div class="card-top-row">
-										{#if item.collection_icon || item.collection_name}
-											<span class="collection-badge">
-												{#if item.collection_icon}<span class="coll-icon">{item.collection_icon}</span>{/if}
-												{#if item.collection_name}<span class="coll-name">{item.collection_name}</span>{/if}
-											</span>
-										{/if}
-										{#if ref}
-											<span class="item-ref">{ref}</span>
-										{/if}
-									</div>
-
-									<div class="card-title">{item.title}</div>
-
-									<div class="card-meta">
-										{#if status}
-											<span class="status-badge" style="color: {statusColor(status)}">
-												{status}
-											</span>
-										{/if}
-										{#if priority}
-											<span class="priority-badge" style="color: {priorityColor(priority)}">
-												{priority}
-											</span>
-										{/if}
-										{#if item.assigned_user_name}
-											<span class="assigned-user">{item.assigned_user_name}</span>
-										{/if}
-									</div>
-								</a>
+								{#if coll}
+									<ItemCard {item} collection={coll} compact={true} showCollection={true} />
+								{:else}
+									<a href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}" class="fallback-card">
+										<span class="card-title">{item.title}</span>
+									</a>
+								{/if}
 							</div>
 						{/each}
 						{#if (laneData[laneKey(lane)] ?? []).length === 0 && !isDragging}
@@ -527,6 +665,134 @@
 		border-color: var(--accent-blue);
 	}
 
+	.new-item-btn {
+		background: var(--accent-blue);
+		color: white;
+		border: none;
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.85em;
+		font-weight: 600;
+		cursor: pointer;
+		transition: filter 0.15s;
+	}
+	.new-item-btn:hover {
+		filter: brightness(1.15);
+	}
+
+	/* ── New Item Modal ──────────────────────────────────────────────── */
+	.new-item-dialog {
+		border: none;
+		border-radius: var(--radius-lg);
+		padding: 0;
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		max-width: 400px;
+		width: 90vw;
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+		position: fixed;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		margin: 0;
+	}
+	.new-item-dialog::backdrop {
+		background: rgba(0, 0, 0, 0.5);
+	}
+	.new-item-content {
+		padding: var(--space-5);
+	}
+	.new-item-content .dialog-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-5);
+	}
+	.new-item-content .dialog-header h2 {
+		flex: 1;
+		font-size: 1.05em;
+		font-weight: 700;
+		margin: 0;
+	}
+	.back-btn {
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-size: 1.1em;
+		padding: var(--space-1) var(--space-2);
+		border-radius: var(--radius);
+	}
+	.back-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.collection-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--space-3);
+	}
+	.collection-pick {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-4) var(--space-3);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		cursor: pointer;
+		transition: border-color 0.15s, background 0.15s;
+	}
+	.collection-pick:hover {
+		border-color: var(--accent-blue);
+		background: var(--bg-hover);
+	}
+	.collection-pick-icon {
+		font-size: 1.5em;
+	}
+	.collection-pick-name {
+		font-size: 0.85em;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.new-item-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+	.new-item-title-input {
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-3) var(--space-4);
+		font-size: 0.95em;
+		width: 100%;
+	}
+	.new-item-title-input:focus {
+		outline: none;
+		border-color: var(--accent-blue);
+	}
+	.new-item-create-btn {
+		background: var(--accent-blue);
+		color: white;
+		border: none;
+		border-radius: var(--radius);
+		padding: var(--space-3) var(--space-5);
+		font-size: 0.9em;
+		font-weight: 600;
+		cursor: pointer;
+		transition: filter 0.15s;
+	}
+	.new-item-create-btn:hover:not(:disabled) {
+		filter: brightness(1.15);
+	}
+	.new-item-create-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
 	/* ── Lanes Container ──────────────────────────────────────────────── */
 	.lanes-container {
 		display: flex;
@@ -549,6 +815,26 @@
 		max-height: 100%;
 	}
 
+	.lane.dragging-source {
+		opacity: 0.4;
+	}
+	.lane.drag-over-left {
+		box-shadow: -3px 0 0 0 var(--accent-blue);
+	}
+	.lane-drag-handle {
+		cursor: grab;
+		color: var(--text-muted);
+		font-size: 0.85em;
+		user-select: none;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	.lane-header:hover .lane-drag-handle {
+		opacity: 0.6;
+	}
+	.lane-header[draggable="true"] {
+		cursor: grab;
+	}
 	.lane-header {
 		padding: var(--space-4) var(--space-4) var(--space-3);
 		border-bottom: 1px solid var(--border);
@@ -636,8 +922,8 @@
 		font-size: 0.85em;
 	}
 
-	/* ── Item Card ────────────────────────────────────────────────────── */
-	.item-card {
+	/* ── Fallback Card ───────────────────────────────────────────────── */
+	.fallback-card {
 		display: block;
 		padding: var(--space-3);
 		background: var(--bg-primary);
@@ -645,87 +931,6 @@
 		border-radius: var(--radius);
 		text-decoration: none;
 		color: inherit;
-		transition: border-color 0.15s, background 0.15s;
-	}
-	.item-card:hover {
-		border-color: var(--text-muted);
-		background: var(--bg-hover);
-	}
-
-	.card-top-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		margin-bottom: var(--space-1);
-		flex-wrap: wrap;
-	}
-
-	.collection-badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 3px;
-		font-size: 0.7em;
-		background: var(--bg-tertiary);
-		padding: 1px 7px;
-		border-radius: 10px;
-		color: var(--text-muted);
-		white-space: nowrap;
-	}
-	.coll-icon {
-		font-size: 1em;
-	}
-	.coll-name {
-		font-weight: 600;
-	}
-
-	.item-ref {
-		font-family: var(--font-mono);
-		font-size: 0.7em;
-		color: var(--text-muted);
-		white-space: nowrap;
-	}
-
-	.card-title {
-		font-size: 0.875em;
-		font-weight: 600;
-		color: var(--text-primary);
-		line-height: 1.35;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		display: -webkit-box;
-		-webkit-line-clamp: 2;
-		-webkit-box-orient: vertical;
-	}
-
-	.card-meta {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-		margin-top: var(--space-2);
-	}
-
-	.status-badge {
-		font-size: 0.7em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.priority-badge {
-		font-size: 0.7em;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-
-	.assigned-user {
-		font-size: 0.7em;
-		color: var(--text-muted);
-		margin-left: auto;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 100px;
 	}
 
 	/* ── Empty State ──────────────────────────────────────────────────── */
@@ -1000,10 +1205,6 @@
 		flex-shrink: 0;
 		text-align: center;
 	}
-	.role-edit-actions {
-		display: flex;
-		gap: var(--space-2);
-	}
 	.role-btn {
 		padding: 5px 12px;
 		font-size: 0.82em;
@@ -1025,24 +1226,6 @@
 	}
 	.role-btn-save:hover {
 		filter: brightness(1.1);
-	}
-	.role-btn-create {
-		width: 100%;
-		padding: 8px;
-		background: var(--accent-blue);
-		color: white;
-		border-color: var(--accent-blue);
-		font-weight: 500;
-	}
-	.role-btn-create:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-	.role-btn-create:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.role-btn-cancel {
-		color: var(--text-muted);
 	}
 	.role-btn-danger {
 		color: var(--accent-orange);
