@@ -68,12 +68,12 @@
 		{ id: 'account', label: 'Account', icon: '\uD83D\uDC64' },
 		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65' },
 		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1' },
-		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' },
 	];
+	const dangerTab = { id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' };
 	let tabs = $derived(
 		profileRole === 'admin'
-			? [...baseTabs, { id: 'platform', label: 'Platform', icon: '\uD83D\uDD27' }]
-			: baseTabs
+			? [...baseTabs, { id: 'platform', label: 'Platform', icon: '\uD83D\uDD27' }, dangerTab]
+			: [...baseTabs, dangerTab]
 	);
 	let validTabIds = $derived(tabs.map(t => t.id));
 

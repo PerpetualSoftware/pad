@@ -30,12 +30,13 @@ func docsCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:      "status",
-					Label:    "Status",
-					Type:     "select",
-					Options:  []string{"draft", "published", "archived"},
-					Default:  "draft",
-					Required: true,
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"draft", "published", "archived"},
+					TerminalOptions: []string{"archived"},
+					Default:         "draft",
+					Required:        true,
 				},
 				{
 					Key:   "category",
@@ -64,12 +65,13 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:      "status",
-					Label:    "Status",
-					Type:     "select",
-					Options:  []string{"active", "draft", "disabled"},
-					Default:  "active",
-					Required: true,
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"active", "draft", "disabled"},
+					TerminalOptions: []string{"disabled"},
+					Default:         "active",
+					Required:        true,
 				},
 				{
 					Key:     "trigger",
@@ -116,12 +118,13 @@ func playbooksCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:      "status",
-					Label:    "Status",
-					Type:     "select",
-					Options:  []string{"active", "draft", "deprecated"},
-					Default:  "draft",
-					Required: true,
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"active", "draft", "deprecated"},
+					TerminalOptions: []string{"deprecated"},
+					Default:         "draft",
+					Required:        true,
 				},
 				{
 					Key:     "trigger",
@@ -166,12 +169,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"new", "ready", "in_sprint", "done"},
-							Default:  "new",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"new", "ready", "in_sprint", "done"},
+							TerminalOptions: []string{"done"},
+							Default:         "new",
+							Required:        true,
 						},
 						{
 							Key:     "priority",
@@ -208,12 +212,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"planning", "active", "completed"},
-							Default:  "planning",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"planning", "active", "completed"},
+							TerminalOptions: []string{"completed"},
+							Default:         "planning",
+							Required:        true,
 						},
 						{
 							Key:   "start_date",
@@ -248,12 +253,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"new", "triaged", "fixing", "resolved", "wontfix"},
-							Default:  "new",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"new", "triaged", "fixing", "resolved", "wontfix"},
+							TerminalOptions: []string{"resolved", "wontfix"},
+							Default:         "new",
+							Required:        true,
 						},
 						{
 							Key:     "severity",
@@ -294,12 +300,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"proposed", "researching", "planned", "building", "shipped"},
-							Default:  "proposed",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"proposed", "researching", "planned", "building", "shipped"},
+							TerminalOptions: []string{"shipped"},
+							Default:         "proposed",
+							Required:        true,
 						},
 						{
 							Key:     "priority",
@@ -331,12 +338,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"new", "reviewed", "planned", "shipped"},
-							Default:  "new",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"new", "reviewed", "planned", "shipped"},
+							TerminalOptions: []string{"shipped"},
+							Default:         "new",
+							Required:        true,
 						},
 						{
 							Key:   "source",
@@ -373,12 +381,13 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:      "status",
-							Label:    "Status",
-							Type:     "select",
-							Options:  []string{"planned", "in_progress", "completed"},
-							Default:  "planned",
-							Required: true,
+							Key:             "status",
+							Label:           "Status",
+							Type:            "select",
+							Options:         []string{"planned", "in_progress", "completed"},
+							TerminalOptions: []string{"completed"},
+							Default:         "planned",
+							Required:        true,
 						},
 						{
 							Key:   "quarter",

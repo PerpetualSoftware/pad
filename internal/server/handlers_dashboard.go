@@ -94,16 +94,6 @@ func priorityRank(priority string) int {
 	}
 }
 
-// isDoneStatus returns true if the status indicates a completed or terminal item.
-func isDoneStatus(status string) bool {
-	switch strings.ToLower(status) {
-	case "done", "completed", "resolved", "cancelled", "rejected", "wontfix", "fixed", "implemented":
-		return true
-	default:
-		return false
-	}
-}
-
 // isActiveStatus returns true if the status indicates work actively in progress.
 // It excludes both initial/queued states and terminal/completed states.
 func isActiveStatus(status string) bool {
@@ -117,11 +107,40 @@ func isActiveStatus(status string) bool {
 	}
 }
 
+// buildSchemaMap builds a map of collection ID → parsed CollectionSchema for quick lookups.
+func buildSchemaMap(collections []models.Collection) map[string]models.CollectionSchema {
+	m := make(map[string]models.CollectionSchema, len(collections))
+	for _, c := range collections {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(c.Schema), &schema); err == nil {
+			m[c.ID] = schema
+		}
+	}
+	return m
+}
+
+// isItemTerminal checks if an item's status is terminal using its collection's schema.
+// Falls back to default terminal statuses if the collection is not in the schema map.
+func isItemTerminal(status, collectionID string, schemaMap map[string]models.CollectionSchema) bool {
+	if schema, ok := schemaMap[collectionID]; ok {
+		return models.IsTerminalStatus(status, schema)
+	}
+	return models.IsTerminalStatusDefault(status)
+}
+
 func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
+
+	// Build a schema map for terminal status lookups
+	collections, err := s.store.ListCollections(workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	schemaMap := buildSchemaMap(collections)
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{
@@ -259,7 +278,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	todayStr := now.Format("2006-01-02")
 	for _, item := range allItems {
 		status := extractFieldValue(item.Fields, "status")
-		if isDoneStatus(status) {
+		if isItemTerminal(status, item.CollectionID, schemaMap) {
 			continue
 		}
 		for _, dateField := range []string{"due_date", "end_date"} {
@@ -311,7 +330,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			for _, task := range allTasks {
 				status := extractFieldValue(task.Fields, "status")
-				if isDoneStatus(status) {
+				if isItemTerminal(status, task.CollectionID, schemaMap) {
 					continue
 				}
 				phaseRef := extractFieldValue(task.Fields, "phase")
@@ -332,7 +351,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// (e) Blocked: non-done items that are blocked by other non-done items
 	for _, item := range allItems {
 		status := extractFieldValue(item.Fields, "status")
-		if isDoneStatus(status) {
+		if isItemTerminal(status, item.CollectionID, schemaMap) {
 			continue
 		}
 		links, err := s.store.GetItemLinks(item.ID)
@@ -353,7 +372,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			blockerStatus := extractFieldValue(blocker.Fields, "status")
-			if isDoneStatus(blockerStatus) {
+			if isItemTerminal(blockerStatus, blocker.CollectionID, schemaMap) {
 				continue
 			}
 			resp.Attention = append(resp.Attention, DashboardAttention{

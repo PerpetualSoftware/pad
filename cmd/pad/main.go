@@ -3085,8 +3085,8 @@ func standupCmd() *cobra.Command {
 				return fmt.Errorf("parsing dashboard: %w", err)
 			}
 
-			// Fetch recently completed items (done statuses)
-			doneStatuses := []string{"done", "completed", "fixed", "implemented", "resolved"}
+			// Fetch recently completed items (terminal statuses)
+			doneStatuses := models.DefaultTerminalStatuses
 			var completedItems []models.Item
 			cutoff := time.Now().AddDate(0, 0, -days)
 
@@ -3298,8 +3298,8 @@ func changelogCmd() *cobra.Command {
 				cutoff = time.Now().AddDate(0, 0, -days)
 			}
 
-			// Fetch completed items across all done-like statuses
-			doneStatuses := []string{"done", "completed", "fixed", "implemented", "resolved"}
+			// Fetch completed items across all terminal statuses
+			doneStatuses := models.DefaultTerminalStatuses
 			var allItems []models.Item
 
 			for _, status := range doneStatuses {

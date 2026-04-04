@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -876,20 +877,39 @@ func (s *Store) DeleteItemLink(id string) error {
 
 // GetPhaseProgress counts total and done tasks linked to a phase via the
 // relation field json_extract(fields, '$.phase') = phaseItemID.
+// "Done" means any terminal status as defined by the tasks collection's schema.
 func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err error) {
+	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
+	args := append(termArgs, phaseItemID)
 	err = s.db.QueryRow(`
 		SELECT COUNT(*),
-		       COUNT(CASE WHEN json_extract(i.fields, '$.status') = 'done' THEN 1 END)
+		       COUNT(CASE WHEN LOWER(json_extract(i.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
 		  AND json_extract(i.fields, '$.phase') = ?
-	`, phaseItemID).Scan(&total, &done)
+	`, args...).Scan(&total, &done)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get phase progress: %w", err)
 	}
 	return total, done, nil
+}
+
+// getTasksTerminalPlaceholders returns SQL placeholders and args for the
+// terminal statuses of the tasks collection. Falls back to defaults if the
+// tasks collection schema is not found.
+func (s *Store) getTasksTerminalPlaceholders() (string, []any) {
+	// Try to find the tasks collection schema in any workspace
+	var schemaJSON sql.NullString
+	_ = s.db.QueryRow(`SELECT schema FROM collections WHERE slug = 'tasks' AND deleted_at IS NULL LIMIT 1`).Scan(&schemaJSON)
+	if schemaJSON.Valid {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(schemaJSON.String), &schema); err == nil {
+			return models.TerminalStatusPlaceholders(schema)
+		}
+	}
+	return models.DefaultTerminalStatusPlaceholders()
 }
 
 // PhaseProgress holds task completion counts for a single phase.
@@ -901,10 +921,12 @@ type PhaseProgress struct {
 
 // GetAllPhasesProgress returns task completion counts for every non-deleted phase in a workspace.
 func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error) {
+	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
+	args := append(termArgs, workspaceID)
 	rows, err := s.db.Query(`
 		SELECT p.id,
 		       COUNT(t.id),
-		       COUNT(CASE WHEN json_extract(t.fields, '$.status') = 'done' THEN 1 END)
+		       COUNT(CASE WHEN LOWER(json_extract(t.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = 'phases'
 		LEFT JOIN items t ON json_extract(t.fields, '$.phase') = p.id
@@ -913,7 +935,7 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 		WHERE p.workspace_id = ?
 		  AND p.deleted_at IS NULL
 		GROUP BY p.id
-	`, workspaceID)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all phases progress: %w", err)
 	}

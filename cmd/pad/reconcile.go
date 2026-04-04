@@ -359,12 +359,7 @@ func extractItemStatus(fieldsJSON string) string {
 }
 
 func isTerminalItemStatus(status string) bool {
-	switch strings.ToLower(status) {
-	case "done", "completed", "resolved", "cancelled", "rejected", "wontfix", "fixed", "implemented":
-		return true
-	default:
-		return false
-	}
+	return models.IsTerminalStatusDefault(status)
 }
 
 func needsPRMetadataRefresh(item *models.Item, livePR *GitHubPR) bool {

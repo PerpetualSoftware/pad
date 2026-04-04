@@ -68,6 +68,7 @@
 		type: FieldDef['type'];
 		options: string[];
 		originalOptions: string[];
+		terminalOptions: string[];
 		required?: boolean;
 		computed?: boolean;
 		collection?: string;
@@ -153,6 +154,7 @@
 				type: f.type,
 				options: f.options ? [...f.options] : [],
 				originalOptions: f.options ? [...f.options] : [],
+				terminalOptions: f.terminal_options ? [...f.terminal_options] : [],
 				required: f.required,
 				computed: f.computed,
 				collection: f.collection,
@@ -207,6 +209,19 @@
 		field.options.push('');
 	}
 
+	function toggleTerminal(field: EditableField, option: string) {
+		const idx = field.terminalOptions.indexOf(option);
+		if (idx >= 0) {
+			field.terminalOptions.splice(idx, 1);
+		} else {
+			field.terminalOptions.push(option);
+		}
+	}
+
+	function isTerminal(field: EditableField, option: string): boolean {
+		return field.terminalOptions.includes(option);
+	}
+
 	// ── New field actions ────────────────────────────────────────────────────
 
 	function addField() {
@@ -259,6 +274,10 @@
 				};
 				if ((f.type === 'select' || f.type === 'multi_select') && f.options.length > 0) {
 					def.options = f.options.map((o) => o.trim()).filter(Boolean);
+				}
+				if (f.key === 'status' && f.terminalOptions.length > 0) {
+					// Only include terminal options that still exist in the options list
+					def.terminal_options = f.terminalOptions.filter(t => def.options?.includes(t));
 				}
 				if (f.required) def.required = true;
 				if (f.computed) def.computed = true;
@@ -435,71 +454,55 @@
 							<div class="fields-list">
 								{#each existingFields as field, i (field.key)}
 									<div class="field-card">
-										<div class="field-card-main">
-											<div class="field-reorder">
-												<button
-													class="reorder-btn"
-													type="button"
-													disabled={i === 0}
-													onclick={() => moveField(i, -1)}
-													title="Move up"
-												>&#9650;</button>
-												<button
-													class="reorder-btn"
-													type="button"
-													disabled={i === existingFields.length - 1}
-													onclick={() => moveField(i, 1)}
-													title="Move down"
-												>&#9660;</button>
+										<div class="field-card-header">
+											<div class="field-drag-handle">
+												<button class="reorder-btn" type="button" disabled={i === 0} onclick={() => moveField(i, -1)} title="Move up">&#9650;</button>
+												<button class="reorder-btn" type="button" disabled={i === existingFields.length - 1} onclick={() => moveField(i, 1)} title="Move down">&#9660;</button>
 											</div>
-											<div class="field-info">
-												<input
-													class="field-label-input"
-													type="text"
-													bind:value={field.label}
-													placeholder="Field label"
-												/>
-												<span class="field-key">{field.key}</span>
+											<div class="field-header-left">
+												<input class="field-label-input" type="text" bind:value={field.label} placeholder="Field label" />
 											</div>
-											<select class="field-type-select" bind:value={field.type}>
+											<select class="field-type-select" bind:value={field.type} title="Field type">
 												{#each FIELD_TYPES as ft (ft)}
 													<option value={ft}>{ft.replace('_', ' ')}</option>
 												{/each}
 											</select>
-											<button
-												class="remove-field-btn"
-												type="button"
-												onclick={() => removeExistingField(i)}
-												title="Remove field"
-											>&#10005;</button>
+											<button class="field-remove-btn" type="button" onclick={() => removeExistingField(i)} title="Remove field">&#10005;</button>
 										</div>
 
 										{#if field.type === 'select' || field.type === 'multi_select'}
-											<div class="options-area">
-												<div class="options-list">
+											<div class="field-options">
+												{#if field.key === 'status' && field.options.length > 0}
+													<div class="options-col-headers">
+														<span class="options-col-label">Options</span>
+														<span class="options-col-terminal" title="Terminal statuses are treated as done/closed">Done?</span>
+														<span class="options-col-spacer"></span>
+													</div>
+												{/if}
+												<div class="options-rows">
 													{#each field.options as _opt, oi (oi)}
-														<div class="option-chip">
-															<input
-																class="option-input"
-																type="text"
-																bind:value={field.options[oi]}
-																placeholder="option"
-															/>
-															<button
-																class="option-remove"
-																type="button"
-																onclick={() => removeOption(field, oi)}
-																title="Remove option"
-															>&#10005;</button>
+														<div class="option-row" class:option-terminal={field.key === 'status' && isTerminal(field, field.options[oi])}>
+															<input class="option-name-input" type="text" bind:value={field.options[oi]} placeholder="option name" />
+															{#if field.key === 'status'}
+																<button
+																	class="option-done-toggle"
+																	class:active={isTerminal(field, field.options[oi])}
+																	type="button"
+																	onclick={() => toggleTerminal(field, field.options[oi])}
+																	title={isTerminal(field, field.options[oi]) ? 'Marked as terminal (click to unmark)' : 'Mark as terminal — items with this status are considered done'}
+																>
+																	{#if isTerminal(field, field.options[oi])}
+																		<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="14" height="14" rx="3" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 8L7 10.5L11.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+																	{:else}
+																		<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>
+																	{/if}
+																</button>
+															{/if}
+															<button class="option-remove-btn" type="button" onclick={() => removeOption(field, oi)} title="Remove option">&#10005;</button>
 														</div>
 													{/each}
-													<button
-														class="option-add-btn"
-														type="button"
-														onclick={() => addOption(field)}
-														title="Add option"
-													>+</button>
 												</div>
+												<button class="option-add-btn" type="button" onclick={() => addOption(field)}>+ Add option</button>
 											</div>
 										{/if}
 									</div>
@@ -510,38 +513,23 @@
 						{/if}
 
 						<div class="add-field-section">
-							<div class="add-field-header">
-								<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
-							</div>
-
 							{#each newFields as field, i (i)}
-								<div class="new-field-row">
-									<input
-										class="field-name-input"
-										type="text"
-										placeholder="Field name"
-										bind:value={field.key}
-									/>
-									<select class="field-type-select" bind:value={field.type}>
-										{#each FIELD_TYPES as ft (ft)}
-											<option value={ft}>{ft.replace('_', ' ')}</option>
-										{/each}
-									</select>
+								<div class="new-field-card">
+									<div class="new-field-top">
+										<input class="new-field-name" type="text" placeholder="Field name" bind:value={field.key} />
+										<select class="field-type-select" bind:value={field.type}>
+											{#each FIELD_TYPES as ft (ft)}
+												<option value={ft}>{ft.replace('_', ' ')}</option>
+											{/each}
+										</select>
+										<button class="field-remove-btn" type="button" onclick={() => removeNewField(i)}>&#10005;</button>
+									</div>
 									{#if field.type === 'select' || field.type === 'multi_select'}
-										<input
-											class="field-options-input"
-											type="text"
-											placeholder="option1, option2, ..."
-											bind:value={field.options}
-										/>
+										<input class="new-field-options" type="text" placeholder="option1, option2, ..." bind:value={field.options} />
 									{/if}
-									<button
-										class="remove-field-btn"
-										type="button"
-										onclick={() => removeNewField(i)}
-									>&#10005;</button>
 								</div>
 							{/each}
+							<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
 						</div>
 					</div>
 				{:else if activeTab === 'display'}
@@ -947,26 +935,24 @@
 	.fields-list {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
 	}
 
 	.field-card {
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
-		padding: var(--space-3);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
+		overflow: hidden;
 	}
 
-	.field-card-main {
+	.field-card-header {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--space-2);
+		padding: var(--space-3) var(--space-3);
 	}
 
-	.field-reorder {
+	.field-drag-handle {
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
@@ -994,7 +980,7 @@
 		cursor: default;
 	}
 
-	.field-info {
+	.field-header-left {
 		flex: 1;
 		min-width: 0;
 		display: flex;
@@ -1023,7 +1009,7 @@
 	}
 
 	.field-key {
-		font-size: 0.75em;
+		font-size: 0.72em;
 		color: var(--text-muted);
 		padding-left: var(--space-2);
 		font-family: var(--font-mono);
@@ -1049,11 +1035,11 @@
 		outline: none;
 	}
 
-	.remove-field-btn {
+	.field-remove-btn {
 		background: none;
 		border: none;
 		color: var(--text-muted);
-		font-size: 0.85em;
+		font-size: 0.82em;
 		cursor: pointer;
 		padding: var(--space-1);
 		border-radius: var(--radius-sm);
@@ -1061,78 +1047,150 @@
 		flex-shrink: 0;
 	}
 
-	.remove-field-btn:hover {
+	.field-remove-btn:hover {
 		color: var(--accent-red, #ef4444);
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
 	/* ── Options area (select / multi_select) ──────────────────────────────── */
 
-	.options-area {
-		padding-left: 32px;
+	.field-options {
+		border-top: 1px solid var(--border);
+		padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 28px);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
 	}
 
-	.options-list {
+	.options-col-headers {
 		display: flex;
-		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+		padding-bottom: var(--space-1);
+	}
+
+	.options-col-label {
+		flex: 1;
+		font-size: 0.72em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+	}
+
+	.options-col-terminal {
+		width: 40px;
+		text-align: center;
+		font-size: 0.72em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+	}
+
+	.options-col-spacer {
+		width: 22px;
+		flex-shrink: 0;
+	}
+
+	.options-rows {
+		display: flex;
+		flex-direction: column;
 		gap: var(--space-1);
-		align-items: center;
 	}
 
-	.option-chip {
+	.option-row {
 		display: flex;
 		align-items: center;
-		gap: 2px;
+		gap: var(--space-2);
+	}
+
+	.option-row.option-terminal .option-name-input {
+		border-color: color-mix(in srgb, var(--accent-green, #22c55e) 30%, var(--border));
+		background: color-mix(in srgb, var(--accent-green, #22c55e) 4%, var(--bg-secondary));
+	}
+
+	.option-name-input {
+		flex: 1;
+		min-width: 0;
+		padding: var(--space-1) var(--space-2);
 		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: 12px;
-		padding: 1px 4px 1px 8px;
-	}
-
-	.option-input {
-		background: transparent;
-		border: none;
-		outline: none;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		font-size: 0.85em;
 		color: var(--text-primary);
-		font-size: 0.8em;
-		width: 72px;
-		padding: 2px 0;
 	}
 
-	.option-input:focus {
-		color: var(--accent-blue);
+	.option-name-input:hover {
+		border-color: var(--border);
 	}
 
-	.option-remove {
+	.option-name-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	.option-done-toggle {
+		width: 40px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		background: none;
 		border: none;
 		color: var(--text-muted);
-		font-size: 0.7em;
 		cursor: pointer;
-		padding: 2px 4px;
-		border-radius: 50%;
-		line-height: 1;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+		flex-shrink: 0;
+		transition: color 0.15s;
 	}
 
-	.option-remove:hover {
+	.option-done-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.option-done-toggle.active {
+		color: var(--accent-green, #22c55e);
+	}
+
+	.option-remove-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.75em;
+		cursor: pointer;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+		line-height: 1;
+		flex-shrink: 0;
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+
+	.option-row:hover .option-remove-btn {
+		opacity: 1;
+	}
+
+	.option-remove-btn:hover {
 		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
+		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
 	.option-add-btn {
 		background: none;
-		border: 1px dashed var(--border);
+		border: none;
 		color: var(--text-muted);
 		font-size: 0.82em;
 		cursor: pointer;
-		padding: 2px 10px;
-		border-radius: 12px;
-		line-height: 1.4;
+		padding: var(--space-1) var(--space-2);
+		border-radius: var(--radius-sm);
+		text-align: left;
+		width: fit-content;
 	}
 
 	.option-add-btn:hover {
 		color: var(--accent-blue);
-		border-color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
 	}
 
 	.empty-state {
@@ -1147,14 +1205,9 @@
 	.add-field-section {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
 		border-top: 1px solid var(--border);
 		padding-top: var(--space-4);
-	}
-
-	.add-field-header {
-		display: flex;
-		align-items: center;
 	}
 
 	.add-field-btn {
@@ -1175,48 +1228,57 @@
 		border-color: var(--accent-blue);
 	}
 
-	.new-field-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-	}
-
-	.field-name-input {
-		flex: 1;
-		min-width: 120px;
-		padding: var(--space-2) var(--space-3);
+	.new-field-card {
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
+		padding: var(--space-3);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.new-field-top {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.new-field-name {
+		flex: 1;
+		min-width: 120px;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
 		font-size: 0.85em;
 		color: var(--text-primary);
 	}
 
-	.field-name-input:hover {
-		border-color: var(--text-muted);
+	.new-field-name:hover {
+		border-color: var(--border);
 	}
 
-	.field-name-input:focus {
+	.new-field-name:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
 
-	.field-options-input {
-		flex: 1 1 100%;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+	.new-field-options {
+		width: 100%;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
 		font-size: 0.85em;
 		color: var(--text-primary);
 	}
 
-	.field-options-input:hover {
-		border-color: var(--text-muted);
+	.new-field-options:hover {
+		border-color: var(--border);
 	}
 
-	.field-options-input:focus {
+	.new-field-options:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
