@@ -111,35 +111,38 @@ func TestRateLimit_NonAPIPathsExempt(t *testing.T) {
 	}
 }
 
-func TestRealIP(t *testing.T) {
+func TestClientIP(t *testing.T) {
+	// clientIP only reads RemoteAddr (proxy headers are handled by chimiddleware.RealIP)
 	tests := []struct {
 		name       string
 		remoteAddr string
-		xRealIP    string
-		xForwarded string
 		want       string
 	}{
-		{"remote addr", "192.168.1.1:1234", "", "", "192.168.1.1"},
-		{"X-Real-IP", "192.168.1.1:1234", "10.0.0.1", "", "10.0.0.1"},
-		{"X-Forwarded-For single", "192.168.1.1:1234", "", "10.0.0.2", "10.0.0.2"},
-		{"X-Forwarded-For multiple", "192.168.1.1:1234", "", "10.0.0.3, 10.0.0.4", "10.0.0.3"},
-		{"X-Real-IP takes priority", "192.168.1.1:1234", "10.0.0.5", "10.0.0.6", "10.0.0.5"},
+		{"with port", "192.168.1.1:1234", "192.168.1.1"},
+		{"no port", "10.0.0.1", "10.0.0.1"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/", nil)
 			req.RemoteAddr = tt.remoteAddr
-			if tt.xRealIP != "" {
-				req.Header.Set("X-Real-IP", tt.xRealIP)
-			}
-			if tt.xForwarded != "" {
-				req.Header.Set("X-Forwarded-For", tt.xForwarded)
-			}
-			got := realIP(req)
+			got := clientIP(req)
 			if got != tt.want {
-				t.Errorf("realIP() = %q, want %q", got, tt.want)
+				t.Errorf("clientIP() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClientIP_IgnoresProxyHeaders(t *testing.T) {
+	// Ensure clientIP does NOT trust X-Real-IP or X-Forwarded-For
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.1:1234"
+	req.Header.Set("X-Real-IP", "10.0.0.99")
+	req.Header.Set("X-Forwarded-For", "10.0.0.88")
+
+	got := clientIP(req)
+	if got != "192.168.1.1" {
+		t.Errorf("clientIP should ignore proxy headers, got %q", got)
 	}
 }

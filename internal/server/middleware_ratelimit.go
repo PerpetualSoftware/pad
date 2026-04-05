@@ -130,7 +130,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			return
 		}
 
-		ip := realIP(r)
+		ip := clientIP(r)
 
 		// Auth-specific rate limits
 		if strings.HasPrefix(path, "/api/v1/auth/") {
@@ -185,20 +185,12 @@ func rateLimitKey(r *http.Request, ip string) string {
 	return "ip:" + ip
 }
 
-// realIP extracts the client's real IP address, respecting common proxy headers.
-func realIP(r *http.Request) string {
-	// X-Real-IP (set by nginx, etc.)
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-
-	// X-Forwarded-For (comma-separated list, first entry is the client)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
-	}
-
-	// Fall back to RemoteAddr
+// clientIP extracts the client IP from RemoteAddr. This is safe because
+// chimiddleware.RealIP runs earlier in the chain and overwrites RemoteAddr
+// with the trusted value from X-Real-IP / X-Forwarded-For. We deliberately
+// do NOT read proxy headers here to prevent clients from spoofing their IP
+// to bypass rate limits.
+func clientIP(r *http.Request) string {
 	host := r.RemoteAddr
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		return host[:idx]

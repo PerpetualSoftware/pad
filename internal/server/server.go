@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,7 @@ import (
 type Server struct {
 	store         *store.Store
 	router        *chi.Mux
+	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
 	webFS         fs.FS                // embedded web UI static files (optional)
 	events        *events.Bus          // real-time event bus (optional)
 	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
@@ -36,12 +38,10 @@ type Server struct {
 }
 
 func New(s *store.Store) *Server {
-	srv := &Server{
+	return &Server{
 		store:        s,
 		rateLimiters: NewRateLimiters(),
 	}
-	srv.setupRouter()
-	return srv
 }
 
 // SetVersion stores the build version info for the health endpoint.
@@ -361,11 +361,21 @@ func (s *Server) spaHandler() http.Handler {
 	})
 }
 
+// ensureRouter lazily initializes the router on first use, so all Set*
+// configuration is applied before the middleware chain is built.
+func (s *Server) ensureRouter() {
+	s.routerOnce.Do(func() {
+		s.setupRouter()
+	})
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.ensureRouter()
 	s.router.ServeHTTP(w, r)
 }
 
 func (s *Server) ListenAndServe(addr string) error {
+	s.ensureRouter()
 	log.Printf("Pad server listening on %s", addr)
 	return http.ListenAndServe(addr, s.router)
 }
