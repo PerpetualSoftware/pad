@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -149,7 +149,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 				wsName = ws.Name
 			}
 			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL); err != nil {
-				log.Printf("Failed to send invitation email: %v", err)
+				slog.Error("failed to send invitation email", "error", err)
 			}
 		}()
 	}

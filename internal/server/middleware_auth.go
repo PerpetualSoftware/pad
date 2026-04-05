@@ -130,7 +130,7 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		path := r.URL.Path
 
 		// Auth endpoints are always exempt
-		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" {
+		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") {
 			next.ServeHTTP(w, r)
 			return
 		}

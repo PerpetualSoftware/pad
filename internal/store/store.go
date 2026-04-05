@@ -55,6 +55,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Ping verifies the database connection is alive.
+func (s *Store) Ping() error {
+	return s.db.Ping()
+}
+
 func (s *Store) migrate() error {
 	// Create migrations tracking table
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (

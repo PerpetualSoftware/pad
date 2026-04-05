@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -369,7 +369,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		commentInput.Source = source
 		comment, cerr := s.store.CreateComment(workspaceID, updated.ID, commentInput)
 		if cerr != nil {
-			log.Printf("WARNING: failed to create comment on item update %s: %v", updated.ID, cerr)
+			slog.Warn("failed to create comment on item update", "item_id", updated.ID, "error", cerr)
 		}
 		if cerr == nil && comment != nil {
 			s.publishCommentEvent(events.CommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)

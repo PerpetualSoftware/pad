@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -115,9 +115,9 @@ func (s *Server) setupRouter() {
 
 	// Middleware
 	r.Use(chimiddleware.RealIP)
-	r.Use(chimiddleware.Logger)
-	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
+	r.Use(StructuredLogger)
+	r.Use(chimiddleware.Recoverer)
 	r.Use(SecurityHeaders)
 	if s.secureCookies {
 		r.Use(StrictTransportSecurity)
@@ -142,6 +142,8 @@ func (s *Server) setupRouter() {
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+		r.Get("/health/live", s.handleHealthLive)
+		r.Get("/health/ready", s.handleHealthReady)
 
 		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {
@@ -391,7 +393,7 @@ func (s *Server) ListenAndServe(addr string) error {
 		// Non-SSE handlers should use per-request context deadlines.
 	}
 
-	log.Printf("Pad server listening on %s", addr)
+	slog.Info("Pad server listening", "addr", addr)
 	return s.httpServer.ListenAndServe()
 }
 
@@ -425,7 +427,7 @@ func jsonContentType(next http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("Error encoding JSON: %v", err)
+		slog.Error("failed to encode JSON response", "error", err)
 	}
 }
 
@@ -442,7 +444,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // message to the client. This prevents leaking SQL errors, file paths,
 // and other internal details.
 func writeInternalError(w http.ResponseWriter, err error) {
-	log.Printf("internal error: %v", err)
+	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 }
 

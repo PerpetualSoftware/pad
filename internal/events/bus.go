@@ -1,7 +1,7 @@
 package events
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -110,7 +110,7 @@ func (b *Bus) Publish(event Event) {
 		select {
 		case sub.ch <- event:
 		default:
-			log.Printf("events: dropping event %s for slow subscriber (workspace=%s)", event.Type, event.WorkspaceID)
+			slog.Warn("dropping event for slow subscriber", "type", event.Type, "workspace", event.WorkspaceID)
 		}
 	}
 }

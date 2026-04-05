@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +31,7 @@ import (
 
 	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/events"
+	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
@@ -162,6 +163,17 @@ func serveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
 
+			// Initialize structured logging
+			logLevel := os.Getenv("PAD_LOG_LEVEL")
+			if logLevel == "" {
+				logLevel = "info"
+			}
+			logFormat := os.Getenv("PAD_LOG_FORMAT")
+			if logFormat == "" {
+				logFormat = "text"
+			}
+			logging.Setup(logLevel, logFormat)
+
 			if cmd.Flags().Changed("host") {
 				cfg.Host = host
 			}
@@ -178,14 +190,14 @@ func serveCmd() *cobra.Command {
 			// Auto-upgrade: ensure all default collections exist in every workspace.
 			// This is safe because SeedDefaultCollections skips collections that already exist.
 			if workspaces, err := s.ListWorkspaces(); err == nil {
-				log.Printf("Auto-upgrade: checking %d workspace(s) for missing default collections", len(workspaces))
+				slog.Info("auto-upgrade: checking workspaces for missing default collections", "count", len(workspaces))
 				for _, ws := range workspaces {
 					if err := s.SeedDefaultCollections(ws.ID); err != nil {
-						log.Printf("Warning: failed to seed defaults for workspace %s: %v", ws.Slug, err)
+						slog.Warn("failed to seed defaults for workspace", "workspace", ws.Slug, "error", err)
 					}
 				}
 			} else {
-				log.Printf("Warning: failed to list workspaces for auto-upgrade: %v", err)
+				slog.Warn("failed to list workspaces for auto-upgrade", "error", err)
 			}
 
 			srv := server.New(s)
@@ -212,7 +224,7 @@ func serveCmd() *cobra.Command {
 					fromName = "Pad"
 				}
 				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()))
-				log.Println("Email sending enabled via Maileroo (env)")
+				slog.Info("Email sending enabled via Maileroo (env)")
 			}
 			// Platform settings can override or provide email config
 			srv.InitEmailFromSettings()
@@ -222,7 +234,7 @@ func serveCmd() *cobra.Command {
 			if err == nil {
 				if entries, err := fs.ReadDir(webFS, "."); err == nil && len(entries) > 0 {
 					srv.SetWebUI(webFS)
-					log.Println("Serving embedded web UI")
+					slog.Info("Serving embedded web UI")
 				}
 			}
 
@@ -243,23 +255,23 @@ func serveCmd() *cobra.Command {
 				return err
 			case <-ctx.Done():
 				// Received shutdown signal
-				log.Println("Shutting down server (30s grace period)...")
+				slog.Info("Shutting down server (30s grace period)...")
 				stop() // Reset signal handling so a second signal force-kills
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
 				if err := srv.Shutdown(shutdownCtx); err != nil {
-					log.Printf("HTTP server shutdown error: %v", err)
+					slog.Error("HTTP server shutdown error", "error", err)
 				}
 
 				// Close event bus (terminates SSE connections)
 				if eventBus != nil {
 					eventBus.Close()
-					log.Println("Event bus closed")
+					slog.Info("Event bus closed")
 				}
 
-				log.Println("Server stopped")
+				slog.Info("Server stopped")
 				return nil
 			}
 		},
