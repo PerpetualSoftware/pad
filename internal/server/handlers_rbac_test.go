@@ -372,3 +372,62 @@ func TestRBAC_ViewerBlockedFromItemLinkMutations(t *testing.T) {
 		t.Errorf("expected 403 for viewer create item link, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestRBAC_SearchScopedToUserWorkspaces(t *testing.T) {
+	env := setupRBACEnv(t)
+
+	// Create an item in the workspace the editor belongs to
+	doRequestWithCookie(env.srv, "POST", "/api/v1/workspaces/"+env.wsSlug+"/collections/docs/items", map[string]interface{}{
+		"title":   "Visible Secret",
+		"content": "This should be found by the editor",
+	}, env.ownerToken)
+
+	// Create a second workspace that the editor does NOT belong to
+	rr := doRequestWithCookie(env.srv, "POST", "/api/v1/workspaces", map[string]string{
+		"name": "Private Workspace",
+	}, env.ownerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create private workspace: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var privateWS map[string]interface{}
+	parseJSON(t, rr, &privateWS)
+	privateSlug := privateWS["slug"].(string)
+
+	// Create an item in the private workspace
+	doRequestWithCookie(env.srv, "POST", "/api/v1/workspaces/"+privateSlug+"/collections/docs/items", map[string]interface{}{
+		"title":   "Hidden Secret",
+		"content": "This should NOT be found by the editor",
+	}, env.ownerToken)
+
+	// Editor searches without workspace param — should only see their workspace's items
+	rr = doRequestWithCookie(env.srv, "GET", "/api/v1/search?q=Secret", nil, env.editorToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("search: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Results []map[string]interface{} `json:"results"`
+		Total   int                      `json:"total"`
+	}
+	parseJSON(t, rr, &resp)
+
+	// Should find only the visible item, not the one in the private workspace
+	if resp.Total != 1 {
+		t.Errorf("expected 1 result (only from editor's workspace), got %d", resp.Total)
+		for _, r := range resp.Results {
+			if item, ok := r["item"].(map[string]interface{}); ok {
+				t.Logf("  found: %v", item["title"])
+			}
+		}
+	}
+
+	// Owner searches without workspace param — should see items from both workspaces
+	rr = doRequestWithCookie(env.srv, "GET", "/api/v1/search?q=Secret", nil, env.ownerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner search: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	parseJSON(t, rr, &resp)
+	if resp.Total != 2 {
+		t.Errorf("expected 2 results for owner (both workspaces), got %d", resp.Total)
+	}
+}
