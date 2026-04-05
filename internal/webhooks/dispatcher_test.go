@@ -80,6 +80,7 @@ func TestDispatcher_Dispatch(t *testing.T) {
 	})
 
 	d := NewDispatcher(store)
+	d.SkipSSRF = true
 	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test Item"})
 	store.waitForUpdate()
 
@@ -124,6 +125,7 @@ func TestDispatcher_EventFiltering(t *testing.T) {
 	})
 
 	d := NewDispatcher(store)
+	d.SkipSSRF = true
 
 	// This event should NOT match — no goroutine launched, no store update
 	d.Dispatch("ws-1", "item.deleted", map[string]string{"title": "Test"})
@@ -156,6 +158,7 @@ func TestDispatcher_WildcardEvent(t *testing.T) {
 	})
 
 	d := NewDispatcher(store)
+	d.SkipSSRF = true
 	d.Dispatch("ws-1", "item.deleted", map[string]string{"title": "Test"})
 	store.waitForUpdate()
 
@@ -189,6 +192,7 @@ func TestDispatcher_InactiveWebhookSkipped(t *testing.T) {
 	})
 
 	d := NewDispatcher(store)
+	d.SkipSSRF = true
 	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
 
 	// Since the hook is inactive, no goroutine is launched
@@ -214,6 +218,7 @@ func TestDispatcher_FailureOnNon2xx(t *testing.T) {
 	})
 
 	d := NewDispatcher(store)
+	d.SkipSSRF = true
 	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
 	store.waitForUpdate()
 

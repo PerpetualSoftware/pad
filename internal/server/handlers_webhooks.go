@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/webhooks"
 )
 
 // dispatchWebhook fires a webhook event if a dispatcher is configured.
@@ -36,6 +37,12 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if input.URL == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "url is required")
+		return
+	}
+
+	// Validate URL to prevent SSRF attacks
+	if err := webhooks.ValidateWebhookURL(input.URL); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid webhook URL: "+err.Error())
 		return
 	}
 

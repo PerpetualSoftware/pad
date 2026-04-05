@@ -30,8 +30,9 @@ type WebhookPayload struct {
 
 // Dispatcher sends webhook HTTP POST notifications for workspace events.
 type Dispatcher struct {
-	store  WebhookStore
-	client *http.Client
+	store        WebhookStore
+	client       *http.Client
+	SkipSSRF     bool // Skip SSRF validation (for tests only)
 }
 
 // NewDispatcher creates a Dispatcher with the given store.
@@ -79,6 +80,15 @@ func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 
 // deliver sends a single HTTP POST to the webhook URL.
 func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
+	// Defense in depth: re-validate URL before making the request
+	if !d.SkipSSRF {
+		if err := ValidateWebhookURL(hook.URL); err != nil {
+			log.Printf("webhooks: blocked delivery to %s: %v", hook.URL, err)
+			d.store.UpdateWebhookFailure(hook.ID, true)
+			return
+		}
+	}
+
 	req, err := http.NewRequest(http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("webhooks: failed to create request for %s: %v", hook.URL, err)
