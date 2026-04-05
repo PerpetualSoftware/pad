@@ -35,7 +35,7 @@ func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := s.store.ListDocuments(workspaceID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if docs == nil {
@@ -78,7 +78,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if updated == nil {
@@ -162,7 +162,7 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.DeleteDocument(doc.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -244,7 +244,7 @@ func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.store.QuickSave(workspaceID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -273,7 +273,7 @@ func (s *Server) handleBulkRead(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := s.store.BulkRead(input.IDs)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if docs == nil {
@@ -290,7 +290,7 @@ func (s *Server) handleGetBacklinks(w http.ResponseWriter, r *http.Request) {
 
 	backlinks, err := s.store.GetBacklinks(workspaceID, doc.Title)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if backlinks == nil {
@@ -318,7 +318,7 @@ func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	linkedDocs, err := s.store.GetLinks(workspaceID, doc.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if linkedDocs == nil {
@@ -346,7 +346,7 @@ func (s *Server) handleGetContext(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := s.store.GetContext(workspaceID, types, includeContent)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if docs == nil {

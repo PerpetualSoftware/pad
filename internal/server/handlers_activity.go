@@ -32,7 +32,7 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if activities == nil {
@@ -69,7 +69,7 @@ func (s *Server) handleListDocumentActivity(w http.ResponseWriter, r *http.Reque
 
 	activities, err := s.store.ListDocumentActivity(doc.ID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if activities == nil {

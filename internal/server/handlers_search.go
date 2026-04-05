@@ -45,7 +45,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := s.store.Search(params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if results == nil {

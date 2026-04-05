@@ -22,7 +22,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -32,7 +32,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 
 	comments, err := s.store.ListComments(item.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if comments == nil {
@@ -71,7 +71,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -106,7 +106,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	comment, err := s.store.CreateComment(workspaceID, item.ID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -144,7 +144,7 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -200,7 +200,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 	comment, err := s.store.CreateComment(workspaceID, parentComment.ItemID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -245,7 +245,7 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 
 	reaction, err := s.store.AddReaction(commentID, userID, actor, input.Emoji)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

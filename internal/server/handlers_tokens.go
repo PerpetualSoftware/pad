@@ -33,7 +33,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 	token, err := s.store.CreateAPIToken(userID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -49,7 +49,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := s.store.ListAPITokens(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if tokens == nil {
@@ -72,7 +72,7 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Token not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -91,7 +91,7 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := s.store.ListUserAPITokens(userID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if tokens == nil {
@@ -122,7 +122,7 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.store.CreateAPIToken(userID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Token not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

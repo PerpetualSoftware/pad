@@ -535,7 +535,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Generate reset token
 	token, err := s.store.CreatePasswordReset(user.ID)
 	if err != nil {
-		log.Printf("Failed to create password reset for %s: %v", input.Email, err)
+		log.Printf("Failed to create password reset: %v", err)
 		writeJSON(w, http.StatusOK, okResponse)
 		return
 	}
@@ -545,12 +545,11 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		resetURL := s.baseURL + "/reset-password/" + token
 		go func() {
 			if err := s.email.SendPasswordReset(context.Background(), user.Email, user.Name, resetURL); err != nil {
-				log.Printf("Failed to send password reset email to %s: %v", user.Email, err)
+				log.Printf("Failed to send password reset email: %v", err)
 			}
 		}()
 	} else {
-		resetURL := s.baseURL + "/reset-password/" + token
-		log.Printf("Password reset token generated for %s (email not configured). Reset URL: %s", input.Email, resetURL)
+		log.Printf("Password reset token generated (email not configured). Use pad auth reset-password to manage.")
 	}
 
 	writeJSON(w, http.StatusOK, okResponse)
@@ -597,7 +596,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Invalidate all existing sessions (force logout everywhere)
 	if err := s.store.DeleteUserSessions(user.ID); err != nil {
-		log.Printf("Failed to invalidate sessions for user %s after password reset: %v", user.ID, err)
+		log.Printf("Failed to invalidate sessions after password reset: %v", err)
 	}
 
 	// Create a fresh session so the user is logged in

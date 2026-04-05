@@ -381,6 +381,14 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+// writeInternalError logs the real error server-side and sends a generic
+// message to the client. This prevents leaking SQL errors, file paths,
+// and other internal details.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
+}
+
 func decodeJSON(r *http.Request, v interface{}) error {
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
@@ -393,7 +401,7 @@ func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string,
 	slug := chi.URLParam(r, "slug")
 	ws, err := s.store.GetWorkspaceBySlug(slug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return "", false
 	}
 	if ws == nil {
@@ -413,7 +421,7 @@ func (s *Server) getWorkspaceDocument(w http.ResponseWriter, r *http.Request) (s
 	docID := chi.URLParam(r, "docID")
 	doc, err := s.store.GetDocument(docID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return "", nil, false
 	}
 	if doc == nil || doc.WorkspaceID != workspaceID {

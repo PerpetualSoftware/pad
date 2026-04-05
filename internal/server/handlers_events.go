@@ -26,7 +26,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := s.store.GetWorkspaceBySlug(slug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if ws == nil {

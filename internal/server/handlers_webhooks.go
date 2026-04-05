@@ -48,7 +48,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 
 	hook, err := s.store.CreateWebhook(workspaceID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -64,7 +64,7 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 	hooks, err := s.store.ListWebhooks(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if hooks == nil {
@@ -90,7 +90,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -110,7 +110,7 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	webhookID := chi.URLParam(r, "webhookID")
 	hook, err := s.store.GetWebhook(webhookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if hook == nil {

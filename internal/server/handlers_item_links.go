@@ -20,7 +20,7 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -30,7 +30,7 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 
 	links, err := s.store.GetItemLinks(item.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if links == nil {
@@ -53,7 +53,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -82,7 +82,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	// Verify target item exists
 	target, err := s.store.GetItem(input.TargetID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if target == nil || target.WorkspaceID != workspaceID {
@@ -100,7 +100,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		actor, _ := actorFromRequest(r)
 		link, err := s.store.SetPhaseLink(workspaceID, item.ID, target.ID, actor)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, link)
@@ -117,7 +117,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -140,7 +140,7 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Link not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

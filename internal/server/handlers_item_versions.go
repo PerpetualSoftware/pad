@@ -19,7 +19,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -29,7 +29,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 
 	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if versions == nil {
@@ -54,7 +54,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -65,7 +65,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// Get all resolved versions to find the target
 	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -93,7 +93,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 
 	updated, err := s.store.UpdateItem(item.ID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
