@@ -115,6 +115,18 @@ func (b *Bus) Publish(event Event) {
 	}
 }
 
+// Close shuts down the event bus by closing all subscriber channels.
+// SSE handler goroutines will see the channel close and exit cleanly.
+func (b *Bus) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for ch := range b.subscribers {
+		delete(b.subscribers, ch)
+		close(ch)
+	}
+}
+
 // SubscriberCount returns the number of active subscribers (for testing/debugging).
 func (b *Bus) SubscriberCount() int {
 	b.mu.RLock()

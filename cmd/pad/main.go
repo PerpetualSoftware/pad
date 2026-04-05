@@ -195,7 +195,8 @@ func serveCmd() *cobra.Command {
 			srv.SetSecureCookies(cfg.SecureCookies)
 
 			// Attach event bus for real-time SSE
-			srv.SetEventBus(events.New())
+			eventBus := events.New()
+			srv.SetEventBus(eventBus)
 
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
@@ -225,7 +226,42 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
-			return srv.ListenAndServe(cfg.Addr())
+			// Graceful shutdown: listen for SIGINT/SIGTERM
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			// Start server in a goroutine
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- srv.ListenAndServe(cfg.Addr())
+			}()
+
+			// Wait for signal or server error
+			select {
+			case err := <-errCh:
+				// Server failed to start or crashed
+				return err
+			case <-ctx.Done():
+				// Received shutdown signal
+				log.Println("Shutting down server (30s grace period)...")
+				stop() // Reset signal handling so a second signal force-kills
+
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				if err := srv.Shutdown(shutdownCtx); err != nil {
+					log.Printf("HTTP server shutdown error: %v", err)
+				}
+
+				// Close event bus (terminates SSE connections)
+				if eventBus != nil {
+					eventBus.Close()
+					log.Println("Event bus closed")
+				}
+
+				log.Println("Server stopped")
+				return nil
+			}
 		},
 	}
 

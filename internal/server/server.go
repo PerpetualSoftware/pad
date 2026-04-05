@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -24,6 +26,7 @@ type Server struct {
 	store         *store.Store
 	router        *chi.Mux
 	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
+	httpServer    *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS         fs.FS                // embedded web UI static files (optional)
 	events        *events.Bus          // real-time event bus (optional)
 	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
@@ -327,6 +330,7 @@ func (s *Server) setupRouter() {
 // SetWebUI sets the embedded web UI filesystem for serving the SPA.
 func (s *Server) SetWebUI(fsys fs.FS) {
 	s.webFS = fsys
+	s.ensureRouter()
 	s.router.Handle("/*", s.spaHandler())
 }
 
@@ -376,8 +380,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ListenAndServe(addr string) error {
 	s.ensureRouter()
+
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           s.router,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout left at 0 — SSE connections are long-lived.
+		// Non-SSE handlers should use per-request context deadlines.
+	}
+
 	log.Printf("Pad server listening on %s", addr)
-	return http.ListenAndServe(addr, s.router)
+	return s.httpServer.ListenAndServe()
+}
+
+// Shutdown gracefully drains in-flight requests and stops the HTTP server.
+// The provided context controls how long to wait for active connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
+}
+
+// Handler returns the configured HTTP handler (router).
+// Useful for testing with httptest.NewServer.
+func (s *Server) Handler() http.Handler {
+	s.ensureRouter()
+	return s.router
 }
 
 // --- helpers ---
