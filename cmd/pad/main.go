@@ -182,9 +182,26 @@ func serveCmd() *cobra.Command {
 				cfg.Port = port
 			}
 
-			s, err := store.New(cfg.DBPath)
-			if err != nil {
-				return fmt.Errorf("open database: %w", err)
+			// Open database (SQLite default, PostgreSQL via PAD_DB_DRIVER)
+			var s *store.Store
+			var err error
+			dbDriver := os.Getenv("PAD_DB_DRIVER")
+			if dbDriver == "postgres" {
+				pgURL := os.Getenv("PAD_DATABASE_URL")
+				if pgURL == "" {
+					return fmt.Errorf("PAD_DATABASE_URL is required when PAD_DB_DRIVER=postgres")
+				}
+				s, err = store.NewPostgres(pgURL)
+				if err != nil {
+					return fmt.Errorf("open postgres: %w", err)
+				}
+				slog.Info("Database using PostgreSQL")
+			} else {
+				s, err = store.New(cfg.DBPath)
+				if err != nil {
+					return fmt.Errorf("open database: %w", err)
+				}
+				slog.Info("Database using SQLite", "path", cfg.DBPath)
 			}
 			defer s.Close()
 

@@ -8,12 +8,12 @@ import (
 )
 
 func (s *Store) ListCustomTemplates(workspaceID string) ([]models.CustomTemplate, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, workspace_id, name, description, doc_type, icon, content, created_at, updated_at
 		FROM custom_templates
 		WHERE workspace_id = ?
 		ORDER BY name ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list custom templates: %w", err)
 	}
@@ -36,11 +36,11 @@ func (s *Store) ListCustomTemplates(workspaceID string) ([]models.CustomTemplate
 func (s *Store) GetCustomTemplate(id string) (*models.CustomTemplate, error) {
 	var t models.CustomTemplate
 	var createdAt, updatedAt string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, name, description, doc_type, icon, content, created_at, updated_at
 		FROM custom_templates
 		WHERE id = ?
-	`, id).Scan(&t.ID, &t.WorkspaceID, &t.Name, &t.Description, &t.DocType, &t.Icon, &t.Content, &createdAt, &updatedAt)
+	`), id).Scan(&t.ID, &t.WorkspaceID, &t.Name, &t.Description, &t.DocType, &t.Icon, &t.Content, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -56,10 +56,10 @@ func (s *Store) CreateCustomTemplate(input models.CustomTemplateCreate) (*models
 	id := newID()
 	ts := now()
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO custom_templates (id, workspace_id, name, description, doc_type, icon, content, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, input.WorkspaceID, input.Name, input.Description, input.DocType, input.Icon, input.Content, ts, ts)
+	`), id, input.WorkspaceID, input.Name, input.Description, input.DocType, input.Icon, input.Content, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("create custom template: %w", err)
 	}
@@ -68,7 +68,7 @@ func (s *Store) CreateCustomTemplate(input models.CustomTemplateCreate) (*models
 }
 
 func (s *Store) DeleteCustomTemplate(id string) error {
-	result, err := s.db.Exec(`DELETE FROM custom_templates WHERE id = ?`, id)
+	result, err := s.db.Exec(s.q(`DELETE FROM custom_templates WHERE id = ?`), id)
 	if err != nil {
 		return err
 	}

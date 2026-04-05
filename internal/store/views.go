@@ -31,9 +31,9 @@ func (s *Store) CreateView(workspaceID string, input models.ViewCreate) (*models
 		viewType = "list"
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO views (id, workspace_id, collection_id, name, slug, view_type, config, sort_order, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`),
 		id, workspaceID, input.CollectionID, input.Name, slug, viewType, config, ts, ts,
 	)
 	if err != nil {
@@ -50,10 +50,10 @@ func (s *Store) GetView(id string) (*models.View, error) {
 	var isDefault int
 	var createdAt, updatedAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, collection_id, name, slug, view_type, config, sort_order, is_default, created_at, updated_at
 		FROM views
-		WHERE id = ?`, id).Scan(
+		WHERE id = ?`), id).Scan(
 		&v.ID, &v.WorkspaceID, &collectionID, &v.Name, &v.Slug, &v.ViewType,
 		&v.Config, &v.SortOrder, &isDefault, &createdAt, &updatedAt,
 	)
@@ -78,10 +78,10 @@ func (s *Store) GetViewBySlug(workspaceID, slug string) (*models.View, error) {
 	var isDefault int
 	var createdAt, updatedAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, collection_id, name, slug, view_type, config, sort_order, is_default, created_at, updated_at
 		FROM views
-		WHERE workspace_id = ? AND slug = ?`, workspaceID, slug).Scan(
+		WHERE workspace_id = ? AND slug = ?`), workspaceID, slug).Scan(
 		&v.ID, &v.WorkspaceID, &collectionID, &v.Name, &v.Slug, &v.ViewType,
 		&v.Config, &v.SortOrder, &isDefault, &createdAt, &updatedAt,
 	)
@@ -101,11 +101,11 @@ func (s *Store) GetViewBySlug(workspaceID, slug string) (*models.View, error) {
 
 // ListViews returns all views for a collection within a workspace.
 func (s *Store) ListViews(workspaceID, collectionID string) ([]models.View, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, workspace_id, collection_id, name, slug, view_type, config, sort_order, is_default, created_at, updated_at
 		FROM views
 		WHERE workspace_id = ? AND collection_id = ?
-		ORDER BY sort_order ASC, created_at ASC`, workspaceID, collectionID)
+		ORDER BY sort_order ASC, created_at ASC`), workspaceID, collectionID)
 	if err != nil {
 		return nil, fmt.Errorf("list views: %w", err)
 	}
@@ -169,7 +169,7 @@ func (s *Store) UpdateView(id string, input models.ViewUpdate) (*models.View, er
 	}
 	query += " WHERE id = ?"
 
-	result, err := s.db.Exec(query, args...)
+	result, err := s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update view: %w", err)
 	}
@@ -183,7 +183,7 @@ func (s *Store) UpdateView(id string, input models.ViewUpdate) (*models.View, er
 
 // DeleteView removes a view by ID.
 func (s *Store) DeleteView(id string) error {
-	result, err := s.db.Exec("DELETE FROM views WHERE id = ?", id)
+	result, err := s.db.Exec(s.q("DELETE FROM views WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete view: %w", err)
 	}

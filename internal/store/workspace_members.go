@@ -13,10 +13,10 @@ import (
 // AddWorkspaceMember adds a user to a workspace with the given role.
 func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
 	ts := now()
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO workspace_members (workspace_id, user_id, role, created_at)
 		VALUES (?, ?, ?, ?)
-	`, workspaceID, userID, role, ts)
+	`), workspaceID, userID, role, ts)
 	if err != nil {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
@@ -26,7 +26,7 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
 // RemoveWorkspaceMember removes a user from a workspace.
 func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	result, err := s.db.Exec(
-		"DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+		s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
 	)
 	if err != nil {
@@ -44,11 +44,11 @@ func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.Workspac
 	var m models.WorkspaceMember
 	var createdAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT workspace_id, user_id, role, created_at
 		FROM workspace_members
 		WHERE workspace_id = ? AND user_id = ?
-	`, workspaceID, userID).Scan(
+	`), workspaceID, userID).Scan(
 		&m.WorkspaceID, &m.UserID, &m.Role, &createdAt,
 	)
 	if err == sql.ErrNoRows {
@@ -65,14 +65,14 @@ func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.Workspac
 // ListWorkspaceMembers returns all members of a workspace, enriched with
 // user name and email from a join.
 func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT wm.workspace_id, wm.user_id, wm.role, wm.created_at,
 		       u.name, u.email
 		FROM workspace_members wm
 		JOIN users u ON u.id = wm.user_id
 		WHERE wm.workspace_id = ?
 		ORDER BY wm.created_at ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list workspace members: %w", err)
 	}
@@ -96,13 +96,13 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 
 // GetUserWorkspaces returns all workspaces a user has access to.
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
 		WHERE wm.user_id = ? AND w.deleted_at IS NULL
 		ORDER BY w.name ASC
-	`, userID)
+	`), userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user workspaces: %w", err)
 	}
@@ -131,7 +131,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 func (s *Store) IsWorkspaceMember(workspaceID, userID string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(
-		"SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+		s.q("SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
 	).Scan(&count)
 	if err != nil {
@@ -143,7 +143,7 @@ func (s *Store) IsWorkspaceMember(workspaceID, userID string) (bool, error) {
 // UpdateWorkspaceMemberRole changes a member's role in a workspace.
 func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) error {
 	result, err := s.db.Exec(
-		"UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?",
+		s.q("UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?"),
 		role, workspaceID, userID,
 	)
 	if err != nil {
@@ -170,10 +170,10 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	id := newID()
 	ts := now()
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, code, ts)
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, code, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}
@@ -187,10 +187,10 @@ func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
 	var acceptedAt *string
 	var createdAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
 		FROM workspace_invitations WHERE id = ?
-	`, id).Scan(
+	`), id).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
 		&inv.Code, &acceptedAt, &createdAt,
 	)
@@ -212,10 +212,10 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 	var acceptedAt *string
 	var createdAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
 		FROM workspace_invitations WHERE code = ? AND accepted_at IS NULL
-	`, code).Scan(
+	`), code).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
 		&inv.Code, &acceptedAt, &createdAt,
 	)
@@ -234,7 +234,7 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 // AcceptInvitation marks an invitation as accepted.
 func (s *Store) AcceptInvitation(id string) error {
 	_, err := s.db.Exec(
-		"UPDATE workspace_invitations SET accepted_at = ? WHERE id = ?",
+		s.q("UPDATE workspace_invitations SET accepted_at = ? WHERE id = ?"),
 		now(), id,
 	)
 	if err != nil {
@@ -246,7 +246,7 @@ func (s *Store) AcceptInvitation(id string) error {
 // DeleteInvitation removes a pending invitation.
 func (s *Store) DeleteInvitation(workspaceID, invitationID string) error {
 	result, err := s.db.Exec(
-		"DELETE FROM workspace_invitations WHERE id = ? AND workspace_id = ? AND accepted_at IS NULL",
+		s.q("DELETE FROM workspace_invitations WHERE id = ? AND workspace_id = ? AND accepted_at IS NULL"),
 		invitationID, workspaceID,
 	)
 	if err != nil {
@@ -261,12 +261,12 @@ func (s *Store) DeleteInvitation(workspaceID, invitationID string) error {
 
 // ListWorkspaceInvitations returns all invitations for a workspace.
 func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.WorkspaceInvitation, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
 		FROM workspace_invitations
 		WHERE workspace_id = ? AND accepted_at IS NULL
 		ORDER BY created_at ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list workspace invitations: %w", err)
 	}
@@ -297,7 +297,7 @@ func (s *Store) backfillWorkspaceOwners() error {
 	// Find the first admin user (if any)
 	var adminID string
 	err := s.db.QueryRow(
-		"SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1",
+		s.q("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"),
 	).Scan(&adminID)
 	if err == sql.ErrNoRows {
 		return nil // No users yet — nothing to backfill
@@ -307,11 +307,11 @@ func (s *Store) backfillWorkspaceOwners() error {
 	}
 
 	// Find workspaces with no members
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT w.id FROM workspaces w
 		WHERE w.deleted_at IS NULL
 		AND NOT EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id = w.id)
-	`)
+	`))
 	if err != nil {
 		return fmt.Errorf("find ownerless workspaces: %w", err)
 	}

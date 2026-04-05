@@ -86,17 +86,17 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 
 	// Assign the next item_number within this collection
 	var nextNum int
-	err = tx.QueryRow("SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?", collectionID).Scan(&nextNum)
+	err = tx.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?"), collectionID).Scan(&nextNum)
 	if err != nil {
 		return nil, fmt.Errorf("get next item number: %w", err)
 	}
 
-	_, err = tx.Exec(`
+	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
+	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		boolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
 		createdBy, createdBy, source, nextNum, ts, ts)
 	if err != nil {
@@ -106,10 +106,10 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 	// Create initial version if there's content
 	if input.Content != "" {
 		vid := newID()
-		_, err = tx.Exec(`
+		_, err = tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
 			VALUES (?, ?, ?, '', ?, ?, 0, ?)
-		`, vid, id, input.Content, createdBy, source, ts)
+		`), vid, id, input.Content, createdBy, source, ts)
 		if err != nil {
 			return nil, fmt.Errorf("create initial version: %w", err)
 		}
@@ -128,7 +128,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 	var deletedAt *string
 	var pinned int
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -141,7 +141,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.id = ? AND i.deleted_at IS NULL
-	`, id).Scan(
+	`), id).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
@@ -168,10 +168,10 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 
 func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 	var id string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id FROM items
 		WHERE workspace_id = ? AND slug = ? AND deleted_at IS NULL
-	`, workspaceID, slug).Scan(&id)
+	`), workspaceID, slug).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -184,11 +184,11 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 // GetItemByRef looks up an item by its PREFIX-NUMBER reference (e.g. "IDEA-15").
 func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
 	var id string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT i.id FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
-	`, workspaceID, prefix, number).Scan(&id)
+	`), workspaceID, prefix, number).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -250,7 +250,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		var deletedAt *string
 		var pinned int
 
-		err := s.db.QueryRow(`
+		err := s.db.QueryRow(s.q(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
@@ -263,7 +263,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
-		`, workspaceID, prefix, number).Scan(
+		`), workspaceID, prefix, number).Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
@@ -324,7 +324,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 	var deletedAt *string
 	var pinned int
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -337,7 +337,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.workspace_id = ? AND i.slug = ?
-	`, workspaceID, slug).Scan(
+	`), workspaceID, slug).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
@@ -419,25 +419,25 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.PhaseID)
 	}
 
-	// Field filters using json_extract — supports comma-separated values as OR
+	// Field filters — supports comma-separated values as OR
 	for key, value := range params.Fields {
+		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
 		if strings.Contains(value, ",") {
 			values := strings.Split(value, ",")
 			placeholders := make([]string, len(values))
-			args = append(args, "$."+key)
 			for i, v := range values {
 				placeholders[i] = "?"
 				args = append(args, strings.TrimSpace(v))
 			}
-			query += " AND json_extract(i.fields, ?) IN (" + strings.Join(placeholders, ",") + ")"
+			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
 		} else {
-			query += " AND json_extract(i.fields, ?) = ?"
-			args = append(args, "$."+key, value)
+			query += " AND " + jsonExpr + " = ?"
+			args = append(args, value)
 		}
 	}
 
 	// Sorting
-	query += buildItemSort(params.Sort)
+	query += buildItemSort(params.Sort, s.dialect)
 
 	// Pagination
 	if params.Limit > 0 {
@@ -449,7 +449,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		}
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
 	}
@@ -459,37 +459,62 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 }
 
 func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
-	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix,
-		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
-		FROM items i
-		JOIN items_fts fts ON i.rowid = fts.rowid
-		JOIN collections c ON c.id = i.collection_id
-		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		AND items_fts MATCH ?
-	`
-	args := []interface{}{workspaceID, params.Search}
+	ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+	ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
+
+	var query string
+	var args []interface{}
+
+	if s.dialect.Driver() == DriverPostgres {
+		query = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+			AND %s
+		`, ftsMatch)
+		args = []interface{}{workspaceID, params.Search}
+	} else {
+		query = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			FROM items i
+			JOIN items_fts fts ON i.rowid = fts.rowid
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+			AND %s
+		`, ftsMatch)
+		args = []interface{}{workspaceID, params.Search}
+	}
 
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
 	}
 
-	query += " ORDER BY rank"
+	query += " ORDER BY " + ftsRank
 
 	if params.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, params.Limit)
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("search items: %w", err)
 	}
@@ -550,10 +575,10 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 				isDiff = 1
 			}
 
-			_, err = tx.Exec(`
+			_, err = tx.Exec(s.q(`
 				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, vid, id, versionContent, input.ChangeSummary, createdBy, source, isDiff, ts)
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, isDiff, ts)
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
@@ -625,7 +650,7 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE items SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = tx.Exec(query, args...)
+	_, err = tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update item: %w", err)
 	}
@@ -639,10 +664,10 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 
 func (s *Store) DeleteItem(id string) error {
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE items SET deleted_at = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, ts, ts, id)
+	`), ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("delete item: %w", err)
 	}
@@ -655,10 +680,10 @@ func (s *Store) DeleteItem(id string) error {
 
 func (s *Store) RestoreItem(id string) (*models.Item, error) {
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE items SET deleted_at = NULL, updated_at = ?
 		WHERE id = ? AND deleted_at IS NOT NULL
-	`, ts, id)
+	`), ts, id)
 	if err != nil {
 		return nil, fmt.Errorf("restore item: %w", err)
 	}
@@ -670,34 +695,63 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 }
 
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
-	sqlQuery := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix,
-		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
-		       snippet(items_fts, 1, '<mark>', '</mark>', '...', 32) as snippet,
-		       rank
-		FROM items_fts fts
-		JOIN items i ON i.rowid = fts.rowid
-		JOIN collections c ON c.id = i.collection_id
-		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE items_fts MATCH ?
-		AND i.deleted_at IS NULL
-	`
-	args := []interface{}{query}
+	ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
+	ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+	ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
+
+	var sqlQuery string
+	var args []interface{}
+
+	if s.dialect.Driver() == DriverPostgres {
+		sqlQuery = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       %s as snippet,
+			       %s as rank_score
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE %s
+			AND i.deleted_at IS NULL
+		`, ftsSnippet, ftsRank, ftsMatch)
+		// PostgreSQL: FTSSnippet, FTSRank, and FTSMatch each consume a "?" for plainto_tsquery
+		args = []interface{}{query, query, query}
+	} else {
+		sqlQuery = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       %s as snippet,
+			       %s as rank_score
+			FROM items_fts fts
+			JOIN items i ON i.rowid = fts.rowid
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE %s
+			AND i.deleted_at IS NULL
+		`, ftsSnippet, ftsRank, ftsMatch)
+		args = []interface{}{query}
+	}
 
 	if workspaceID != "" {
 		sqlQuery += " AND i.workspace_id = ?"
 		args = append(args, workspaceID)
 	}
 
-	sqlQuery += " ORDER BY rank LIMIT 50"
+	sqlQuery += " ORDER BY rank_score LIMIT 50"
 
-	rows, err := s.db.Query(sqlQuery, args...)
+	rows, err := s.db.Query(s.q(sqlQuery), args...)
 	if err != nil {
 		return nil, fmt.Errorf("search items: %w", err)
 	}
@@ -749,10 +803,10 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 		createdBy = "user"
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts)
+	`), id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts)
 	if err != nil {
 		return nil, fmt.Errorf("create item link: %w", err)
 	}
@@ -768,18 +822,20 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	var sourceItemNumber, targetItemNumber sql.NullInt64
 	var sourceStatus, targetStatus sql.NullString
 
-	err := s.db.QueryRow(`
+	srcStatus := s.dialect.JSONExtractText("s.fields", "status")
+	tgtStatus := s.dialect.JSONExtractText("t.fields", "status")
+	err := s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
-		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
+		       %s, %s
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id
 		JOIN items t ON t.id = l.target_id
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.id = ?
-	`, id).Scan(
+	`, srcStatus, tgtStatus)), id).Scan(
 		&link.ID, &link.WorkspaceID, &link.SourceID, &link.TargetID,
 		&link.LinkType, &link.CreatedBy, &createdAt,
 		&link.SourceTitle, &link.TargetTitle,
@@ -812,11 +868,13 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 }
 
 func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
-	rows, err := s.db.Query(`
+	srcStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
+	tgtStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
-		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
+		       %s, %s
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id
 		JOIN items t ON t.id = l.target_id
@@ -824,7 +882,7 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? OR l.target_id = ?
 		ORDER BY l.created_at DESC
-	`, itemID, itemID)
+	`, srcStatusExpr, tgtStatusExpr)), itemID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("get item links: %w", err)
 	}
@@ -868,7 +926,7 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 }
 
 func (s *Store) DeleteItemLink(id string) error {
-	result, err := s.db.Exec("DELETE FROM item_links WHERE id = ?", id)
+	result, err := s.db.Exec(s.q("DELETE FROM item_links WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete item link: %w", err)
 	}
@@ -891,17 +949,17 @@ func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*m
 	defer tx.Rollback()
 
 	// Delete existing phase link for this item (if any)
-	if _, err := tx.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID); err != nil {
+	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`), itemID); err != nil {
 		return nil, fmt.Errorf("delete existing phase link: %w", err)
 	}
 
 	// Insert new phase link
 	id := newID()
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.Exec(`
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
 		VALUES (?, ?, ?, ?, 'phase', ?, ?)
-	`, id, workspaceID, itemID, phaseID, createdBy, now); err != nil {
+	`), id, workspaceID, itemID, phaseID, createdBy, now); err != nil {
 		return nil, fmt.Errorf("insert phase link: %w", err)
 	}
 
@@ -924,7 +982,7 @@ func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*m
 
 // ClearPhaseLink removes the phase link for an item.
 func (s *Store) ClearPhaseLink(itemID string) error {
-	_, err := s.db.Exec(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`, itemID)
+	_, err := s.db.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`), itemID)
 	if err != nil {
 		return fmt.Errorf("clear phase link: %w", err)
 	}
@@ -933,18 +991,20 @@ func (s *Store) ClearPhaseLink(itemID string) error {
 
 // GetPhaseForItem returns the phase link for an item, or nil if not in a phase.
 func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
-	rows, err := s.db.Query(`
+	sStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
+	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
-		       json_extract(s.fields, '$.status'), json_extract(t.fields, '$.status')
+		       %s, %s
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id
 		JOIN items t ON t.id = l.target_id
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? AND l.link_type = 'phase'
-	`, itemID)
+	`, sStatusExpr, tStatusExpr)), itemID)
 	if err != nil {
 		return nil, fmt.Errorf("get phase for item: %w", err)
 	}
@@ -990,10 +1050,10 @@ func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
 // GetTaskPhaseMap returns a map of item ID -> phase item ID for all phase links
 // in a workspace. Used for efficient batch lookups (e.g., dashboard).
 func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT source_id, target_id FROM item_links
 		WHERE workspace_id = ? AND link_type = 'phase'
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get task phase map: %w", err)
 	}
@@ -1017,15 +1077,16 @@ func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
 func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err error) {
 	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
 	args := append(termArgs, phaseItemID)
-	err = s.db.QueryRow(`
+	statusExpr := s.dialect.JSONExtractText("i.fields", "status")
+	err = s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT COUNT(*),
-		       COUNT(CASE WHEN LOWER(json_extract(i.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
+		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
-	`, args...).Scan(&total, &done)
+	`, statusExpr, termPlaceholders)), args...).Scan(&total, &done)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get phase progress: %w", err)
 	}
@@ -1038,7 +1099,7 @@ func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err e
 func (s *Store) getTasksTerminalPlaceholders() (string, []any) {
 	// Try to find the tasks collection schema in any workspace
 	var schemaJSON sql.NullString
-	_ = s.db.QueryRow(`SELECT schema FROM collections WHERE slug = 'tasks' AND deleted_at IS NULL LIMIT 1`).Scan(&schemaJSON)
+	_ = s.db.QueryRow(s.q(`SELECT schema FROM collections WHERE slug = 'tasks' AND deleted_at IS NULL LIMIT 1`)).Scan(&schemaJSON)
 	if schemaJSON.Valid {
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(schemaJSON.String), &schema); err == nil {
@@ -1059,10 +1120,11 @@ type PhaseProgress struct {
 func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error) {
 	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
 	args := append(termArgs, workspaceID)
-	rows, err := s.db.Query(`
+	tStatusExpr2 := s.dialect.JSONExtractText("t.fields", "status")
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT p.id,
 		       COUNT(t.id),
-		       COUNT(CASE WHEN LOWER(json_extract(t.fields, '$.status')) IN (`+termPlaceholders+`) THEN 1 END)
+		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = 'phases'
 		LEFT JOIN item_links il ON il.link_type = 'phase' AND il.target_id = p.id
@@ -1072,7 +1134,7 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 		WHERE p.workspace_id = ?
 		  AND p.deleted_at IS NULL
 		GROUP BY p.id
-	`, args...)
+	`, tStatusExpr2, termPlaceholders)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all phases progress: %w", err)
 	}
@@ -1094,7 +1156,7 @@ func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error
 
 // GetTasksForPhase returns all non-deleted tasks linked to the given phase via item_links.
 func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -1110,7 +1172,7 @@ func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 		WHERE c.slug = 'tasks'
 		  AND i.deleted_at IS NULL
 		ORDER BY i.sort_order ASC, i.created_at ASC
-	`, phaseItemID)
+	`), phaseItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get tasks for phase: %w", err)
 	}
@@ -1131,16 +1193,16 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 
 	// Get next item_number in the target collection
 	var nextNumber int
-	err = tx.QueryRow(`SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?`, targetCollectionID).Scan(&nextNumber)
+	err = tx.QueryRow(s.q(`SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?`), targetCollectionID).Scan(&nextNumber)
 	if err != nil {
 		return nil, fmt.Errorf("get next item number: %w", err)
 	}
 
 	// Update the item
-	_, err = tx.Exec(`
+	_, err = tx.Exec(s.q(`
 		UPDATE items
 		SET collection_id = ?, fields = ?, item_number = ?, updated_at = ?
-		WHERE id = ? AND deleted_at IS NULL`,
+		WHERE id = ? AND deleted_at IS NULL`),
 		targetCollectionID, newFieldsJSON, nextNumber, time.Now().UTC().Format(time.RFC3339), itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
@@ -1158,15 +1220,15 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 // validSortField matches safe field names (alphanumeric + underscore, starting with a letter).
 var validSortField = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
-func buildItemSort(sort string) string {
+func buildItemSort(sort string, dialect Dialect) string {
 	if sort == "" {
 		return " ORDER BY i.pinned DESC, i.updated_at DESC"
 	}
 
 	var parts []string
-	for _, s := range strings.Split(sort, ",") {
-		s = strings.TrimSpace(s)
-		tokens := strings.SplitN(s, ":", 2)
+	for _, seg := range strings.Split(sort, ",") {
+		seg = strings.TrimSpace(seg)
+		tokens := strings.SplitN(seg, ":", 2)
 		col := tokens[0]
 		dir := "ASC"
 		if len(tokens) == 2 && strings.ToUpper(tokens[1]) == "DESC" {
@@ -1183,12 +1245,12 @@ func buildItemSort(sort string) string {
 		case "sort_order":
 			parts = append(parts, fmt.Sprintf("i.sort_order %s", dir))
 		default:
-			// For field-based sorting, use json_extract — validate the field name
+			// For field-based sorting, use dialect JSON extract — validate the field name
 			// to prevent SQL injection via crafted sort parameters.
 			if !validSortField.MatchString(col) {
 				continue // skip invalid field names
 			}
-			parts = append(parts, fmt.Sprintf("json_extract(i.fields, '$.%s') %s", col, dir))
+			parts = append(parts, fmt.Sprintf("%s %s", dialect.JSONExtractText("i.fields", col), dir))
 		}
 	}
 
@@ -1201,13 +1263,13 @@ func buildItemSort(sort string) string {
 // shouldCreateItemVersion mirrors ShouldCreateVersion but queries item_versions.
 func (s *Store) shouldCreateItemVersion(itemID, actor, source string) (bool, error) {
 	var createdBy, src, createdAt string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT created_by, source, created_at
 		FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, itemID).Scan(&createdBy, &src, &createdAt)
+	`), itemID).Scan(&createdBy, &src, &createdAt)
 	if err == sql.ErrNoRows {
 		return true, nil // No versions yet
 	}
@@ -1257,13 +1319,13 @@ func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]model
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM item_versions
 		WHERE item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?
-	`, itemID, ts, ts, beforeID, limit)
+	`), itemID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1286,12 +1348,12 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 
 // ListItemVersions returns all versions for an item.
 func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC
-	`, itemID)
+	`), itemID)
 	if err != nil {
 		return nil, err
 	}

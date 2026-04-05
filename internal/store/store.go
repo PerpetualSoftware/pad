@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 	"github.com/xarmian/pad/internal/collections"
 	_ "modernc.org/sqlite"
 )
@@ -15,10 +16,21 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+//go:embed pgmigrations/*.sql
+var pgMigrationsFS embed.FS
+
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect Dialect
 }
 
+// D returns the store's dialect for building backend-specific SQL.
+func (s *Store) D() Dialect { return s.dialect }
+
+// DB returns the underlying *sql.DB (for use in migrations/testing).
+func (s *Store) DB() *sql.DB { return s.db }
+
+// New creates a Store backed by SQLite at the given path.
 func New(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -35,9 +47,43 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, dialect: &sqliteDialect{}}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+
+	if err := s.backfillItemNumbers(); err != nil {
+		return nil, fmt.Errorf("backfill item numbers: %w", err)
+	}
+
+	if err := s.backfillWorkspaceOwners(); err != nil {
+		return nil, fmt.Errorf("backfill workspace owners: %w", err)
+	}
+
+	return s, nil
+}
+
+// NewPostgres creates a Store backed by PostgreSQL.
+// The connStr should be a PostgreSQL connection string (e.g. "postgres://user:pass@host/db").
+func NewPostgres(connStr string) (*Store, error) {
+	db, err := sql.Open("pgx", connStr)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+
+	// Verify connection
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	// Connection pool tuning for cloud deployment
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	s := &Store{db: db, dialect: &postgresDialect{}}
+	if err := s.migratePostgres(); err != nil {
+		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
 
 	if err := s.backfillItemNumbers(); err != nil {
@@ -115,6 +161,49 @@ func (s *Store) migrate() error {
 
 		// Record migration
 		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now())
+		if err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+// migratePostgres applies PostgreSQL migrations.
+// PostgreSQL supports multi-statement execution natively, so we don't need execMulti.
+func (s *Store) migratePostgres() error {
+	// Create migrations tracking table
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	migrations := []string{
+		"001_initial.sql",
+	}
+
+	for _, name := range migrations {
+		var count int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = $1", name).Scan(&count); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if count > 0 {
+			continue
+		}
+
+		data, err := pgMigrationsFS.ReadFile("pgmigrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+
+		if _, err := s.db.Exec(string(data)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+
+		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)", name, now())
 		if err != nil {
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
@@ -241,6 +330,11 @@ func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, exclude
 
 func isAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+// q rebinds a query to the store's dialect (converts "?" to "$1", "$2", etc. for PostgreSQL).
+func (s *Store) q(query string) string {
+	return s.dialect.Rebind(query)
 }
 
 func newID() string {

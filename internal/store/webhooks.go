@@ -17,10 +17,10 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*
 		evts = `["*"]`
 	}
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO webhooks (id, workspace_id, url, secret, events, active, created_at, updated_at, failure_count)
 		VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0)
-	`, id, workspaceID, input.URL, input.Secret, evts, ts, ts)
+	`), id, workspaceID, input.URL, input.Secret, evts, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
@@ -35,11 +35,11 @@ func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 	var createdAt, updatedAt string
 	var lastTriggeredAt *string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
 		FROM webhooks
 		WHERE id = ?
-	`, id).Scan(
+	`), id).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
 		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
 	)
@@ -59,12 +59,12 @@ func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 
 // ListWebhooks returns all webhooks for a workspace.
 func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
 		FROM webhooks
 		WHERE workspace_id = ?
 		ORDER BY created_at ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list webhooks: %w", err)
 	}
@@ -94,7 +94,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 
 // DeleteWebhook removes a webhook by ID.
 func (s *Store) DeleteWebhook(id string) error {
-	result, err := s.db.Exec("DELETE FROM webhooks WHERE id = ?", id)
+	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete webhook: %w", err)
 	}
@@ -112,24 +112,24 @@ func (s *Store) DeleteWebhook(id string) error {
 func (s *Store) UpdateWebhookFailure(id string, failed bool) error {
 	ts := now()
 	if failed {
-		_, err := s.db.Exec(`
+		_, err := s.db.Exec(s.q(`
 			UPDATE webhooks
 			SET failure_count = failure_count + 1,
 			    updated_at = ?,
 			    active = CASE WHEN failure_count + 1 >= 10 THEN 0 ELSE active END
 			WHERE id = ?
-		`, ts, id)
+		`), ts, id)
 		if err != nil {
 			return fmt.Errorf("update webhook failure: %w", err)
 		}
 	} else {
-		_, err := s.db.Exec(`
+		_, err := s.db.Exec(s.q(`
 			UPDATE webhooks
 			SET failure_count = 0,
 			    last_triggered_at = ?,
 			    updated_at = ?
 			WHERE id = ?
-		`, ts, ts, id)
+		`), ts, ts, id)
 		if err != nil {
 			return fmt.Errorf("update webhook success: %w", err)
 		}

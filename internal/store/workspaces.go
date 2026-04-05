@@ -8,12 +8,12 @@ import (
 )
 
 func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, name, slug, description, settings, created_at, updated_at
 		FROM workspaces
 		WHERE deleted_at IS NULL
 		ORDER BY name ASC
-	`)
+	`))
 	if err != nil {
 		return nil, err
 	}
@@ -69,10 +69,10 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 		}
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO workspaces (id, name, slug, description, settings, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, input.Name, finalSlug, input.Description, settings, ts, ts)
+	`), id, input.Name, finalSlug, input.Description, settings, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert workspace: %w", err)
 	}
@@ -84,7 +84,7 @@ func (s *Store) uniqueWorkspaceSlug(baseSlug string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		err := s.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ? AND deleted_at IS NULL", slug).Scan(&count)
+		err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ? AND deleted_at IS NULL"), slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}
@@ -100,11 +100,11 @@ func (s *Store) GetWorkspaceBySlug(slug string) (*models.Workspace, error) {
 	var createdAt, updatedAt string
 	var deletedAt *string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, name, slug, description, settings, created_at, updated_at, deleted_at
 		FROM workspaces
 		WHERE slug = ? AND deleted_at IS NULL
-	`, slug).Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
+	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -124,11 +124,11 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 	var createdAt, updatedAt string
 	var deletedAt *string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, name, slug, description, settings, created_at, updated_at, deleted_at
 		FROM workspaces
 		WHERE id = ? AND deleted_at IS NULL
-	`, id).Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
+	`), id).Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -178,10 +178,10 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 		w.Settings = settings
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		UPDATE workspaces SET name = ?, description = ?, settings = ?, updated_at = ?
 		WHERE id = ?
-	`, w.Name, w.Description, w.Settings, ts, w.ID)
+	`), w.Name, w.Description, w.Settings, ts, w.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -191,10 +191,10 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 
 func (s *Store) DeleteWorkspace(slug string) error {
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE workspaces SET deleted_at = ?, updated_at = ?
 		WHERE slug = ? AND deleted_at IS NULL
-	`, ts, ts, slug)
+	`), ts, ts, slug)
 	if err != nil {
 		return err
 	}
