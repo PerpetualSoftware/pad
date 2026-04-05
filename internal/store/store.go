@@ -332,6 +332,21 @@ func isAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
 }
 
+// isValidFieldKey checks that a field name contains only safe characters
+// (alphanumeric, underscore, hyphen). This prevents SQL injection when
+// field keys from user input are interpolated into JSON path expressions.
+func isValidFieldKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, c := range key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // q rebinds a query to the store's dialect (converts "?" to "$1", "$2", etc. for PostgreSQL).
 func (s *Store) q(query string) string {
 	return s.dialect.Rebind(query)

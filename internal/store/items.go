@@ -421,6 +421,11 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 
 	// Field filters — supports comma-separated values as OR
 	for key, value := range params.Fields {
+		// Sanitize the key to prevent SQL injection — field names must be
+		// alphanumeric/underscore only (user-controlled from query params).
+		if !isValidFieldKey(key) {
+			continue
+		}
 		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
 		if strings.Contains(value, ",") {
 			values := strings.Split(value, ",")
@@ -513,7 +518,13 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.CollectionSlug)
 	}
 
-	query += " ORDER BY " + ftsRank
+	// SQLite bm25(): more negative = more relevant → ASC (default).
+	// PostgreSQL ts_rank(): higher = more relevant → DESC.
+	if s.dialect.Driver() == DriverPostgres {
+		query += " ORDER BY " + ftsRank + " DESC"
+	} else {
+		query += " ORDER BY " + ftsRank
+	}
 
 	if params.Limit > 0 {
 		query += " LIMIT ?"
@@ -761,7 +772,11 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		args = append(args, workspaceID)
 	}
 
-	sqlQuery += " ORDER BY rank_score LIMIT 50"
+	if s.dialect.Driver() == DriverPostgres {
+		sqlQuery += " ORDER BY rank_score DESC LIMIT 50"
+	} else {
+		sqlQuery += " ORDER BY rank_score LIMIT 50"
+	}
 
 	rows, err := s.db.Query(s.q(sqlQuery), args...)
 	if err != nil {

@@ -97,7 +97,15 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 	}
 
 	if params.Query != "" {
-		query += fmt.Sprintf(" ORDER BY rank, d.%s %s", sortCol, order)
+		if s.dialect.Driver() == DriverPostgres {
+			// PostgreSQL ts_rank(): higher = more relevant → DESC
+			ftsRank := s.dialect.FTSRank("d", "search_vector")
+			query += fmt.Sprintf(" ORDER BY %s DESC, d.%s %s", ftsRank, sortCol, order)
+			args = append(args, params.Query) // extra placeholder for ts_rank
+		} else {
+			// SQLite FTS5: rank is a hidden column on the FTS JOIN (ascending = better)
+			query += fmt.Sprintf(" ORDER BY rank, d.%s %s", sortCol, order)
+		}
 	} else {
 		query += fmt.Sprintf(" ORDER BY pinned DESC, %s %s", sortCol, order)
 	}
