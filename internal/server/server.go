@@ -28,7 +28,7 @@ type Server struct {
 	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
 	httpServer    *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS         fs.FS                // embedded web UI static files (optional)
-	events        *events.Bus          // real-time event bus (optional)
+	events        events.EventBus       // real-time event bus (optional)
 	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
 	email         *email.Sender        // transactional email sender (optional)
 	rateLimiters  *RateLimiters        // per-endpoint rate limiters
@@ -60,7 +60,7 @@ func (s *Server) SetBaseURL(url string) {
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
-func (s *Server) SetEventBus(bus *events.Bus) {
+func (s *Server) SetEventBus(bus events.EventBus) {
 	s.events = bus
 }
 

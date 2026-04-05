@@ -30,6 +30,7 @@ import (
 	"regexp"
 
 	"github.com/xarmian/pad/internal/email"
+	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/models"
@@ -207,7 +208,22 @@ func serveCmd() *cobra.Command {
 			srv.SetSecureCookies(cfg.SecureCookies)
 
 			// Attach event bus for real-time SSE
-			eventBus := events.New()
+			var eventBus events.EventBus
+			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
+				opts, err := redis.ParseURL(redisURL)
+				if err != nil {
+					return fmt.Errorf("invalid PAD_REDIS_URL: %w", err)
+				}
+				rc := redis.NewClient(opts)
+				if err := rc.Ping(context.Background()).Err(); err != nil {
+					return fmt.Errorf("redis connection failed: %w", err)
+				}
+				eventBus = events.NewRedisBus(rc)
+				slog.Info("Event bus using Redis pub/sub", "url", redisURL)
+			} else {
+				eventBus = events.New()
+				slog.Info("Event bus using in-memory (single instance)")
+			}
 			srv.SetEventBus(eventBus)
 
 			// Attach webhook dispatcher for outgoing notifications

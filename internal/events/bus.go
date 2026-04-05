@@ -47,29 +47,49 @@ type Event struct {
 	Timestamp   int64  `json:"timestamp"`
 }
 
+// EventBus is the interface for pub/sub event distribution.
+// Implementations include MemoryBus (in-process) and RedisBus (cross-instance).
+type EventBus interface {
+	// Subscribe registers a new subscriber for the given workspace.
+	// Returns a buffered channel that will receive events for that workspace.
+	Subscribe(workspaceID string) chan Event
+
+	// Unsubscribe removes a subscriber and closes its channel.
+	Unsubscribe(ch chan Event)
+
+	// Publish sends an event to all subscribers for the event's workspace.
+	Publish(event Event)
+
+	// Close shuts down the event bus and cleans up resources.
+	Close()
+
+	// SubscriberCount returns the number of active local subscribers.
+	SubscriberCount() int
+}
+
 // subscriber wraps a channel with its workspace filter.
 type subscriber struct {
 	ch          chan Event
 	workspaceID string
 }
 
-// Bus is an in-process pub/sub event bus that fans out events
-// to all subscribers for a given workspace.
-type Bus struct {
+// MemoryBus is an in-process pub/sub event bus that fans out events
+// to all subscribers for a given workspace. Suitable for single-instance deployments.
+type MemoryBus struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
 }
 
-// New creates a new EventBus.
-func New() *Bus {
-	return &Bus{
+// New creates a new in-memory EventBus.
+func New() *MemoryBus {
+	return &MemoryBus{
 		subscribers: make(map[chan Event]*subscriber),
 	}
 }
 
 // Subscribe registers a new subscriber for the given workspace.
 // Returns a buffered channel that will receive events for that workspace.
-func (b *Bus) Subscribe(workspaceID string) chan Event {
+func (b *MemoryBus) Subscribe(workspaceID string) chan Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -82,7 +102,7 @@ func (b *Bus) Subscribe(workspaceID string) chan Event {
 }
 
 // Unsubscribe removes a subscriber and closes its channel.
-func (b *Bus) Unsubscribe(ch chan Event) {
+func (b *MemoryBus) Unsubscribe(ch chan Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -95,7 +115,7 @@ func (b *Bus) Unsubscribe(ch chan Event) {
 // Publish sends an event to all subscribers for the event's workspace.
 // Non-blocking: if a subscriber's channel is full, the event is dropped
 // and a warning is logged.
-func (b *Bus) Publish(event Event) {
+func (b *MemoryBus) Publish(event Event) {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
 	}
@@ -117,7 +137,7 @@ func (b *Bus) Publish(event Event) {
 
 // Close shuts down the event bus by closing all subscriber channels.
 // SSE handler goroutines will see the channel close and exit cleanly.
-func (b *Bus) Close() {
+func (b *MemoryBus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -128,7 +148,7 @@ func (b *Bus) Close() {
 }
 
 // SubscriberCount returns the number of active subscribers (for testing/debugging).
-func (b *Bus) SubscriberCount() int {
+func (b *MemoryBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.subscribers)
