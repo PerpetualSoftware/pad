@@ -108,8 +108,8 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 		vid := newID()
 		_, err = tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
-			VALUES (?, ?, ?, '', ?, ?, 0, ?)
-		`), vid, id, input.Content, createdBy, source, ts)
+			VALUES (?, ?, ?, '', ?, ?, ?, ?)
+		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts)
 		if err != nil {
 			return nil, fmt.Errorf("create initial version: %w", err)
 		}
@@ -574,17 +574,17 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		if shouldVersion {
 			vid := newID()
 			versionContent := existing.Content
-			isDiff := 0
+			isDiff := false
 			patch := diff.CreateReversePatch(existing.Content, *input.Content)
 			if diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
-				isDiff = 1
+				isDiff = true
 			}
 
 			_, err = tx.Exec(s.q(`
 				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, isDiff, ts)
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts)
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}

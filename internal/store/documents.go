@@ -35,9 +35,9 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 	}
 	if params.Pinned != nil {
 		if *params.Pinned {
-			query += " AND pinned = 1"
+			query += " AND pinned = TRUE"
 		} else {
-			query += " AND pinned = 0"
+			query += " AND pinned = FALSE"
 		}
 	}
 	if params.Query != "" {
@@ -248,17 +248,17 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 			// Store a reverse diff (patch from new → old) instead of full content.
 			// Falls back to full content if the diff isn't meaningfully smaller.
 			versionContent := existing.Content
-			isDiff := 0
+			isDiff := false
 			patch := diff.CreateReversePatch(existing.Content, *input.Content)
 			if diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
-				isDiff = 1
+				isDiff = true
 			}
 
 			_, err = tx.Exec(s.q(`
 				INSERT INTO versions (id, document_id, content, change_summary, created_by, source, is_diff, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, isDiff, ts)
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts)
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
@@ -530,7 +530,7 @@ func (s *Store) GetContext(workspaceID string, types []string, includeContent bo
 		       created_at, updated_at
 		FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL
-		AND (status = 'active' OR pinned = 1)
+		AND (status = 'active' OR pinned = TRUE)
 	`
 	args := []interface{}{workspaceID}
 

@@ -185,15 +185,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		newCollID := newID()
 		collMap[c.ID] = newCollID
 
-		isDefault := 0
-		if c.IsDefault {
-			isDefault = 1
-		}
-
 		_, err := tx.Exec(s.q(`
 			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, isDefault,
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault),
 			c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
@@ -209,11 +204,6 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 			continue // skip orphaned items
 		}
 
-		pinned := 0
-		if it.Pinned {
-			pinned = 1
-		}
-
 		// On first pass, parent_id may refer to an item not yet created, so use empty
 		parentID := ""
 		if it.ParentID != "" {
@@ -225,7 +215,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)`),
-			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, pinned, it.SortOrder,
+			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, it.ItemNumber,
 			it.CreatedAt, it.UpdatedAt)
 		if err != nil {
@@ -294,14 +284,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		if newItemID == "" {
 			continue
 		}
-		isDiff := 0
-		if ver.IsDiff {
-			isDiff = 1
-		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
-			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, isDiff,
+			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
 			ver.CreatedAt)
 		if err != nil {
 			// Log detail but skip — version history is non-critical

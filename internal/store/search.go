@@ -165,7 +165,13 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		}
 	}
 
-	query += " ORDER BY rank_score LIMIT 50"
+	// SQLite bm25() returns negative values (more negative = more relevant) → ASC.
+	// PostgreSQL ts_rank() returns positive values (higher = more relevant) → DESC.
+	if s.dialect.Driver() == DriverPostgres {
+		query += " ORDER BY rank_score DESC LIMIT 50"
+	} else {
+		query += " ORDER BY rank_score LIMIT 50"
+	}
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {

@@ -116,7 +116,7 @@ func (s *Store) UpdateWebhookFailure(id string, failed bool) error {
 			UPDATE webhooks
 			SET failure_count = failure_count + 1,
 			    updated_at = ?,
-			    active = CASE WHEN failure_count + 1 >= 10 THEN 0 ELSE active END
+			    active = CASE WHEN failure_count + 1 >= 10 THEN FALSE ELSE active END
 			WHERE id = ?
 		`), ts, id)
 		if err != nil {
