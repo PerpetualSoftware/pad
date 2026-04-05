@@ -20,20 +20,24 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	router    *chi.Mux
-	webFS     fs.FS                // embedded web UI static files (optional)
-	events    *events.Bus          // real-time event bus (optional)
-	webhooks  *webhooks.Dispatcher // webhook dispatcher (optional)
-	email     *email.Sender        // transactional email sender (optional)
-	baseURL   string               // public base URL for generating links (e.g. invite URLs)
-	version   string               // release version (e.g. "dev", "1.2.3")
-	commit    string               // git commit hash
-	buildTime string               // build timestamp
+	store        *store.Store
+	router       *chi.Mux
+	webFS        fs.FS                // embedded web UI static files (optional)
+	events       *events.Bus          // real-time event bus (optional)
+	webhooks     *webhooks.Dispatcher // webhook dispatcher (optional)
+	email        *email.Sender        // transactional email sender (optional)
+	rateLimiters *RateLimiters        // per-endpoint rate limiters
+	baseURL      string               // public base URL for generating links (e.g. invite URLs)
+	version      string               // release version (e.g. "dev", "1.2.3")
+	commit       string               // git commit hash
+	buildTime    string               // build timestamp
 }
 
 func New(s *store.Store) *Server {
-	srv := &Server{store: s}
+	srv := &Server{
+		store:        s,
+		rateLimiters: NewRateLimiters(),
+	}
 	srv.setupRouter()
 	return srv
 }
@@ -95,6 +99,7 @@ func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 
 	// Middleware
+	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
@@ -107,6 +112,7 @@ func (s *Server) setupRouter() {
 	}))
 	r.Use(s.TokenAuth)
 	r.Use(s.SessionAuth)
+	r.Use(s.RateLimit)
 	r.Use(s.CSRFProtect)
 	r.Use(s.RequireAuth)
 	r.Use(jsonContentType)
