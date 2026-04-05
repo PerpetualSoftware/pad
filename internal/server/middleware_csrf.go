@@ -82,7 +82,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 
 // setCSRFCookie writes a new CSRF token cookie. The cookie is NOT HttpOnly
 // so that JavaScript can read it and send it back as a header.
-func setCSRFCookie(w http.ResponseWriter, ttl int) {
+func setCSRFCookie(w http.ResponseWriter, ttl int, secure bool) {
 	token := generateCSRFToken()
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookie,
@@ -90,6 +90,7 @@ func setCSRFCookie(w http.ResponseWriter, ttl int) {
 		Path:     "/",
 		MaxAge:   ttl,
 		HttpOnly: false, // Must be readable by JS
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }

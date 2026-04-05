@@ -191,6 +191,8 @@ func serveCmd() *cobra.Command {
 			srv := server.New(s)
 			srv.SetVersion(version, commit, buildTime)
 			srv.SetBaseURL(cfg.BaseURL())
+			srv.SetCORSOrigins(cfg.CORSOrigins)
+			srv.SetSecureCookies(cfg.SecureCookies)
 
 			// Attach event bus for real-time SSE
 			srv.SetEventBus(events.New())

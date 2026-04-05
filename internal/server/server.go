@@ -20,17 +20,19 @@ import (
 )
 
 type Server struct {
-	store        *store.Store
-	router       *chi.Mux
-	webFS        fs.FS                // embedded web UI static files (optional)
-	events       *events.Bus          // real-time event bus (optional)
-	webhooks     *webhooks.Dispatcher // webhook dispatcher (optional)
-	email        *email.Sender        // transactional email sender (optional)
-	rateLimiters *RateLimiters        // per-endpoint rate limiters
-	baseURL      string               // public base URL for generating links (e.g. invite URLs)
-	version      string               // release version (e.g. "dev", "1.2.3")
-	commit       string               // git commit hash
-	buildTime    string               // build timestamp
+	store         *store.Store
+	router        *chi.Mux
+	webFS         fs.FS                // embedded web UI static files (optional)
+	events        *events.Bus          // real-time event bus (optional)
+	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
+	email         *email.Sender        // transactional email sender (optional)
+	rateLimiters  *RateLimiters        // per-endpoint rate limiters
+	baseURL       string               // public base URL for generating links (e.g. invite URLs)
+	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
+	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
+	version       string               // release version (e.g. "dev", "1.2.3")
+	commit        string               // git commit hash
+	buildTime     string               // build timestamp
 }
 
 func New(s *store.Store) *Server {
@@ -69,6 +71,16 @@ func (s *Server) SetEmailSender(e *email.Sender) {
 	s.email = e
 }
 
+// SetCORSOrigins configures allowed CORS origins (comma-separated).
+func (s *Server) SetCORSOrigins(origins string) {
+	s.corsOrigins = origins
+}
+
+// SetSecureCookies enables the Secure flag on all cookies.
+func (s *Server) SetSecureCookies(secure bool) {
+	s.secureCookies = secure
+}
+
 // reconfigureEmail reads email settings from the platform_settings table
 // and updates (or creates) the email sender. Called after admin settings change.
 func (s *Server) reconfigureEmail() {
@@ -103,10 +115,14 @@ func (s *Server) setupRouter() {
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
+	r.Use(SecurityHeaders)
+	if s.secureCookies {
+		r.Use(StrictTransportSecurity)
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:*", "http://127.0.0.1:*"},
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
+		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))

@@ -81,11 +81,12 @@ func (s *Server) createAuthSession(w http.ResponseWriter, user *models.User, ttl
 		Path:     "/",
 		MaxAge:   int(ttl.Seconds()),
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
 
 	// Set CSRF cookie alongside the session cookie
-	setCSRFCookie(w, int(ttl.Seconds()))
+	setCSRFCookie(w, int(ttl.Seconds()), s.secureCookies)
 
 	return token, nil
 }
@@ -380,6 +381,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -612,11 +614,12 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   int(webSessionTTL.Seconds()),
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
 
 	// Set CSRF cookie alongside the new session
-	setCSRFCookie(w, int(webSessionTTL.Seconds()))
+	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,
