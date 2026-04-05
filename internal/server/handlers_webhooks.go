@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/webhooks"
 )
 
 // dispatchWebhook fires a webhook event if a dispatcher is configured.
@@ -20,6 +21,9 @@ func (s *Server) dispatchWebhook(workspaceID, event string, data interface{}) {
 
 // handleCreateWebhook registers a new webhook for a workspace.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -36,9 +40,15 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate URL to prevent SSRF attacks
+	if err := webhooks.ValidateWebhookURL(input.URL); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid webhook URL: "+err.Error())
+		return
+	}
+
 	hook, err := s.store.CreateWebhook(workspaceID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -54,7 +64,7 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 	hooks, err := s.store.ListWebhooks(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if hooks == nil {
@@ -66,6 +76,9 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteWebhook removes a webhook by ID.
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -77,7 +90,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -86,6 +99,9 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleTestWebhook sends a test payload to the specified webhook.
 func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -94,7 +110,7 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	webhookID := chi.URLParam(r, "webhookID")
 	hook, err := s.store.GetWebhook(webhookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if hook == nil {

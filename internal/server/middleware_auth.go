@@ -283,6 +283,16 @@ func requireRole(r *http.Request, minRole string) bool {
 	return roleLevel(role) >= roleLevel(minRole)
 }
 
+// requireMinRole checks role and writes a 403 if insufficient.
+// Returns true if the request should continue, false if it was rejected.
+func requireMinRole(w http.ResponseWriter, r *http.Request, minRole string) bool {
+	if requireRole(r, minRole) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+	return false
+}
+
 // roleLevel returns a numeric level for role comparison.
 // Higher values indicate more permissions.
 func roleLevel(role string) int {

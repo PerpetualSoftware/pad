@@ -17,14 +17,14 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 
 	members, err := s.store.ListWorkspaceMembers(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
 	// Include pending invitations, enriched with join URLs
 	invitations, err := s.store.ListWorkspaceInvitations(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -91,7 +91,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	// Check if user with this email already exists
 	existingUser, err := s.store.GetUserByEmail(input.Email)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -103,7 +103,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.AddWorkspaceMember(workspaceID, existingUser.ID, input.Role); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -119,7 +119,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	// User doesn't exist — create an invitation
 	inv, err := s.store.CreateInvitation(workspaceID, input.Email, input.Role, inviterID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -149,7 +149,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 				wsName = ws.Name
 			}
 			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL); err != nil {
-				log.Printf("Failed to send invitation email to %s: %v", inv.Email, err)
+				log.Printf("Failed to send invitation email: %v", err)
 			}
 		}()
 	}
@@ -248,7 +248,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 
 	inv, err := s.store.GetInvitationByCode(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if inv == nil {
@@ -264,13 +264,13 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 
 	// Add user to workspace
 	if err := s.store.AddWorkspaceMember(inv.WorkspaceID, user.ID, inv.Role); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
 	// Mark invitation as accepted
 	if err := s.store.AcceptInvitation(inv.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

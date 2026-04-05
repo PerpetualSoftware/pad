@@ -19,7 +19,7 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -29,7 +29,7 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 
 	views, err := s.store.ListViews(workspaceID, coll.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if views == nil {
@@ -41,6 +41,9 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateView creates a new saved view for a collection.
 func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -49,7 +52,7 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -72,7 +75,7 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 
 	view, err := s.store.CreateView(workspaceID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -81,6 +84,9 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateView modifies an existing saved view.
 func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -100,7 +106,7 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "View not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -109,6 +115,9 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteView removes a saved view.
 func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -121,7 +130,7 @@ func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "View not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

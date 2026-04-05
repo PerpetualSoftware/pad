@@ -31,7 +31,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if result == nil {
@@ -52,7 +52,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -69,7 +69,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if result == nil {
@@ -82,6 +82,9 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 // handleCreateItem creates a new item in a collection, validating fields against the schema.
 func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -90,7 +93,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -163,7 +166,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "An item with this title already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -182,7 +185,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	if err := s.enrichItemForResponse(item); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -199,7 +202,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -208,7 +211,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.enrichItemForResponse(item); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -217,6 +220,9 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateItem updates an existing item (fields, content, or both).
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -225,7 +231,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -317,7 +323,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.store.UpdateItem(item.ID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if updated == nil {
@@ -376,7 +382,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.enrichItemForResponse(updated); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -385,6 +391,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItem archives (soft-deletes) an item.
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -393,7 +402,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -402,7 +411,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.DeleteItem(item.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -416,6 +425,9 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 // handleRestoreItem restores an archived item.
 func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -426,7 +438,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	// We need to find the item even if deleted (for restore).
 	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -440,7 +452,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Item not found or not archived")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -449,7 +461,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source)
 
 	if err := s.enrichItemForResponse(restored); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -458,6 +470,9 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 // handleMoveItem moves an item to a different collection with field migration.
 func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -545,7 +560,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Move the item
 	moved, err := s.store.MoveItem(item.ID, targetColl.ID, string(fieldsJSON))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -559,7 +574,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
 	if err := s.enrichItemForResponse(moved); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -597,7 +612,7 @@ func (s *Server) handlePhasesProgress(w http.ResponseWriter, r *http.Request) {
 
 	progress, err := s.store.GetAllPhasesProgress(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, progress)
@@ -613,7 +628,7 @@ func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -623,7 +638,7 @@ func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := s.store.GetTasksForPhase(item.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if tasks == nil {
@@ -926,7 +941,7 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
@@ -947,7 +962,7 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 
 	activities, err := s.store.ListDocumentActivity(item.ID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if activities == nil {

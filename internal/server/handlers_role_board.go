@@ -8,6 +8,9 @@ import (
 
 // handleRoleBoardReorder updates role_sort_order for items within a lane.
 func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -20,7 +23,7 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.store.UpdateRoleSortOrder(workspaceID, updates); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -29,6 +32,9 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 
 // handleRoleBoardLaneReorder updates sort_order for roles (lane ordering).
 func (s *Server) handleRoleBoardLaneReorder(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -41,7 +47,7 @@ func (s *Server) handleRoleBoardLaneReorder(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := s.store.UpdateAgentRoleOrder(workspaceID, updates); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -62,7 +68,7 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 
 	lanes, err := s.store.GetRoleBoardItems(workspaceID, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

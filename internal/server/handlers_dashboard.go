@@ -137,7 +137,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// Build a schema map for terminal status lookups
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	schemaMap := buildSchemaMap(collections)
@@ -156,7 +156,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// Summary: items grouped by collection slug and status field
 	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

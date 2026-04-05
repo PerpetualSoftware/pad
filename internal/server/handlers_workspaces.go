@@ -101,7 +101,7 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if user != nil && user.Role != "admin" {
 		workspaces, err := s.store.GetUserWorkspaces(user.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		if workspaces == nil {
@@ -114,7 +114,7 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	// Admin users (or fresh-install with no users) see all workspaces.
 	workspaces, err := s.store.ListWorkspaces()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if workspaces == nil {
@@ -141,7 +141,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := s.store.CreateWorkspace(input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	ws, err := s.store.GetWorkspaceBySlug(slug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if ws == nil {
@@ -174,6 +174,9 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 
 	var input models.WorkspaceUpdate
@@ -188,7 +191,7 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := s.store.UpdateWorkspace(slug, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if ws == nil {
@@ -202,6 +205,9 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 	err := s.store.DeleteWorkspace(slug)
 	if err != nil {
@@ -212,6 +218,9 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 	export, err := s.store.ExportWorkspace(slug)
 	if err != nil {

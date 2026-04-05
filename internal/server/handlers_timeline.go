@@ -55,7 +55,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 
 	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -77,13 +77,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 
 	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
 	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

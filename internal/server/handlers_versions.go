@@ -19,7 +19,7 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	// Resolve diffs so API consumers always get full content
 	versions, err := s.store.ListVersionsResolved(doc.ID, doc.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if versions == nil {
@@ -39,7 +39,7 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	// Resolve diffs to return full content
 	version, err := s.store.GetVersionResolved(versionID, doc.ID, doc.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if version == nil {
@@ -59,7 +59,7 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	// Use resolved versions so diffs work correctly
 	versions, err := s.store.ListVersionsResolved(doc.ID, doc.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

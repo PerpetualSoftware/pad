@@ -13,9 +13,19 @@ type SearchResult struct {
 	Rank    float64     `json:"rank"`
 }
 
+// placeholders returns a comma-separated string of SQL placeholders: "?, ?, ?"
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	s := strings.Repeat("?, ", n)
+	return s[:len(s)-2] // trim trailing ", "
+}
+
 type SearchParams struct {
-	Query     string
-	Workspace string // workspace slug, optional
+	Query        string
+	Workspace    string   // workspace slug, optional — scopes to single workspace
+	WorkspaceIDs []string // workspace IDs to scope results to (used when no specific workspace is given)
 }
 
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
@@ -43,6 +53,11 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		if params.Workspace != "" {
 			refQuery += ` AND i.workspace_id = (SELECT id FROM workspaces WHERE slug = ? AND deleted_at IS NULL)`
 			refArgs = append(refArgs, params.Workspace)
+		} else if len(params.WorkspaceIDs) > 0 {
+			refQuery += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
+			for _, id := range params.WorkspaceIDs {
+				refArgs = append(refArgs, id)
+			}
 		}
 
 		refRows, err := s.db.Query(refQuery, refArgs...)
@@ -104,6 +119,11 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			)
 		`
 		args = append(args, params.Workspace)
+	} else if len(params.WorkspaceIDs) > 0 {
+		query += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
+		for _, id := range params.WorkspaceIDs {
+			args = append(args, id)
+		}
 	}
 
 	query += " ORDER BY rank LIMIT 50"

@@ -36,6 +36,10 @@ type Config struct {
 	MailerooAPIKey string `toml:"maileroo_api_key"`
 	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
 	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
+
+	// Security
+	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
+	SecureCookies  bool   `toml:"secure_cookies"`  // Set Secure flag on cookies (requires TLS)
 }
 
 func DefaultConfig() *Config {
@@ -117,6 +121,12 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_EMAIL_FROM_NAME"); v != "" {
 		cfg.EmailFromName = v
+	}
+	if v := os.Getenv("PAD_CORS_ORIGINS"); v != "" {
+		cfg.CORSOrigins = v
+	}
+	if v := os.Getenv("PAD_SECURE_COOKIES"); v == "true" || v == "1" {
+		cfg.SecureCookies = true
 	}
 
 	return cfg, nil

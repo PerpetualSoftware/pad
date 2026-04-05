@@ -18,7 +18,7 @@ func (s *Server) handleListAgentRoles(w http.ResponseWriter, r *http.Request) {
 
 	roles, err := s.store.ListAgentRoles(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -27,6 +27,9 @@ func (s *Server) handleListAgentRoles(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateAgentRole creates a new agent role in a workspace.
 func (s *Server) handleCreateAgentRole(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -45,7 +48,7 @@ func (s *Server) handleCreateAgentRole(w http.ResponseWriter, r *http.Request) {
 
 	role, err := s.store.CreateAgentRole(workspaceID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -62,7 +65,7 @@ func (s *Server) handleGetAgentRole(w http.ResponseWriter, r *http.Request) {
 	roleID := chi.URLParam(r, "roleID")
 	role, err := s.store.GetAgentRole(workspaceID, roleID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if role == nil {
@@ -75,6 +78,9 @@ func (s *Server) handleGetAgentRole(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateAgentRole updates an existing agent role.
 func (s *Server) handleUpdateAgentRole(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -89,7 +95,7 @@ func (s *Server) handleUpdateAgentRole(w http.ResponseWriter, r *http.Request) {
 
 	role, err := s.store.UpdateAgentRole(workspaceID, roleID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if role == nil {
@@ -102,6 +108,9 @@ func (s *Server) handleUpdateAgentRole(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteAgentRole removes an agent role from a workspace.
 func (s *Server) handleDeleteAgentRole(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -113,7 +122,7 @@ func (s *Server) handleDeleteAgentRole(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Agent role not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

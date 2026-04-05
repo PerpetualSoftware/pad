@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -20,22 +21,27 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	router    *chi.Mux
-	webFS     fs.FS                // embedded web UI static files (optional)
-	events    *events.Bus          // real-time event bus (optional)
-	webhooks  *webhooks.Dispatcher // webhook dispatcher (optional)
-	email     *email.Sender        // transactional email sender (optional)
-	baseURL   string               // public base URL for generating links (e.g. invite URLs)
-	version   string               // release version (e.g. "dev", "1.2.3")
-	commit    string               // git commit hash
-	buildTime string               // build timestamp
+	store         *store.Store
+	router        *chi.Mux
+	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
+	webFS         fs.FS                // embedded web UI static files (optional)
+	events        *events.Bus          // real-time event bus (optional)
+	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
+	email         *email.Sender        // transactional email sender (optional)
+	rateLimiters  *RateLimiters        // per-endpoint rate limiters
+	baseURL       string               // public base URL for generating links (e.g. invite URLs)
+	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
+	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
+	version       string               // release version (e.g. "dev", "1.2.3")
+	commit        string               // git commit hash
+	buildTime     string               // build timestamp
 }
 
 func New(s *store.Store) *Server {
-	srv := &Server{store: s}
-	srv.setupRouter()
-	return srv
+	return &Server{
+		store:        s,
+		rateLimiters: NewRateLimiters(),
+	}
 }
 
 // SetVersion stores the build version info for the health endpoint.
@@ -63,6 +69,16 @@ func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 // SetEmailSender attaches a transactional email sender.
 func (s *Server) SetEmailSender(e *email.Sender) {
 	s.email = e
+}
+
+// SetCORSOrigins configures allowed CORS origins (comma-separated).
+func (s *Server) SetCORSOrigins(origins string) {
+	s.corsOrigins = origins
+}
+
+// SetSecureCookies enables the Secure flag on all cookies.
+func (s *Server) SetSecureCookies(secure bool) {
+	s.secureCookies = secure
 }
 
 // reconfigureEmail reads email settings from the platform_settings table
@@ -95,18 +111,25 @@ func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 
 	// Middleware
+	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
+	r.Use(SecurityHeaders)
+	if s.secureCookies {
+		r.Use(StrictTransportSecurity)
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:*", "http://127.0.0.1:*"},
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
+		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
 	r.Use(s.TokenAuth)
 	r.Use(s.SessionAuth)
+	r.Use(s.RateLimit)
+	r.Use(s.CSRFProtect)
 	r.Use(s.RequireAuth)
 	r.Use(jsonContentType)
 
@@ -338,11 +361,21 @@ func (s *Server) spaHandler() http.Handler {
 	})
 }
 
+// ensureRouter lazily initializes the router on first use, so all Set*
+// configuration is applied before the middleware chain is built.
+func (s *Server) ensureRouter() {
+	s.routerOnce.Do(func() {
+		s.setupRouter()
+	})
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.ensureRouter()
 	s.router.ServeHTTP(w, r)
 }
 
 func (s *Server) ListenAndServe(addr string) error {
+	s.ensureRouter()
 	log.Printf("Pad server listening on %s", addr)
 	return http.ListenAndServe(addr, s.router)
 }
@@ -374,6 +407,14 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+// writeInternalError logs the real error server-side and sends a generic
+// message to the client. This prevents leaking SQL errors, file paths,
+// and other internal details.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
+}
+
 func decodeJSON(r *http.Request, v interface{}) error {
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
@@ -386,7 +427,7 @@ func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string,
 	slug := chi.URLParam(r, "slug")
 	ws, err := s.store.GetWorkspaceBySlug(slug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return "", false
 	}
 	if ws == nil {
@@ -406,7 +447,7 @@ func (s *Server) getWorkspaceDocument(w http.ResponseWriter, r *http.Request) (s
 	docID := chi.URLParam(r, "docID")
 	doc, err := s.store.GetDocument(docID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return "", nil, false
 	}
 	if doc == nil || doc.WorkspaceID != workspaceID {

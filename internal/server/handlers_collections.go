@@ -18,7 +18,7 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 
 	colls, err := s.store.ListCollections(workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if colls == nil {
@@ -28,6 +28,9 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -50,7 +53,7 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, "conflict", "A collection with this name already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -66,7 +69,7 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -78,6 +81,9 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -86,7 +92,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -106,7 +112,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 
 	updated, err := s.store.UpdateCollection(coll.ID, input)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if updated == nil {
@@ -126,6 +132,9 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -134,7 +143,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	collSlug := chi.URLParam(r, "collSlug")
 	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
@@ -151,7 +160,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "bad_request", "Cannot delete a default collection")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
