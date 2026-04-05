@@ -107,6 +107,7 @@ func (s *Server) setupRouter() {
 	}))
 	r.Use(s.TokenAuth)
 	r.Use(s.SessionAuth)
+	r.Use(s.CSRFProtect)
 	r.Use(s.RequireAuth)
 	r.Use(jsonContentType)
 

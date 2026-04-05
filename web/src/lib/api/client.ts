@@ -45,9 +45,24 @@ class PadApiError extends Error {
 	}
 }
 
+function getCSRFToken(): string | null {
+	if (typeof document === 'undefined') return null;
+	const match = document.cookie.match(/(?:^|;\s*)pad_csrf=([^;]+)/);
+	return match ? match[1] : null;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+	// Attach CSRF token for state-changing requests
+	const method = options?.method?.toUpperCase();
+	if (method && method !== 'GET' && method !== 'HEAD') {
+		const csrf = getCSRFToken();
+		if (csrf) headers['X-CSRF-Token'] = csrf;
+	}
+
 	const resp = await fetch(BASE + path, {
-		headers: { 'Content-Type': 'application/json' },
+		headers,
 		credentials: 'same-origin',
 		...options
 	});

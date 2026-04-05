@@ -343,6 +343,13 @@ func doRequestWithCookie(srv *Server, method, path string, body interface{}, tok
 		Name:  "pad_session",
 		Value: token,
 	})
+	// Include CSRF token for the double-submit cookie pattern
+	const testCSRF = "test-csrf-token"
+	req.AddCookie(&http.Cookie{
+		Name:  "pad_csrf",
+		Value: testCSRF,
+	})
+	req.Header.Set("X-CSRF-Token", testCSRF)
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	return rr

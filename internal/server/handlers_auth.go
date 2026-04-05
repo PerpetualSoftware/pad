@@ -84,6 +84,9 @@ func (s *Server) createAuthSession(w http.ResponseWriter, user *models.User, ttl
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	// Set CSRF cookie alongside the session cookie
+	setCSRFCookie(w, int(ttl.Seconds()))
+
 	return token, nil
 }
 
@@ -380,6 +383,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	// Clear CSRF cookie on logout
+	clearCSRFCookie(w)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,
 	})
@@ -609,6 +615,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	// Set CSRF cookie alongside the new session
+	setCSRFCookie(w, int(webSessionTTL.Seconds()))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,
