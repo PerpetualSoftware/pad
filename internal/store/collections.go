@@ -48,7 +48,7 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	_, err = s.db.Exec(s.q(`
 		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, boolToInt(input.IsDefault), ts, ts)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, s.dialect.BoolToInt(input.IsDefault), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
 	}
@@ -60,7 +60,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	var c models.Collection
 	var createdAt, updatedAt string
 	var deletedAt *string
-	var isDefault int
+	var isDefault bool
 
 	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at, deleted_at
@@ -78,7 +78,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
 
-	c.IsDefault = isDefault == 1
+	c.IsDefault = isDefault
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
 	c.DeletedAt = parseTimePtr(deletedAt)
@@ -126,7 +126,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 	for rows.Next() {
 		var c models.Collection
 		var createdAt, updatedAt string
-		var isDefault int
+		var isDefault bool
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
 			&c.Schema, &c.Settings, &c.SortOrder, &isDefault,
@@ -134,7 +134,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		); err != nil {
 			return nil, err
 		}
-		c.IsDefault = isDefault == 1
+		c.IsDefault = isDefault
 		c.CreatedAt = parseTime(createdAt)
 		c.UpdatedAt = parseTime(updatedAt)
 		result = append(result, c)
@@ -207,7 +207,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 func (s *Store) DeleteCollection(id string) error {
 	// Check if it's a default collection
-	var isDefault int
+	var isDefault bool
 	err := s.db.QueryRow(s.q("SELECT is_default FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&isDefault)
 	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
@@ -215,7 +215,7 @@ func (s *Store) DeleteCollection(id string) error {
 	if err != nil {
 		return fmt.Errorf("check collection: %w", err)
 	}
-	if isDefault == 1 {
+	if isDefault {
 		return fmt.Errorf("cannot delete default collection")
 	}
 

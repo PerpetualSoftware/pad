@@ -317,7 +317,7 @@ func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, exclude
 	for i := 2; ; i++ {
 		var count int
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND id != ?", table, scopeCol)
-		err := s.db.QueryRow(query, scopeVal, slug, excludeID).Scan(&count)
+		err := s.db.QueryRow(s.q(query), scopeVal, slug, excludeID).Scan(&count)
 		if err != nil {
 			return "", err
 		}
@@ -384,7 +384,7 @@ func slugify(s string) string {
 // ensures the unique index on (collection_id, item_number) exists.
 func (s *Store) backfillItemNumbers() error {
 	// 1. Backfill collection prefixes
-	rows, err := s.db.Query("SELECT id, name FROM collections WHERE prefix = ''")
+	rows, err := s.db.Query(s.q("SELECT id, name FROM collections WHERE prefix = ''"))
 	if err != nil {
 		return fmt.Errorf("query collections for prefix backfill: %w", err)
 	}
@@ -410,13 +410,13 @@ func (s *Store) backfillItemNumbers() error {
 		if prefix == "" {
 			prefix = "ITEM"
 		}
-		if _, err := s.db.Exec("UPDATE collections SET prefix = ? WHERE id = ?", prefix, c.id); err != nil {
+		if _, err := s.db.Exec(s.q("UPDATE collections SET prefix = ? WHERE id = ?"), prefix, c.id); err != nil {
 			return fmt.Errorf("update prefix for collection %s: %w", c.id, err)
 		}
 	}
 
 	// 2. Backfill item numbers per collection
-	collRows, err := s.db.Query("SELECT id FROM collections")
+	collRows, err := s.db.Query(s.q("SELECT id FROM collections"))
 	if err != nil {
 		return fmt.Errorf("query collections for item number backfill: %w", err)
 	}
@@ -436,7 +436,7 @@ func (s *Store) backfillItemNumbers() error {
 
 	for _, collID := range collIDs {
 		itemRows, err := s.db.Query(
-			"SELECT id FROM items WHERE collection_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC",
+			s.q("SELECT id FROM items WHERE collection_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC"),
 			collID,
 		)
 		if err != nil {
@@ -459,13 +459,13 @@ func (s *Store) backfillItemNumbers() error {
 
 		// Get current max
 		var maxNum int
-		if err := s.db.QueryRow("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE collection_id = ?", collID).Scan(&maxNum); err != nil {
+		if err := s.db.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE collection_id = ?"), collID).Scan(&maxNum); err != nil {
 			return fmt.Errorf("get max item_number for collection %s: %w", collID, err)
 		}
 
 		for _, itemID := range itemIDs {
 			maxNum++
-			if _, err := s.db.Exec("UPDATE items SET item_number = ? WHERE id = ?", maxNum, itemID); err != nil {
+			if _, err := s.db.Exec(s.q("UPDATE items SET item_number = ? WHERE id = ?"), maxNum, itemID); err != nil {
 				return fmt.Errorf("update item_number for item %s: %w", itemID, err)
 			}
 		}
@@ -487,7 +487,7 @@ func (s *Store) uniqueSlug(table, scopeCol, scopeVal, baseSlug string) (string, 
 		var count int
 		// Check all rows including soft-deleted to respect the DB UNIQUE constraint
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ?", table, scopeCol)
-		err := s.db.QueryRow(query, scopeVal, slug).Scan(&count)
+		err := s.db.QueryRow(s.q(query), scopeVal, slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}

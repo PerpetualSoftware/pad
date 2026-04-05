@@ -40,11 +40,11 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var c models.CollectionExport
-		var isDefault int
+		var isDefault bool
 		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
-		c.IsDefault = isDefault == 1
+		c.IsDefault = isDefault
 		export.Collections = append(export.Collections, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -63,11 +63,11 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	defer itemRows.Close()
 	for itemRows.Next() {
 		var it models.ItemExport
-		var pinned int
+		var pinned bool
 		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
-		it.Pinned = pinned == 1
+		it.Pinned = pinned
 		export.Items = append(export.Items, it)
 	}
 	if err := itemRows.Err(); err != nil {
@@ -129,11 +129,11 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	defer versionRows.Close()
 	for versionRows.Next() {
 		var ver models.ItemVersionExport
-		var isDiff int
+		var isDiff bool
 		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan item version: %w", err)
 		}
-		ver.IsDiff = isDiff == 1
+		ver.IsDiff = isDiff
 		export.ItemVersions = append(export.ItemVersions, ver)
 	}
 	if err := versionRows.Err(); err != nil {

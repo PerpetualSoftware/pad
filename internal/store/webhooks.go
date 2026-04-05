@@ -31,7 +31,7 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*
 // GetWebhook retrieves a single webhook by ID.
 func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 	var wh models.Webhook
-	var active int
+	var active bool
 	var createdAt, updatedAt string
 	var lastTriggeredAt *string
 
@@ -50,7 +50,7 @@ func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 		return nil, fmt.Errorf("get webhook: %w", err)
 	}
 
-	wh.Active = active == 1
+	wh.Active = active
 	wh.CreatedAt = parseTime(createdAt)
 	wh.UpdatedAt = parseTime(updatedAt)
 	wh.LastTriggeredAt = parseTimePtr(lastTriggeredAt)
@@ -73,7 +73,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	var result []models.Webhook
 	for rows.Next() {
 		var wh models.Webhook
-		var active int
+		var active bool
 		var createdAt, updatedAt string
 		var lastTriggeredAt *string
 
@@ -83,7 +83,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan webhook: %w", err)
 		}
-		wh.Active = active == 1
+		wh.Active = active
 		wh.CreatedAt = parseTime(createdAt)
 		wh.UpdatedAt = parseTime(updatedAt)
 		wh.LastTriggeredAt = parseTimePtr(lastTriggeredAt)

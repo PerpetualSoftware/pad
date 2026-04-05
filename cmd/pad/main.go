@@ -291,17 +291,18 @@ func serveCmd() *cobra.Command {
 				slog.Info("Shutting down server (30s grace period)...")
 				stop() // Reset signal handling so a second signal force-kills
 
+				// Close event bus first — this terminates SSE handler
+				// goroutines so http.Server.Shutdown won't block on them.
+				if eventBus != nil {
+					eventBus.Close()
+					slog.Info("Event bus closed")
+				}
+
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
 				if err := srv.Shutdown(shutdownCtx); err != nil {
 					slog.Error("HTTP server shutdown error", "error", err)
-				}
-
-				// Close event bus (terminates SSE connections)
-				if eventBus != nil {
-					eventBus.Close()
-					slog.Info("Event bus closed")
 				}
 
 				slog.Info("Server stopped")

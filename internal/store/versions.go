@@ -51,7 +51,7 @@ func (s *Store) GetLatestVersion(documentID string) (*models.Version, error) {
 func (s *Store) getLatestVersionRaw(documentID string) (*models.Version, error) {
 	var v models.Version
 	var createdAt string
-	var isDiff int
+	var isDiff bool
 	err := s.db.QueryRow(s.q(`
 		SELECT id, document_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM versions
@@ -65,7 +65,7 @@ func (s *Store) getLatestVersionRaw(documentID string) (*models.Version, error) 
 	if err != nil {
 		return nil, err
 	}
-	v.IsDiff = isDiff == 1
+	v.IsDiff = isDiff
 	v.CreatedAt = parseTime(createdAt)
 	return &v, nil
 }
@@ -86,11 +86,11 @@ func (s *Store) ListVersions(documentID string) ([]models.Version, error) {
 	for rows.Next() {
 		var v models.Version
 		var createdAt string
-		var isDiff int
+		var isDiff bool
 		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
 			return nil, err
 		}
-		v.IsDiff = isDiff == 1
+		v.IsDiff = isDiff
 		v.CreatedAt = parseTime(createdAt)
 		versions = append(versions, v)
 	}
@@ -133,7 +133,7 @@ func (s *Store) ListVersionsResolved(documentID, currentContent string) ([]model
 func (s *Store) GetVersion(id string) (*models.Version, error) {
 	var v models.Version
 	var createdAt string
-	var isDiff int
+	var isDiff bool
 	err := s.db.QueryRow(s.q(`
 		SELECT id, document_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM versions
@@ -145,7 +145,7 @@ func (s *Store) GetVersion(id string) (*models.Version, error) {
 	if err != nil {
 		return nil, err
 	}
-	v.IsDiff = isDiff == 1
+	v.IsDiff = isDiff
 	v.CreatedAt = parseTime(createdAt)
 	return &v, nil
 }

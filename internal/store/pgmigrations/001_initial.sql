@@ -332,7 +332,7 @@ CREATE INDEX IF NOT EXISTS idx_invitations_email ON workspace_invitations(email)
 
 CREATE TABLE IF NOT EXISTS api_tokens (
     id           TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    workspace_id TEXT REFERENCES workspaces(id),
     user_id      TEXT REFERENCES users(id),
     name         TEXT NOT NULL,
     token_hash   TEXT NOT NULL,

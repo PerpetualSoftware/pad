@@ -47,7 +47,7 @@ func (s *Store) CreateView(workspaceID string, input models.ViewCreate) (*models
 func (s *Store) GetView(id string) (*models.View, error) {
 	var v models.View
 	var collectionID *string
-	var isDefault int
+	var isDefault bool
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRow(s.q(`
@@ -65,7 +65,7 @@ func (s *Store) GetView(id string) (*models.View, error) {
 	}
 
 	v.CollectionID = collectionID
-	v.IsDefault = isDefault == 1
+	v.IsDefault = isDefault
 	v.CreatedAt = parseTime(createdAt)
 	v.UpdatedAt = parseTime(updatedAt)
 	return &v, nil
@@ -75,7 +75,7 @@ func (s *Store) GetView(id string) (*models.View, error) {
 func (s *Store) GetViewBySlug(workspaceID, slug string) (*models.View, error) {
 	var v models.View
 	var collectionID *string
-	var isDefault int
+	var isDefault bool
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRow(s.q(`
@@ -93,7 +93,7 @@ func (s *Store) GetViewBySlug(workspaceID, slug string) (*models.View, error) {
 	}
 
 	v.CollectionID = collectionID
-	v.IsDefault = isDefault == 1
+	v.IsDefault = isDefault
 	v.CreatedAt = parseTime(createdAt)
 	v.UpdatedAt = parseTime(updatedAt)
 	return &v, nil
@@ -115,7 +115,7 @@ func (s *Store) ListViews(workspaceID, collectionID string) ([]models.View, erro
 	for rows.Next() {
 		var v models.View
 		var collID *string
-		var isDefault int
+		var isDefault bool
 		var createdAt, updatedAt string
 
 		if err := rows.Scan(
@@ -125,7 +125,7 @@ func (s *Store) ListViews(workspaceID, collectionID string) ([]models.View, erro
 			return nil, fmt.Errorf("scan view: %w", err)
 		}
 		v.CollectionID = collID
-		v.IsDefault = isDefault == 1
+		v.IsDefault = isDefault
 		v.CreatedAt = parseTime(createdAt)
 		v.UpdatedAt = parseTime(updatedAt)
 		views = append(views, v)

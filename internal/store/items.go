@@ -97,7 +97,7 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		boolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
+		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
 		createdBy, createdBy, source, nextNum, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert item: %w", err)
@@ -126,7 +126,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 	var item models.Item
 	var createdAt, updatedAt string
 	var deletedAt *string
-	var pinned int
+	var pinned bool
 
 	err := s.db.QueryRow(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
@@ -158,7 +158,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 		return nil, fmt.Errorf("get item: %w", err)
 	}
 
-	item.Pinned = pinned == 1
+	item.Pinned = pinned
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
 	item.DeletedAt = parseTimePtr(deletedAt)
@@ -248,7 +248,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		var item models.Item
 		var createdAt, updatedAt string
 		var deletedAt *string
-		var pinned int
+		var pinned bool
 
 		err := s.db.QueryRow(s.q(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
@@ -274,7 +274,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
 		)
 		if err == nil {
-			item.Pinned = pinned == 1
+			item.Pinned = pinned
 			item.CreatedAt = parseTime(createdAt)
 			item.UpdatedAt = parseTime(updatedAt)
 			item.DeletedAt = parseTimePtr(deletedAt)
@@ -322,7 +322,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 	var item models.Item
 	var createdAt, updatedAt string
 	var deletedAt *string
-	var pinned int
+	var pinned bool
 
 	err := s.db.QueryRow(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
@@ -354,7 +354,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 		return nil, fmt.Errorf("get item by slug (include deleted): %w", err)
 	}
 
-	item.Pinned = pinned == 1
+	item.Pinned = pinned
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
 	item.DeletedAt = parseTimePtr(deletedAt)
@@ -459,13 +459,15 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 }
 
 func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
-	ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
-	ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
-
 	var query string
 	var args []interface{}
+	var ftsRank string
 
 	if s.dialect.Driver() == DriverPostgres {
+		// PostgreSQL: search_vector lives on the items table (aliased as "i").
+		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		ftsRank = s.dialect.FTSRank("i", "search_vector")
+
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -483,6 +485,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		`, ftsMatch)
 		args = []interface{}{workspaceID, params.Search}
 	} else {
+		// SQLite: uses FTS5 virtual table "items_fts".
+		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		ftsRank = s.dialect.FTSRank("items_fts", "search_vector")
+
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -617,7 +623,7 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	}
 	if input.Pinned != nil {
 		sets = append(sets, "pinned = ?")
-		args = append(args, boolToInt(*input.Pinned))
+		args = append(args, s.dialect.BoolToInt(*input.Pinned))
 	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
@@ -695,14 +701,15 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 }
 
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
-	ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
-	ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
-	ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
-
 	var sqlQuery string
 	var args []interface{}
 
 	if s.dialect.Driver() == DriverPostgres {
+		// PostgreSQL: search_vector lives on the items table (aliased as "i").
+		ftsSnippet := s.dialect.FTSSnippet("i", 1, "i.content")
+		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		ftsRank := s.dialect.FTSRank("i", "search_vector")
+
 		sqlQuery = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -723,6 +730,11 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		// PostgreSQL: FTSSnippet, FTSRank, and FTSMatch each consume a "?" for plainto_tsquery
 		args = []interface{}{query, query, query}
 	} else {
+		// SQLite: uses FTS5 virtual table "items_fts".
+		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
+		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
+
 		sqlQuery = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -761,7 +773,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 	for rows.Next() {
 		var r ItemSearchResult
 		var createdAt, updatedAt string
-		var pinned int
+		var pinned bool
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
@@ -775,7 +787,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		); err != nil {
 			return nil, err
 		}
-		r.Item.Pinned = pinned == 1
+		r.Item.Pinned = pinned
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
 		r.Item.ComputeRef()
@@ -1335,11 +1347,11 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 	for rows.Next() {
 		var v models.Version
 		var createdAt string
-		var isDiff int
+		var isDiff bool
 		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
 			return nil, err
 		}
-		v.IsDiff = isDiff == 1
+		v.IsDiff = isDiff
 		v.CreatedAt = parseTime(createdAt)
 		versions = append(versions, v)
 	}
@@ -1363,11 +1375,11 @@ func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
 	for rows.Next() {
 		var v models.Version
 		var createdAt string
-		var isDiff int
+		var isDiff bool
 		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
 			return nil, err
 		}
-		v.IsDiff = isDiff == 1
+		v.IsDiff = isDiff
 		v.CreatedAt = parseTime(createdAt)
 		versions = append(versions, v)
 	}
@@ -1379,7 +1391,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 	for rows.Next() {
 		var item models.Item
 		var createdAt, updatedAt string
-		var pinned int
+		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
@@ -1392,7 +1404,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 		); err != nil {
 			return nil, err
 		}
-		item.Pinned = pinned == 1
+		item.Pinned = pinned
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
 		hydrateItemComputedMetadata(&item)
