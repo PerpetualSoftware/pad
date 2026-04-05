@@ -45,6 +45,9 @@ func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -96,6 +99,9 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -147,6 +153,9 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -165,6 +174,9 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	// Restore needs special handling — doc is soft-deleted so getWorkspaceDocument won't find it.
 	// Verify workspace exists, then restore by ID.
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -195,6 +207,9 @@ func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

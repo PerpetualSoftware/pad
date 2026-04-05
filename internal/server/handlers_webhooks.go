@@ -20,6 +20,9 @@ func (s *Server) dispatchWebhook(workspaceID, event string, data interface{}) {
 
 // handleCreateWebhook registers a new webhook for a workspace.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -66,6 +69,9 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteWebhook removes a webhook by ID.
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -86,6 +92,9 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleTestWebhook sends a test payload to the specified webhook.
 func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

@@ -28,6 +28,9 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -78,6 +81,9 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -126,6 +132,9 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

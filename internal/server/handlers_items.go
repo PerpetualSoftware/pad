@@ -82,6 +82,9 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 // handleCreateItem creates a new item in a collection, validating fields against the schema.
 func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -217,6 +220,9 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateItem updates an existing item (fields, content, or both).
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -385,6 +391,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItem archives (soft-deletes) an item.
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -416,6 +425,9 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 // handleRestoreItem restores an archived item.
 func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -458,6 +470,9 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 // handleMoveItem moves an item to a different collection with field migration.
 func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

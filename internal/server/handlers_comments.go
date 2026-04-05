@@ -60,6 +60,9 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateComment adds a new comment to an item.
 func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -119,6 +122,9 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteComment removes a comment.
 func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -147,6 +153,9 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateReply creates a reply to an existing comment.
 func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -202,6 +211,9 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 // handleAddReaction adds an emoji reaction to a comment.
 func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -247,6 +259,9 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 
 // handleRemoveReaction removes an emoji reaction from a comment.
 func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

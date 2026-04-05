@@ -174,6 +174,9 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 
 	var input models.WorkspaceUpdate
@@ -202,6 +205,9 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 	err := s.store.DeleteWorkspace(slug)
 	if err != nil {
@@ -212,6 +218,9 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	slug := chi.URLParam(r, "slug")
 	export, err := s.store.ExportWorkspace(slug)
 	if err != nil {

@@ -41,6 +41,9 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateView creates a new saved view for a collection.
 func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -81,6 +84,9 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateView modifies an existing saved view.
 func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -109,6 +115,9 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteView removes a saved view.
 func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "editor") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
