@@ -1,13 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -24,8 +26,9 @@ type Server struct {
 	store         *store.Store
 	router        *chi.Mux
 	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
+	httpServer    *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS         fs.FS                // embedded web UI static files (optional)
-	events        *events.Bus          // real-time event bus (optional)
+	events        events.EventBus       // real-time event bus (optional)
 	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
 	email         *email.Sender        // transactional email sender (optional)
 	rateLimiters  *RateLimiters        // per-endpoint rate limiters
@@ -57,7 +60,7 @@ func (s *Server) SetBaseURL(url string) {
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
-func (s *Server) SetEventBus(bus *events.Bus) {
+func (s *Server) SetEventBus(bus events.EventBus) {
 	s.events = bus
 }
 
@@ -112,9 +115,9 @@ func (s *Server) setupRouter() {
 
 	// Middleware
 	r.Use(chimiddleware.RealIP)
-	r.Use(chimiddleware.Logger)
-	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
+	r.Use(StructuredLogger)
+	r.Use(chimiddleware.Recoverer)
 	r.Use(SecurityHeaders)
 	if s.secureCookies {
 		r.Use(StrictTransportSecurity)
@@ -139,6 +142,8 @@ func (s *Server) setupRouter() {
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+		r.Get("/health/live", s.handleHealthLive)
+		r.Get("/health/ready", s.handleHealthReady)
 
 		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {
@@ -327,6 +332,7 @@ func (s *Server) setupRouter() {
 // SetWebUI sets the embedded web UI filesystem for serving the SPA.
 func (s *Server) SetWebUI(fsys fs.FS) {
 	s.webFS = fsys
+	s.ensureRouter()
 	s.router.Handle("/*", s.spaHandler())
 }
 
@@ -376,8 +382,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ListenAndServe(addr string) error {
 	s.ensureRouter()
-	log.Printf("Pad server listening on %s", addr)
-	return http.ListenAndServe(addr, s.router)
+
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           s.router,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout left at 0 — SSE connections are long-lived.
+		// Non-SSE handlers should use per-request context deadlines.
+	}
+
+	slog.Info("Pad server listening", "addr", addr)
+	return s.httpServer.ListenAndServe()
+}
+
+// Shutdown gracefully drains in-flight requests and stops the HTTP server.
+// The provided context controls how long to wait for active connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
+}
+
+// Handler returns the configured HTTP handler (router).
+// Useful for testing with httptest.NewServer.
+func (s *Server) Handler() http.Handler {
+	s.ensureRouter()
+	return s.router
 }
 
 // --- helpers ---
@@ -394,7 +427,7 @@ func jsonContentType(next http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("Error encoding JSON: %v", err)
+		slog.Error("failed to encode JSON response", "error", err)
 	}
 }
 
@@ -411,7 +444,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // message to the client. This prevents leaking SQL errors, file paths,
 // and other internal details.
 func writeInternalError(w http.ResponseWriter, err error) {
-	log.Printf("internal error: %v", err)
+	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 }
 

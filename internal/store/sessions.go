@@ -29,10 +29,10 @@ func (s *Store) CreateSession(userID, deviceInfo string, ttl time.Duration) (str
 	ts := now()
 	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO sessions (id, user_id, token_hash, device_info, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, id, userID, tokenHash, deviceInfo, expiresAt, ts)
+	`), id, userID, tokenHash, deviceInfo, expiresAt, ts)
 	if err != nil {
 		return "", fmt.Errorf("insert session: %w", err)
 	}
@@ -47,9 +47,9 @@ func (s *Store) ValidateSession(token string) (*models.User, error) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	var userID, expiresAt string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT user_id, expires_at FROM sessions WHERE token_hash = ?
-	`, tokenHash).Scan(&userID, &expiresAt)
+	`), tokenHash).Scan(&userID, &expiresAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -70,7 +70,7 @@ func (s *Store) DeleteSession(token string) error {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	_, err := s.db.Exec("DELETE FROM sessions WHERE token_hash = ?", tokenHash)
+	_, err := s.db.Exec(s.q("DELETE FROM sessions WHERE token_hash = ?"), tokenHash)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -79,7 +79,7 @@ func (s *Store) DeleteSession(token string) error {
 
 // DeleteUserSessions destroys all sessions for a user (logout everywhere).
 func (s *Store) DeleteUserSessions(userID string) error {
-	_, err := s.db.Exec("DELETE FROM sessions WHERE user_id = ?", userID)
+	_, err := s.db.Exec(s.q("DELETE FROM sessions WHERE user_id = ?"), userID)
 	if err != nil {
 		return fmt.Errorf("delete user sessions: %w", err)
 	}
@@ -88,7 +88,7 @@ func (s *Store) DeleteUserSessions(userID string) error {
 
 // CleanExpiredSessions removes all sessions past their expiry time.
 func (s *Store) CleanExpiredSessions() error {
-	_, err := s.db.Exec("DELETE FROM sessions WHERE expires_at < ?", now())
+	_, err := s.db.Exec(s.q("DELETE FROM sessions WHERE expires_at < ?"), now())
 	if err != nil {
 		return fmt.Errorf("clean expired sessions: %w", err)
 	}

@@ -3,7 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -89,7 +89,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 func writeSSEEvent(w http.ResponseWriter, eventType string, data interface{}) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("events: error marshaling SSE event: %v", err)
+		slog.Error("failed to marshal SSE event", "error", err)
 		return
 	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, jsonData)

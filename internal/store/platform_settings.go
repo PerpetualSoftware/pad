@@ -5,7 +5,7 @@ import "database/sql"
 // GetPlatformSetting returns a single platform setting value, or empty string if not set.
 func (s *Store) GetPlatformSetting(key string) (string, error) {
 	var value string
-	err := s.db.QueryRow("SELECT value FROM platform_settings WHERE key = ?", key).Scan(&value)
+	err := s.db.QueryRow(s.q("SELECT value FROM platform_settings WHERE key = ?"), key).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -14,16 +14,16 @@ func (s *Store) GetPlatformSetting(key string) (string, error) {
 
 // SetPlatformSetting upserts a platform setting.
 func (s *Store) SetPlatformSetting(key, value string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-	`, key, value, now())
+	`), key, value, now())
 	return err
 }
 
 // GetPlatformSettings returns all platform settings as a map.
 func (s *Store) GetPlatformSettings() (map[string]string, error) {
-	rows, err := s.db.Query("SELECT key, value FROM platform_settings ORDER BY key")
+	rows, err := s.db.Query(s.q("SELECT key, value FROM platform_settings ORDER BY key"))
 	if err != nil {
 		return nil, err
 	}
@@ -42,6 +42,6 @@ func (s *Store) GetPlatformSettings() (map[string]string, error) {
 
 // DeletePlatformSetting removes a platform setting.
 func (s *Store) DeletePlatformSetting(key string) error {
-	_, err := s.db.Exec("DELETE FROM platform_settings WHERE key = ?", key)
+	_, err := s.db.Exec(s.q("DELETE FROM platform_settings WHERE key = ?"), key)
 	return err
 }

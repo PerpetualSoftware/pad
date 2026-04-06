@@ -30,21 +30,21 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Collections
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, created_at, updated_at
 		FROM collections WHERE workspace_id = ? AND deleted_at IS NULL
-		ORDER BY sort_order, name`, ws.ID)
+		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export collections: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c models.CollectionExport
-		var isDefault int
+		var isDefault bool
 		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
-		c.IsDefault = isDefault == 1
+		c.IsDefault = isDefault
 		export.Collections = append(export.Collections, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -52,22 +52,22 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Items
-	itemRows, err := s.db.Query(`
+	itemRows, err := s.db.Query(s.q(`
 		SELECT id, collection_id, title, slug, content, fields, tags, pinned, sort_order,
 		       COALESCE(parent_id, ''), created_by, last_modified_by, source, COALESCE(item_number, 0), created_at, updated_at
 		FROM items WHERE workspace_id = ? AND deleted_at IS NULL
-		ORDER BY collection_id, sort_order, created_at`, ws.ID)
+		ORDER BY collection_id, sort_order, created_at`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
 	}
 	defer itemRows.Close()
 	for itemRows.Next() {
 		var it models.ItemExport
-		var pinned int
+		var pinned bool
 		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
-		it.Pinned = pinned == 1
+		it.Pinned = pinned
 		export.Items = append(export.Items, it)
 	}
 	if err := itemRows.Err(); err != nil {
@@ -75,12 +75,12 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Comments
-	commentRows, err := s.db.Query(`
+	commentRows, err := s.db.Query(s.q(`
 		SELECT c.id, c.item_id, c.author, c.body, c.created_by, c.source, c.created_at, c.updated_at
 		FROM comments c
 		JOIN items i ON c.item_id = i.id
 		WHERE c.workspace_id = ? AND i.deleted_at IS NULL
-		ORDER BY c.created_at`, ws.ID)
+		ORDER BY c.created_at`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export comments: %w", err)
 	}
@@ -97,10 +97,10 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Item links
-	linkRows, err := s.db.Query(`
+	linkRows, err := s.db.Query(s.q(`
 		SELECT id, source_id, target_id, link_type, created_by, created_at
 		FROM item_links WHERE workspace_id = ?
-		ORDER BY created_at`, ws.ID)
+		ORDER BY created_at`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export item links: %w", err)
 	}
@@ -117,23 +117,23 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Item versions
-	versionRows, err := s.db.Query(`
+	versionRows, err := s.db.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		ORDER BY v.created_at`, ws.ID)
+		ORDER BY v.created_at`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export item versions: %w", err)
 	}
 	defer versionRows.Close()
 	for versionRows.Next() {
 		var ver models.ItemVersionExport
-		var isDiff int
+		var isDiff bool
 		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan item version: %w", err)
 		}
-		ver.IsDiff = isDiff == 1
+		ver.IsDiff = isDiff
 		export.ItemVersions = append(export.ItemVersions, ver)
 	}
 	if err := versionRows.Err(); err != nil {
@@ -185,15 +185,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		newCollID := newID()
 		collMap[c.ID] = newCollID
 
-		isDefault := 0
-		if c.IsDefault {
-			isDefault = 1
-		}
-
-		_, err := tx.Exec(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, isDefault,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault),
 			c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
@@ -209,11 +204,6 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 			continue // skip orphaned items
 		}
 
-		pinned := 0
-		if it.Pinned {
-			pinned = 1
-		}
-
 		// On first pass, parent_id may refer to an item not yet created, so use empty
 		parentID := ""
 		if it.ParentID != "" {
@@ -222,10 +212,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 			}
 		}
 
-		_, err := tx.Exec(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)`,
-			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, pinned, it.SortOrder,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)`),
+			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, it.ItemNumber,
 			it.CreatedAt, it.UpdatedAt)
 		if err != nil {
@@ -247,7 +237,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 				parentID = mapped
 			}
 		}
-		_, err := tx.Exec(`UPDATE items SET fields = ?, parent_id = NULLIF(?, '') WHERE id = ?`,
+		_, err := tx.Exec(s.q(`UPDATE items SET fields = ?, parent_id = NULLIF(?, '') WHERE id = ?`),
 			fields, parentID, newItemID)
 		if err != nil {
 			return nil, fmt.Errorf("remap item %s: %w", it.Title, err)
@@ -260,9 +250,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		if newItemID == "" {
 			continue
 		}
-		_, err := tx.Exec(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			newID(), newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
@@ -277,9 +267,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		if newSourceID == "" || newTargetID == "" {
 			continue
 		}
-		_, err := tx.Exec(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
 			newID(), ws.ID, newSourceID, newTargetID, lk.LinkType, lk.CreatedBy,
 			lk.CreatedAt)
 		if err != nil {
@@ -294,14 +284,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		if newItemID == "" {
 			continue
 		}
-		isDiff := 0
-		if ver.IsDiff {
-			isDiff = 1
-		}
-		_, err := tx.Exec(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, isDiff,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
 			ver.CreatedAt)
 		if err != nil {
 			// Log detail but skip — version history is non-critical
@@ -322,8 +308,12 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 
 // rebuildFTSForWorkspace rebuilds the FTS index for all items in a workspace.
 // This is needed after import because direct INSERTs bypass the FTS triggers.
+// Only applicable to SQLite (PostgreSQL uses trigger-maintained tsvector columns).
 func (s *Store) rebuildFTSForWorkspace(wsID string) {
-	rows, err := s.db.Query(`SELECT rowid, title, content, tags FROM items WHERE workspace_id = ? AND deleted_at IS NULL`, wsID)
+	if s.dialect.Driver() != DriverSQLite {
+		return
+	}
+	rows, err := s.db.Query(s.q(`SELECT rowid, title, content, tags FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), wsID)
 	if err != nil {
 		return
 	}
@@ -334,7 +324,7 @@ func (s *Store) rebuildFTSForWorkspace(wsID string) {
 		if err := rows.Scan(&rowid, &title, &content, &tags); err != nil {
 			continue
 		}
-		s.db.Exec(`INSERT INTO items_fts(rowid, title, content, tags) VALUES (?, ?, ?, ?)`, rowid, title, content, tags)
+		s.db.Exec(s.q(`INSERT INTO items_fts(rowid, title, content, tags) VALUES (?, ?, ?, ?)`), rowid, title, content, tags)
 	}
 }
 

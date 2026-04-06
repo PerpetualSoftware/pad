@@ -29,28 +29,42 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 		args = append(args, params.Status)
 	}
 	if params.Tag != "" {
-		// Search within JSON array
-		query += " AND tags LIKE ?"
-		args = append(args, "%\""+params.Tag+"\"%")
+		tagExpr, tagArg := s.dialect.JSONArrayContains("tags", params.Tag)
+		query += " AND " + tagExpr
+		args = append(args, tagArg)
 	}
 	if params.Pinned != nil {
 		if *params.Pinned {
-			query += " AND pinned = 1"
+			query += " AND pinned = TRUE"
 		} else {
-			query += " AND pinned = 0"
+			query += " AND pinned = FALSE"
 		}
 	}
 	if params.Query != "" {
-		// Use FTS5 for search
-		query = `
-			SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,
-			       d.pinned, d.sort_order, d.created_by, d.last_modified_by, d.source,
-			       d.created_at, d.updated_at
-			FROM documents d
-			JOIN documents_fts fts ON d.rowid = fts.rowid
-			WHERE d.workspace_id = ? AND d.deleted_at IS NULL
-			AND documents_fts MATCH ?
-		`
+		// Use FTS for search
+		if s.dialect.Driver() == DriverSQLite {
+			ftsMatch := s.dialect.FTSMatch("documents_fts", "search_vector")
+			query = fmt.Sprintf(`
+				SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,
+				       d.pinned, d.sort_order, d.created_by, d.last_modified_by, d.source,
+				       d.created_at, d.updated_at
+				FROM documents d
+				JOIN documents_fts fts ON d.rowid = fts.rowid
+				WHERE d.workspace_id = ? AND d.deleted_at IS NULL
+				AND %s
+			`, ftsMatch)
+		} else {
+			// PostgreSQL: search_vector lives on the documents table (aliased as "d").
+			ftsMatch := s.dialect.FTSMatch("d", "search_vector")
+			query = fmt.Sprintf(`
+				SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,
+				       d.pinned, d.sort_order, d.created_by, d.last_modified_by, d.source,
+				       d.created_at, d.updated_at
+				FROM documents d
+				WHERE d.workspace_id = ? AND d.deleted_at IS NULL
+				AND %s
+			`, ftsMatch)
+		}
 		args = []interface{}{workspaceID, params.Query}
 
 		if params.Type != "" {
@@ -83,12 +97,20 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 	}
 
 	if params.Query != "" {
-		query += fmt.Sprintf(" ORDER BY rank, d.%s %s", sortCol, order)
+		if s.dialect.Driver() == DriverPostgres {
+			// PostgreSQL ts_rank(): higher = more relevant → DESC
+			ftsRank := s.dialect.FTSRank("d", "search_vector")
+			query += fmt.Sprintf(" ORDER BY %s DESC, d.%s %s", ftsRank, sortCol, order)
+			args = append(args, params.Query) // extra placeholder for ts_rank
+		} else {
+			// SQLite FTS5: rank is a hidden column on the FTS JOIN (ascending = better)
+			query += fmt.Sprintf(" ORDER BY rank, d.%s %s", sortCol, order)
+		}
 	} else {
 		query += fmt.Sprintf(" ORDER BY pinned DESC, %s %s", sortCol, order)
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
@@ -131,12 +153,12 @@ func (s *Store) CreateDocument(workspaceID string, input models.DocumentCreate) 
 		return nil, err
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO documents (id, workspace_id, title, slug, content, doc_type, status, tags,
 		                       pinned, sort_order, created_by, last_modified_by, source, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-	`, id, workspaceID, input.Title, slug, input.Content, docType, status, tags,
-		boolToInt(input.Pinned), createdBy, createdBy, source, ts, ts)
+	`), id, workspaceID, input.Title, slug, input.Content, docType, status, tags,
+		s.dialect.BoolToInt(input.Pinned), createdBy, createdBy, source, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert document: %w", err)
 	}
@@ -148,15 +170,15 @@ func (s *Store) GetDocument(id string) (*models.Document, error) {
 	var d models.Document
 	var createdAt, updatedAt string
 	var deletedAt *string
-	var pinned int
+	var pinned bool
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, title, slug, content, doc_type, status, tags,
 		       pinned, sort_order, created_by, last_modified_by, source,
 		       created_at, updated_at, deleted_at
 		FROM documents
 		WHERE id = ? AND deleted_at IS NULL
-	`, id).Scan(
+	`), id).Scan(
 		&d.ID, &d.WorkspaceID, &d.Title, &d.Slug, &d.Content, &d.DocType, &d.Status, &d.Tags,
 		&pinned, &d.SortOrder, &d.CreatedBy, &d.LastModifiedBy, &d.Source,
 		&createdAt, &updatedAt, &deletedAt,
@@ -168,7 +190,7 @@ func (s *Store) GetDocument(id string) (*models.Document, error) {
 		return nil, err
 	}
 
-	d.Pinned = pinned == 1
+	d.Pinned = pinned
 	d.CreatedAt = parseTime(createdAt)
 	d.UpdatedAt = parseTime(updatedAt)
 	d.DeletedAt = parseTimePtr(deletedAt)
@@ -177,10 +199,10 @@ func (s *Store) GetDocument(id string) (*models.Document, error) {
 
 func (s *Store) GetDocumentByTitle(workspaceID, title string) (*models.Document, error) {
 	var id string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id FROM documents
 		WHERE workspace_id = ? AND title = ? AND deleted_at IS NULL
-	`, workspaceID, title).Scan(&id)
+	`), workspaceID, title).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -234,17 +256,17 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 			// Store a reverse diff (patch from new → old) instead of full content.
 			// Falls back to full content if the diff isn't meaningfully smaller.
 			versionContent := existing.Content
-			isDiff := 0
+			isDiff := false
 			patch := diff.CreateReversePatch(existing.Content, *input.Content)
 			if diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
-				isDiff = 1
+				isDiff = true
 			}
 
-			_, err = tx.Exec(`
+			_, err = tx.Exec(s.q(`
 				INSERT INTO versions (id, document_id, content, change_summary, created_by, source, is_diff, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, vid, id, versionContent, input.ChangeSummary, createdBy, source, isDiff, ts)
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts)
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
@@ -296,7 +318,7 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 	}
 	if input.Pinned != nil {
 		sets = append(sets, "pinned = ?")
-		args = append(args, boolToInt(*input.Pinned))
+		args = append(args, s.dialect.BoolToInt(*input.Pinned))
 	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
@@ -313,7 +335,7 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE documents SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = tx.Exec(query, args...)
+	_, err = tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update document: %w", err)
 	}
@@ -328,10 +350,10 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle string) error {
 	// Find all documents in the workspace that contain [[oldTitle]]
 	searchTerm := "[[" + oldTitle + "]]"
-	rows, err := tx.Query(`
+	rows, err := tx.Query(s.q(`
 		SELECT id, content FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ?
-	`, workspaceID, "%"+searchTerm+"%")
+	`), workspaceID, "%"+searchTerm+"%")
 	if err != nil {
 		return err
 	}
@@ -355,7 +377,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	}
 
 	for _, du := range updates {
-		_, err = tx.Exec("UPDATE documents SET content = ? WHERE id = ?", du.content, du.id)
+		_, err = tx.Exec(s.q("UPDATE documents SET content = ? WHERE id = ?"), du.content, du.id)
 		if err != nil {
 			return err
 		}
@@ -365,10 +387,10 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 
 func (s *Store) DeleteDocument(id string) error {
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE documents SET deleted_at = ?, updated_at = ?, status = 'archived'
 		WHERE id = ? AND deleted_at IS NULL
-	`, ts, ts, id)
+	`), ts, ts, id)
 	if err != nil {
 		return err
 	}
@@ -381,10 +403,10 @@ func (s *Store) DeleteDocument(id string) error {
 
 func (s *Store) RestoreDocument(id string) (*models.Document, error) {
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE documents SET deleted_at = NULL, updated_at = ?, status = 'draft'
 		WHERE id = ? AND deleted_at IS NOT NULL
-	`, ts, id)
+	`), ts, id)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +477,7 @@ func (s *Store) BulkRead(ids []string) ([]models.Document, error) {
 		WHERE id IN (%s) AND deleted_at IS NULL
 	`, strings.Join(placeholders, ","))
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -466,13 +488,13 @@ func (s *Store) BulkRead(ids []string) ([]models.Document, error) {
 
 func (s *Store) GetBacklinks(workspaceID, documentTitle string) ([]models.Document, error) {
 	searchTerm := "[[" + documentTitle + "]]"
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, workspace_id, title, slug, content, doc_type, status, tags,
 		       pinned, sort_order, created_by, last_modified_by, source,
 		       created_at, updated_at
 		FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ?
-	`, workspaceID, "%"+searchTerm+"%")
+	`), workspaceID, "%"+searchTerm+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +523,7 @@ func (s *Store) GetLinks(workspaceID, content string) ([]models.Document, error)
 		WHERE workspace_id = ? AND deleted_at IS NULL AND title IN (%s)
 	`, strings.Join(placeholders, ","))
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +538,7 @@ func (s *Store) GetContext(workspaceID string, types []string, includeContent bo
 		       created_at, updated_at
 		FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL
-		AND (status = 'active' OR pinned = 1)
+		AND (status = 'active' OR pinned = TRUE)
 	`
 	args := []interface{}{workspaceID}
 
@@ -531,7 +553,7 @@ func (s *Store) GetContext(workspaceID string, types []string, includeContent bo
 
 	query += " ORDER BY pinned DESC, updated_at DESC"
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +578,7 @@ func scanDocuments(rows *sql.Rows) ([]models.Document, error) {
 	for rows.Next() {
 		var d models.Document
 		var createdAt, updatedAt string
-		var pinned int
+		var pinned bool
 		if err := rows.Scan(
 			&d.ID, &d.WorkspaceID, &d.Title, &d.Slug, &d.Content, &d.DocType, &d.Status, &d.Tags,
 			&pinned, &d.SortOrder, &d.CreatedBy, &d.LastModifiedBy, &d.Source,
@@ -564,7 +586,7 @@ func scanDocuments(rows *sql.Rows) ([]models.Document, error) {
 		); err != nil {
 			return nil, err
 		}
-		d.Pinned = pinned == 1
+		d.Pinned = pinned
 		d.CreatedAt = parseTime(createdAt)
 		d.UpdatedAt = parseTime(updatedAt)
 		docs = append(docs, d)
@@ -572,9 +594,3 @@ func scanDocuments(rows *sql.Rows) ([]models.Document, error) {
 	return docs, rows.Err()
 }
 
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}

@@ -45,10 +45,10 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 		return nil, fmt.Errorf("unique slug: %w", err)
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, boolToInt(input.IsDefault), ts, ts)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, s.dialect.BoolToInt(input.IsDefault), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
 	}
@@ -60,13 +60,13 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	var c models.Collection
 	var createdAt, updatedAt string
 	var deletedAt *string
-	var isDefault int
+	var isDefault bool
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at, deleted_at
 		FROM collections
 		WHERE id = ? AND deleted_at IS NULL
-	`, id).Scan(
+	`), id).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
 		&c.Schema, &c.Settings, &c.SortOrder, &isDefault,
 		&createdAt, &updatedAt, &deletedAt,
@@ -78,7 +78,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
 
-	c.IsDefault = isDefault == 1
+	c.IsDefault = isDefault
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
 	c.DeletedAt = parseTimePtr(deletedAt)
@@ -87,10 +87,10 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 
 func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collection, error) {
 	var id string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id FROM collections
 		WHERE workspace_id = ? AND slug = ? AND deleted_at IS NULL
-	`, workspaceID, slug).Scan(&id)
+	`), workspaceID, slug).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -103,19 +103,20 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
 	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
 	queryArgs := append(termArgs, workspaceID)
-	rows, err := s.db.Query(`
+	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
 		       c.schema, c.settings, c.sort_order, c.is_default, c.created_at, c.updated_at,
 		       COUNT(i.id) as item_count,
-		       COUNT(CASE WHEN LOWER(json_extract(i.fields, '$.status')) NOT IN
-		           (`+termPlaceholders+`)
+		       COUNT(CASE WHEN LOWER(COALESCE(%s, '')) NOT IN
+		           (%s)
 		           THEN i.id END) as active_item_count
 		FROM collections c
 		LEFT JOIN items i ON i.collection_id = c.id AND i.deleted_at IS NULL
 		WHERE c.workspace_id = ? AND c.deleted_at IS NULL
 		GROUP BY c.id
 		ORDER BY c.sort_order ASC, c.created_at ASC
-	`, queryArgs...)
+	`, jsonExtractStatus, termPlaceholders)), queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
@@ -125,7 +126,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 	for rows.Next() {
 		var c models.Collection
 		var createdAt, updatedAt string
-		var isDefault int
+		var isDefault bool
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
 			&c.Schema, &c.Settings, &c.SortOrder, &isDefault,
@@ -133,7 +134,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		); err != nil {
 			return nil, err
 		}
-		c.IsDefault = isDefault == 1
+		c.IsDefault = isDefault
 		c.CreatedAt = parseTime(createdAt)
 		c.UpdatedAt = parseTime(updatedAt)
 		result = append(result, c)
@@ -196,7 +197,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = s.db.Exec(query, args...)
+	_, err = s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update collection: %w", err)
 	}
@@ -206,23 +207,23 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 func (s *Store) DeleteCollection(id string) error {
 	// Check if it's a default collection
-	var isDefault int
-	err := s.db.QueryRow("SELECT is_default FROM collections WHERE id = ? AND deleted_at IS NULL", id).Scan(&isDefault)
+	var isDefault bool
+	err := s.db.QueryRow(s.q("SELECT is_default FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&isDefault)
 	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
 	}
 	if err != nil {
 		return fmt.Errorf("check collection: %w", err)
 	}
-	if isDefault == 1 {
+	if isDefault {
 		return fmt.Errorf("cannot delete default collection")
 	}
 
 	ts := now()
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		UPDATE collections SET deleted_at = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, ts, ts, id)
+	`), ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("delete collection: %w", err)
 	}
@@ -249,15 +250,16 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 			if oldVal == newVal {
 				continue
 			}
-			fieldPath := fmt.Sprintf("$.%s", m.Field)
-			result, err := s.db.Exec(`
+			jsonSet := s.dialect.JSONSet("fields", m.Field)
+			jsonExtract := s.dialect.JSONExtractText("fields", m.Field)
+			result, err := s.db.Exec(s.q(fmt.Sprintf(`
 				UPDATE items
-				SET fields = json_set(fields, ?, ?),
+				SET fields = %s,
 				    updated_at = ?
 				WHERE collection_id = ?
-				  AND json_extract(fields, ?) = ?
+				  AND %s = ?
 				  AND deleted_at IS NULL
-			`, fieldPath, newVal, ts, collectionID, fieldPath, oldVal)
+			`, jsonSet, jsonExtract)), newVal, ts, collectionID, oldVal)
 			if err != nil {
 				return totalAffected, fmt.Errorf("migrate field %s (%s → %s): %w", m.Field, oldVal, newVal, err)
 			}

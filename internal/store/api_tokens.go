@@ -40,10 +40,10 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*mod
 		wsID = input.WorkspaceID
 	}
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO api_tokens (id, workspace_id, user_id, name, token_hash, prefix, scopes, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, wsID, userID, input.Name, tokenHash, prefix, scopes, ts)
+	`), id, wsID, userID, input.Name, tokenHash, prefix, scopes, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
 	}
@@ -61,12 +61,12 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*mod
 
 // ListAPITokens returns all API tokens for a workspace (without secrets).
 func (s *Store) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, COALESCE(workspace_id, ''), COALESCE(user_id, ''), name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE workspace_id = ?
 		ORDER BY created_at ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list api tokens: %w", err)
 	}
@@ -85,12 +85,12 @@ func (s *Store) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
 
 // ListUserAPITokens returns all API tokens owned by a user (without secrets).
 func (s *Store) ListUserAPITokens(userID string) ([]models.APIToken, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, COALESCE(workspace_id, ''), COALESCE(user_id, ''), name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE user_id = ?
 		ORDER BY created_at ASC
-	`, userID)
+	`), userID)
 	if err != nil {
 		return nil, fmt.Errorf("list user api tokens: %w", err)
 	}
@@ -109,7 +109,7 @@ func (s *Store) ListUserAPITokens(userID string) ([]models.APIToken, error) {
 
 // DeleteAPIToken removes an API token by ID.
 func (s *Store) DeleteAPIToken(id string) error {
-	result, err := s.db.Exec("DELETE FROM api_tokens WHERE id = ?", id)
+	result, err := s.db.Exec(s.q("DELETE FROM api_tokens WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete api token: %w", err)
 	}
@@ -122,7 +122,7 @@ func (s *Store) DeleteAPIToken(id string) error {
 
 // DeleteUserAPIToken removes an API token by ID, verifying it belongs to the user.
 func (s *Store) DeleteUserAPIToken(id, userID string) error {
-	result, err := s.db.Exec("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", id, userID)
+	result, err := s.db.Exec(s.q("DELETE FROM api_tokens WHERE id = ? AND user_id = ?"), id, userID)
 	if err != nil {
 		return fmt.Errorf("delete user api token: %w", err)
 	}
@@ -145,11 +145,11 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 	var workspaceID *string
 	var createdAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE token_hash = ?
-	`, tokenHash).Scan(
+	`), tokenHash).Scan(
 		&t.ID, &workspaceID, &userID, &t.Name, &t.Prefix, &t.Scopes,
 		&expiresAt, &lastUsedAt, &createdAt,
 	)
@@ -177,7 +177,7 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 
 	// Update last_used_at
 	ts := now()
-	_, _ = s.db.Exec("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", ts, t.ID)
+	_, _ = s.db.Exec(s.q("UPDATE api_tokens SET last_used_at = ? WHERE id = ?"), ts, t.ID)
 
 	return &t, nil
 }
@@ -188,11 +188,11 @@ func (s *Store) getAPIToken(id string) (*models.APIToken, error) {
 	var expiresAt, lastUsedAt, userID, workspaceID *string
 	var createdAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE id = ?
-	`, id).Scan(
+	`), id).Scan(
 		&t.ID, &workspaceID, &userID, &t.Name, &t.Prefix, &t.Scopes,
 		&expiresAt, &lastUsedAt, &createdAt,
 	)

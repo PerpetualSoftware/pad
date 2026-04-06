@@ -26,10 +26,10 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 	id := newID()
 	ts := now()
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Name), string(hash), role, ts, ts)
+	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Name), string(hash), role, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
@@ -42,10 +42,10 @@ func (s *Store) GetUser(id string) (*models.User, error) {
 	var u models.User
 	var createdAt, updatedAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
 		FROM users WHERE id = ?
-	`, id).Scan(
+	`), id).Scan(
 		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&createdAt, &updatedAt,
 	)
@@ -66,10 +66,10 @@ func (s *Store) GetUserByEmail(email string) (*models.User, error) {
 	var u models.User
 	var createdAt, updatedAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
 		FROM users WHERE email = ?
-	`, strings.ToLower(strings.TrimSpace(email))).Scan(
+	`), strings.ToLower(strings.TrimSpace(email))).Scan(
 		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&createdAt, &updatedAt,
 	)
@@ -116,7 +116,7 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = ?", strings.Join(sets, ", "))
-	result, err := s.db.Exec(query, args...)
+	result, err := s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
@@ -148,10 +148,10 @@ func (s *Store) ValidatePassword(email, password string) (*models.User, error) {
 
 // ListUsers returns all users.
 func (s *Store) ListUsers() ([]models.User, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
 		FROM users ORDER BY created_at ASC
-	`)
+	`))
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -177,7 +177,7 @@ func (s *Store) ListUsers() ([]models.User, error) {
 // UserCount returns the total number of registered users.
 func (s *Store) UserCount() (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM users")).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count users: %w", err)
 	}

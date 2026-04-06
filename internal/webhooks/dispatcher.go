@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -50,7 +50,7 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 	hooks, err := d.store.ListWebhooks(workspaceID)
 	if err != nil {
-		log.Printf("webhooks: failed to list webhooks for workspace %s: %v", workspaceID, err)
+		slog.Error("failed to list webhooks", "workspace", workspaceID, "error", err)
 		return
 	}
 
@@ -63,7 +63,7 @@ func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("webhooks: failed to marshal payload: %v", err)
+		slog.Error("failed to marshal webhook payload", "error", err)
 		return
 	}
 
@@ -83,7 +83,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 	// Defense in depth: re-validate URL before making the request
 	if !d.SkipSSRF {
 		if err := ValidateWebhookURL(hook.URL); err != nil {
-			log.Printf("webhooks: blocked delivery to %s: %v", hook.URL, err)
+			slog.Warn("blocked webhook delivery", "url", hook.URL, "error", err)
 			d.store.UpdateWebhookFailure(hook.ID, true)
 			return
 		}
@@ -91,7 +91,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 
 	req, err := http.NewRequest(http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("webhooks: failed to create request for %s: %v", hook.URL, err)
+		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
 		d.store.UpdateWebhookFailure(hook.ID, true)
 		return
 	}
@@ -106,7 +106,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		log.Printf("webhooks: delivery failed for %s: %v", hook.URL, err)
+		slog.Error("webhook delivery failed", "url", hook.URL, "error", err)
 		d.store.UpdateWebhookFailure(hook.ID, true)
 		return
 	}
@@ -115,7 +115,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		d.store.UpdateWebhookFailure(hook.ID, false)
 	} else {
-		log.Printf("webhooks: non-2xx response (%d) from %s", resp.StatusCode, hook.URL)
+		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
 		d.store.UpdateWebhookFailure(hook.ID, true)
 	}
 }

@@ -24,9 +24,12 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		// Restrict browser features the app doesn't need
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
-		// CSP: allow self-sourced scripts/styles, plus inline styles for Svelte
+		// CSP: allow self-sourced content, inline styles for Svelte component scoping,
+		// and inline scripts for SvelteKit's module bootstrap/hydration.
+		// Without 'unsafe-inline' on script-src, SvelteKit's generated inline <script>
+		// tags are blocked, causing a white screen (especially on mobile browsers).
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 
 		next.ServeHTTP(w, r)
 	})

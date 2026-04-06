@@ -26,9 +26,9 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 		author = createdBy
 	}
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, activity_id, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, itemID, workspaceID, author, input.Body, createdBy, source,
 		nilIfEmpty(input.ActivityID), nilIfEmpty(input.ParentID), ts, ts,
 	)
@@ -41,14 +41,14 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 
 // GetComment returns a single comment by ID.
 func (s *Store) GetComment(id string) (*models.Comment, error) {
-	row := s.db.QueryRow(`
+	row := s.db.QueryRow(s.q(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
 		       i.title, i.slug
 		FROM comments c
 		JOIN items i ON i.id = c.item_id
-		WHERE c.id = ?`, id)
+		WHERE c.id = ?`), id)
 
 	var c models.Comment
 	var createdAt, updatedAt string
@@ -71,13 +71,13 @@ func (s *Store) GetComment(id string) (*models.Comment, error) {
 
 // ListComments returns all comments for an item, ordered chronologically.
 func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at
 		FROM comments c
 		WHERE c.item_id = ?
-		ORDER BY c.created_at ASC`, itemID)
+		ORDER BY c.created_at ASC`), itemID)
 	if err != nil {
 		return nil, fmt.Errorf("list comments: %w", err)
 	}
@@ -105,14 +105,14 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at
 		FROM comments c
 		WHERE c.item_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
 		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT ?`, itemID, ts, ts, beforeID, limit)
+		LIMIT ?`), itemID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list comments before time: %w", err)
 	}
@@ -138,7 +138,7 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 
 // DeleteComment removes a comment by ID.
 func (s *Store) DeleteComment(id string) error {
-	result, err := s.db.Exec("DELETE FROM comments WHERE id = ?", id)
+	result, err := s.db.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)
 	}
@@ -152,6 +152,6 @@ func (s *Store) DeleteComment(id string) error {
 // CountComments returns the number of comments for an item.
 func (s *Store) CountComments(itemID string) (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM comments WHERE item_id = ?", itemID).Scan(&count)
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM comments WHERE item_id = ?"), itemID).Scan(&count)
 	return count, err
 }

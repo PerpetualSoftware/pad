@@ -20,10 +20,10 @@ func (s *Store) CreateActivity(a models.Activity) (string, error) {
 	}
 	ts := now()
 
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(s.q(`
 		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), ts)
+	`), a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), ts)
 	return a.ID, err
 }
 
@@ -50,12 +50,12 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 
 	// Look for a recent activity to coalesce with.
 	var existingID, existingMeta string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, metadata FROM activities
 		WHERE document_id = ? AND action = ? AND created_at >= ?
 			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
 		ORDER BY created_at DESC LIMIT 1
-	`, a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
+	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
 
 	if err == sql.ErrNoRows {
 		// No recent match — create a new activity.
@@ -69,9 +69,9 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// Merge metadata: accumulate "changes" strings from both old and new.
 	merged := mergeActivityMeta(existingMeta, a.Metadata)
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		UPDATE activities SET metadata = ?, created_at = ? WHERE id = ?
-	`, merged, ts, existingID)
+	`), merged, ts, existingID)
 	return existingID, err
 }
 
@@ -149,7 +149,7 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		query += fmt.Sprintf(" OFFSET %d", params.Offset)
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 		query += fmt.Sprintf(" OFFSET %d", params.Offset)
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -200,14 +200,14 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT ?
-	`, documentID, ts, ts, beforeID, limit)
+	`), documentID, ts, ts, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}

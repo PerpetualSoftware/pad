@@ -26,10 +26,10 @@ func (s *Store) CreateAgentRole(workspaceID string, input models.AgentRoleCreate
 		return nil, fmt.Errorf("unique slug: %w", err)
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO agent_roles (id, workspace_id, slug, name, description, icon, tools, sort_order, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-	`, id, workspaceID, slug, input.Name, input.Description, input.Icon, input.Tools, ts, ts)
+	`), id, workspaceID, slug, input.Name, input.Description, input.Icon, input.Tools, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("create agent role: %w", err)
 	}
@@ -41,11 +41,11 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 	var role models.AgentRole
 	var createdAt, updatedAt string
 
-	err := s.db.QueryRow(`
+	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, slug, name, description, icon, tools, sort_order, created_at, updated_at
 		FROM agent_roles
 		WHERE workspace_id = ? AND (id = ? OR slug = ?)
-	`, workspaceID, idOrSlug, idOrSlug).Scan(
+	`), workspaceID, idOrSlug, idOrSlug).Scan(
 		&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
 		&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt,
 	)
@@ -62,7 +62,7 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 }
 
 func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.Query(s.q(`
 		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
 		       COUNT(i.id) as item_count
@@ -71,7 +71,7 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 		WHERE r.workspace_id = ?
 		GROUP BY r.id
 		ORDER BY r.sort_order ASC, r.name ASC
-	`, workspaceID)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list agent roles: %w", err)
 	}
@@ -137,7 +137,7 @@ func (s *Store) UpdateAgentRole(workspaceID, id string, input models.AgentRoleUp
 
 	args = append(args, existing.ID)
 	query := fmt.Sprintf("UPDATE agent_roles SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = s.db.Exec(query, args...)
+	_, err = s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update agent role: %w", err)
 	}
@@ -146,9 +146,9 @@ func (s *Store) UpdateAgentRole(workspaceID, id string, input models.AgentRoleUp
 }
 
 func (s *Store) DeleteAgentRole(workspaceID, id string) error {
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(s.q(`
 		DELETE FROM agent_roles WHERE workspace_id = ? AND (id = ? OR slug = ?)
-	`, workspaceID, id, id)
+	`), workspaceID, id, id)
 	if err != nil {
 		return fmt.Errorf("delete agent role: %w", err)
 	}
@@ -182,15 +182,17 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 	// Count non-terminal items per role (exclude done/completed/etc. to match board view)
 	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
 	roleCountArgs := append([]any{workspaceID}, termArgs...)
-	rows, err := s.db.Query(`
-		SELECT i.agent_role_id, COUNT(*) as cnt, GROUP_CONCAT(DISTINCT u.name) as users
+	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	groupConcatUsers := s.dialect.GroupConcat("u.name", true)
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT i.agent_role_id, COUNT(*) as cnt, %s as users
 		FROM items i
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		  AND LOWER(COALESCE(json_extract(i.fields, '$.status'), '')) NOT IN
-		      (`+termPlaceholders+`)
+		  AND LOWER(COALESCE(%s, '')) NOT IN
+		      (%s)
 		GROUP BY i.agent_role_id
-	`, roleCountArgs...)
+	`, groupConcatUsers, jsonExtractStatus, termPlaceholders)), roleCountArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("role breakdown: %w", err)
 	}
@@ -401,7 +403,7 @@ func (s *Store) UpdateAgentRoleOrder(workspaceID string, updates []RoleOrderUpda
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE agent_roles SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ?")
+	stmt, err := tx.Prepare(s.q("UPDATE agent_roles SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ?"))
 	if err != nil {
 		return fmt.Errorf("prepare role order update: %w", err)
 	}
@@ -431,7 +433,7 @@ func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?")
+	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?"))
 	if err != nil {
 		return fmt.Errorf("prepare role sort update: %w", err)
 	}

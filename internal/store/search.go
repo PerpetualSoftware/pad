@@ -60,13 +60,13 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			}
 		}
 
-		refRows, err := s.db.Query(refQuery, refArgs...)
+		refRows, err := s.db.Query(s.q(refQuery), refArgs...)
 		if err == nil {
 			defer refRows.Close()
 			for refRows.Next() {
 				var r SearchResult
 				var createdAt, updatedAt string
-				var pinned int
+				var pinned bool
 				if err := refRows.Scan(
 					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
@@ -79,7 +79,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 				); err != nil {
 					continue
 				}
-				r.Item.Pinned = pinned == 1
+				r.Item.Pinned = pinned
 				r.Item.CreatedAt = parseTime(createdAt)
 				r.Item.UpdatedAt = parseTime(updatedAt)
 				hydrateItemComputedMetadata(&r.Item)
@@ -92,25 +92,64 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		// If no ref matches, fall through to FTS below
 	}
 
-	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
-		       c.slug, c.name, c.icon, c.prefix,
-		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
-		       snippet(items_fts, 1, '<mark>', '</mark>', '...', 32) as snippet,
-		       rank
-		FROM items_fts fts
-		JOIN items i ON i.rowid = fts.rowid
-		JOIN collections c ON c.id = i.collection_id
-		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE items_fts MATCH ?
-		AND i.deleted_at IS NULL
-	`
-	args := []interface{}{sanitizeFTSQuery(params.Query)}
+	// Build the FTS query — the approach differs between SQLite (FTS5 virtual table)
+	// and PostgreSQL (tsvector column on the items table).
+	var query string
+	var args []interface{}
+
+	if s.dialect.Driver() == DriverPostgres {
+		// PostgreSQL: search_vector is a column on the items table (aliased as "i"); no JOIN needed.
+		ftsSnippet := s.dialect.FTSSnippet("i", 1, "i.content")
+		ftsRank := s.dialect.FTSRank("i", "search_vector")
+		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+
+		// FTSSnippet, FTSRank, and FTSMatch each consume a "?" placeholder
+		// for the query parameter (plainto_tsquery('english', ?)).
+		query = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       %s as snippet,
+			       %s as rank_score
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE %s
+			AND i.deleted_at IS NULL
+		`, ftsSnippet, ftsRank, ftsMatch)
+		searchQuery := params.Query
+		args = []interface{}{searchQuery, searchQuery, searchQuery}
+	} else {
+		// SQLite: uses FTS5 virtual table with JOIN on rowid.
+		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
+		ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
+		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+
+		query = fmt.Sprintf(`
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       %s as snippet,
+			       %s as rank_score
+			FROM items_fts fts
+			JOIN items i ON i.rowid = fts.rowid
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE %s
+			AND i.deleted_at IS NULL
+		`, ftsSnippet, ftsRank, ftsMatch)
+		args = []interface{}{sanitizeFTSQuery(params.Query)}
+	}
 
 	if params.Workspace != "" {
 		query += `
@@ -126,9 +165,15 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		}
 	}
 
-	query += " ORDER BY rank LIMIT 50"
+	// SQLite bm25() returns negative values (more negative = more relevant) → ASC.
+	// PostgreSQL ts_rank() returns positive values (higher = more relevant) → DESC.
+	if s.dialect.Driver() == DriverPostgres {
+		query += " ORDER BY rank_score DESC LIMIT 50"
+	} else {
+		query += " ORDER BY rank_score LIMIT 50"
+	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		// If we already have a ref match, return that instead of failing
 		// (FTS5 may reject queries like "TASK-5" due to special syntax)
@@ -148,7 +193,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	for rows.Next() {
 		var r SearchResult
 		var createdAt, updatedAt string
-		var pinned int
+		var pinned bool
 
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
@@ -167,7 +212,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		if seen[r.Item.ID] {
 			continue
 		}
-		r.Item.Pinned = pinned == 1
+		r.Item.Pinned = pinned
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
 		hydrateItemComputedMetadata(&r.Item)
@@ -180,6 +225,7 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 
 // sanitizeFTSQuery wraps each token in double quotes so FTS5 treats
 // special characters (like hyphens) as literals rather than operators.
+// Only used for SQLite FTS5 queries.
 func sanitizeFTSQuery(q string) string {
 	q = strings.TrimSpace(q)
 	if q == "" {

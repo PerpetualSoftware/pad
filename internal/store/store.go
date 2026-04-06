@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 	"github.com/xarmian/pad/internal/collections"
 	_ "modernc.org/sqlite"
 )
@@ -15,10 +16,21 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+//go:embed pgmigrations/*.sql
+var pgMigrationsFS embed.FS
+
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect Dialect
 }
 
+// D returns the store's dialect for building backend-specific SQL.
+func (s *Store) D() Dialect { return s.dialect }
+
+// DB returns the underlying *sql.DB (for use in migrations/testing).
+func (s *Store) DB() *sql.DB { return s.db }
+
+// New creates a Store backed by SQLite at the given path.
 func New(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -35,7 +47,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, dialect: &sqliteDialect{}}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -51,8 +63,47 @@ func New(dbPath string) (*Store, error) {
 	return s, nil
 }
 
+// NewPostgres creates a Store backed by PostgreSQL.
+// The connStr should be a PostgreSQL connection string (e.g. "postgres://user:pass@host/db").
+func NewPostgres(connStr string) (*Store, error) {
+	db, err := sql.Open("pgx", connStr)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+
+	// Verify connection
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	// Connection pool tuning for cloud deployment
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	s := &Store{db: db, dialect: &postgresDialect{}}
+	if err := s.migratePostgres(); err != nil {
+		return nil, fmt.Errorf("migrate postgres: %w", err)
+	}
+
+	if err := s.backfillItemNumbers(); err != nil {
+		return nil, fmt.Errorf("backfill item numbers: %w", err)
+	}
+
+	if err := s.backfillWorkspaceOwners(); err != nil {
+		return nil, fmt.Errorf("backfill workspace owners: %w", err)
+	}
+
+	return s, nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// Ping verifies the database connection is alive.
+func (s *Store) Ping() error {
+	return s.db.Ping()
 }
 
 func (s *Store) migrate() error {
@@ -110,6 +161,49 @@ func (s *Store) migrate() error {
 
 		// Record migration
 		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now())
+		if err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+// migratePostgres applies PostgreSQL migrations.
+// PostgreSQL supports multi-statement execution natively, so we don't need execMulti.
+func (s *Store) migratePostgres() error {
+	// Create migrations tracking table
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	migrations := []string{
+		"001_initial.sql",
+	}
+
+	for _, name := range migrations {
+		var count int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = $1", name).Scan(&count); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if count > 0 {
+			continue
+		}
+
+		data, err := pgMigrationsFS.ReadFile("pgmigrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+
+		if _, err := s.db.Exec(string(data)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+
+		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)", name, now())
 		if err != nil {
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
@@ -223,7 +317,7 @@ func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, exclude
 	for i := 2; ; i++ {
 		var count int
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND id != ?", table, scopeCol)
-		err := s.db.QueryRow(query, scopeVal, slug, excludeID).Scan(&count)
+		err := s.db.QueryRow(s.q(query), scopeVal, slug, excludeID).Scan(&count)
 		if err != nil {
 			return "", err
 		}
@@ -236,6 +330,26 @@ func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, exclude
 
 func isAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+// isValidFieldKey checks that a field name contains only safe characters
+// (alphanumeric, underscore, hyphen). This prevents SQL injection when
+// field keys from user input are interpolated into JSON path expressions.
+func isValidFieldKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, c := range key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// q rebinds a query to the store's dialect (converts "?" to "$1", "$2", etc. for PostgreSQL).
+func (s *Store) q(query string) string {
+	return s.dialect.Rebind(query)
 }
 
 func newID() string {
@@ -285,7 +399,7 @@ func slugify(s string) string {
 // ensures the unique index on (collection_id, item_number) exists.
 func (s *Store) backfillItemNumbers() error {
 	// 1. Backfill collection prefixes
-	rows, err := s.db.Query("SELECT id, name FROM collections WHERE prefix = ''")
+	rows, err := s.db.Query(s.q("SELECT id, name FROM collections WHERE prefix = ''"))
 	if err != nil {
 		return fmt.Errorf("query collections for prefix backfill: %w", err)
 	}
@@ -311,13 +425,13 @@ func (s *Store) backfillItemNumbers() error {
 		if prefix == "" {
 			prefix = "ITEM"
 		}
-		if _, err := s.db.Exec("UPDATE collections SET prefix = ? WHERE id = ?", prefix, c.id); err != nil {
+		if _, err := s.db.Exec(s.q("UPDATE collections SET prefix = ? WHERE id = ?"), prefix, c.id); err != nil {
 			return fmt.Errorf("update prefix for collection %s: %w", c.id, err)
 		}
 	}
 
 	// 2. Backfill item numbers per collection
-	collRows, err := s.db.Query("SELECT id FROM collections")
+	collRows, err := s.db.Query(s.q("SELECT id FROM collections"))
 	if err != nil {
 		return fmt.Errorf("query collections for item number backfill: %w", err)
 	}
@@ -337,7 +451,7 @@ func (s *Store) backfillItemNumbers() error {
 
 	for _, collID := range collIDs {
 		itemRows, err := s.db.Query(
-			"SELECT id FROM items WHERE collection_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC",
+			s.q("SELECT id FROM items WHERE collection_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC"),
 			collID,
 		)
 		if err != nil {
@@ -360,13 +474,13 @@ func (s *Store) backfillItemNumbers() error {
 
 		// Get current max
 		var maxNum int
-		if err := s.db.QueryRow("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE collection_id = ?", collID).Scan(&maxNum); err != nil {
+		if err := s.db.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE collection_id = ?"), collID).Scan(&maxNum); err != nil {
 			return fmt.Errorf("get max item_number for collection %s: %w", collID, err)
 		}
 
 		for _, itemID := range itemIDs {
 			maxNum++
-			if _, err := s.db.Exec("UPDATE items SET item_number = ? WHERE id = ?", maxNum, itemID); err != nil {
+			if _, err := s.db.Exec(s.q("UPDATE items SET item_number = ? WHERE id = ?"), maxNum, itemID); err != nil {
 				return fmt.Errorf("update item_number for item %s: %w", itemID, err)
 			}
 		}
@@ -388,7 +502,7 @@ func (s *Store) uniqueSlug(table, scopeCol, scopeVal, baseSlug string) (string, 
 		var count int
 		// Check all rows including soft-deleted to respect the DB UNIQUE constraint
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ?", table, scopeCol)
-		err := s.db.QueryRow(query, scopeVal, slug).Scan(&count)
+		err := s.db.QueryRow(s.q(query), scopeVal, slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}

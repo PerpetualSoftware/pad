@@ -72,6 +72,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleHealthLive is a lightweight liveness probe — always returns 200 if the
+// process is running. Kubernetes uses this to decide whether to restart the pod.
+func (s *Server) handleHealthLive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleHealthReady is a readiness probe — returns 200 only when the service
+// can accept traffic (DB connection healthy). Kubernetes uses this to decide
+// whether to route traffic to the pod.
+func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Ping(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "not ready",
+			"error":  "database unavailable",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	type templateInfo struct {
 		Name        string   `json:"name"`

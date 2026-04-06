@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,7 +30,9 @@ import (
 	"regexp"
 
 	"github.com/xarmian/pad/internal/email"
+	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
+	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
@@ -162,6 +164,17 @@ func serveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
 
+			// Initialize structured logging
+			logLevel := os.Getenv("PAD_LOG_LEVEL")
+			if logLevel == "" {
+				logLevel = "info"
+			}
+			logFormat := os.Getenv("PAD_LOG_FORMAT")
+			if logFormat == "" {
+				logFormat = "text"
+			}
+			logging.Setup(logLevel, logFormat)
+
 			if cmd.Flags().Changed("host") {
 				cfg.Host = host
 			}
@@ -169,23 +182,40 @@ func serveCmd() *cobra.Command {
 				cfg.Port = port
 			}
 
-			s, err := store.New(cfg.DBPath)
-			if err != nil {
-				return fmt.Errorf("open database: %w", err)
+			// Open database (SQLite default, PostgreSQL via PAD_DB_DRIVER)
+			var s *store.Store
+			var err error
+			dbDriver := os.Getenv("PAD_DB_DRIVER")
+			if dbDriver == "postgres" {
+				pgURL := os.Getenv("PAD_DATABASE_URL")
+				if pgURL == "" {
+					return fmt.Errorf("PAD_DATABASE_URL is required when PAD_DB_DRIVER=postgres")
+				}
+				s, err = store.NewPostgres(pgURL)
+				if err != nil {
+					return fmt.Errorf("open postgres: %w", err)
+				}
+				slog.Info("Database using PostgreSQL")
+			} else {
+				s, err = store.New(cfg.DBPath)
+				if err != nil {
+					return fmt.Errorf("open database: %w", err)
+				}
+				slog.Info("Database using SQLite", "path", cfg.DBPath)
 			}
 			defer s.Close()
 
 			// Auto-upgrade: ensure all default collections exist in every workspace.
 			// This is safe because SeedDefaultCollections skips collections that already exist.
 			if workspaces, err := s.ListWorkspaces(); err == nil {
-				log.Printf("Auto-upgrade: checking %d workspace(s) for missing default collections", len(workspaces))
+				slog.Info("auto-upgrade: checking workspaces for missing default collections", "count", len(workspaces))
 				for _, ws := range workspaces {
 					if err := s.SeedDefaultCollections(ws.ID); err != nil {
-						log.Printf("Warning: failed to seed defaults for workspace %s: %v", ws.Slug, err)
+						slog.Warn("failed to seed defaults for workspace", "workspace", ws.Slug, "error", err)
 					}
 				}
 			} else {
-				log.Printf("Warning: failed to list workspaces for auto-upgrade: %v", err)
+				slog.Warn("failed to list workspaces for auto-upgrade", "error", err)
 			}
 
 			srv := server.New(s)
@@ -195,7 +225,23 @@ func serveCmd() *cobra.Command {
 			srv.SetSecureCookies(cfg.SecureCookies)
 
 			// Attach event bus for real-time SSE
-			srv.SetEventBus(events.New())
+			var eventBus events.EventBus
+			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
+				opts, err := redis.ParseURL(redisURL)
+				if err != nil {
+					return fmt.Errorf("invalid PAD_REDIS_URL: %w", err)
+				}
+				rc := redis.NewClient(opts)
+				if err := rc.Ping(context.Background()).Err(); err != nil {
+					return fmt.Errorf("redis connection failed: %w", err)
+				}
+				eventBus = events.NewRedisBus(rc)
+				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
+			} else {
+				eventBus = events.New()
+				slog.Info("Event bus using in-memory (single instance)")
+			}
+			srv.SetEventBus(eventBus)
 
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
@@ -211,7 +257,7 @@ func serveCmd() *cobra.Command {
 					fromName = "Pad"
 				}
 				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()))
-				log.Println("Email sending enabled via Maileroo (env)")
+				slog.Info("Email sending enabled via Maileroo (env)")
 			}
 			// Platform settings can override or provide email config
 			srv.InitEmailFromSettings()
@@ -221,11 +267,47 @@ func serveCmd() *cobra.Command {
 			if err == nil {
 				if entries, err := fs.ReadDir(webFS, "."); err == nil && len(entries) > 0 {
 					srv.SetWebUI(webFS)
-					log.Println("Serving embedded web UI")
+					slog.Info("Serving embedded web UI")
 				}
 			}
 
-			return srv.ListenAndServe(cfg.Addr())
+			// Graceful shutdown: listen for SIGINT/SIGTERM
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			// Start server in a goroutine
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- srv.ListenAndServe(cfg.Addr())
+			}()
+
+			// Wait for signal or server error
+			select {
+			case err := <-errCh:
+				// Server failed to start or crashed
+				return err
+			case <-ctx.Done():
+				// Received shutdown signal
+				slog.Info("Shutting down server (30s grace period)...")
+				stop() // Reset signal handling so a second signal force-kills
+
+				// Close event bus first — this terminates SSE handler
+				// goroutines so http.Server.Shutdown won't block on them.
+				if eventBus != nil {
+					eventBus.Close()
+					slog.Info("Event bus closed")
+				}
+
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				if err := srv.Shutdown(shutdownCtx); err != nil {
+					slog.Error("HTTP server shutdown error", "error", err)
+				}
+
+				slog.Info("Server stopped")
+				return nil
+			}
 		},
 	}
 
