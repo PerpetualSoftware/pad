@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -36,6 +37,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	s.logAuditEvent(models.ActionTokenCreated, r, fmt.Sprintf(`{"name":"%s","workspace_id":"%s"}`, input.Name, input.WorkspaceID))
 
 	writeJSON(w, http.StatusCreated, token)
 }
@@ -75,6 +78,8 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	s.logAuditEvent(models.ActionTokenRevoked, r, fmt.Sprintf(`{"token_id":"%s"}`, tokenID))
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -126,6 +131,8 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAuditEvent(models.ActionTokenCreated, r, fmt.Sprintf(`{"name":"%s"}`, input.Name))
+
 	writeJSON(w, http.StatusCreated, token)
 }
 
@@ -146,6 +153,8 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	s.logAuditEvent(models.ActionTokenRevoked, r, fmt.Sprintf(`{"token_id":"%s"}`, tokenID))
 
 	w.WriteHeader(http.StatusNoContent)
 }

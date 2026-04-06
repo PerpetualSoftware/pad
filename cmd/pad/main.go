@@ -5200,3 +5200,75 @@ func relativeTimeStr(t time.Time) string {
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
+
+// --- audit-log ---
+
+func auditLogCmd() *cobra.Command {
+	var days int
+	var actor string
+	var action string
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "audit-log",
+		Short: "View the compliance audit log (admin-only)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+
+			params := models.AuditLogParams{
+				Days:   days,
+				Actor:  actor,
+				Action: action,
+				Limit:  limit,
+			}
+
+			activities, err := client.GetAuditLog(params)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(activities)
+			}
+
+			if len(activities) == 0 {
+				fmt.Println("No audit log entries found.")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "TIME\tACTION\tACTOR\tIP\tDETAILS")
+			for _, a := range activities {
+				ts := a.CreatedAt.Format("2006-01-02 15:04")
+				actorName := a.ActorName
+				if actorName == "" {
+					actorName = a.UserID
+				}
+				ip := a.IPAddress
+				if ip == "" {
+					ip = "-"
+				}
+				detail := a.Metadata
+				if detail == "" {
+					detail = "-"
+				}
+				// Truncate long metadata
+				if len(detail) > 60 {
+					detail = detail[:57] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ts, a.Action, actorName, ip, detail)
+			}
+			w.Flush()
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&days, "days", 30, "number of days to look back")
+	cmd.Flags().StringVar(&actor, "actor", "", "filter by actor (user ID)")
+	cmd.Flags().StringVar(&action, "action", "", "filter by action type")
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of entries")
+
+	return cmd
+}

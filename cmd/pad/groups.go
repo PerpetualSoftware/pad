@@ -49,6 +49,7 @@ func workspaceCmd() *cobra.Command {
 		joinCmd(),
 		exportCmd(),
 		importCmd(),
+		auditLogCmd(),
 	)
 	return cmd
 }

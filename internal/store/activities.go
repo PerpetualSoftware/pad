@@ -21,9 +21,9 @@ func (s *Store) CreateActivity(a models.Activity) (string, error) {
 	ts := now()
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), a.ID, a.WorkspaceID, nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), ts)
+		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, ip_address, user_agent, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), a.ID, nilIfEmpty(a.WorkspaceID), nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), nilIfEmpty(a.IPAddress), nilIfEmpty(a.UserAgent), ts)
 	return a.ID, err
 }
 
@@ -118,7 +118,7 @@ func mergeActivityMeta(existing, incoming string) string {
 
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
+		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.workspace_id = ?
@@ -160,7 +160,7 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 
 func (s *Store) ListDocumentActivity(documentID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
+		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.document_id = ?
@@ -201,7 +201,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	rows, err := s.db.Query(s.q(`
-		SELECT a.id, a.workspace_id, COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, '')
+		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
@@ -225,7 +225,7 @@ func scanActivitiesWithUser(rows interface {
 	for rows.Next() {
 		var a models.Activity
 		var createdAt string
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.DocumentID, &a.Action, &a.Actor, &a.Source, &a.Metadata, &a.UserID, &createdAt, &a.ActorName); err != nil {
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.DocumentID, &a.Action, &a.Actor, &a.Source, &a.Metadata, &a.UserID, &createdAt, &a.ActorName, &a.IPAddress, &a.UserAgent); err != nil {
 			return nil, err
 		}
 		a.CreatedAt = parseTime(createdAt)
@@ -239,4 +239,53 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// ListAuditLog returns activities matching the given audit log filters.
+// Supports filtering by action, actor, workspace, and date range.
+func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, error) {
+	query := s.q(`
+		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
+		FROM activities a
+		LEFT JOIN users u ON a.user_id = u.id
+		WHERE 1=1
+	`)
+	args := []interface{}{}
+
+	if params.WorkspaceID != "" {
+		query += s.q(` AND a.workspace_id = ?`)
+		args = append(args, params.WorkspaceID)
+	}
+	if params.Action != "" {
+		query += s.q(` AND a.action = ?`)
+		args = append(args, params.Action)
+	}
+	if params.Actor != "" {
+		query += s.q(` AND a.actor = ?`)
+		args = append(args, params.Actor)
+	}
+	if params.Days > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -params.Days).Format(time.RFC3339)
+		query += s.q(` AND a.created_at >= ?`)
+		args = append(args, cutoff)
+	}
+
+	query += ` ORDER BY a.created_at DESC`
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query += fmt.Sprintf(` LIMIT %d`, limit)
+	if params.Offset > 0 {
+		query += fmt.Sprintf(` OFFSET %d`, params.Offset)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanActivitiesWithUser(rows)
 }

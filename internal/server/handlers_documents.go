@@ -448,6 +448,45 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 		Source:      source,
 		Metadata:    metadata,
 		UserID:      currentUserID(r),
+		IPAddress:   clientIP(r),
+		UserAgent:   r.Header.Get("User-Agent"),
+	})
+}
+
+// logAuditEvent logs a non-workspace audit event (e.g. login, logout).
+// Best-effort: errors are silently ignored.
+func (s *Server) logAuditEvent(action string, r *http.Request, metadata string) {
+	actor, source := actorFromRequest(r)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	_, _ = s.store.CreateActivity(models.Activity{
+		Action:    action,
+		Actor:     actor,
+		Source:    source,
+		Metadata:  metadata,
+		UserID:    currentUserID(r),
+		IPAddress: clientIP(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+}
+
+// logWorkspaceAuditEvent logs a workspace-scoped audit event (e.g. member invited).
+// Best-effort: errors are silently ignored.
+func (s *Server) logWorkspaceAuditEvent(workspaceID, action string, r *http.Request, metadata string) {
+	actor, source := actorFromRequest(r)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	_, _ = s.store.CreateActivity(models.Activity{
+		WorkspaceID: workspaceID,
+		Action:      action,
+		Actor:       actor,
+		Source:      source,
+		Metadata:    metadata,
+		UserID:      currentUserID(r),
+		IPAddress:   clientIP(r),
+		UserAgent:   r.Header.Get("User-Agent"),
 	})
 }
 

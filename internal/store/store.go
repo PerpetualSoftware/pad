@@ -138,6 +138,7 @@ func (s *Store) migrate() error {
 		"019_agent_roles_tools.sql",
 		"020_role_sort_order.sql",
 		"021_phase_to_links.sql",
+		"022_audit_trail.sql",
 	}
 
 	for _, name := range migrations {
@@ -183,6 +184,7 @@ func (s *Store) migratePostgres() error {
 
 	migrations := []string{
 		"001_initial.sql",
+		"002_audit_trail.sql",
 	}
 
 	for _, name := range migrations {

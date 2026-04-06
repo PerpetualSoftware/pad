@@ -203,6 +203,9 @@ func (s *Server) setupRouter() {
 			r.Post("/test-email", s.handleTestEmail)
 		})
 
+		// Audit log (admin-only)
+		r.Get("/audit-log", s.handleAuditLog)
+
 		// Templates
 		r.Get("/templates", s.handleListTemplates)
 
