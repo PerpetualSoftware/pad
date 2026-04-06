@@ -360,3 +360,105 @@ func TestSSENoEventBus(t *testing.T) {
 		t.Errorf("expected 503, got %d", rr.Code)
 	}
 }
+
+func TestSSEGlobalConnectionLimit(t *testing.T) {
+	srv := testServerWithEvents(t)
+	srv.SetSSELimits(1, 0) // global limit of 1, no per-workspace limit
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// First connection should succeed
+	ch := connectSSE(ctx, t, ts.URL, slug)
+	waitForEvent(t, ch, 3*time.Second) // connected
+
+	// Second connection should be rejected with 429
+	req, err := http.NewRequest("GET", ts.URL+"/api/v1/events?workspace="+slug, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", resp.StatusCode)
+	}
+}
+
+func TestSSEPerWorkspaceLimit(t *testing.T) {
+	srv := testServerWithEvents(t)
+	srv.SetSSELimits(0, 1) // no global limit, per-workspace limit of 1
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug1 := createTestWorkspace(t, ts.URL, "WS One")
+	slug2 := createTestWorkspace(t, ts.URL, "WS Two")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// First connection to ws1 should succeed
+	ch1 := connectSSE(ctx, t, ts.URL, slug1)
+	waitForEvent(t, ch1, 3*time.Second) // connected
+
+	// Second connection to ws1 should be rejected
+	req, err := http.NewRequest("GET", ts.URL+"/api/v1/events?workspace="+slug1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for second ws1 connection, got %d", resp.StatusCode)
+	}
+
+	// Connection to ws2 should still succeed (different workspace)
+	ch2 := connectSSE(ctx, t, ts.URL, slug2)
+	event := waitForEvent(t, ch2, 3*time.Second)
+	if event.Type != "connected" {
+		t.Errorf("expected 'connected' for ws2, got %q", event.Type)
+	}
+}
+
+func TestSSELimitsExistingConnectionsUnaffected(t *testing.T) {
+	srv := testServerWithEvents(t)
+	srv.SetSSELimits(1, 0) // global limit of 1
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Establish connection
+	ch := connectSSE(ctx, t, ts.URL, slug)
+	waitForEvent(t, ch, 3*time.Second) // connected
+
+	// Try (and fail) to get a second connection
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/events?workspace="+slug, nil)
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	// The existing connection should still work — publish an event
+	srv.events.Publish(events.Event{
+		Type:        "item.created",
+		WorkspaceID: slug, // need the real workspace ID
+	})
+
+	// We can't easily test the existing connection receives events here
+	// because the workspace ID in the event must match the internal UUID,
+	// but we can verify the subscriber count is still 1
+	if got := srv.events.SubscriberCount(); got != 1 {
+		t.Errorf("expected 1 subscriber still active, got %d", got)
+	}
+}

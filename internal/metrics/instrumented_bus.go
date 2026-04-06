@@ -72,3 +72,8 @@ func (b *InstrumentedBus) Close() {
 func (b *InstrumentedBus) SubscriberCount() int {
 	return b.inner.SubscriberCount()
 }
+
+// WorkspaceSubscriberCount delegates to the inner bus.
+func (b *InstrumentedBus) WorkspaceSubscriberCount(workspaceID string) int {
+	return b.inner.WorkspaceSubscriberCount(workspaceID)
+}

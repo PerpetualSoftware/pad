@@ -65,6 +65,10 @@ type EventBus interface {
 
 	// SubscriberCount returns the number of active local subscribers.
 	SubscriberCount() int
+
+	// WorkspaceSubscriberCount returns the number of active subscribers
+	// for a specific workspace.
+	WorkspaceSubscriberCount(workspaceID string) int
 }
 
 // subscriber wraps a channel with its workspace filter.
@@ -152,4 +156,17 @@ func (b *MemoryBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.subscribers)
+}
+
+// WorkspaceSubscriberCount returns the number of active subscribers for a workspace.
+func (b *MemoryBus) WorkspaceSubscriberCount(workspaceID string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	count := 0
+	for _, sub := range b.subscribers {
+		if sub.workspaceID == workspaceID {
+			count++
+		}
+	}
+	return count
 }

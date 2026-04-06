@@ -47,9 +47,29 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
+	// Check SSE connection limits before subscribing
+	if s.sseMaxConnections > 0 && s.events.SubscriberCount() >= s.sseMaxConnections {
+		slog.Warn("SSE global connection limit reached", "current", s.events.SubscriberCount(), "max", s.sseMaxConnections)
+		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "Global SSE connection limit reached")
+		return
+	}
+	if s.sseMaxPerWorkspace > 0 && s.events.WorkspaceSubscriberCount(ws.ID) >= s.sseMaxPerWorkspace {
+		slog.Warn("SSE per-workspace connection limit reached", "workspace", ws.Slug, "current", s.events.WorkspaceSubscriberCount(ws.ID), "max", s.sseMaxPerWorkspace)
+		writeError(w, http.StatusTooManyRequests, "sse_workspace_limit_exceeded", "Workspace SSE connection limit reached")
+		return
+	}
+
 	// Subscribe to events for this workspace
 	ch := s.events.Subscribe(ws.ID)
 	defer s.events.Unsubscribe(ch)
+
+	// Log warning at 80% global capacity
+	if s.sseMaxConnections > 0 {
+		total := s.events.SubscriberCount()
+		if total >= s.sseMaxConnections*80/100 {
+			slog.Warn("SSE connections approaching global limit", "current", total, "max", s.sseMaxConnections)
+		}
+	}
 
 	// Send initial connected event
 	writeSSEEvent(w, "connected", map[string]string{

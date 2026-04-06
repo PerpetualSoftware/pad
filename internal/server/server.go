@@ -37,8 +37,10 @@ type Server struct {
 	baseURL       string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
-	metrics       *metrics.Metrics      // Prometheus metrics (optional)
-	version       string               // release version (e.g. "dev", "1.2.3")
+	metrics            *metrics.Metrics      // Prometheus metrics (optional)
+	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
+	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
+	version            string               // release version (e.g. "dev", "1.2.3")
 	commit        string               // git commit hash
 	buildTime     string               // build timestamp
 }
@@ -91,6 +93,13 @@ func (s *Server) SetSecureCookies(secure bool) {
 // Must be called before the first request is served.
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
+}
+
+// SetSSELimits configures global and per-workspace SSE connection limits.
+// A value of 0 means unlimited.
+func (s *Server) SetSSELimits(global, perWorkspace int) {
+	s.sseMaxConnections = global
+	s.sseMaxPerWorkspace = perWorkspace
 }
 
 // reconfigureEmail reads email settings from the platform_settings table

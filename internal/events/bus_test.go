@@ -230,6 +230,43 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSubscriberCount(t *testing.T) {
+	bus := New()
+
+	// No subscribers initially
+	if got := bus.WorkspaceSubscriberCount("ws-1"); got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+
+	// Subscribe to ws-1
+	ch1 := bus.Subscribe("ws-1")
+	ch2 := bus.Subscribe("ws-1")
+	ch3 := bus.Subscribe("ws-2")
+
+	if got := bus.WorkspaceSubscriberCount("ws-1"); got != 2 {
+		t.Fatalf("expected 2 for ws-1, got %d", got)
+	}
+	if got := bus.WorkspaceSubscriberCount("ws-2"); got != 1 {
+		t.Fatalf("expected 1 for ws-2, got %d", got)
+	}
+	if got := bus.WorkspaceSubscriberCount("ws-3"); got != 0 {
+		t.Fatalf("expected 0 for ws-3, got %d", got)
+	}
+
+	// Unsubscribe one from ws-1
+	bus.Unsubscribe(ch1)
+	if got := bus.WorkspaceSubscriberCount("ws-1"); got != 1 {
+		t.Fatalf("expected 1 for ws-1 after unsubscribe, got %d", got)
+	}
+
+	// Unsubscribe remaining
+	bus.Unsubscribe(ch2)
+	bus.Unsubscribe(ch3)
+	if got := bus.WorkspaceSubscriberCount("ws-1"); got != 0 {
+		t.Fatalf("expected 0 for ws-1 after all unsubscribed, got %d", got)
+	}
+}
+
 func TestPublishNoSubscribers(t *testing.T) {
 	bus := New()
 	// Should not panic

@@ -224,6 +224,7 @@ func serveCmd() *cobra.Command {
 			srv.SetBaseURL(cfg.BaseURL())
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
+			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
 
 			// Initialize Prometheus metrics
 			m := metrics.New()

@@ -143,6 +143,13 @@ func (b *RedisBus) SubscriberCount() int {
 	return len(b.subscribers)
 }
 
+// WorkspaceSubscriberCount returns the number of active local subscribers for a workspace.
+func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.wsCounts[workspaceID]
+}
+
 // startRedisSubscription begins listening on a Redis channel for a workspace.
 // Must be called with b.mu held.
 func (b *RedisBus) startRedisSubscription(workspaceID string) {
