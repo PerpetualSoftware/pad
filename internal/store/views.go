@@ -33,8 +33,8 @@ func (s *Store) CreateView(workspaceID string, input models.ViewCreate) (*models
 
 	_, err = s.db.Exec(s.q(`
 		INSERT INTO views (id, workspace_id, collection_id, name, slug, view_type, config, sort_order, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`),
-		id, workspaceID, input.CollectionID, input.Name, slug, viewType, config, ts, ts,
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
+		id, workspaceID, input.CollectionID, input.Name, slug, viewType, config, s.dialect.BoolToInt(false), ts, ts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert view: %w", err)

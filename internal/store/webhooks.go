@@ -19,8 +19,8 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*
 
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO webhooks (id, workspace_id, url, secret, events, active, created_at, updated_at, failure_count)
-		VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0)
-	`), id, workspaceID, input.URL, input.Secret, evts, ts, ts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+	`), id, workspaceID, input.URL, input.Secret, evts, s.dialect.BoolToInt(true), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
