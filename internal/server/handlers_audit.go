@@ -8,7 +8,7 @@ import (
 )
 
 // handleAuditLog returns a filtered audit log. Admin-only.
-// Supports filtering by action, actor, workspace, days, and pagination.
+// Supports filtering by action, user (user ID), workspace, days, and pagination.
 func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil || user.Role != "admin" {
@@ -16,9 +16,15 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept both "user" and "actor" query params for filtering by user ID.
+	actorFilter := r.URL.Query().Get("user")
+	if actorFilter == "" {
+		actorFilter = r.URL.Query().Get("actor")
+	}
+
 	params := models.AuditLogParams{
 		Action:      r.URL.Query().Get("action"),
-		Actor:       r.URL.Query().Get("actor"),
+		Actor:       actorFilter,
 		WorkspaceID: r.URL.Query().Get("workspace"),
 		Days:        30, // default
 	}

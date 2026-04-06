@@ -456,6 +456,13 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 // logAuditEvent logs a non-workspace audit event (e.g. login, logout).
 // Best-effort: errors are silently ignored.
 func (s *Server) logAuditEvent(action string, r *http.Request, metadata string) {
+	s.logAuditEventForUser(action, r, currentUserID(r), metadata)
+}
+
+// logAuditEventForUser logs an audit event with an explicit user ID.
+// Use this when the user isn't (yet) in the request context, e.g. after
+// a successful login/register/bootstrap where the session was just created.
+func (s *Server) logAuditEventForUser(action string, r *http.Request, userID string, metadata string) {
 	actor, source := actorFromRequest(r)
 	if metadata == "" {
 		metadata = "{}"
@@ -465,7 +472,7 @@ func (s *Server) logAuditEvent(action string, r *http.Request, metadata string) 
 		Actor:     actor,
 		Source:    source,
 		Metadata:  metadata,
-		UserID:    currentUserID(r),
+		UserID:    userID,
 		IPAddress: clientIP(r),
 		UserAgent: r.Header.Get("User-Agent"),
 	})

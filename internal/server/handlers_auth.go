@@ -162,7 +162,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionBootstrap, r, `{"email":"`+user.Email+`"}`)
+	s.logAuditEventForUser(models.ActionBootstrap, r, user.ID, `{"email":"`+user.Email+`"}`)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
@@ -276,7 +276,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionRegister, r, `{"email":"`+user.Email+`"}`)
+	s.logAuditEventForUser(models.ActionRegister, r, user.ID, `{"email":"`+user.Email+`"}`)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
@@ -324,7 +324,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionLogin, r, `{"email":"`+user.Email+`"}`)
+	s.logAuditEventForUser(models.ActionLogin, r, user.ID, `{"email":"`+user.Email+`"}`)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user":  sessionUserPayload(user),
@@ -634,7 +634,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Set CSRF cookie alongside the new session
 	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
 
-	s.logAuditEvent(models.ActionPasswordReset, r, `{"email":"`+user.Email+`"}`)
+	s.logAuditEventForUser(models.ActionPasswordReset, r, user.ID, `{"email":"`+user.Email+`"}`)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,

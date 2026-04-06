@@ -261,7 +261,7 @@ func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, e
 		args = append(args, params.Action)
 	}
 	if params.Actor != "" {
-		query += s.q(` AND a.actor = ?`)
+		query += s.q(` AND a.user_id = ?`)
 		args = append(args, params.Actor)
 	}
 	if params.Days > 0 {

@@ -5204,25 +5204,13 @@ func relativeTimeStr(t time.Time) string {
 
 // --- database tools ---
 
-// parsePgURL extracts connection parameters from a PostgreSQL URL for use with
-// pg_dump/pg_restore/psql. Returns host, port, user, password, dbname.
-func parsePgURL(raw string) (host, port, user, password, dbname string, err error) {
+// pgDbnameFromURL extracts just the database name from a PostgreSQL URL for display purposes.
+func pgDbnameFromURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("invalid database URL: %w", err)
+		return "unknown"
 	}
-	host = u.Hostname()
-	port = u.Port()
-	if port == "" {
-		port = "5432"
-	}
-	user = u.User.Username()
-	password, _ = u.User.Password()
-	dbname = strings.TrimPrefix(u.Path, "/")
-	if dbname == "" {
-		return "", "", "", "", "", fmt.Errorf("no database name in URL")
-	}
-	return
+	return strings.TrimPrefix(u.Path, "/")
 }
 
 func dbBackupCmd() *cobra.Command {
@@ -5242,30 +5230,27 @@ For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
 				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.\nFor SQLite, copy the database file directly: cp ~/.pad/pad.db backup.db")
 			}
 
-			host, port, user, password, dbname, err := parsePgURL(dbURL)
-			if err != nil {
-				return err
-			}
-
 			if output == "" {
 				output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
 			}
 
+			// Use --dbname with the full URL so pg_dump inherits all connection
+			// parameters (sslmode, sslrootcert, timeouts, etc.).
+			// --clean emits DROP statements so the dump can be restored into an
+			// existing database, and --if-exists avoids errors on a fresh DB.
 			pgArgs := []string{
-				"--host", host,
-				"--port", port,
-				"--username", user,
-				"--no-password",
+				"--dbname", dbURL,
 				"--format", "plain",
+				"--clean",
+				"--if-exists",
 				"--file", output,
-				dbname,
 			}
 
 			pgCmd := exec.Command("pg_dump", pgArgs...)
-			pgCmd.Env = append(os.Environ(), "PGPASSWORD="+password)
 			pgCmd.Stdout = os.Stdout
 			pgCmd.Stderr = os.Stderr
 
+			dbname := pgDbnameFromURL(dbURL)
 			if !cronMode {
 				fmt.Fprintf(os.Stderr, "Backing up database %s to %s...\n", dbname, output)
 			}
@@ -5319,11 +5304,7 @@ WARNING: This will overwrite the current database contents.`,
 				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.")
 			}
 
-			host, port, user, password, dbname, err := parsePgURL(dbURL)
-			if err != nil {
-				return err
-			}
-
+			dbname := pgDbnameFromURL(dbURL)
 			if !force {
 				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the database '%s' with data from %s.\n", dbname, inputFile)
 				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
@@ -5336,18 +5317,15 @@ WARNING: This will overwrite the current database contents.`,
 				}
 			}
 
+			// Use --dbname with the full URL so psql inherits all connection
+			// parameters (sslmode, sslrootcert, timeouts, etc.).
 			psqlArgs := []string{
-				"--host", host,
-				"--port", port,
-				"--username", user,
-				"--no-password",
-				"--dbname", dbname,
+				"--dbname", dbURL,
 				"--file", inputFile,
 				"--single-transaction",
 			}
 
 			psqlCmd := exec.Command("psql", psqlArgs...)
-			psqlCmd.Env = append(os.Environ(), "PGPASSWORD="+password)
 			psqlCmd.Stdout = os.Stdout
 			psqlCmd.Stderr = os.Stderr
 
