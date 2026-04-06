@@ -33,6 +33,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
+	"github.com/xarmian/pad/internal/metrics"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
@@ -224,6 +225,12 @@ func serveCmd() *cobra.Command {
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
 
+			// Initialize Prometheus metrics
+			m := metrics.New()
+			m.RegisterDBCollector(s.DB())
+			srv.SetMetrics(m)
+			slog.Info("Prometheus metrics enabled at /metrics")
+
 			// Attach event bus for real-time SSE
 			var eventBus events.EventBus
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
@@ -241,6 +248,8 @@ func serveCmd() *cobra.Command {
 				eventBus = events.New()
 				slog.Info("Event bus using in-memory (single instance)")
 			}
+			// Wrap event bus with Prometheus instrumentation
+			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
 
 			// Attach webhook dispatcher for outgoing notifications
