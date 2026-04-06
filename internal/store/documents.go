@@ -29,9 +29,9 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 		args = append(args, params.Status)
 	}
 	if params.Tag != "" {
-		// Search within JSON array
-		query += " AND tags LIKE ?"
-		args = append(args, "%\""+params.Tag+"\"%")
+		tagExpr, tagArg := s.dialect.JSONArrayContains("tags", params.Tag)
+		query += " AND " + tagExpr
+		args = append(args, tagArg)
 	}
 	if params.Pinned != nil {
 		if *params.Pinned {

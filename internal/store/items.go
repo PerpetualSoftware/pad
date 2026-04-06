@@ -394,8 +394,9 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	}
 
 	if params.Tag != "" {
-		query += " AND i.tags LIKE ?"
-		args = append(args, "%\""+params.Tag+"\"%")
+		tagExpr, tagArg := s.dialect.JSONArrayContains("i.tags", params.Tag)
+		query += " AND " + tagExpr
+		args = append(args, tagArg)
 	}
 
 	if params.ParentID != "" {

@@ -92,6 +92,12 @@ type Dialect interface {
 	// SQLite: rank (built-in FTS5 column)
 	// PostgreSQL: ts_rank(tsvector_col, plainto_tsquery('english', ?))
 	FTSRank(table, column string) string
+
+	// JSONArrayContains returns SQL + the arg to check if a JSON array column
+	// contains a given text value.
+	// SQLite: "column LIKE ?" with arg `%"value"%`
+	// PostgreSQL: "column::jsonb @> ?::jsonb" with arg `["value"]`
+	JSONArrayContains(column, value string) (string, interface{})
 }
 
 // ---------- SQLite dialect ----------
@@ -160,6 +166,10 @@ func (d *sqliteDialect) FTSRank(_, _ string) string {
 	return "rank"
 }
 
+func (d *sqliteDialect) JSONArrayContains(column, value string) (string, interface{}) {
+	return column + " LIKE ?", "%\"" + value + "\"%"
+}
+
 // ---------- PostgreSQL dialect ----------
 
 type postgresDialect struct{}
@@ -226,6 +236,10 @@ func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn string) strin
 
 func (d *postgresDialect) FTSRank(table, column string) string {
 	return fmt.Sprintf("ts_rank(%s.%s, plainto_tsquery('english', ?))", table, column)
+}
+
+func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {
+	return column + "::jsonb @> ?::jsonb", `["` + value + `"]`
 }
 
 // ---------- Helper ----------

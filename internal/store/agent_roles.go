@@ -403,7 +403,7 @@ func (s *Store) UpdateAgentRoleOrder(workspaceID string, updates []RoleOrderUpda
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE agent_roles SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ?")
+	stmt, err := tx.Prepare(s.q("UPDATE agent_roles SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ?"))
 	if err != nil {
 		return fmt.Errorf("prepare role order update: %w", err)
 	}
@@ -433,7 +433,7 @@ func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?")
+	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?"))
 	if err != nil {
 		return fmt.Errorf("prepare role sort update: %w", err)
 	}

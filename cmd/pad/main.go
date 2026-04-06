@@ -236,7 +236,7 @@ func serveCmd() *cobra.Command {
 					return fmt.Errorf("redis connection failed: %w", err)
 				}
 				eventBus = events.NewRedisBus(rc)
-				slog.Info("Event bus using Redis pub/sub", "url", redisURL)
+				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
 			} else {
 				eventBus = events.New()
 				slog.Info("Event bus using in-memory (single instance)")
