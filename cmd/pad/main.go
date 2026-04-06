@@ -87,6 +87,7 @@ func main() {
 		githubCmd(),
 		roleCmd(),
 		webhooksCmd(),
+		dbCmd(),
 		completionCmd(),
 	)
 
@@ -5199,6 +5200,295 @@ func relativeTimeStr(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// --- database tools ---
+
+// parsePgURL extracts connection parameters from a PostgreSQL URL for use with
+// pg_dump/pg_restore/psql. Returns host, port, user, password, dbname.
+func parsePgURL(raw string) (host, port, user, password, dbname string, err error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", "", "", "", fmt.Errorf("invalid database URL: %w", err)
+	}
+	host = u.Hostname()
+	port = u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	user = u.User.Username()
+	password, _ = u.User.Password()
+	dbname = strings.TrimPrefix(u.Path, "/")
+	if dbname == "" {
+		return "", "", "", "", "", fmt.Errorf("no database name in URL")
+	}
+	return
+}
+
+func dbBackupCmd() *cobra.Command {
+	var output string
+	var cronMode bool
+
+	cmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Back up the PostgreSQL database using pg_dump",
+		Long: `Creates a SQL dump of the Pad PostgreSQL database.
+Requires pg_dump to be installed and PAD_DATABASE_URL or PAD_DB_DRIVER=postgres to be configured.
+
+For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbURL := os.Getenv("PAD_DATABASE_URL")
+			if dbURL == "" {
+				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.\nFor SQLite, copy the database file directly: cp ~/.pad/pad.db backup.db")
+			}
+
+			host, port, user, password, dbname, err := parsePgURL(dbURL)
+			if err != nil {
+				return err
+			}
+
+			if output == "" {
+				output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
+			}
+
+			pgArgs := []string{
+				"--host", host,
+				"--port", port,
+				"--username", user,
+				"--no-password",
+				"--format", "plain",
+				"--file", output,
+				dbname,
+			}
+
+			pgCmd := exec.Command("pg_dump", pgArgs...)
+			pgCmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+			pgCmd.Stdout = os.Stdout
+			pgCmd.Stderr = os.Stderr
+
+			if !cronMode {
+				fmt.Fprintf(os.Stderr, "Backing up database %s to %s...\n", dbname, output)
+			}
+
+			if err := pgCmd.Run(); err != nil {
+				if cronMode {
+					slog.Error("backup failed", "error", err, "output", output)
+				}
+				return fmt.Errorf("pg_dump failed: %w", err)
+			}
+
+			// Get file size
+			if info, err := os.Stat(output); err == nil {
+				sizeMB := float64(info.Size()) / 1024 / 1024
+				if cronMode {
+					slog.Info("backup completed", "output", output, "size_mb", fmt.Sprintf("%.1f", sizeMB))
+				} else {
+					fmt.Fprintf(os.Stderr, "Backup complete: %s (%.1f MB)\n", output, sizeMB)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: pad-backup-YYYYMMDD-HHMMSS.sql)")
+	cmd.Flags().BoolVar(&cronMode, "cron", false, "cron mode: structured log output, no interactive messages")
+
+	return cmd
+}
+
+func dbRestoreCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "restore <file.sql>",
+		Short: "Restore a PostgreSQL database from a backup",
+		Long: `Restores a Pad PostgreSQL database from a SQL dump created by 'pad db backup'.
+Requires psql to be installed and PAD_DATABASE_URL to be configured.
+
+WARNING: This will overwrite the current database contents.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inputFile := args[0]
+			if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+				return fmt.Errorf("backup file not found: %s", inputFile)
+			}
+
+			dbURL := os.Getenv("PAD_DATABASE_URL")
+			if dbURL == "" {
+				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.")
+			}
+
+			host, port, user, password, dbname, err := parsePgURL(dbURL)
+			if err != nil {
+				return err
+			}
+
+			if !force {
+				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the database '%s' with data from %s.\n", dbname, inputFile)
+				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
+				fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
+				var confirm string
+				fmt.Scanln(&confirm)
+				if confirm != "y" && confirm != "Y" {
+					fmt.Fprintln(os.Stderr, "Aborted.")
+					return nil
+				}
+			}
+
+			psqlArgs := []string{
+				"--host", host,
+				"--port", port,
+				"--username", user,
+				"--no-password",
+				"--dbname", dbname,
+				"--file", inputFile,
+				"--single-transaction",
+			}
+
+			psqlCmd := exec.Command("psql", psqlArgs...)
+			psqlCmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+			psqlCmd.Stdout = os.Stdout
+			psqlCmd.Stderr = os.Stderr
+
+			fmt.Fprintf(os.Stderr, "Restoring database %s from %s...\n", dbname, inputFile)
+
+			if err := psqlCmd.Run(); err != nil {
+				return fmt.Errorf("psql restore failed: %w", err)
+			}
+
+			fmt.Fprintln(os.Stderr, "Restore complete.")
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
+
+	return cmd
+}
+
+func dbMigrateToPgCmd() *cobra.Command {
+	var fromPath string
+	var toURL string
+
+	cmd := &cobra.Command{
+		Use:   "migrate-to-pg",
+		Short: "Migrate data from SQLite to PostgreSQL",
+		Long: `One-time migration from a SQLite database to PostgreSQL.
+Uses application-level export/import to transfer all workspace data.
+
+This reads each workspace from the SQLite database and imports it into
+the PostgreSQL database. Users, platform settings, and auth data are
+NOT migrated — only workspace content (collections, items, comments,
+links, versions).
+
+Steps:
+  1. Set up a fresh PostgreSQL database
+  2. Run 'pad serve' with PAD_DB_DRIVER=postgres once to create the schema
+  3. Stop the server
+  4. Run this command to migrate workspace data`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if fromPath == "" {
+				fromPath = filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+			}
+			if _, err := os.Stat(fromPath); os.IsNotExist(err) {
+				return fmt.Errorf("SQLite database not found: %s", fromPath)
+			}
+
+			if toURL == "" {
+				toURL = os.Getenv("PAD_DATABASE_URL")
+			}
+			if toURL == "" {
+				return fmt.Errorf("target PostgreSQL URL required: use --to or set PAD_DATABASE_URL")
+			}
+
+			// Open source SQLite
+			fmt.Fprintf(os.Stderr, "Opening SQLite database: %s\n", fromPath)
+			srcStore, err := store.New(fromPath)
+			if err != nil {
+				return fmt.Errorf("open SQLite: %w", err)
+			}
+			defer srcStore.Close()
+
+			// Open target PostgreSQL
+			fmt.Fprintf(os.Stderr, "Connecting to PostgreSQL: %s\n", maskPassword(toURL))
+			dstStore, err := store.NewPostgres(toURL)
+			if err != nil {
+				return fmt.Errorf("open PostgreSQL: %w", err)
+			}
+			defer dstStore.Close()
+
+			// List workspaces from source
+			workspaces, err := srcStore.ListWorkspaces()
+			if err != nil {
+				return fmt.Errorf("list workspaces: %w", err)
+			}
+
+			if len(workspaces) == 0 {
+				fmt.Fprintln(os.Stderr, "No workspaces found in SQLite database.")
+				return nil
+			}
+
+			fmt.Fprintf(os.Stderr, "Found %d workspace(s) to migrate:\n", len(workspaces))
+			for _, ws := range workspaces {
+				fmt.Fprintf(os.Stderr, "  - %s (%s)\n", ws.Name, ws.Slug)
+			}
+			fmt.Fprintln(os.Stderr)
+
+			migrated := 0
+			for _, ws := range workspaces {
+				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
+
+				data, err := srcStore.ExportWorkspace(ws.Slug)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ERROR exporting %s: %v (skipping)\n", ws.Slug, err)
+					continue
+				}
+
+				stats := fmt.Sprintf("%d collections, %d items, %d comments",
+					len(data.Collections), len(data.Items), len(data.Comments))
+
+				if _, err := dstStore.ImportWorkspace(data, ""); err != nil {
+					fmt.Fprintf(os.Stderr, "  ERROR importing %s: %v (skipping)\n", ws.Slug, err)
+					continue
+				}
+
+				fmt.Fprintf(os.Stderr, "  OK: %s\n", stats)
+				migrated++
+			}
+
+			fmt.Fprintf(os.Stderr, "\nMigration complete: %d/%d workspace(s) migrated.\n", migrated, len(workspaces))
+			if migrated < len(workspaces) {
+				fmt.Fprintln(os.Stderr, "Some workspaces failed — check the errors above.")
+				return fmt.Errorf("%d workspace(s) failed to migrate", len(workspaces)-migrated)
+			}
+
+			fmt.Fprintln(os.Stderr, "\nNext steps:")
+			fmt.Fprintln(os.Stderr, "  1. Set PAD_DB_DRIVER=postgres and PAD_DATABASE_URL in your environment")
+			fmt.Fprintln(os.Stderr, "  2. Start the server: pad serve")
+			fmt.Fprintln(os.Stderr, "  3. Run 'pad auth setup' to create an admin account on the new database")
+			fmt.Fprintln(os.Stderr, "  4. Verify your data in the web UI")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: ~/.pad/pad.db)")
+	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
+
+	return cmd
+}
+
+// maskPassword replaces the password in a PostgreSQL URL for safe display.
+func maskPassword(pgURL string) string {
+	u, err := url.Parse(pgURL)
+	if err != nil {
+		return "***"
+	}
+	if _, hasPW := u.User.Password(); hasPW {
+		u.User = url.UserPassword(u.User.Username(), "***")
+	}
+	return u.String()
 }
 
 // --- audit-log ---
