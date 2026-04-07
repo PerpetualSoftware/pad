@@ -7,28 +7,28 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
-// enrichItemsWithPhase batch-populates phase link info on a slice of items.
+// enrichItemsWithParent batch-populates parent link info on a slice of items.
 // Used by list endpoints where calling enrichItemForResponse per-item is too expensive.
-func (s *Server) enrichItemsWithPhase(workspaceID string, items []models.Item) {
+func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item) {
 	if len(items) == 0 {
 		return
 	}
-	phaseMap, err := s.store.GetTaskPhaseMap(workspaceID)
-	if err != nil || len(phaseMap) == 0 {
+	parentMap, err := s.store.GetParentMap(workspaceID)
+	if err != nil || len(parentMap) == 0 {
 		return
 	}
-	// Collect unique phase IDs
-	phaseIDs := make(map[string]bool)
-	for _, pid := range phaseMap {
-		phaseIDs[pid] = true
+	// Collect unique parent IDs
+	parentIDs := make(map[string]bool)
+	for _, pid := range parentMap {
+		parentIDs[pid] = true
 	}
-	// Fetch phase item details (title, ref) in bulk
-	type phaseInfo struct {
+	// Fetch parent item details (title, ref) in bulk
+	type parentInfo struct {
 		title string
 		ref   string
 	}
-	phases := make(map[string]phaseInfo)
-	for pid := range phaseIDs {
+	parents := make(map[string]parentInfo)
+	for pid := range parentIDs {
 		item, err := s.store.GetItem(pid)
 		if err != nil || item == nil {
 			continue
@@ -37,20 +37,28 @@ func (s *Server) enrichItemsWithPhase(workspaceID string, items []models.Item) {
 		if item.CollectionPrefix != "" && item.ItemNumber != nil {
 			ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
 		}
-		phases[pid] = phaseInfo{title: item.Title, ref: ref}
+		parents[pid] = parentInfo{title: item.Title, ref: ref}
 	}
 	// Populate items
 	for i := range items {
-		pid, ok := phaseMap[items[i].ID]
+		pid, ok := parentMap[items[i].ID]
 		if !ok {
 			continue
 		}
-		items[i].PhaseID = pid
-		if info, ok := phases[pid]; ok {
-			items[i].PhaseTitle = info.title
-			items[i].PhaseRef = info.ref
+		items[i].ParentLinkID = pid
+		items[i].PhaseID = pid // backward compat
+		if info, ok := parents[pid]; ok {
+			items[i].ParentTitle = info.title
+			items[i].ParentRef = info.ref
+			items[i].PhaseTitle = info.title // backward compat
+			items[i].PhaseRef = info.ref     // backward compat
 		}
 	}
+}
+
+// enrichItemsWithPhase is a deprecated alias for enrichItemsWithParent.
+func (s *Server) enrichItemsWithPhase(workspaceID string, items []models.Item) {
+	s.enrichItemsWithParent(workspaceID, items)
 }
 
 func (s *Server) enrichItemForResponse(item *models.Item) error {
@@ -63,15 +71,19 @@ func (s *Server) enrichItemForResponse(item *models.Item) error {
 	}
 	item.DerivedClosure = closure
 
-	// Populate phase link info
-	phaseLink, err := s.store.GetPhaseForItem(item.ID)
+	// Populate parent link info
+	parentLink, err := s.store.GetParentForItem(item.ID)
 	if err != nil {
 		return err
 	}
-	if phaseLink != nil {
-		item.PhaseID = phaseLink.TargetID
-		item.PhaseRef = phaseLink.TargetRef
-		item.PhaseTitle = phaseLink.TargetTitle
+	if parentLink != nil {
+		item.ParentLinkID = parentLink.TargetID
+		item.ParentRef = parentLink.TargetRef
+		item.ParentTitle = parentLink.TargetTitle
+		// Backward compat
+		item.PhaseID = parentLink.TargetID
+		item.PhaseRef = parentLink.TargetRef
+		item.PhaseTitle = parentLink.TargetTitle
 	}
 
 	return nil

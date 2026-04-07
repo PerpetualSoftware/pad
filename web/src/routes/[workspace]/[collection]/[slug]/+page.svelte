@@ -11,7 +11,7 @@
 	import type { Editor as EditorType } from '@tiptap/core';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
-	import PhaseTasks from '$lib/components/phases/PhaseTasks.svelte';
+	import ChildItems from '$lib/components/ChildItems.svelte';
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -76,7 +76,9 @@
 	let itemLinks = $state<ItemLink[]>([]);
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string }[]>([]);
 	let agentRoles = $state<AgentRole[]>([]);
-	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks) : []);
+	let childItemIds = $state<Set<string>>(new Set());
+	let hasChildren = $state(false);
+	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
 	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
 	let codeContext = $derived(item?.code_context ?? null);
 	$effect(() => {
@@ -124,21 +126,18 @@
 			item = itemData;
 			collection = collData;
 
-			// Fetch real progress for phases
-			if (collSlug === 'phases' && itemData) {
-				try {
-					const progress = await api.items.phasesProgress(wsSlug);
-					const match = progress.find(p => p.phase_id === itemData.id);
-					if (match) {
-						const pct = match.total > 0 ? Math.round((match.done / match.total) * 100) : 0;
-						computedOverrides = { progress: pct, _progressDone: match.done, _progressTotal: match.total };
-					} else {
-						computedOverrides = { progress: 0, _progressDone: 0, _progressTotal: 0 };
-					}
-				} catch {
+			// Fetch child item progress for any item (generalized from phases-only)
+			try {
+				const progress = await api.items.progress(wsSlug, itemData.slug);
+				if (progress.total > 0) {
+					hasChildren = true;
+					computedOverrides = { progress: progress.percentage, _progressDone: progress.done, _progressTotal: progress.total };
+				} else {
+					hasChildren = false;
 					computedOverrides = {};
 				}
-			} else {
+			} catch {
+				hasChildren = false;
 				computedOverrides = {};
 			}
 
@@ -303,12 +302,24 @@
 
 	let computedOverrides = $state<Record<string, any>>({});
 
-	function handlePhaseTasksChange(tasks: Item[]) {
-		if (collSlug !== 'phases') return;
-		const total = tasks.length;
-		const tasksCollection = (collectionStore.collections ?? []).find(c => c.slug === 'tasks');
-		const termOpts = tasksCollection ? getTerminalOptions(tasksCollection) : ['done', 'cancelled'];
-		const done = tasks.filter((task) => termOpts.includes(parseFields(task).status)).length;
+	function handleChildrenChange(items: Item[]) {
+		// Track child IDs for deduplication in the relationships section
+		childItemIds = new Set(items.map(i => i.id));
+		hasChildren = items.length > 0;
+
+		// Recompute progress from the actual children
+		const total = items.length;
+		const allCollections = collectionStore.collections ?? [];
+		// Gather terminal statuses from all collections the children belong to
+		const termSet = new Set<string>();
+		for (const child of items) {
+			const col = allCollections.find(c => c.slug === child.collection_slug);
+			if (col) {
+				for (const ts of getTerminalOptions(col)) termSet.add(ts);
+			}
+		}
+		const termOpts = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
+		const done = items.filter((i) => termOpts.includes(parseFields(i).status)).length;
 		const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 		computedOverrides = { progress, _progressDone: done, _progressTotal: total };
 	}
@@ -361,11 +372,11 @@
 		};
 	}
 
-	function buildRelationshipGroups(currentItem: Item, links: ItemLink[]): RelationshipGroup[] {
+	function buildRelationshipGroups(currentItem: Item, links: ItemLink[], excludeChildIds: Set<string> = new Set()): RelationshipGroup[] {
 		const grouped = new Map<string, RelationshipGroup>();
 		const definitions: Record<string, { label: string; tone: RelationshipGroup['tone'] }> = {
-			phase: { label: 'Phase', tone: 'default' },
-			in_phase: { label: 'In phase', tone: 'default' },
+			parent_of: { label: 'Children', tone: 'default' },
+			child_of: { label: 'Child of', tone: 'default' },
 			blocks: { label: 'Blocks', tone: 'blocks' },
 			blocked_by: { label: 'Blocked by', tone: 'blocks' },
 			links_to: { label: 'Links to', tone: 'wiki' },
@@ -378,7 +389,7 @@
 			implemented_by: { label: 'Implemented by', tone: 'lineage' },
 			related: { label: 'Related', tone: 'default' }
 		};
-		const order = ['phase', 'in_phase', 'blocks', 'blocked_by', 'links_to', 'referenced_by', 'split_from', 'split_into', 'supersedes', 'superseded_by', 'implements', 'implemented_by', 'related'];
+		const order = ['parent_of', 'child_of', 'blocks', 'blocked_by', 'links_to', 'referenced_by', 'split_from', 'split_into', 'supersedes', 'superseded_by', 'implements', 'implemented_by', 'related'];
 
 		function addEntry(groupKey: string, entry: RelationshipEntry) {
 			const definition = definitions[groupKey];
@@ -392,9 +403,13 @@
 		for (const link of links) {
 			const isSource = link.source_id === currentItem.id;
 			switch (link.link_type) {
-				case 'phase':
-					addEntry(isSource ? 'in_phase' : 'phase', linkEntry(link, !isSource));
+				case 'parent':
+				case 'phase': {
+					// If this item is the parent and the child is already shown in ChildItems, skip it
+					if (!isSource && excludeChildIds.has(link.source_id)) break;
+					addEntry(isSource ? 'child_of' : 'parent_of', linkEntry(link, !isSource));
 					break;
+				}
 				case 'blocks':
 					addEntry(isSource ? 'blocks' : 'blocked_by', linkEntry(link, !isSource));
 					break;
@@ -841,7 +856,7 @@
 								<option value="implements">Implements</option>
 								<option value="split_from">Split from</option>
 								<option value="supersedes">Supersedes</option>
-								<option value="phase">Phase</option>
+								<option value="parent">Parent</option>
 							</select>
 							<input
 								type="text"
@@ -872,10 +887,9 @@
 			</div>
 		{/if}
 
-		<!-- Phase Tasks (shown only for phases collection) -->
-		{#if collSlug === 'phases' && item}
-			{@const tasksCol = (collectionStore.collections ?? []).find(c => c.slug === 'tasks')}
-			<PhaseTasks {wsSlug} {itemSlug} itemId={item.id} phaseFields={fields} terminalStatuses={tasksCol ? getTerminalOptions(tasksCol) : undefined} onTasksChange={handlePhaseTasksChange} />
+		<!-- Child Items (shown for any item that has children) -->
+		{#if hasChildren && item}
+			<ChildItems {wsSlug} {itemSlug} itemId={item.id} parentFields={fields} onChildrenChange={handleChildrenChange} />
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->

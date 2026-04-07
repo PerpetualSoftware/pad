@@ -225,8 +225,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				Title: phase.Title,
 			}
 
-			// Compute progress from tasks linked via relation field
-			total, done, err := s.store.GetPhaseProgress(phase.ID)
+			// Compute progress from child items linked via parent link
+			total, done, err := s.store.GetItemProgress(phase.ID)
 			if err == nil && total > 0 {
 				dp.TaskCount = total
 				dp.DoneCount = done
@@ -301,7 +301,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// (c) Phase completion: phases where ALL linked tasks are done
+	// (c) Phase completion: phases where ALL child items are done
 	for _, dp := range resp.ActivePhases {
 		if dp.TaskCount > 0 && dp.DoneCount == dp.TaskCount {
 			resp.Attention = append(resp.Attention, DashboardAttention{
@@ -314,20 +314,20 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// (d) Orphaned tasks: tasks with no phase link set
-	//     Only flag these if the workspace actually has phases with tasks linked to them.
-	hasPhaseWithTasks := false
+	// (d) Orphaned tasks: tasks with no parent link set
+	//     Only flag these if the workspace has active phases with children linked to them.
+	hasParentWithChildren := false
 	for _, dp := range resp.ActivePhases {
 		if dp.TaskCount > 0 {
-			hasPhaseWithTasks = true
+			hasParentWithChildren = true
 			break
 		}
 	}
-	if hasPhaseWithTasks {
-		// Batch-fetch all task→phase mappings for efficiency
-		taskPhaseMap, err := s.store.GetTaskPhaseMap(workspaceID)
+	if hasParentWithChildren {
+		// Batch-fetch all child→parent mappings for efficiency
+		parentMap, err := s.store.GetParentMap(workspaceID)
 		if err != nil {
-			taskPhaseMap = map[string]string{}
+			parentMap = map[string]string{}
 		}
 		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
@@ -338,7 +338,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				if isItemTerminal(status, task.CollectionID, schemaMap) {
 					continue
 				}
-				if _, hasPhase := taskPhaseMap[task.ID]; !hasPhase {
+				if _, hasParent := parentMap[task.ID]; !hasParent {
 					resp.Attention = append(resp.Attention, DashboardAttention{
 						Type:       "orphaned_task",
 						ItemSlug:   task.Slug,
@@ -419,7 +419,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Suggested Next ---
-	// Find open tasks in active phases, sorted by priority, top 3
+	// Find open child items in active phases, sorted by priority, top 3
 	type suggestion struct {
 		item     models.Item
 		phase    string
@@ -428,11 +428,11 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	var candidates []suggestion
 
 	for _, dp := range resp.ActivePhases {
-		phaseItem, err := s.store.ResolveItem(workspaceID, dp.Slug)
-		if err != nil || phaseItem == nil {
+		parentItem, err := s.store.ResolveItem(workspaceID, dp.Slug)
+		if err != nil || parentItem == nil {
 			continue
 		}
-		tasks, err := s.store.GetTasksForPhase(phaseItem.ID)
+		tasks, err := s.store.GetChildItems(parentItem.ID)
 		if err != nil {
 			continue
 		}

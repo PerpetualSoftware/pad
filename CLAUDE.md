@@ -69,7 +69,9 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /workspaces/{ws}/dashboard` — computed project overview (active items, phases, attention, blockers)
 - `GET /workspaces/{ws}/activity` — workspace activity feed (enriched with item titles + change details)
 - `GET/POST/DELETE /workspaces/{ws}/webhooks` — webhook management
-- `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by)
+- `GET /workspaces/{ws}/items/{slug}/children` — child items linked to a parent
+- `GET /workspaces/{ws}/items/{slug}/progress` — child item completion progress
+- `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by, parent/child)
 - `GET /search?q=query&workspace=slug` — full-text search
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
 - `GET /workspaces/{ws}/members` — list members + pending invitations
@@ -132,8 +134,8 @@ Items are referenced by **issue ID** (e.g. `TASK-5`, `BUG-8`) wherever a `<ref>`
 Slugs also work but issue IDs are preferred.
 
 ```bash
-pad item create <collection> "title" [--status X] [--priority X]
-pad item list [collection] [--status X] [--all]
+pad item create <collection> "title" [--status X] [--priority X] [--parent REF]
+pad item list [collection] [--status X] [--parent REF] [--all]
 pad item show <ref>           # e.g. pad item show TASK-5
 pad item update <ref> [--status X] [--priority X]
 pad item delete <ref>
@@ -142,7 +144,7 @@ pad item search "query"
 pad project dashboard         # Project dashboard
 pad project next              # Recommended next task
 pad project standup [--days N]  # Daily standup report
-pad project changelog [--days N]  # Release notes from completed items
+pad project changelog [--days N] [--parent REF]  # Release notes from completed items
 pad item block <source> <target>  # e.g. pad item block TASK-5 TASK-8
 pad item blocked-by <item> <blocker>
 pad item deps <ref>           # Show dependencies
@@ -175,6 +177,7 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 - **Collections** have JSON schemas defining typed fields (select, text, date, number, etc.)
 - **Items** have structured `fields` JSON + optional rich `content` (markdown)
+- **Parent/child links:** Any item can be a parent of child items (`--parent REF`). Children get progress tracking, burndown charts, and nested rendering. Phases are the most common parent, but Ideas, Docs, or Tasks can also have children.
 - **Wiki-links** `[[Title]]` resolve across all items, rendered as clickable links
 - **Default collections:** Tasks, Ideas, Phases, Docs
 - **Templates:** startup (default), scrum, product — set via `pad workspace init --template`

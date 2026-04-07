@@ -3,13 +3,13 @@
 	import { parseFields } from '$lib/types';
 
 	interface Props {
-		tasks: Item[];
-		startDate: string;
+		children: Item[];
+		startDate?: string;
 		endDate?: string;
 		terminalStatuses?: string[];
 	}
 
-	let { tasks, startDate, endDate, terminalStatuses }: Props = $props();
+	let { children, startDate, endDate, terminalStatuses }: Props = $props();
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
@@ -21,33 +21,55 @@
 	const chartH = height - padding.top - padding.bottom;
 
 	let chartData = $derived.by(() => {
-		const total = tasks.length;
-		if (total === 0) return null;
+		const total = children.length;
+		if (total < 2) return null;
 
-		const start = new Date(startDate);
-		start.setHours(0, 0, 0, 0);
+		// Identify completed children
+		const completions: { date: Date; count: number }[] = [];
+		for (const child of children) {
+			const f = parseFields(child);
+			if (terminal.includes(f.status)) {
+				completions.push({ date: new Date(child.updated_at), count: 1 });
+			}
+		}
+		completions.sort((a, b) => a.date.getTime() - b.date.getTime());
 
+		const allDone = completions.length === total;
 		const now = new Date();
 		now.setHours(23, 59, 59, 999);
 
-		const end = endDate ? new Date(endDate) : now;
+		// ── Determine start date ──────────────────────────────────────────
+		let start: Date;
+		if (startDate) {
+			start = new Date(startDate);
+		} else {
+			// Infer: earliest created_at among children
+			let earliest = new Date(children[0].created_at);
+			for (const child of children) {
+				const d = new Date(child.created_at);
+				if (d < earliest) earliest = d;
+			}
+			start = earliest;
+		}
+		start.setHours(0, 0, 0, 0);
+
+		// ── Determine end date ────────────────────────────────────────────
+		let end: Date;
+		if (endDate) {
+			end = new Date(endDate);
+		} else if (allDone && completions.length > 0) {
+			// All children done → last completion date
+			end = new Date(completions[completions.length - 1].date);
+		} else {
+			// Open-ended → today
+			end = new Date(now);
+		}
 		end.setHours(23, 59, 59, 999);
 
 		// Use the later of end date or today for display range
 		const displayEnd = end > now ? end : now;
 		const totalMs = displayEnd.getTime() - start.getTime();
 		if (totalMs <= 0) return null;
-
-		// Build completion events: when each done task was completed
-		const completions: { date: Date; count: number }[] = [];
-		for (const task of tasks) {
-			const f = parseFields(task);
-			if (terminal.includes(f.status)) {
-				const completedAt = new Date(task.updated_at);
-				completions.push({ date: completedAt, count: 1 });
-			}
-		}
-		completions.sort((a, b) => a.date.getTime() - b.date.getTime());
 
 		// Build actual line points (step chart)
 		const actualPoints: { x: number; y: number }[] = [];
@@ -129,7 +151,7 @@
 </script>
 
 {#if chartData}
-	<div class="phase-chart">
+	<div class="child-chart">
 		<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet">
 			<g transform="translate({padding.left},{padding.top})">
 				<!-- Y axis gridlines -->
@@ -241,12 +263,12 @@
 {/if}
 
 <style>
-	.phase-chart {
+	.child-chart {
 		width: 100%;
 		margin: var(--space-3) 0;
 	}
 
-	.phase-chart svg {
+	.child-chart svg {
 		width: 100%;
 		height: 200px;
 		display: block;

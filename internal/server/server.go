@@ -295,7 +295,9 @@ func (s *Server) setupRouter() {
 					r.Get("/comments", s.handleListComments)
 					r.Post("/comments", s.handleCreateComment)
 					r.Get("/timeline", s.handleListItemTimeline)
-					r.Get("/tasks", s.handleGetItemTasks)
+					r.Get("/children", s.handleGetItemChildren)
+					r.Get("/progress", s.handleGetItemProgress)
+					r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
 				})
 
 				// Links (v2)

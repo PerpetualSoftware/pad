@@ -148,7 +148,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Reports:**
 - "prep for standup" / "what did we do?" → `pad project standup --format json`
 - "generate changelog" / "what shipped?" → `pad project changelog --format json`
-- "changelog for this phase" → `pad project changelog --phase PHASE-2 --format json`
+- "changelog for this phase" → `pad project changelog --parent PHASE-2 --format json`
 - "changelog since Monday" → `pad project changelog --since 2026-03-24 --format json`
 
 **Retrospective:**
@@ -203,8 +203,8 @@ pad role delete <slug>                                              # Delete a r
 ```bash
 # Create items (collection accepts singular or plural: task/tasks, idea/ideas, etc.)
 # The CLI prints the new item's issue ID (e.g. "Created TASK-5: ...") — use it for subsequent commands
-pad item create <collection> "title" [--status X] [--priority X] [--role X] [--assign X] [--category X] [--content "..."] [--stdin]
-pad item create task "Fix OAuth redirect" --priority high --role implementer --assign Dave
+pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--category X] [--content "..."] [--stdin]
+pad item create task "Fix OAuth redirect" --priority high --parent PHASE-3 --role implementer --assign Dave
 pad item create idea "Real-time collaboration" --category infrastructure
 pad item create phase "API Redesign" --status active
 pad item create doc "Auth Architecture" --category architecture --stdin <<< "# Auth Architecture\n\n..."
@@ -215,7 +215,7 @@ pad item create convention "Always review with linter" --field trigger=on-implem
 pad item create roadmap "Feature X" --field quarter=2026-Q3
 
 # List items (defaults to non-done items)
-pad item list [collection] [--status X] [--priority X] [--role X] [--assign X] [--all] [--field key=value] [--format json]
+pad item list [collection] [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--all] [--field key=value] [--format json]
 pad item list tasks                            # open + in_progress tasks
 pad item list tasks --role implementer         # tasks assigned to the implementer role
 pad item list tasks --role implementer --assign Dave  # Dave's implementer queue
@@ -248,7 +248,7 @@ pad item search "query" [--format json]
 pad project dashboard [--format json]  # Project dashboard
 pad project next [--format json]       # Recommended next task
 pad project standup [--days N] [--format json]  # Daily standup report (completed/in-progress/blockers)
-pad project changelog [--days N] [--since DATE] [--phase PHASE-2] [--format json|markdown]  # Release notes
+pad project changelog [--days N] [--since DATE] [--parent PHASE-2] [--format json|markdown]  # Release notes
 ```
 
 ### Server
@@ -303,7 +303,7 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 4. **Create the phase:** `pad item create phase "Phase N: Title" --status draft --stdin <<< "<plan content>"`
 5. **Decompose into tasks:** For each task in the plan, create a Task item:
    ```bash
-   pad item create task "Task description" --phase PHASE-3 --priority medium
+   pad item create task "Task description" --parent PHASE-3 --priority medium
    ```
 6. **If roles exist, suggest role assignments** for each task: "This looks like Implementer work — assign to Implementer?"
 7. **Each task should be PR-sized** — small enough for one branch, large enough to be meaningful.
@@ -315,7 +315,7 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 2. **Analyze the content** for actionable work items
 3. **Propose task list** with titles, priorities, and suggested role assignments
 4. **Create approved tasks:** One `pad item create task` per approved item
-5. **Link tasks to phase** using `--phase PHASE-2` flag (if the phase collection has a relation field)
+5. **Link tasks to phase** using `--parent PHASE-2` flag
 
 ### Status Check: "How are we doing?"
 

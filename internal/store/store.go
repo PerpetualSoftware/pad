@@ -139,6 +139,7 @@ func (s *Store) migrate() error {
 		"020_role_sort_order.sql",
 		"021_phase_to_links.sql",
 		"022_audit_trail.sql",
+		"023_parent_link_type.sql",
 	}
 
 	for _, name := range migrations {
