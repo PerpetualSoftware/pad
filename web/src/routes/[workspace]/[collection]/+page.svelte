@@ -261,8 +261,9 @@
 		for (const [key, value] of Object.entries(activeFilters)) {
 			result = result.filter((item) => {
 				// Parent filter uses the parent link, not fields JSON
-				if (key === 'parent') {
-					return item.parent_id === value;
+				// Also accept legacy 'phase' key for backward compat with saved views
+				if (key === 'parent' || key === 'phase') {
+					return item.parent_link_id === value;
 				}
 				const fields = parseFields(item);
 				return fields[key] === value;
