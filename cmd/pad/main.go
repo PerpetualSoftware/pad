@@ -5234,12 +5234,11 @@ For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
 				output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
 			}
 
-			// Use --dbname with the full URL so pg_dump inherits all connection
-			// parameters (sslmode, sslrootcert, timeouts, etc.).
+			// Pass the connection URL via environment variable instead of
+			// command-line args, so credentials don't leak in ps/proc output.
 			// --clean emits DROP statements so the dump can be restored into an
 			// existing database, and --if-exists avoids errors on a fresh DB.
 			pgArgs := []string{
-				"--dbname", dbURL,
 				"--format", "plain",
 				"--clean",
 				"--if-exists",
@@ -5247,6 +5246,7 @@ For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
 			}
 
 			pgCmd := exec.Command("pg_dump", pgArgs...)
+			pgCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
 			pgCmd.Stdout = os.Stdout
 			pgCmd.Stderr = os.Stderr
 
@@ -5317,15 +5317,15 @@ WARNING: This will overwrite the current database contents.`,
 				}
 			}
 
-			// Use --dbname with the full URL so psql inherits all connection
-			// parameters (sslmode, sslrootcert, timeouts, etc.).
+			// Pass the connection URL via environment variable instead of
+			// command-line args, so credentials don't leak in ps/proc output.
 			psqlArgs := []string{
-				"--dbname", dbURL,
 				"--file", inputFile,
 				"--single-transaction",
 			}
 
 			psqlCmd := exec.Command("psql", psqlArgs...)
+			psqlCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
 			psqlCmd.Stdout = os.Stdout
 			psqlCmd.Stderr = os.Stderr
 

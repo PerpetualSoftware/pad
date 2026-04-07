@@ -414,11 +414,12 @@ func agentMeta(r *http.Request, existingMeta string) string {
 		return existingMeta
 	}
 	if existingMeta == "" || existingMeta == "{}" {
-		return fmt.Sprintf(`{"agent":"%s"}`, agentName)
+		return auditMeta(map[string]string{"agent": agentName})
 	}
-	// Merge: insert agent field into existing JSON
+	// Merge: insert agent field into existing JSON object
 	if strings.HasPrefix(existingMeta, "{") {
-		return fmt.Sprintf(`{"agent":"%s",%s`, agentName, existingMeta[1:])
+		agentJSON, _ := json.Marshal(agentName)
+		return fmt.Sprintf(`{"agent":%s,%s`, agentJSON, existingMeta[1:])
 	}
 	return existingMeta
 }
@@ -476,6 +477,16 @@ func (s *Server) logAuditEventForUser(action string, r *http.Request, userID str
 		IPAddress: clientIP(r),
 		UserAgent: r.Header.Get("User-Agent"),
 	})
+}
+
+// auditMeta safely marshals a map to a JSON string for audit log metadata.
+// Falls back to "{}" on marshal error so audit calls never break.
+func auditMeta(kv map[string]string) string {
+	data, err := json.Marshal(kv)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 // logWorkspaceAuditEvent logs a workspace-scoped audit event (e.g. member invited).

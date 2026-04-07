@@ -54,6 +54,12 @@ type EventBus interface {
 	// Returns a buffered channel that will receive events for that workspace.
 	Subscribe(workspaceID string) chan Event
 
+	// SubscribeIfAllowed atomically checks the global and per-workspace
+	// subscriber limits and, only if both are satisfied, subscribes in the
+	// same critical section.  Returns (ch, true) on success or (nil, false)
+	// when a limit would be exceeded.  Pass 0 for either limit to disable it.
+	SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool)
+
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Event)
 
@@ -103,6 +109,34 @@ func (b *MemoryBus) Subscribe(workspaceID string) chan Event {
 		workspaceID: workspaceID,
 	}
 	return ch
+}
+
+// SubscribeIfAllowed atomically checks limits and subscribes.
+func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if maxGlobal > 0 && len(b.subscribers) >= maxGlobal {
+		return nil, false
+	}
+	if maxPerWorkspace > 0 {
+		count := 0
+		for _, sub := range b.subscribers {
+			if sub.workspaceID == workspaceID {
+				count++
+			}
+		}
+		if count >= maxPerWorkspace {
+			return nil, false
+		}
+	}
+
+	ch := make(chan Event, 64)
+	b.subscribers[ch] = &subscriber{
+		ch:          ch,
+		workspaceID: workspaceID,
+	}
+	return ch, true
 }
 
 // Unsubscribe removes a subscriber and closes its channel.

@@ -244,29 +244,31 @@ func nilIfEmpty(s string) interface{} {
 // ListAuditLog returns activities matching the given audit log filters.
 // Supports filtering by action, actor, workspace, and date range.
 func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, error) {
-	query := s.q(`
+	// Build the full query with ? placeholders first, then rebind once at
+	// the end so PostgreSQL $1/$2/... numbering is correct across all filters.
+	query := `
 		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE 1=1
-	`)
+	`
 	args := []interface{}{}
 
 	if params.WorkspaceID != "" {
-		query += s.q(` AND a.workspace_id = ?`)
+		query += ` AND a.workspace_id = ?`
 		args = append(args, params.WorkspaceID)
 	}
 	if params.Action != "" {
-		query += s.q(` AND a.action = ?`)
+		query += ` AND a.action = ?`
 		args = append(args, params.Action)
 	}
 	if params.Actor != "" {
-		query += s.q(` AND a.user_id = ?`)
+		query += ` AND a.user_id = ?`
 		args = append(args, params.Actor)
 	}
 	if params.Days > 0 {
 		cutoff := time.Now().UTC().AddDate(0, 0, -params.Days).Format(time.RFC3339)
-		query += s.q(` AND a.created_at >= ?`)
+		query += ` AND a.created_at >= ?`
 		args = append(args, cutoff)
 	}
 
@@ -280,6 +282,9 @@ func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, e
 	if params.Offset > 0 {
 		query += fmt.Sprintf(` OFFSET %d`, params.Offset)
 	}
+
+	// Rebind all ? placeholders in one pass so $1, $2, ... are sequential.
+	query = s.q(query)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

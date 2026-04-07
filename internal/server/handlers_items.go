@@ -338,7 +338,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Title != nil && *input.Title != item.Title {
 		if meta == "" {
-			meta = fmt.Sprintf(`{"changes":"title: %s → %s"}`, item.Title, *input.Title)
+			titleChange := fmt.Sprintf("title: %s → %s", item.Title, *input.Title)
+			meta = fmt.Sprintf(`{"changes":%q}`, titleChange)
 		}
 	}
 	// Track role and assignment changes
@@ -566,7 +567,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Log activity with metadata about the move
 	actor, source := actorFromRequest(r)
-	moveMeta := fmt.Sprintf(`{"from_collection":"%s","to_collection":"%s"}`, sourceColl.Slug, targetColl.Slug)
+	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections

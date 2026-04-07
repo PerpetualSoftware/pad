@@ -1,9 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/xarmian/pad/internal/models"
 )
@@ -86,7 +86,8 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 			keys = append(keys, key)
 		}
 	}
-	s.logAuditEvent(models.ActionSettingsChanged, r, fmt.Sprintf(`{"keys":["%s"]}`, strings.Join(keys, `","`)))
+	keysJSON, _ := json.Marshal(keys)
+	s.logAuditEvent(models.ActionSettingsChanged, r, fmt.Sprintf(`{"keys":%s}`, keysJSON))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }

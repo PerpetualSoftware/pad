@@ -103,37 +103,37 @@ func TestInstrumentedBus_SubscribeUnsubscribe(t *testing.T) {
 		t.Fatal("Subscribe should return a channel")
 	}
 
-	// Check SSE gauge incremented
-	gauge := getGaugeValue(t, m.SSEConnectionsActive.WithLabelValues("ws-1"))
+	// Check SSE gauge incremented (single total gauge, not per-workspace)
+	gauge := getGaugeValue(t, *m.SSEConnectionsActive)
 	if gauge != 1 {
 		t.Errorf("Expected SSE active connections = 1, got %v", gauge)
 	}
 
 	// Subscribe a second connection to same workspace
 	ch2 := bus.Subscribe("ws-1")
-	gauge = getGaugeValue(t, m.SSEConnectionsActive.WithLabelValues("ws-1"))
+	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
 	if gauge != 2 {
 		t.Errorf("Expected SSE active connections = 2, got %v", gauge)
 	}
 
 	// Subscribe to a different workspace
 	ch3 := bus.Subscribe("ws-2")
-	gauge2 := getGaugeValue(t, m.SSEConnectionsActive.WithLabelValues("ws-2"))
-	if gauge2 != 1 {
-		t.Errorf("Expected SSE active connections for ws-2 = 1, got %v", gauge2)
+	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
+	if gauge != 3 {
+		t.Errorf("Expected SSE active connections = 3, got %v", gauge)
 	}
 
 	// Unsubscribe one from ws-1
 	bus.Unsubscribe(ch)
-	gauge = getGaugeValue(t, m.SSEConnectionsActive.WithLabelValues("ws-1"))
-	if gauge != 1 {
-		t.Errorf("Expected SSE active connections = 1 after unsubscribe, got %v", gauge)
+	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
+	if gauge != 2 {
+		t.Errorf("Expected SSE active connections = 2 after unsubscribe, got %v", gauge)
 	}
 
 	// Unsubscribe remaining
 	bus.Unsubscribe(ch2)
 	bus.Unsubscribe(ch3)
-	gauge = getGaugeValue(t, m.SSEConnectionsActive.WithLabelValues("ws-1"))
+	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
 	if gauge != 0 {
 		t.Errorf("Expected SSE active connections = 0 after all unsubscribed, got %v", gauge)
 	}

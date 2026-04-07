@@ -19,8 +19,8 @@ type Metrics struct {
 	HTTPRequestDuration *prometheus.HistogramVec
 	HTTPResponseSize    *prometheus.HistogramVec
 
-	// SSE connection metrics
-	SSEConnectionsActive *prometheus.GaugeVec
+	// SSE connection metrics (single gauge to avoid unbounded label cardinality)
+	SSEConnectionsActive *prometheus.Gauge
 
 	// EventBus metrics
 	EventBusPublishTotal *prometheus.Counter
@@ -53,10 +53,10 @@ func New() *Metrics {
 		Buckets: prometheus.ExponentialBuckets(100, 10, 7), // 100B to 100MB
 	}, []string{"method", "route", "status"})
 
-	sseConnectionsActive := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	sseConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_sse_connections_active",
-		Help: "Number of active SSE connections per workspace.",
-	}, []string{"workspace_id"})
+		Help: "Total number of active SSE connections.",
+	})
 
 	eventBusPublishTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_eventbus_publish_total",
@@ -82,7 +82,7 @@ func New() *Metrics {
 		HTTPRequestsTotal:    httpRequestsTotal,
 		HTTPRequestDuration:  httpRequestDuration,
 		HTTPResponseSize:     httpResponseSize,
-		SSEConnectionsActive: sseConnectionsActive,
+		SSEConnectionsActive: &sseConnectionsActive,
 		EventBusPublishTotal: &eventBusPublishTotal,
 		EventBusSubscribers:  &eventBusSubscribers,
 	}

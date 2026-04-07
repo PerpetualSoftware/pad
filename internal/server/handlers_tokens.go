@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -38,7 +37,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionTokenCreated, r, fmt.Sprintf(`{"name":"%s","workspace_id":"%s"}`, input.Name, input.WorkspaceID))
+	s.logAuditEvent(models.ActionTokenCreated, r, auditMeta(map[string]string{"name": input.Name, "workspace_id": input.WorkspaceID}))
 
 	writeJSON(w, http.StatusCreated, token)
 }
@@ -79,7 +78,7 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionTokenRevoked, r, fmt.Sprintf(`{"token_id":"%s"}`, tokenID))
+	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -131,7 +130,7 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionTokenCreated, r, fmt.Sprintf(`{"name":"%s"}`, input.Name))
+	s.logAuditEvent(models.ActionTokenCreated, r, auditMeta(map[string]string{"name": input.Name}))
 
 	writeJSON(w, http.StatusCreated, token)
 }
@@ -154,7 +153,7 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAuditEvent(models.ActionTokenRevoked, r, fmt.Sprintf(`{"token_id":"%s"}`, tokenID))
+	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
 	w.WriteHeader(http.StatusNoContent)
 }

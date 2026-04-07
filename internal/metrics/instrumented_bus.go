@@ -35,15 +35,32 @@ func (b *InstrumentedBus) Subscribe(workspaceID string) chan events.Event {
 	b.workspaces[ch] = workspaceID
 	b.mu.Unlock()
 
-	b.metrics.SSEConnectionsActive.WithLabelValues(workspaceID).Inc()
+	(*b.metrics.SSEConnectionsActive).Inc()
 	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
 	return ch
+}
+
+// SubscribeIfAllowed delegates the atomic check-and-subscribe to the inner bus
+// and updates Prometheus gauges on success.
+func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan events.Event, bool) {
+	ch, ok := b.inner.SubscribeIfAllowed(workspaceID, maxGlobal, maxPerWorkspace)
+	if !ok {
+		return nil, false
+	}
+
+	b.mu.Lock()
+	b.workspaces[ch] = workspaceID
+	b.mu.Unlock()
+
+	(*b.metrics.SSEConnectionsActive).Inc()
+	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
+	return ch, true
 }
 
 // Unsubscribe delegates to the inner bus and decrements the SSE connection gauge.
 func (b *InstrumentedBus) Unsubscribe(ch chan events.Event) {
 	b.mu.Lock()
-	workspaceID, ok := b.workspaces[ch]
+	_, ok := b.workspaces[ch]
 	if ok {
 		delete(b.workspaces, ch)
 	}
@@ -52,7 +69,7 @@ func (b *InstrumentedBus) Unsubscribe(ch chan events.Event) {
 	b.inner.Unsubscribe(ch)
 
 	if ok {
-		b.metrics.SSEConnectionsActive.WithLabelValues(workspaceID).Dec()
+		(*b.metrics.SSEConnectionsActive).Dec()
 	}
 	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
 }

@@ -12,6 +12,10 @@ services:
   pad:
     environment:
       PAD_SECURE_COOKIES: "true"
+      # Override Redis URL to include password when REDIS_PASSWORD is set.
+      # Without this, the pad container inherits the passwordless URL from
+      # docker-compose.yml and fails to connect when Redis AUTH is enabled.
+      PAD_REDIS_URL: "redis://:${REDIS_PASSWORD:-}@redis:6379"
       # Set your public-facing URL for correct invitation links:
       # PAD_URL: "https://pad.example.com"
       # CORS origins (comma-separated):
@@ -50,6 +54,15 @@ services:
 
   redis:
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:-}"
+    healthcheck:
+      # Override the base healthcheck to authenticate when REDIS_PASSWORD is set.
+      # redis-cli reads REDISCLI_AUTH automatically for authentication.
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$${REDIS_PASSWORD:-} redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
     deploy:
       resources:
         limits:
