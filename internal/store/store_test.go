@@ -291,7 +291,7 @@ func TestDocumentListFilters(t *testing.T) {
 
 	// Create docs of different types and statuses
 	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Roadmap", DocType: "roadmap", Status: "active"})
-	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Plan", DocType: "phase-plan", Status: "active"})
+	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Plan", DocType: "plan", Status: "active"})
 	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Notes", DocType: "notes", Status: "draft"})
 
 	// Filter by type

@@ -278,8 +278,8 @@ export const api = {
 			request<Item[]>(`/workspaces/${ws}/items/${slug}/children`),
 
 		/** @deprecated Use progress() per-item instead */
-		phasesProgress: (ws: string) =>
-			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/phases-progress`)
+		plansProgress: (ws: string) =>
+			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/plans-progress`)
 	},
 
 	// ── Versions ──────────────────────────────────────────────────────────────

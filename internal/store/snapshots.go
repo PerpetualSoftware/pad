@@ -12,7 +12,7 @@ func (s *Store) CreateSnapshot(snap models.ProgressSnapshot) error {
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO progress_snapshots (id, workspace_id, total_tasks, done_tasks, open_tasks, in_progress, percentage, phase_data, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		newID(), snap.WorkspaceID, snap.TotalTasks, snap.DoneTasks, snap.OpenTasks, snap.InProgress, snap.Percentage, snap.PhaseData, now(),
+		newID(), snap.WorkspaceID, snap.TotalTasks, snap.DoneTasks, snap.OpenTasks, snap.InProgress, snap.Percentage, snap.PlanData, now(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert snapshot: %w", err)
@@ -54,7 +54,7 @@ func (s *Store) ListSnapshots(workspaceID string, params models.SnapshotListPara
 	for rows.Next() {
 		var snap models.ProgressSnapshot
 		var createdAt string
-		if err := rows.Scan(&snap.ID, &snap.WorkspaceID, &snap.TotalTasks, &snap.DoneTasks, &snap.OpenTasks, &snap.InProgress, &snap.Percentage, &snap.PhaseData, &createdAt); err != nil {
+		if err := rows.Scan(&snap.ID, &snap.WorkspaceID, &snap.TotalTasks, &snap.DoneTasks, &snap.OpenTasks, &snap.InProgress, &snap.Percentage, &snap.PlanData, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
 		snap.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -74,7 +74,7 @@ func (s *Store) LatestSnapshot(workspaceID string) (*models.ProgressSnapshot, er
 		ORDER BY created_at DESC
 		LIMIT 1`),
 		workspaceID,
-	).Scan(&snap.ID, &snap.WorkspaceID, &snap.TotalTasks, &snap.DoneTasks, &snap.OpenTasks, &snap.InProgress, &snap.Percentage, &snap.PhaseData, &createdAt)
+	).Scan(&snap.ID, &snap.WorkspaceID, &snap.TotalTasks, &snap.DoneTasks, &snap.OpenTasks, &snap.InProgress, &snap.Percentage, &snap.PlanData, &createdAt)
 
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {

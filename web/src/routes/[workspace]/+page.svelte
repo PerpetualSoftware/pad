@@ -156,7 +156,7 @@
 	function attentionIcon(type: string): string {
 		if (type === 'overdue') return '\u23f0';
 		if (type === 'stalled') return '\u26a0';
-		if (type === 'phase_complete' || type === 'phase_completion') return '\ud83c\udf89';
+		if (type === 'plan_complete' || type === 'plan_completion' || type === 'phase_complete' || type === 'phase_completion') return '\ud83c\udf89';
 		if (type === 'orphaned_task' || type === 'orphaned') return '\ud83d\udd17';
 		return '?';
 	}
@@ -253,20 +253,20 @@
 			</section>
 		{/if}
 
-		<!-- 4. Active Phases -->
-		{#if dashboard.active_phases.length > 0}
+		<!-- 4. Active Plans -->
+		{#if dashboard.active_plans.length > 0}
 			<section class="section">
 				<div class="section-header">
-					<span class="section-label">Active Phases</span>
+					<span class="section-label">Active Plans</span>
 				</div>
-				<div class="phase-list">
-					{#each dashboard.active_phases as phase (phase.slug)}
-						<a href="/{wsSlug}/phases/{phase.slug}" class="phase-row">
-							<span class="phase-title">{phase.title}</span>
+				<div class="plan-list">
+					{#each dashboard.active_plans as plan (plan.slug)}
+						<a href="/{wsSlug}/plans/{plan.slug}" class="plan-row">
+							<span class="plan-title">{plan.title}</span>
 							<div class="progress-bar">
-								<div class="progress-fill" style="width: {phase.progress}%"></div>
+								<div class="progress-fill" style="width: {plan.progress}%"></div>
 							</div>
-							<span class="phase-meta">{phase.done_count}/{phase.task_count} &middot; {phase.progress}%</span>
+							<span class="plan-meta">{plan.done_count}/{plan.task_count} &middot; {plan.progress}%</span>
 						</a>
 					{/each}
 				</div>
@@ -599,13 +599,13 @@
 		margin-left: auto;
 	}
 
-	/* ── Active Phases ──────────────────────────────────────────────────── */
-	.phase-list {
+	/* ── Active Plans ──────────────────────────────────────────────────── */
+	.plan-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
 	}
-	.phase-row {
+	.plan-row {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
@@ -617,11 +617,11 @@
 		color: inherit;
 		transition: border-color 0.15s, background 0.15s;
 	}
-	.phase-row:hover {
+	.plan-row:hover {
 		border-color: var(--accent-blue);
 		text-decoration: none;
 	}
-	.phase-title {
+	.plan-title {
 		font-weight: 600;
 		font-size: 0.9em;
 		color: var(--text-primary);
@@ -641,7 +641,7 @@
 		border-radius: 3px;
 		transition: width 0.3s ease;
 	}
-	.phase-meta {
+	.plan-meta {
 		font-size: 0.8em;
 		color: var(--text-secondary);
 		white-space: nowrap;

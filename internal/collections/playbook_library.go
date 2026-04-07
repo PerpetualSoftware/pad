@@ -61,18 +61,18 @@ func PlaybookLibrary() []PlaybookCategory {
 			Description: "Planning and triage workflows",
 			Playbooks: []LibraryPlaybook{
 				{
-					Title:    "Phase Planning",
+					Title:    "Plan Creation",
 					Category: "planning",
 					Trigger:  "on-plan",
 					Scope:    "all",
-					Content: `1. Review current state — check the roadmap, active phases, and recent progress
-2. Define the goal — what does success look like for this phase?
+					Content: `1. Review current state — check the roadmap, active plans, and recent progress
+2. Define the goal — what does success look like for this plan?
 3. Identify the work — list everything that needs to happen
 4. Break into tasks — each task should be independently completable (one branch, one PR)
 5. Estimate effort — flag tasks that seem too large and split them
 6. Order by dependency — what must happen before what?
-7. Set targets — define when the phase should start and end
-8. Create the items — build the phase and its tasks in the project tracker
+7. Set targets — define when the plan should start and end
+8. Create the items — build the plan and its tasks in the project tracker
 
 ` + "\U0001F4A1 Ask your AI agent to customize this playbook for your specific project tools and workflow.",
 				},
@@ -86,7 +86,7 @@ func PlaybookLibrary() []PlaybookCategory {
 3. Determine severity — critical (broken for everyone), high (significant impact), medium (inconvenient), low (cosmetic)
 4. Check for duplicates — search existing tasks for similar reports
 5. Capture the details — create a task with: steps to reproduce, expected vs actual behavior, severity
-6. Link related items — connect to relevant phases, architecture docs, or prior work
+6. Link related items — connect to relevant plans, architecture docs, or prior work
 7. Prioritize — decide if it needs immediate attention or can be scheduled
 
 ` + "\U0001F4A1 Ask your AI agent to customize this playbook for your specific project tools and workflow.",
@@ -102,12 +102,12 @@ func PlaybookLibrary() []PlaybookCategory {
 					Category: "quality",
 					Trigger:  "manual",
 					Scope:    "all",
-					Content: `1. Gather the data — load the completed phase and all its tasks
+					Content: `1. Gather the data — load the completed plan and all its tasks
 2. What shipped — list everything that was completed
 3. What was deferred — list anything that was planned but postponed
 4. What went well — identify practices, tools, or decisions that helped
 5. What could improve — identify friction, surprises, or mistakes
-6. Action items — concrete changes for the next phase
+6. Action items — concrete changes for the next plan
 7. Save and share — document the retrospective for future reference
 
 ` + "\U0001F4A1 Ask your AI agent to customize this playbook for your specific project tools and workflow.",
@@ -119,7 +119,7 @@ func PlaybookLibrary() []PlaybookCategory {
 					Scope:    "all",
 					Content: `1. Read the architecture — understand the tech stack, structure, and key patterns
 2. Read the roadmap — understand where the project is and where it's going
-3. Review active work — check current phases, in-progress tasks, and recent activity
+3. Review active work — check current plans, in-progress tasks, and recent activity
 4. Set up the environment — get the project building and running locally
 5. Read the conventions — understand the team's rules and expectations
 6. Pick a starter task — choose something small to build familiarity

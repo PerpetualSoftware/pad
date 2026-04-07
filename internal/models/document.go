@@ -4,7 +4,7 @@ import "time"
 
 // Valid document types
 var ValidDocTypes = []string{
-	"roadmap", "phase-plan", "architecture", "ideation",
+	"roadmap", "plan", "architecture", "ideation",
 	"feature-spec", "notes", "prompt-library", "reference",
 }
 

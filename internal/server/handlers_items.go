@@ -134,10 +134,10 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
-	// Accepts both "parent" and "phase" (backward compat) as the field key.
+	// Accepts both "parent" and "plan" as the field key.
 	// Skip this if the schema actually defines a field with that key.
 	var parentValue string
-	for _, key := range []string{"parent", "phase"} {
+	for _, key := range []string{"parent", "plan"} {
 		if schemaHasField(schema, key) {
 			continue
 		}
@@ -277,11 +277,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
-		// Accepts both "parent" and "phase" (backward compat) as the field key.
+		// Accepts both "parent" and "plan" as the field key.
 		// Skip this if the schema actually defines a field with that key.
 		var parentValue string
 		var parentProvided bool
-		for _, key := range []string{"parent", "phase"} {
+		for _, key := range []string{"parent", "plan"} {
 			if schemaHasField(schema, key) {
 				continue
 			}
@@ -622,15 +622,15 @@ func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title,
 	})
 }
 
-// handlePhasesProgress returns child item completion progress for all non-deleted phases.
+// handlePlansProgress returns child item completion progress for all non-deleted plans.
 // This is a backward-compat endpoint; the general form is per-item via /items/{slug}/children.
-func (s *Server) handlePhasesProgress(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
-	progress, err := s.store.GetAllItemProgress(workspaceID, "phases")
+	progress, err := s.store.GetAllItemProgress(workspaceID, "plans")
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -707,7 +707,7 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveParentFilter extracts a "parent" (or legacy "phase") key from the field
+// resolveParentFilter extracts a "parent" (or "plan") key from the field
 // filters and converts it to a ParentLinkID filter (which uses item_links instead of json_extract).
 // An optional schema can be passed; if the schema defines a field with the key,
 // that key is left as a normal field filter instead of being treated as a parent link.
@@ -716,14 +716,14 @@ func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemList
 		return nil
 	}
 
-	// Accept both "parent" and "phase" (backward compat)
+	// Accept both "parent" and "plan" as parent filter keys
 	// but skip if the schema defines a real field with that key
 	var schema *models.CollectionSchema
 	if len(schemas) > 0 {
 		schema = &schemas[0]
 	}
 	var val string
-	for _, key := range []string{"parent", "phase"} {
+	for _, key := range []string{"parent", "plan"} {
 		if schema != nil && schemaHasField(*schema, key) {
 			continue
 		}
@@ -752,7 +752,7 @@ func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemList
 
 // resolveRelationFields resolves slugs, PREFIX-NUMBER refs, and other identifiers
 // in relation fields to their canonical UUIDs. This allows clients to send
-// human-readable identifiers (e.g. --field phase=workspace-onboarding) and have
+// human-readable identifiers (e.g. --field plan=workspace-onboarding) and have
 // them stored as UUIDs that the dashboard and queries expect.
 func (s *Server) resolveRelationFields(workspaceID string, fields map[string]any, schema models.CollectionSchema) error {
 	for _, def := range schema.Fields {

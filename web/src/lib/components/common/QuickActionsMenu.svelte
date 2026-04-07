@@ -30,7 +30,8 @@
 			fields: Object.entries(fields)
 				.map(([k, v]) => `${k}: ${v}`)
 				.join(', '),
-			phase: item ? String(fields['phase'] ?? '') : ''
+			plan: item ? String(fields['plan'] ?? '') : '',
+			phase: item ? String(fields['phase'] ?? fields['plan'] ?? '') : ''
 		};
 
 		for (const [key, value] of Object.entries(vars)) {

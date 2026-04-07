@@ -126,7 +126,7 @@
 			item = itemData;
 			collection = collData;
 
-			// Fetch child item progress for any item (generalized from phases-only)
+			// Fetch child item progress for any item (generalized parent/child)
 			try {
 				const progress = await api.items.progress(wsSlug, itemData.slug);
 				if (progress.total > 0) {
@@ -464,7 +464,7 @@
 		try {
 			await api.links.delete(wsSlug, linkId);
 			itemLinks = itemLinks.filter(l => l.id !== linkId);
-			// Refresh item to update phase info
+			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
 			item = { ...refreshed, content: item.content };
 			toastStore.show('Relationship removed', 'success');
@@ -512,7 +512,7 @@
 			showAddLink = false;
 			addLinkSearch = '';
 			addLinkResults = [];
-			// Refresh item to update phase info
+			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
 			item = { ...refreshed, content: item.content };
 			toastStore.show('Relationship added', 'success');

@@ -1,6 +1,6 @@
 ---
 name: pad
-description: "Talk to your project. Natural-language project management — create items, check status, plan phases, brainstorm ideas, and more."
+description: "Talk to your project. Natural-language project management — create items, check status, plan work, brainstorm ideas, and more."
 argument-hint: <anything you want to say to your project>
 allowed-tools:
   - Bash
@@ -9,7 +9,7 @@ allowed-tools:
 
 # Pad — Talk to Your Project
 
-You are the interface between the user and their Pad workspace — a project management tool for developers and AI agents. Pad uses **Collections** (Tasks, Ideas, Phases, Docs, and custom types) containing **Items** with structured fields and optional rich content.
+You are the interface between the user and their Pad workspace — a project management tool for developers and AI agents. Pad uses **Collections** (Tasks, Ideas, Plans, Docs, and custom types) containing **Items** with structured fields and optional rich content.
 
 Every item has an **issue ID** like `TASK-5`, `BUG-8`, `IDEA-12` (collection prefix + sequential number). **Always use issue IDs to reference items** — never use slugs. Issue IDs are short, stable, and human-readable.
 
@@ -24,7 +24,7 @@ There is **one command**: `/pad <anything>`. You interpret the user's intent and
 On every `/pad` invocation, start by loading workspace context:
 
 ```bash
-pad project dashboard --format json    # Project overview: collections, phases, attention, suggestions
+pad project dashboard --format json    # Project overview: collections, plans, attention, suggestions
 pad collection list --format json      # Available collections with schemas
 pad item list conventions --field status=active --field trigger=always --format json  # Always-on project conventions
 pad role list --format json            # Agent roles configured in workspace
@@ -113,7 +113,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Creating items:**
 - "I have an idea for X" → Create an Idea item
 - "new task: fix the OAuth bug" → Create a Task item
-- "let's start a new phase for the API redesign" → Create a Phase item
+- "let's start a new plan for the API redesign" → Create a Plan item
 - "document the auth architecture" → Create a Doc item
 
 **Querying:**
@@ -131,8 +131,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Best practice:** Always use `--comment` when changing status to explain *why*. This creates an audit trail linking each status change to a reason.
 
 **Planning:**
-- "let's plan the next phase" → Multi-step planning workflow (see below)
-- "break phase 2 into tasks" → Decompose a phase into task items
+- "let's create a plan" → Multi-step planning workflow (see below)
+- "break plan 2 into tasks" → Decompose a plan into task items
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
@@ -148,11 +148,11 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Reports:**
 - "prep for standup" / "what did we do?" → `pad project standup --format json`
 - "generate changelog" / "what shipped?" → `pad project changelog --format json`
-- "changelog for this phase" → `pad project changelog --parent PHASE-2 --format json`
+- "changelog for this plan" → `pad project changelog --parent PLAN-2 --format json`
 - "changelog since Monday" → `pad project changelog --since 2026-03-24 --format json`
 
 **Retrospective:**
-- "phase 2 is done, let's retro" → Review completed work, save retrospective
+- "plan 2 is done, let's retro" → Review completed work, save retrospective
 
 **Onboarding:**
 - "scan this codebase" / "set up my workspace" → Codebase analysis + onboarding workflow (see below)
@@ -204,9 +204,9 @@ pad role delete <slug>                                              # Delete a r
 # Create items (collection accepts singular or plural: task/tasks, idea/ideas, etc.)
 # The CLI prints the new item's issue ID (e.g. "Created TASK-5: ...") — use it for subsequent commands
 pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--category X] [--content "..."] [--stdin]
-pad item create task "Fix OAuth redirect" --priority high --parent PHASE-3 --role implementer --assign Dave
+pad item create task "Fix OAuth redirect" --priority high --parent PLAN-3 --role implementer --assign Dave
 pad item create idea "Real-time collaboration" --category infrastructure
-pad item create phase "API Redesign" --status active
+pad item create plan "API Redesign" --status active
 pad item create doc "Auth Architecture" --category architecture --stdin <<< "# Auth Architecture\n\n..."
 
 # Custom fields via --field flag (works for any collection's fields)
@@ -248,7 +248,7 @@ pad item search "query" [--format json]
 pad project dashboard [--format json]  # Project dashboard
 pad project next [--format json]       # Recommended next task
 pad project standup [--days N] [--format json]  # Daily standup report (completed/in-progress/blockers)
-pad project changelog [--days N] [--since DATE] [--parent PHASE-2] [--format json|markdown]  # Release notes
+pad project changelog [--days N] [--since DATE] [--parent PLAN-2] [--format json|markdown]  # Release notes
 ```
 
 ### Server
@@ -295,27 +295,27 @@ All commands support `--format json` (for parsing) or `--format table` (default,
    - "Should I create a Doc for this architecture decision?" → `pad item create doc "X" --category decision --stdin`
 5. **Never save without asking.** Always show what you'll create and get confirmation.
 
-### Planning: "Let's plan the next phase"
+### Planning: "Let's create a plan"
 
-1. **Load context:** `pad project dashboard --format json`, `pad item list phases --all --format json`
-2. **Understand current state:** What phases exist? What's active? What's completed?
-3. **Propose outline:** Present phase title + 1-line summary. Ask for feedback.
-4. **Create the phase:** `pad item create phase "Phase N: Title" --status draft --stdin <<< "<plan content>"`
+1. **Load context:** `pad project dashboard --format json`, `pad item list plans --all --format json`
+2. **Understand current state:** What plans exist? What's active? What's completed?
+3. **Propose outline:** Present plan title + 1-line summary. Ask for feedback.
+4. **Create the plan:** `pad item create plan "Plan N: Title" --status draft --stdin <<< "<plan content>"`
 5. **Decompose into tasks:** For each task in the plan, create a Task item:
    ```bash
-   pad item create task "Task description" --parent PHASE-3 --priority medium
+   pad item create task "Task description" --parent PLAN-3 --priority medium
    ```
 6. **If roles exist, suggest role assignments** for each task: "This looks like Implementer work — assign to Implementer?"
 7. **Each task should be PR-sized** — small enough for one branch, large enough to be meaningful.
 8. **Ask before creating each item.** Don't bulk-create without approval.
 
-### Decomposition: "Break phase X into tasks"
+### Decomposition: "Break plan X into tasks"
 
-1. **Load the phase:** `pad item show PHASE-2 --format markdown`
+1. **Load the plan:** `pad item show PLAN-2 --format markdown`
 2. **Analyze the content** for actionable work items
 3. **Propose task list** with titles, priorities, and suggested role assignments
 4. **Create approved tasks:** One `pad item create task` per approved item
-5. **Link tasks to phase** using `--parent PHASE-2` flag
+5. **Link tasks to plan** using `--parent PLAN-2` flag
 
 ### Status Check: "How are we doing?"
 
@@ -324,7 +324,7 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 3. Present conversationally:
    - If role active: role queue first ("Your Implementer queue: 3 items")
    - Collection summaries (Tasks: 5 open, 2 in progress, 12 done)
-   - Active phase progress with bars
+   - Active plan progress with bars
    - Attention items (stalled, overdue)
    - Suggested next actions
 4. Offer follow-up: "Want me to dig into any of these?"
@@ -352,17 +352,17 @@ All commands support `--format json` (for parsing) or `--format table` (default,
    - Linter/formatter: what tools enforce code style?
 4. **Suggest conventions:** Based on the detected tooling, suggest conventions from the library. Customize the content with the actual commands found in the project (e.g., "Run `make test`" not just "Run the test suite"). Present as a checklist and ask which to activate.
 5. **Draft an architecture doc:** Summarize the project structure, tech stack, key directories, and how the pieces fit together. Offer to save as a Doc item.
-6. **Propose an initial phase:** Based on recent git activity (`git log --oneline -20`) and any open TODOs, suggest a phase name and a few starter tasks. Ask before creating.
+6. **Propose an initial plan:** Based on recent git activity (`git log --oneline -20`) and any open TODOs, suggest a plan name and a few starter tasks. Ask before creating.
 7. **Suggest agent roles:** If no roles exist yet, suggest creating roles based on the project type. For a typical dev project: Planner, Implementer, Reviewer. Don't auto-create — ask first.
 8. **Always confirm before creating each item.** Show what will be created, get approval, then create.
 
-### Retrospective: "Phase X is done, let's retro"
+### Retrospective: "Plan X is done, let's retro"
 
-1. Load the phase: `pad item show PHASE-2 --format markdown`
-2. Load tasks: `pad item list tasks --all --format json` (filter to phase)
+1. Load the plan: `pad item show PLAN-2 --format markdown`
+2. Load tasks: `pad item list tasks --all --format json` (filter to plan)
 3. Generate retro: What shipped, what was deferred, lessons learned
-4. Offer to save: `pad item create doc "Phase N Retrospective" --category retro --stdin`
-5. Offer to update phase status: `pad item update PHASE-2 --status completed`
+4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`
+5. Offer to update plan status: `pad item update PLAN-2 --status completed`
 
 ## Key Principles
 

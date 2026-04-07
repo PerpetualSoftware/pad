@@ -251,13 +251,9 @@ func PrintItemMeta(item *models.Item) {
 		fmt.Printf("%s %s\n", label.Sprint("Collection:"), collLabel)
 	}
 	// Parent link
-	if item.ParentRef != "" || item.PhaseRef != "" {
+	if item.ParentRef != "" {
 		ref := item.ParentRef
 		title := item.ParentTitle
-		if ref == "" {
-			ref = item.PhaseRef
-			title = item.PhaseTitle
-		}
 		parentStr := ref
 		if title != "" {
 			parentStr = ref + " " + title

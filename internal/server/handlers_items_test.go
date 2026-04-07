@@ -20,7 +20,7 @@ func TestCollectionCRUD(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// List collections — should have 4 defaults (tasks, ideas, phases, docs)
+	// List collections — should have 4 defaults (tasks, ideas, plans, docs)
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list collections: expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -234,23 +234,23 @@ func TestListCollectionItemsResolvesRelationFieldFilterRefs(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	phaseResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/phases/items", map[string]interface{}{
+	planResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
 		"title":  "Agent Workflow Intelligence",
 		"fields": `{"status":"active"}`,
 	})
-	if phaseResp.Code != http.StatusCreated {
-		t.Fatalf("create phase: expected 201, got %d: %s", phaseResp.Code, phaseResp.Body.String())
+	if planResp.Code != http.StatusCreated {
+		t.Fatalf("create plan: expected 201, got %d: %s", planResp.Code, planResp.Body.String())
 	}
 
-	var phase models.Item
-	parseJSON(t, phaseResp, &phase)
-	if phase.Ref == "" {
-		t.Fatal("expected phase ref to be populated")
+	var plan models.Item
+	parseJSON(t, planResp, &plan)
+	if plan.Ref == "" {
+		t.Fatal("expected plan ref to be populated")
 	}
 
 	taskResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
 		"title":  "Add relation filter resolution",
-		"fields": `{"status":"open","phase":"` + phase.Ref + `"}`,
+		"fields": `{"status":"open","parent":"` + plan.Ref + `"}`,
 	})
 	if taskResp.Code != http.StatusCreated {
 		t.Fatalf("create task: expected 201, got %d: %s", taskResp.Code, taskResp.Body.String())
@@ -264,15 +264,15 @@ func TestListCollectionItemsResolvesRelationFieldFilterRefs(t *testing.T) {
 		t.Fatalf("create unrelated task: expected 201, got %d: %s", otherTaskResp.Code, otherTaskResp.Body.String())
 	}
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/items?phase="+phase.Ref, nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/items?parent="+plan.Ref, nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("list tasks by phase ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("list tasks by plan ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var items []models.Item
 	parseJSON(t, rr, &items)
 	if len(items) != 1 {
-		t.Fatalf("expected 1 task for phase ref filter, got %d", len(items))
+		t.Fatalf("expected 1 task for plan ref filter, got %d", len(items))
 	}
 	if items[0].Title != "Add relation filter resolution" {
 		t.Fatalf("unexpected task returned: %q", items[0].Title)
@@ -283,20 +283,20 @@ func TestListItemsResolvesRelationFieldFilterRefsAcrossCollections(t *testing.T)
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	phaseResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/phases/items", map[string]interface{}{
+	planResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
 		"title":  "Open Source Launch",
 		"fields": `{"status":"active"}`,
 	})
-	if phaseResp.Code != http.StatusCreated {
-		t.Fatalf("create phase: expected 201, got %d: %s", phaseResp.Code, phaseResp.Body.String())
+	if planResp.Code != http.StatusCreated {
+		t.Fatalf("create plan: expected 201, got %d: %s", planResp.Code, planResp.Body.String())
 	}
 
-	var phase models.Item
-	parseJSON(t, phaseResp, &phase)
+	var plan models.Item
+	parseJSON(t, planResp, &plan)
 
 	taskResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
 		"title":  "Document release filters",
-		"fields": `{"status":"open","phase":"` + phase.Ref + `"}`,
+		"fields": `{"status":"open","parent":"` + plan.Ref + `"}`,
 	})
 	if taskResp.Code != http.StatusCreated {
 		t.Fatalf("create task: expected 201, got %d: %s", taskResp.Code, taskResp.Body.String())
@@ -310,15 +310,15 @@ func TestListItemsResolvesRelationFieldFilterRefsAcrossCollections(t *testing.T)
 		t.Fatalf("create doc: expected 201, got %d: %s", docResp.Code, docResp.Body.String())
 	}
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items?phase="+phase.Ref, nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items?parent="+plan.Ref, nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("list items by phase ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("list items by plan ref: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var items []models.Item
 	parseJSON(t, rr, &items)
 	if len(items) != 1 {
-		t.Fatalf("expected 1 item for cross-collection phase ref filter, got %d", len(items))
+		t.Fatalf("expected 1 item for cross-collection plan ref filter, got %d", len(items))
 	}
 	if items[0].CollectionSlug != "tasks" {
 		t.Fatalf("expected task item, got collection %q", items[0].CollectionSlug)
@@ -911,8 +911,8 @@ func TestDashboard(t *testing.T) {
 	}
 
 	// Verify structure has correct field types (even if empty)
-	if resp.ActivePhases == nil {
-		t.Error("expected active_phases to be non-nil")
+	if resp.ActivePlans == nil {
+		t.Error("expected active_plans to be non-nil")
 	}
 	if resp.Attention == nil {
 		t.Error("expected attention to be non-nil")

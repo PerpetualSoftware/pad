@@ -329,7 +329,7 @@ func (s *Store) rebuildFTSForWorkspace(wsID string) {
 }
 
 // remapFieldIDs replaces old UUIDs in a JSON fields string with their new IDs.
-// This handles relation fields (e.g. phase: "uuid") without needing to parse the schema.
+// This handles relation fields (e.g. parent: "uuid") without needing to parse the schema.
 func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string {
 	result := fieldsJSON
 	for oldID, newID := range itemMap {

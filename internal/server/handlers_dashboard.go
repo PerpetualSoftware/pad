@@ -17,7 +17,7 @@ import (
 type DashboardResponse struct {
 	Summary        DashboardSummary       `json:"summary"`
 	ActiveItems    []DashboardActiveItem  `json:"active_items"`
-	ActivePhases   []DashboardPhase       `json:"active_phases"`
+	ActivePlans    []DashboardPlan         `json:"active_plans"`
 	ByRole         []store.RoleBreakdown  `json:"by_role,omitempty"`
 	Attention      []DashboardAttention   `json:"attention"`
 	RecentActivity []DashboardActivity    `json:"recent_activity"`
@@ -52,7 +52,7 @@ type DashboardSummary struct {
 	ByCollection map[string]map[string]int `json:"by_collection"`
 }
 
-type DashboardPhase struct {
+type DashboardPlan struct {
 	Slug      string `json:"slug"`
 	Ref       string `json:"ref,omitempty"`
 	Title     string `json:"title"`
@@ -147,7 +147,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			ByCollection: make(map[string]map[string]int),
 		},
 		ActiveItems:    []DashboardActiveItem{},
-		ActivePhases:   []DashboardPhase{},
+		ActivePlans:    []DashboardPlan{},
 		Attention:      []DashboardAttention{},
 		RecentActivity: []DashboardActivity{},
 		SuggestedNext:  []DashboardSuggestion{},
@@ -180,8 +180,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		if !isActiveStatus(status) {
 			continue
 		}
-		// Skip phases (they have their own section)
-		if item.CollectionSlug == "phases" {
+		// Skip plans (they have their own section)
+		if item.CollectionSlug == "plans" {
 			continue
 		}
 		ai := DashboardActiveItem{
@@ -212,28 +212,28 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		resp.ActiveItems = resp.ActiveItems[:10]
 	}
 
-	// Active phases: items in "phases" collection where status=active
-	phases, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionSlug: "phases",
+	// Active plans: items in "plans" collection where status=active
+	plans, err := s.store.ListItems(workspaceID, models.ItemListParams{
+		CollectionSlug: "plans",
 		Fields:         map[string]string{"status": "active"},
 	})
 	if err == nil {
-		for _, phase := range phases {
-			dp := DashboardPhase{
-				Slug:  phase.Slug,
-				Ref:   phase.Ref,
-				Title: phase.Title,
+		for _, plan := range plans {
+			dp := DashboardPlan{
+				Slug:  plan.Slug,
+				Ref:   plan.Ref,
+				Title: plan.Title,
 			}
 
 			// Compute progress from child items linked via parent link
-			total, done, err := s.store.GetItemProgress(phase.ID)
+			total, done, err := s.store.GetItemProgress(plan.ID)
 			if err == nil && total > 0 {
 				dp.TaskCount = total
 				dp.DoneCount = done
 				dp.Progress = (done * 100) / total
 			} else {
-				// Fallback: use explicit progress field on the phase
-				progress := extractFieldValue(phase.Fields, "progress")
+				// Fallback: use explicit progress field on the plan
+				progress := extractFieldValue(plan.Fields, "progress")
 				if progress != "" {
 					var pval float64
 					if err := json.Unmarshal([]byte(progress), &pval); err == nil {
@@ -242,7 +242,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			resp.ActivePhases = append(resp.ActivePhases, dp)
+			resp.ActivePlans = append(resp.ActivePlans, dp)
 		}
 	}
 
@@ -301,23 +301,23 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// (c) Phase completion: phases where ALL child items are done
-	for _, dp := range resp.ActivePhases {
+	// (c) Plan completion: plans where ALL child items are done
+	for _, dp := range resp.ActivePlans {
 		if dp.TaskCount > 0 && dp.DoneCount == dp.TaskCount {
 			resp.Attention = append(resp.Attention, DashboardAttention{
-				Type:       "phase_completion",
+				Type:       "plan_completion",
 				ItemSlug:   dp.Slug,
 				ItemTitle:  dp.Title,
-				Collection: "phases",
+				Collection: "plans",
 				Reason:     "All " + strconv.Itoa(dp.TaskCount) + " tasks are done. Mark as completed?",
 			})
 		}
 	}
 
 	// (d) Orphaned tasks: tasks with no parent link set
-	//     Only flag these if the workspace has active phases with children linked to them.
+	//     Only flag these if the workspace has active plans with children linked to them.
 	hasParentWithChildren := false
-	for _, dp := range resp.ActivePhases {
+	for _, dp := range resp.ActivePlans {
 		if dp.TaskCount > 0 {
 			hasParentWithChildren = true
 			break
@@ -345,7 +345,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 						ItemRef:    task.Ref,
 						ItemTitle:  task.Title,
 						Collection: "tasks",
-						Reason:     "Task has no phase assigned",
+						Reason:     "Task has no plan assigned",
 					})
 				}
 			}
@@ -419,15 +419,15 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Suggested Next ---
-	// Find open child items in active phases, sorted by priority, top 3
+	// Find open child items in active plans, sorted by priority, top 3
 	type suggestion struct {
 		item     models.Item
-		phase    string
+		plan     string
 		priority int
 	}
 	var candidates []suggestion
 
-	for _, dp := range resp.ActivePhases {
+	for _, dp := range resp.ActivePlans {
 		parentItem, err := s.store.ResolveItem(workspaceID, dp.Slug)
 		if err != nil || parentItem == nil {
 			continue
@@ -442,7 +442,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				pri := extractFieldValue(task.Fields, "priority")
 				candidates = append(candidates, suggestion{
 					item:     task,
-					phase:    dp.Title,
+					plan:     dp.Title,
 					priority: priorityRank(pri),
 				})
 			}
@@ -461,7 +461,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range candidates[:limit] {
 		pri := extractFieldValue(c.item.Fields, "priority")
-		reason := "Open task in active phase \"" + c.phase + "\""
+		reason := "Open task in active plan \"" + c.plan + "\""
 		if pri != "" {
 			reason += " (" + pri + " priority)"
 		}

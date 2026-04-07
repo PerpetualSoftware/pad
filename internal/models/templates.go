@@ -66,19 +66,19 @@ How do we know when we're done?
 `,
 	},
 	{
-		Type:        "phase-plan",
-		Name:        "Phase Plan",
-		Description: "Scoped implementation plan for a specific phase or milestone",
+		Type:        "plan",
+		Name:        "Plan",
+		Description: "Scoped implementation plan for a specific milestone",
 		Icon:        "\U0001F3D7\uFE0F",
 		Content: `# {Title}
 
 ## Overview
 
-What does this phase accomplish? What's the scope?
+What does this plan accomplish? What's the scope?
 
 ## Prerequisites
 
-What needs to be done before this phase can start?
+What needs to be done before this plan can start?
 
 - [ ] Prerequisite 1
 - [ ] Prerequisite 2

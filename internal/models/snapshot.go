@@ -12,12 +12,12 @@ type ProgressSnapshot struct {
 	OpenTasks   int       `json:"open_tasks"`
 	InProgress  int       `json:"in_progress"`
 	Percentage  float64   `json:"percentage"`
-	PhaseData   string    `json:"phase_data"` // JSON array of per-phase snapshots
+	PlanData    string    `json:"phase_data"` // JSON array of per-plan snapshots (legacy DB column name: phase_data)
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// PhaseSnapshot is a single entry in the PhaseData JSON array.
-type PhaseSnapshot struct {
+// PlanSnapshot is a single entry in the PlanData JSON array.
+type PlanSnapshot struct {
 	Title      string  `json:"title"`
 	Done       int     `json:"done"`
 	Total      int     `json:"total"`
