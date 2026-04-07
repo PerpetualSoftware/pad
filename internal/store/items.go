@@ -12,6 +12,20 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
+// childLinkTypes lists the link types that establish a parent→child relationship
+// for progress tracking. Both 'parent' and 'implements' links count as children.
+var childLinkTypes = []string{"parent", "implements"}
+
+// childLinkTypeSQL returns a SQL IN clause fragment like "'parent','implements'"
+// for filtering item_links by child relationship types.
+func childLinkTypeSQL() string {
+	quoted := make([]string, len(childLinkTypes))
+	for i, t := range childLinkTypes {
+		quoted[i] = "'" + t + "'"
+	}
+	return strings.Join(quoted, ",")
+}
+
 // ItemSearchResult holds FTS search results for items.
 type ItemSearchResult struct {
 	Item    models.Item `json:"item"`
@@ -1064,8 +1078,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 		JOIN items t ON t.id = l.target_id
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
-		WHERE l.source_id = ? AND l.link_type = 'parent'
-	`, sStatusExpr, tStatusExpr)), itemID)
+		WHERE l.source_id = ? AND l.link_type IN (%s)
+	`, sStatusExpr, tStatusExpr, childLinkTypeSQL())), itemID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent for item: %w", err)
 	}
@@ -1111,10 +1125,10 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 // GetParentMap returns a map of item ID -> parent item ID for all parent links
 // in a workspace. Used for efficient batch lookups (e.g., dashboard, list enrichment).
 func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
-	rows, err := s.db.Query(s.q(`
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT source_id, target_id FROM item_links
-		WHERE workspace_id = ? AND link_type = 'parent'
-	`), workspaceID)
+		WHERE workspace_id = ? AND link_type IN (%s)
+	`, childLinkTypeSQL())), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent map: %w", err)
 	}
@@ -1144,9 +1158,9 @@ func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err e
 		SELECT COUNT(*),
 		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items i
-		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		WHERE i.deleted_at IS NULL
-	`, statusExpr, termPlaceholders)), args...).Scan(&total, &done)
+	`, statusExpr, termPlaceholders, childLinkTypeSQL())), args...).Scan(&total, &done)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get item progress: %w", err)
 	}
@@ -1158,13 +1172,13 @@ func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err e
 // It queries the actual child items' collection schemas rather than hardcoding 'tasks'.
 func (s *Store) getChildTerminalPlaceholders(parentItemID string) (string, []any) {
 	// Find distinct collection IDs of child items
-	rows, err := s.db.Query(s.q(`
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT c.schema
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
-	`), parentItemID)
+	`, childLinkTypeSQL())), parentItemID)
 	if err != nil {
 		return models.DefaultTerminalStatusPlaceholders()
 	}
@@ -1207,17 +1221,17 @@ func (s *Store) getChildTerminalPlaceholders(parentItemID string) (string, []any
 // a single parent, it gathers terminal statuses across all parent→child links in a
 // workspace/collection pair.
 func (s *Store) getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug string) (string, []any) {
-	rows, err := s.db.Query(s.q(`
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT c.schema
 		FROM items t
 		JOIN collections c ON c.id = t.collection_id
-		JOIN item_links il ON il.source_id = t.id AND il.link_type = 'parent'
+		JOIN item_links il ON il.source_id = t.id AND il.link_type IN (%s)
 		JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
 		WHERE p.workspace_id = ?
 		  AND t.deleted_at IS NULL
 		  AND c.deleted_at IS NULL
-	`), collectionSlug, workspaceID)
+	`, childLinkTypeSQL())), collectionSlug, workspaceID)
 	if err != nil {
 		return models.DefaultTerminalStatusPlaceholders()
 	}
@@ -1272,14 +1286,14 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id
-		LEFT JOIN item_links il ON il.link_type = 'parent' AND il.target_id = p.id
+		LEFT JOIN item_links il ON il.link_type IN (%s) AND il.target_id = p.id
 		LEFT JOIN items t ON t.id = il.source_id
 		                  AND t.deleted_at IS NULL
 		WHERE p.workspace_id = ?
 		  AND pc.slug = ?
 		  AND p.deleted_at IS NULL
 		GROUP BY p.id
-	`, tStatusExpr, termPlaceholders)), args...)
+	`, tStatusExpr, termPlaceholders, childLinkTypeSQL())), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all item progress: %w", err)
 	}
@@ -1302,7 +1316,7 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 // GetChildItems returns all non-deleted child items linked to the given parent
 // via item_links. Returns children from any collection.
 func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
-	rows, err := s.db.Query(s.q(`
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -1312,12 +1326,12 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL
 		ORDER BY i.sort_order ASC, i.created_at ASC
-	`), parentItemID)
+	`, childLinkTypeSQL())), parentItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get child items: %w", err)
 	}
@@ -1351,8 +1365,8 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 	query := fmt.Sprintf(`
 		SELECT DISTINCT il.target_id FROM item_links il
 		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
-		WHERE il.link_type = 'parent' AND il.target_id IN (%s)
-	`, strings.Join(placeholders, ","))
+		WHERE il.link_type IN (%s) AND il.target_id IN (%s)
+	`, childLinkTypeSQL(), strings.Join(placeholders, ","))
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {

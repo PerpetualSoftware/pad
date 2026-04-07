@@ -15,7 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, ItemRelationRef, AgentRole } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 
@@ -31,6 +31,7 @@
 		label: string;
 		tone: 'default' | 'blocks' | 'wiki' | 'lineage';
 		entries: RelationshipEntry[];
+		closureSummary?: string;
 	};
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -79,7 +80,6 @@
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
-	let closureEntries = $derived(item?.derived_closure?.related_items?.map((related) => relationRefEntry(related)) ?? []);
 	let codeContext = $derived(item?.code_context ?? null);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
@@ -348,15 +348,6 @@
 		return `/${wsSlug}/${collectionSlug}/${refOrSlug}`;
 	}
 
-	function relationRefEntry(related: ItemRelationRef): RelationshipEntry {
-		return {
-			key: related.id,
-			label: relationLabel(related.ref, related.title, related.id),
-			href: relationHref(related.collection_slug, related.ref ?? related.slug),
-			status: related.status
-		};
-	}
-
 	function linkEntry(link: ItemLink, useSource: boolean): RelationshipEntry {
 		const ref = useSource ? link.source_ref : link.target_ref;
 		const title = useSource ? link.source_title : link.target_title;
@@ -424,12 +415,28 @@
 				case 'supersedes':
 					addEntry(isSource ? 'supersedes' : 'superseded_by', linkEntry(link, !isSource));
 					break;
-				case 'implements':
+				case 'implements': {
+					// If this item is the target (implemented by) and the source is already shown in ChildItems, skip it
+					if (!isSource && excludeChildIds.has(link.source_id)) break;
 					addEntry(isSource ? 'implements' : 'implemented_by', linkEntry(link, !isSource));
 					break;
+				}
 				default:
 					addEntry('related', linkEntry(link, !isSource));
 					break;
+			}
+		}
+
+		// Annotate the matching relationship group with closure summary
+		if (currentItem.derived_closure) {
+			const closureGroupKey: Record<string, string> = {
+				superseded_by: 'superseded_by',
+				implemented_by: 'implemented_by',
+				split_into: 'split_into'
+			};
+			const key = closureGroupKey[currentItem.derived_closure.kind];
+			if (key && grouped.has(key)) {
+				grouped.get(key)!.closureSummary = currentItem.derived_closure.summary;
 			}
 		}
 
@@ -779,33 +786,6 @@
 			</div>
 		</div>
 
-		<!-- Relationships -->
-		{#if item.derived_closure}
-			<div class="closure-notice">
-				<div class="closure-notice-header">
-					<h3 class="section-title">Derived Closure</h3>
-					<span class="closure-kind">{formatFieldDisplay(item.derived_closure.kind)}</span>
-				</div>
-				<p class="closure-summary">{item.derived_closure.summary}</p>
-				{#if closureEntries.length > 0}
-					<div class="closure-related-list">
-						{#each closureEntries as related (related.key)}
-							<div class="closure-related-item">
-								{#if related.href}
-									<a href={related.href} class="closure-related-link">{related.label}</a>
-								{:else}
-									<span class="closure-related-link">{related.label}</span>
-								{/if}
-								{#if related.status}
-									<span class="link-status">{formatFieldDisplay(related.status)}</span>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-		{/if}
-
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -813,6 +793,9 @@
 					{#each relationshipGroups as group (group.label)}
 						<div class="relationship-group">
 							<h4 class="relationship-group-title">{group.label}</h4>
+							{#if group.closureSummary}
+								<p class="closure-inline-summary">✓ {group.closureSummary}</p>
+							{/if}
 							<div class="links-list">
 								{#each group.entries as entry (entry.key)}
 									<div class="link-row" class:tone-blocks={group.tone === 'blocks'} class:tone-wiki={group.tone === 'wiki'} class:tone-lineage={group.tone === 'lineage'}>
@@ -1235,56 +1218,11 @@
 		color: var(--text-muted);
 	}
 
-	/* Derived closure */
-	.closure-notice {
-		margin-top: var(--space-6);
-		padding: var(--space-4);
-		background: color-mix(in srgb, var(--accent-green) 10%, var(--bg-secondary));
-		border: 1px solid color-mix(in srgb, var(--accent-green) 35%, var(--border));
-		border-radius: var(--radius);
-	}
-	.closure-notice-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		margin-bottom: var(--space-2);
-		flex-wrap: wrap;
-	}
-	.closure-kind {
-		font-size: 0.75em;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
+	.closure-inline-summary {
+		margin: 0 0 var(--space-2) 0;
+		font-size: 0.8em;
 		color: var(--accent-green);
-	}
-	.closure-summary {
-		margin: 0;
-		color: var(--text-primary);
-	}
-	.closure-related-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2);
-		margin-top: var(--space-3);
-	}
-	.closure-related-item {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-	}
-	.closure-related-link {
 		font-weight: 500;
-		color: var(--text-primary);
-		text-decoration: none;
-	}
-	.closure-related-link:hover {
-		color: var(--accent-blue);
-		text-decoration: underline;
 	}
 
 	/* Relationships */
