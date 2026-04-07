@@ -290,7 +290,9 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 
 // parseItemRef parses "PREFIX-123" into ("PREFIX", 123, true).
 // Returns false if the string is not a valid item ref.
+// Case-insensitive: "task-5", "Task-5", and "TASK-5" all parse to ("TASK", 5, true).
 func parseItemRef(s string) (string, int, bool) {
+	s = strings.ToUpper(s)
 	idx := strings.LastIndex(s, "-")
 	if idx <= 0 || idx == len(s)-1 {
 		return "", 0, false
