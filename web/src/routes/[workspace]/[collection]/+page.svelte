@@ -145,7 +145,7 @@
 					const progress = await api.items.phasesProgress(wsSlug).catch(() => []);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
-						map[p.phase_id] = { total: p.total, done: p.done };
+						map[p.item_id] = { total: p.total, done: p.done };
 					}
 					itemProgress = map;
 				} else {
@@ -190,7 +190,7 @@
 					const progress = await api.items.phasesProgress(ws);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
-						map[p.phase_id] = { total: p.total, done: p.done };
+						map[p.item_id] = { total: p.total, done: p.done };
 					}
 					itemProgress = map;
 					progressLabel = 'tasks';
