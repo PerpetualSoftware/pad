@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
 	"strings"
 )
@@ -24,12 +26,10 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		// Restrict browser features the app doesn't need
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
-		// CSP: allow self-sourced content, inline styles for Svelte component scoping,
-		// and inline scripts for SvelteKit's module bootstrap/hydration.
-		// Without 'unsafe-inline' on script-src, SvelteKit's generated inline <script>
-		// tags are blocked, causing a white screen (especially on mobile browsers).
+		// CSP: strict policy for API responses. HTML pages served by spaHandler
+		// override this with a nonce-based script-src for SvelteKit inline scripts.
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 
 		next.ServeHTTP(w, r)
 	})
@@ -42,6 +42,14 @@ func StrictTransportSecurity(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// generateCSPNonce generates a cryptographically random nonce for
+// Content-Security-Policy headers. Returns a 16-byte base64-encoded string.
+func generateCSPNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 // parseCORSOrigins parses a comma-separated list of origins into a slice.

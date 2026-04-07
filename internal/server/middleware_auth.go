@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -45,16 +48,24 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		// Session token (from CLI login)
 		if strings.HasPrefix(token, "padsess_") {
-			user, err := s.store.ValidateSession(token)
+			session, err := s.store.ValidateSession(token)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "internal_error", "Session validation failed")
 				return
 			}
-			if user == nil {
+			if session == nil {
 				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired session")
 				return
 			}
-			ctx := context.WithValue(r.Context(), ctxCurrentUser, user)
+			// Session binding: validate User-Agent hasn't changed
+			if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
+				slog.Warn("session binding mismatch: User-Agent changed",
+					"session_ip", session.IPAddress,
+					"client_ip", clientIP(r))
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Session expired")
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -111,8 +122,17 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		user, err := s.store.ValidateSession(cookie.Value)
-		if err != nil || user == nil {
+		session, err := s.store.ValidateSession(cookie.Value)
+		if err != nil || session == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Session binding: validate User-Agent hasn't changed
+		if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
+			slog.Warn("session binding mismatch: User-Agent changed",
+				"session_ip", session.IPAddress,
+				"client_ip", clientIP(r))
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -126,7 +146,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			}
 		}
 
-		ctx := context.WithValue(r.Context(), ctxCurrentUser, user)
+		ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -315,4 +335,10 @@ func roleLevel(role string) int {
 	default:
 		return 0
 	}
+}
+
+// sha256hex returns the SHA-256 hex digest of a string.
+func sha256hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
 }

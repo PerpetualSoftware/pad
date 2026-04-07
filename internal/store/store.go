@@ -142,6 +142,7 @@ func (s *Store) migrate() error {
 		"023_parent_link_type.sql",
 		"024_phases_to_plans.sql",
 		"025_doc_type_plan.sql",
+		"026_session_binding.sql",
 	}
 
 	for _, name := range migrations {
@@ -191,6 +192,7 @@ func (s *Store) migratePostgres() error {
 		"003_parent_link_type.sql",
 		"004_doc_type_plan.sql",
 		"005_phases_to_plans.sql",
+		"006_session_binding.sql",
 	}
 
 	for _, name := range migrations {

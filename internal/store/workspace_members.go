@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -159,26 +160,38 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 // --- Invitations ---
 
 // CreateInvitation creates a pending workspace invitation.
+// Generates a 128-bit (16-byte) random code and stores only its SHA-256 hash.
+// The plaintext code is returned once to be shared with the invitee.
 func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*models.WorkspaceInvitation, error) {
-	// Generate a random 8-char join code
-	raw := make([]byte, 4)
+	// Generate a random 128-bit join code (32 hex chars)
+	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, fmt.Errorf("generate invitation code: %w", err)
 	}
 	code := hex.EncodeToString(raw)
 
+	// Store SHA-256 hash of the code (plaintext never stored)
+	hash := sha256.Sum256([]byte(code))
+	codeHash := hex.EncodeToString(hash[:])
+
 	id := newID()
 	ts := now()
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, code, ts)
+		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, "", codeHash, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}
 
-	return s.GetInvitation(id)
+	inv, err := s.GetInvitation(id)
+	if err != nil {
+		return nil, err
+	}
+	// Return the plaintext code to the caller (not stored in DB)
+	inv.Code = code
+	return inv, nil
 }
 
 // GetInvitation retrieves an invitation by ID.
@@ -207,12 +220,36 @@ func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
 }
 
 // GetInvitationByCode retrieves a pending invitation by its join code.
+// Looks up by SHA-256 hash first (new invitations), then falls back to
+// plaintext lookup for legacy invitations created before hashing.
 func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, error) {
+	// Hash the provided code for lookup
+	hash := sha256.Sum256([]byte(code))
+	codeHash := hex.EncodeToString(hash[:])
+
 	var inv models.WorkspaceInvitation
 	var acceptedAt *string
 	var createdAt string
 
+	// Try hashed lookup first (new invitations)
 	err := s.db.QueryRow(s.q(`
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		FROM workspace_invitations WHERE code_hash = ? AND accepted_at IS NULL
+	`), codeHash).Scan(
+		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
+		&inv.Code, &acceptedAt, &createdAt,
+	)
+	if err == nil {
+		inv.CreatedAt = parseTime(createdAt)
+		inv.AcceptedAt = parseTimePtr(acceptedAt)
+		return &inv, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("get invitation by code hash: %w", err)
+	}
+
+	// Fall back to plaintext lookup (legacy invitations)
+	err = s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
 		FROM workspace_invitations WHERE code = ? AND accepted_at IS NULL
 	`), code).Scan(

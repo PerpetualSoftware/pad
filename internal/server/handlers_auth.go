@@ -68,8 +68,8 @@ func requestIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (s *Server) createAuthSession(w http.ResponseWriter, user *models.User, ttl time.Duration) (string, error) {
-	token, err := s.store.CreateSession(user.ID, "web", ttl)
+func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
+	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
@@ -157,7 +157,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.createAuthSession(w, user, cliSessionTTL)
+	token, err := s.createAuthSession(w, r, user, cliSessionTTL)
 	if err != nil {
 		return
 	}
@@ -271,7 +271,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AcceptInvitation(invitation.ID)
 	}
 
-	token, err := s.createAuthSession(w, user, webSessionTTL)
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return
 	}
@@ -319,7 +319,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.createAuthSession(w, user, webSessionTTL)
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return
 	}
@@ -356,9 +356,9 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Try session cookie directly (since auth endpoints are exempt from middleware)
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		user, _ := s.store.ValidateSession(cookie.Value)
-		if user != nil {
-			writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
+		session, _ := s.store.ValidateSession(cookie.Value)
+		if session != nil && session.User != nil {
+			writeJSON(w, http.StatusOK, sessionStatePayload(true, session.User))
 			return
 		}
 	}
@@ -408,7 +408,9 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		// Try cookie directly
 		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			user, _ = s.store.ValidateSession(cookie.Value)
+			if session, _ := s.store.ValidateSession(cookie.Value); session != nil {
+				user = session.User
+			}
 		}
 	}
 	if user == nil {
@@ -435,7 +437,9 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	if user == nil {
 		// Try cookie directly (auth endpoints are exempt from middleware)
 		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			user, _ = s.store.ValidateSession(cookie.Value)
+			if session, _ := s.store.ValidateSession(cookie.Value); session != nil {
+				user = session.User
+			}
 		}
 	}
 	if user == nil {
@@ -615,7 +619,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a fresh session so the user is logged in
-	sessionToken, err := s.store.CreateSession(user.ID, "web", webSessionTTL)
+	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
 		return

@@ -11,10 +11,19 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
+// SessionInfo holds the result of session validation, including the
+// authenticated user and session binding metadata for IP/UA verification.
+type SessionInfo struct {
+	User      *models.User
+	IPAddress string
+	UAHash    string
+}
+
 // CreateSession generates a random session token, stores its SHA-256 hash,
 // and returns the plaintext token (prefixed with "padsess_"). The plaintext
-// is returned exactly once and never stored.
-func (s *Store) CreateSession(userID, deviceInfo string, ttl time.Duration) (string, error) {
+// is returned exactly once and never stored. IP address and User-Agent hash
+// are stored for session binding validation.
+func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, ttl time.Duration) (string, error) {
 	// Generate 32 random bytes → hex → prefix
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -25,14 +34,21 @@ func (s *Store) CreateSession(userID, deviceInfo string, ttl time.Duration) (str
 	hash := sha256.Sum256([]byte(plaintext))
 	tokenHash := hex.EncodeToString(hash[:])
 
+	// Hash the User-Agent for storage (we don't need the original)
+	uaHash := ""
+	if userAgent != "" {
+		h := sha256.Sum256([]byte(userAgent))
+		uaHash = hex.EncodeToString(h[:])
+	}
+
 	id := newID()
 	ts := now()
 	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO sessions (id, user_id, token_hash, device_info, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`), id, userID, tokenHash, deviceInfo, expiresAt, ts)
+		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts)
 	if err != nil {
 		return "", fmt.Errorf("insert session: %w", err)
 	}
@@ -41,15 +57,16 @@ func (s *Store) CreateSession(userID, deviceInfo string, ttl time.Duration) (str
 }
 
 // ValidateSession hashes the provided token, looks it up, checks expiry,
-// and returns the associated user. Returns nil if invalid or expired.
-func (s *Store) ValidateSession(token string) (*models.User, error) {
+// and returns the session info including the associated user and binding
+// metadata (IP/UA). Returns nil if invalid or expired.
+func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	var userID, expiresAt string
+	var userID, expiresAt, ipAddress, uaHash string
 	err := s.db.QueryRow(s.q(`
-		SELECT user_id, expires_at FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&userID, &expiresAt)
+		SELECT user_id, expires_at, ip_address, ua_hash FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -62,7 +79,19 @@ func (s *Store) ValidateSession(token string) (*models.User, error) {
 		return nil, nil
 	}
 
-	return s.GetUser(userID)
+	user, err := s.GetUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, nil
+	}
+
+	return &SessionInfo{
+		User:      user,
+		IPAddress: ipAddress,
+		UAHash:    uaHash,
+	}, nil
 }
 
 // DeleteSession destroys a session by its plaintext token.
