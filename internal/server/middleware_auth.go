@@ -117,6 +117,12 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Re-issue CSRF cookie if the session is valid but the cookie is missing.
+		// This can happen when cookies expire at different times or are selectively cleared.
+		if _, csrfErr := r.Cookie(csrfCookie); csrfErr != nil {
+			setCSRFCookie(w, 7*24*60*60, s.secureCookies)
+		}
+
 		ctx := context.WithValue(r.Context(), ctxCurrentUser, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

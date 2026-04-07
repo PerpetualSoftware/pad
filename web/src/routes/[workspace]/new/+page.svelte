@@ -69,9 +69,9 @@
 				source: 'web'
 			});
 			goto(`/${wsSlug}/${selectedColl}/${itemUrlId(item)}?new=1`);
-		} catch {
+		} catch (err: any) {
 			creating = false;
-			toastStore.show('Failed to create item', 'error');
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		}
 	}
 </script>

@@ -301,6 +301,7 @@
 	}
 
 	let computedOverrides = $state<Record<string, any>>({});
+	let childTerminalStatuses = $state<string[] | undefined>(undefined);
 
 	function handleChildrenChange(items: Item[]) {
 		// Track child IDs for deduplication in the relationships section
@@ -319,6 +320,7 @@
 			}
 		}
 		const termOpts = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
+		childTerminalStatuses = termOpts;
 		const done = items.filter((i) => termOpts.includes(parseFields(i).status)).length;
 		const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 		computedOverrides = { progress, _progressDone: done, _progressTotal: total };
@@ -887,9 +889,9 @@
 			</div>
 		{/if}
 
-		<!-- Child Items (shown for any item that has children) -->
-		{#if hasChildren && item}
-			<ChildItems {wsSlug} {itemSlug} itemId={item.id} parentFields={fields} onChildrenChange={handleChildrenChange} />
+		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
+		{#if item}
+			<ChildItems {wsSlug} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} />
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->

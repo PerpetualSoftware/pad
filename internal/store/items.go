@@ -1229,6 +1229,58 @@ func (s *Store) getChildTerminalPlaceholders(parentItemID string) (string, []any
 	return strings.Join(placeholders, ","), args
 }
 
+// getCollectionChildTerminalPlaceholders returns SQL placeholders and args for the
+// terminal statuses of all child collections linked to parents in the given collection.
+// This is the batch version of getChildTerminalPlaceholders — instead of querying for
+// a single parent, it gathers terminal statuses across all parent→child links in a
+// workspace/collection pair.
+func (s *Store) getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug string) (string, []any) {
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT c.schema
+		FROM items t
+		JOIN collections c ON c.id = t.collection_id
+		JOIN item_links il ON il.source_id = t.id AND il.link_type = 'parent'
+		JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL
+		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
+		WHERE p.workspace_id = ?
+		  AND t.deleted_at IS NULL
+		  AND c.deleted_at IS NULL
+	`), collectionSlug, workspaceID)
+	if err != nil {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+	defer rows.Close()
+
+	terminalSet := make(map[string]bool)
+	found := false
+	for rows.Next() {
+		var schemaJSON string
+		if err := rows.Scan(&schemaJSON); err != nil {
+			continue
+		}
+		found = true
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+			continue
+		}
+		for _, ts := range models.TerminalStatusesFromSchema(schema) {
+			terminalSet[strings.ToLower(ts)] = true
+		}
+	}
+
+	if !found || len(terminalSet) == 0 {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+
+	placeholders := make([]string, 0, len(terminalSet))
+	args := make([]any, 0, len(terminalSet))
+	for ts := range terminalSet {
+		placeholders = append(placeholders, "?")
+		args = append(args, ts)
+	}
+	return strings.Join(placeholders, ","), args
+}
+
 // ItemProgress holds child item completion counts for a single parent item.
 type ItemProgress struct {
 	ItemID string `json:"item_id"`
@@ -1243,7 +1295,7 @@ type PhaseProgress = ItemProgress
 // item in the given collection within a workspace. This generalizes
 // GetAllPhasesProgress — any collection can be queried, not just phases.
 func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
-	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
+	termPlaceholders, termArgs := s.getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug)
 	args := append(termArgs, workspaceID, collectionSlug)
 	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
@@ -1335,8 +1387,9 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 		args[i] = id
 	}
 	query := fmt.Sprintf(`
-		SELECT DISTINCT target_id FROM item_links
-		WHERE link_type = 'parent' AND target_id IN (%s)
+		SELECT DISTINCT il.target_id FROM item_links il
+		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
+		WHERE il.link_type = 'parent' AND il.target_id IN (%s)
 	`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.Query(s.q(query), args...)

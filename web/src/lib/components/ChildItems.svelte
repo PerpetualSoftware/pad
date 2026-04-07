@@ -166,6 +166,7 @@
 	}
 </script>
 
+{#if loading || children.length > 0}
 <div class="child-items">
 	<div class="section-header">
 		<h3>Children</h3>
@@ -238,11 +239,9 @@
 			</div>
 		{/each}
 
-		{#if children.length === 0}
-			<div class="empty">No child items yet</div>
-		{/if}
 	{/if}
 </div>
+{/if}
 
 <style>
 	.child-items {
@@ -447,10 +446,4 @@
 		font-size: 0.85em;
 	}
 
-	.empty {
-		text-align: center;
-		color: var(--text-muted);
-		font-size: 0.9em;
-		padding: var(--space-4) 0;
-	}
 </style>

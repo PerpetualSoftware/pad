@@ -62,7 +62,12 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
-	if err := s.resolveParentFilter(workspaceID, &params); err != nil {
+
+	var collSchema models.CollectionSchema
+	if coll.Schema != "" {
+		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+	}
+	if err := s.resolveParentFilter(workspaceID, &params, collSchema); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -130,8 +135,12 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 	// Accepts both "parent" and "phase" (backward compat) as the field key.
+	// Skip this if the schema actually defines a field with that key.
 	var parentValue string
 	for _, key := range []string{"parent", "phase"} {
+		if schemaHasField(schema, key) {
+			continue
+		}
 		if pv, ok := fieldMap[key]; ok && pv != nil {
 			if pvStr, ok := pv.(string); ok && pvStr != "" {
 				if !isUUID(pvStr) {
@@ -269,9 +278,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 		// Accepts both "parent" and "phase" (backward compat) as the field key.
+		// Skip this if the schema actually defines a field with that key.
 		var parentValue string
 		var parentProvided bool
 		for _, key := range []string{"parent", "phase"} {
+			if schemaHasField(schema, key) {
+				continue
+			}
 			if pv, ok := fieldMap[key]; ok {
 				parentProvided = true
 				if pv != nil {
@@ -696,14 +709,24 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 
 // resolveParentFilter extracts a "parent" (or legacy "phase") key from the field
 // filters and converts it to a ParentLinkID filter (which uses item_links instead of json_extract).
-func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemListParams) error {
+// An optional schema can be passed; if the schema defines a field with the key,
+// that key is left as a normal field filter instead of being treated as a parent link.
+func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemListParams, schemas ...models.CollectionSchema) error {
 	if params.Fields == nil {
 		return nil
 	}
 
 	// Accept both "parent" and "phase" (backward compat)
+	// but skip if the schema defines a real field with that key
+	var schema *models.CollectionSchema
+	if len(schemas) > 0 {
+		schema = &schemas[0]
+	}
 	var val string
 	for _, key := range []string{"parent", "phase"} {
+		if schema != nil && schemaHasField(*schema, key) {
+			continue
+		}
 		if v, ok := params.Fields[key]; ok && v != "" {
 			val = v
 			delete(params.Fields, key)
@@ -866,6 +889,16 @@ func (s *Server) resolveRelationFilterValue(workspaceID, key, rawValue string) (
 }
 
 // isUUID checks if a string looks like a UUID (8-4-4-4-12 hex).
+// schemaHasField returns true if the collection schema defines a field with the given key.
+func schemaHasField(schema models.CollectionSchema, key string) bool {
+	for _, f := range schema.Fields {
+		if f.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func isUUID(s string) bool {
 	if len(s) != 36 {
 		return false

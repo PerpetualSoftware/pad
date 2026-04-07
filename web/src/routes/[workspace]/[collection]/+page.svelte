@@ -417,8 +417,8 @@
 				source: 'web'
 			});
 			goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
-		} catch {
-			toastStore.show('Failed to create item', 'error');
+		} catch (err: any) {
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		} finally {
 			creatingNew = false;
 		}
@@ -444,8 +444,8 @@
 			items = [...items, item];
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
-		} catch {
-			toastStore.show('Failed to create item', 'error');
+		} catch (err: any) {
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		} finally {
 			creatingNew = false;
 		}

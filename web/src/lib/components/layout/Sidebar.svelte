@@ -116,8 +116,8 @@
 			});
 			uiStore.onNavigate();
 			goto(`/${wsSlug}/${activeCollectionSlug}/${itemUrlId(item)}?new=1`);
-		} catch {
-			toastStore.show('Failed to create item', 'error');
+		} catch (err: any) {
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		}
 	}
 

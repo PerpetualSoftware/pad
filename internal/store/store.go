@@ -186,6 +186,7 @@ func (s *Store) migratePostgres() error {
 	migrations := []string{
 		"001_initial.sql",
 		"002_audit_trail.sql",
+		"003_parent_link_type.sql",
 	}
 
 	for _, name := range migrations {

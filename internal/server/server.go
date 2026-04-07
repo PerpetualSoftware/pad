@@ -135,10 +135,10 @@ func (s *Server) setupRouter() {
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.RequestID)
 	r.Use(StructuredLogger)
-	r.Use(chimiddleware.Recoverer)
 	if s.metrics != nil {
 		r.Use(MetricsMiddleware(s.metrics))
 	}
+	r.Use(chimiddleware.Recoverer)
 
 	// Prometheus scrape endpoint — no auth/CSRF/security headers
 	if s.metrics != nil {
