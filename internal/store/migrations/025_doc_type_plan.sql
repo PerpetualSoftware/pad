@@ -29,8 +29,41 @@ CREATE TABLE documents_new (
     UNIQUE(workspace_id, title)
 );
 
-INSERT INTO documents_new SELECT * FROM documents;
+-- Copy data, renaming 'phase-plan' to 'plan' during the insert
+INSERT INTO documents_new
+SELECT id, workspace_id, title, slug, content,
+       CASE WHEN doc_type = 'phase-plan' THEN 'plan' ELSE doc_type END,
+       status, tags, pinned, sort_order, created_by, last_modified_by,
+       source, created_at, updated_at, deleted_at
+FROM documents;
 
 DROP TABLE documents;
 
 ALTER TABLE documents_new RENAME TO documents;
+
+-- Recreate indexes (originally from 001_initial.sql)
+CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(workspace_id, doc_type);
+CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(workspace_id, updated_at);
+
+-- Recreate FTS triggers (originally from 001_initial.sql)
+CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, title, content, tags)
+    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, title, content, tags)
+    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+    INSERT INTO documents_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
+END;
+
+-- Rebuild FTS index to match potentially renamed doc_type values
+INSERT INTO documents_fts(documents_fts) VALUES ('rebuild');
