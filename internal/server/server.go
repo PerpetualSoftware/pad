@@ -14,9 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/events"
+	"github.com/xarmian/pad/internal/metrics"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/store"
 	"github.com/xarmian/pad/internal/webhooks"
@@ -35,7 +37,10 @@ type Server struct {
 	baseURL       string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
-	version       string               // release version (e.g. "dev", "1.2.3")
+	metrics            *metrics.Metrics      // Prometheus metrics (optional)
+	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
+	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
+	version            string               // release version (e.g. "dev", "1.2.3")
 	commit        string               // git commit hash
 	buildTime     string               // build timestamp
 }
@@ -84,6 +89,19 @@ func (s *Server) SetSecureCookies(secure bool) {
 	s.secureCookies = secure
 }
 
+// SetMetrics attaches Prometheus metrics to the server.
+// Must be called before the first request is served.
+func (s *Server) SetMetrics(m *metrics.Metrics) {
+	s.metrics = m
+}
+
+// SetSSELimits configures global and per-workspace SSE connection limits.
+// A value of 0 means unlimited.
+func (s *Server) SetSSELimits(global, perWorkspace int) {
+	s.sseMaxConnections = global
+	s.sseMaxPerWorkspace = perWorkspace
+}
+
 // reconfigureEmail reads email settings from the platform_settings table
 // and updates (or creates) the email sender. Called after admin settings change.
 func (s *Server) reconfigureEmail() {
@@ -113,34 +131,47 @@ func (s *Server) InitEmailFromSettings() {
 func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 
-	// Middleware
+	// Infrastructure middleware (applies to all routes including /metrics)
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.RequestID)
 	r.Use(StructuredLogger)
 	r.Use(chimiddleware.Recoverer)
-	r.Use(SecurityHeaders)
-	if s.secureCookies {
-		r.Use(StrictTransportSecurity)
+	if s.metrics != nil {
+		r.Use(MetricsMiddleware(s.metrics))
 	}
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
-	r.Use(s.TokenAuth)
-	r.Use(s.SessionAuth)
-	r.Use(s.RateLimit)
-	r.Use(s.CSRFProtect)
-	r.Use(s.RequireAuth)
-	r.Use(jsonContentType)
 
-	// SSE endpoint (outside jsonContentType middleware)
-	r.Get("/api/v1/events", s.handleSSE)
+	// Prometheus scrape endpoint — no auth/CSRF/security headers
+	if s.metrics != nil {
+		r.Group(func(r chi.Router) {
+			r.Handle("/metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
+		})
+	}
 
-	// API routes
-	r.Route("/api/v1", func(r chi.Router) {
+	// All other routes — full middleware stack
+	r.Group(func(r chi.Router) {
+		r.Use(SecurityHeaders)
+		if s.secureCookies {
+			r.Use(StrictTransportSecurity)
+		}
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
+			AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		}))
+		r.Use(s.TokenAuth)
+		r.Use(s.SessionAuth)
+		r.Use(s.RateLimit)
+		r.Use(s.CSRFProtect)
+		r.Use(s.RequireAuth)
+		r.Use(jsonContentType)
+
+		// SSE endpoint (outside jsonContentType middleware — but inherits auth)
+		r.Get("/api/v1/events", s.handleSSE)
+
+		// API routes
+		r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
 		r.Get("/health/live", s.handleHealthLive)
 		r.Get("/health/ready", s.handleHealthReady)
@@ -171,6 +202,9 @@ func (s *Server) setupRouter() {
 			r.Patch("/settings", s.handleUpdatePlatformSettings)
 			r.Post("/test-email", s.handleTestEmail)
 		})
+
+		// Audit log (admin-only)
+		r.Get("/audit-log", s.handleAuditLog)
 
 		// Templates
 		r.Get("/templates", s.handleListTemplates)
@@ -325,6 +359,7 @@ func (s *Server) setupRouter() {
 		// Search
 		r.Get("/search", s.handleSearch)
 	})
+	}) // end r.Group (full middleware stack)
 
 	s.router = r
 }

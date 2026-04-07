@@ -33,6 +33,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
+	"github.com/xarmian/pad/internal/metrics"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/server"
 	"github.com/xarmian/pad/internal/store"
@@ -86,6 +87,7 @@ func main() {
 		githubCmd(),
 		roleCmd(),
 		webhooksCmd(),
+		dbCmd(),
 		completionCmd(),
 	)
 
@@ -223,6 +225,13 @@ func serveCmd() *cobra.Command {
 			srv.SetBaseURL(cfg.BaseURL())
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
+			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
+
+			// Initialize Prometheus metrics
+			m := metrics.New()
+			m.RegisterDBCollector(s.DB())
+			srv.SetMetrics(m)
+			slog.Info("Prometheus metrics enabled at /metrics")
 
 			// Attach event bus for real-time SSE
 			var eventBus events.EventBus
@@ -241,6 +250,8 @@ func serveCmd() *cobra.Command {
 				eventBus = events.New()
 				slog.Info("Event bus using in-memory (single instance)")
 			}
+			// Wrap event bus with Prometheus instrumentation
+			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
 
 			// Attach webhook dispatcher for outgoing notifications
@@ -5189,4 +5200,343 @@ func relativeTimeStr(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// --- database tools ---
+
+// pgDbnameFromURL extracts just the database name from a PostgreSQL URL for display purposes.
+func pgDbnameFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
+func dbBackupCmd() *cobra.Command {
+	var output string
+	var cronMode bool
+
+	cmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Back up the PostgreSQL database using pg_dump",
+		Long: `Creates a SQL dump of the Pad PostgreSQL database.
+Requires pg_dump to be installed and PAD_DATABASE_URL or PAD_DB_DRIVER=postgres to be configured.
+
+For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbURL := os.Getenv("PAD_DATABASE_URL")
+			if dbURL == "" {
+				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.\nFor SQLite, copy the database file directly: cp ~/.pad/pad.db backup.db")
+			}
+
+			if output == "" {
+				output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
+			}
+
+			// Pass the connection URL via environment variable instead of
+			// command-line args, so credentials don't leak in ps/proc output.
+			// --clean emits DROP statements so the dump can be restored into an
+			// existing database, and --if-exists avoids errors on a fresh DB.
+			pgArgs := []string{
+				"--format", "plain",
+				"--clean",
+				"--if-exists",
+				"--file", output,
+			}
+
+			pgCmd := exec.Command("pg_dump", pgArgs...)
+			pgCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+			pgCmd.Stdout = os.Stdout
+			pgCmd.Stderr = os.Stderr
+
+			dbname := pgDbnameFromURL(dbURL)
+			if !cronMode {
+				fmt.Fprintf(os.Stderr, "Backing up database %s to %s...\n", dbname, output)
+			}
+
+			if err := pgCmd.Run(); err != nil {
+				if cronMode {
+					slog.Error("backup failed", "error", err, "output", output)
+				}
+				return fmt.Errorf("pg_dump failed: %w", err)
+			}
+
+			// Get file size
+			if info, err := os.Stat(output); err == nil {
+				sizeMB := float64(info.Size()) / 1024 / 1024
+				if cronMode {
+					slog.Info("backup completed", "output", output, "size_mb", fmt.Sprintf("%.1f", sizeMB))
+				} else {
+					fmt.Fprintf(os.Stderr, "Backup complete: %s (%.1f MB)\n", output, sizeMB)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: pad-backup-YYYYMMDD-HHMMSS.sql)")
+	cmd.Flags().BoolVar(&cronMode, "cron", false, "cron mode: structured log output, no interactive messages")
+
+	return cmd
+}
+
+func dbRestoreCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "restore <file.sql>",
+		Short: "Restore a PostgreSQL database from a backup",
+		Long: `Restores a Pad PostgreSQL database from a SQL dump created by 'pad db backup'.
+Requires psql to be installed and PAD_DATABASE_URL to be configured.
+
+WARNING: This will overwrite the current database contents.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inputFile := args[0]
+			if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+				return fmt.Errorf("backup file not found: %s", inputFile)
+			}
+
+			dbURL := os.Getenv("PAD_DATABASE_URL")
+			if dbURL == "" {
+				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.")
+			}
+
+			dbname := pgDbnameFromURL(dbURL)
+			if !force {
+				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the database '%s' with data from %s.\n", dbname, inputFile)
+				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
+				fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
+				var confirm string
+				fmt.Scanln(&confirm)
+				if confirm != "y" && confirm != "Y" {
+					fmt.Fprintln(os.Stderr, "Aborted.")
+					return nil
+				}
+			}
+
+			// Pass the connection URL via environment variable instead of
+			// command-line args, so credentials don't leak in ps/proc output.
+			psqlArgs := []string{
+				"--file", inputFile,
+				"--single-transaction",
+			}
+
+			psqlCmd := exec.Command("psql", psqlArgs...)
+			psqlCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+			psqlCmd.Stdout = os.Stdout
+			psqlCmd.Stderr = os.Stderr
+
+			fmt.Fprintf(os.Stderr, "Restoring database %s from %s...\n", dbname, inputFile)
+
+			if err := psqlCmd.Run(); err != nil {
+				return fmt.Errorf("psql restore failed: %w", err)
+			}
+
+			fmt.Fprintln(os.Stderr, "Restore complete.")
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
+
+	return cmd
+}
+
+func dbMigrateToPgCmd() *cobra.Command {
+	var fromPath string
+	var toURL string
+
+	cmd := &cobra.Command{
+		Use:   "migrate-to-pg",
+		Short: "Migrate data from SQLite to PostgreSQL",
+		Long: `One-time migration from a SQLite database to PostgreSQL.
+Uses application-level export/import to transfer all workspace data.
+
+This reads each workspace from the SQLite database and imports it into
+the PostgreSQL database. Users, platform settings, and auth data are
+NOT migrated — only workspace content (collections, items, comments,
+links, versions).
+
+Steps:
+  1. Set up a fresh PostgreSQL database
+  2. Run 'pad serve' with PAD_DB_DRIVER=postgres once to create the schema
+  3. Stop the server
+  4. Run this command to migrate workspace data`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if fromPath == "" {
+				fromPath = filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+			}
+			if _, err := os.Stat(fromPath); os.IsNotExist(err) {
+				return fmt.Errorf("SQLite database not found: %s", fromPath)
+			}
+
+			if toURL == "" {
+				toURL = os.Getenv("PAD_DATABASE_URL")
+			}
+			if toURL == "" {
+				return fmt.Errorf("target PostgreSQL URL required: use --to or set PAD_DATABASE_URL")
+			}
+
+			// Open source SQLite
+			fmt.Fprintf(os.Stderr, "Opening SQLite database: %s\n", fromPath)
+			srcStore, err := store.New(fromPath)
+			if err != nil {
+				return fmt.Errorf("open SQLite: %w", err)
+			}
+			defer srcStore.Close()
+
+			// Open target PostgreSQL
+			fmt.Fprintf(os.Stderr, "Connecting to PostgreSQL: %s\n", maskPassword(toURL))
+			dstStore, err := store.NewPostgres(toURL)
+			if err != nil {
+				return fmt.Errorf("open PostgreSQL: %w", err)
+			}
+			defer dstStore.Close()
+
+			// List workspaces from source
+			workspaces, err := srcStore.ListWorkspaces()
+			if err != nil {
+				return fmt.Errorf("list workspaces: %w", err)
+			}
+
+			if len(workspaces) == 0 {
+				fmt.Fprintln(os.Stderr, "No workspaces found in SQLite database.")
+				return nil
+			}
+
+			fmt.Fprintf(os.Stderr, "Found %d workspace(s) to migrate:\n", len(workspaces))
+			for _, ws := range workspaces {
+				fmt.Fprintf(os.Stderr, "  - %s (%s)\n", ws.Name, ws.Slug)
+			}
+			fmt.Fprintln(os.Stderr)
+
+			migrated := 0
+			for _, ws := range workspaces {
+				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
+
+				data, err := srcStore.ExportWorkspace(ws.Slug)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ERROR exporting %s: %v (skipping)\n", ws.Slug, err)
+					continue
+				}
+
+				stats := fmt.Sprintf("%d collections, %d items, %d comments",
+					len(data.Collections), len(data.Items), len(data.Comments))
+
+				if _, err := dstStore.ImportWorkspace(data, ""); err != nil {
+					fmt.Fprintf(os.Stderr, "  ERROR importing %s: %v (skipping)\n", ws.Slug, err)
+					continue
+				}
+
+				fmt.Fprintf(os.Stderr, "  OK: %s\n", stats)
+				migrated++
+			}
+
+			fmt.Fprintf(os.Stderr, "\nMigration complete: %d/%d workspace(s) migrated.\n", migrated, len(workspaces))
+			if migrated < len(workspaces) {
+				fmt.Fprintln(os.Stderr, "Some workspaces failed — check the errors above.")
+				return fmt.Errorf("%d workspace(s) failed to migrate", len(workspaces)-migrated)
+			}
+
+			fmt.Fprintln(os.Stderr, "\nNext steps:")
+			fmt.Fprintln(os.Stderr, "  1. Set PAD_DB_DRIVER=postgres and PAD_DATABASE_URL in your environment")
+			fmt.Fprintln(os.Stderr, "  2. Start the server: pad serve")
+			fmt.Fprintln(os.Stderr, "  3. Run 'pad auth setup' to create an admin account on the new database")
+			fmt.Fprintln(os.Stderr, "  4. Verify your data in the web UI")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: ~/.pad/pad.db)")
+	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
+
+	return cmd
+}
+
+// maskPassword replaces the password in a PostgreSQL URL for safe display.
+func maskPassword(pgURL string) string {
+	u, err := url.Parse(pgURL)
+	if err != nil {
+		return "***"
+	}
+	if _, hasPW := u.User.Password(); hasPW {
+		u.User = url.UserPassword(u.User.Username(), "***")
+	}
+	return u.String()
+}
+
+// --- audit-log ---
+
+func auditLogCmd() *cobra.Command {
+	var days int
+	var actor string
+	var action string
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "audit-log",
+		Short: "View the compliance audit log (admin-only)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+
+			params := models.AuditLogParams{
+				Days:   days,
+				Actor:  actor,
+				Action: action,
+				Limit:  limit,
+			}
+
+			activities, err := client.GetAuditLog(params)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(activities)
+			}
+
+			if len(activities) == 0 {
+				fmt.Println("No audit log entries found.")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "TIME\tACTION\tACTOR\tIP\tDETAILS")
+			for _, a := range activities {
+				ts := a.CreatedAt.Format("2006-01-02 15:04")
+				actorName := a.ActorName
+				if actorName == "" {
+					actorName = a.UserID
+				}
+				ip := a.IPAddress
+				if ip == "" {
+					ip = "-"
+				}
+				detail := a.Metadata
+				if detail == "" {
+					detail = "-"
+				}
+				// Truncate long metadata
+				if len(detail) > 60 {
+					detail = detail[:57] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ts, a.Action, actorName, ip, detail)
+			}
+			w.Flush()
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&days, "days", 30, "number of days to look back")
+	cmd.Flags().StringVar(&actor, "actor", "", "filter by actor (user ID)")
+	cmd.Flags().StringVar(&action, "action", "", "filter by action type")
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of entries")
+
+	return cmd
 }

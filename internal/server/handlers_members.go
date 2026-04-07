@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
 // handleListMembers returns all members of a workspace.
@@ -106,6 +108,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberInvited, r, auditMeta(map[string]string{"email": existingUser.Email, "role": input.Role, "added_directly": "true"}))
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"added":   true,
 			"user_id": existingUser.ID,
@@ -134,6 +137,8 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		joinURL = s.baseURL + "/join/" + inv.Code
 		resp["join_url"] = joinURL
 	}
+
+	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberInvited, r, auditMeta(map[string]string{"email": input.Email, "role": input.Role}))
 
 	writeJSON(w, http.StatusCreated, resp)
 
@@ -180,6 +185,8 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(map[string]string{"user_id": userID}))
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -214,6 +221,8 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Member not found")
 		return
 	}
+
+	s.logWorkspaceAuditEvent(workspaceID, models.ActionRoleChanged, r, auditMeta(map[string]string{"user_id": userID, "role": input.Role}))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user_id": userID,

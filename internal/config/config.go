@@ -40,19 +40,25 @@ type Config struct {
 	// Security
 	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
 	SecureCookies  bool   `toml:"secure_cookies"`  // Set Secure flag on cookies (requires TLS)
+
+	// SSE limits
+	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
+	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
 }
 
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	dataDir := filepath.Join(homeDir, ".pad")
 	return &Config{
-		Host:       "127.0.0.1",
-		Port:       7777,
-		Editor:     "",
-		LogLevel:   "info",
-		DBPath:     filepath.Join(dataDir, "pad.db"),
-		DataDir:    dataDir,
-		ConfigPath: filepath.Join(dataDir, "config.toml"),
+		Host:               "127.0.0.1",
+		Port:               7777,
+		Editor:             "",
+		LogLevel:           "info",
+		DBPath:             filepath.Join(dataDir, "pad.db"),
+		DataDir:            dataDir,
+		ConfigPath:         filepath.Join(dataDir, "config.toml"),
+		SSEMaxConnections:  1000,
+		SSEMaxPerWorkspace: 100,
 	}
 }
 
@@ -127,6 +133,16 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_SECURE_COOKIES"); v == "true" || v == "1" {
 		cfg.SecureCookies = true
+	}
+	if v := os.Getenv("PAD_SSE_MAX_CONNECTIONS"); v != "" {
+		if max, err := strconv.Atoi(v); err == nil {
+			cfg.SSEMaxConnections = max
+		}
+	}
+	if v := os.Getenv("PAD_SSE_MAX_PER_WORKSPACE"); v != "" {
+		if max, err := strconv.Atoi(v); err == nil {
+			cfg.SSEMaxPerWorkspace = max
+		}
 	}
 
 	return cfg, nil

@@ -1,7 +1,11 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
 // Known platform setting keys. Values are stored in the platform_settings table.
@@ -74,6 +78,16 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 
 	// Reconfigure email sender if email settings changed
 	s.reconfigureEmail()
+
+	// Log which settings were changed (keys only, not values for security)
+	var keys []string
+	for key := range input {
+		if allowed[key] {
+			keys = append(keys, key)
+		}
+	}
+	keysJSON, _ := json.Marshal(keys)
+	s.logAuditEvent(models.ActionSettingsChanged, r, fmt.Sprintf(`{"keys":%s}`, keysJSON))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }

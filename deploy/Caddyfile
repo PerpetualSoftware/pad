@@ -1,0 +1,31 @@
+# Pad — Caddy reverse proxy
+# Caddy automatically provisions and renews TLS certificates.
+#
+# Usage:
+#   1. Replace "pad.example.com" with your domain
+#   2. Run: caddy run --config Caddyfile
+#
+# With Docker Compose, add a Caddy service on the pad-net network.
+
+pad.example.com {
+	reverse_proxy pad:7777 {
+		# SSE: disable buffering for real-time events
+		flush_interval -1
+	}
+
+	# Optional: rate limiting
+	# rate_limit {
+	#     zone api {
+	#         key {remote_host}
+	#         events 100
+	#         window 1m
+	#     }
+	# }
+
+	encode gzip
+
+	log {
+		output file /var/log/caddy/pad-access.log
+		format json
+	}
+}

@@ -77,6 +77,35 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 	return ch
 }
 
+// SubscribeIfAllowed atomically checks limits and subscribes.
+// NOTE: Limits are enforced against local (per-pod) subscriber counts only.
+// In multi-replica deployments the effective cap is multiplied by the number
+// of replicas.  For truly global caps, use a Redis-backed counter.
+func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if maxGlobal > 0 && len(b.subscribers) >= maxGlobal {
+		return nil, false
+	}
+	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
+		return nil, false
+	}
+
+	ch := make(chan Event, 64)
+	b.subscribers[ch] = &subscriber{
+		ch:          ch,
+		workspaceID: workspaceID,
+	}
+
+	b.wsCounts[workspaceID]++
+	if b.wsCounts[workspaceID] == 1 {
+		b.startRedisSubscription(workspaceID)
+	}
+
+	return ch, true
+}
+
 // Unsubscribe removes a local subscriber and closes its channel.
 // Cancels the Redis subscription if this was the last local subscriber for the workspace.
 func (b *RedisBus) Unsubscribe(ch chan Event) {
@@ -141,6 +170,13 @@ func (b *RedisBus) SubscriberCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.subscribers)
+}
+
+// WorkspaceSubscriberCount returns the number of active local subscribers for a workspace.
+func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.wsCounts[workspaceID]
 }
 
 // startRedisSubscription begins listening on a Redis channel for a workspace.

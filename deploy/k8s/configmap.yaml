@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pad-config
+  namespace: pad
+data:
+  PAD_HOST: "0.0.0.0"
+  PAD_PORT: "7777"
+  PAD_DB_DRIVER: "postgres"
+  PAD_DATA_DIR: "/data"
+  PAD_LOG_LEVEL: "info"
+  PAD_SECURE_COOKIES: "true"
+  PAD_SSE_MAX_CONNECTIONS: "1000"
+  PAD_SSE_MAX_PER_WORKSPACE: "100"
+  # Set your public URL:
+  # PAD_URL: "https://pad.example.com"
+  # CORS origins:
+  # PAD_CORS_ORIGINS: "https://pad.example.com"

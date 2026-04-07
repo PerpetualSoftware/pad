@@ -461,6 +461,37 @@ func (c *Client) CheckSession() (*SessionResponse, error) {
 	return &result, c.get("/auth/session", &result)
 }
 
+// --- Audit Log ---
+
+// GetAuditLog fetches the global audit log (admin-only).
+func (c *Client) GetAuditLog(params models.AuditLogParams) ([]models.Activity, error) {
+	q := url.Values{}
+	if params.Action != "" {
+		q.Set("action", params.Action)
+	}
+	if params.Actor != "" {
+		q.Set("actor", params.Actor)
+	}
+	if params.WorkspaceID != "" {
+		q.Set("workspace", params.WorkspaceID)
+	}
+	if params.Days > 0 {
+		q.Set("days", fmt.Sprintf("%d", params.Days))
+	}
+	if params.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", params.Limit))
+	}
+	if params.Offset > 0 {
+		q.Set("offset", fmt.Sprintf("%d", params.Offset))
+	}
+	path := "/audit-log"
+	if qs := q.Encode(); qs != "" {
+		path += "?" + qs
+	}
+	var result []models.Activity
+	return result, c.get(path, &result)
+}
+
 // --- HTTP helpers ---
 
 type APIError struct {

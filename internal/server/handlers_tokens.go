@@ -37,6 +37,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAuditEvent(models.ActionTokenCreated, r, auditMeta(map[string]string{"name": input.Name, "workspace_id": input.WorkspaceID}))
+
 	writeJSON(w, http.StatusCreated, token)
 }
 
@@ -75,6 +77,8 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -126,6 +130,8 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAuditEvent(models.ActionTokenCreated, r, auditMeta(map[string]string{"name": input.Name}))
+
 	writeJSON(w, http.StatusCreated, token)
 }
 
@@ -146,6 +152,8 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
 	w.WriteHeader(http.StatusNoContent)
 }

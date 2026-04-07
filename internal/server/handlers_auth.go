@@ -162,6 +162,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAuditEventForUser(models.ActionBootstrap, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
@@ -274,6 +276,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAuditEventForUser(models.ActionRegister, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
@@ -310,6 +314,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		// Slow down brute force attempts
 		time.Sleep(500 * time.Millisecond)
+		s.logAuditEvent(models.ActionLoginFailed, r, auditMeta(map[string]string{"email": input.Email}))
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid email or password")
 		return
 	}
@@ -318,6 +323,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+
+	s.logAuditEventForUser(models.ActionLogin, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user":  sessionUserPayload(user),
@@ -387,6 +394,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Clear CSRF cookie on logout
 	clearCSRFCookie(w)
+
+	s.logAuditEvent(models.ActionLogout, r, "")
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,
@@ -490,6 +499,10 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
 		return
+	}
+
+	if input.NewPassword != "" {
+		s.logAuditEvent(models.ActionPasswordChanged, r, "")
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -620,6 +633,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Set CSRF cookie alongside the new session
 	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
+
+	s.logAuditEventForUser(models.ActionPasswordReset, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,

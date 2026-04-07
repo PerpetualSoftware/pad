@@ -49,6 +49,7 @@ func workspaceCmd() *cobra.Command {
 		joinCmd(),
 		exportCmd(),
 		importCmd(),
+		auditLogCmd(),
 	)
 	return cmd
 }
@@ -139,6 +140,19 @@ func agentCmd() *cobra.Command {
 		installCmd(),
 		agentUpdateCmd(),
 		agentStatusCmd(),
+	)
+	return cmd
+}
+
+func dbCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "db",
+		Short: "Database backup, restore, and migration tools",
+	}
+	cmd.AddCommand(
+		dbBackupCmd(),
+		dbRestoreCmd(),
+		dbMigrateToPgCmd(),
 	)
 	return cmd
 }

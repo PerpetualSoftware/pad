@@ -414,11 +414,12 @@ func agentMeta(r *http.Request, existingMeta string) string {
 		return existingMeta
 	}
 	if existingMeta == "" || existingMeta == "{}" {
-		return fmt.Sprintf(`{"agent":"%s"}`, agentName)
+		return auditMeta(map[string]string{"agent": agentName})
 	}
-	// Merge: insert agent field into existing JSON
+	// Merge: insert agent field into existing JSON object
 	if strings.HasPrefix(existingMeta, "{") {
-		return fmt.Sprintf(`{"agent":"%s",%s`, agentName, existingMeta[1:])
+		agentJSON, _ := json.Marshal(agentName)
+		return fmt.Sprintf(`{"agent":%s,%s`, agentJSON, existingMeta[1:])
 	}
 	return existingMeta
 }
@@ -448,6 +449,62 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 		Source:      source,
 		Metadata:    metadata,
 		UserID:      currentUserID(r),
+		IPAddress:   clientIP(r),
+		UserAgent:   r.Header.Get("User-Agent"),
+	})
+}
+
+// logAuditEvent logs a non-workspace audit event (e.g. login, logout).
+// Best-effort: errors are silently ignored.
+func (s *Server) logAuditEvent(action string, r *http.Request, metadata string) {
+	s.logAuditEventForUser(action, r, currentUserID(r), metadata)
+}
+
+// logAuditEventForUser logs an audit event with an explicit user ID.
+// Use this when the user isn't (yet) in the request context, e.g. after
+// a successful login/register/bootstrap where the session was just created.
+func (s *Server) logAuditEventForUser(action string, r *http.Request, userID string, metadata string) {
+	actor, source := actorFromRequest(r)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	_, _ = s.store.CreateActivity(models.Activity{
+		Action:    action,
+		Actor:     actor,
+		Source:    source,
+		Metadata:  metadata,
+		UserID:    userID,
+		IPAddress: clientIP(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+}
+
+// auditMeta safely marshals a map to a JSON string for audit log metadata.
+// Falls back to "{}" on marshal error so audit calls never break.
+func auditMeta(kv map[string]string) string {
+	data, err := json.Marshal(kv)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+// logWorkspaceAuditEvent logs a workspace-scoped audit event (e.g. member invited).
+// Best-effort: errors are silently ignored.
+func (s *Server) logWorkspaceAuditEvent(workspaceID, action string, r *http.Request, metadata string) {
+	actor, source := actorFromRequest(r)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	_, _ = s.store.CreateActivity(models.Activity{
+		WorkspaceID: workspaceID,
+		Action:      action,
+		Actor:       actor,
+		Source:      source,
+		Metadata:    metadata,
+		UserID:      currentUserID(r),
+		IPAddress:   clientIP(r),
+		UserAgent:   r.Header.Get("User-Agent"),
 	})
 }
 
