@@ -258,7 +258,7 @@
 <style>
 	.board-view {
 		display: flex;
-		gap: var(--space-5);
+		gap: var(--space-4);
 		flex: 1;
 		min-height: 0;
 		overflow-x: auto;
@@ -269,6 +269,9 @@
 		flex-direction: column;
 		flex: 1 0 0;
 		min-width: 220px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
 		transition: transform 0.15s ease;
 	}
 
@@ -284,10 +287,10 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: var(--space-2) var(--space-3);
-		margin-bottom: var(--space-3);
+		padding: var(--space-3) var(--space-4);
 		border-bottom: 2px solid var(--text-secondary);
-		font-weight: 600;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+		font-weight: 700;
 		font-size: 0.9em;
 		cursor: grab;
 		flex-shrink: 0;
@@ -410,9 +413,7 @@
 		display: flex;
 		flex-direction: column;
 		flex: 1;
-		gap: var(--space-3);
-		min-height: 60px;
-		border-radius: var(--radius);
+		gap: var(--space-2);
 		padding: var(--space-2);
 		transition: background 0.15s ease;
 		overflow-y: auto;
