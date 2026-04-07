@@ -6,7 +6,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 
-	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-phase-start','on-phase-complete','on-plan'] as const;
+	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
 
 	const TRIGGER_META: Record<Trigger, { icon: string; label: string }> = {
@@ -16,8 +16,8 @@
 		'on-implement':      { icon: '\u{1F528}', label: 'On Implement' },
 		'on-commit':         { icon: '\u{1F4BE}', label: 'On Commit' },
 		'on-pr-create':      { icon: '\u{1F500}', label: 'On PR Create' },
-		'on-phase-start':    { icon: '\u{1F3C1}', label: 'On Phase Start' },
-		'on-phase-complete': { icon: '\u{1F389}', label: 'On Phase Complete' },
+		'on-plan-start':     { icon: '\u{1F3C1}', label: 'On Plan Start' },
+		'on-plan-complete':  { icon: '\u{1F389}', label: 'On Plan Complete' },
 		'on-plan':           { icon: '\u{1F4CB}', label: 'On Plan' },
 	};
 

@@ -12,7 +12,7 @@
 	const messages: Record<string, string> = {
 		tasks: 'No tasks yet. Create your first task to start tracking work.',
 		ideas: 'No ideas captured yet. Jot down your first idea.',
-		phases: 'No phases defined. Create a phase to plan your milestones.',
+		plans: 'No plans defined. Create a plan to organize your milestones.',
 		docs: 'No documents yet. Start writing to build your knowledge base.',
 		bugs: "No bugs reported. That's either great news or you haven't looked yet.",
 		conventions: 'No conventions set. Define rules for how agents should work.'

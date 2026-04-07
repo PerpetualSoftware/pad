@@ -112,10 +112,10 @@ func Defaults() []DefaultCollection {
 			},
 		},
 		{
-			Name:        "Phases",
-			Slug:        "phases",
-			Icon:        "🏗️",
-			Description: "Plan and track project phases and milestones",
+			Name:        "Plans",
+			Slug:        "plans",
+			Icon:        "🗺️",
+			Description: "Plan and track project plans and milestones",
 			SortOrder:   2,
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
@@ -152,10 +152,10 @@ func Defaults() []DefaultCollection {
 				DefaultView: "list",
 				ListSortBy:  "sort_order",
 				QuickActions: []models.QuickAction{
-					{Label: "Plan this phase", Prompt: "/pad plan {ref} \"{title}\" — outline goals, deliverables, and timeline", Scope: "item", Icon: "📐"},
+					{Label: "Plan this", Prompt: "/pad plan {ref} \"{title}\" — outline goals, deliverables, and timeline", Scope: "item", Icon: "📐"},
 					{Label: "Break into tasks", Prompt: "/pad break {ref} \"{title}\" into PR-sized tasks", Scope: "item", Icon: "📝"},
 					{Label: "Run a retro", Prompt: "/pad run a retrospective on {ref} \"{title}\"", Scope: "item", Icon: "🔄"},
-					{Label: "Compare progress", Prompt: "/pad compare progress across all phases", Scope: "collection", Icon: "📊"},
+					{Label: "Compare progress", Prompt: "/pad compare progress across all plans", Scope: "collection", Icon: "📊"},
 				},
 			},
 		},
@@ -217,7 +217,7 @@ func Defaults() []DefaultCollection {
 						Key:     "trigger",
 						Label:   "When",
 						Type:    "select",
-						Options: []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-phase-start", "on-phase-complete", "on-plan"},
+						Options: []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-plan-start", "on-plan-complete", "on-plan"},
 					},
 					{
 						Key:     "scope",

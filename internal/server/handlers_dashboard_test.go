@@ -74,8 +74,8 @@ func TestDashboardEmpty(t *testing.T) {
 	if len(resp.ActiveItems) != 0 {
 		t.Errorf("expected 0 active_items, got %d", len(resp.ActiveItems))
 	}
-	if len(resp.ActivePhases) != 0 {
-		t.Errorf("expected 0 active_phases, got %d", len(resp.ActivePhases))
+	if len(resp.ActivePlans) != 0 {
+		t.Errorf("expected 0 active_plans, got %d", len(resp.ActivePlans))
 	}
 	if len(resp.Attention) != 0 {
 		t.Errorf("expected 0 attention items, got %d", len(resp.Attention))
@@ -93,7 +93,7 @@ func TestDashboardEmpty(t *testing.T) {
 	if err := json.Unmarshal(raw.Body.Bytes(), &rawMap); err != nil {
 		t.Fatalf("failed to parse raw JSON: %v", err)
 	}
-	for _, key := range []string{"active_items", "active_phases", "attention", "recent_activity", "suggested_next"} {
+	for _, key := range []string{"active_items", "active_plans", "attention", "recent_activity", "suggested_next"} {
 		val := string(rawMap[key])
 		if val == "null" {
 			t.Errorf("expected %s to be [], got null", key)
@@ -285,14 +285,14 @@ func TestDashboardActiveItemsSorting(t *testing.T) {
 	}
 }
 
-func TestDashboardActiveItemsExcludesPhases(t *testing.T) {
+func TestDashboardActiveItemsExcludesPlans(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create an active phase — it should NOT appear in active_items
-	// (phases have their own section)
-	createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Phase 1",
+	// Create an active plan — it should NOT appear in active_items
+	// (plans have their own section)
+	createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Plan 1",
 		"fields": `{"status":"active"}`,
 	})
 
@@ -305,55 +305,55 @@ func TestDashboardActiveItemsExcludesPhases(t *testing.T) {
 	resp := getDashboard(t, srv, slug)
 
 	if len(resp.ActiveItems) != 1 {
-		t.Fatalf("expected 1 active_item (no phases), got %d", len(resp.ActiveItems))
+		t.Fatalf("expected 1 active_item (no plans), got %d", len(resp.ActiveItems))
 	}
 	if resp.ActiveItems[0].Title != "Active Task" {
 		t.Errorf("expected active item to be 'Active Task', got %q", resp.ActiveItems[0].Title)
 	}
 }
 
-func TestDashboardActivePhases(t *testing.T) {
+func TestDashboardActivePlans(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create a phase with status=active
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
+	// Create a plan with status=active
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "Sprint 1",
 		"fields": `{"status":"active"}`,
 	})
 
-	// Create tasks linked to the phase
+	// Create tasks linked to the plan
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Task A",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Task B",
-		"fields": `{"status":"done","priority":"medium","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"done","priority":"medium","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Task C",
-		"fields": `{"status":"done","priority":"low","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"done","priority":"low","parent":"` + plan.ID + `"}`,
 	})
 
-	// Also a planned phase that should NOT appear in active_phases
-	createItem(t, srv, slug, "phases", map[string]interface{}{
+	// Also a planned plan that should NOT appear in active_plans
+	createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "Sprint 2",
 		"fields": `{"status":"planned"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
-	if len(resp.ActivePhases) != 1 {
-		t.Fatalf("expected 1 active_phase, got %d", len(resp.ActivePhases))
+	if len(resp.ActivePlans) != 1 {
+		t.Fatalf("expected 1 active_plan, got %d", len(resp.ActivePlans))
 	}
 
-	ap := resp.ActivePhases[0]
+	ap := resp.ActivePlans[0]
 	if ap.Title != "Sprint 1" {
-		t.Errorf("expected phase title 'Sprint 1', got %q", ap.Title)
+		t.Errorf("expected plan title 'Sprint 1', got %q", ap.Title)
 	}
 	if ap.Slug == "" {
-		t.Error("expected phase slug to be set")
+		t.Error("expected plan slug to be set")
 	}
 	if ap.TaskCount != 3 {
 		t.Errorf("expected task_count=3, got %d", ap.TaskCount)
@@ -412,9 +412,9 @@ func TestDashboardAttentionOverdueEndDate(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create a phase with a past end_date (not done)
-	createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Overdue Phase",
+	// Create a plan with a past end_date (not done)
+	createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Overdue Plan",
 		"fields": `{"status":"active","end_date":"2020-06-15"}`,
 	})
 
@@ -425,8 +425,8 @@ func TestDashboardAttentionOverdueEndDate(t *testing.T) {
 		t.Fatalf("expected 1 overdue attention item for end_date, got %d: %+v", len(overdueItems), overdueItems)
 	}
 
-	if overdueItems[0].ItemTitle != "Overdue Phase" {
-		t.Errorf("expected 'Overdue Phase', got %q", overdueItems[0].ItemTitle)
+	if overdueItems[0].ItemTitle != "Overdue Plan" {
+		t.Errorf("expected 'Overdue Plan', got %q", overdueItems[0].ItemTitle)
 	}
 }
 
@@ -520,34 +520,34 @@ func TestDashboardSuggestedNext(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create an active phase
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Active Phase",
+	// Create an active plan
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Active Plan",
 		"fields": `{"status":"active"}`,
 	})
 
-	// Create open tasks in the phase with different priorities
+	// Create open tasks in the plan with different priorities
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Low Priority Task",
-		"fields": `{"status":"open","priority":"low","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"low","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Critical Priority Task",
-		"fields": `{"status":"open","priority":"critical","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"critical","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "High Priority Task",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Medium Priority Task",
-		"fields": `{"status":"open","priority":"medium","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"medium","parent":"` + plan.ID + `"}`,
 	})
 
 	// This one is in-progress — not "open", so NOT suggested
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Already In Progress",
-		"fields": `{"status":"in-progress","priority":"critical","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"in-progress","priority":"critical","parent":"` + plan.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
@@ -578,11 +578,11 @@ func TestDashboardSuggestedNext(t *testing.T) {
 	}
 }
 
-func TestDashboardSuggestedNextNoPhases(t *testing.T) {
+func TestDashboardSuggestedNextNoPlans(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create tasks but no active phases
+	// Create tasks but no active plans
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Orphan Task",
 		"fields": `{"status":"open","priority":"high"}`,
@@ -591,29 +591,29 @@ func TestDashboardSuggestedNextNoPhases(t *testing.T) {
 	resp := getDashboard(t, srv, slug)
 
 	if len(resp.SuggestedNext) != 0 {
-		t.Errorf("expected 0 suggested_next without active phases, got %d", len(resp.SuggestedNext))
+		t.Errorf("expected 0 suggested_next without active plans, got %d", len(resp.SuggestedNext))
 	}
 }
 
-func TestDashboardSuggestedNextFromPlannedPhase(t *testing.T) {
+func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Planned phase — should NOT contribute to suggested_next
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Planned Phase",
+	// Planned plan — should NOT contribute to suggested_next
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Planned Plan",
 		"fields": `{"status":"planned"}`,
 	})
 
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
-		"title":  "Task in Planned Phase",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase.ID + `"}`,
+		"title":  "Task in Planned Plan",
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
 	if len(resp.SuggestedNext) != 0 {
-		t.Errorf("expected 0 suggested_next from planned phase, got %d", len(resp.SuggestedNext))
+		t.Errorf("expected 0 suggested_next from planned plan, got %d", len(resp.SuggestedNext))
 	}
 }
 
@@ -657,12 +657,12 @@ func TestDashboardIsDoneStatus(t *testing.T) {
 	}
 }
 
-func TestDashboardPhaseCompletion(t *testing.T) {
+func TestDashboardPlanCompletion(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create active phase
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
+	// Create active plan
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "Completed Sprint",
 		"fields": `{"status":"active"}`,
 	})
@@ -670,52 +670,52 @@ func TestDashboardPhaseCompletion(t *testing.T) {
 	// All tasks done
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Done Task 1",
-		"fields": `{"status":"done","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"done","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Done Task 2",
-		"fields": `{"status":"done","priority":"medium","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"done","priority":"medium","parent":"` + plan.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
-	phaseCompletions := filterAttention(resp.Attention, "phase_completion")
-	if len(phaseCompletions) != 1 {
-		t.Fatalf("expected 1 phase_completion attention, got %d: %+v", len(phaseCompletions), phaseCompletions)
+	planCompletions := filterAttention(resp.Attention, "plan_completion")
+	if len(planCompletions) != 1 {
+		t.Fatalf("expected 1 plan_completion attention, got %d: %+v", len(planCompletions), planCompletions)
 	}
 
-	if phaseCompletions[0].ItemTitle != "Completed Sprint" {
-		t.Errorf("expected 'Completed Sprint', got %q", phaseCompletions[0].ItemTitle)
+	if planCompletions[0].ItemTitle != "Completed Sprint" {
+		t.Errorf("expected 'Completed Sprint', got %q", planCompletions[0].ItemTitle)
 	}
-	if phaseCompletions[0].Collection != "phases" {
-		t.Errorf("expected collection 'phases', got %q", phaseCompletions[0].Collection)
+	if planCompletions[0].Collection != "plans" {
+		t.Errorf("expected collection 'plans', got %q", planCompletions[0].Collection)
 	}
 }
 
-func TestDashboardPhaseCompletionNotTriggeredWithOpenTasks(t *testing.T) {
+func TestDashboardPlanCompletionNotTriggeredWithOpenTasks(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Active phase with one done and one open task
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
+	// Active plan with one done and one open task
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "In Progress Sprint",
 		"fields": `{"status":"active"}`,
 	})
 
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Done Task",
-		"fields": `{"status":"done","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"done","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Open Task",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
-	phaseCompletions := filterAttention(resp.Attention, "phase_completion")
-	if len(phaseCompletions) != 0 {
-		t.Errorf("expected 0 phase_completion when tasks are still open, got %d", len(phaseCompletions))
+	planCompletions := filterAttention(resp.Attention, "plan_completion")
+	if len(planCompletions) != 0 {
+		t.Errorf("expected 0 plan_completion when tasks are still open, got %d", len(planCompletions))
 	}
 }
 
@@ -778,67 +778,67 @@ func TestDashboardNonexistentWorkspace(t *testing.T) {
 	}
 }
 
-func TestDashboardMultipleActivePhases(t *testing.T) {
+func TestDashboardMultipleActivePlans(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create two active phases
-	phase1 := createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Phase Alpha",
+	// Create two active plans
+	plan1 := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Plan Alpha",
 		"fields": `{"status":"active"}`,
 	})
-	phase2 := createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Phase Beta",
+	plan2 := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Plan Beta",
 		"fields": `{"status":"active"}`,
 	})
 
-	// Tasks for phase 1: 1 done out of 2
+	// Tasks for plan 1: 1 done out of 2
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Alpha Task 1",
-		"fields": `{"status":"done","priority":"high","phase":"` + phase1.ID + `"}`,
+		"fields": `{"status":"done","priority":"high","parent":"` + plan1.ID + `"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Alpha Task 2",
-		"fields": `{"status":"open","priority":"medium","phase":"` + phase1.ID + `"}`,
+		"fields": `{"status":"open","priority":"medium","parent":"` + plan1.ID + `"}`,
 	})
 
-	// Tasks for phase 2: 0 done out of 1
+	// Tasks for plan 2: 0 done out of 1
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Beta Task 1",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase2.ID + `"}`,
+		"fields": `{"status":"open","priority":"high","parent":"` + plan2.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
-	if len(resp.ActivePhases) != 2 {
-		t.Fatalf("expected 2 active phases, got %d", len(resp.ActivePhases))
+	if len(resp.ActivePlans) != 2 {
+		t.Fatalf("expected 2 active plans, got %d", len(resp.ActivePlans))
 	}
 
-	phaseMap := map[string]DashboardPhase{}
-	for _, p := range resp.ActivePhases {
-		phaseMap[p.Title] = p
+	planMap := map[string]DashboardPlan{}
+	for _, p := range resp.ActivePlans {
+		planMap[p.Title] = p
 	}
 
-	alpha, ok := phaseMap["Phase Alpha"]
+	alpha, ok := planMap["Plan Alpha"]
 	if !ok {
-		t.Fatal("expected 'Phase Alpha' in active phases")
+		t.Fatal("expected 'Plan Alpha' in active plans")
 	}
 	if alpha.TaskCount != 2 || alpha.DoneCount != 1 {
-		t.Errorf("Phase Alpha: expected task_count=2, done_count=1, got task_count=%d, done_count=%d", alpha.TaskCount, alpha.DoneCount)
+		t.Errorf("Plan Alpha: expected task_count=2, done_count=1, got task_count=%d, done_count=%d", alpha.TaskCount, alpha.DoneCount)
 	}
 	if alpha.Progress != 50 {
-		t.Errorf("Phase Alpha: expected progress=50, got %d", alpha.Progress)
+		t.Errorf("Plan Alpha: expected progress=50, got %d", alpha.Progress)
 	}
 
-	beta, ok := phaseMap["Phase Beta"]
+	beta, ok := planMap["Plan Beta"]
 	if !ok {
-		t.Fatal("expected 'Phase Beta' in active phases")
+		t.Fatal("expected 'Plan Beta' in active plans")
 	}
 	if beta.TaskCount != 1 || beta.DoneCount != 0 {
-		t.Errorf("Phase Beta: expected task_count=1, done_count=0, got task_count=%d, done_count=%d", beta.TaskCount, beta.DoneCount)
+		t.Errorf("Plan Beta: expected task_count=1, done_count=0, got task_count=%d, done_count=%d", beta.TaskCount, beta.DoneCount)
 	}
 	if beta.Progress != 0 {
-		t.Errorf("Phase Beta: expected progress=0, got %d", beta.Progress)
+		t.Errorf("Plan Beta: expected progress=0, got %d", beta.Progress)
 	}
 }
 
@@ -865,23 +865,23 @@ func TestDashboardOrphanedTasks(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create an active phase WITH at least one linked task (activates orphan detection)
-	phase := createItem(t, srv, slug, "phases", map[string]interface{}{
+	// Create an active plan WITH at least one linked task (activates orphan detection)
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "Sprint 1",
 		"fields": `{"status":"active"}`,
 	})
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Linked Task",
-		"fields": `{"status":"open","priority":"high","phase":"` + phase.ID + `"}`,
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
 	})
 
-	// Create a task WITHOUT a phase — should be flagged as orphaned
+	// Create a task WITHOUT a plan — should be flagged as orphaned
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Orphan Task",
 		"fields": `{"status":"open","priority":"medium"}`,
 	})
 
-	// Create a done task without a phase — should NOT be flagged (done tasks are excluded)
+	// Create a done task without a plan — should NOT be flagged (done tasks are excluded)
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Done Orphan",
 		"fields": `{"status":"done","priority":"low"}`,
@@ -898,17 +898,17 @@ func TestDashboardOrphanedTasks(t *testing.T) {
 	}
 }
 
-func TestDashboardOrphanedTasksNotFlaggedWithoutPhaseLinks(t *testing.T) {
+func TestDashboardOrphanedTasksNotFlaggedWithoutPlanLinks(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create an active phase but with NO linked tasks
-	createItem(t, srv, slug, "phases", map[string]interface{}{
-		"title":  "Empty Phase",
+	// Create an active plan but with NO linked tasks
+	createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Empty Plan",
 		"fields": `{"status":"active"}`,
 	})
 
-	// Task without phase — should NOT be flagged because no phase has tasks
+	// Task without plan — should NOT be flagged because no plan has tasks
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Unlinked Task",
 		"fields": `{"status":"open","priority":"medium"}`,
@@ -918,7 +918,7 @@ func TestDashboardOrphanedTasksNotFlaggedWithoutPhaseLinks(t *testing.T) {
 
 	orphans := filterAttention(resp.Attention, "orphaned_task")
 	if len(orphans) != 0 {
-		t.Errorf("expected 0 orphaned tasks when no phase has tasks linked, got %d: %+v", len(orphans), orphans)
+		t.Errorf("expected 0 orphaned tasks when no plan has tasks linked, got %d: %+v", len(orphans), orphans)
 	}
 }
 

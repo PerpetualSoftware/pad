@@ -415,13 +415,9 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	}
 
 	// Parent link filter via item_links
-	parentFilter := params.ParentLinkID
-	if parentFilter == "" {
-		parentFilter = params.PhaseID // deprecated alias
-	}
-	if parentFilter != "" {
+	if params.ParentLinkID != "" {
 		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
-		args = append(args, parentFilter)
+		args = append(args, params.ParentLinkID)
 	}
 
 	// Field filters — supports comma-separated values as OR
@@ -1018,11 +1014,6 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 	return nil, fmt.Errorf("parent link created but not found")
 }
 
-// SetPhaseLink is a deprecated alias for SetParentLink.
-func (s *Store) SetPhaseLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
-	return s.SetParentLink(workspaceID, itemID, parentID, createdBy)
-}
-
 // checkParentCycle walks the ancestor chain from parentID and returns an error
 // if itemID is found (which would create a cycle).
 func (s *Store) checkParentCycle(itemID, parentID string) error {
@@ -1055,11 +1046,6 @@ func (s *Store) ClearParentLink(itemID string) error {
 		return fmt.Errorf("clear parent link: %w", err)
 	}
 	return nil
-}
-
-// ClearPhaseLink is a deprecated alias for ClearParentLink.
-func (s *Store) ClearPhaseLink(itemID string) error {
-	return s.ClearParentLink(itemID)
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
@@ -1120,11 +1106,6 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 	return &link, nil
 }
 
-// GetPhaseForItem is a deprecated alias for GetParentForItem.
-func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
-	return s.GetParentForItem(itemID)
-}
-
 // GetParentMap returns a map of item ID -> parent item ID for all parent links
 // in a workspace. Used for efficient batch lookups (e.g., dashboard, list enrichment).
 func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
@@ -1148,17 +1129,11 @@ func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	return m, rows.Err()
 }
 
-// GetTaskPhaseMap is a deprecated alias for GetParentMap.
-func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
-	return s.GetParentMap(workspaceID)
-}
-
 // --- Child Item Progress ---
 
 // GetItemProgress counts total and done child items linked to a parent via item_links.
 // "Done" means any terminal status as defined by the child items' collection schemas.
-// Unlike the old GetPhaseProgress, this is not filtered to a specific collection —
-// children from any collection count toward progress.
+// Children from any collection count toward progress.
 func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err error) {
 	termPlaceholders, termArgs := s.getChildTerminalPlaceholders(parentItemID)
 	args := append(termArgs, parentItemID)
@@ -1174,11 +1149,6 @@ func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err e
 		return 0, 0, fmt.Errorf("get item progress: %w", err)
 	}
 	return total, done, nil
-}
-
-// GetPhaseProgress is a deprecated alias for GetItemProgress.
-func (s *Store) GetPhaseProgress(parentItemID string) (total int, done int, err error) {
-	return s.GetItemProgress(parentItemID)
 }
 
 // getChildTerminalPlaceholders returns SQL placeholders and args for the terminal
@@ -1288,12 +1258,8 @@ type ItemProgress struct {
 	Done   int    `json:"done"`
 }
 
-// PhaseProgress is a deprecated alias for ItemProgress.
-type PhaseProgress = ItemProgress
-
 // GetAllItemProgress returns child item completion counts for every non-deleted
-// item in the given collection within a workspace. This generalizes
-// GetAllPhasesProgress — any collection can be queried, not just phases.
+// item in the given collection within a workspace.
 func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
 	termPlaceholders, termArgs := s.getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug)
 	args := append(termArgs, workspaceID, collectionSlug)
@@ -1331,14 +1297,8 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 	return result, rows.Err()
 }
 
-// GetAllPhasesProgress is a deprecated alias that calls GetAllItemProgress for the "phases" collection.
-func (s *Store) GetAllPhasesProgress(workspaceID string) ([]ItemProgress, error) {
-	return s.GetAllItemProgress(workspaceID, "phases")
-}
-
 // GetChildItems returns all non-deleted child items linked to the given parent
-// via item_links. Unlike the old GetTasksForPhase, this returns children from
-// any collection, not just tasks.
+// via item_links. Returns children from any collection.
 func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
@@ -1407,11 +1367,6 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 			items[i].HasChildren = true
 		}
 	}
-}
-
-// GetTasksForPhase is a deprecated alias for GetChildItems.
-func (s *Store) GetTasksForPhase(parentItemID string) ([]models.Item, error) {
-	return s.GetChildItems(parentItemID)
 }
 
 // MoveItem moves an item to a different collection within the same workspace.

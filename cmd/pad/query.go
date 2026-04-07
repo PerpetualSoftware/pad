@@ -36,7 +36,7 @@ func readyCmd() *cobra.Command {
 
 This is the broader query-oriented counterpart to 'pad project next'. It reuses the
 dashboard's suggested-next logic and returns the current actionable backlog
-for active phases.`,
+for active plans.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

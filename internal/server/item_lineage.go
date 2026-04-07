@@ -46,19 +46,11 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item) 
 			continue
 		}
 		items[i].ParentLinkID = pid
-		items[i].PhaseID = pid // backward compat
 		if info, ok := parents[pid]; ok {
 			items[i].ParentTitle = info.title
 			items[i].ParentRef = info.ref
-			items[i].PhaseTitle = info.title // backward compat
-			items[i].PhaseRef = info.ref     // backward compat
 		}
 	}
-}
-
-// enrichItemsWithPhase is a deprecated alias for enrichItemsWithParent.
-func (s *Server) enrichItemsWithPhase(workspaceID string, items []models.Item) {
-	s.enrichItemsWithParent(workspaceID, items)
 }
 
 func (s *Server) enrichItemForResponse(item *models.Item) error {
@@ -80,10 +72,6 @@ func (s *Server) enrichItemForResponse(item *models.Item) error {
 		item.ParentLinkID = parentLink.TargetID
 		item.ParentRef = parentLink.TargetRef
 		item.ParentTitle = parentLink.TargetTitle
-		// Backward compat
-		item.PhaseID = parentLink.TargetID
-		item.PhaseRef = parentLink.TargetRef
-		item.PhaseTitle = parentLink.TargetTitle
 	}
 
 	return nil

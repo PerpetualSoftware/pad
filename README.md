@@ -16,7 +16,7 @@
 <!-- TODO: Replace with actual screenshots -->
 <!--
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" width="800" alt="Pad dashboard showing collection overview, active phases, and activity feed" />
+  <img src="docs/screenshots/dashboard.png" width="800" alt="Pad dashboard showing collection overview, active plans, and activity feed" />
 </p>
 -->
 
@@ -68,7 +68,7 @@ pad server info                         # How this client is connected to Pad
 - **Rich text editor** — Tiptap-based with markdown, formatting toolbar, and auto-save
 - **Wiki-links** — type `[[Title]]` to link between items
 - **Real-time updates** — agent creates a task in the terminal, it appears in the browser instantly (via SSE)
-- **Dashboard** — collection overview, active work, phase tracking, activity feed
+- **Dashboard** — collection overview, active work, plan tracking, activity feed
 
 <!-- TODO: Screenshot of board view with drag-and-drop -->
 
@@ -121,7 +121,7 @@ Pad organizes work into **collections** — typed containers with structured fie
 |---|---|
 | **Tasks** | Work items with status, priority, assignee, effort, due date |
 | **Ideas** | Feature ideas with impact and category |
-| **Phases** | Project milestones with progress tracking |
+| **Plans** | Project milestones with progress tracking |
 | **Docs** | Documentation, decisions, reference material |
 | **Conventions** | Project rules that guide agent behavior |
 | **Playbooks** | Multi-step workflows for agents to follow |
@@ -268,7 +268,7 @@ pad project changelog [--days N]      Release notes from completed items
 pad project watch                     Real-time activity stream
 pad project reconcile                 Reconcile item and PR state
 
-pad item create <coll> "title"        Create item (task, idea, phase, doc, ...)
+pad item create <coll> "title"        Create item (task, idea, plan, doc, ...)
 pad item list [collection]            List items (filters: --status, --priority, --all)
 pad item show <ref>                   Show item detail
 pad item update <ref>                 Update item fields

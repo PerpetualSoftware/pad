@@ -38,10 +38,10 @@
 			hint: '/pad what conventions should this project follow?'
 		},
 		{
-			title: 'Create your first phase',
-			href: `/${wsSlug}/new?collection=phases`,
-			done: collectionHasItems('phases'),
-			hint: '/pad create a phase for what I\'m working on'
+			title: 'Create your first plan',
+			href: `/${wsSlug}/new?collection=plans`,
+			done: collectionHasItems('plans'),
+			hint: '/pad create a plan for what I\'m working on'
 		},
 		{
 			title: 'Add a few tasks',

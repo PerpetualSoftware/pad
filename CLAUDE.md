@@ -66,7 +66,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/collections` — collection CRUD
 - `GET/POST /workspaces/{ws}/collections/{coll}/items` — item CRUD
 - `GET/PATCH/DELETE /workspaces/{ws}/items/{slug}` — item by slug
-- `GET /workspaces/{ws}/dashboard` — computed project overview (active items, phases, attention, blockers)
+- `GET /workspaces/{ws}/dashboard` — computed project overview (active items, plans, attention, blockers)
 - `GET /workspaces/{ws}/activity` — workspace activity feed (enriched with item titles + change details)
 - `GET/POST/DELETE /workspaces/{ws}/webhooks` — webhook management
 - `GET /workspaces/{ws}/items/{slug}/children` — child items linked to a parent
@@ -177,9 +177,9 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 - **Collections** have JSON schemas defining typed fields (select, text, date, number, etc.)
 - **Items** have structured `fields` JSON + optional rich `content` (markdown)
-- **Parent/child links:** Any item can be a parent of child items (`--parent REF`). Children get progress tracking, burndown charts, and nested rendering. Phases are the most common parent, but Ideas, Docs, or Tasks can also have children.
+- **Parent/child links:** Any item can be a parent of child items (`--parent REF`). Children get progress tracking, burndown charts, and nested rendering. Plans are the most common parent, but Ideas, Docs, or Tasks can also have children.
 - **Wiki-links** `[[Title]]` resolve across all items, rendered as clickable links
-- **Default collections:** Tasks, Ideas, Phases, Docs
+- **Default collections:** Tasks, Ideas, Plans, Docs
 - **Templates:** startup (default), scrum, product — set via `pad workspace init --template`
 
 ## Testing

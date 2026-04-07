@@ -57,11 +57,6 @@ type Item struct {
 	ParentRef    string `json:"parent_ref,omitempty"`
 	ParentTitle  string `json:"parent_title,omitempty"`
 
-	// Deprecated aliases — kept for API backward compatibility
-	PhaseID    string `json:"phase_id,omitempty"`
-	PhaseRef   string `json:"phase_ref,omitempty"`
-	PhaseTitle string `json:"phase_title,omitempty"`
-
 	// HasChildren is true if this item has child items linked to it.
 	// Populated by enrichment, not stored in the DB.
 	HasChildren bool `json:"has_children,omitempty"`
@@ -520,7 +515,6 @@ type ItemListParams struct {
 	AssignedUserID  string // filter by assigned user
 	AgentRoleID     string // filter by agent role (ID or slug)
 	ParentLinkID    string // filter by parent link (item ID of the parent)
-	PhaseID         string // deprecated alias for ParentLinkID
 	IncludeArchived bool
 	Limit           int
 	Offset          int

@@ -141,8 +141,8 @@
 				items = freshItems;
 
 				// Update progress data without resetting view state
-				if (collSlug === 'phases') {
-					const progress = await api.items.phasesProgress(wsSlug).catch(() => []);
+				if (collSlug === 'plans') {
+					const progress = await api.items.plansProgress(wsSlug).catch(() => []);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };
@@ -184,10 +184,10 @@
 			savedViews = viewsData;
 			activeViewId = null;
 
-			// Fetch phase progress if viewing phases collection
-			if (coll === 'phases') {
+			// Fetch plan progress if viewing plans collection
+			if (coll === 'plans') {
 				try {
-					const progress = await api.items.phasesProgress(ws);
+					const progress = await api.items.plansProgress(ws);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };
@@ -211,12 +211,12 @@
 				progressLabel = 'done';
 			}
 
-			// Fetch phase names for relation display on task cards
+			// Fetch plan names for relation display on task cards
 			if (coll === 'tasks') {
 				try {
-					const phases = await api.items.listByCollection(ws, 'phases');
+					const plans = await api.items.listByCollection(ws, 'plans');
 					const labels: Record<string, string> = {};
-					for (const p of phases) {
+					for (const p of plans) {
 						labels[p.id] = p.title;
 					}
 					relationLabels = labels;
@@ -260,9 +260,10 @@
 		// Apply field filters
 		for (const [key, value] of Object.entries(activeFilters)) {
 			result = result.filter((item) => {
-				// Phase filter uses the phase link, not fields JSON
-				if (key === 'phase') {
-					return item.phase_id === value;
+				// Parent filter uses the parent link, not fields JSON
+				// Also accept legacy 'phase' key for backward compat with saved views
+				if (key === 'parent' || key === 'phase') {
+					return item.parent_link_id === value;
 				}
 				const fields = parseFields(item);
 				return fields[key] === value;
@@ -305,7 +306,7 @@
 	const emptyHintMap: Record<string, string> = {
 		tasks: '/pad break down my current work into tasks',
 		ideas: "/pad I have an idea for...",
-		phases: '/pad create a phase for what I\'m working on',
+		plans: '/pad create a plan for what I\'m working on',
 		docs: '/pad document the architecture of this project',
 		conventions: '/pad what conventions should this project follow?',
 		playbooks: '/pad set up playbooks for our workflow',

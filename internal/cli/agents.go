@@ -180,7 +180,7 @@ func FormatForTool(tool AgentTool, embeddedContent []byte) []byte {
 		body := StripFrontmatter(embeddedContent)
 		fm := `---
 name: pad
-description: "Talk to your project. Natural-language project management — create items, check status, plan phases, brainstorm ideas, and more."
+description: "Talk to your project. Natural-language project management — create items, check status, create plans, brainstorm ideas, and more."
 ---
 
 `

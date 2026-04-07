@@ -276,8 +276,8 @@ func (s *Server) setupRouter() {
 					})
 				})
 
-				// Phases progress
-				r.Get("/phases-progress", s.handlePhasesProgress)
+				// Plans progress
+				r.Get("/plans-progress", s.handlePlansProgress)
 
 				// Items (cross-collection, v2)
 				r.Get("/items", s.handleListItems)

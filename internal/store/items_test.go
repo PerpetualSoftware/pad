@@ -194,7 +194,7 @@ func TestSeedDefaultCollections(t *testing.T) {
 			t.Errorf("expected collection %q to be default", c.Slug)
 		}
 	}
-	for _, expected := range []string{"tasks", "ideas", "phases", "docs", "conventions", "playbooks"} {
+	for _, expected := range []string{"tasks", "ideas", "plans", "docs", "conventions", "playbooks"} {
 		if !slugs[expected] {
 			t.Errorf("expected default collection %q", expected)
 		}

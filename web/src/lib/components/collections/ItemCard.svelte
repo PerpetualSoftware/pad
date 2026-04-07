@@ -109,9 +109,9 @@
 				{formatLabel(fields.priority)}
 			</span>
 		{/if}
-		{#if item.phase_title}
+		{#if item.parent_title}
 			<span class="meta-sep">&middot;</span>
-			<span class="meta-phase">{item.phase_ref ? `${item.phase_ref}: ${item.phase_title}` : item.phase_title}</span>
+			<span class="meta-parent">{item.parent_ref ? `${item.parent_ref}: ${item.parent_title}` : item.parent_title}</span>
 		{/if}
 		{#if item.agent_role_name}
 			<span class="meta-sep">&middot;</span>
@@ -258,7 +258,7 @@
 		white-space: nowrap;
 	}
 
-	.meta-phase {
+	.meta-parent {
 		font-size: 0.7em;
 		font-weight: 500;
 		color: var(--accent-purple, var(--text-secondary));

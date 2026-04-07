@@ -321,12 +321,6 @@ export interface Item {
 	parent_link_id?: string;
 	parent_ref?: string;
 	parent_title?: string;
-	/** @deprecated Use parent_id */
-	phase_id?: string;
-	/** @deprecated Use parent_ref */
-	phase_ref?: string;
-	/** @deprecated Use parent_title */
-	phase_title?: string;
 	has_children?: boolean;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
@@ -520,7 +514,7 @@ export interface DashboardResponse {
 		by_collection: Record<string, Record<string, number>>;
 	};
 	active_items: DashboardActiveItem[];
-	active_phases: {
+	active_plans: {
 		slug: string;
 		title: string;
 		progress: number;

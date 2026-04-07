@@ -6,7 +6,7 @@ type LibraryConvention struct {
 	Title       string   `json:"title"`
 	Content     string   `json:"content"`
 	Category    string   `json:"category"`    // git, quality, pm, docs, build
-	Trigger     string   `json:"trigger"`     // always, on-task-start, on-task-complete, on-implement, on-commit, on-pr-create, on-phase-complete, on-plan
+	Trigger     string   `json:"trigger"`     // always, on-task-start, on-task-complete, on-implement, on-commit, on-pr-create, on-plan-complete, on-plan
 	Surfaces    []string `json:"surfaces"`    // all, backend, frontend, mobile, docs, devops
 	Enforcement string   `json:"enforcement"` // must, should, nice-to-have
 	Commands    []string `json:"commands,omitempty"`
@@ -132,10 +132,10 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
-					Title:       "Retrospective on phase completion",
-					Content:     "When all tasks in a phase are done, suggest running a retrospective before marking the phase complete. Capture: what shipped, what was deferred, and lessons learned.",
+					Title:       "Retrospective on plan completion",
+					Content:     "When all tasks in a plan are done, suggest running a retrospective before marking the plan complete. Capture: what shipped, what was deferred, and lessons learned.",
 					Category:    "pm",
-					Trigger:     "on-phase-complete",
+					Trigger:     "on-plan-complete",
 					Surfaces:    []string{"all"},
 					Enforcement: "nice-to-have",
 				},

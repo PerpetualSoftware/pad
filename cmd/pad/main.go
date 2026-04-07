@@ -1143,7 +1143,7 @@ func printOnboardingHints() {
 	bold.Println("Get started:")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "scan this codebase and set up my workspace")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "what conventions should this project follow?")
-	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a phase for what I'm working on")
+	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
 	fmt.Println()
 	fmt.Printf("Or open the web UI at %s\n", bold.Sprint("http://localhost:7777"))
 	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
@@ -1720,7 +1720,6 @@ func createCmd() *cobra.Command {
 		status     string
 		assignee   string
 		roleFlag   string
-		phase      string
 		category   string
 		parentSlug string
 		tags       string
@@ -1736,7 +1735,7 @@ func createCmd() *cobra.Command {
 Examples:
   pad item create task "Fix OAuth redirect" --priority high
   pad item create idea "Real-time collaboration" --category infrastructure
-  pad item create phase "API Redesign" --status active
+  pad item create plan "API Redesign" --status active
   pad item create doc "Payment Architecture" --category architecture --stdin
 
 Run with --help-collections to see available collections and their status values.`,
@@ -1757,11 +1756,7 @@ Run with --help-collections to see available collections and their status values
 			if priority != "" {
 				fields["priority"] = priority
 			}
-			// --parent takes precedence; --phase is a backward-compat alias
 			parentRef := parentSlug
-			if parentRef == "" {
-				parentRef = phase
-			}
 			if parentRef != "" {
 				parentItem, err := client.GetItem(ws, parentRef)
 				if err != nil {
@@ -1868,8 +1863,6 @@ Run with --help-collections to see available collections and their status values
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
 	cmd.Flags().StringVar(&parentSlug, "parent", "", "parent item (ref, slug, or ID)")
-	cmd.Flags().StringVar(&phase, "phase", "", "parent item (deprecated alias for --parent)")
-	cmd.Flags().Lookup("phase").Hidden = true
 	cmd.Flags().StringVar(&category, "category", "", "category field value")
 	cmd.Flags().StringVar(&tags, "tags", "", "JSON array of tags")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
@@ -2259,7 +2252,6 @@ func updateCmd() *cobra.Command {
 		priority   string
 		assignee   string
 		roleFlag   string
-		phase      string
 		parentFlag string
 		category   string
 		tags       string
@@ -2277,7 +2269,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.
 Examples:
   pad item update TASK-5 --status done
   pad item update TASK-5 --status done --comment "Fixed the login bug"
-  pad item update PHASE-2 --status active --priority high
+  pad item update PLAN-2 --status active --priority high
   pad item update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2317,11 +2309,7 @@ Examples:
 			}
 
 			// Merge field changes with existing fields
-			// --parent takes precedence; --phase is a backward-compat alias
 			parentRef := parentFlag
-			if parentRef == "" {
-				parentRef = phase
-			}
 
 			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0
 			if hasFieldChanges {
@@ -2424,8 +2412,6 @@ Examples:
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
 	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID)")
-	cmd.Flags().StringVar(&phase, "phase", "", "update parent item (deprecated alias for --parent)")
-	cmd.Flags().Lookup("phase").Hidden = true
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
@@ -2947,13 +2933,13 @@ func statusCmd() *cobra.Command {
 					Status         string `json:"status"`
 					ItemRef        string `json:"item_ref"`
 				} `json:"active_items"`
-				ActivePhases []struct {
+				ActivePlans []struct {
 					Slug      string `json:"slug"`
 					Title     string `json:"title"`
 					Progress  int    `json:"progress"`
 					TaskCount int    `json:"task_count"`
 					DoneCount int    `json:"done_count"`
-				} `json:"active_phases"`
+				} `json:"active_plans"`
 				ByRole []struct {
 					RoleName  string   `json:"role_name"`
 					RoleSlug  string   `json:"role_slug"`
@@ -3021,17 +3007,17 @@ func statusCmd() *cobra.Command {
 				}
 			}
 
-			// Active phases
-			if len(dash.ActivePhases) > 0 {
+			// Active plans
+			if len(dash.ActivePlans) > 0 {
 				fmt.Println()
-				bold.Println("🏗️  Active Phases")
-				for _, p := range dash.ActivePhases {
-					bar := colorProgressBar(p.Progress, 20, green)
+				bold.Println("🏗️  Active Plans")
+				for _, plan := range dash.ActivePlans {
+					bar := colorProgressBar(plan.Progress, 20, green)
 					fmt.Printf("  %s %s %s %s\n",
-						bold.Sprint(p.Title),
+						bold.Sprint(plan.Title),
 						bar,
-						color.New(color.FgGreen).Sprintf("%d%%", p.Progress),
-						dim.Sprintf("(%d/%d tasks)", p.DoneCount, p.TaskCount),
+						color.New(color.FgGreen).Sprintf("%d%%", plan.Progress),
+						dim.Sprintf("(%d/%d tasks)", plan.DoneCount, plan.TaskCount),
 					)
 				}
 			}
@@ -3135,7 +3121,7 @@ func nextCmd() *cobra.Command {
 			}
 
 			if len(dash.SuggestedNext) == 0 {
-				fmt.Println("No suggestions — all tasks may be complete or no active phases found.")
+				fmt.Println("No suggestions — all tasks may be complete or no active plans found.")
 				return nil
 			}
 
@@ -3390,7 +3376,6 @@ func standupCmd() *cobra.Command {
 func changelogCmd() *cobra.Command {
 	var days int
 	var since string
-	var phase string
 	var parentRef string
 
 	cmd := &cobra.Command{
@@ -3432,20 +3417,15 @@ func changelogCmd() *cobra.Command {
 				}
 			}
 
-			// Filter by parent if specified (--parent or --phase)
+			// Filter by parent if specified
 			filterParent := parentRef
-			if filterParent == "" {
-				filterParent = phase
-			}
 			if filterParent != "" {
 				var filtered []models.Item
 				for _, item := range allItems {
 					// Check parent link (populated by API enrichment)
 					if strings.EqualFold(item.ParentLinkID, filterParent) ||
 						strings.EqualFold(item.ParentRef, filterParent) ||
-						strings.EqualFold(item.ParentTitle, filterParent) ||
-						strings.EqualFold(item.PhaseID, filterParent) ||
-						strings.EqualFold(item.PhaseRef, filterParent) {
+						strings.EqualFold(item.ParentTitle, filterParent) {
 						filtered = append(filtered, item)
 					}
 				}
@@ -3609,8 +3589,6 @@ func changelogCmd() *cobra.Command {
 	cmd.Flags().IntVar(&days, "days", 7, "show items completed in last N days")
 	cmd.Flags().StringVar(&since, "since", "", "only show items completed after this date (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&parentRef, "parent", "", "only show items under a specific parent (ref, slug, or title)")
-	cmd.Flags().StringVar(&phase, "phase", "", "only show items under a specific parent (deprecated alias for --parent)")
-	cmd.Flags().Lookup("phase").Hidden = true
 
 	return cmd
 }
@@ -3626,8 +3604,8 @@ func collectionDefaultIcon(slug string) string {
 		return "💡"
 	case "docs":
 		return "📄"
-	case "phases":
-		return "📋"
+	case "plans":
+		return "🗺️"
 	default:
 		return "•"
 	}
@@ -3828,7 +3806,7 @@ func completeCollectionNames(cmd *cobra.Command, args []string, toComplete strin
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	// Static list of common collection names (singular + plural)
-	names := []string{"task", "tasks", "idea", "ideas", "phase", "phases", "doc", "docs", "bug", "bugs"}
+	names := []string{"task", "tasks", "idea", "ideas", "plan", "plans", "doc", "docs", "bug", "bugs"}
 	// Try to fetch dynamic collections from API
 	cfg, err := config.Load()
 	if err == nil && cfg.IsConfigured() {
@@ -3905,7 +3883,7 @@ func normalizeCollectionSlug(input string) string {
 	aliases := map[string]string{
 		"task": "tasks", "t": "tasks",
 		"idea": "ideas", "i": "ideas",
-		"phase": "phases", "p": "phases",
+		"plan": "plans", "p": "plans", "phase": "plans", "phases": "plans",
 		"doc": "docs", "d": "docs",
 		"bug":        "bugs",
 		"convention": "conventions",

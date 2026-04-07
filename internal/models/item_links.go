@@ -13,7 +13,6 @@ const (
 	ItemLinkTypeSupersedes = "supersedes"
 	ItemLinkTypeImplements = "implements"
 	ItemLinkTypeParent    = "parent"
-	ItemLinkTypePhase     = "parent" // Deprecated alias — use ItemLinkTypeParent
 )
 
 var itemLinkTypeAliases = map[string]string{
@@ -27,7 +26,6 @@ var itemLinkTypeAliases = map[string]string{
 	"supersedes": ItemLinkTypeSupersedes,
 	"implements": ItemLinkTypeImplements,
 	"parent":     ItemLinkTypeParent,
-	"phase":      ItemLinkTypeParent, // backward compat
 }
 
 // NormalizeItemLinkType canonicalizes supported link types and returns an error

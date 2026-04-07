@@ -77,7 +77,7 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 					Key:     "trigger",
 					Label:   "When",
 					Type:    "select",
-					Options: []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-phase-start", "on-phase-complete", "on-plan"},
+					Options: []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-plan-start", "on-plan-complete", "on-plan"},
 				},
 				{
 					Key:     "scope",
@@ -153,7 +153,7 @@ func playbooksCollection(sortOrder int) DefaultCollection {
 var templates = []WorkspaceTemplate{
 	{
 		Name:        "startup",
-		Description: "Tasks, Ideas, Phases, Docs, Conventions, Playbooks",
+		Description: "Tasks, Ideas, Plans, Docs, Conventions, Playbooks",
 		Collections: Defaults(),
 	},
 	{
@@ -423,9 +423,9 @@ var templates = []WorkspaceTemplate{
 
 func demoSeedItems() []SeedItem {
 	return []SeedItem{
-		// Phase
+		// Plan
 		{
-			CollectionSlug: "phases",
+			CollectionSlug: "plans",
 			Title:          "MVP Launch",
 			Content: `# MVP Launch
 
@@ -529,7 +529,7 @@ Pad is a single Go binary with an embedded SvelteKit web UI and SQLite storage.
 
 ## Related
 
-See [[MVP Launch]] for the current phase and [[Write API documentation]] for the API docs effort.
+See [[MVP Launch]] for the current plan and [[Write API documentation]] for the API docs effort.
 `,
 			Fields: `{"status":"published","category":"architecture"}`,
 		},

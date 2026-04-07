@@ -30,16 +30,16 @@
 		onFilterChange(next);
 	}
 
-	let hasPhaseFilter = $derived(Object.keys(relationLabels).length > 0);
-	let activePhase = $derived(activeFilters.phase ?? '');
+	let hasParentFilter = $derived(Object.keys(relationLabels).length > 0);
+	let activeParent = $derived(activeFilters.parent ?? '');
 
-	function setPhaseFilter(e: Event) {
+	function setParentFilter(e: Event) {
 		const value = (e.target as HTMLSelectElement).value;
 		const next = { ...activeFilters };
 		if (value === '') {
-			delete next.phase;
+			delete next.parent;
 		} else {
-			next.phase = value;
+			next.parent = value;
 		}
 		onFilterChange(next);
 	}
@@ -72,9 +72,9 @@
 		</div>
 	{/if}
 
-	{#if hasPhaseFilter}
-		<select class="phase-filter" value={activePhase} onchange={setPhaseFilter}>
-			<option value="">All phases</option>
+	{#if hasParentFilter}
+		<select class="parent-filter" value={activeParent} onchange={setParentFilter}>
+			<option value="">All plans</option>
 			{#each Object.entries(relationLabels) as [id, label] (id)}
 				<option value={id}>{label}</option>
 			{/each}
@@ -132,7 +132,7 @@
 		background: var(--bg-hover);
 	}
 
-	.phase-filter {
+	.parent-filter {
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -142,7 +142,7 @@
 		cursor: pointer;
 		max-width: 180px;
 	}
-	.phase-filter:focus {
+	.parent-filter:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
