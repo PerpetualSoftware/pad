@@ -1,11 +1,16 @@
 -- Rename "Phases" collection to "Plans"
+-- Guard against slug collision: only rename if 'plans' doesn't already exist in the same workspace
 UPDATE collections
 SET name = 'Plans',
     slug = 'plans',
     icon = '🗺️',
     prefix = 'PLAN',
     description = 'Plan and track project plans and milestones'
-WHERE slug = 'phases';
+WHERE slug = 'phases'
+AND NOT EXISTS (
+    SELECT 1 FROM collections c2
+    WHERE c2.workspace_id = collections.workspace_id AND c2.slug = 'plans'
+);
 
 -- Update convention trigger options: on-phase-start → on-plan-start, on-phase-complete → on-plan-complete
 -- Update the conventions collection schema to use new trigger names
