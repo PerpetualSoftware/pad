@@ -1757,13 +1757,17 @@ Run with --help-collections to see available collections and their status values
 			if priority != "" {
 				fields["priority"] = priority
 			}
-			if phase != "" {
-				// Resolve phase slug to item ID
-				phaseItem, err := client.GetItem(ws, phase)
+			// --parent takes precedence; --phase is a backward-compat alias
+			parentRef := parentSlug
+			if parentRef == "" {
+				parentRef = phase
+			}
+			if parentRef != "" {
+				parentItem, err := client.GetItem(ws, parentRef)
 				if err != nil {
-					return fmt.Errorf("phase %q not found: %w", phase, err)
+					return fmt.Errorf("parent %q not found: %w", parentRef, err)
 				}
-				fields["phase"] = phaseItem.ID
+				fields["parent"] = parentItem.ID
 			}
 			if category != "" {
 				fields["category"] = category
@@ -1863,9 +1867,10 @@ Run with --help-collections to see available collections and their status values
 	cmd.Flags().StringVar(&status, "status", "", "status field value")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&phase, "phase", "", "phase relation (slug or ID)")
+	cmd.Flags().StringVar(&parentSlug, "parent", "", "parent item (ref, slug, or ID)")
+	cmd.Flags().StringVar(&phase, "phase", "", "parent item (deprecated alias for --parent)")
+	cmd.Flags().Lookup("phase").Hidden = true
 	cmd.Flags().StringVar(&category, "category", "", "category field value")
-	cmd.Flags().StringVar(&parentSlug, "parent", "", "parent item slug for nesting")
 	cmd.Flags().StringVar(&tags, "tags", "", "JSON array of tags")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
 
@@ -1895,6 +1900,7 @@ func listCmd() *cobra.Command {
 		priorityFilter string
 		assigneeFilter string
 		roleFilter     string
+		parentFilter   string
 		sortBy         string
 		groupBy        string
 		limitNum       int
@@ -1957,6 +1963,9 @@ Examples:
 			if roleFilter != "" {
 				params.Set("agent_role_id", roleFilter)
 			}
+			if parentFilter != "" {
+				params.Set("parent", parentFilter)
+			}
 			if sortBy != "" {
 				params.Set("sort", sortBy)
 			}
@@ -2009,6 +2018,7 @@ Examples:
 	cmd.Flags().StringVar(&priorityFilter, "priority", "", "filter by priority")
 	cmd.Flags().StringVar(&assigneeFilter, "assign", "", "filter by assigned user (name or email)")
 	cmd.Flags().StringVar(&roleFilter, "role", "", "filter by agent role (slug)")
+	cmd.Flags().StringVar(&parentFilter, "parent", "", "filter by parent item (ref, slug, or ID)")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
 	cmd.Flags().IntVar(&limitNum, "limit", 0, "max number of items to return")
@@ -2250,6 +2260,7 @@ func updateCmd() *cobra.Command {
 		assignee   string
 		roleFlag   string
 		phase      string
+		parentFlag string
 		category   string
 		tags       string
 		fieldFlags []string
@@ -2306,7 +2317,13 @@ Examples:
 			}
 
 			// Merge field changes with existing fields
-			hasFieldChanges := status != "" || priority != "" || assignee != "" || phase != "" || category != "" || len(fieldFlags) > 0
+			// --parent takes precedence; --phase is a backward-compat alias
+			parentRef := parentFlag
+			if parentRef == "" {
+				parentRef = phase
+			}
+
+			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0
 			if hasFieldChanges {
 				existingFields := make(map[string]interface{})
 				if item.Fields != "" && item.Fields != "{}" {
@@ -2319,13 +2336,12 @@ Examples:
 				if priority != "" {
 					existingFields["priority"] = priority
 				}
-				if phase != "" {
-					// Resolve phase slug to item ID
-					phaseItem, err := client.GetItem(ws, phase)
+				if parentRef != "" {
+					parentItem, err := client.GetItem(ws, parentRef)
 					if err != nil {
-						return fmt.Errorf("phase %q not found: %w", phase, err)
+						return fmt.Errorf("parent %q not found: %w", parentRef, err)
 					}
-					existingFields["phase"] = phaseItem.ID
+					existingFields["parent"] = parentItem.ID
 				}
 				if category != "" {
 					existingFields["category"] = category
@@ -2407,7 +2423,9 @@ Examples:
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&phase, "phase", "", "update phase relation")
+	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID)")
+	cmd.Flags().StringVar(&phase, "phase", "", "update parent item (deprecated alias for --parent)")
+	cmd.Flags().Lookup("phase").Hidden = true
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
@@ -3373,6 +3391,7 @@ func changelogCmd() *cobra.Command {
 	var days int
 	var since string
 	var phase string
+	var parentRef string
 
 	cmd := &cobra.Command{
 		Use:   "changelog",
@@ -3413,14 +3432,20 @@ func changelogCmd() *cobra.Command {
 				}
 			}
 
-			// Filter by phase if specified
-			if phase != "" {
+			// Filter by parent if specified (--parent or --phase)
+			filterParent := parentRef
+			if filterParent == "" {
+				filterParent = phase
+			}
+			if filterParent != "" {
 				var filtered []models.Item
 				for _, item := range allItems {
-					// Check phase link (populated by API enrichment)
-					if strings.EqualFold(item.PhaseID, phase) ||
-						strings.EqualFold(item.PhaseRef, phase) ||
-						strings.EqualFold(item.PhaseTitle, phase) {
+					// Check parent link (populated by API enrichment)
+					if strings.EqualFold(item.ParentLinkID, filterParent) ||
+						strings.EqualFold(item.ParentRef, filterParent) ||
+						strings.EqualFold(item.ParentTitle, filterParent) ||
+						strings.EqualFold(item.PhaseID, filterParent) ||
+						strings.EqualFold(item.PhaseRef, filterParent) {
 						filtered = append(filtered, item)
 					}
 				}
@@ -3460,8 +3485,8 @@ func changelogCmd() *cobra.Command {
 			if since != "" {
 				periodLabel = "since " + since
 			}
-			if phase != "" {
-				periodLabel += " (phase: " + phase + ")"
+			if filterParent != "" {
+				periodLabel += " (parent: " + filterParent + ")"
 			}
 
 			// JSON output
@@ -3583,7 +3608,9 @@ func changelogCmd() *cobra.Command {
 
 	cmd.Flags().IntVar(&days, "days", 7, "show items completed in last N days")
 	cmd.Flags().StringVar(&since, "since", "", "only show items completed after this date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&phase, "phase", "", "only show items from a specific phase")
+	cmd.Flags().StringVar(&parentRef, "parent", "", "only show items under a specific parent (ref, slug, or title)")
+	cmd.Flags().StringVar(&phase, "phase", "", "only show items under a specific parent (deprecated alias for --parent)")
+	cmd.Flags().Lookup("phase").Hidden = true
 
 	return cmd
 }

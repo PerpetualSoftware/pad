@@ -265,13 +265,21 @@ export const api = {
 				})
 			}),
 
-		/** Get tasks linked to a phase item */
-		tasks: (ws: string, slug: string) =>
-			request<Item[]>(`/workspaces/${ws}/items/${slug}/tasks`),
+		/** Get child items linked to a parent item */
+		children: (ws: string, slug: string) =>
+			request<Item[]>(`/workspaces/${ws}/items/${slug}/children`),
 
-		/** Get task progress for all phases in a workspace */
+		/** Get completion progress for an item's children */
+		progress: (ws: string, slug: string) =>
+			request<{total: number; done: number; percentage: number}>(`/workspaces/${ws}/items/${slug}/progress`),
+
+		/** @deprecated Use children() */
+		tasks: (ws: string, slug: string) =>
+			request<Item[]>(`/workspaces/${ws}/items/${slug}/children`),
+
+		/** @deprecated Use progress() per-item instead */
 		phasesProgress: (ws: string) =>
-			request<{phase_id: string; total: number; done: number}[]>(`/workspaces/${ws}/phases-progress`)
+			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/phases-progress`)
 	},
 
 	// ── Versions ──────────────────────────────────────────────────────────────

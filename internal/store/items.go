@@ -414,10 +414,14 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
-	// Phase filter via item_links
-	if params.PhaseID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?)"
-		args = append(args, params.PhaseID)
+	// Parent link filter via item_links
+	parentFilter := params.ParentLinkID
+	if parentFilter == "" {
+		parentFilter = params.PhaseID // deprecated alias
+	}
+	if parentFilter != "" {
+		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		args = append(args, parentFilter)
 	}
 
 	// Field filters — supports comma-separated values as OR
@@ -967,32 +971,38 @@ func (s *Store) DeleteItemLink(id string) error {
 
 // --- Phase Links ---
 
-// SetPhaseLink sets the phase for an item. Since an item can belong to at most
-// one phase, this deletes any existing phase link for the item first.
-func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*models.ItemLink, error) {
+// SetParentLink sets the parent for an item. Since an item can belong to at most
+// one parent, this deletes any existing parent link for the item first.
+// Includes cycle detection to prevent A→B→A or deeper ancestor loops.
+func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
+	// Cycle detection: walk the ancestor chain from parentID to ensure itemID is not an ancestor.
+	if err := s.checkParentCycle(itemID, parentID); err != nil {
+		return nil, err
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Delete existing phase link for this item (if any)
-	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`), itemID); err != nil {
-		return nil, fmt.Errorf("delete existing phase link: %w", err)
+	// Delete existing parent link for this item (if any)
+	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
+		return nil, fmt.Errorf("delete existing parent link: %w", err)
 	}
 
-	// Insert new phase link
+	// Insert new parent link
 	id := newID()
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
-		VALUES (?, ?, ?, ?, 'phase', ?, ?)
-	`), id, workspaceID, itemID, phaseID, createdBy, now); err != nil {
-		return nil, fmt.Errorf("insert phase link: %w", err)
+		VALUES (?, ?, ?, ?, 'parent', ?, ?)
+	`), id, workspaceID, itemID, parentID, createdBy, now); err != nil {
+		return nil, fmt.Errorf("insert parent link: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit phase link: %w", err)
+		return nil, fmt.Errorf("commit parent link: %w", err)
 	}
 
 	// Return the full link with enriched fields
@@ -1005,20 +1015,55 @@ func (s *Store) SetPhaseLink(workspaceID, itemID, phaseID, createdBy string) (*m
 			return &link, nil
 		}
 	}
-	return nil, fmt.Errorf("phase link created but not found")
+	return nil, fmt.Errorf("parent link created but not found")
 }
 
-// ClearPhaseLink removes the phase link for an item.
-func (s *Store) ClearPhaseLink(itemID string) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'phase'`), itemID)
-	if err != nil {
-		return fmt.Errorf("clear phase link: %w", err)
+// SetPhaseLink is a deprecated alias for SetParentLink.
+func (s *Store) SetPhaseLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
+	return s.SetParentLink(workspaceID, itemID, parentID, createdBy)
+}
+
+// checkParentCycle walks the ancestor chain from parentID and returns an error
+// if itemID is found (which would create a cycle).
+func (s *Store) checkParentCycle(itemID, parentID string) error {
+	visited := map[string]bool{itemID: true}
+	current := parentID
+	for {
+		if visited[current] {
+			return fmt.Errorf("cannot set parent: would create a cycle")
+		}
+		visited[current] = true
+
+		// Look up the parent of current
+		var targetID sql.NullString
+		err := s.db.QueryRow(s.q(`
+			SELECT target_id FROM item_links
+			WHERE source_id = ? AND link_type = 'parent'
+		`), current).Scan(&targetID)
+		if err != nil || !targetID.Valid {
+			break // no parent — no cycle
+		}
+		current = targetID.String
 	}
 	return nil
 }
 
-// GetPhaseForItem returns the phase link for an item, or nil if not in a phase.
-func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
+// ClearParentLink removes the parent link for an item.
+func (s *Store) ClearParentLink(itemID string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID)
+	if err != nil {
+		return fmt.Errorf("clear parent link: %w", err)
+	}
+	return nil
+}
+
+// ClearPhaseLink is a deprecated alias for ClearParentLink.
+func (s *Store) ClearPhaseLink(itemID string) error {
+	return s.ClearParentLink(itemID)
+}
+
+// GetParentForItem returns the parent link for an item, or nil if it has no parent.
+func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 	sStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
 	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
@@ -1031,10 +1076,10 @@ func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
 		JOIN items t ON t.id = l.target_id
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
-		WHERE l.source_id = ? AND l.link_type = 'phase'
+		WHERE l.source_id = ? AND l.link_type = 'parent'
 	`, sStatusExpr, tStatusExpr)), itemID)
 	if err != nil {
-		return nil, fmt.Errorf("get phase for item: %w", err)
+		return nil, fmt.Errorf("get parent for item: %w", err)
 	}
 	defer rows.Close()
 
@@ -1057,7 +1102,7 @@ func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
 		&sourceItemNumber, &targetItemNumber,
 		&sourceStatus, &targetStatus,
 	); err != nil {
-		return nil, fmt.Errorf("scan phase link: %w", err)
+		return nil, fmt.Errorf("scan parent link: %w", err)
 	}
 	link.CreatedAt = parseTime(createdAt)
 	if sourceItemNumber.Valid && sourcePrefix != "" {
@@ -1075,15 +1120,20 @@ func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
 	return &link, nil
 }
 
-// GetTaskPhaseMap returns a map of item ID -> phase item ID for all phase links
-// in a workspace. Used for efficient batch lookups (e.g., dashboard).
-func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
+// GetPhaseForItem is a deprecated alias for GetParentForItem.
+func (s *Store) GetPhaseForItem(itemID string) (*models.ItemLink, error) {
+	return s.GetParentForItem(itemID)
+}
+
+// GetParentMap returns a map of item ID -> parent item ID for all parent links
+// in a workspace. Used for efficient batch lookups (e.g., dashboard, list enrichment).
+func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT source_id, target_id FROM item_links
-		WHERE workspace_id = ? AND link_type = 'phase'
+		WHERE workspace_id = ? AND link_type = 'parent'
 	`), workspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("get task phase map: %w", err)
+		return nil, fmt.Errorf("get parent map: %w", err)
 	}
 	defer rows.Close()
 
@@ -1098,92 +1148,198 @@ func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
 	return m, rows.Err()
 }
 
-// --- Phase Progress ---
+// GetTaskPhaseMap is a deprecated alias for GetParentMap.
+func (s *Store) GetTaskPhaseMap(workspaceID string) (map[string]string, error) {
+	return s.GetParentMap(workspaceID)
+}
 
-// GetPhaseProgress counts total and done tasks linked to a phase via item_links.
-// "Done" means any terminal status as defined by the tasks collection's schema.
-func (s *Store) GetPhaseProgress(phaseItemID string) (total int, done int, err error) {
-	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
-	args := append(termArgs, phaseItemID)
+// --- Child Item Progress ---
+
+// GetItemProgress counts total and done child items linked to a parent via item_links.
+// "Done" means any terminal status as defined by the child items' collection schemas.
+// Unlike the old GetPhaseProgress, this is not filtered to a specific collection —
+// children from any collection count toward progress.
+func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err error) {
+	termPlaceholders, termArgs := s.getChildTerminalPlaceholders(parentItemID)
+	args := append(termArgs, parentItemID)
 	statusExpr := s.dialect.JSONExtractText("i.fields", "status")
 	err = s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT COUNT(*),
 		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items i
-		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?
-		WHERE c.slug = 'tasks'
-		  AND i.deleted_at IS NULL
+		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
+		WHERE i.deleted_at IS NULL
 	`, statusExpr, termPlaceholders)), args...).Scan(&total, &done)
 	if err != nil {
-		return 0, 0, fmt.Errorf("get phase progress: %w", err)
+		return 0, 0, fmt.Errorf("get item progress: %w", err)
 	}
 	return total, done, nil
 }
 
-// getTasksTerminalPlaceholders returns SQL placeholders and args for the
-// terminal statuses of the tasks collection. Falls back to defaults if the
-// tasks collection schema is not found.
-func (s *Store) getTasksTerminalPlaceholders() (string, []any) {
-	// Try to find the tasks collection schema in any workspace
-	var schemaJSON sql.NullString
-	_ = s.db.QueryRow(s.q(`SELECT schema FROM collections WHERE slug = 'tasks' AND deleted_at IS NULL LIMIT 1`)).Scan(&schemaJSON)
-	if schemaJSON.Valid {
+// GetPhaseProgress is a deprecated alias for GetItemProgress.
+func (s *Store) GetPhaseProgress(parentItemID string) (total int, done int, err error) {
+	return s.GetItemProgress(parentItemID)
+}
+
+// getChildTerminalPlaceholders returns SQL placeholders and args for the terminal
+// statuses of the collections that a parent item's children belong to.
+// It queries the actual child items' collection schemas rather than hardcoding 'tasks'.
+func (s *Store) getChildTerminalPlaceholders(parentItemID string) (string, []any) {
+	// Find distinct collection IDs of child items
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT c.schema
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
+		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
+	`), parentItemID)
+	if err != nil {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+	defer rows.Close()
+
+	// Collect terminal statuses from all child collections
+	terminalSet := make(map[string]bool)
+	found := false
+	for rows.Next() {
+		var schemaJSON string
+		if err := rows.Scan(&schemaJSON); err != nil {
+			continue
+		}
+		found = true
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(schemaJSON.String), &schema); err == nil {
-			return models.TerminalStatusPlaceholders(schema)
+		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+			continue
+		}
+		for _, ts := range models.TerminalStatusesFromSchema(schema) {
+			terminalSet[strings.ToLower(ts)] = true
 		}
 	}
-	return models.DefaultTerminalStatusPlaceholders()
+
+	if !found || len(terminalSet) == 0 {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+
+	placeholders := make([]string, 0, len(terminalSet))
+	args := make([]any, 0, len(terminalSet))
+	for ts := range terminalSet {
+		placeholders = append(placeholders, "?")
+		args = append(args, ts)
+	}
+	return strings.Join(placeholders, ","), args
 }
 
-// PhaseProgress holds task completion counts for a single phase.
-type PhaseProgress struct {
-	PhaseID string `json:"phase_id"`
-	Total   int    `json:"total"`
-	Done    int    `json:"done"`
+// getCollectionChildTerminalPlaceholders returns SQL placeholders and args for the
+// terminal statuses of all child collections linked to parents in the given collection.
+// This is the batch version of getChildTerminalPlaceholders — instead of querying for
+// a single parent, it gathers terminal statuses across all parent→child links in a
+// workspace/collection pair.
+func (s *Store) getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug string) (string, []any) {
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT c.schema
+		FROM items t
+		JOIN collections c ON c.id = t.collection_id
+		JOIN item_links il ON il.source_id = t.id AND il.link_type = 'parent'
+		JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL
+		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
+		WHERE p.workspace_id = ?
+		  AND t.deleted_at IS NULL
+		  AND c.deleted_at IS NULL
+	`), collectionSlug, workspaceID)
+	if err != nil {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+	defer rows.Close()
+
+	terminalSet := make(map[string]bool)
+	found := false
+	for rows.Next() {
+		var schemaJSON string
+		if err := rows.Scan(&schemaJSON); err != nil {
+			continue
+		}
+		found = true
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+			continue
+		}
+		for _, ts := range models.TerminalStatusesFromSchema(schema) {
+			terminalSet[strings.ToLower(ts)] = true
+		}
+	}
+
+	if !found || len(terminalSet) == 0 {
+		return models.DefaultTerminalStatusPlaceholders()
+	}
+
+	placeholders := make([]string, 0, len(terminalSet))
+	args := make([]any, 0, len(terminalSet))
+	for ts := range terminalSet {
+		placeholders = append(placeholders, "?")
+		args = append(args, ts)
+	}
+	return strings.Join(placeholders, ","), args
 }
 
-// GetAllPhasesProgress returns task completion counts for every non-deleted phase in a workspace.
-func (s *Store) GetAllPhasesProgress(workspaceID string) ([]PhaseProgress, error) {
-	termPlaceholders, termArgs := s.getTasksTerminalPlaceholders()
-	args := append(termArgs, workspaceID)
-	tStatusExpr2 := s.dialect.JSONExtractText("t.fields", "status")
+// ItemProgress holds child item completion counts for a single parent item.
+type ItemProgress struct {
+	ItemID string `json:"item_id"`
+	Total  int    `json:"total"`
+	Done   int    `json:"done"`
+}
+
+// PhaseProgress is a deprecated alias for ItemProgress.
+type PhaseProgress = ItemProgress
+
+// GetAllItemProgress returns child item completion counts for every non-deleted
+// item in the given collection within a workspace. This generalizes
+// GetAllPhasesProgress — any collection can be queried, not just phases.
+func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
+	termPlaceholders, termArgs := s.getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug)
+	args := append(termArgs, workspaceID, collectionSlug)
+	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT p.id,
 		       COUNT(t.id),
 		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
 		FROM items p
-		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = 'phases'
-		LEFT JOIN item_links il ON il.link_type = 'phase' AND il.target_id = p.id
+		JOIN collections pc ON pc.id = p.collection_id
+		LEFT JOIN item_links il ON il.link_type = 'parent' AND il.target_id = p.id
 		LEFT JOIN items t ON t.id = il.source_id
 		                  AND t.deleted_at IS NULL
-		LEFT JOIN collections tc ON tc.id = t.collection_id AND tc.slug = 'tasks'
 		WHERE p.workspace_id = ?
+		  AND pc.slug = ?
 		  AND p.deleted_at IS NULL
 		GROUP BY p.id
-	`, tStatusExpr2, termPlaceholders)), args...)
+	`, tStatusExpr, termPlaceholders)), args...)
 	if err != nil {
-		return nil, fmt.Errorf("get all phases progress: %w", err)
+		return nil, fmt.Errorf("get all item progress: %w", err)
 	}
 	defer rows.Close()
 
-	var result []PhaseProgress
+	var result []ItemProgress
 	for rows.Next() {
-		var pp PhaseProgress
-		if err := rows.Scan(&pp.PhaseID, &pp.Total, &pp.Done); err != nil {
-			return nil, fmt.Errorf("scan phase progress: %w", err)
+		var ip ItemProgress
+		if err := rows.Scan(&ip.ItemID, &ip.Total, &ip.Done); err != nil {
+			return nil, fmt.Errorf("scan item progress: %w", err)
 		}
-		result = append(result, pp)
+		result = append(result, ip)
 	}
 	if result == nil {
-		result = []PhaseProgress{}
+		result = []ItemProgress{}
 	}
 	return result, rows.Err()
 }
 
-// GetTasksForPhase returns all non-deleted tasks linked to the given phase via item_links.
-func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
+// GetAllPhasesProgress is a deprecated alias that calls GetAllItemProgress for the "phases" collection.
+func (s *Store) GetAllPhasesProgress(workspaceID string) ([]ItemProgress, error) {
+	return s.GetAllItemProgress(workspaceID, "phases")
+}
+
+// GetChildItems returns all non-deleted child items linked to the given parent
+// via item_links. Unlike the old GetTasksForPhase, this returns children from
+// any collection, not just tasks.
+func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -1194,19 +1350,68 @@ func (s *Store) GetTasksForPhase(phaseItemID string) ([]models.Item, error) {
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'phase' AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE c.slug = 'tasks'
-		  AND i.deleted_at IS NULL
+		WHERE i.deleted_at IS NULL
 		ORDER BY i.sort_order ASC, i.created_at ASC
-	`), phaseItemID)
+	`), parentItemID)
 	if err != nil {
-		return nil, fmt.Errorf("get tasks for phase: %w", err)
+		return nil, fmt.Errorf("get child items: %w", err)
 	}
 	defer rows.Close()
 
 	return scanItems(rows)
+}
+
+// PopulateHasChildren sets HasChildren=true on items that have at least one
+// child linked via parent link_type. Operates in-place on the slice.
+func (s *Store) PopulateHasChildren(items []models.Item) {
+	if len(items) == 0 {
+		return
+	}
+
+	// Build ID list and index
+	ids := make([]string, len(items))
+	idx := make(map[string]int, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+		idx[item.ID] = i
+	}
+
+	// Batch query: which of these IDs are targets of a parent link?
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT DISTINCT il.target_id FROM item_links il
+		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
+		WHERE il.link_type = 'parent' AND il.target_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return // best-effort; don't fail the whole request
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var targetID string
+		if err := rows.Scan(&targetID); err != nil {
+			continue
+		}
+		if i, ok := idx[targetID]; ok {
+			items[i].HasChildren = true
+		}
+	}
+}
+
+// GetTasksForPhase is a deprecated alias for GetChildItems.
+func (s *Store) GetTasksForPhase(parentItemID string) ([]models.Item, error) {
+	return s.GetChildItems(parentItemID)
 }
 
 // MoveItem moves an item to a different collection within the same workspace.

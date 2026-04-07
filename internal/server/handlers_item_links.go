@@ -94,12 +94,16 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase links enforce single-phase: an item can only belong to one phase.
-	// Use SetPhaseLink which handles the upsert automatically.
-	if input.LinkType == models.ItemLinkTypePhase {
+	// Parent links enforce single-parent: an item can only belong to one parent.
+	// Use SetParentLink which handles upsert and cycle detection.
+	if input.LinkType == models.ItemLinkTypeParent {
 		actor, _ := actorFromRequest(r)
-		link, err := s.store.SetPhaseLink(workspaceID, item.ID, target.ID, actor)
+		link, err := s.store.SetParentLink(workspaceID, item.ID, target.ID, actor)
 		if err != nil {
+			if strings.Contains(err.Error(), "cycle") {
+				writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
 			writeInternalError(w, err)
 			return
 		}

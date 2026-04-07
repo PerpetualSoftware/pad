@@ -135,10 +135,10 @@ func (s *Server) setupRouter() {
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.RequestID)
 	r.Use(StructuredLogger)
-	r.Use(chimiddleware.Recoverer)
 	if s.metrics != nil {
 		r.Use(MetricsMiddleware(s.metrics))
 	}
+	r.Use(chimiddleware.Recoverer)
 
 	// Prometheus scrape endpoint — no auth/CSRF/security headers
 	if s.metrics != nil {
@@ -295,7 +295,9 @@ func (s *Server) setupRouter() {
 					r.Get("/comments", s.handleListComments)
 					r.Post("/comments", s.handleCreateComment)
 					r.Get("/timeline", s.handleListItemTimeline)
-					r.Get("/tasks", s.handleGetItemTasks)
+					r.Get("/children", s.handleGetItemChildren)
+					r.Get("/progress", s.handleGetItemProgress)
+					r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
 				})
 
 				// Links (v2)

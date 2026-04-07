@@ -318,9 +318,16 @@ export interface Item {
 	collection_icon?: string;
 	collection_prefix?: string;
 	item_number?: number;
+	parent_link_id?: string;
+	parent_ref?: string;
+	parent_title?: string;
+	/** @deprecated Use parent_id */
 	phase_id?: string;
+	/** @deprecated Use parent_ref */
 	phase_ref?: string;
+	/** @deprecated Use parent_title */
 	phase_title?: string;
+	has_children?: boolean;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;

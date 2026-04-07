@@ -25,7 +25,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
-	if err := s.resolvePhaseFilter(workspaceID, &params); err != nil {
+	if err := s.resolveParentFilter(workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -37,7 +37,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithPhase(workspaceID, result)
+	s.enrichItemsWithParent(workspaceID, result)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -62,7 +62,12 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
-	if err := s.resolvePhaseFilter(workspaceID, &params); err != nil {
+
+	var collSchema models.CollectionSchema
+	if coll.Schema != "" {
+		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+	}
+	if err := s.resolveParentFilter(workspaceID, &params, collSchema); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -75,7 +80,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithPhase(workspaceID, result)
+	s.enrichItemsWithParent(workspaceID, result)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -128,23 +133,29 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Extract phase from fields — it's managed via item_links, not stored in fields JSON
-	var phaseValue string
-	if pv, ok := fieldMap["phase"]; ok && pv != nil {
-		if pvStr, ok := pv.(string); ok && pvStr != "" {
-			// Resolve slug/ref to UUID if needed
-			if !isUUID(pvStr) {
-				resolved, err := s.store.ResolveItem(workspaceID, pvStr)
-				if err != nil || resolved == nil {
-					writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("phase %q not found", pvStr))
-					return
-				}
-				phaseValue = resolved.ID
-			} else {
-				phaseValue = pvStr
-			}
+	// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
+	// Accepts both "parent" and "phase" (backward compat) as the field key.
+	// Skip this if the schema actually defines a field with that key.
+	var parentValue string
+	for _, key := range []string{"parent", "phase"} {
+		if schemaHasField(schema, key) {
+			continue
 		}
-		delete(fieldMap, "phase")
+		if pv, ok := fieldMap[key]; ok && pv != nil {
+			if pvStr, ok := pv.(string); ok && pvStr != "" {
+				if !isUUID(pvStr) {
+					resolved, err := s.store.ResolveItem(workspaceID, pvStr)
+					if err != nil || resolved == nil {
+						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+						return
+					}
+					parentValue = resolved.ID
+				} else {
+					parentValue = pvStr
+				}
+			}
+			delete(fieldMap, key)
+		}
 	}
 
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
@@ -170,11 +181,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create phase link if specified
-	if phaseValue != "" {
+	// Create parent link if specified
+	if parentValue != "" {
 		actor, _ := actorFromRequest(r)
-		if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but phase link failed: %v", err))
+		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err))
 			return
 		}
 	}
@@ -265,26 +276,33 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Extract phase from fields — it's managed via item_links, not stored in fields JSON
-		var phaseValue string
-		var phaseProvided bool
-		if pv, ok := fieldMap["phase"]; ok {
-			phaseProvided = true
-			if pv != nil {
-				if pvStr, ok := pv.(string); ok && pvStr != "" {
-					if !isUUID(pvStr) {
-						resolved, err := s.store.ResolveItem(workspaceID, pvStr)
-						if err != nil || resolved == nil {
-							writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("phase %q not found", pvStr))
-							return
+		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
+		// Accepts both "parent" and "phase" (backward compat) as the field key.
+		// Skip this if the schema actually defines a field with that key.
+		var parentValue string
+		var parentProvided bool
+		for _, key := range []string{"parent", "phase"} {
+			if schemaHasField(schema, key) {
+				continue
+			}
+			if pv, ok := fieldMap[key]; ok {
+				parentProvided = true
+				if pv != nil {
+					if pvStr, ok := pv.(string); ok && pvStr != "" {
+						if !isUUID(pvStr) {
+							resolved, err := s.store.ResolveItem(workspaceID, pvStr)
+							if err != nil || resolved == nil {
+								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+								return
+							}
+							parentValue = resolved.ID
+						} else {
+							parentValue = pvStr
 						}
-						phaseValue = resolved.ID
-					} else {
-						phaseValue = pvStr
 					}
 				}
+				delete(fieldMap, key)
 			}
-			delete(fieldMap, "phase")
 		}
 
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
@@ -303,18 +321,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		validated := string(validatedFields)
 		input.Fields = &validated
 
-		// Update phase link if phase was provided in the update
-		if phaseProvided {
-			if phaseValue != "" {
+		// Update parent link if parent was provided in the update
+		if parentProvided {
+			if parentValue != "" {
 				actor, _ := actorFromRequest(r)
-				if _, err := s.store.SetPhaseLink(workspaceID, item.ID, phaseValue, actor); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update phase link: %v", err))
+				if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
+					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
 					return
 				}
 			} else {
-				// Phase was explicitly set to empty/null — clear the link
-				if err := s.store.ClearPhaseLink(item.ID); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear phase link: %v", err))
+				// Parent was explicitly set to empty/null — clear the link
+				if err := s.store.ClearParentLink(item.ID); err != nil {
+					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
 					return
 				}
 			}
@@ -604,14 +622,15 @@ func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title,
 	})
 }
 
-// handlePhasesProgress returns task completion progress for all non-deleted phases.
+// handlePhasesProgress returns child item completion progress for all non-deleted phases.
+// This is a backward-compat endpoint; the general form is per-item via /items/{slug}/children.
 func (s *Server) handlePhasesProgress(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
-	progress, err := s.store.GetAllPhasesProgress(workspaceID)
+	progress, err := s.store.GetAllItemProgress(workspaceID, "phases")
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -619,8 +638,9 @@ func (s *Server) handlePhasesProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, progress)
 }
 
-// handleGetItemTasks returns tasks linked to a phase item via the phase relation field.
-func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
+// handleGetItemChildren returns all child items linked to a parent item.
+// This is the generalized version — children can come from any collection.
+func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -637,39 +657,95 @@ func (s *Server) handleGetItemTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, err := s.store.GetTasksForPhase(item.ID)
+	children, err := s.store.GetChildItems(item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if tasks == nil {
-		tasks = []models.Item{}
+	if children == nil {
+		children = []models.Item{}
 	}
-	s.enrichItemsWithPhase(workspaceID, tasks)
-	writeJSON(w, http.StatusOK, tasks)
+	s.enrichItemsWithParent(workspaceID, children)
+	s.store.PopulateHasChildren(children)
+	writeJSON(w, http.StatusOK, children)
 }
 
-// resolvePhaseFilter extracts a "phase" key from the field filters and converts
-// it to a PhaseID filter (which uses item_links instead of json_extract).
-func (s *Server) resolvePhaseFilter(workspaceID string, params *models.ItemListParams) error {
+// handleGetItemProgress returns completion progress for an item's children.
+// Response: {"total": N, "done": N, "percentage": N}
+func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	itemSlug := chi.URLParam(r, "itemSlug")
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+
+	total, done, err := s.store.GetItemProgress(item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	pct := 0
+	if total > 0 {
+		pct = (done * 100) / total
+	}
+
+	writeJSON(w, http.StatusOK, map[string]int{
+		"total":      total,
+		"done":       done,
+		"percentage": pct,
+	})
+}
+
+// resolveParentFilter extracts a "parent" (or legacy "phase") key from the field
+// filters and converts it to a ParentLinkID filter (which uses item_links instead of json_extract).
+// An optional schema can be passed; if the schema defines a field with the key,
+// that key is left as a normal field filter instead of being treated as a parent link.
+func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemListParams, schemas ...models.CollectionSchema) error {
 	if params.Fields == nil {
 		return nil
 	}
-	phaseVal, ok := params.Fields["phase"]
-	if !ok || phaseVal == "" {
+
+	// Accept both "parent" and "phase" (backward compat)
+	// but skip if the schema defines a real field with that key
+	var schema *models.CollectionSchema
+	if len(schemas) > 0 {
+		schema = &schemas[0]
+	}
+	var val string
+	for _, key := range []string{"parent", "phase"} {
+		if schema != nil && schemaHasField(*schema, key) {
+			continue
+		}
+		if v, ok := params.Fields[key]; ok && v != "" {
+			val = v
+			delete(params.Fields, key)
+			break
+		}
+	}
+	if val == "" {
 		return nil
 	}
-	delete(params.Fields, "phase")
 
 	// Resolve slug/ref to UUID
-	if !isUUID(phaseVal) {
-		resolved, err := s.store.ResolveItem(workspaceID, phaseVal)
+	if !isUUID(val) {
+		resolved, err := s.store.ResolveItem(workspaceID, val)
 		if err != nil || resolved == nil {
-			return fmt.Errorf("phase %q not found", phaseVal)
+			return fmt.Errorf("parent %q not found", val)
 		}
-		params.PhaseID = resolved.ID
+		params.ParentLinkID = resolved.ID
 	} else {
-		params.PhaseID = phaseVal
+		params.ParentLinkID = val
 	}
 	return nil
 }
@@ -813,6 +889,16 @@ func (s *Server) resolveRelationFilterValue(workspaceID, key, rawValue string) (
 }
 
 // isUUID checks if a string looks like a UUID (8-4-4-4-12 hex).
+// schemaHasField returns true if the collection schema defines a field with the given key.
+func schemaHasField(schema models.CollectionSchema, key string) bool {
+	for _, f := range schema.Fields {
+		if f.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func isUUID(s string) bool {
 	if len(s) != 36 {
 		return false

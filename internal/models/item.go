@@ -52,10 +52,19 @@ type Item struct {
 	CollectionIcon      string                   `json:"collection_icon,omitempty"`
 	CollectionPrefix    string                   `json:"collection_prefix,omitempty"`
 
-	// Phase link (populated by enrichItemForResponse)
+	// Parent link (populated by enrichItemForResponse / enrichItemsWithParent)
+	ParentLinkID string `json:"parent_link_id,omitempty"`
+	ParentRef    string `json:"parent_ref,omitempty"`
+	ParentTitle  string `json:"parent_title,omitempty"`
+
+	// Deprecated aliases — kept for API backward compatibility
 	PhaseID    string `json:"phase_id,omitempty"`
 	PhaseRef   string `json:"phase_ref,omitempty"`
 	PhaseTitle string `json:"phase_title,omitempty"`
+
+	// HasChildren is true if this item has child items linked to it.
+	// Populated by enrichment, not stored in the DB.
+	HasChildren bool `json:"has_children,omitempty"`
 
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
@@ -510,7 +519,8 @@ type ItemListParams struct {
 	Tag             string
 	AssignedUserID  string // filter by assigned user
 	AgentRoleID     string // filter by agent role (ID or slug)
-	PhaseID         string // filter by phase link (item ID of the phase)
+	ParentLinkID    string // filter by parent link (item ID of the parent)
+	PhaseID         string // deprecated alias for ParentLinkID
 	IncludeArchived bool
 	Limit           int
 	Offset          int

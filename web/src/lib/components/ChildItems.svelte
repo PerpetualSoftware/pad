@@ -8,48 +8,65 @@
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
-	import PhaseChart from './PhaseChart.svelte';
+	import ChildChart from './ChildChart.svelte';
+	import NestedChildren from './NestedChildren.svelte';
 
 	interface Props {
 		wsSlug: string;
 		itemSlug: string;
 		itemId: string;
-		phaseFields?: Record<string, any>;
+		parentFields?: Record<string, any>;
 		terminalStatuses?: string[];
-		onTasksChange?: (tasks: Item[]) => void;
+		onChildrenChange?: (children: Item[]) => void;
 	}
 
-	let { wsSlug, itemSlug, itemId, phaseFields, terminalStatuses, onTasksChange }: Props = $props();
+	let { wsSlug, itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
-	let tasks = $state<Item[]>([]);
+	let children = $state<Item[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 	let unsubscribeSSE: (() => void) | null = null;
 	let unsubscribeVisibility: (() => void) | null = null;
 
+	let expandedIds = $state<Set<string>>(new Set());
+
+	function toggleExpand(child: Item) {
+		const next = new Set(expandedIds);
+		if (next.has(child.id)) {
+			next.delete(child.id);
+		} else {
+			next.add(child.id);
+		}
+		expandedIds = next;
+	}
+
 	const statusOrder: string[] = ['in_progress', 'open', 'blocked', 'done'];
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
 
-	let doneCount = $derived(tasks.filter((t) => terminal.includes(parseFields(t).status)).length);
-	let totalCount = $derived(tasks.length);
+	let doneCount = $derived(children.filter((t) => terminal.includes(parseFields(t).status)).length);
+	let totalCount = $derived(children.length);
 	let percentage = $derived(totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0);
+
+	/** Set of child item IDs — exposed for deduplication by the parent page */
+	export function getChildIds(): Set<string> {
+		return new Set(children.map(c => c.id));
+	}
 
 	let groups = $derived.by(() => {
 		const map = new SvelteMap<string, Item[]>();
-		for (const task of tasks) {
-			const status = parseFields(task).status ?? 'open';
+		for (const child of children) {
+			const status = parseFields(child).status ?? 'open';
 			if (!map.has(status)) map.set(status, []);
-			map.get(status)!.push(task);
+			map.get(status)!.push(child);
 		}
 		const sorted: [string, Item[]][] = [];
 		for (const s of statusOrder) {
 			if (map.has(s)) sorted.push([s, map.get(s)!]);
 		}
-		// Include any statuses not in the predefined order
 		for (const [s, items] of map) {
 			if (!statusOrder.includes(s)) sorted.push([s, items]);
 		}
@@ -60,13 +77,12 @@
 	let isDragging = $state(false);
 	let groupData: Record<string, Item[]> = $state({});
 
-	/** Sync groupData from derived groups, but only when not actively dragging */
 	$effect(() => {
 		const g = groups;
 		if (!isDragging) {
 			const data: Record<string, Item[]> = {};
-			for (const [status, statusTasks] of g) {
-				data[status] = [...statusTasks];
+			for (const [status, statusChildren] of g) {
+				data[status] = [...statusChildren];
 			}
 			groupData = data;
 		}
@@ -90,7 +106,6 @@
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ id: item.id, sort_order: index }));
 
-		// Persist sequentially (SQLite)
 		try {
 			for (const { id, sort_order } of updates) {
 				await api.items.update(wsSlug, id, { sort_order });
@@ -102,15 +117,15 @@
 
 	// ── Data loading ─────────────────────────────────────────────────────────
 
-	async function loadTasks() {
+	async function loadChildren() {
 		loading = true;
 		error = '';
 		try {
-			tasks = await api.items.tasks(wsSlug, itemSlug);
-			onTasksChange?.(tasks);
+			children = await api.items.children(wsSlug, itemSlug);
+			onChildrenChange?.(children);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load tasks';
-			onTasksChange?.([]);
+			error = err instanceof Error ? err.message : 'Failed to load children';
+			onChildrenChange?.([]);
 		} finally {
 			loading = false;
 		}
@@ -119,13 +134,13 @@
 	$effect(() => {
 		void wsSlug;
 		void itemSlug;
-		loadTasks();
+		loadChildren();
 	});
 
 	onMount(() => {
 		unsubscribeVisibility = visibility.onTabResume(() => {
 			if (!wsSlug || !itemSlug) return;
-			loadTasks();
+			loadChildren();
 		});
 	});
 
@@ -136,9 +151,8 @@
 		if (!wsSlug || !itemSlug) return;
 
 		unsubscribeSSE = sseService.onItemEvent((event) => {
-			if (event.collection !== 'tasks') return;
 			if (!['item_created', 'item_updated', 'item_archived', 'item_restored'].includes(event.type)) return;
-			loadTasks();
+			loadChildren();
 		});
 	});
 
@@ -152,79 +166,88 @@
 	}
 </script>
 
-<div class="phase-tasks">
+{#if loading || children.length > 0}
+<div class="child-items">
 	<div class="section-header">
-		<h3>Tasks</h3>
-		<span class="task-count">{doneCount}/{totalCount} done</span>
+		<h3>Children</h3>
+		<span class="child-count">{doneCount}/{totalCount} done</span>
 	</div>
 
 	<div class="progress-bar">
 		<div class="progress-fill" style:width="{percentage}%"></div>
 	</div>
 
-	{#if !loading && tasks.length > 0 && phaseFields?.start_date}
-		<PhaseChart {tasks} startDate={phaseFields.start_date} endDate={phaseFields.end_date} {terminalStatuses} />
+	{#if !loading && children.length >= 2}
+		<ChildChart {children} startDate={parentFields?.start_date} endDate={parentFields?.end_date} {terminalStatuses} />
 	{/if}
 
 	{#if loading}
 		<div class="loading">
 			<span class="spinner"></span>
-			<span>Loading tasks...</span>
+			<span>Loading children...</span>
 		</div>
 	{:else if error}
 		<div class="error-msg">{error}</div>
 	{:else}
-		{#each groups as [status, _statusTasks] (status)}
-			<div class="task-group">
+		{#each groups as [status, _statusChildren] (status)}
+			<div class="child-group">
 				<div class="group-label">{formatLabel(status)} ({(groupData[status] ?? []).length})</div>
 				<div
-					class="task-list"
+					class="child-list"
 					use:dndzone={{
 						items: groupData[status] ?? [],
 						flipDurationMs,
-						type: 'phase-task',
+						type: 'child-item',
 						dropTargetClasses: ['drop-target'],
 						delayTouchStart: touchDragDelayMs
 					}}
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}
 				>
-					{#each groupData[status] ?? [] as task (task.id)}
-						{@const fields = parseFields(task)}
+					{#each groupData[status] ?? [] as child (child.id)}
+						{@const fields = parseFields(child)}
 						{@const isDone = terminal.includes(fields.status)}
-						<a href="/{wsSlug}/tasks/{task.slug}" class="task-row">
-							<span class="task-ref">{formatItemRef(task) ?? ''}</span>
-							<span class="task-title" class:done={isDone}>{task.title}</span>
-							{#if fields.priority}
-								<span
-									class="task-priority"
-									class:high={fields.priority === 'high'}
-									class:critical={fields.priority === 'critical'}
-								>
-									{fields.priority}
-								</span>
+						{@const isExpanded = expandedIds.has(child.id)}
+						{@const canExpand = child.has_children}
+						<div class="child-item-wrapper">
+							<div class="child-row-container">
+								{#if canExpand}
+									<button class="expand-toggle" onclick={(e) => { e.preventDefault(); toggleExpand(child); }} title={isExpanded ? 'Collapse' : 'Expand'}>
+										<span class="expand-icon" class:expanded={isExpanded}>▸</span>
+									</button>
+								{/if}
+								<a href="/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" class:has-toggle={canExpand}>
+									<span class="child-ref">{formatItemRef(child) ?? ''}</span>
+									<span class="child-title" class:done={isDone}>{child.title}</span>
+									{#if fields.priority}
+										<span
+											class="child-priority"
+											class:high={fields.priority === 'high'}
+											class:critical={fields.priority === 'critical'}
+										>
+											{fields.priority}
+										</span>
+									{/if}
+								</a>
+							</div>
+							{#if canExpand && isExpanded}
+								<NestedChildren {wsSlug} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} />
 							{/if}
-						</a>
+						</div>
 					{/each}
 				</div>
 			</div>
 		{/each}
 
-		{#if tasks.length === 0}
-			<div class="empty">No tasks linked to this phase yet</div>
-		{/if}
 	{/if}
 </div>
+{/if}
 
 <style>
-	/* ── Container ──────────────────────────────────────────────────────────── */
-
-	.phase-tasks {
+	.child-items {
 		padding: var(--space-4) 0;
 		border-top: 1px solid var(--border);
 	}
-
-	/* ── Header ─────────────────────────────────────────────────────────────── */
 
 	.section-header {
 		display: flex;
@@ -240,13 +263,11 @@
 		color: var(--text-primary);
 	}
 
-	.task-count {
+	.child-count {
 		font-size: 0.8em;
 		color: var(--text-muted);
 		font-weight: 400;
 	}
-
-	/* ── Progress bar ──────────────────────────────────────────────────────── */
 
 	.progress-bar {
 		height: 6px;
@@ -263,9 +284,7 @@
 		transition: width 0.3s ease;
 	}
 
-	/* ── Task groups ───────────────────────────────────────────────────────── */
-
-	.task-group {
+	.child-group {
 		margin-top: var(--space-3);
 	}
 
@@ -278,9 +297,42 @@
 		margin-bottom: var(--space-2);
 	}
 
-	/* ── Task list (dnd container) ─────────────────────────────────────────── */
+	.child-item-wrapper {
+		/* container for row + nested children */
+	}
 
-	.task-list {
+	.child-row-container {
+		display: flex;
+		align-items: center;
+	}
+
+	.expand-toggle {
+		background: none;
+		border: none;
+		cursor: pointer;
+		padding: 0 2px;
+		color: var(--text-muted);
+		font-size: 0.8em;
+		line-height: 1;
+		flex-shrink: 0;
+		width: 20px;
+		text-align: center;
+	}
+
+	.expand-toggle:hover {
+		color: var(--text-primary);
+	}
+
+	.expand-icon {
+		display: inline-block;
+		transition: transform 0.15s ease;
+	}
+
+	.expand-icon.expanded {
+		transform: rotate(90deg);
+	}
+
+	.child-list {
 		min-height: 4px;
 	}
 
@@ -290,9 +342,7 @@
 		border-radius: var(--radius-sm);
 	}
 
-	/* ── Task row ──────────────────────────────────────────────────────────── */
-
-	.task-row {
+	.child-row {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
@@ -307,19 +357,19 @@
 		user-select: none;
 	}
 
-	.task-row:hover {
+	.child-row:hover {
 		background: var(--bg-hover);
 	}
 
-	.task-row:active {
+	.child-row:active {
 		cursor: grabbing;
 	}
 
-	.task-row:last-child {
+	.child-row:last-child {
 		border-bottom: none;
 	}
 
-	.task-ref {
+	.child-ref {
 		font-family: var(--font-mono);
 		font-size: 0.78em;
 		color: var(--text-muted);
@@ -327,7 +377,7 @@
 		flex-shrink: 0;
 	}
 
-	.task-title {
+	.child-title {
 		flex: 1;
 		font-size: 0.88em;
 		color: var(--text-primary);
@@ -337,14 +387,12 @@
 		white-space: nowrap;
 	}
 
-	.task-title.done {
+	.child-title.done {
 		text-decoration: line-through;
 		color: var(--text-muted);
 	}
 
-	/* ── Priority badge ────────────────────────────────────────────────────── */
-
-	.task-priority {
+	.child-priority {
 		font-size: 0.72em;
 		padding: 1px 6px;
 		border-radius: 3px;
@@ -355,17 +403,15 @@
 		flex-shrink: 0;
 	}
 
-	.task-priority.high {
+	.child-priority.high {
 		color: var(--accent-amber);
 		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
 	}
 
-	.task-priority.critical {
+	.child-priority.critical {
 		color: var(--accent-orange);
 		background: color-mix(in srgb, var(--accent-orange) 15%, transparent);
 	}
-
-	/* ── Loading ────────────────────────────────────────────────────────────── */
 
 	.loading {
 		display: flex;
@@ -392,8 +438,6 @@
 		}
 	}
 
-	/* ── Error ──────────────────────────────────────────────────────────────── */
-
 	.error-msg {
 		padding: var(--space-2) var(--space-3);
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
@@ -402,12 +446,4 @@
 		font-size: 0.85em;
 	}
 
-	/* ── Empty state ───────────────────────────────────────────────────────── */
-
-	.empty {
-		text-align: center;
-		color: var(--text-muted);
-		font-size: 0.9em;
-		padding: var(--space-4) 0;
-	}
 </style>

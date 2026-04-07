@@ -12,7 +12,8 @@ const (
 	ItemLinkTypeSplitFrom  = "split_from"
 	ItemLinkTypeSupersedes = "supersedes"
 	ItemLinkTypeImplements = "implements"
-	ItemLinkTypePhase     = "phase"
+	ItemLinkTypeParent    = "parent"
+	ItemLinkTypePhase     = "parent" // Deprecated alias — use ItemLinkTypeParent
 )
 
 var itemLinkTypeAliases = map[string]string{
@@ -25,7 +26,8 @@ var itemLinkTypeAliases = map[string]string{
 	"split-from": ItemLinkTypeSplitFrom,
 	"supersedes": ItemLinkTypeSupersedes,
 	"implements": ItemLinkTypeImplements,
-	"phase":      ItemLinkTypePhase,
+	"parent":     ItemLinkTypeParent,
+	"phase":      ItemLinkTypeParent, // backward compat
 }
 
 // NormalizeItemLinkType canonicalizes supported link types and returns an error

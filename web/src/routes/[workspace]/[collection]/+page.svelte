@@ -145,7 +145,7 @@
 					const progress = await api.items.phasesProgress(wsSlug).catch(() => []);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
-						map[p.phase_id] = { total: p.total, done: p.done };
+						map[p.item_id] = { total: p.total, done: p.done };
 					}
 					itemProgress = map;
 				} else {
@@ -190,7 +190,7 @@
 					const progress = await api.items.phasesProgress(ws);
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
-						map[p.phase_id] = { total: p.total, done: p.done };
+						map[p.item_id] = { total: p.total, done: p.done };
 					}
 					itemProgress = map;
 					progressLabel = 'tasks';
@@ -417,8 +417,8 @@
 				source: 'web'
 			});
 			goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
-		} catch {
-			toastStore.show('Failed to create item', 'error');
+		} catch (err: any) {
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		} finally {
 			creatingNew = false;
 		}
@@ -444,8 +444,8 @@
 			items = [...items, item];
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
-		} catch {
-			toastStore.show('Failed to create item', 'error');
+		} catch (err: any) {
+			toastStore.show(err?.message || 'Failed to create item', 'error');
 		} finally {
 			creatingNew = false;
 		}
