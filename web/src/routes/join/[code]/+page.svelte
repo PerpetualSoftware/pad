@@ -6,7 +6,7 @@
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
 	let code = $derived(page.params.code ?? '');
-	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup'>('loading');
+	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
 	let errorMsg = $state('');
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 
@@ -18,6 +18,8 @@
 	let confirmPassword = $state('');
 	let formError = $state('');
 	let submitting = $state(false);
+	let challengeToken = $state('');
+	let totpCode = $state('');
 
 	onMount(async () => {
 		try {
@@ -72,7 +74,14 @@
 			} else {
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
 				if (!password) { formError = 'Password is required'; submitting = false; return; }
-				await api.auth.login(email.trim(), password);
+				const response = await api.auth.login(email.trim(), password);
+
+				if (response.requires_2fa && response.challenge_token) {
+					challengeToken = response.challenge_token;
+					status = '2fa';
+					submitting = false;
+					return;
+				}
 			}
 			// Logged in via login — now accept the invitation
 			await acceptInvitation();
@@ -82,8 +91,49 @@
 		}
 	}
 
+	async function handleVerify2FA() {
+		formError = '';
+		const code = totpCode.trim();
+
+		if (!code) {
+			formError = 'Please enter your authentication code.';
+			return;
+		}
+
+		submitting = true;
+		try {
+			const isTotp = /^\d{6}$/.test(code);
+
+			if (isTotp) {
+				await api.auth.verify2FA(challengeToken, code, undefined);
+			} else {
+				await api.auth.verify2FA(challengeToken, undefined, code);
+			}
+
+			// 2FA verified — now accept the invitation
+			await acceptInvitation();
+		} catch (err: unknown) {
+			formError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
+			submitting = false;
+		}
+	}
+
+	function handleBack2FA() {
+		status = 'login';
+		challengeToken = '';
+		totpCode = '';
+		formError = '';
+		submitting = false;
+	}
+
 	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') handleSubmit();
+		if (event.key === 'Enter') {
+			if (status === '2fa') {
+				handleVerify2FA();
+			} else {
+				handleSubmit();
+			}
+		}
 	}
 </script>
 
@@ -105,6 +155,38 @@
 		{:else if status === 'error'}
 			<p class="subtitle error-text">{errorMsg}</p>
 			<a href="/login" class="link">Go to login</a>
+		{:else if status === '2fa'}
+			<p class="subtitle">Two-factor authentication</p>
+
+			<div class="form">
+				<p class="hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+
+				<input
+					type="text"
+					placeholder="Authentication code"
+					bind:value={totpCode}
+					onkeydown={handleKeydown}
+					disabled={submitting}
+					autocomplete="one-time-code"
+					inputmode="numeric"
+				/>
+
+				{#if formError}
+					<p class="error">{formError}</p>
+				{/if}
+
+				<button onclick={handleVerify2FA} disabled={submitting}>
+					{#if submitting}
+						Verifying...
+					{:else}
+						Verify & join
+					{/if}
+				</button>
+
+				<button class="back-button" onclick={handleBack2FA} disabled={submitting} type="button">
+					Back to sign in
+				</button>
+			</div>
 		{:else}
 			<p class="subtitle">You've been invited to a workspace</p>
 			<p class="hint">{mode === 'register' ? 'Create an account' : 'Sign in'} to accept</p>
@@ -209,6 +291,7 @@
 		color: var(--text-muted);
 		font-size: 0.85rem;
 		margin-bottom: var(--space-6);
+		line-height: 1.4;
 	}
 
 	.error-text {
@@ -258,6 +341,18 @@
 	}
 	button:hover:not(:disabled) { opacity: 0.9; }
 	button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+	.back-button {
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 400;
+		padding: var(--space-2) var(--space-4);
+	}
+	.back-button:hover:not(:disabled) {
+		color: var(--text-primary);
+		opacity: 1;
+	}
 
 	.switch-mode {
 		margin-top: var(--space-6);

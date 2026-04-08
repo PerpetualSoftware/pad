@@ -194,9 +194,9 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 // TOCTOU races (e.g., a concurrent setup call overwriting the secret).
 func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) error {
 	result, err := s.db.Exec(s.q(
-		`UPDATE users SET totp_enabled = 1, recovery_codes = ?, updated_at = ?
+		`UPDATE users SET totp_enabled = ?, recovery_codes = ?, updated_at = ?
 		 WHERE id = ? AND totp_secret = ?`),
-		hashedRecoveryCodes, now(), userID, expectedSecret)
+		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, expectedSecret)
 	if err != nil {
 		return fmt.Errorf("enable totp: %w", err)
 	}
@@ -209,8 +209,8 @@ func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) e
 
 // DisableTOTP disables 2FA and clears the secret and recovery codes.
 func (s *Store) DisableTOTP(userID string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = 0, totp_secret = '', recovery_codes = '', updated_at = ? WHERE id = ?`),
-		now(), userID)
+	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = ?, totp_secret = '', recovery_codes = '', updated_at = ? WHERE id = ?`),
+		s.dialect.BoolToInt(false), now(), userID)
 	if err != nil {
 		return fmt.Errorf("disable totp: %w", err)
 	}
@@ -260,10 +260,18 @@ func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
 		return false, nil
 	}
 
-	_, err = tx.Exec(s.q(`UPDATE users SET recovery_codes = ?, updated_at = ? WHERE id = ?`),
-		strings.Join(remaining, "\n"), now(), userID)
+	// Use optimistic locking: include the original recovery_codes in the WHERE
+	// clause so a concurrent transaction that already consumed a code will cause
+	// this UPDATE to match 0 rows, preventing double-spend.
+	result, err := tx.Exec(s.q(`UPDATE users SET recovery_codes = ?, updated_at = ? WHERE id = ? AND recovery_codes = ?`),
+		strings.Join(remaining, "\n"), now(), userID, recoveryCodes)
 	if err != nil {
 		return false, fmt.Errorf("consume recovery code: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		// Another request consumed or modified the codes concurrently
+		return false, nil
 	}
 	return true, tx.Commit()
 }

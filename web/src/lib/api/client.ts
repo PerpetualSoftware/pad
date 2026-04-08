@@ -107,6 +107,13 @@ export interface AuthSession {
 	user?: { id: string; email: string; name: string; role: string };
 }
 
+export interface LoginResponse {
+	user?: { id: string; email: string; name: string; role: string };
+	token?: string;
+	requires_2fa?: boolean;
+	challenge_token?: string;
+}
+
 export const api = {
 	// ── Health / Version ──────────────────────────────────────────────────────
 
@@ -503,9 +510,14 @@ export const api = {
 	auth: {
 		session: (): Promise<AuthSession> => fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
 		login: (email: string, password: string) =>
-			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/login', {
+			request<LoginResponse>('/auth/login', {
 				method: 'POST',
 				body: JSON.stringify({ email, password })
+			}),
+		verify2FA: (challengeToken: string, code?: string, recoveryCode?: string) =>
+			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/2fa/login-verify', {
+				method: 'POST',
+				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
 		register: (email: string, name: string, password: string, invitation_code?: string) =>
 			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/register', {
