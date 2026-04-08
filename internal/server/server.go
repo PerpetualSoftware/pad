@@ -76,7 +76,9 @@ func (s *Server) Init2FASecret() error {
 		return nil
 	}
 
-	// First run — generate and persist a new secret
+	// First run — generate and persist a new secret.
+	// Multiple instances may race here on a fresh database; after persisting,
+	// re-read the winning value so all instances converge on the same key.
 	secret, err := generateTwoFASecret()
 	if err != nil {
 		return err
@@ -85,8 +87,19 @@ func (s *Server) Init2FASecret() error {
 	if err := s.store.SetPlatformSetting(settingKey, encoded); err != nil {
 		return fmt.Errorf("persist 2FA secret: %w", err)
 	}
-	s.twoFAChallengeSecret = secret
-	slog.Info("generated and persisted 2FA challenge signing key")
+
+	// Re-read to pick up whichever instance won the race (upsert may have
+	// been overwritten by a concurrent instance between our check and write).
+	final, err := s.store.GetPlatformSetting(settingKey)
+	if err != nil {
+		return fmt.Errorf("re-read 2FA secret: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(final)
+	if err != nil {
+		return fmt.Errorf("decode 2FA secret after re-read: %w", err)
+	}
+	s.twoFAChallengeSecret = decoded
+	slog.Info("initialized 2FA challenge signing key")
 	return nil
 }
 

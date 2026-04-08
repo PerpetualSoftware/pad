@@ -26,6 +26,11 @@ const (
 // for the user to scan with their authenticator app. The secret is stored
 // but 2FA is not enabled until verified via /auth/2fa/verify.
 func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "2FA management requires an interactive session, not an API token")
+		return
+	}
+
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -63,6 +68,11 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 // enables 2FA if valid. The secret must match the one stored in the database
 // (set during setup) to prevent TOCTOU races. Returns recovery codes.
 func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "2FA management requires an interactive session, not an API token")
+		return
+	}
+
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -126,6 +136,11 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 // handleTOTPDisable disables 2FA for the current user. Requires the
 // current password for verification.
 func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "2FA management requires an interactive session, not an API token")
+		return
+	}
+
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")

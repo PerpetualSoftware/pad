@@ -22,6 +22,9 @@ const (
 	ctxCurrentUser contextKey = "current_user"
 	// ctxWorkspaceRole is set by RequireWorkspaceAccess with the user's role.
 	ctxWorkspaceRole contextKey = "workspace_role"
+	// ctxIsAPIToken is set to true when the request is authenticated via an API token
+	// (as opposed to a session cookie or CLI session token).
+	ctxIsAPIToken contextKey = "is_api_token"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
@@ -96,7 +99,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		// Add near-expiry warning headers
 		setTokenExpiryWarning(w, apiToken)
 
-		ctx := r.Context()
+		ctx := context.WithValue(r.Context(), ctxIsAPIToken, true)
 
 		// Resolve user from token's user_id (new user-owned tokens)
 		if apiToken.UserID != "" {
@@ -222,6 +225,14 @@ func tokenWorkspaceID(r *http.Request) string {
 func currentUser(r *http.Request) *models.User {
 	u, _ := r.Context().Value(ctxCurrentUser).(*models.User)
 	return u
+}
+
+// isAPITokenAuth returns true if the request was authenticated via an API token
+// (not a session cookie or CLI session). Use this to gate sensitive operations
+// like 2FA enrollment that should require an interactive session.
+func isAPITokenAuth(r *http.Request) bool {
+	v, _ := r.Context().Value(ctxIsAPIToken).(bool)
+	return v
 }
 
 // currentUserID returns the authenticated user's ID, or empty string.
