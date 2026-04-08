@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"bytes"
 	"fmt"
@@ -42,8 +43,9 @@ type Server struct {
 	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
 	version            string               // release version (e.g. "dev", "1.2.3")
-	commit        string               // git commit hash
-	buildTime     string               // build timestamp
+	commit              string               // git commit hash
+	buildTime           string               // build timestamp
+	twoFAChallengeSecret []byte              // HMAC key for 2FA challenge tokens
 }
 
 func New(s *store.Store) *Server {
@@ -51,6 +53,54 @@ func New(s *store.Store) *Server {
 		store:        s,
 		rateLimiters: NewRateLimiters(),
 	}
+}
+
+// Init2FASecret loads the 2FA challenge signing key from platform_settings.
+// If no key exists (first run), a new random key is generated and persisted.
+// This must be called before the server handles requests so that challenge
+// tokens survive process restarts and work across multiple instances.
+func (s *Server) Init2FASecret() error {
+	const settingKey = "2fa_challenge_secret"
+
+	existing, err := s.store.GetPlatformSetting(settingKey)
+	if err != nil {
+		return fmt.Errorf("load 2FA secret: %w", err)
+	}
+
+	if existing != "" {
+		decoded, err := base64.StdEncoding.DecodeString(existing)
+		if err != nil {
+			return fmt.Errorf("decode 2FA secret: %w", err)
+		}
+		s.twoFAChallengeSecret = decoded
+		return nil
+	}
+
+	// First run — generate and persist a new secret.
+	// Multiple instances may race here on a fresh database; after persisting,
+	// re-read the winning value so all instances converge on the same key.
+	secret, err := generateTwoFASecret()
+	if err != nil {
+		return err
+	}
+	encoded := base64.StdEncoding.EncodeToString(secret)
+	if err := s.store.SetPlatformSetting(settingKey, encoded); err != nil {
+		return fmt.Errorf("persist 2FA secret: %w", err)
+	}
+
+	// Re-read to pick up whichever instance won the race (upsert may have
+	// been overwritten by a concurrent instance between our check and write).
+	final, err := s.store.GetPlatformSetting(settingKey)
+	if err != nil {
+		return fmt.Errorf("re-read 2FA secret: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(final)
+	if err != nil {
+		return fmt.Errorf("decode 2FA secret after re-read: %w", err)
+	}
+	s.twoFAChallengeSecret = decoded
+	slog.Info("initialized 2FA challenge signing key")
+	return nil
 }
 
 // SetVersion stores the build version info for the health endpoint.
@@ -192,6 +242,12 @@ func (s *Server) setupRouter() {
 			// Password reset
 			r.Post("/forgot-password", s.handleForgotPassword)
 			r.Post("/reset-password", s.handleResetPassword)
+
+			// Two-factor authentication
+			r.Post("/2fa/setup", s.handleTOTPSetup)
+			r.Post("/2fa/verify", s.handleTOTPVerify)
+			r.Post("/2fa/disable", s.handleTOTPDisable)
+			r.Post("/2fa/login-verify", s.handleTOTPLoginVerify)
 
 			// User-scoped API tokens
 			r.Get("/tokens", s.handleListUserTokens)

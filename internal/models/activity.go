@@ -19,6 +19,8 @@ const (
 	ActionTokenCreated    = "token_created"
 	ActionTokenRevoked    = "token_revoked"
 	ActionTokenRotated    = "token_rotated"
+	ActionTOTPEnabled     = "totp_enabled"
+	ActionTOTPDisabled    = "totp_disabled"
 	ActionMemberInvited   = "member_invited"
 	ActionMemberRemoved   = "member_removed"
 	ActionRoleChanged     = "role_changed"

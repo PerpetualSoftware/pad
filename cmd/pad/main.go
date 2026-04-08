@@ -273,6 +273,11 @@ func serveCmd() *cobra.Command {
 			// Platform settings can override or provide email config
 			srv.InitEmailFromSettings()
 
+			// Initialize 2FA challenge signing key (persisted in platform_settings)
+			if err := srv.Init2FASecret(); err != nil {
+				return fmt.Errorf("init 2FA secret: %w", err)
+			}
+
 			// Mount embedded web UI if available
 			webFS, err := fs.Sub(pad.WebUI, "web/build")
 			if err == nil {
@@ -504,6 +509,30 @@ func doLogin(client *cli.Client, cfg *config.Config) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
+	// Handle 2FA challenge
+	if resp.Requires2FA {
+		fmt.Println("  Two-factor authentication is required.")
+		fmt.Print("  TOTP code (or recovery code): ")
+		codeInput, _ := reader.ReadString('\n')
+		codeInput = strings.TrimSpace(codeInput)
+		if codeInput == "" {
+			return fmt.Errorf("2FA code is required")
+		}
+
+		// Determine if this is a TOTP code (6 digits) or a recovery code
+		var totpCode, recoveryCode string
+		if len(codeInput) == 6 && isAllDigits(codeInput) {
+			totpCode = codeInput
+		} else {
+			recoveryCode = codeInput
+		}
+
+		resp, err = client.LoginVerify2FA(resp.ChallengeToken, totpCode, recoveryCode)
+		if err != nil {
+			return fmt.Errorf("2FA verification failed: %w", err)
+		}
+	}
+
 	if err := saveCredentials(cfg, resp); err != nil {
 		return err
 	}
@@ -511,6 +540,15 @@ func doLogin(client *cli.Client, cfg *config.Config) error {
 	green := color.New(color.FgGreen).SprintFunc()
 	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
 	return nil
+}
+
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func promptForAccountDetails() (string, string, string, error) {

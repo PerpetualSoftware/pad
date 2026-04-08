@@ -12,6 +12,10 @@
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
 
+	let step = $state<'credentials' | '2fa'>('credentials');
+	let challengeToken = $state('');
+	let totpCode = $state('');
+
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
@@ -40,8 +44,16 @@
 
 		loading = true;
 		try {
-			await api.auth.login(email, password);
-			await authStore.load(); // Refresh global auth state before navigating.
+			const response = await api.auth.login(email, password);
+
+			if (response.requires_2fa && response.challenge_token) {
+				challengeToken = response.challenge_token;
+				step = '2fa';
+				error = '';
+				return;
+			}
+
+			await authStore.load();
 			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
@@ -54,9 +66,52 @@
 		}
 	}
 
+	async function handleVerify2FA() {
+		error = '';
+		const code = totpCode.trim();
+
+		if (!code) {
+			error = 'Please enter your authentication code.';
+			return;
+		}
+
+		loading = true;
+		try {
+			const isTotp = /^\d{6}$/.test(code);
+
+			if (isTotp) {
+				await api.auth.verify2FA(challengeToken, code, undefined);
+			} else {
+				await api.auth.verify2FA(challengeToken, undefined, code);
+			}
+
+			await authStore.load();
+			await goto('/', { replaceState: true });
+		} catch (err: unknown) {
+			if (err instanceof Error) {
+				error = err.message || 'Invalid code. Please try again.';
+			} else {
+				error = 'Invalid code. Please try again.';
+			}
+		} finally {
+			loading = false;
+		}
+	}
+
+	function handleBack() {
+		step = 'credentials';
+		challengeToken = '';
+		totpCode = '';
+		error = '';
+	}
+
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Enter') {
-			handleSubmit();
+			if (step === 'credentials') {
+				handleSubmit();
+			} else {
+				handleVerify2FA();
+			}
 		}
 	}
 </script>
@@ -69,6 +124,38 @@
 				{setupMethod}
 				nextStep="Once setup is complete, return here to sign in."
 			/>
+		{:else if step === '2fa'}
+			<p class="subtitle">Two-factor authentication</p>
+
+			<div class="form">
+				<p class="hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+
+				<input
+					type="text"
+					placeholder="Authentication code"
+					bind:value={totpCode}
+					onkeydown={handleKeydown}
+					disabled={loading}
+					autocomplete="one-time-code"
+					inputmode="numeric"
+				/>
+
+				{#if error}
+					<p class="error">{error}</p>
+				{/if}
+
+				<button onclick={handleVerify2FA} disabled={loading}>
+					{#if loading}
+						Verifying...
+					{:else}
+						Verify
+					{/if}
+				</button>
+
+				<button class="back-button" onclick={handleBack} disabled={loading} type="button">
+					Back to sign in
+				</button>
+			</div>
 		{:else}
 			<p class="subtitle">Sign in to continue</p>
 
@@ -154,6 +241,13 @@
 		gap: var(--space-4);
 	}
 
+	.hint {
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		text-align: left;
+		line-height: 1.4;
+	}
+
 	input {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
@@ -206,6 +300,19 @@
 	button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.back-button {
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 400;
+		padding: var(--space-2) var(--space-4);
+	}
+
+	.back-button:hover:not(:disabled) {
+		color: var(--text-primary);
+		opacity: 1;
 	}
 
 	.register-link {

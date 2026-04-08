@@ -31,10 +31,11 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		return nil
 	}
 	return map[string]interface{}{
-		"id":    user.ID,
-		"email": user.Email,
-		"name":  user.Name,
-		"role":  user.Role,
+		"id":           user.ID,
+		"email":        user.Email,
+		"name":         user.Name,
+		"role":         user.Role,
+		"totp_enabled": user.TOTPEnabled,
 	}
 }
 
@@ -335,6 +336,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		s.logAuditEvent(models.ActionLoginFailed, r, auditMeta(map[string]string{"email": input.Email}))
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid email or password")
+		return
+	}
+
+	// If 2FA is enabled, return a challenge token instead of a full session.
+	// The challenge token is HMAC-signed, IP-bound, and expires in 5 minutes.
+	if user.TOTPEnabled {
+		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"requires_2fa":    true,
+			"challenge_token": challenge,
+		})
 		return
 	}
 
