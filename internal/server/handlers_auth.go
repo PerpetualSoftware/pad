@@ -68,6 +68,25 @@ func requestIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// validateSessionCookie validates a session cookie including session binding
+// (User-Agent check). Returns the user if valid, nil otherwise. This must be
+// used instead of calling ValidateSession directly to ensure binding is enforced.
+func (s *Server) validateSessionCookie(r *http.Request) *models.User {
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return nil
+	}
+	session, _ := s.store.ValidateSession(cookie.Value)
+	if session == nil || session.User == nil {
+		return nil
+	}
+	// Session binding: reject if User-Agent has changed
+	if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
+		return nil
+	}
+	return session.User
+}
+
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
 	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
@@ -355,12 +374,9 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try session cookie directly (since auth endpoints are exempt from middleware)
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		session, _ := s.store.ValidateSession(cookie.Value)
-		if session != nil && session.User != nil {
-			writeJSON(w, http.StatusOK, sessionStatePayload(true, session.User))
-			return
-		}
+	if user := s.validateSessionCookie(r); user != nil {
+		writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
+		return
 	}
 
 	writeJSON(w, http.StatusOK, sessionStatePayload(false, nil))
@@ -406,12 +422,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil {
-		// Try cookie directly
-		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			if session, _ := s.store.ValidateSession(cookie.Value); session != nil {
-				user = session.User
-			}
-		}
+		// Try cookie directly (auth endpoints are exempt from middleware)
+		user = s.validateSessionCookie(r)
 	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -436,11 +448,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	user := currentUser(r)
 	if user == nil {
 		// Try cookie directly (auth endpoints are exempt from middleware)
-		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			if session, _ := s.store.ValidateSession(cookie.Value); session != nil {
-				user = session.User
-			}
-		}
+		user = s.validateSessionCookie(r)
 	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")

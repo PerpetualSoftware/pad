@@ -180,7 +180,7 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, "", codeHash, ts)
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}

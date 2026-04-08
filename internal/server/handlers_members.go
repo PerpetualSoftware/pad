@@ -40,15 +40,21 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	enrichedInvs := make([]invWithURL, len(invitations))
 	for i, inv := range invitations {
+		// For hashed invitations (code == id placeholder), the plaintext
+		// code is not recoverable — only show code/join_url for legacy invites.
+		code := inv.Code
+		if code == inv.ID {
+			code = ""
+		}
 		enrichedInvs[i] = invWithURL{
 			ID:        inv.ID,
 			Email:     inv.Email,
 			Role:      inv.Role,
-			Code:      inv.Code,
+			Code:      code,
 			CreatedAt: inv.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		}
-		if s.baseURL != "" {
-			enrichedInvs[i].JoinURL = s.baseURL + "/join/" + inv.Code
+		if s.baseURL != "" && code != "" {
+			enrichedInvs[i].JoinURL = s.baseURL + "/join/" + code
 		}
 	}
 
