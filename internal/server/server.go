@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -140,7 +141,13 @@ func (s *Server) setupRouter() {
 	}
 	r.Use(chimiddleware.Recoverer)
 
-	// Prometheus scrape endpoint — no auth/CSRF/security headers
+	// Security headers (applies to all routes)
+	r.Use(SecurityHeaders)
+	if s.secureCookies {
+		r.Use(StrictTransportSecurity)
+	}
+
+	// Prometheus scrape endpoint — no auth/CSRF
 	if s.metrics != nil {
 		r.Group(func(r chi.Router) {
 			r.Handle("/metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
@@ -149,10 +156,6 @@ func (s *Server) setupRouter() {
 
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
-		r.Use(SecurityHeaders)
-		if s.secureCookies {
-			r.Use(StrictTransportSecurity)
-		}
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
 			AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
@@ -397,10 +400,21 @@ func (s *Server) spaHandler() http.Handler {
 			}
 		}
 
+		// Generate per-request nonce for inline script CSP
+		nonce := generateCSPNonce()
+
+		// Inject nonce into inline <script> tags (SvelteKit bootstrap)
+		html := bytes.Replace(indexHTML, []byte("<script>"), []byte(fmt.Sprintf(`<script nonce="%s">`, nonce)), -1)
+
+		// Set nonce-based CSP (overrides the strict default from SecurityHeaders)
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
+			"default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+			nonce))
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.WriteHeader(http.StatusOK)
-		w.Write(indexHTML)
+		w.Write(html)
 	})
 }
 

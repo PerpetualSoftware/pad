@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const bcryptCost = 10
+const bcryptCost = 12
 
 // CreateUser creates a new user with a hashed password.
 func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {

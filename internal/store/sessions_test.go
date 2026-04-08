@@ -12,8 +12,8 @@ func TestSessionCreateAndValidate(t *testing.T) {
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
-	// Create session
-	token, err := s.CreateSession(u.ID, "cli", 30*24*time.Hour)
+	// Create session with binding metadata
+	token, err := s.CreateSession(u.ID, "cli", "127.0.0.1", "TestAgent/1.0", 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
@@ -25,29 +25,38 @@ func TestSessionCreateAndValidate(t *testing.T) {
 	}
 
 	// Validate session
-	user, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(token)
 	if err != nil {
 		t.Fatalf("ValidateSession error: %v", err)
 	}
-	if user == nil {
+	if session == nil {
+		t.Fatal("expected session from valid token")
+	}
+	if session.User == nil {
 		t.Fatal("expected user from valid session")
 	}
-	if user.ID != u.ID {
-		t.Errorf("expected user ID %q, got %q", u.ID, user.ID)
+	if session.User.ID != u.ID {
+		t.Errorf("expected user ID %q, got %q", u.ID, session.User.ID)
 	}
-	if user.Email != "test@test.com" {
-		t.Errorf("expected email 'test@test.com', got %q", user.Email)
+	if session.User.Email != "test@test.com" {
+		t.Errorf("expected email 'test@test.com', got %q", session.User.Email)
+	}
+	if session.IPAddress != "127.0.0.1" {
+		t.Errorf("expected IP '127.0.0.1', got %q", session.IPAddress)
+	}
+	if session.UAHash == "" {
+		t.Error("expected non-empty UA hash")
 	}
 }
 
 func TestSessionInvalidToken(t *testing.T) {
 	s := testStore(t)
 
-	user, err := s.ValidateSession("padsess_invalidtoken")
+	session, err := s.ValidateSession("padsess_invalidtoken")
 	if err != nil {
 		t.Fatalf("ValidateSession error: %v", err)
 	}
-	if user != nil {
+	if session != nil {
 		t.Error("expected nil for invalid token")
 	}
 }
@@ -57,17 +66,17 @@ func TestSessionExpired(t *testing.T) {
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
 	// Create session with 0 TTL (already expired)
-	token, err := s.CreateSession(u.ID, "cli", 0)
+	token, err := s.CreateSession(u.ID, "cli", "127.0.0.1", "", 0)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
 
 	// Should not validate
-	user, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(token)
 	if err != nil {
 		t.Fatalf("ValidateSession error: %v", err)
 	}
-	if user != nil {
+	if session != nil {
 		t.Error("expected nil for expired session")
 	}
 }
@@ -76,7 +85,7 @@ func TestSessionDelete(t *testing.T) {
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
-	token, _ := s.CreateSession(u.ID, "web", 7*24*time.Hour)
+	token, _ := s.CreateSession(u.ID, "web", "127.0.0.1", "Browser/1.0", 7*24*time.Hour)
 
 	// Delete session
 	err := s.DeleteSession(token)
@@ -85,8 +94,8 @@ func TestSessionDelete(t *testing.T) {
 	}
 
 	// Should no longer validate
-	user, _ := s.ValidateSession(token)
-	if user != nil {
+	session, _ := s.ValidateSession(token)
+	if session != nil {
 		t.Error("session should not validate after deletion")
 	}
 }
@@ -95,8 +104,8 @@ func TestDeleteUserSessions(t *testing.T) {
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
-	token1, _ := s.CreateSession(u.ID, "web", 7*24*time.Hour)
-	token2, _ := s.CreateSession(u.ID, "cli", 30*24*time.Hour)
+	token1, _ := s.CreateSession(u.ID, "web", "127.0.0.1", "Browser/1.0", 7*24*time.Hour)
+	token2, _ := s.CreateSession(u.ID, "cli", "127.0.0.1", "CLI/1.0", 30*24*time.Hour)
 
 	// Delete all user sessions
 	err := s.DeleteUserSessions(u.ID)
@@ -105,9 +114,9 @@ func TestDeleteUserSessions(t *testing.T) {
 	}
 
 	// Neither should validate
-	user1, _ := s.ValidateSession(token1)
-	user2, _ := s.ValidateSession(token2)
-	if user1 != nil || user2 != nil {
+	s1, _ := s.ValidateSession(token1)
+	s2, _ := s.ValidateSession(token2)
+	if s1 != nil || s2 != nil {
 		t.Error("no sessions should validate after DeleteUserSessions")
 	}
 }
@@ -117,8 +126,8 @@ func TestCleanExpiredSessions(t *testing.T) {
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
 	// Create one expired and one valid session
-	s.CreateSession(u.ID, "expired", 0)
-	validToken, _ := s.CreateSession(u.ID, "valid", 7*24*time.Hour)
+	s.CreateSession(u.ID, "expired", "", "", 0)
+	validToken, _ := s.CreateSession(u.ID, "valid", "127.0.0.1", "", 7*24*time.Hour)
 
 	// Clean expired
 	err := s.CleanExpiredSessions()
@@ -127,9 +136,40 @@ func TestCleanExpiredSessions(t *testing.T) {
 	}
 
 	// Valid session should still work
-	user, _ := s.ValidateSession(validToken)
-	if user == nil {
+	session, _ := s.ValidateSession(validToken)
+	if session == nil {
 		t.Error("valid session should survive cleanup")
+	}
+}
+
+func TestSessionBindingMetadata(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "test@test.com", "Test", "password123")
+
+	// Create session without binding metadata
+	token, _ := s.CreateSession(u.ID, "cli", "", "", 1*time.Hour)
+	session, _ := s.ValidateSession(token)
+	if session == nil {
+		t.Fatal("expected valid session")
+	}
+	if session.IPAddress != "" {
+		t.Errorf("expected empty IP, got %q", session.IPAddress)
+	}
+	if session.UAHash != "" {
+		t.Errorf("expected empty UA hash, got %q", session.UAHash)
+	}
+
+	// Create session with binding metadata
+	token2, _ := s.CreateSession(u.ID, "web", "192.168.1.1", "Mozilla/5.0", 1*time.Hour)
+	session2, _ := s.ValidateSession(token2)
+	if session2 == nil {
+		t.Fatal("expected valid session")
+	}
+	if session2.IPAddress != "192.168.1.1" {
+		t.Errorf("expected IP '192.168.1.1', got %q", session2.IPAddress)
+	}
+	if session2.UAHash == "" {
+		t.Error("expected non-empty UA hash for session with User-Agent")
 	}
 }
 
@@ -249,17 +289,17 @@ func TestCreateTestUserHelper(t *testing.T) {
 	}
 
 	// Should be reusable for sessions
-	token, err := s.CreateSession(u.ID, "test", 1*time.Hour)
+	token, err := s.CreateSession(u.ID, "test", "127.0.0.1", "TestAgent", 1*time.Hour)
 	if err != nil {
 		t.Fatalf("CreateSession with test user error: %v", err)
 	}
 
-	user, err := s.ValidateSession(token)
+	session, err := s.ValidateSession(token)
 	if err != nil {
 		t.Fatalf("ValidateSession error: %v", err)
 	}
-	if user.Email != "helper@test.com" {
-		t.Errorf("expected email 'helper@test.com', got %q", user.Email)
+	if session.User.Email != "helper@test.com" {
+		t.Errorf("expected email 'helper@test.com', got %q", session.User.Email)
 	}
 }
 

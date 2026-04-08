@@ -68,8 +68,27 @@ func requestIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (s *Server) createAuthSession(w http.ResponseWriter, user *models.User, ttl time.Duration) (string, error) {
-	token, err := s.store.CreateSession(user.ID, "web", ttl)
+// validateSessionCookie validates a session cookie including session binding
+// (User-Agent check). Returns the user if valid, nil otherwise. This must be
+// used instead of calling ValidateSession directly to ensure binding is enforced.
+func (s *Server) validateSessionCookie(r *http.Request) *models.User {
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return nil
+	}
+	session, _ := s.store.ValidateSession(cookie.Value)
+	if session == nil || session.User == nil {
+		return nil
+	}
+	// Session binding: reject if User-Agent has changed
+	if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
+		return nil
+	}
+	return session.User
+}
+
+func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
+	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
@@ -157,7 +176,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.createAuthSession(w, user, cliSessionTTL)
+	token, err := s.createAuthSession(w, r, user, cliSessionTTL)
 	if err != nil {
 		return
 	}
@@ -271,7 +290,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AcceptInvitation(invitation.ID)
 	}
 
-	token, err := s.createAuthSession(w, user, webSessionTTL)
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return
 	}
@@ -319,7 +338,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.createAuthSession(w, user, webSessionTTL)
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return
 	}
@@ -355,12 +374,9 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try session cookie directly (since auth endpoints are exempt from middleware)
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		user, _ := s.store.ValidateSession(cookie.Value)
-		if user != nil {
-			writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
-			return
-		}
+	if user := s.validateSessionCookie(r); user != nil {
+		writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
+		return
 	}
 
 	writeJSON(w, http.StatusOK, sessionStatePayload(false, nil))
@@ -406,10 +422,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil {
-		// Try cookie directly
-		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			user, _ = s.store.ValidateSession(cookie.Value)
-		}
+		// Try cookie directly (auth endpoints are exempt from middleware)
+		user = s.validateSessionCookie(r)
 	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -434,9 +448,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	user := currentUser(r)
 	if user == nil {
 		// Try cookie directly (auth endpoints are exempt from middleware)
-		if cookie, err := r.Cookie(sessionCookie); err == nil {
-			user, _ = s.store.ValidateSession(cookie.Value)
-		}
+		user = s.validateSessionCookie(r)
 	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -615,7 +627,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a fresh session so the user is logged in
-	sessionToken, err := s.store.CreateSession(user.ID, "web", webSessionTTL)
+	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
 		return
