@@ -4,14 +4,17 @@ import "time"
 
 // User represents a registered user in the system.
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	Name         string    `json:"name"`
-	PasswordHash string    `json:"-"` // Never serialized
-	Role         string    `json:"role"` // "admin" or "member"
-	AvatarURL    string    `json:"avatar_url,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Email          string    `json:"email"`
+	Name           string    `json:"name"`
+	PasswordHash   string    `json:"-"`                       // Never serialized
+	Role           string    `json:"role"`                    // "admin" or "member"
+	AvatarURL      string    `json:"avatar_url,omitempty"`
+	TOTPSecret     string    `json:"-"`                       // Never serialized
+	TOTPEnabled    bool      `json:"totp_enabled"`
+	RecoveryCodes  string    `json:"-"`                       // Never serialized
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // UserCreate is the input for registering a new user.

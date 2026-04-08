@@ -193,6 +193,12 @@ func (s *Server) setupRouter() {
 			r.Post("/forgot-password", s.handleForgotPassword)
 			r.Post("/reset-password", s.handleResetPassword)
 
+			// Two-factor authentication
+			r.Post("/2fa/setup", s.handleTOTPSetup)
+			r.Post("/2fa/verify", s.handleTOTPVerify)
+			r.Post("/2fa/disable", s.handleTOTPDisable)
+			r.Post("/2fa/login-verify", s.handleTOTPLoginVerify)
+
 			// User-scoped API tokens
 			r.Get("/tokens", s.handleListUserTokens)
 			r.Post("/tokens", s.handleCreateUserToken)

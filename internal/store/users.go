@@ -11,6 +11,31 @@ import (
 
 const bcryptCost = 12
 
+// user SELECT columns — used by all user queries.
+const userColumns = `id, email, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, created_at, updated_at`
+
+// scanUser scans a user row into a User struct.
+func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error) {
+	var u models.User
+	var createdAt, updatedAt string
+
+	err := row.Scan(
+		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
+		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
+		&createdAt, &updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	u.CreatedAt = parseTime(createdAt)
+	u.UpdatedAt = parseTime(updatedAt)
+	return &u, nil
+}
+
 // CreateUser creates a new user with a hashed password.
 func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
@@ -39,50 +64,21 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 
 // GetUser retrieves a user by ID.
 func (s *Store) GetUser(id string) (*models.User, error) {
-	var u models.User
-	var createdAt, updatedAt string
-
-	err := s.db.QueryRow(s.q(`
-		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
-		FROM users WHERE id = ?
-	`), id).Scan(
-		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
-		&createdAt, &updatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE id = ?`), id))
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
-
-	u.CreatedAt = parseTime(createdAt)
-	u.UpdatedAt = parseTime(updatedAt)
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByEmail retrieves a user by email address (case-insensitive).
 func (s *Store) GetUserByEmail(email string) (*models.User, error) {
-	var u models.User
-	var createdAt, updatedAt string
-
-	err := s.db.QueryRow(s.q(`
-		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
-		FROM users WHERE email = ?
-	`), strings.ToLower(strings.TrimSpace(email))).Scan(
-		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
-		&createdAt, &updatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE email = ?`),
+		strings.ToLower(strings.TrimSpace(email))))
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
-
-	u.CreatedAt = parseTime(createdAt)
-	u.UpdatedAt = parseTime(updatedAt)
-	return &u, nil
+	return u, nil
 }
 
 // UpdateUser updates mutable user fields.
@@ -148,10 +144,7 @@ func (s *Store) ValidatePassword(email, password string) (*models.User, error) {
 
 // ListUsers returns all users.
 func (s *Store) ListUsers() ([]models.User, error) {
-	rows, err := s.db.Query(s.q(`
-		SELECT id, email, name, password_hash, role, avatar_url, created_at, updated_at
-		FROM users ORDER BY created_at ASC
-	`))
+	rows, err := s.db.Query(s.q(`SELECT ` + userColumns + ` FROM users ORDER BY created_at ASC`))
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -159,17 +152,11 @@ func (s *Store) ListUsers() ([]models.User, error) {
 
 	var result []models.User
 	for rows.Next() {
-		var u models.User
-		var createdAt, updatedAt string
-		if err := rows.Scan(
-			&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
-			&createdAt, &updatedAt,
-		); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
-		u.CreatedAt = parseTime(createdAt)
-		u.UpdatedAt = parseTime(updatedAt)
-		result = append(result, u)
+		result = append(result, *u)
 	}
 	return result, rows.Err()
 }
@@ -182,4 +169,70 @@ func (s *Store) UserCount() (int, error) {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
 	return count, nil
+}
+
+// --- TOTP 2FA ---
+
+// SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
+func (s *Store) SetTOTPSecret(userID, secret string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?`), secret, now(), userID)
+	if err != nil {
+		return fmt.Errorf("set totp secret: %w", err)
+	}
+	return nil
+}
+
+// EnableTOTP enables 2FA for a user and stores recovery codes.
+func (s *Store) EnableTOTP(userID, recoveryCodes string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = 1, recovery_codes = ?, updated_at = ? WHERE id = ?`),
+		recoveryCodes, now(), userID)
+	if err != nil {
+		return fmt.Errorf("enable totp: %w", err)
+	}
+	return nil
+}
+
+// DisableTOTP disables 2FA and clears the secret and recovery codes.
+func (s *Store) DisableTOTP(userID string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = 0, totp_secret = '', recovery_codes = '', updated_at = ? WHERE id = ?`),
+		now(), userID)
+	if err != nil {
+		return fmt.Errorf("disable totp: %w", err)
+	}
+	return nil
+}
+
+// ConsumeRecoveryCode validates and removes a single recovery code.
+// Returns true if the code was valid and consumed.
+func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
+	u, err := s.GetUser(userID)
+	if err != nil || u == nil {
+		return false, err
+	}
+
+	codes := strings.Split(u.RecoveryCodes, "\n")
+	var remaining []string
+	found := false
+	for _, c := range codes {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !found && c == code {
+			found = true
+			continue // consume this one
+		}
+		remaining = append(remaining, c)
+	}
+
+	if !found {
+		return false, nil
+	}
+
+	_, err = s.db.Exec(s.q(`UPDATE users SET recovery_codes = ?, updated_at = ? WHERE id = ?`),
+		strings.Join(remaining, "\n"), now(), userID)
+	if err != nil {
+		return false, fmt.Errorf("consume recovery code: %w", err)
+	}
+	return true, nil
 }
