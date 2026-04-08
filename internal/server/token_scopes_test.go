@@ -42,8 +42,14 @@ func TestTokenScopeAllows(t *testing.T) {
 		{"read+write allows POST", `["read","write"]`, http.MethodPost, "/api/v1/test", true},
 		{"read only blocks PUT", `["read"]`, http.MethodPut, "/api/v1/test", false},
 
-		// Empty array
-		{"empty array blocks all", `[]`, http.MethodGet, "/api/v1/test", false},
+		// Empty array (no known scopes → allow for backward compat)
+		{"empty array allows all", `[]`, http.MethodGet, "/api/v1/test", true},
+
+		// Unrecognized/legacy scopes (backward compat — allow)
+		{"unknown scope allows GET", `["docs"]`, http.MethodGet, "/api/v1/test", true},
+		{"unknown scope allows POST", `["repo"]`, http.MethodPost, "/api/v1/test", true},
+		{"unknown+read blocks POST", `["docs","read"]`, http.MethodPost, "/api/v1/test", false},
+		{"unknown+read allows GET", `["docs","read"]`, http.MethodGet, "/api/v1/test", true},
 	}
 
 	for _, tt := range tests {

@@ -111,8 +111,6 @@ func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDa
 	hash := sha256.Sum256([]byte(plaintext))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	ts := now()
-
 	// Determine new expiry
 	var expiresAt interface{}
 	if expiryDays > 0 {
@@ -126,9 +124,9 @@ func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDa
 	}
 
 	_, err = s.db.Exec(s.q(`
-		UPDATE api_tokens SET token_hash = ?, prefix = ?, expires_at = ?, last_used_at = NULL, created_at = ?
+		UPDATE api_tokens SET token_hash = ?, prefix = ?, expires_at = ?, last_used_at = NULL
 		WHERE id = ?
-	`), tokenHash, prefix, expiresAt, ts, tokenID)
+	`), tokenHash, prefix, expiresAt, tokenID)
 	if err != nil {
 		return nil, fmt.Errorf("rotate api token: %w", err)
 	}

@@ -198,8 +198,14 @@ func (s *Server) handleRotateUserToken(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ExpiresIn int `json:"expires_in,omitempty"` // new expiry in days (0 = keep existing)
 	}
-	// Body is optional — rotation works without it
-	_ = decodeJSON(r, &input)
+	// Body is optional — rotation works without it, but malformed JSON is rejected
+	// to prevent silent destructive rotation when the caller intended to set expiry.
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+			return
+		}
+	}
 
 	_, maxDays := s.getTokenExpirySettings()
 

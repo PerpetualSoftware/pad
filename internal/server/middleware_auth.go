@@ -376,15 +376,27 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 		return true
 	}
 
+	hasKnownScope := false
 	for _, scope := range scopes {
 		switch scope {
 		case "*", "write":
 			return true
 		case "read":
+			hasKnownScope = true
 			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
 				return true
 			}
+		default:
+			// Unrecognized scope — ignore but don't block.
+			// Tokens created before scope enforcement may contain
+			// custom values that were previously stored but not checked.
 		}
+	}
+
+	// If no recognized scope was found, allow for backward compatibility
+	// (e.g. tokens with only custom/legacy scope strings).
+	if !hasKnownScope {
+		return true
 	}
 
 	return false
