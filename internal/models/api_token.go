@@ -20,6 +20,7 @@ type APITokenCreate struct {
 	Name        string `json:"name"`
 	Scopes      string `json:"scopes,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"` // optional scope
+	ExpiresIn   int    `json:"expires_in,omitempty"`   // expiry in days (0 = use platform default)
 }
 
 // APITokenWithSecret is returned only on creation and includes the
