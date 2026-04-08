@@ -194,6 +194,7 @@ func (s *Server) setupRouter() {
 			r.Get("/tokens", s.handleListUserTokens)
 			r.Post("/tokens", s.handleCreateUserToken)
 			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
+			r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
 		})
 
 		// Admin endpoints (admin-only, handlers check role internally)

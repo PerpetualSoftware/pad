@@ -6,14 +6,21 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/xarmian/pad/internal/models"
 )
 
+// defaultTokenExpiryDays is used when no platform setting overrides it.
+const defaultTokenExpiryDays = 90
+
 // CreateAPIToken generates a new API token owned by a user, optionally
 // scoped to a workspace. The plaintext token is returned in the response
 // and is never stored — only its SHA-256 hash is persisted.
-func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*models.APITokenWithSecret, error) {
+//
+// If expiresInDays is 0 on the input, the platform default is used.
+// The maxLifetimeDays parameter enforces a ceiling on expiry (0 = no limit).
+func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defaultExpiryDays, maxLifetimeDays int) (*models.APITokenWithSecret, error) {
 	// Generate 32 random bytes → 64 hex chars
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -40,10 +47,25 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*mod
 		wsID = input.WorkspaceID
 	}
 
+	// Determine expiry
+	expiryDays := input.ExpiresIn
+	if expiryDays <= 0 {
+		expiryDays = defaultExpiryDays
+	}
+	// Enforce max lifetime if configured
+	if maxLifetimeDays > 0 && expiryDays > maxLifetimeDays {
+		expiryDays = maxLifetimeDays
+	}
+
+	var expiresAt interface{}
+	if expiryDays > 0 {
+		expiresAt = time.Now().UTC().Add(time.Duration(expiryDays) * 24 * time.Hour).Format(time.RFC3339)
+	}
+
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO api_tokens (id, workspace_id, user_id, name, token_hash, prefix, scopes, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, wsID, userID, input.Name, tokenHash, prefix, scopes, ts)
+		INSERT INTO api_tokens (id, workspace_id, user_id, name, token_hash, prefix, scopes, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, wsID, userID, input.Name, tokenHash, prefix, scopes, expiresAt, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
 	}
@@ -55,6 +77,69 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate) (*mod
 
 	return &models.APITokenWithSecret{
 		APIToken: *token,
+		Token:    plaintext,
+	}, nil
+}
+
+// RotateAPIToken generates a new secret for an existing token, preserving
+// all metadata (name, scopes, workspace, user, expiry). The old token is
+// invalidated and the new plaintext is returned once.
+//
+// expiryDays controls the new expiry: 0 keeps the original, >0 sets a new one.
+// maxLifetimeDays enforces a ceiling on the new expiry (0 = no limit).
+func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDays int) (*models.APITokenWithSecret, error) {
+	// Verify the token exists and belongs to the user
+	existing, err := s.getAPIToken(tokenID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, sql.ErrNoRows
+	}
+	if existing.UserID != userID {
+		return nil, sql.ErrNoRows
+	}
+
+	// Generate new secret
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("generate rotated token: %w", err)
+	}
+	plaintext := "pad_" + hex.EncodeToString(raw)
+	prefix := plaintext[:8]
+
+	hash := sha256.Sum256([]byte(plaintext))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	ts := now()
+
+	// Determine new expiry
+	var expiresAt interface{}
+	if expiryDays > 0 {
+		if maxLifetimeDays > 0 && expiryDays > maxLifetimeDays {
+			expiryDays = maxLifetimeDays
+		}
+		expiresAt = time.Now().UTC().Add(time.Duration(expiryDays) * 24 * time.Hour).Format(time.RFC3339)
+	} else if existing.ExpiresAt != nil {
+		// Preserve original expiry
+		expiresAt = existing.ExpiresAt.Format(time.RFC3339)
+	}
+
+	_, err = s.db.Exec(s.q(`
+		UPDATE api_tokens SET token_hash = ?, prefix = ?, expires_at = ?, last_used_at = NULL, created_at = ?
+		WHERE id = ?
+	`), tokenHash, prefix, expiresAt, ts, tokenID)
+	if err != nil {
+		return nil, fmt.Errorf("rotate api token: %w", err)
+	}
+
+	updated, err := s.getAPIToken(tokenID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.APITokenWithSecret{
+		APIToken: *updated,
 		Token:    plaintext,
 	}, nil
 }

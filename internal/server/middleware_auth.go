@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -74,6 +75,15 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired token")
 			return
 		}
+
+		// Enforce token scopes
+		if !tokenScopeAllows(apiToken.Scopes, r.Method, r.URL.Path) {
+			writeError(w, http.StatusForbidden, "forbidden", "Token scope does not permit this action")
+			return
+		}
+
+		// Add near-expiry warning headers
+		setTokenExpiryWarning(w, apiToken)
 
 		ctx := r.Context()
 
@@ -315,4 +325,41 @@ func roleLevel(role string) int {
 	default:
 		return 0
 	}
+}
+
+// tokenScopeAllows checks if the token's scopes permit the given HTTP method
+// and path. Scopes are stored as a JSON array of strings.
+//
+// Supported scopes:
+//   - "*"       — full access (default)
+//   - "read"    — GET/HEAD/OPTIONS only
+//   - "write"   — all methods
+//
+// An empty or unparseable scope string defaults to full access for
+// backward compatibility with tokens created before scope enforcement.
+func tokenScopeAllows(scopesJSON, method, path string) bool {
+	_ = path // reserved for future per-resource scopes
+
+	if scopesJSON == "" || scopesJSON == `["*"]` {
+		return true
+	}
+
+	var scopes []string
+	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil {
+		// Unparseable → allow (backward compat)
+		return true
+	}
+
+	for _, scope := range scopes {
+		switch scope {
+		case "*", "write":
+			return true
+		case "read":
+			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+				return true
+			}
+		}
+	}
+
+	return false
 }
