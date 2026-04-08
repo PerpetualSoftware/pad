@@ -42,14 +42,16 @@ type Server struct {
 	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
 	version            string               // release version (e.g. "dev", "1.2.3")
-	commit        string               // git commit hash
-	buildTime     string               // build timestamp
+	commit              string               // git commit hash
+	buildTime           string               // build timestamp
+	twoFAChallengeSecret []byte              // HMAC key for 2FA challenge tokens
 }
 
 func New(s *store.Store) *Server {
 	return &Server{
-		store:        s,
-		rateLimiters: NewRateLimiters(),
+		store:                s,
+		rateLimiters:         NewRateLimiters(),
+		twoFAChallengeSecret: generateTwoFASecret(),
 	}
 }
 

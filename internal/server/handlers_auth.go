@@ -339,11 +339,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If 2FA is enabled, return a challenge instead of a full session
+	// If 2FA is enabled, return a challenge token instead of a full session.
+	// The challenge token is HMAC-signed, IP-bound, and expires in 5 minutes.
 	if user.TOTPEnabled {
+		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"requires_2fa": true,
-			"user_id":      user.ID,
+			"requires_2fa":    true,
+			"challenge_token": challenge,
 		})
 		return
 	}

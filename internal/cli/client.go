@@ -391,8 +391,10 @@ func (c *Client) PostRaw(path string, data []byte, result interface{}) error {
 
 // LoginResponse is the response from POST /auth/login.
 type LoginResponse struct {
-	User  LoginUser `json:"user"`
-	Token string    `json:"token"`
+	User           LoginUser `json:"user"`
+	Token          string    `json:"token"`
+	Requires2FA    bool      `json:"requires_2fa,omitempty"`
+	ChallengeToken string    `json:"challenge_token,omitempty"`
 }
 
 // LoginUser is the user info returned from auth endpoints.
@@ -419,6 +421,22 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 		"email":    email,
 		"password": password,
 	}, &result)
+	return &result, err
+}
+
+// LoginVerify2FA completes a 2FA login by submitting a TOTP or recovery code.
+func (c *Client) LoginVerify2FA(challengeToken, code, recoveryCode string) (*LoginResponse, error) {
+	var result LoginResponse
+	body := map[string]string{
+		"challenge_token": challengeToken,
+	}
+	if code != "" {
+		body["code"] = code
+	}
+	if recoveryCode != "" {
+		body["recovery_code"] = recoveryCode
+	}
+	err := c.post("/auth/2fa/login-verify", body, &result)
 	return &result, err
 }
 

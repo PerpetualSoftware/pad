@@ -136,7 +136,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if strings.HasPrefix(path, "/api/v1/auth/") {
 			var limiter *ipRateLimiter
 			switch {
-			case path == "/api/v1/auth/login" || path == "/api/v1/auth/bootstrap":
+			case path == "/api/v1/auth/login" || path == "/api/v1/auth/bootstrap" || path == "/api/v1/auth/2fa/login-verify":
 				limiter = s.rateLimiters.Auth
 			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password":
 				limiter = s.rateLimiters.PasswordReset

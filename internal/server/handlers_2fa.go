@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -58,8 +59,9 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTOTPVerify verifies a TOTP code against the stored secret and
-// enables 2FA if valid. Returns recovery codes.
+// handleTOTPVerify verifies a TOTP code against the provided secret and
+// enables 2FA if valid. The secret must match the one stored in the database
+// (set during setup) to prevent TOCTOU races. Returns recovery codes.
 func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil {
@@ -72,20 +74,9 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-fetch user to get the latest secret (may have been set in setup)
-	user, err := s.store.GetUser(user.ID)
-	if err != nil || user == nil {
-		writeInternalError(w, fmt.Errorf("fetch user: %w", err))
-		return
-	}
-
-	if user.TOTPSecret == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Call /auth/2fa/setup first to generate a secret")
-		return
-	}
-
 	var input struct {
-		Code string `json:"code"`
+		Code   string `json:"code"`
+		Secret string `json:"secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -93,27 +84,34 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.Code = strings.TrimSpace(input.Code)
+	input.Secret = strings.TrimSpace(input.Secret)
+
 	if input.Code == "" {
 		writeError(w, http.StatusBadRequest, "validation_error", "TOTP code is required")
 		return
 	}
+	if input.Secret == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Secret is required (from /auth/2fa/setup)")
+		return
+	}
 
-	// Validate the code
-	if !totp.Validate(input.Code, user.TOTPSecret) {
+	// Validate the code against the secret the client has
+	if !totp.Validate(input.Code, input.Secret) {
 		writeError(w, http.StatusUnauthorized, "invalid_code", "Invalid TOTP code. Please try again.")
 		return
 	}
 
-	// Generate recovery codes
+	// Generate recovery codes (plaintext for the user, hashed for storage)
 	codes, err := generateRecoveryCodes(recoveryCodeCount)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("generate recovery codes: %w", err))
 		return
 	}
+	hashedCodes := hashRecoveryCodes(codes)
 
-	// Enable 2FA
-	if err := s.store.EnableTOTP(user.ID, strings.Join(codes, "\n")); err != nil {
-		writeInternalError(w, err)
+	// Atomically enable 2FA only if the DB secret still matches (prevents TOCTOU race)
+	if err := s.store.EnableTOTP(user.ID, input.Secret, strings.Join(hashedCodes, "\n")); err != nil {
+		writeError(w, http.StatusConflict, "conflict", "TOTP secret changed during verification. Please run setup again.")
 		return
 	}
 
@@ -177,20 +175,22 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTOTPLoginVerify completes a login that requires 2FA verification.
-// Accepts a TOTP code or a recovery code and returns a full session.
+// Requires a valid challenge token (from the login response) plus a TOTP
+// code or recovery code. The challenge token is HMAC-signed, IP-bound,
+// and short-lived to prove the user already passed password verification.
 func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		UserID       string `json:"user_id"`
-		Code         string `json:"code"`
-		RecoveryCode string `json:"recovery_code"`
+		ChallengeToken string `json:"challenge_token"`
+		Code           string `json:"code"`
+		RecoveryCode   string `json:"recovery_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
 
-	if input.UserID == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "user_id is required")
+	if input.ChallengeToken == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "challenge_token is required")
 		return
 	}
 
@@ -202,7 +202,15 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.GetUser(input.UserID)
+	// Validate the challenge token (proves password was verified, checks IP + expiry)
+	userID, err := validateTwoFAChallenge(input.ChallengeToken, clientIP(r), s.twoFAChallengeSecret)
+	if err != nil {
+		time.Sleep(500 * time.Millisecond)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired 2FA challenge")
+		return
+	}
+
+	user, err := s.store.GetUser(userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -222,7 +230,7 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Try recovery code
+	// Try recovery code (hashed comparison)
 	if !verified && input.RecoveryCode != "" {
 		consumed, err := s.store.ConsumeRecoveryCode(user.ID, input.RecoveryCode)
 		if err != nil {
@@ -263,4 +271,14 @@ func generateRecoveryCodes(n int) ([]string, error) {
 		codes[i] = hex.EncodeToString(b)
 	}
 	return codes, nil
+}
+
+// hashRecoveryCodes returns SHA-256 hex hashes of the given plaintext codes.
+func hashRecoveryCodes(codes []string) []string {
+	hashed := make([]string, len(codes))
+	for i, c := range codes {
+		h := sha256.Sum256([]byte(c))
+		hashed[i] = hex.EncodeToString(h[:])
+	}
+	return hashed
 }

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -173,6 +175,11 @@ func (s *Store) UserCount() (int, error) {
 
 // --- TOTP 2FA ---
 
+// TODO: Encrypt TOTP secret at rest using an app-level encryption key
+// (e.g., AES-256-GCM with a key from PAD_ENCRYPTION_KEY env var).
+// The secret must remain decryptable for TOTP validation, so hashing
+// is not an option here. For now, it is stored as plaintext.
+
 // SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
 func (s *Store) SetTOTPSecret(userID, secret string) error {
 	_, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?`), secret, now(), userID)
@@ -182,12 +189,20 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 	return nil
 }
 
-// EnableTOTP enables 2FA for a user and stores recovery codes.
-func (s *Store) EnableTOTP(userID, recoveryCodes string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = 1, recovery_codes = ?, updated_at = ? WHERE id = ?`),
-		recoveryCodes, now(), userID)
+// EnableTOTP atomically enables 2FA for a user and stores hashed recovery codes.
+// The expectedSecret must match the currently stored totp_secret to prevent
+// TOCTOU races (e.g., a concurrent setup call overwriting the secret).
+func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) error {
+	result, err := s.db.Exec(s.q(
+		`UPDATE users SET totp_enabled = 1, recovery_codes = ?, updated_at = ?
+		 WHERE id = ? AND totp_secret = ?`),
+		hashedRecoveryCodes, now(), userID, expectedSecret)
 	if err != nil {
 		return fmt.Errorf("enable totp: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("enable totp: secret mismatch or user not found")
 	}
 	return nil
 }
@@ -203,14 +218,30 @@ func (s *Store) DisableTOTP(userID string) error {
 }
 
 // ConsumeRecoveryCode validates and removes a single recovery code.
-// Returns true if the code was valid and consumed.
+// Recovery codes are stored as SHA-256 hashes. The provided plaintext
+// code is hashed before comparison. Uses a transaction to prevent
+// concurrent consumption of the same code.
 func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
-	u, err := s.GetUser(userID)
-	if err != nil || u == nil {
-		return false, err
+	// Hash the input code for comparison against stored hashes
+	inputHash := sha256.Sum256([]byte(code))
+	inputHashStr := hex.EncodeToString(inputHash[:])
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var recoveryCodes string
+	err = tx.QueryRow(s.q(`SELECT recovery_codes FROM users WHERE id = ?`), userID).Scan(&recoveryCodes)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("select recovery codes: %w", err)
 	}
 
-	codes := strings.Split(u.RecoveryCodes, "\n")
+	codes := strings.Split(recoveryCodes, "\n")
 	var remaining []string
 	found := false
 	for _, c := range codes {
@@ -218,7 +249,7 @@ func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
 		if c == "" {
 			continue
 		}
-		if !found && c == code {
+		if !found && c == inputHashStr {
 			found = true
 			continue // consume this one
 		}
@@ -229,10 +260,10 @@ func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
 		return false, nil
 	}
 
-	_, err = s.db.Exec(s.q(`UPDATE users SET recovery_codes = ?, updated_at = ? WHERE id = ?`),
+	_, err = tx.Exec(s.q(`UPDATE users SET recovery_codes = ?, updated_at = ? WHERE id = ?`),
 		strings.Join(remaining, "\n"), now(), userID)
 	if err != nil {
 		return false, fmt.Errorf("consume recovery code: %w", err)
 	}
-	return true, nil
+	return true, tx.Commit()
 }
