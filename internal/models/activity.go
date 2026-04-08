@@ -18,6 +18,7 @@ const (
 	ActionPasswordReset   = "password_reset"
 	ActionTokenCreated    = "token_created"
 	ActionTokenRevoked    = "token_revoked"
+	ActionTokenRotated    = "token_rotated"
 	ActionMemberInvited   = "member_invited"
 	ActionMemberRemoved   = "member_removed"
 	ActionRoleChanged     = "role_changed"

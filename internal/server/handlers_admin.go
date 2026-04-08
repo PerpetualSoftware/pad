@@ -15,6 +15,10 @@ const (
 	settingEmailFrom      = "email_from"       // Sender address
 	settingEmailFromName  = "email_from_name"  // Sender display name
 	settingPlatformName   = "platform_name"    // Instance name (default: "Pad")
+
+	// Token policy settings
+	settingTokenDefaultExpiryDays = "token_default_expiry_days" // Default: 90
+	settingTokenMaxLifetimeDays   = "token_max_lifetime_days"   // Default: 0 (no limit)
 )
 
 // handleGetPlatformSettings returns all platform settings.
@@ -59,11 +63,13 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 
 	// Whitelist known settings
 	allowed := map[string]bool{
-		settingEmailProvider:  true,
-		settingMailerooAPIKey: true,
-		settingEmailFrom:      true,
-		settingEmailFromName:  true,
-		settingPlatformName:   true,
+		settingEmailProvider:          true,
+		settingMailerooAPIKey:         true,
+		settingEmailFrom:              true,
+		settingEmailFromName:          true,
+		settingPlatformName:           true,
+		settingTokenDefaultExpiryDays: true,
+		settingTokenMaxLifetimeDays:   true,
 	}
 
 	for key, value := range input {
