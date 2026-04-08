@@ -195,8 +195,8 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) error {
 	result, err := s.db.Exec(s.q(
 		`UPDATE users SET totp_enabled = ?, recovery_codes = ?, updated_at = ?
-		 WHERE id = ? AND totp_secret = ?`),
-		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, expectedSecret)
+		 WHERE id = ? AND totp_secret = ? AND totp_enabled = ?`),
+		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, expectedSecret, s.dialect.BoolToInt(false))
 	if err != nil {
 		return fmt.Errorf("enable totp: %w", err)
 	}

@@ -273,6 +273,11 @@ func serveCmd() *cobra.Command {
 			// Platform settings can override or provide email config
 			srv.InitEmailFromSettings()
 
+			// Initialize 2FA challenge signing key (persisted in platform_settings)
+			if err := srv.Init2FASecret(); err != nil {
+				return fmt.Errorf("init 2FA secret: %w", err)
+			}
+
 			// Mount embedded web UI if available
 			webFS, err := fs.Sub(pad.WebUI, "web/build")
 			if err == nil {

@@ -14,10 +14,12 @@ import (
 const twoFAChallengeExpiry = 5 * time.Minute
 
 // generateTwoFASecret creates a random 32-byte secret for signing 2FA challenge tokens.
-func generateTwoFASecret() []byte {
+func generateTwoFASecret() ([]byte, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return b
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate 2FA secret: %w", err)
+	}
+	return b, nil
 }
 
 // generateTwoFAChallenge creates a short-lived, HMAC-signed challenge token

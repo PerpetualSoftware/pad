@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"bytes"
 	"fmt"
@@ -49,10 +50,44 @@ type Server struct {
 
 func New(s *store.Store) *Server {
 	return &Server{
-		store:                s,
-		rateLimiters:         NewRateLimiters(),
-		twoFAChallengeSecret: generateTwoFASecret(),
+		store:        s,
+		rateLimiters: NewRateLimiters(),
 	}
+}
+
+// Init2FASecret loads the 2FA challenge signing key from platform_settings.
+// If no key exists (first run), a new random key is generated and persisted.
+// This must be called before the server handles requests so that challenge
+// tokens survive process restarts and work across multiple instances.
+func (s *Server) Init2FASecret() error {
+	const settingKey = "2fa_challenge_secret"
+
+	existing, err := s.store.GetPlatformSetting(settingKey)
+	if err != nil {
+		return fmt.Errorf("load 2FA secret: %w", err)
+	}
+
+	if existing != "" {
+		decoded, err := base64.StdEncoding.DecodeString(existing)
+		if err != nil {
+			return fmt.Errorf("decode 2FA secret: %w", err)
+		}
+		s.twoFAChallengeSecret = decoded
+		return nil
+	}
+
+	// First run — generate and persist a new secret
+	secret, err := generateTwoFASecret()
+	if err != nil {
+		return err
+	}
+	encoded := base64.StdEncoding.EncodeToString(secret)
+	if err := s.store.SetPlatformSetting(settingKey, encoded); err != nil {
+		return fmt.Errorf("persist 2FA secret: %w", err)
+	}
+	s.twoFAChallengeSecret = secret
+	slog.Info("generated and persisted 2FA challenge signing key")
+	return nil
 }
 
 // SetVersion stores the build version info for the health endpoint.
