@@ -255,7 +255,15 @@ func execMulti(db *sql.DB, sqlText string) error {
 		stmt := strings.TrimSpace(sqlText[:end+1])
 		if stmt != "" && stmt != ";" {
 			if _, err := db.Exec(stmt); err != nil {
-				return fmt.Errorf("exec migration statement: %w\nStatement: %.200s", err, stmt)
+				// Tolerate "duplicate column name" errors from ALTER TABLE ADD COLUMN.
+				// This makes migrations idempotent when partially applied (e.g. server
+				// crashed after adding a column but before recording the migration).
+				upper := strings.ToUpper(strings.TrimSpace(stmt))
+				isDupCol := strings.Contains(err.Error(), "duplicate column name")
+				isAddCol := strings.HasPrefix(upper, "ALTER TABLE") && strings.Contains(upper, "ADD COLUMN")
+				if !(isDupCol && isAddCol) {
+					return fmt.Errorf("exec migration statement: %w\nStatement: %.200s", err, stmt)
+				}
 			}
 		}
 		sqlText = sqlText[end+1:]

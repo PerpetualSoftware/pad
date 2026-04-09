@@ -230,6 +230,7 @@
 		const extensions = [
 			StarterKit.configure({
 				codeBlock: false,
+				link: false, // We use our own SafeLink extension below
 			}),
 			MermaidCodeBlock.configure({
 				HTMLAttributes: { class: 'code-block' },
