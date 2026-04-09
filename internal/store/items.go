@@ -1317,7 +1317,7 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 // via item_links. Returns children from any collection.
 func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.created_at, i.updated_at,
