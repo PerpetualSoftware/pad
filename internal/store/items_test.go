@@ -752,6 +752,81 @@ func TestItemLinkDefaultType(t *testing.T) {
 	}
 }
 
+// --- Workspace-Global Item Numbering Tests ---
+
+func TestItemNumbersAreWorkspaceGlobal(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	tasks := createTestCollection(t, s, ws.ID, "Tasks")
+	ideas := createTestCollection(t, s, ws.ID, "Ideas")
+
+	// Create items across two collections — numbers should be globally sequential
+	t1 := createTestItem(t, s, ws.ID, tasks.ID, "Task 1", "")
+	i1 := createTestItem(t, s, ws.ID, ideas.ID, "Idea 1", "")
+	t2 := createTestItem(t, s, ws.ID, tasks.ID, "Task 2", "")
+	i2 := createTestItem(t, s, ws.ID, ideas.ID, "Idea 2", "")
+
+	if *t1.ItemNumber != 1 {
+		t.Errorf("expected Task 1 to be #1, got #%d", *t1.ItemNumber)
+	}
+	if *i1.ItemNumber != 2 {
+		t.Errorf("expected Idea 1 to be #2, got #%d", *i1.ItemNumber)
+	}
+	if *t2.ItemNumber != 3 {
+		t.Errorf("expected Task 2 to be #3, got #%d", *t2.ItemNumber)
+	}
+	if *i2.ItemNumber != 4 {
+		t.Errorf("expected Idea 2 to be #4, got #%d", *i2.ItemNumber)
+	}
+}
+
+func TestMoveItemPreservesNumber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	tasks := createTestCollection(t, s, ws.ID, "Tasks")
+	bugs := createTestCollection(t, s, ws.ID, "Bugs")
+
+	item := createTestItem(t, s, ws.ID, tasks.ID, "Fix something", "")
+	originalNumber := *item.ItemNumber
+
+	// Move from Tasks to Bugs
+	moved, err := s.MoveItem(item.ID, bugs.ID, `{"status":"open"}`)
+	if err != nil {
+		t.Fatalf("MoveItem error: %v", err)
+	}
+
+	if moved.CollectionID != bugs.ID {
+		t.Error("item should be in bugs collection after move")
+	}
+	if *moved.ItemNumber != originalNumber {
+		t.Errorf("item number should be preserved after move: expected %d, got %d", originalNumber, *moved.ItemNumber)
+	}
+
+	// Verify the ref changed prefix but kept the number
+	if moved.Ref != fmt.Sprintf("%s-%d", bugs.Prefix, originalNumber) {
+		t.Errorf("expected ref %s-%d, got %s", bugs.Prefix, originalNumber, moved.Ref)
+	}
+}
+
+func TestWorkspaceNumberingIsolation(t *testing.T) {
+	s := testStore(t)
+	ws1 := createTestWorkspace(t, s, "Workspace 1")
+	ws2 := createTestWorkspace(t, s, "Workspace 2")
+	col1 := createTestCollection(t, s, ws1.ID, "Tasks")
+	col2 := createTestCollection(t, s, ws2.ID, "Tasks")
+
+	// Each workspace has its own counter starting at 1
+	item1 := createTestItem(t, s, ws1.ID, col1.ID, "WS1 Task", "")
+	item2 := createTestItem(t, s, ws2.ID, col2.ID, "WS2 Task", "")
+
+	if *item1.ItemNumber != 1 {
+		t.Errorf("expected WS1 item to be #1, got #%d", *item1.ItemNumber)
+	}
+	if *item2.ItemNumber != 1 {
+		t.Errorf("expected WS2 item to be #1, got #%d", *item2.ItemNumber)
+	}
+}
+
 func TestItemVersionCreation(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

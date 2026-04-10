@@ -417,8 +417,13 @@ func slugify(s string) string {
 }
 
 // backfillItemNumbers assigns prefixes to collections that lack them and
-// sequential item_number values to items that don't have one yet. It also
-// ensures the unique index on (collection_id, item_number) exists.
+// sequential item_number values to items that don't have one yet.
+//
+// On first run after the workspace-global numbering migration, this function
+// detects the old per-collection unique index and performs a one-time
+// renumbering of all items so that item_number is unique per workspace
+// (not per collection). This allows items to keep their number when moved
+// between collections (e.g. IDEA-42 → BUG-42).
 func (s *Store) backfillItemNumbers() error {
 	// 1. Backfill collection prefixes
 	rows, err := s.db.Query(s.q("SELECT id, name FROM collections WHERE prefix = ''"))
@@ -452,32 +457,158 @@ func (s *Store) backfillItemNumbers() error {
 		}
 	}
 
-	// 2. Backfill item numbers per collection
-	collRows, err := s.db.Query(s.q("SELECT id FROM collections"))
-	if err != nil {
-		return fmt.Errorf("query collections for item number backfill: %w", err)
+	// 2. Migrate from per-collection to per-workspace numbering (one-time)
+	if err := s.migrateToWorkspaceNumbering(); err != nil {
+		return fmt.Errorf("migrate to workspace numbering: %w", err)
 	}
-	defer collRows.Close()
 
-	var collIDs []string
-	for collRows.Next() {
+	// 3. Backfill NULL item_numbers for any new items (per workspace)
+	if err := s.backfillNullItemNumbers(); err != nil {
+		return fmt.Errorf("backfill null item numbers: %w", err)
+	}
+
+	// 4. Ensure the workspace-level unique index exists
+	_, err = s.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_workspace_number ON items(workspace_id, item_number)")
+	if err != nil {
+		return fmt.Errorf("create workspace number index: %w", err)
+	}
+
+	return nil
+}
+
+// indexExists checks whether the named index exists in the database.
+func (s *Store) indexExists(name string) bool {
+	var query string
+	switch s.dialect.Driver() {
+	case DriverPostgres:
+		query = "SELECT 1 FROM pg_indexes WHERE indexname = $1"
+	default: // SQLite
+		query = "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?"
+	}
+	var one int
+	err := s.db.QueryRow(query, name).Scan(&one)
+	return err == nil
+}
+
+// migrateToWorkspaceNumbering performs a one-time migration from per-collection
+// item numbering to per-workspace item numbering. It detects the old index
+// (collection_id, item_number) and, if present, renumbers all items within each
+// workspace using a single sequential counter ordered by created_at.
+//
+// The entire operation runs in a single transaction — if anything fails the
+// database is left unchanged and the migration will be retried on next startup.
+func (s *Store) migrateToWorkspaceNumbering() error {
+	// Nothing to migrate if the old index doesn't exist
+	if !s.indexExists("idx_items_collection_number") {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Drop the old per-collection unique index
+	if _, err := tx.Exec("DROP INDEX IF EXISTS idx_items_collection_number"); err != nil {
+		return fmt.Errorf("drop old index: %w", err)
+	}
+
+	// Get all workspace IDs
+	wsRows, err := tx.Query(s.q("SELECT id FROM workspaces"))
+	if err != nil {
+		return fmt.Errorf("query workspaces: %w", err)
+	}
+	var wsIDs []string
+	for wsRows.Next() {
 		var id string
-		if err := collRows.Scan(&id); err != nil {
+		if err := wsRows.Scan(&id); err != nil {
+			wsRows.Close()
 			return err
 		}
-		collIDs = append(collIDs, id)
+		wsIDs = append(wsIDs, id)
 	}
-	if err := collRows.Err(); err != nil {
+	wsRows.Close()
+	if err := wsRows.Err(); err != nil {
 		return err
 	}
 
-	for _, collID := range collIDs {
-		itemRows, err := s.db.Query(
-			s.q("SELECT id FROM items WHERE collection_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC"),
-			collID,
+	// Renumber items per workspace: assign 1, 2, 3… ordered by created_at, id
+	for _, wsID := range wsIDs {
+		itemRows, err := tx.Query(s.q(
+			"SELECT id FROM items WHERE workspace_id = ? ORDER BY created_at ASC, id ASC"),
+			wsID,
 		)
 		if err != nil {
-			return fmt.Errorf("query items for backfill in collection %s: %w", collID, err)
+			return fmt.Errorf("query items for workspace %s: %w", wsID, err)
+		}
+
+		var itemIDs []string
+		for itemRows.Next() {
+			var id string
+			if err := itemRows.Scan(&id); err != nil {
+				itemRows.Close()
+				return err
+			}
+			itemIDs = append(itemIDs, id)
+		}
+		itemRows.Close()
+		if err := itemRows.Err(); err != nil {
+			return err
+		}
+
+		// Assign sequential numbers across the entire workspace
+		for i, itemID := range itemIDs {
+			num := i + 1
+			if _, err := tx.Exec(s.q("UPDATE items SET item_number = ? WHERE id = ?"), num, itemID); err != nil {
+				return fmt.Errorf("renumber item %s to %d: %w", itemID, num, err)
+			}
+		}
+	}
+
+	// Create the new workspace-level unique index inside the transaction
+	if _, err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_workspace_number ON items(workspace_id, item_number)"); err != nil {
+		return fmt.Errorf("create workspace number index: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+
+	return nil
+}
+
+// backfillNullItemNumbers assigns the next workspace-global item_number to any
+// items that have a NULL item_number (e.g. from interrupted inserts or pre-
+// migration data).
+func (s *Store) backfillNullItemNumbers() error {
+	// Get workspaces that have items with NULL item_number
+	wsRows, err := s.db.Query(s.q(
+		"SELECT DISTINCT workspace_id FROM items WHERE item_number IS NULL"))
+	if err != nil {
+		return fmt.Errorf("query workspaces with null item numbers: %w", err)
+	}
+	var wsIDs []string
+	for wsRows.Next() {
+		var id string
+		if err := wsRows.Scan(&id); err != nil {
+			wsRows.Close()
+			return err
+		}
+		wsIDs = append(wsIDs, id)
+	}
+	wsRows.Close()
+	if err := wsRows.Err(); err != nil {
+		return err
+	}
+
+	for _, wsID := range wsIDs {
+		itemRows, err := s.db.Query(
+			s.q("SELECT id FROM items WHERE workspace_id = ? AND item_number IS NULL ORDER BY created_at ASC, id ASC"),
+			wsID,
+		)
+		if err != nil {
+			return fmt.Errorf("query null-numbered items for workspace %s: %w", wsID, err)
 		}
 
 		var itemIDs []string
@@ -494,10 +625,10 @@ func (s *Store) backfillItemNumbers() error {
 			continue
 		}
 
-		// Get current max
+		// Get current max in this workspace
 		var maxNum int
-		if err := s.db.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE collection_id = ?"), collID).Scan(&maxNum); err != nil {
-			return fmt.Errorf("get max item_number for collection %s: %w", collID, err)
+		if err := s.db.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) FROM items WHERE workspace_id = ?"), wsID).Scan(&maxNum); err != nil {
+			return fmt.Errorf("get max item_number for workspace %s: %w", wsID, err)
 		}
 
 		for _, itemID := range itemIDs {
@@ -506,12 +637,6 @@ func (s *Store) backfillItemNumbers() error {
 				return fmt.Errorf("update item_number for item %s: %w", itemID, err)
 			}
 		}
-	}
-
-	// 3. Create unique index (safe now that all items have numbers)
-	_, err = s.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_collection_number ON items(collection_id, item_number)")
-	if err != nil {
-		return fmt.Errorf("create unique index: %w", err)
 	}
 
 	return nil
