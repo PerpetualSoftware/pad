@@ -72,6 +72,7 @@
 		if (isMod(e) && e.key === '\\') {
 			e.preventDefault();
 			uiStore.toggleSidebar();
+			uiStore.toggleTopbar();
 			return;
 		}
 		if (isMod(e) && e.key === ']') {
@@ -81,9 +82,7 @@
 		}
 		if (isMod(e) && e.key === 'n') {
 			e.preventDefault();
-			if (workspaceStore.current) {
-				goto(`/${workspaceStore.current.slug}/new`);
-			}
+			uiStore.requestQuickAdd();
 			return;
 		}
 		if (e.key === '?' && !isInputFocused()) {
@@ -121,11 +120,35 @@
 		<TopBar mobile />
 	{/if}
 	<div class="app-layout">
-		{#if !uiStore.isMobile}
+		{#if !uiStore.isMobile && uiStore.topbarOpen}
 			<TopBar />
+		{/if}
+		{#if !uiStore.isMobile && !uiStore.topbarOpen}
+			<button
+				class="topbar-expand-btn"
+				onclick={() => uiStore.openTopbar()}
+				aria-label="Show workspace bar"
+				title="Show workspace bar (⌘\)"
+			>
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
 		{/if}
 		<div class="app-shell">
 			<Sidebar />
+			{#if !uiStore.isMobile && !uiStore.sidebarOpen}
+				<button
+					class="sidebar-expand-btn"
+					onclick={() => uiStore.openSidebar()}
+					aria-label="Open sidebar"
+					title="Open sidebar (⌘\)"
+				>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</button>
+			{/if}
 			<main class="main-content">
 				{#if uiStore.isMobile && !uiStore.sidebarOpen}
 					<div class="mobile-header">
@@ -152,12 +175,14 @@
 
 <style>
 	.app-layout {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
 		overflow: hidden;
 	}
 	.app-shell {
+		position: relative;
 		display: flex;
 		flex: 1;
 		min-height: 0;
@@ -200,5 +225,61 @@
 	.mobile-title:hover {
 		color: var(--accent-blue);
 		text-decoration: none;
+	}
+	.topbar-expand-btn {
+		position: absolute;
+		top: 0;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 10;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 48px;
+		height: 20px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-top: none;
+		border-radius: 0 0 var(--radius) var(--radius);
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0;
+		opacity: 0;
+		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
+	}
+	.app-layout:hover .topbar-expand-btn {
+		opacity: 1;
+	}
+	.topbar-expand-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+	.sidebar-expand-btn {
+		position: absolute;
+		left: 0;
+		top: 50%;
+		transform: translateY(-50%);
+		z-index: 10;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 48px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-left: none;
+		border-radius: 0 var(--radius) var(--radius) 0;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0;
+		opacity: 0;
+		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
+	}
+	.app-shell:hover .sidebar-expand-btn {
+		opacity: 1;
+	}
+	.sidebar-expand-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
 	}
 </style>

@@ -15,6 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
@@ -47,7 +48,7 @@
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
-	let titleInputEl = $state<HTMLInputElement>();
+	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
@@ -134,6 +135,8 @@
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		editorStore.resetForDoc();
+		collectionStore.setActiveItem(null);
 	});
 
 	async function loadData() {
@@ -146,6 +149,8 @@
 			]);
 			item = itemData;
 			collection = collData;
+			collectionStore.setActiveItem(itemData);
+			editorStore.resetForDoc();
 
 			// Fetch child item progress for any item (generalized parent/child)
 			try {
@@ -198,10 +203,18 @@
 		if (!item) return;
 		titleDraft = item.title;
 		editingTitle = true;
-		// Wait for the DOM to render the input, then focus
+		// Wait for the DOM to render the textarea, then focus + select all
 		await tick();
-		titleInputEl?.focus();
-		titleInputEl?.select();
+		if (titleInputEl) {
+			autoResizeTitle(titleInputEl);
+			titleInputEl.focus();
+			titleInputEl.setSelectionRange(0, titleInputEl.value.length);
+		}
+	}
+
+	function autoResizeTitle(el: HTMLTextAreaElement) {
+		el.style.height = 'auto';
+		el.style.height = el.scrollHeight + 'px';
 	}
 
 	function showSaved() {
@@ -285,9 +298,13 @@
 
 	function handleContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
-		saveStatus = 'saving';
+		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
+			saveStatus = 'saving';
+			// Set lastSaveTime BEFORE the API call so the SSE guard works
+			// even if the SSE event arrives before the response.
+			editorStore.setLastSaveTime(Date.now());
 			const allItems = collectionStore.items ?? [];
 			let toSave = markdown;
 			if (allItems.length > 0) {
@@ -297,28 +314,34 @@
 			api.items.update(wsSlug, item.id, { content: toSave }).then(() => {
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
 				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
-		}, 500);
+		}, 1200);
 	}
 
 	function handleRawContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
-		saveStatus = 'saving';
+		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
+			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			api.items.update(wsSlug, item.id, { content: markdown }).then((updated) => {
 				item = updated;
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
 				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
-		}, 500);
+		}, 1200);
 	}
 
 	let computedOverrides = $state<Record<string, any>>({});
@@ -586,13 +609,15 @@
 				<span class="item-ref">{formatItemRef(item)}</span>
 			{/if}
 			{#if editingTitle}
-				<input
+				<textarea
 					class="title-input"
+					rows="1"
 					bind:this={titleInputEl}
 					bind:value={titleDraft}
 					onblur={saveTitle}
 					onkeydown={handleTitleKeydown}
-				/>
+					oninput={(e) => autoResizeTitle(e.currentTarget)}
+				></textarea>
 			{:else}
 				<button class="title" onclick={startEditTitle}>
 					{item.title}
@@ -985,6 +1010,10 @@
 		border-radius: var(--radius);
 		padding: 2px 4px;
 		color: var(--text-primary);
+		resize: none;
+		overflow: hidden;
+		line-height: 1.3;
+		font-family: inherit;
 	}
 
 	/* Meta */

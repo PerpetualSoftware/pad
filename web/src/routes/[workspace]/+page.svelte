@@ -1,13 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
-	import { itemUrlId } from '$lib/types';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
@@ -122,40 +121,7 @@
 		}
 	}
 
-	let creating = $state(false);
 
-	async function quickCreate(collectionSlug: string) {
-		if (creating) return;
-		creating = true;
-		try {
-			const coll = collections.find(c => c.slug === collectionSlug);
-			const defaultFields: Record<string, any> = {};
-			let contentTemplate = '';
-			if (coll) {
-				try {
-					const schema = JSON.parse(coll.schema);
-					const statusField = schema.fields?.find((f: any) => f.key === 'status');
-					if (statusField?.options?.length) defaultFields.status = statusField.options[0];
-				} catch { /* ignore */ }
-				try {
-					const settings = JSON.parse(coll.settings);
-					if (settings.content_template) contentTemplate = settings.content_template;
-				} catch { /* ignore */ }
-			}
-			const item = await api.items.create(wsSlug, collectionSlug, {
-				title: 'Untitled',
-				content: contentTemplate,
-				fields: JSON.stringify(defaultFields),
-				source: 'web'
-			});
-			goto(`/${wsSlug}/${collectionSlug}/${itemUrlId(item)}?new=1`);
-		} catch {
-			// Fall back to form creation
-			goto(`/${wsSlug}/new?collection=${collectionSlug}`);
-		} finally {
-			creating = false;
-		}
-	}
 
 	function attentionIcon(type: string): string {
 		if (type === 'overdue') return '\u23f0';
@@ -209,8 +175,8 @@
 				<span class="item-count">{totalItems} item{totalItems !== 1 ? 's' : ''}</span>
 			</div>
 			<div class="dash-header-actions">
-				<button class="btn btn-secondary" onclick={() => quickCreate('ideas')} disabled={creating}>💡 New Idea</button>
-				<button class="btn btn-primary" onclick={() => quickCreate('tasks')} disabled={creating}>+ New Task</button>
+				<button class="btn btn-secondary" onclick={() => uiStore.requestQuickAdd()}>💡 New Idea</button>
+				<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd()}>+ New Task</button>
 			</div>
 		</header>
 

@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
+	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
@@ -155,6 +156,8 @@
 
 		unsubscribeSSE = sseService.onItemEvent((event) => {
 			if (!['item_created', 'item_updated', 'item_archived', 'item_restored'].includes(event.type)) return;
+			// Skip self-triggered content saves — they don't affect children
+			if (event.type === 'item_updated' && (editorStore.dirty || Date.now() - editorStore.lastSaveTime < 5000)) return;
 			loadChildren();
 		});
 	});
