@@ -47,7 +47,7 @@
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
-	let titleInputEl = $state<HTMLInputElement>();
+	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
@@ -198,10 +198,18 @@
 		if (!item) return;
 		titleDraft = item.title;
 		editingTitle = true;
-		// Wait for the DOM to render the input, then focus
+		// Wait for the DOM to render the textarea, then focus + select all
 		await tick();
-		titleInputEl?.focus();
-		titleInputEl?.select();
+		if (titleInputEl) {
+			autoResizeTitle(titleInputEl);
+			titleInputEl.focus();
+			titleInputEl.setSelectionRange(0, titleInputEl.value.length);
+		}
+	}
+
+	function autoResizeTitle(el: HTMLTextAreaElement) {
+		el.style.height = 'auto';
+		el.style.height = el.scrollHeight + 'px';
 	}
 
 	function showSaved() {
@@ -586,13 +594,15 @@
 				<span class="item-ref">{formatItemRef(item)}</span>
 			{/if}
 			{#if editingTitle}
-				<input
+				<textarea
 					class="title-input"
+					rows="1"
 					bind:this={titleInputEl}
 					bind:value={titleDraft}
 					onblur={saveTitle}
 					onkeydown={handleTitleKeydown}
-				/>
+					oninput={(e) => autoResizeTitle(e.currentTarget)}
+				></textarea>
 			{:else}
 				<button class="title" onclick={startEditTitle}>
 					{item.title}
@@ -985,6 +995,10 @@
 		border-radius: var(--radius);
 		padding: 2px 4px;
 		color: var(--text-primary);
+		resize: none;
+		overflow: hidden;
+		line-height: 1.3;
+		font-family: inherit;
 	}
 
 	/* Meta */

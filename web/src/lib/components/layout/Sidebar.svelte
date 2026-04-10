@@ -13,8 +13,10 @@
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
+	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 
 	let notificationPanelOpen = $state(false);
+	let showCreateCollection = $state(false);
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
@@ -277,6 +279,12 @@
 				{#if sidebarCollections.length > 0}
 					<div class="section-header">
 						<span class="section-label">Collections</span>
+						<button
+							class="section-add-btn"
+							type="button"
+							onclick={() => { showCreateCollection = true; }}
+							title="New collection"
+						>+</button>
 					</div>
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
@@ -375,6 +383,18 @@
 	</div>
 </aside>
 
+{#if wsSlug}
+	<CreateCollectionModal
+		open={showCreateCollection}
+		{wsSlug}
+		oncreated={() => {
+			showCreateCollection = false;
+			if (wsSlug) collectionStore.loadCollections(wsSlug);
+		}}
+		onclose={() => { showCreateCollection = false; }}
+	/>
+{/if}
+
 <NotificationPanel visible={notificationPanelOpen} onclose={() => { notificationPanelOpen = false; }} />
 
 <style>
@@ -435,6 +455,9 @@
 		min-height: 0;
 	}
 	.section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
 		padding: var(--space-3) var(--space-3) var(--space-1);
 	}
 	.section-header.agent-section {
@@ -448,6 +471,25 @@
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
+	}
+	.section-add-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.85em;
+		cursor: pointer;
+		padding: 0 var(--space-1);
+		border-radius: var(--radius-sm);
+		line-height: 1;
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s;
+	}
+	.section-header:hover .section-add-btn {
+		opacity: 1;
+	}
+	.section-add-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
 	}
 	.nav-section {
 		display: flex;
