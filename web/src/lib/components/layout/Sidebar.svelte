@@ -102,6 +102,17 @@
 		quickAddTitle = '';
 	}
 
+	// Watch for Cmd-N quick-add requests from the layout
+	$effect(() => {
+		if (uiStore.quickAddRequested) {
+			uiStore.clearQuickAddRequest();
+			const target = activeColl
+				?? regularCollections.find(c => c.slug === 'tasks')
+				?? regularCollections[0];
+			if (target) startQuickAdd(target);
+		}
+	});
+
 	function autofocus(node: HTMLElement) {
 		requestAnimationFrame(() => node.focus());
 	}

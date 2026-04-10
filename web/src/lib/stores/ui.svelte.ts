@@ -7,6 +7,7 @@ let isMobile = $state(browser ? window.innerWidth <= 768 : false);
 let isTouch = $state(browser ? 'ontouchstart' in window : false);
 let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && window.innerWidth > 768 : false);
 let createWorkspaceOpen = $state(false);
+let quickAddRequested = $state(false);
 
 if (browser) {
 	window.addEventListener('resize', () => {
@@ -67,6 +68,11 @@ export const uiStore = {
 
 	openCreateWorkspace() { createWorkspaceOpen = true; },
 	closeCreateWorkspace() { createWorkspaceOpen = false; },
+
+	// Quick-add item trigger — sidebar watches this
+	get quickAddRequested() { return quickAddRequested; },
+	requestQuickAdd() { quickAddRequested = true; },
+	clearQuickAddRequest() { quickAddRequested = false; },
 
 	/** Close sidebar on mobile after navigation */
 	onNavigate() {

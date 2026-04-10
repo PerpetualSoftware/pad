@@ -82,9 +82,7 @@
 		}
 		if (isMod(e) && e.key === 'n') {
 			e.preventDefault();
-			if (workspaceStore.current) {
-				goto(`/${workspaceStore.current.slug}/new`);
-			}
+			uiStore.requestQuickAdd();
 			return;
 		}
 		if (e.key === '?' && !isInputFocused()) {

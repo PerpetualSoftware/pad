@@ -39,19 +39,19 @@
 		},
 		{
 			title: 'Create your first plan',
-			href: `/${wsSlug}/new?collection=plans`,
+			href: `/${wsSlug}/plans`,
 			done: collectionHasItems('plans'),
 			hint: '/pad create a plan for what I\'m working on'
 		},
 		{
 			title: 'Add a few tasks',
-			href: `/${wsSlug}/new?collection=tasks`,
+			href: `/${wsSlug}/tasks`,
 			done: collectionItemCount('tasks') >= 3,
 			hint: '/pad break down my current work into tasks'
 		},
 		{
 			title: 'Write an architecture doc',
-			href: `/${wsSlug}/new?collection=docs`,
+			href: `/${wsSlug}/docs`,
 			done: collectionHasItems('docs'),
 			hint: '/pad document the architecture of this project'
 		}
