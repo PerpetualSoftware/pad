@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,6 +14,11 @@ import (
 const (
 	// redisChannelPrefix is prepended to workspace IDs for Redis pub/sub channels.
 	redisChannelPrefix = "pad:events:"
+
+	// redisSeqKey is the Redis key used for the global event sequence counter.
+	// All instances share this counter so SSE event IDs are globally ordered
+	// and Last-Event-ID is valid across any instance on reconnect.
+	redisSeqKey = "pad:event_seq"
 
 	// reconnectDelay is how long to wait before retrying a failed Redis subscription.
 	reconnectDelay = 2 * time.Second
@@ -32,6 +38,15 @@ type RedisBus struct {
 	wsCounts map[string]int         // workspace → local subscriber count
 	wsSubs   map[string]*redisSub   // workspace → active Redis subscription
 
+	// Monotonic sequence counter for event IDs (local to this instance).
+	seq atomic.Int64
+
+	// Per-workspace replay buffers for Last-Event-ID support.
+	// Populated from events received via Redis pub/sub.
+	replayMu      sync.RWMutex
+	replayBuffers map[string]*replayBuffer
+	replaySize    int
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -47,12 +62,14 @@ type redisSub struct {
 func NewRedisBus(client *redis.Client) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisBus{
-		client:      client,
-		subscribers: make(map[chan Event]*subscriber),
-		wsCounts:    make(map[string]int),
-		wsSubs:      make(map[string]*redisSub),
-		ctx:         ctx,
-		cancel:      cancel,
+		client:        client,
+		subscribers:   make(map[chan Event]*subscriber),
+		wsCounts:      make(map[string]int),
+		wsSubs:        make(map[string]*redisSub),
+		replayBuffers: make(map[string]*replayBuffer),
+		replaySize:    DefaultReplayBufferSize,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -129,10 +146,23 @@ func (b *RedisBus) Unsubscribe(ch chan Event) {
 }
 
 // Publish sends an event to Redis, which distributes it to all instances.
+// Events are assigned a globally unique sequence ID via Redis INCR so that
+// Last-Event-ID is valid across any instance on reconnect.
 func (b *RedisBus) Publish(event Event) {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
 	}
+
+	// Assign a globally ordered sequence ID via Redis atomic counter.
+	// This ensures all instances share the same ID space, so Last-Event-ID
+	// from one instance is meaningful on any other instance.
+	id, err := b.client.Incr(b.ctx, redisSeqKey).Result()
+	if err != nil {
+		// Fall back to local counter if Redis INCR fails (degraded mode).
+		slog.Warn("failed to get global event ID from Redis, falling back to local", "error", err)
+		id = b.seq.Add(1)
+	}
+	event.ID = id
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -144,6 +174,19 @@ func (b *RedisBus) Publish(event Event) {
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
 		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
 	}
+}
+
+// EventsSince returns buffered events for a workspace with IDs greater than sinceID.
+// Returns nil if sinceID has been evicted from the buffer (gap too large).
+func (b *RedisBus) EventsSince(workspaceID string, sinceID int64) []Event {
+	b.replayMu.RLock()
+	defer b.replayMu.RUnlock()
+
+	rb, ok := b.replayBuffers[workspaceID]
+	if !ok {
+		return []Event{}
+	}
+	return rb.since(sinceID)
 }
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
@@ -227,8 +270,23 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 	}
 }
 
-// fanOutLocally distributes an event to all local subscribers for the event's workspace.
+// fanOutLocally distributes an event to all local subscribers for the event's workspace
+// and stores it in the replay buffer.
 func (b *RedisBus) fanOutLocally(event Event) {
+	// Events received via Redis pub/sub already carry a global ID assigned by
+	// the publishing instance via Redis INCR. We use that ID directly so all
+	// instances share the same ID space for Last-Event-ID replay.
+
+	// Store in replay buffer for reconnect replay.
+	b.replayMu.Lock()
+	rb, ok := b.replayBuffers[event.WorkspaceID]
+	if !ok {
+		rb = newReplayBuffer(b.replaySize)
+		b.replayBuffers[event.WorkspaceID] = rb
+	}
+	rb.append(event)
+	b.replayMu.Unlock()
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

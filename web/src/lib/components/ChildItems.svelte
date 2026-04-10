@@ -3,7 +3,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
-	import { visibility } from '$lib/services/visibility.svelte';
+	import { syncService } from '$lib/services/sync.svelte';
 	import type { Item } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
@@ -29,7 +29,7 @@
 	let loading = $state(true);
 	let error = $state('');
 	let unsubscribeSSE: (() => void) | null = null;
-	let unsubscribeVisibility: (() => void) | null = null;
+	let unsubscribeSync: (() => void) | null = null;
 
 	let expandedIds = $state<Set<string>>(new Set());
 
@@ -138,9 +138,12 @@
 	});
 
 	onMount(() => {
-		unsubscribeVisibility = visibility.onTabResume(() => {
+		unsubscribeSync = syncService.onSync((result) => {
 			if (!wsSlug || !itemSlug) return;
-			loadChildren();
+			// Only reload children on actual changes, not when caught up
+			if (result.type !== 'caught_up') {
+				loadChildren();
+			}
 		});
 	});
 
@@ -158,7 +161,7 @@
 
 	onDestroy(() => {
 		unsubscribeSSE?.();
-		unsubscribeVisibility?.();
+		unsubscribeSync?.();
 	});
 
 	function formatLabel(value: string): string {

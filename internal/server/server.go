@@ -415,6 +415,9 @@ func (s *Server) setupRouter() {
 
 				// Dashboard (v2)
 				r.Get("/dashboard", s.handleGetDashboard)
+
+				// Incremental sync — returns items changed since a timestamp
+				r.Get("/changes", s.handleGetChanges)
 			})
 		})
 

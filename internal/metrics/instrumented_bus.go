@@ -94,3 +94,8 @@ func (b *InstrumentedBus) SubscriberCount() int {
 func (b *InstrumentedBus) WorkspaceSubscriberCount(workspaceID string) int {
 	return b.inner.WorkspaceSubscriberCount(workspaceID)
 }
+
+// EventsSince delegates to the inner bus.
+func (b *InstrumentedBus) EventsSince(workspaceID string, sinceID int64) []events.Event {
+	return b.inner.EventsSince(workspaceID, sinceID)
+}

@@ -11,7 +11,7 @@
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
-	import { visibility } from '$lib/services/visibility.svelte';
+	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
@@ -129,36 +129,60 @@
 		});
 	});
 
-	// Silently refresh items when the tab regains focus (SSE events may have been lost)
-	let unsubscribeVisibility: (() => void) | null = null;
+	// Sync coordinator — handle tab-resume data refresh efficiently
+	let unsubscribeSync: (() => void) | null = null;
 
 	onMount(() => {
-		unsubscribeVisibility = visibility.onTabResume(async () => {
+		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
+
+			if (result.type === 'caught_up') return;
+
+			if (result.type === 'incremental') {
+				// Apply incremental changes to this collection's item list
+				const changes = result.changes;
+				let changed = false;
+
+				for (const updated of changes.updated) {
+					const existingIdx = items.findIndex(i => i.id === updated.id);
+
+					if (updated.collection_slug === collSlug) {
+						// Item belongs to this collection — update or add
+						changed = true;
+						if (existingIdx >= 0) {
+							items[existingIdx] = updated;
+						} else {
+							items = [...items, updated];
+						}
+					} else if (existingIdx >= 0) {
+						// Item was moved OUT of this collection — remove it
+						changed = true;
+						items = items.filter(i => i.id !== updated.id);
+					}
+				}
+
+				for (const deletedId of changes.deleted) {
+					const idx = items.findIndex(i => i.id === deletedId);
+					if (idx >= 0) {
+						changed = true;
+						items = items.filter(i => i.id !== deletedId);
+					}
+				}
+
+				// Refresh progress data if anything changed
+				if (changed) {
+					await refreshProgress(wsSlug, collSlug, items);
+				}
+				return;
+			}
+
+			// Full refresh fallback
 			try {
 				const listParams = showArchived ? { include_archived: true } : undefined;
 				const freshItems = await api.items.listByCollection(wsSlug, collSlug, listParams);
 				items = freshItems;
-
-				// Update progress data without resetting view state
-				if (collSlug === 'plans') {
-					const progress = await api.items.plansProgress(wsSlug).catch(() => []);
-					const map: Record<string, { total: number; done: number }> = {};
-					for (const p of progress) {
-						map[p.item_id] = { total: p.total, done: p.done };
-					}
-					itemProgress = map;
-				} else {
-					const map: Record<string, { total: number; done: number }> = {};
-					for (const it of freshItems) {
-						if (!it.content) continue;
-						const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
-						if (total === 0) continue;
-						const done = (it.content.match(/- \[x\]/g) ?? []).length;
-						map[it.id] = { total, done };
-					}
-					itemProgress = map;
-				}
+				await refreshProgress(wsSlug, collSlug, freshItems);
+				syncService.markSynced(); // Advance cursor now that reload succeeded
 			} catch {
 				// Ignore — will catch up on next SSE event
 			}
@@ -167,8 +191,29 @@
 
 	onDestroy(() => {
 		unsubscribeSSE?.();
-		unsubscribeVisibility?.();
+		unsubscribeSync?.();
 	});
+
+	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
+		if (coll === 'plans') {
+			const progress = await api.items.plansProgress(ws).catch(() => []);
+			const map: Record<string, { total: number; done: number }> = {};
+			for (const p of progress) {
+				map[p.item_id] = { total: p.total, done: p.done };
+			}
+			itemProgress = map;
+		} else {
+			const map: Record<string, { total: number; done: number }> = {};
+			for (const it of itemList) {
+				if (!it.content) continue;
+				const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
+				if (total === 0) continue;
+				const done = (it.content.match(/- \[x\]/g) ?? []).length;
+				map[it.id] = { total, done };
+			}
+			itemProgress = map;
+		}
+	}
 
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		loading = true;

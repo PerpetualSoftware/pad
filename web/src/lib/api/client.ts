@@ -32,7 +32,8 @@ import type {
 	AgentRole,
 	AgentRoleCreate,
 	AgentRoleUpdate,
-	RoleBoardLane
+	RoleBoardLane,
+	ChangesResponse
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -400,6 +401,14 @@ export const api = {
 	dashboard: {
 		get: (ws: string) =>
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
+	},
+
+	// ── Incremental Sync ─────────────────────────────────────────────────────
+
+	changes: {
+		/** Fetch items modified since the given timestamp (unix ms). */
+		since: (ws: string, sinceMs: number) =>
+			request<ChangesResponse>(`/workspaces/${ws}/changes?since=${sinceMs}`)
 	},
 
 	// ── Search ────────────────────────────────────────────────────────────────
