@@ -209,8 +209,8 @@
 				<span class="item-count">{totalItems} item{totalItems !== 1 ? 's' : ''}</span>
 			</div>
 			<div class="dash-header-actions">
-				<button class="btn btn-secondary" onclick={() => quickCreate('ideas')} disabled={creating}>💡 New Idea</button>
-				<button class="btn btn-primary" onclick={() => quickCreate('tasks')} disabled={creating}>+ New Task</button>
+				<a class="btn btn-secondary" href="/{wsSlug}/new?collection=ideas">💡 New Idea</a>
+				<a class="btn btn-primary" href="/{wsSlug}/new?collection=tasks">+ New Task</a>
 			</div>
 		</header>
 

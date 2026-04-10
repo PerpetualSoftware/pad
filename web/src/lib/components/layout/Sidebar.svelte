@@ -17,6 +17,9 @@
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
+	let quickAddCollection = $state<Collection | null>(null);
+	let quickAddTitle = $state('');
+	let quickAddInputEl = $state<HTMLTextAreaElement>();
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
@@ -94,10 +97,25 @@
 		collectionStore.loadCollections(wsSlug);
 	}
 
-	async function createNewItem() {
-		if (!wsSlug || !activeCollectionSlug) return;
-		const coll = activeColl;
-		if (!coll) return;
+	function startQuickAdd(coll: Collection) {
+		quickAddCollection = coll;
+		quickAddTitle = '';
+	}
+
+	function autofocus(node: HTMLElement) {
+		requestAnimationFrame(() => node.focus());
+	}
+
+	function cancelQuickAdd() {
+		quickAddCollection = null;
+		quickAddTitle = '';
+	}
+
+	async function submitQuickAdd() {
+		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim()) return;
+		const coll = quickAddCollection;
+		const title = quickAddTitle.trim();
+		cancelQuickAdd();
 		try {
 			const schema = parseSchema(coll);
 			const settings = parseSettings(coll);
@@ -106,16 +124,25 @@
 			if (statusField?.options?.length) {
 				defaultFields.status = statusField.options[0];
 			}
-			const item = await api.items.create(wsSlug, activeCollectionSlug, {
-				title: 'Untitled',
+			const item = await api.items.create(wsSlug, coll.slug, {
+				title,
 				content: settings.content_template || '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
 			uiStore.onNavigate();
-			goto(`/${wsSlug}/${activeCollectionSlug}/${itemUrlId(item)}?new=1`);
+			goto(`/${wsSlug}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			toastStore.show(err?.message || 'Failed to create item', 'error');
+		}
+	}
+
+	function handleQuickAddKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			submitQuickAdd();
+		} else if (e.key === 'Escape') {
+			cancelQuickAdd();
 		}
 	}
 
@@ -308,6 +335,11 @@
 								{:else if collection.active_item_count == null && collection.item_count != null && collection.item_count > 0}
 									<span class="nav-count">{collection.item_count}</span>
 								{/if}
+								<button
+									class="nav-quick-add"
+									title="New {collection.name.replace(/s$/, '')}"
+									onclick={(e) => { e.stopPropagation(); e.preventDefault(); startQuickAdd(collection); }}
+								>+</button>
 							</a>
 						{/each}
 					</div>
@@ -334,13 +366,13 @@
 				{/if}
 			</nav>
 
-			{#if !agentSlugs.includes(activeCollectionSlug ?? '') && activeCollectionSlug}
+			{#if !agentSlugs.includes(activeCollectionSlug ?? '') && activeCollectionSlug && activeColl}
 			<div class="actions">
 				<button
 					class="new-item-btn"
-					onclick={createNewItem}
+					onclick={() => startQuickAdd(activeColl)}
 				>
-					+ New {activeColl?.name ? activeColl.name.replace(/s$/, '') : 'Item'}
+					+ New {activeColl.name ? activeColl.name.replace(/s$/, '') : 'Item'}
 				</button>
 			</div>
 			{/if}
@@ -355,6 +387,18 @@
 					<a href="/{wsSlug}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
 						⚙ Settings
 					</a>
+				{/if}
+				{#if !uiStore.isMobile}
+					<button
+						class="collapse-sidebar-btn"
+						onclick={() => uiStore.closeSidebar()}
+						title="Hide sidebar (⌘\)"
+						aria-label="Hide sidebar"
+					>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<path d="M11 3L6 8L11 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					</button>
 				{/if}
 				<button
 					class="bell-btn"
@@ -393,6 +437,38 @@
 		}}
 		onclose={() => { showCreateCollection = false; }}
 	/>
+{/if}
+
+{#if quickAddCollection}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="quick-add-overlay" onclick={cancelQuickAdd}>
+		<div class="quick-add-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="quick-add-header">
+				<span class="quick-add-icon">{quickAddCollection.icon}</span>
+				<span class="quick-add-label">New {quickAddCollection.name.replace(/s$/, '')}</span>
+			</div>
+			<textarea
+				class="quick-add-input"
+				rows="1"
+				placeholder="What's the title?"
+				use:autofocus
+				bind:this={quickAddInputEl}
+				bind:value={quickAddTitle}
+				onkeydown={handleQuickAddKeydown}
+				oninput={(e) => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
+			></textarea>
+			<div class="quick-add-actions">
+				<span class="quick-add-hint">Enter to create · Esc to cancel</span>
+				<button
+					class="quick-add-btn"
+					type="button"
+					disabled={!quickAddTitle.trim()}
+					onclick={submitQuickAdd}
+				>Create</button>
+			</div>
+		</div>
+	</div>
 {/if}
 
 <NotificationPanel visible={notificationPanelOpen} onclose={() => { notificationPanelOpen = false; }} />
@@ -488,6 +564,31 @@
 		opacity: 1;
 	}
 	.section-add-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+	.nav-quick-add {
+		flex-shrink: 0;
+		width: 1.4em;
+		height: 1.4em;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		font-size: 0.8em;
+		font-weight: 600;
+		line-height: 1;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		padding: 0;
+		visibility: hidden;
+	}
+	.nav-item:hover .nav-quick-add {
+		visibility: visible;
+	}
+	.nav-quick-add:hover {
 		color: var(--text-primary);
 		background: var(--bg-hover);
 	}
@@ -590,6 +691,87 @@
 		color: var(--text-primary);
 		text-decoration: none;
 	}
+	.quick-add-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		z-index: 50;
+		display: flex;
+		justify-content: center;
+		align-items: flex-start;
+		padding-top: 20vh;
+	}
+	.quick-add-modal {
+		width: 100%;
+		max-width: 560px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+		padding: var(--space-4) var(--space-5);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.quick-add-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.quick-add-icon {
+		font-size: 1.1em;
+	}
+	.quick-add-label {
+		font-size: 0.9em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+	.quick-add-input {
+		width: 100%;
+		padding: var(--space-3);
+		background: var(--bg-tertiary);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		font-size: 1em;
+		color: var(--text-primary);
+		outline: none;
+		resize: none;
+		overflow: hidden;
+		line-height: 1.4;
+		font-family: inherit;
+	}
+	.quick-add-input:focus {
+		border-color: var(--accent-blue);
+	}
+	.quick-add-input::placeholder {
+		color: var(--text-muted);
+	}
+	.quick-add-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.quick-add-hint {
+		font-size: 0.75em;
+		color: var(--text-muted);
+	}
+	.quick-add-btn {
+		padding: var(--space-2) var(--space-4);
+		background: var(--accent-blue);
+		border: none;
+		border-radius: var(--radius);
+		color: #fff;
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+	}
+	.quick-add-btn:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+	.quick-add-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
 
 	/* Footer */
 	.sidebar-footer {
@@ -635,6 +817,23 @@
 		opacity: 0.6;
 		margin-top: var(--space-2);
 		user-select: text;
+	}
+	.collapse-sidebar-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		cursor: pointer;
+	}
+	.collapse-sidebar-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
 	}
 	.bell-btn {
 		position: relative;

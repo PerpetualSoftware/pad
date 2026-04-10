@@ -100,10 +100,11 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(5.0 / 3600.0),
 			Burst: 5,
 		}),
-		// API: 100 requests per minute per user/IP (= 100/60 per second, burst 20)
+		// API: 600 requests per minute per user/IP (= 10 per second, burst 60)
+		// Local-first tool with SSE-driven UI needs headroom for cascading refreshes.
 		API: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(100.0 / 60.0),
-			Burst: 20,
+			Rate:  rate.Limit(600.0 / 60.0),
+			Burst: 60,
 		}),
 		// Search: 30 requests per minute per user/IP (= 30/60 per second, burst 10)
 		Search: newIPRateLimiter(rateLimitConfig{

@@ -165,6 +165,16 @@
 		</button>
 
 		<div class="topbar-right">
+			<button
+				class="collapse-btn"
+				onclick={() => uiStore.closeTopbar()}
+				title="Hide workspace bar (⌘\)"
+				aria-label="Hide workspace bar"
+			>
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+					<path d="M3 11L8 6L13 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
 			{#if authStore.user}
 				<div class="user-menu-container">
 					<button
@@ -276,8 +286,10 @@
 
 <style>
 	.topbar {
+		position: relative;
 		display: flex;
 		align-items: center;
+		justify-content: center;
 		height: var(--topbar-height);
 		min-height: var(--topbar-height);
 		background: var(--bg-secondary);
@@ -301,8 +313,8 @@
 		display: flex;
 		align-items: center;
 		gap: 2px;
-		flex: 1;
 		min-width: 0;
+		max-width: 100%;
 		overflow-x: auto;
 		scrollbar-width: none;
 		-ms-overflow-style: none;
@@ -415,9 +427,33 @@
 
 	/* Right side — user menu (desktop only) */
 	.topbar-right {
+		position: absolute;
+		right: var(--space-3);
 		display: flex;
 		align-items: center;
+		gap: var(--space-1);
 		flex-shrink: 0;
+	}
+
+	.collapse-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0;
+		background: none;
+		border: none;
+		opacity: 0.5;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
+	}
+	.collapse-btn:hover {
+		opacity: 1;
+		color: var(--text-primary);
+		background: var(--bg-hover);
 	}
 
 	.user-menu-container {

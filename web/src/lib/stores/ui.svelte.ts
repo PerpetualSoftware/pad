@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 
 let sidebarOpen = $state(browser ? window.innerWidth > 768 : true);
+let topbarOpen = $state(browser ? localStorage.getItem('pad-topbar') !== 'closed' : true);
 let searchOpen = $state(false);
 let isMobile = $state(browser ? window.innerWidth <= 768 : false);
 let isTouch = $state(browser ? 'ontouchstart' in window : false);
@@ -24,6 +25,7 @@ if (browser) {
 
 export const uiStore = {
 	get sidebarOpen() { return sidebarOpen; },
+	get topbarOpen() { return topbarOpen; },
 	get searchOpen() { return searchOpen; },
 	get isMobile() { return isMobile; },
 	get isTouch() { return isTouch; },
@@ -33,6 +35,19 @@ export const uiStore = {
 	toggleSidebar() { sidebarOpen = !sidebarOpen; },
 	openSidebar() { sidebarOpen = true; },
 	closeSidebar() { sidebarOpen = false; },
+
+	toggleTopbar() {
+		topbarOpen = !topbarOpen;
+		if (browser) localStorage.setItem('pad-topbar', topbarOpen ? 'open' : 'closed');
+	},
+	openTopbar() {
+		topbarOpen = true;
+		if (browser) localStorage.setItem('pad-topbar', 'open');
+	},
+	closeTopbar() {
+		topbarOpen = false;
+		if (browser) localStorage.setItem('pad-topbar', 'closed');
+	},
 	openSearch() { searchOpen = true; },
 	closeSearch() { searchOpen = false; },
 	toggleSearch() { searchOpen = !searchOpen; },
