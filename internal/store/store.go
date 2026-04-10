@@ -60,6 +60,10 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("backfill workspace owners: %w", err)
 	}
 
+	if err := s.backfillUsernames(); err != nil {
+		return nil, fmt.Errorf("backfill usernames: %w", err)
+	}
+
 	return s, nil
 }
 
@@ -92,6 +96,10 @@ func NewPostgres(connStr string) (*Store, error) {
 
 	if err := s.backfillWorkspaceOwners(); err != nil {
 		return nil, fmt.Errorf("backfill workspace owners: %w", err)
+	}
+
+	if err := s.backfillUsernames(); err != nil {
+		return nil, fmt.Errorf("backfill usernames: %w", err)
 	}
 
 	return s, nil

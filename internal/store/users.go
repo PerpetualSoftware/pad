@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/xarmian/pad/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
+
+var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 const bcryptCost = 12
 
@@ -188,6 +191,112 @@ func (s *Store) UserCount() (int, error) {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
 	return count, nil
+}
+
+// --- Username backfill ---
+
+// GenerateUsername derives a URL-safe username from a display name.
+// Falls back to the email local part if the name produces an empty result.
+func GenerateUsername(name, email string) string {
+	// Lowercase and replace spaces/special chars with hyphens
+	u := strings.ToLower(strings.TrimSpace(name))
+	u = usernameCleanRe.ReplaceAllString(u, "-")
+
+	// Collapse consecutive hyphens, strip leading/trailing
+	for strings.Contains(u, "--") {
+		u = strings.ReplaceAll(u, "--", "-")
+	}
+	u = strings.Trim(u, "-")
+
+	// Truncate to 39 chars (GitHub-style limit)
+	if len(u) > 39 {
+		u = u[:39]
+		u = strings.TrimRight(u, "-")
+	}
+
+	// Fall back to email local part
+	if u == "" && email != "" {
+		local := strings.Split(email, "@")[0]
+		u = strings.ToLower(local)
+		u = usernameCleanRe.ReplaceAllString(u, "-")
+		u = strings.Trim(u, "-")
+		if len(u) > 39 {
+			u = u[:39]
+			u = strings.TrimRight(u, "-")
+		}
+	}
+
+	if u == "" {
+		u = "user"
+	}
+	return u
+}
+
+// backfillUsernames generates usernames for existing users that don't have one.
+// Idempotent: skips users who already have a non-empty username.
+func (s *Store) backfillUsernames() error {
+	// Find users with empty username
+	rows, err := s.db.Query(s.q(`SELECT id, name, email FROM users WHERE username = '' OR username IS NULL`))
+	if err != nil {
+		return fmt.Errorf("find users without username: %w", err)
+	}
+	defer rows.Close()
+
+	type userRow struct {
+		id, name, email string
+	}
+	var users []userRow
+	for rows.Next() {
+		var u userRow
+		if err := rows.Scan(&u.id, &u.name, &u.email); err != nil {
+			return fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(users) == 0 {
+		return nil // Nothing to backfill
+	}
+
+	// Collect all existing usernames to detect collisions
+	existing := make(map[string]bool)
+	existingRows, err := s.db.Query(s.q(`SELECT username FROM users WHERE username != ''`))
+	if err != nil {
+		return fmt.Errorf("list existing usernames: %w", err)
+	}
+	defer existingRows.Close()
+	for existingRows.Next() {
+		var u string
+		if err := existingRows.Scan(&u); err != nil {
+			return err
+		}
+		existing[strings.ToLower(u)] = true
+	}
+
+	for _, u := range users {
+		base := GenerateUsername(u.name, u.email)
+		username := base
+
+		// Handle collisions: append -2, -3, etc.
+		suffix := 2
+		for existing[username] {
+			username = fmt.Sprintf("%s-%d", base, suffix)
+			suffix++
+		}
+
+		existing[username] = true
+
+		_, err := s.db.Exec(s.q(`UPDATE users SET username = ?, updated_at = ? WHERE id = ?`),
+			username, now(), u.id)
+		if err != nil {
+			return fmt.Errorf("set username for user %s: %w", u.id, err)
+		}
+	}
+
+	return nil
 }
 
 // --- TOTP 2FA ---
