@@ -3,6 +3,7 @@
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -602,14 +603,7 @@
 								{#each itemActions as { action, index } (index)}
 									<div class="action-card">
 										<div class="action-card-top">
-											<input
-												class="action-icon-input"
-												type="text"
-												placeholder="⚡"
-												bind:value={action.icon}
-												maxlength="2"
-												title="Icon (emoji)"
-											/>
+											<EmojiPickerButton bind:value={action.icon} placeholder="⚡" />
 											<input
 												class="action-label-input"
 												type="text"
@@ -644,14 +638,7 @@
 								{#each collectionActions as { action, index } (index)}
 									<div class="action-card">
 										<div class="action-card-top">
-											<input
-												class="action-icon-input"
-												type="text"
-												placeholder="⚡"
-												bind:value={action.icon}
-												maxlength="2"
-												title="Icon (emoji)"
-											/>
+											<EmojiPickerButton bind:value={action.icon} placeholder="⚡" />
 											<input
 												class="action-label-input"
 												type="text"
