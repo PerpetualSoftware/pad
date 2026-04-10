@@ -7,6 +7,7 @@
 	import { api } from '$lib/api/client';
 	import type { Workspace } from '$lib/types';
 	import { onMount } from 'svelte';
+	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -132,6 +133,9 @@
 {#if !mobile}
 	<!-- ── Desktop ────────────────────────────────────────────────────────── -->
 	<header class="topbar">
+		<div class="topbar-left">
+			<PadLogo />
+		</div>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="workspace-list"
@@ -214,6 +218,9 @@
 {:else}
 	<!-- ── Mobile ─────────────────────────────────────────────────────────── -->
 	<header class="topbar topbar-mobile">
+		<div class="topbar-left">
+			<PadLogo />
+		</div>
 		<div class="workspace-list">
 			{#each workspaceStore.workspaces as ws (ws.id)}
 				<a
@@ -294,7 +301,7 @@
 		min-height: var(--topbar-height);
 		background: var(--bg-secondary);
 		border-bottom: 1px solid var(--border);
-		padding: 0 var(--space-3);
+		padding: 0 72px 0 56px; /* clear absolute-positioned logo (left) and user menu (right) */
 		gap: var(--space-2);
 		z-index: 20;
 	}
@@ -423,6 +430,16 @@
 	}
 	.done-btn:hover {
 		background: color-mix(in srgb, var(--accent-blue) 25%, transparent);
+	}
+
+	/* Left side — logo */
+	.topbar-left {
+		position: absolute;
+		left: var(--space-3);
+		display: flex;
+		align-items: center;
+		flex-shrink: 0;
+		z-index: 1;
 	}
 
 	/* Right side — user menu (desktop only) */

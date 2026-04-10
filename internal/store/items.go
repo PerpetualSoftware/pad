@@ -57,6 +57,10 @@ func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agen
 	return nil
 }
 
+// maxItemNumberRetries is the number of times CreateItem will retry when a
+// concurrent insert claims the same workspace-global item_number.
+const maxItemNumberRetries = 3
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	// Validate assignment scope before writing
 	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
@@ -92,17 +96,36 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 		return nil, fmt.Errorf("unique slug: %w", err)
 	}
 
+	// Retry loop: if a concurrent insert claims the same item_number we
+	// roll back and re-read MAX(item_number) on the next attempt.
+	var lastErr error
+	for attempt := 0; attempt < maxItemNumberRetries; attempt++ {
+		lastErr = s.tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source, input)
+		if lastErr == nil {
+			return s.GetItem(id)
+		}
+		// Only retry on unique-constraint violations (item_number conflict)
+		if !isUniqueViolation(lastErr) {
+			return nil, fmt.Errorf("insert item: %w", lastErr)
+		}
+	}
+	return nil, fmt.Errorf("insert item after %d retries: %w", maxItemNumberRetries, lastErr)
+}
+
+// tryCreateItem attempts a single transactional insert of an item with the
+// next available workspace-global item_number.
+func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer tx.Rollback()
 
-	// Assign the next item_number within this collection
+	// Assign the next item_number within this workspace (global counter)
 	var nextNum int
-	err = tx.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?"), collectionID).Scan(&nextNum)
+	err = tx.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?"), workspaceID).Scan(&nextNum)
 	if err != nil {
-		return nil, fmt.Errorf("get next item number: %w", err)
+		return fmt.Errorf("get next item number: %w", err)
 	}
 
 	_, err = tx.Exec(s.q(`
@@ -114,7 +137,7 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
 		createdBy, createdBy, source, nextNum, ts, ts)
 	if err != nil {
-		return nil, fmt.Errorf("insert item: %w", err)
+		return err
 	}
 
 	// Create initial version if there's content
@@ -125,15 +148,22 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 			VALUES (?, ?, ?, '', ?, ?, ?, ?)
 		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts)
 		if err != nil {
-			return nil, fmt.Errorf("create initial version: %w", err)
+			return fmt.Errorf("create initial version: %w", err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
+	return tx.Commit()
+}
 
-	return s.GetItem(id)
+// isUniqueViolation checks whether an error is a unique constraint violation.
+// Works for both SQLite (UNIQUE constraint failed) and PostgreSQL (duplicate key).
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicate key value violates unique constraint")
 }
 
 func (s *Store) GetItem(id string) (*models.Item, error) {
@@ -1386,34 +1416,17 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 }
 
 // MoveItem moves an item to a different collection within the same workspace.
-// It updates the collection_id, assigns a new item_number in the target collection,
-// and updates the fields JSON.
+// It updates the collection_id and fields JSON. The item_number is preserved
+// because numbering is workspace-global — the number stays the same, only the
+// collection prefix changes (e.g. IDEA-42 → BUG-42).
 func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*models.Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// Get next item_number in the target collection
-	var nextNumber int
-	err = tx.QueryRow(s.q(`SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE collection_id = ?`), targetCollectionID).Scan(&nextNumber)
-	if err != nil {
-		return nil, fmt.Errorf("get next item number: %w", err)
-	}
-
-	// Update the item
-	_, err = tx.Exec(s.q(`
+	_, err := s.db.Exec(s.q(`
 		UPDATE items
-		SET collection_id = ?, fields = ?, item_number = ?, updated_at = ?
+		SET collection_id = ?, fields = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, nextNumber, time.Now().UTC().Format(time.RFC3339), itemID)
+		targetCollectionID, newFieldsJSON, time.Now().UTC().Format(time.RFC3339), itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
 	}
 
 	return s.GetItem(itemID)

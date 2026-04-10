@@ -56,7 +56,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		SELECT id, collection_id, title, slug, content, fields, tags, pinned, sort_order,
 		       COALESCE(parent_id, ''), created_by, last_modified_by, source, COALESCE(item_number, 0), created_at, updated_at
 		FROM items WHERE workspace_id = ? AND deleted_at IS NULL
-		ORDER BY collection_id, sort_order, created_at`), ws.ID)
+		ORDER BY created_at, id`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
 	}
@@ -196,6 +196,11 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 	}
 
 	// Import items (first pass: create items, remap collection_id)
+	// Item numbers are assigned sequentially in created_at order to produce
+	// workspace-global numbering. Exported item_number values are ignored
+	// because old exports used per-collection numbering which can have
+	// duplicates within a workspace.
+	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
 		itemMap[it.ID] = newItemID
@@ -212,11 +217,12 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 			}
 		}
 
+		nextItemNumber++
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)`),
 			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
-			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, it.ItemNumber,
+			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, nextItemNumber,
 			it.CreatedAt, it.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)

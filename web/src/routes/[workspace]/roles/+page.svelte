@@ -8,6 +8,7 @@
 	import { itemUrlId } from '$lib/types';
 	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
+	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 
@@ -449,7 +450,7 @@
 				<div class="role-field-group">
 					<label class="role-field-label">Icon & Name</label>
 					<div class="role-edit-row">
-						<input class="role-input role-input-icon" type="text" bind:value={editIcon} placeholder="🔨" />
+						<EmojiPickerButton bind:value={editIcon} placeholder="🔨" size="md" />
 						<input class="role-input" type="text" bind:value={editName} placeholder="Role name" />
 					</div>
 				</div>
