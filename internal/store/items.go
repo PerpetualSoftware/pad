@@ -1605,6 +1605,70 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 	return items, rows.Err()
 }
 
+// ItemsModifiedSince returns items in a workspace that were updated after the
+// given timestamp. Used for incremental sync on tab resume. Also returns IDs of
+// items that were deleted (hard-deleted or archived) since the timestamp.
+//
+// The updated list includes both active AND recently archived items (those with
+// deleted_at > since). This lets the frontend update archived views correctly —
+// an item that was just archived needs its full data to appear in archived views,
+// not just its ID in the deleted list.
+func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated []models.Item, deletedIDs []string, err error) {
+	sinceStr := since.UTC().Format(time.RFC3339)
+
+	// Fetch updated items: active items modified since the timestamp,
+	// PLUS items archived since the timestamp (so archived views can update).
+	query := s.q(`
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.created_at, i.updated_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.workspace_id = ?
+		  AND i.updated_at > ?
+		  AND (i.deleted_at IS NULL OR i.deleted_at > ?)
+		ORDER BY i.updated_at ASC
+	`)
+
+	rows, err := s.db.Query(query, workspaceID, sinceStr, sinceStr)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	updated, err = scanItems(rows)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Fetch IDs of items deleted since the timestamp.
+	delQuery := s.q(`
+		SELECT id FROM items
+		WHERE workspace_id = ?
+		  AND deleted_at IS NOT NULL
+		  AND deleted_at > ?
+	`)
+	delRows, err := s.db.Query(delQuery, workspaceID, sinceStr)
+	if err != nil {
+		return updated, nil, err
+	}
+	defer delRows.Close()
+	for delRows.Next() {
+		var id string
+		if err := delRows.Scan(&id); err != nil {
+			return updated, nil, err
+		}
+		deletedIDs = append(deletedIDs, id)
+	}
+
+	return updated, deletedIDs, delRows.Err()
+}
+
 func hydrateItemComputedMetadata(item *models.Item) {
 	if item == nil {
 		return

@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
 // handleSSE streams Server-Sent Events for a workspace.
 // GET /api/v1/events?workspace=<slug>
+//
+// Supports Last-Event-ID: when a client reconnects with a Last-Event-ID header
+// (set automatically by the browser's EventSource), the server replays any
+// missed events from its in-memory replay buffer before entering the live
+// stream. If the requested ID is too old (evicted from the buffer), the server
+// sends a "sync_required" event so the client knows to do a full refresh.
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// SSE requires the event bus
 	if s.events == nil {
@@ -69,11 +76,37 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial connected event
-	writeSSEEvent(w, "connected", map[string]string{
+	writeSSEEvent(w, "connected", 0, map[string]string{
 		"workspace_id": ws.ID,
 		"workspace":    ws.Slug,
 	})
 	flusher.Flush()
+
+	// Replay missed events if the client provided Last-Event-ID.
+	// The browser's EventSource sends this automatically on reconnect.
+	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
+		lastID, parseErr := strconv.ParseInt(lastIDStr, 10, 64)
+		if parseErr == nil && lastID > 0 {
+			missed := s.events.EventsSince(ws.ID, lastID)
+			if missed == nil {
+				// Gap too large — buffer evicted. Tell client to do a full sync.
+				slog.Info("SSE replay gap too large, sending sync_required",
+					"workspace", ws.Slug, "last_event_id", lastID)
+				writeSSEEvent(w, "sync_required", 0, map[string]string{
+					"reason": "Event buffer exceeded. Full sync required.",
+				})
+				flusher.Flush()
+			} else if len(missed) > 0 {
+				slog.Info("SSE replaying missed events",
+					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
+				for _, event := range missed {
+					writeSSEEvent(w, event.Type, event.ID, event)
+					flusher.Flush()
+				}
+			}
+			// If len(missed) == 0: client is caught up, nothing to replay.
+		}
+	}
 
 	// Keepalive ticker
 	keepalive := time.NewTicker(30 * time.Second)
@@ -91,7 +124,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Channel closed (unsubscribed)
 				return
 			}
-			writeSSEEvent(w, event.Type, event)
+			writeSSEEvent(w, event.Type, event.ID, event)
 			flusher.Flush()
 
 		case <-keepalive.C:
@@ -103,11 +136,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeSSEEvent writes a single SSE event to the response writer.
-func writeSSEEvent(w http.ResponseWriter, eventType string, data interface{}) {
+// If eventID > 0, an "id:" field is included for Last-Event-ID support.
+func writeSSEEvent(w http.ResponseWriter, eventType string, eventID int64, data interface{}) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("failed to marshal SSE event", "error", err)
 		return
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, jsonData)
+	if eventID > 0 {
+		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", eventID, eventType, jsonData)
+	} else {
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, jsonData)
+	}
 }

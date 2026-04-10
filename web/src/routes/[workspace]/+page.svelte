@@ -5,7 +5,7 @@
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import { visibility } from '$lib/services/visibility.svelte';
+	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { itemUrlId } from '$lib/types';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
@@ -40,20 +40,24 @@
 		if (wsSlug) load(wsSlug);
 	});
 
-	let unsubscribeVisibility: (() => void) | null = null;
+	let unsubscribeSync: (() => void) | null = null;
 
 	onMount(() => {
 		pollTimer = setInterval(() => {
 			if (wsSlug) load(wsSlug, true);
 		}, 30000);
-		unsubscribeVisibility = visibility.onTabResume(() => {
-			if (wsSlug) load(wsSlug, true);
+		// Dashboard always does a full reload on any sync signal since it's
+		// an aggregated view (counts, activity, suggestions change with any item update)
+		unsubscribeSync = syncService.onSync((result) => {
+			if (result.type !== 'caught_up' && wsSlug) {
+				load(wsSlug, true);
+			}
 		});
 		return () => clearInterval(pollTimer);
 	});
 
 	onDestroy(() => {
-		unsubscribeVisibility?.();
+		unsubscribeSync?.();
 	});
 
 	async function load(slug: string, silent = false) {

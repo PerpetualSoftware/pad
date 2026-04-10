@@ -5,7 +5,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
-	import { visibility } from '$lib/services/visibility.svelte';
+	import { syncService } from '$lib/services/sync.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
@@ -13,23 +13,26 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let unsubscribeSSE: (() => void) | null = null;
-	let unsubscribeVisibility: (() => void) | null = null;
+	let unsubscribeSync: (() => void) | null = null;
 
 	onMount(() => {
-		visibility.init();
-		unsubscribeVisibility = visibility.onTabResume(() => {
+		// Initialize the sync coordinator (sets up visibilitychange listener once)
+		syncService.init();
+
+		// Listen for sync results to refresh collection metadata
+		unsubscribeSync = syncService.onSync((result) => {
 			if (!wsSlug) return;
-			// Reconnect SSE — events may have been lost while the tab was hidden
-			sseService.connect(wsSlug);
-			// Refresh collection metadata (counts, etc.)
-			collectionStore.loadCollections(wsSlug);
+			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
+				collectionStore.loadCollections(wsSlug);
+			}
 		});
+
 		connectSSE();
 	});
 
 	onDestroy(() => {
 		unsubscribeSSE?.();
-		unsubscribeVisibility?.();
+		unsubscribeSync?.();
 		sseService.disconnect();
 	});
 
@@ -38,6 +41,7 @@
 		if (wsSlug) {
 			workspaceStore.setCurrent(wsSlug);
 			collectionStore.loadCollections(wsSlug);
+			syncService.setWorkspace(wsSlug);
 			connectSSE();
 		}
 	});

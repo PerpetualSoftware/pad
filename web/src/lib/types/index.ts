@@ -547,6 +547,15 @@ export interface DashboardResponse {
 	}[];
 }
 
+// ─── Incremental Sync ────────────────────────────────────────────────────────
+
+export interface ChangesResponse {
+	updated: Item[];
+	deleted: string[];
+	server_time: number;
+	collections_changed: boolean;
+}
+
 // ─── Search ──────────────────────────────────────────────────────────────────
 
 export interface SearchResult {
