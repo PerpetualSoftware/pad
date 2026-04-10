@@ -145,6 +145,7 @@ func (s *Store) migrate() error {
 		"026_session_binding.sql",
 		"027_totp.sql",
 		"028_workspace_sort_order.sql",
+		"029_username.sql",
 	}
 
 	for _, name := range migrations {
@@ -197,6 +198,7 @@ func (s *Store) migratePostgres() error {
 		"006_session_binding.sql",
 		"007_totp.sql",
 		"008_workspace_sort_order.sql",
+		"009_username.sql",
 	}
 
 	for _, name := range migrations {

@@ -6,6 +6,7 @@ import "time"
 type User struct {
 	ID             string    `json:"id"`
 	Email          string    `json:"email"`
+	Username       string    `json:"username"`                // Unique handle; empty until set
 	Name           string    `json:"name"`
 	PasswordHash   string    `json:"-"`                       // Never serialized
 	Role           string    `json:"role"`                    // "admin" or "member"
@@ -20,14 +21,16 @@ type User struct {
 // UserCreate is the input for registering a new user.
 type UserCreate struct {
 	Email    string `json:"email"`
+	Username string `json:"username,omitempty"` // Optional; auto-generated if empty
 	Name     string `json:"name"`
-	Password string `json:"password"` // Plaintext, will be hashed
-	Role     string `json:"role,omitempty"` // Defaults to "member"
+	Password string `json:"password"`          // Plaintext, will be hashed
+	Role     string `json:"role,omitempty"`     // Defaults to "member"
 }
 
 // UserUpdate is the input for updating user profile fields.
 type UserUpdate struct {
 	Name      *string `json:"name,omitempty"`
+	Username  *string `json:"username,omitempty"`
 	Password  *string `json:"password,omitempty"` // Plaintext, will be hashed
 	AvatarURL *string `json:"avatar_url,omitempty"`
 }
@@ -62,6 +65,7 @@ type WorkspaceMember struct {
 	CreatedAt   time.Time `json:"created_at"`
 
 	// Populated by joins (not stored)
-	UserName  string `json:"user_name,omitempty"`
-	UserEmail string `json:"user_email,omitempty"`
+	UserName     string `json:"user_name,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	UserUsername string `json:"user_username,omitempty"`
 }

@@ -3,6 +3,7 @@
 export interface User {
 	id: string;
 	email: string;
+	username: string;
 	name: string;
 	role: string;
 	avatar_url?: string;
@@ -12,6 +13,7 @@ export interface User {
 
 export interface UserProfileUpdate {
 	name?: string;
+	username?: string;
 	current_password?: string;
 	new_password?: string;
 }

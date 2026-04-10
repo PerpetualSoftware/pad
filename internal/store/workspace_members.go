@@ -68,7 +68,7 @@ func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.Workspac
 func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT wm.workspace_id, wm.user_id, wm.role, wm.created_at,
-		       u.name, u.email
+		       u.name, u.email, u.username
 		FROM workspace_members wm
 		JOIN users u ON u.id = wm.user_id
 		WHERE wm.workspace_id = ?
@@ -85,7 +85,7 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 		var createdAt string
 		if err := rows.Scan(
 			&m.WorkspaceID, &m.UserID, &m.Role, &createdAt,
-			&m.UserName, &m.UserEmail,
+			&m.UserName, &m.UserEmail, &m.UserUsername,
 		); err != nil {
 			return nil, fmt.Errorf("scan workspace member: %w", err)
 		}

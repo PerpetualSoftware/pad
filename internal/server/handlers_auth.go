@@ -33,6 +33,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 	return map[string]interface{}{
 		"id":           user.ID,
 		"email":        user.Email,
+		"username":     user.Username,
 		"name":         user.Name,
 		"role":         user.Role,
 		"totp_enabled": user.TOTPEnabled,
@@ -445,6 +446,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":         user.ID,
 		"email":      user.Email,
+		"username":   user.Username,
 		"name":       user.Name,
 		"role":       user.Role,
 		"avatar_url": user.AvatarURL,
@@ -532,6 +534,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":         updated.ID,
 		"email":      updated.Email,
+		"username":   updated.Username,
 		"name":       updated.Name,
 		"role":       updated.Role,
 		"avatar_url": updated.AvatarURL,
@@ -663,10 +666,11 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true,
 		"user": map[string]interface{}{
-			"id":    user.ID,
-			"email": user.Email,
-			"name":  user.Name,
-			"role":  user.Role,
+			"id":       user.ID,
+			"email":    user.Email,
+			"username": user.Username,
+			"name":     user.Name,
+			"role":     user.Role,
 		},
 		"token": sessionToken,
 	})

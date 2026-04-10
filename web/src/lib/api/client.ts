@@ -105,11 +105,11 @@ export interface AuthSession {
 	setup_required: boolean;
 	setup_method?: 'local_cli' | 'docker_exec' | 'cloud';
 	auth_method: 'password' | 'cloud';
-	user?: { id: string; email: string; name: string; role: string };
+	user?: { id: string; email: string; username: string; name: string; role: string };
 }
 
 export interface LoginResponse {
-	user?: { id: string; email: string; name: string; role: string };
+	user?: { id: string; email: string; username: string; name: string; role: string };
 	token?: string;
 	requires_2fa?: boolean;
 	challenge_token?: string;
@@ -530,12 +530,12 @@ export const api = {
 				body: JSON.stringify({ email, password })
 			}),
 		verify2FA: (challengeToken: string, code?: string, recoveryCode?: string) =>
-			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/2fa/login-verify', {
+			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/2fa/login-verify', {
 				method: 'POST',
 				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
 		register: (email: string, name: string, password: string, invitation_code?: string) =>
-			request<{ user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/register', {
+			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
 			}),
@@ -546,7 +546,7 @@ export const api = {
 				body: JSON.stringify({ email })
 			}),
 		resetPassword: (token: string, password: string) =>
-			request<{ ok: boolean; user: { id: string; email: string; name: string; role: string }; token: string }>('/auth/reset-password', {
+			request<{ ok: boolean; user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/reset-password', {
 				method: 'POST',
 				body: JSON.stringify({ token, password })
 			}),

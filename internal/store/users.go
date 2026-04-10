@@ -14,7 +14,7 @@ import (
 const bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error) {
@@ -22,7 +22,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var createdAt, updatedAt string
 
 	err := row.Scan(
-		&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
+		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
 		&createdAt, &updatedAt,
 	)
@@ -54,9 +54,9 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 	ts := now()
 
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Name), string(hash), role, ts, ts)
+		INSERT INTO users (id, email, username, name, password_hash, role, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), string(hash), role, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
@@ -83,6 +83,19 @@ func (s *Store) GetUserByEmail(email string) (*models.User, error) {
 	return u, nil
 }
 
+// GetUserByUsername retrieves a user by username (case-insensitive).
+func (s *Store) GetUserByUsername(username string) (*models.User, error) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		return nil, nil
+	}
+	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE LOWER(username) = ?`), username))
+	if err != nil {
+		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	return u, nil
+}
+
 // UpdateUser updates mutable user fields.
 func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, error) {
 	var sets []string
@@ -91,6 +104,10 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 	if input.Name != nil {
 		sets = append(sets, "name = ?")
 		args = append(args, strings.TrimSpace(*input.Name))
+	}
+	if input.Username != nil {
+		sets = append(sets, "username = ?")
+		args = append(args, strings.TrimSpace(*input.Username))
 	}
 	if input.Password != nil {
 		hash, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcryptCost)
