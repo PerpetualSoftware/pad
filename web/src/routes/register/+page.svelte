@@ -5,6 +5,7 @@
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 
 	let name = $state('');
+	let username = $state('');
 	let email = $state('');
 	let password = $state('');
 	let confirmPassword = $state('');
@@ -12,6 +13,12 @@
 	let setupRequired = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
+
+	let usernameManuallyEdited = $state(false);
+	let usernameChecking = $state(false);
+	let usernameAvailable = $state<boolean | null>(null);
+	let usernameError = $state('');
+	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
 		try {
@@ -28,8 +35,56 @@
 		} catch {}
 	});
 
+	function generateUsername(name: string): string {
+		let u = name.toLowerCase().trim();
+		u = u.replace(/[^a-z0-9-]+/g, '-');
+		u = u.replace(/-{2,}/g, '-');
+		u = u.replace(/^-|-$/g, '');
+		if (u.length > 39) u = u.substring(0, 39).replace(/-$/, '');
+		return u;
+	}
+
+	function handleNameInput() {
+		if (!usernameManuallyEdited) {
+			username = generateUsername(name);
+			checkUsernameAvailability();
+		}
+	}
+
+	function handleUsernameInput() {
+		usernameManuallyEdited = username !== '' && username !== generateUsername(name);
+		checkUsernameAvailability();
+	}
+
+	function checkUsernameAvailability() {
+		if (checkTimeout) clearTimeout(checkTimeout);
+		usernameAvailable = null;
+		usernameError = '';
+
+		if (!username || username.length < 3) {
+			usernameChecking = false;
+			return;
+		}
+
+		usernameChecking = true;
+		checkTimeout = setTimeout(async () => {
+			try {
+				const result = await api.auth.checkUsername(username);
+				usernameAvailable = result.available;
+				usernameError = result.message || '';
+			} catch {
+				usernameError = '';
+				usernameAvailable = null;
+			} finally {
+				usernameChecking = false;
+			}
+		}, 400);
+	}
+
 	function validate(): string | null {
 		if (!name.trim()) return 'Please enter your name.';
+		if (username && username.length < 3) return 'Username must be at least 3 characters.';
+		if (usernameAvailable === false) return usernameError || 'Username is not available.';
 		if (!email.trim()) return 'Please enter your email.';
 		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 		if (!emailRegex.test(email)) return 'Please enter a valid email address.';
@@ -48,7 +103,7 @@
 
 		loading = true;
 		try {
-			await api.auth.register(email, name, password);
+			await api.auth.register(email, name, password, username || undefined);
 			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
@@ -86,10 +141,30 @@
 					type="text"
 					placeholder="Name"
 					bind:value={name}
+					oninput={handleNameInput}
 					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="name"
 				/>
+
+				<div class="username-field">
+					<input
+						type="text"
+						placeholder="Username"
+						bind:value={username}
+						oninput={handleUsernameInput}
+						onkeydown={handleKeydown}
+						disabled={loading}
+						autocomplete="username"
+					/>
+					{#if usernameChecking}
+						<span class="username-status checking">checking...</span>
+					{:else if usernameAvailable === true}
+						<span class="username-status available">available</span>
+					{:else if usernameAvailable === false}
+						<span class="username-status taken">{usernameError || 'not available'}</span>
+					{/if}
+				</div>
 
 				<input
 					type="email"
@@ -245,5 +320,30 @@
 
 	.login-link a:hover {
 		text-decoration: underline;
+	}
+
+	.username-field {
+		position: relative;
+	}
+
+	.username-status {
+		position: absolute;
+		right: var(--space-3);
+		top: 50%;
+		transform: translateY(-50%);
+		font-size: 0.75rem;
+		pointer-events: none;
+	}
+
+	.username-status.checking {
+		color: var(--text-muted);
+	}
+
+	.username-status.available {
+		color: #22c55e;
+	}
+
+	.username-status.taken {
+		color: #ef4444;
 	}
 </style>

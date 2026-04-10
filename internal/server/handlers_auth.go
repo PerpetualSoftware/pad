@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/store"
 )
 
 const (
@@ -38,6 +39,56 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"role":         user.Role,
 		"totp_enabled": user.TOTPEnabled,
 	}
+}
+
+// handleCheckUsername checks if a username is available for registration.
+// GET /api/v1/auth/check-username?username=foo
+func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
+	username := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("username")))
+
+	if username == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available": false,
+			"reason":    "invalid",
+			"message":   "Username is required",
+		})
+		return
+	}
+
+	// Format/reserved validation
+	if err := ValidateUsername(username); err != nil {
+		reason := "invalid"
+		if IsReservedUsername(username) {
+			reason = "reserved"
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available": false,
+			"reason":    reason,
+			"message":   err.Error(),
+		})
+		return
+	}
+
+	// Uniqueness check
+	existing, err := s.store.GetUserByUsername(username)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if existing != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available": false,
+			"reason":    "taken",
+			"message":   "Username is already taken",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"available": true,
+		"reason":    nil,
+		"message":   nil,
+	})
 }
 
 func setupStatePayload(setupMethod string) map[string]interface{} {
@@ -167,8 +218,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-generate username from name (D1: no prompt for bootstrap)
+	username := store.GenerateUsername(input.Name, input.Email)
+
 	user, err := s.store.CreateUser(models.UserCreate{
 		Email:    input.Email,
+		Username: username,
 		Name:     input.Name,
 		Password: input.Password,
 		Role:     "admin",
@@ -197,6 +252,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Email          string `json:"email"`
+		Username       string `json:"username"`
 		Name           string `json:"name"`
 		Password       string `json:"password"`
 		InvitationCode string `json:"invitation_code"`
@@ -208,6 +264,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Validate
 	input.Email = strings.TrimSpace(input.Email)
+	input.Username = strings.TrimSpace(strings.ToLower(input.Username))
 	input.Name = strings.TrimSpace(input.Name)
 	input.InvitationCode = strings.TrimSpace(input.InvitationCode)
 
@@ -273,9 +330,29 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Username: validate if provided, auto-generate if not
+	if input.Username != "" {
+		if err := ValidateUsername(input.Username); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		existingUser, err := s.store.GetUserByUsername(input.Username)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check username")
+			return
+		}
+		if existingUser != nil {
+			writeError(w, http.StatusConflict, "conflict", "Username is already taken")
+			return
+		}
+	} else {
+		input.Username = store.GenerateUsername(input.Name, input.Email)
+	}
+
 	// Create user
 	user, err := s.store.CreateUser(models.UserCreate{
 		Email:    input.Email,
+		Username: input.Username,
 		Name:     input.Name,
 		Password: input.Password,
 		Role:     "member",

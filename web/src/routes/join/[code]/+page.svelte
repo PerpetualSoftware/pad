@@ -14,12 +14,19 @@
 	let mode = $state<'login' | 'register'>('register');
 	let email = $state('');
 	let name = $state('');
+	let username = $state('');
 	let password = $state('');
 	let confirmPassword = $state('');
 	let formError = $state('');
 	let submitting = $state(false);
 	let challengeToken = $state('');
 	let totpCode = $state('');
+
+	let usernameManuallyEdited = $state(false);
+	let usernameChecking = $state(false);
+	let usernameAvailable = $state<boolean | null>(null);
+	let usernameError = $state('');
+	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
 		try {
@@ -54,6 +61,52 @@
 		}
 	}
 
+	function generateUsername(name: string): string {
+		let u = name.toLowerCase().trim();
+		u = u.replace(/[^a-z0-9-]+/g, '-');
+		u = u.replace(/-{2,}/g, '-');
+		u = u.replace(/^-|-$/g, '');
+		if (u.length > 39) u = u.substring(0, 39).replace(/-$/, '');
+		return u;
+	}
+
+	function handleNameInput() {
+		if (!usernameManuallyEdited) {
+			username = generateUsername(name);
+			checkUsernameAvailability();
+		}
+	}
+
+	function handleUsernameInput() {
+		usernameManuallyEdited = username !== '' && username !== generateUsername(name);
+		checkUsernameAvailability();
+	}
+
+	function checkUsernameAvailability() {
+		if (checkTimeout) clearTimeout(checkTimeout);
+		usernameAvailable = null;
+		usernameError = '';
+
+		if (!username || username.length < 3) {
+			usernameChecking = false;
+			return;
+		}
+
+		usernameChecking = true;
+		checkTimeout = setTimeout(async () => {
+			try {
+				const result = await api.auth.checkUsername(username);
+				usernameAvailable = result.available;
+				usernameError = result.message || '';
+			} catch {
+				usernameError = '';
+				usernameAvailable = null;
+			} finally {
+				usernameChecking = false;
+			}
+		}, 400);
+	}
+
 	async function handleSubmit() {
 		formError = '';
 		submitting = true;
@@ -61,12 +114,14 @@
 		try {
 			if (mode === 'register') {
 				if (!name.trim()) { formError = 'Name is required'; submitting = false; return; }
+				if (username && username.length < 3) { formError = 'Username must be at least 3 characters'; submitting = false; return; }
+				if (usernameAvailable === false) { formError = usernameError || 'Username is not available'; submitting = false; return; }
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
 				if (password.length < 8) { formError = 'Password must be at least 8 characters'; submitting = false; return; }
 				if (password !== confirmPassword) { formError = 'Passwords do not match'; submitting = false; return; }
 				// Pass the invitation code so the backend allows registration
 				// and auto-accepts the invitation in one step.
-				await api.auth.register(email.trim(), name.trim(), password, code);
+				await api.auth.register(email.trim(), name.trim(), password, username || undefined, code);
 				// Registration with invitation_code already accepted the invite,
 				// so redirect directly instead of calling acceptInvitation().
 				await goto('/', { replaceState: true });
@@ -197,10 +252,30 @@
 						type="text"
 						placeholder="Name"
 						bind:value={name}
+						oninput={handleNameInput}
 						onkeydown={handleKeydown}
 						disabled={submitting}
 						autocomplete="name"
 					/>
+
+					<div class="username-field">
+						<input
+							type="text"
+							placeholder="Username"
+							bind:value={username}
+							oninput={handleUsernameInput}
+							onkeydown={handleKeydown}
+							disabled={submitting}
+							autocomplete="username"
+						/>
+						{#if usernameChecking}
+							<span class="username-status checking">checking...</span>
+						{:else if usernameAvailable === true}
+							<span class="username-status available">available</span>
+						{:else if usernameAvailable === false}
+							<span class="username-status taken">{usernameError || 'not available'}</span>
+						{/if}
+					</div>
 				{/if}
 				<input
 					type="email"
@@ -378,4 +453,29 @@
 		text-decoration: none;
 	}
 	.link:hover { text-decoration: underline; }
+
+	.username-field {
+		position: relative;
+	}
+
+	.username-status {
+		position: absolute;
+		right: var(--space-3);
+		top: 50%;
+		transform: translateY(-50%);
+		font-size: 0.75rem;
+		pointer-events: none;
+	}
+
+	.username-status.checking {
+		color: var(--text-muted);
+	}
+
+	.username-status.available {
+		color: #22c55e;
+	}
+
+	.username-status.taken {
+		color: #ef4444;
+	}
 </style>

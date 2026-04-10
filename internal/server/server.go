@@ -234,6 +234,7 @@ func (s *Server) setupRouter() {
 			r.Get("/session", s.handleSessionCheck)
 			r.Post("/bootstrap", s.handleBootstrap)
 			r.Post("/register", s.handleRegister)
+			r.Get("/check-username", s.handleCheckUsername)
 			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)
 			r.Get("/me", s.handleGetCurrentUser)

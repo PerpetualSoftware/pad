@@ -534,11 +534,13 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
-		register: (email: string, name: string, password: string, invitation_code?: string) =>
+		register: (email: string, name: string, password: string, username?: string, invitation_code?: string) =>
 			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/register', {
 				method: 'POST',
-				body: JSON.stringify({ email, name, password, ...(invitation_code ? { invitation_code } : {}) })
+				body: JSON.stringify({ email, name, password, ...(username ? { username } : {}), ...(invitation_code ? { invitation_code } : {}) })
 			}),
+		checkUsername: (username: string) =>
+			request<{ available: boolean; reason: string | null; message: string | null }>(`/auth/check-username?username=${encodeURIComponent(username)}`),
 		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 		forgotPassword: (email: string) =>
 			request<{ ok: boolean; message: string }>('/auth/forgot-password', {
