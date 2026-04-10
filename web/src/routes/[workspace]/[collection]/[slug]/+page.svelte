@@ -15,6 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
@@ -134,6 +135,8 @@
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		editorStore.resetForDoc();
+		collectionStore.setActiveItem(null);
 	});
 
 	async function loadData() {
@@ -146,6 +149,8 @@
 			]);
 			item = itemData;
 			collection = collData;
+			collectionStore.setActiveItem(itemData);
+			editorStore.resetForDoc();
 
 			// Fetch child item progress for any item (generalized parent/child)
 			try {
@@ -293,9 +298,10 @@
 
 	function handleContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
-		saveStatus = 'saving';
+		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
+			saveStatus = 'saving';
 			const allItems = collectionStore.items ?? [];
 			let toSave = markdown;
 			if (allItems.length > 0) {
@@ -305,28 +311,33 @@
 			api.items.update(wsSlug, item.id, { content: toSave }).then(() => {
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
 				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
-		}, 500);
+		}, 1200);
 	}
 
 	function handleRawContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
-		saveStatus = 'saving';
+		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
+			saveStatus = 'saving';
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			api.items.update(wsSlug, item.id, { content: markdown }).then((updated) => {
 				item = updated;
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
 				showSaved();
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
-		}, 500);
+		}, 1200);
 	}
 
 	let computedOverrides = $state<Record<string, any>>({});
