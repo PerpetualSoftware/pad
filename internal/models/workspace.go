@@ -6,8 +6,9 @@ type Workspace struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Slug        string            `json:"slug"`
+	OwnerID     string            `json:"owner_id,omitempty"` // User ID of workspace owner
 	Description string            `json:"description"`
-	Settings    string            `json:"settings"` // JSON
+	Settings    string            `json:"settings"`           // JSON
 	SortOrder   int               `json:"sort_order"`
 	Context     *WorkspaceContext `json:"context,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
@@ -17,7 +18,8 @@ type Workspace struct {
 
 type WorkspaceCreate struct {
 	Name        string            `json:"name"`
-	Slug        string            `json:"slug,omitempty"` // auto-generated if empty
+	Slug        string            `json:"slug,omitempty"`     // auto-generated if empty
+	OwnerID     string            `json:"owner_id,omitempty"` // set by server from authenticated user
 	Description string            `json:"description,omitempty"`
 	Settings    string            `json:"settings,omitempty"`
 	Context     *WorkspaceContext `json:"context,omitempty"`

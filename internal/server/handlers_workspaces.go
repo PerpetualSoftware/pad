@@ -206,6 +206,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set owner to the authenticated user
+	if userID := currentUserID(r); userID != "" {
+		input.OwnerID = userID
+	}
+
 	ws, err := s.store.CreateWorkspace(input)
 	if err != nil {
 		writeInternalError(w, err)

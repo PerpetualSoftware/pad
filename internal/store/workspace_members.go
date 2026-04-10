@@ -99,7 +99,7 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		SELECT w.id, w.name, w.slug, w.owner_id, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
 		       wm.sort_order
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
@@ -117,7 +117,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var createdAt, updatedAt string
 		var deletedAt *string
 		if err := rows.Scan(
-			&ws.ID, &ws.Name, &ws.Slug, &ws.Description, &ws.Settings,
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
 			&ws.SortOrder,
 		); err != nil {
@@ -388,6 +388,60 @@ func (s *Store) backfillWorkspaceOwners() error {
 	for _, wsID := range wsIDs {
 		if err := s.AddWorkspaceMember(wsID, adminID, "owner"); err != nil {
 			return fmt.Errorf("add owner to workspace %s: %w", wsID, err)
+		}
+	}
+
+	// Backfill owner_id column on workspaces that don't have one set.
+	// Uses D3 logic: earliest owner member → earliest member → first admin.
+	ownerlessRows, err := s.db.Query(s.q(`
+		SELECT id FROM workspaces WHERE (owner_id = '' OR owner_id IS NULL) AND deleted_at IS NULL
+	`))
+	if err != nil {
+		return fmt.Errorf("find workspaces without owner_id: %w", err)
+	}
+	defer ownerlessRows.Close()
+
+	var ownerlessIDs []string
+	for ownerlessRows.Next() {
+		var id string
+		if err := ownerlessRows.Scan(&id); err != nil {
+			return err
+		}
+		ownerlessIDs = append(ownerlessIDs, id)
+	}
+	if err := ownerlessRows.Err(); err != nil {
+		return err
+	}
+
+	for _, wsID := range ownerlessIDs {
+		var ownerID string
+
+		// Try: earliest member with "owner" role
+		err := s.db.QueryRow(s.q(`
+			SELECT user_id FROM workspace_members
+			WHERE workspace_id = ? AND role = 'owner'
+			ORDER BY created_at ASC LIMIT 1
+		`), wsID).Scan(&ownerID)
+
+		if err == sql.ErrNoRows {
+			// Try: earliest member regardless of role
+			err = s.db.QueryRow(s.q(`
+				SELECT user_id FROM workspace_members
+				WHERE workspace_id = ?
+				ORDER BY created_at ASC LIMIT 1
+			`), wsID).Scan(&ownerID)
+		}
+
+		if err == sql.ErrNoRows {
+			// Fall back to first admin
+			ownerID = adminID
+		} else if err != nil {
+			return fmt.Errorf("find owner for workspace %s: %w", wsID, err)
+		}
+
+		_, err = s.db.Exec(s.q(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), ownerID, wsID)
+		if err != nil {
+			return fmt.Errorf("set owner_id for workspace %s: %w", wsID, err)
 		}
 	}
 

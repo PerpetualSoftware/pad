@@ -154,6 +154,7 @@ func (s *Store) migrate() error {
 		"027_totp.sql",
 		"028_workspace_sort_order.sql",
 		"029_username.sql",
+		"030_workspace_owner.sql",
 	}
 
 	for _, name := range migrations {
@@ -207,6 +208,7 @@ func (s *Store) migratePostgres() error {
 		"007_totp.sql",
 		"008_workspace_sort_order.sql",
 		"009_username.sql",
+		"010_workspace_owner.sql",
 	}
 
 	for _, name := range migrations {

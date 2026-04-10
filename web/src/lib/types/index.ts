@@ -40,6 +40,7 @@ export interface Workspace {
 	id: string;
 	name: string;
 	slug: string;
+	owner_id?: string;
 	description: string;
 	settings: string;
 	sort_order: number;
