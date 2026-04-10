@@ -196,6 +196,7 @@ func (s *Store) migratePostgres() error {
 		"005_phases_to_plans.sql",
 		"006_session_binding.sql",
 		"007_totp.sql",
+		"008_workspace_sort_order.sql",
 	}
 
 	for _, name := range migrations {

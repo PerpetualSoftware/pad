@@ -135,7 +135,7 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="workspace-list"
-			use:dndzone={{items: dndWorkspaces, flipDurationMs, type: 'topbar-workspace', direction: 'horizontal', dragDisabled: uiStore.isTouch}}
+			use:dndzone={{items: dndWorkspaces, flipDurationMs, type: 'topbar-workspace', dragDisabled: uiStore.isTouch}}
 			onconsider={handleConsider}
 			onfinalize={handleFinalize}
 		>

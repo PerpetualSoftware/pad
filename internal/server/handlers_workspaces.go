@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 
@@ -175,7 +176,12 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 		if ws == nil {
 			continue
 		}
+		// Skip silently if user is not a member of this workspace
+		// (e.g. admin sees all workspaces but may not be joined to all)
 		if err := s.store.UpdateWorkspaceSortOrder(userID, ws.ID, item.SortOrder); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
 			writeInternalError(w, err)
 			return
 		}

@@ -6,6 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
@@ -117,6 +118,13 @@
 	}
 
 	let versionLabel = $state('');
+
+	async function handleLogout() {
+		try {
+			await api.auth.logout();
+			window.location.href = '/login';
+		} catch {}
+	}
 
 	onMount(async () => {
 		try {
@@ -354,6 +362,12 @@
 					{/if}
 				</button>
 			</div>
+			{#if uiStore.isMobile && authStore.user}
+				<div class="mobile-user-row">
+					<span class="mobile-user-name">{authStore.user.name}</span>
+					<button class="mobile-logout-btn" onclick={handleLogout}>Sign out</button>
+				</div>
+			{/if}
 			{#if versionLabel}
 				<span class="version-label">{versionLabel}</span>
 			{/if}
@@ -613,6 +627,30 @@
 		text-align: center;
 		border-radius: 8px;
 		pointer-events: none;
+	}
+	/* Mobile sign-out row */
+	.mobile-user-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-2) var(--space-3);
+		margin-top: var(--space-2);
+		border-top: 1px solid var(--border);
+		font-size: 0.8em;
+		color: var(--text-muted);
+	}
+	.mobile-user-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.mobile-logout-btn {
+		color: var(--text-muted);
+		font-size: 0.85em;
+		flex-shrink: 0;
+	}
+	.mobile-logout-btn:hover {
+		color: var(--text-secondary);
 	}
 	kbd {
 		background: var(--bg-primary);
