@@ -226,18 +226,37 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 }
 
 // GetItemByRef looks up an item by its PREFIX-NUMBER reference (e.g. "IDEA-15").
+// Since item numbers are workspace-unique, this first tries an exact prefix match
+// and falls back to a number-only lookup. This allows old refs to still resolve
+// after an item has been moved to a different collection (e.g. PLAN-42 still
+// finds the item even after it became TASK-42).
 func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
 	var id string
+	// Try exact prefix + number match first
 	err := s.db.QueryRow(s.q(`
 		SELECT i.id FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
 	`), workspaceID, prefix, number).Scan(&id)
+	if err == nil {
+		return s.GetItem(id)
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("get item by ref: %w", err)
+	}
+
+	// Fallback: item numbers are workspace-unique, so look up by number alone.
+	// This handles the case where an item was moved to a different collection
+	// but is still being referenced by its old prefix.
+	err = s.db.QueryRow(s.q(`
+		SELECT id FROM items
+		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL
+	`), workspaceID, number).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get item by ref: %w", err)
+		return nil, fmt.Errorf("get item by number: %w", err)
 	}
 	return s.GetItem(id)
 }

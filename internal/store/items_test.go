@@ -808,6 +808,55 @@ func TestMoveItemPreservesNumber(t *testing.T) {
 	}
 }
 
+func TestOldRefResolvesAfterMove(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	plans := createTestCollection(t, s, ws.ID, "Plans")
+	tasks := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item := createTestItem(t, s, ws.ID, plans.ID, "My Plan", "")
+	originalNumber := *item.ItemNumber
+
+	// Item is currently PLAN-1
+	found, err := s.GetItemByRef(ws.ID, "PLAN", originalNumber)
+	if err != nil {
+		t.Fatalf("GetItemByRef error: %v", err)
+	}
+	if found == nil || found.ID != item.ID {
+		t.Fatal("expected to find item by PLAN ref before move")
+	}
+
+	// Move to Tasks — becomes TASK-1
+	moved, err := s.MoveItem(item.ID, tasks.ID, `{"status":"open"}`)
+	if err != nil {
+		t.Fatalf("MoveItem error: %v", err)
+	}
+	if moved.Ref != fmt.Sprintf("TASK-%d", originalNumber) {
+		t.Fatalf("expected ref TASK-%d after move, got %s", originalNumber, moved.Ref)
+	}
+
+	// Old ref PLAN-1 should STILL resolve to the same item (fallback by number)
+	found, err = s.GetItemByRef(ws.ID, "PLAN", originalNumber)
+	if err != nil {
+		t.Fatalf("GetItemByRef (old ref) error: %v", err)
+	}
+	if found == nil {
+		t.Fatal("old ref PLAN-N should still resolve after move")
+	}
+	if found.ID != item.ID {
+		t.Error("old ref resolved to wrong item")
+	}
+
+	// New ref TASK-1 should also work
+	found, err = s.GetItemByRef(ws.ID, "TASK", originalNumber)
+	if err != nil {
+		t.Fatalf("GetItemByRef (new ref) error: %v", err)
+	}
+	if found == nil || found.ID != item.ID {
+		t.Fatal("new ref TASK-N should resolve after move")
+	}
+}
+
 func TestWorkspaceNumberingIsolation(t *testing.T) {
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "Workspace 1")
