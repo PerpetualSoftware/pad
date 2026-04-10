@@ -568,10 +568,19 @@ func decodeJSON(r *http.Request, v interface{}) error {
 	return nil
 }
 
-// getWorkspaceID resolves workspace slug to ID.
+// getWorkspaceID resolves workspace slug/ID from the request.
+// If RequireWorkspaceAccess already resolved the workspace, reads from context.
+// Otherwise falls back to direct resolution (for unauthenticated paths).
 func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	slug := chi.URLParam(r, "slug")
-	ws, err := s.store.GetWorkspaceBySlug(slug)
+	// Fast path: already resolved by RequireWorkspaceAccess middleware
+	if wsID, ok := r.Context().Value(ctxResolvedWorkspaceID).(string); ok && wsID != "" {
+		return wsID, true
+	}
+
+	// Slow path: resolve directly (should rarely happen — only for routes
+	// that don't go through RequireWorkspaceAccess)
+	slugOrID := chi.URLParam(r, "slug")
+	ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return "", false
@@ -582,6 +591,48 @@ func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string,
 	}
 	return ws.ID, true
 }
+
+// resolveWorkspace resolves a workspace by slug or UUID, scoped to the
+// authenticated user's accessible workspaces when a user context is present.
+// Returns nil (not an error) if no workspace is found.
+func (s *Server) resolveWorkspace(slugOrID string, user *models.User) (*models.Workspace, error) {
+	// 1. Is it a UUID? Resolve by ID directly.
+	if isUUID(slugOrID) {
+		return s.store.GetWorkspaceByID(slugOrID)
+	}
+
+	// 2. No authenticated user — fall back to global slug lookup
+	//    (fresh install, or pre-auth paths)
+	if user == nil {
+		return s.store.GetWorkspaceBySlug(slugOrID)
+	}
+
+	// 3. Admin users — global slug lookup (admins can see all workspaces)
+	if user.Role == "admin" {
+		return s.store.GetWorkspaceBySlug(slugOrID)
+	}
+
+	// 4. Auth-scoped slug resolution: find workspaces where user is owner or member
+	workspaces, err := s.store.GetWorkspacesBySlugForUser(slugOrID, user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(workspaces) == 1 {
+		return &workspaces[0], nil
+	}
+	if len(workspaces) == 0 {
+		return nil, nil
+	}
+
+	// Ambiguous: multiple workspaces match — this should be rare.
+	// For now, return the first one. The 409 disambiguation is only needed
+	// when we actually have per-owner slug uniqueness (after the unique
+	// constraint is changed). Currently slugs are globally unique.
+	return &workspaces[0], nil
+}
+
+// isUUID is defined in handlers_items.go
 
 // getWorkspaceDocument resolves workspace slug and document ID from URL params.
 func (s *Server) getWorkspaceDocument(w http.ResponseWriter, r *http.Request) (string, *models.Document, bool) {

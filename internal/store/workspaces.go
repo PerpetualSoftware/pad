@@ -164,6 +164,36 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 	return &w, nil
 }
 
+// GetWorkspacesBySlugForUser finds workspaces matching a slug that are accessible
+// to the given user (owned by them or where they are a member).
+func (s *Store) GetWorkspacesBySlugForUser(slug, userID string) ([]models.Workspace, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, w.description, w.settings, w.created_at, w.updated_at
+		FROM workspaces w
+		LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
+		WHERE w.slug = ? AND w.deleted_at IS NULL
+		AND (w.owner_id = ? OR wm.user_id IS NOT NULL)
+	`), userID, slug, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get workspaces by slug for user: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		var createdAt, updatedAt string
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.Description, &w.Settings, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		w.CreatedAt = parseTime(createdAt)
+		w.UpdatedAt = parseTime(updatedAt)
+		w.HydrateDerivedFields()
+		result = append(result, w)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*models.Workspace, error) {
 	w, err := s.GetWorkspaceBySlug(slug)
 	if err != nil {

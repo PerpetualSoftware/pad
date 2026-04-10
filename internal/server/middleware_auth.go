@@ -25,6 +25,9 @@ const (
 	// ctxIsAPIToken is set to true when the request is authenticated via an API token
 	// (as opposed to a session cookie or CLI session token).
 	ctxIsAPIToken contextKey = "is_api_token"
+	// ctxResolvedWorkspaceID is set by RequireWorkspaceAccess after resolving
+	// the workspace slug/ID. Avoids redundant lookups in handlers.
+	ctxResolvedWorkspaceID contextKey = "resolved_workspace_id"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
@@ -252,13 +255,14 @@ func currentUserID(r *http.Request) string {
 // if the token's workspace matches the requested workspace.
 func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slug := chi.URLParam(r, "slug")
-		if slug == "" {
+		slugOrID := chi.URLParam(r, "slug")
+		if slugOrID == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		ws, err := s.store.GetWorkspaceBySlug(slug)
+		// Resolve workspace: supports both UUID and slug.
+		ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to resolve workspace")
 			return
@@ -268,10 +272,13 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
+		// Store resolved workspace ID in context for downstream handlers
+		ctx := context.WithValue(r.Context(), ctxResolvedWorkspaceID, ws.ID)
+
 		// Fresh install: no users → everyone gets owner access
 		count, _ := s.store.UserCount()
 		if count == 0 {
-			ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "owner")
+			ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -279,7 +286,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// Legacy API token: workspace-scoped token without user context
 		if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && currentUser(r) == nil {
 			if tokenWsID == ws.ID {
-				ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "editor")
+				ctx = context.WithValue(ctx, ctxWorkspaceRole, "editor")
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -296,7 +303,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 
 		// Admin users get owner access to all workspaces
 		if user.Role == "admin" {
-			ctx := context.WithValue(r.Context(), ctxWorkspaceRole, "owner")
+			ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -311,7 +318,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxWorkspaceRole, member.Role)
+		ctx = context.WithValue(ctx, ctxWorkspaceRole, member.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
