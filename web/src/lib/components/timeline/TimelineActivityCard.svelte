@@ -92,7 +92,7 @@
 	</div>
 	{#if changes.length > 0}
 		<div class="changes">
-			{#each changes as change (change.field)}
+			{#each changes as change, i (i)}
 				<span class="change-pill">
 					<span class="change-field">{change.field}:</span>
 					<span class="change-from">{change.from}</span>
