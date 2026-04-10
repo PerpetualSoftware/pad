@@ -9,6 +9,7 @@
 	const SCOPES = ['all', 'backend', 'frontend', 'mobile', 'devops'] as const;
 	const STATUS_ORDER: Record<string, number> = { active: 0, draft: 1, deprecated: 2 };
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let playbooks = $state<Item[]>([]);
 	let loading = $state(true);
 	let expandedId = $state<string | null>(null);
@@ -145,7 +146,7 @@
 			</div>
 			{#if !showNewForm}
 				<div style="display:flex;gap:var(--space-2);align-items:center;">
-					<a href="/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
+					<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
 					<button class="new-btn" onclick={() => (showNewForm = true)}>+ New Playbook</button>
 				</div>
 			{/if}
@@ -264,7 +265,7 @@
 								</div>
 								<div class="card-divider"></div>
 								<div class="card-actions">
-									<button class="action-btn" onclick={() => goto(`/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</button>
+									<button class="action-btn" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</button>
 									<button class="action-btn" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
 										{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
 									</button>

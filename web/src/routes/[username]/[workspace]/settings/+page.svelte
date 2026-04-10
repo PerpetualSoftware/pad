@@ -13,6 +13,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let loading = $state(true);
 	let collections = $state<Collection[]>([]);
 	let wsName = $state('');

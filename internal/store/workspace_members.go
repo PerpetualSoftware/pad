@@ -99,10 +99,11 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
 		       wm.sort_order
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
+		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE wm.user_id = ? AND w.deleted_at IS NULL
 		ORDER BY wm.sort_order ASC, w.name ASC
 	`), userID)
@@ -117,7 +118,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var createdAt, updatedAt string
 		var deletedAt *string
 		if err := rows.Scan(
-			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.Description, &ws.Settings,
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
 			&ws.SortOrder,
 		); err != nil {

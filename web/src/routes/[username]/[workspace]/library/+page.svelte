@@ -4,6 +4,7 @@
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 
 	let categories = $state<LibraryCategory[]>([]);
 	let playbookCategories = $state<PlaybookCategory[]>([]);

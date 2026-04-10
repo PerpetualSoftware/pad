@@ -11,6 +11,7 @@
 	import type { DashboardResponse, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 
 	let loading = $state(true);
 	let dashboard = $state<DashboardResponse | null>(null);
@@ -183,7 +184,7 @@
 		<!-- 2. Onboarding -->
 		{#if totalItems === 0 && !onboardingDismissed}
 			<div class="onboarding-wrapper">
-				<OnboardingChecklist {wsSlug} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
+				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
 			</div>
 		{:else if totalItems === 0 && onboardingDismissed}
 			<div class="onboarding-reshow">
@@ -200,7 +201,7 @@
 				</div>
 				<div class="active-grid">
 					{#each dashboard.active_items as item (item.slug)}
-						<a href="/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
+						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
 							<div class="active-card-top">
 								{#if item.item_ref}
 									<span class="active-ref">{item.item_ref}</span>
@@ -231,7 +232,7 @@
 				</div>
 				<div class="plan-list">
 					{#each dashboard.active_plans as plan (plan.slug)}
-						<a href="/{wsSlug}/plans/{plan.slug}" class="plan-row">
+						<a href="/{username}/{wsSlug}/plans/{plan.slug}" class="plan-row">
 							<span class="plan-title">{plan.title}</span>
 							<div class="progress-bar">
 								<div class="progress-fill" style="width: {plan.progress}%"></div>
@@ -252,7 +253,7 @@
 				{#each collections as coll (coll.slug)}
 					{@const breakdown = dashboard.summary.by_collection[coll.name] ?? dashboard.summary.by_collection[coll.slug] ?? {}}
 					{@const prog = collProgress(coll)}
-					<a href="/{wsSlug}/{coll.slug}" class="coll-card">
+					<a href="/{username}/{wsSlug}/{coll.slug}" class="coll-card">
 						<div class="coll-card-header">
 							<span class="coll-card-name">
 								{#if coll.icon}<span class="coll-icon">{coll.icon}</span>{/if}
@@ -278,7 +279,7 @@
 						</div>
 					</a>
 				{/each}
-				<a href="/{wsSlug}/settings" class="coll-card coll-card-new">
+				<a href="/{username}/{wsSlug}/settings" class="coll-card coll-card-new">
 					<div class="coll-card-header">
 						<span class="coll-card-name">
 							<span class="coll-icon">+</span>
@@ -306,7 +307,7 @@
 								<div class="attention-card">
 									<span class="attention-icon">{attentionIcon(alert.type)}</span>
 									<div class="attention-content">
-										<a href="/{wsSlug}/{alert.collection}/{alert.item_slug}" class="attention-title">{alert.item_title}</a>
+										<a href="/{username}/{wsSlug}/{alert.collection}/{alert.item_slug}" class="attention-title">{alert.item_title}</a>
 										<span class="attention-reason">{alert.reason}</span>
 									</div>
 								</div>
@@ -324,7 +325,7 @@
 								<div class="suggested-card">
 									<span class="sug-num">{i + 1}</span>
 									<div class="sug-content">
-										<a href="/{wsSlug}/{sug.collection}/{sug.item_slug}" class="sug-title">{sug.item_title}</a>
+										<a href="/{username}/{wsSlug}/{sug.collection}/{sug.item_slug}" class="sug-title">{sug.item_title}</a>
 										<span class="sug-reason">{sug.reason}</span>
 									</div>
 								</div>
@@ -340,7 +341,7 @@
 			<section class="section">
 				<div class="section-header">
 					<span class="section-label">Recent Activity</span>
-					<a href="/{wsSlug}/activity" class="section-link">View all</a>
+					<a href="/{username}/{wsSlug}/activity" class="section-link">View all</a>
 				</div>
 				<div class="activity-list">
 					{#each dashboard.recent_activity.slice(0, 10) as activity, i (i)}
@@ -356,7 +357,7 @@
 							<span class="activity-dot" style="color: {activity.action === 'created' ? 'var(--accent-green)' : activity.action === 'archived' ? 'var(--text-muted)' : 'var(--accent-blue)'};">{activityIcon(activity.action)}</span>
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
 							{#if activity.item_title}
-								<a href="/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
+								<a href="/{username}/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
 							{/if}
 							{#if changes}
 								<span class="activity-changes">{changes}</span>

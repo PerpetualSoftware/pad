@@ -159,7 +159,7 @@
 								<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
 							</svg>
 						</button>
-						<a href="/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
+						<a href="/{workspaceStore.current?.owner_username ?? ''}/${workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
 					</div>
 				{/if}
 				{@render children()}

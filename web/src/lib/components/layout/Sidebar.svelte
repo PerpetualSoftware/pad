@@ -22,13 +22,15 @@
 	let quickAddInputEl = $state<HTMLTextAreaElement>();
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
-	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
-	let isRolesPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}/roles` : false);
-	let isActivityPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}/activity` : false);
+	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
+	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	let isDashboardPage = $derived(wsPrefix ? page.url.pathname === wsPrefix : false);
+	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
+	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
 
 	let activeCollectionSlug = $derived.by(() => {
-		if (!wsSlug) return null;
-		const prefix = `/${wsSlug}/`;
+		if (!wsPrefix) return null;
+		const prefix = `${wsPrefix}/`;
 		const path = page.url.pathname;
 		if (!path.startsWith(prefix)) return null;
 		const rest = path.slice(prefix.length);
@@ -142,7 +144,7 @@
 				source: 'web'
 			});
 			uiStore.onNavigate();
-			goto(`/${wsSlug}/${coll.slug}/${itemUrlId(item)}?new=1`);
+			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			toastStore.show(err?.message || 'Failed to create item', 'error');
 		}
@@ -302,7 +304,7 @@
 		{#if wsSlug}
 			<nav class="collection-nav">
 				<a
-					href="/{wsSlug}"
+					href="{wsPrefix}"
 					class="nav-item dashboard"
 					class:active={isDashboardPage}
 					onclick={() => uiStore.onNavigate()}
@@ -311,7 +313,7 @@
 					<span class="nav-label">Dashboard</span>
 				</a>
 				<a
-					href="/{wsSlug}/roles"
+					href="{wsPrefix}/roles"
 					class="nav-item"
 					class:active={isRolesPage}
 					onclick={() => uiStore.onNavigate()}
@@ -320,7 +322,7 @@
 					<span class="nav-label">Roles</span>
 				</a>
 				<a
-					href="/{wsSlug}/activity"
+					href="{wsPrefix}/activity"
 					class="nav-item"
 					class:active={isActivityPage}
 					onclick={() => uiStore.onNavigate()}
@@ -348,7 +350,7 @@
 					>
 						{#each sidebarCollections as collection (collection.id)}
 							<a
-								href="/{wsSlug}/{collection.slug}"
+								href="{wsPrefix}/{collection.slug}"
 								class="nav-item draggable"
 								class:active={activeCollectionSlug === collection.slug}
 								onclick={() => uiStore.onNavigate()}
@@ -377,7 +379,7 @@
 					</div>
 					{#each agentCollections as collection (collection.id)}
 						<a
-							href="/{wsSlug}/{collection.slug}"
+							href="{wsPrefix}/{collection.slug}"
 							class="nav-item"
 							class:active={activeCollectionSlug === collection.slug}
 							onclick={() => uiStore.onNavigate()}
@@ -410,7 +412,7 @@
 			</button>
 			<div class="footer-row">
 				{#if wsSlug}
-					<a href="/{wsSlug}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
+					<a href="{wsPrefix}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
 						⚙ Settings
 					</a>
 				{/if}

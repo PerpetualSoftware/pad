@@ -25,6 +25,7 @@
 	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks' }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
+	let isMobile = $state(false);
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
@@ -38,6 +39,18 @@
 
 	$effect(() => {
 		columnOrder = [...columns];
+	});
+
+	$effect(() => {
+		const mql = window.matchMedia('(max-width: 768px)');
+		isMobile = mql.matches;
+		function onChange(e: MediaQueryListEvent) {
+			isMobile = e.matches;
+		}
+		mql.addEventListener('change', onChange);
+		return () => {
+			mql.removeEventListener('change', onChange);
+		};
 	});
 
 	// Native HTML5 drag-and-drop for column reordering
@@ -242,14 +255,15 @@
 					flipDurationMs,
 					type: 'board-card',
 					dropTargetClasses: ['drop-target'],
-					delayTouchStart: touchDragDelayMs
+					delayTouchStart: touchDragDelayMs,
+					dragDisabled: isMobile
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}
 				oncontextmenu={(e) => e.preventDefault()}
 			>
 				{#each colItems as item (item.id)}
-					<div class="card-wrapper">
+					<div class="card-wrapper" class:no-drag={isMobile}>
 						<ItemCard
 							{item}
 							{collection}
@@ -449,6 +463,14 @@
 
 	.card-wrapper:active {
 		cursor: grabbing;
+	}
+
+	.card-wrapper.no-drag {
+		cursor: default;
+	}
+
+	.card-wrapper.no-drag:active {
+		cursor: default;
 	}
 
 	.column-empty {

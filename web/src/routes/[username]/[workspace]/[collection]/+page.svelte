@@ -36,6 +36,7 @@
 	let saveViewInput = $state<HTMLInputElement>();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
 
 	// Persist view mode to localStorage per collection
@@ -64,7 +65,7 @@
 		}
 		if (searchQuery) params.set('q', searchQuery);
 		const qs = params.toString();
-		const newUrl = `/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
+		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
 		goto(newUrl, { replaceState: true, noScroll: true, keepFocus: true });
 	}
 
@@ -465,7 +466,7 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			toastStore.show(err?.message || 'Failed to create item', 'error');
 		} finally {
@@ -564,7 +565,7 @@
 				if (focusedIndex >= 0 && focusedIndex < filteredItems.length) {
 					e.preventDefault();
 					const item = filteredItems[focusedIndex];
-					goto(`/${wsSlug}/${collSlug}/${itemUrlId(item)}`);
+					goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}`);
 				}
 				break;
 			case 'Escape':

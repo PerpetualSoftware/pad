@@ -48,7 +48,7 @@
 				template: selectedTemplate || undefined
 			});
 			close();
-			goto(`/${ws.slug}`);
+			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch {
 			toastStore.show('Failed to create workspace', 'error');
 		}
@@ -68,7 +68,7 @@
 			await workspaceStore.loadAll();
 			close();
 			toastStore.show(`Imported workspace "${ws.name}"`, 'success');
-			goto(`/${ws.slug}`);
+			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err) {
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {

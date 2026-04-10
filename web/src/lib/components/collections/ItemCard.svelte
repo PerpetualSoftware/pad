@@ -18,12 +18,13 @@
 	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks' }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let fields = $derived(parseFields(item));
 	let schema = $derived(parseSchema(collection));
 
 	let statusField = $derived(schema.fields.find((f) => f.key === 'status'));
 	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
-	let itemUrl = $derived(`/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
+	let itemUrl = $derived(`/${username}/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
 
 	let statusCyclable = $derived(

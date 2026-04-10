@@ -26,6 +26,7 @@
 	const ENFORCEMENT_LEVELS = ['must','should','nice-to-have'] as const;
 
 	let workspace = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let conventions = $state<Item[]>([]);
 	let loading = $state(true);
 	let expandedSlug = $state<string | null>(null);
@@ -301,7 +302,7 @@
 				<p class="subtitle">Rules that guide agent behavior in this project</p>
 			</div>
 			<div class="header-actions">
-				<a href="/{workspace}/library" class="btn btn-secondary">Browse Library</a>
+				<a href="/{username}/{workspace}/library" class="btn btn-secondary">Browse Library</a>
 				<button class="btn btn-primary" onclick={() => (showCreate = !showCreate)}>
 					{showCreate ? 'Cancel' : '+ New Convention'}
 				</button>

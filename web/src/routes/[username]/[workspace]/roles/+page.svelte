@@ -13,6 +13,7 @@
 	import type { DndEvent } from 'svelte-dnd-action';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 
 	// Data
 	let lanes = $state<RoleBoardLane[]>([]);
@@ -577,7 +578,7 @@
 								{#if coll}
 									<ItemCard {item} collection={coll} compact={true} showCollection={true} />
 								{:else}
-									<a href="/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}" class="fallback-card">
+									<a href="/{username}/{wsSlug}/{item.collection_slug}/{itemUrlId(item)}" class="fallback-card">
 										<span class="card-title">{item.title}</span>
 									</a>
 								{/if}

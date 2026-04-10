@@ -3,11 +3,12 @@
 
 	interface Props {
 		wsSlug: string;
+		username?: string;
 		byCollection: Record<string, Record<string, number>>;
 		ondismiss?: () => void;
 	}
 
-	let { wsSlug, byCollection, ondismiss }: Props = $props();
+	let { wsSlug, username = '', byCollection, ondismiss }: Props = $props();
 
 	let copiedHint = $state<string | null>(null);
 
@@ -33,25 +34,25 @@
 	let steps = $derived<Step[]>([
 		{
 			title: 'Add project conventions',
-			href: `/${wsSlug}/library`,
+			href: `/${username}/${wsSlug}/library`,
 			done: collectionHasItems('conventions'),
 			hint: '/pad what conventions should this project follow?'
 		},
 		{
 			title: 'Create your first plan',
-			href: `/${wsSlug}/plans`,
+			href: `/${username}/${wsSlug}/plans`,
 			done: collectionHasItems('plans'),
 			hint: '/pad create a plan for what I\'m working on'
 		},
 		{
 			title: 'Add a few tasks',
-			href: `/${wsSlug}/tasks`,
+			href: `/${username}/${wsSlug}/tasks`,
 			done: collectionItemCount('tasks') >= 3,
 			hint: '/pad break down my current work into tasks'
 		},
 		{
 			title: 'Write an architecture doc',
-			href: `/${wsSlug}/docs`,
+			href: `/${username}/${wsSlug}/docs`,
 			done: collectionHasItems('docs'),
 			hint: '/pad document the architecture of this project'
 		}
@@ -129,7 +130,7 @@
 		<p class="footer-instructions">
 			Install the Pad skill in your project with <code>pad agent install</code>, then paste a prompt above into Claude Code or your favorite AI agent.
 		</p>
-		<a href="/{wsSlug}/library" class="footer-link">Or browse the library for conventions and playbooks</a>
+		<a href="/{username}/{wsSlug}/library" class="footer-link">Or browse the library for conventions and playbooks</a>
 	</div>
 </div>
 

@@ -6,7 +6,8 @@ type Workspace struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Slug        string            `json:"slug"`
-	OwnerID     string            `json:"owner_id,omitempty"` // User ID of workspace owner
+	OwnerID       string            `json:"owner_id,omitempty"`       // User ID of workspace owner
+	OwnerUsername string            `json:"owner_username,omitempty"` // Populated by JOIN (not stored)
 	Description string            `json:"description"`
 	Settings    string            `json:"settings"`           // JSON
 	SortOrder   int               `json:"sort_order"`

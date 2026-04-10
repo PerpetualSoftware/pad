@@ -5,13 +5,14 @@
 
 	interface Props {
 		wsSlug: string;
+		username?: string;
 		parentSlug: string;
 		depth?: number;
 		maxDepth?: number;
 		terminalStatuses?: string[];
 	}
 
-	let { wsSlug, parentSlug, depth = 1, maxDepth = 3, terminalStatuses }: Props = $props();
+	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -73,7 +74,7 @@
 					{:else}
 						<span class="expand-spacer"></span>
 					{/if}
-					<a href="/{wsSlug}/{child.collection_slug}/{child.slug}" class="nested-link">
+					<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="nested-link">
 						<span class="nested-ref">{formatItemRef(child) ?? ''}</span>
 						<span class="nested-title" class:done={isDone}>{child.title}</span>
 					</a>
@@ -88,7 +89,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} />
+					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} />
 				{/if}
 			</div>
 		{/each}

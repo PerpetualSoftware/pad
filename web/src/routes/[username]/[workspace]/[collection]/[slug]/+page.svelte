@@ -36,6 +36,7 @@
 	};
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
 	let itemSlug = $derived(page.params.slug ?? '');
 
@@ -62,7 +63,7 @@
 		const raw = item.content ?? '';
 		const allItems = collectionStore.items ?? [];
 		if (allItems.length > 0 && raw.includes('[[')) {
-			return wikiLinksToMarkdown(raw, allItems, wsSlug);
+			return wikiLinksToMarkdown(raw, allItems, wsSlug, username);
 		}
 		return raw;
 	});
@@ -113,8 +114,8 @@
 				// Check if our item was deleted
 				if (result.changes.deleted.includes(item!.id)) {
 					// Item was deleted — navigate back to collection
-					goto(`/${wsSlug}/${collSlug}`);
-				}
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+}
 				return;
 			}
 
@@ -193,7 +194,7 @@
 			// Auto-start title editing for newly created items
 			if (page.url.searchParams.get('new') === '1' && item) {
 				// Clean up the URL param first, then focus title after DOM settles
-				goto(`/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+				goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
 				await startEditTitle();
 			}
 		}
@@ -389,7 +390,7 @@
 
 	function relationHref(collectionSlug?: string, refOrSlug?: string): string | null {
 		if (!collectionSlug || !refOrSlug) return null;
-		return `/${wsSlug}/${collectionSlug}/${refOrSlug}`;
+		return `/${username}/${wsSlug}/${collectionSlug}/${refOrSlug}`;
 	}
 
 	function linkEntry(link: ItemLink, useSource: boolean): RelationshipEntry {
@@ -499,7 +500,7 @@
 		try {
 			await api.items.delete(wsSlug, item.id);
 			toastStore.show('Item deleted', 'success');
-			goto(`/${wsSlug}/${collSlug}`);
+			goto(`/${username}/${wsSlug}/${collSlug}`);
 		} catch {
 			toastStore.show('Failed to delete item', 'error');
 			deleting = false;
@@ -579,7 +580,7 @@
 		try {
 			const moved = await api.items.move(wsSlug, item.slug, targetSlug);
 			toastStore.show(`Moved to ${targetSlug}`, 'success');
-			goto(`/${wsSlug}/${targetSlug}/${moved.slug}`);
+			goto(`/${username}/${wsSlug}/${targetSlug}/${moved.slug}`);
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to move item', 'error');
 		} finally {
@@ -596,9 +597,9 @@
 	<div class="item-page">
 		<!-- Breadcrumb -->
 		<nav class="breadcrumb">
-			<a href="/{wsSlug}">Home</a>
+			<a href="/{username}/{wsSlug}">Home</a>
 			<span class="sep">/</span>
-			<a href="/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
+			<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
 			<span class="sep">/</span>
 			<span class="current">{formatItemRef(item) || item.title}</span>
 		</nav>
@@ -920,7 +921,7 @@
 
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
 		{#if item}
-			<ChildItems {wsSlug} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} />
+			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} />
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->

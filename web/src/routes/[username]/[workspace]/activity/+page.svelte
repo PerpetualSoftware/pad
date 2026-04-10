@@ -7,6 +7,7 @@
 	import type { Activity, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 
 	// Data
 	let activities = $state<Activity[]>([]);
@@ -317,7 +318,7 @@
 										<span class="entry-verb">{activityVerb(activity.action)}</span>
 										{#if itemTitle && itemSlug && collSlug}
 											<a
-												href="/{wsSlug}/{collSlug}/{itemSlug}"
+												href="/{username}/{wsSlug}/{collSlug}/{itemSlug}"
 												class="entry-item-link">{itemTitle}</a
 											>
 										{:else if itemTitle}

@@ -12,6 +12,7 @@
 	let { children } = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 	let unsubscribeSSE: (() => void) | null = null;
 	let unsubscribeSync: (() => void) | null = null;
 
@@ -68,7 +69,7 @@
 					}
 					if (isExternal) {
 						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
-						const link = event.collection ? `/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
+						const link = event.collection ? `/${username}/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
 						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
 					}
 					break;

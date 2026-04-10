@@ -4,8 +4,9 @@
 
 	// Dashboard is now the workspace home page — redirect there
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
 
 	$effect(() => {
-		if (wsSlug) goto(`/${wsSlug}`, { replaceState: true });
+		if (wsSlug) goto(`/${username}/${wsSlug}`, { replaceState: true });
 	});
 </script>

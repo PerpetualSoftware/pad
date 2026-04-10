@@ -41,6 +41,7 @@ export interface Workspace {
 	name: string;
 	slug: string;
 	owner_id?: string;
+	owner_username?: string;
 	description: string;
 	settings: string;
 	sort_order: number;

@@ -57,9 +57,10 @@
 
 	function selectResult(r: SearchResult) {
 		const ws = workspaceStore.current?.slug;
+		const wsUsername = workspaceStore.current?.owner_username;
 		const collSlug = r.item.collection_slug;
-		if (ws && collSlug) {
-			goto(`/${ws}/${collSlug}/${itemUrlId(r.item)}`);
+		if (ws && wsUsername && collSlug) {
+			goto(`/${wsUsername}/${ws}/${collSlug}/${itemUrlId(r.item)}`);
 		}
 		uiStore.closeSearch();
 	}

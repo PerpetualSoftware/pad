@@ -5,9 +5,9 @@
 
 	let open = $state(false);
 
-	function select(slug: string) {
+	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;
-		goto(`/${slug}`);
+		goto(`/${ws.owner_username}/${ws.slug}`);
 	}
 
 	function openCreateModal() {
@@ -31,7 +31,7 @@
 				<button
 					class="item"
 					class:active={ws.slug === workspaceStore.current?.slug}
-					onclick={() => select(ws.slug)}
+					onclick={() => select(ws)}
 				>
 					{ws.name}
 				</button>

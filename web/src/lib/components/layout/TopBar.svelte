@@ -15,6 +15,7 @@
 	let currentTheme = $state<'dark' | 'light'>('dark');
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
+	let currentUsername = $derived(workspaceStore.current?.owner_username ?? '');
 
 	// DnD state — local copy of workspaces for reordering
 	let dndWorkspaces: Workspace[] = $state([]);
@@ -145,7 +146,7 @@
 		>
 			{#each dndWorkspaces as ws (ws.id)}
 				<a
-					href="/{ws.slug}"
+					href="/{ws.owner_username}/{ws.slug}"
 					class="workspace-item"
 					class:active={ws.slug === currentSlug}
 					title={ws.name}
@@ -198,7 +199,7 @@
 							</div>
 							<div class="dropdown-divider"></div>
 							{#if currentSlug}
-								<a href="/{currentSlug}/settings" class="dropdown-item" onclick={closeUserMenu}>
+								<a href="/{currentUsername}/{currentSlug}/settings" class="dropdown-item" onclick={closeUserMenu}>
 									Settings
 								</a>
 							{/if}
@@ -224,7 +225,7 @@
 		<div class="workspace-list">
 			{#each workspaceStore.workspaces as ws (ws.id)}
 				<a
-					href="/{ws.slug}"
+					href="/{ws.owner_username}/{ws.slug}"
 					class="workspace-item"
 					class:active={ws.slug === currentSlug}
 					onclick={() => uiStore.onNavigate()}

@@ -14,6 +14,7 @@
 
 	interface Props {
 		wsSlug: string;
+		username?: string;
 		itemSlug: string;
 		itemId: string;
 		parentFields?: Record<string, any>;
@@ -21,7 +22,7 @@
 		onChildrenChange?: (children: Item[]) => void;
 	}
 
-	let { wsSlug, itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -222,7 +223,7 @@
 										<span class="expand-icon" class:expanded={isExpanded}>▸</span>
 									</button>
 								{/if}
-								<a href="/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" class:has-toggle={canExpand}>
+								<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" class:has-toggle={canExpand}>
 									<span class="child-ref">{formatItemRef(child) ?? ''}</span>
 									<span class="child-title" class:done={isDone}>{child.title}</span>
 									{#if fields.priority}
@@ -237,7 +238,7 @@
 								</a>
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} />
+								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} />
 							{/if}
 						</div>
 					{/each}

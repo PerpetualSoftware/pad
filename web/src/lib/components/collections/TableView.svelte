@@ -25,6 +25,7 @@
 	}: Props = $props();
 
 	let resolvedWsSlug = $derived(wsSlug || page.params.workspace || '');
+	let resolvedUsername = $derived(page.params.username || '');
 	let schema = $derived(parseSchema(collection));
 	let visibleFields = $derived(schema.fields.filter((f) => !f.computed));
 
@@ -127,7 +128,7 @@
 				<tr>
 					<td class="col-ref"><span class="ref">{formatItemRef(item) ?? ''}</span></td>
 					<td class="col-title">
-						<a href="/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
+						<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
 						{#if itemProgress?.[item.id]}
 							{@const p = itemProgress[item.id]}
 							<div class="cell-progress">

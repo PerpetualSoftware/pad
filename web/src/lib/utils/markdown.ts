@@ -59,7 +59,7 @@ export function unescapeDocLinks(markdown: string): string {
  * Tiptap doesn't understand [[]] syntax, so we convert to standard
  * markdown links before feeding content to the editor.
  */
-export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlug: string): string {
+export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlug: string, username?: string): string {
 	return content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
 		// Support optional collection/ prefix: [[tasks/My Task]]
 		let searchTitle = title;
@@ -79,7 +79,8 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 		});
 
 		if (item && item.collection_slug) {
-			return `[${searchTitle}](/${workspaceSlug}/${item.collection_slug}/${itemUrlId(item)})`;
+			const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
+				return `[${searchTitle}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
 		}
 		// Unresolved — render as styled text (editor will show it as plain text)
 		return `[${searchTitle}](broken)`;
@@ -91,8 +92,8 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
  * Reverses wikiLinksToMarkdown() so we store [[]] not []() in the database.
  */
 export function markdownToWikiLinks(markdown: string, items: Item[]): string {
-	// Match [Title](/workspace/collection/slug-or-REF) pattern
-	return markdown.replace(/\[([^\]]+)\]\(\/[^/]+\/[^/]+\/([^)]+)\)/g, (_match, title: string, slugOrRef: string) => {
+	// Match [Title](/username/workspace/collection/slug-or-REF) or [Title](/workspace/collection/slug-or-REF) pattern
+	return markdown.replace(/\[([^\]]+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, title: string, slugOrRef: string) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			// Also match PREFIX-NUMBER refs
