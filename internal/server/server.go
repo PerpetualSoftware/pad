@@ -283,6 +283,7 @@ func (s *Server) setupRouter() {
 			r.Get("/", s.handleListWorkspaces)
 			r.Post("/", s.handleCreateWorkspace)
 			r.Post("/import", s.handleImportWorkspace)
+			r.Put("/reorder", s.handleReorderWorkspaces)
 
 			r.Route("/{slug}", func(r chi.Router) {
 				r.Use(s.RequireWorkspaceAccess)

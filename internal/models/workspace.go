@@ -8,6 +8,7 @@ type Workspace struct {
 	Slug        string            `json:"slug"`
 	Description string            `json:"description"`
 	Settings    string            `json:"settings"` // JSON
+	SortOrder   int               `json:"sort_order"`
 	Context     *WorkspaceContext `json:"context,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`

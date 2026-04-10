@@ -12,11 +12,9 @@
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 
 	let notificationPanelOpen = $state(false);
-	let currentAuthUser = $state<{ name: string; email: string; role: string } | null>(null);
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let isDashboardPage = $derived(wsSlug ? page.url.pathname === `/${wsSlug}` : false);
@@ -39,8 +37,6 @@
 			? collectionStore.collections.find(c => c.slug === activeCollectionSlug)
 			: null
 	);
-
-	let currentTheme = $state<'dark' | 'light'>('dark');
 
 	// Swipe tracking for mobile
 	let touchStartX = $state(0);
@@ -123,20 +119,14 @@
 
 	let versionLabel = $state('');
 
+	async function handleLogout() {
+		try {
+			await api.auth.logout();
+			window.location.href = '/login';
+		} catch {}
+	}
+
 	onMount(async () => {
-		const saved = localStorage.getItem('pad-theme');
-		if (saved === 'light' || saved === 'dark') {
-			currentTheme = saved;
-		} else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-			currentTheme = 'light';
-		}
-		document.documentElement.setAttribute('data-theme', currentTheme);
-
-		// Read from the global auth store (populated by root layout).
-		if (authStore.authenticated && authStore.user) {
-			currentAuthUser = authStore.user;
-		}
-
 		try {
 			const health = await api.health();
 			if (health.version) {
@@ -146,20 +136,14 @@
 		} catch {}
 	});
 
-	async function handleLogout() {
-		try {
-			await api.auth.logout();
-			window.location.href = '/login';
-		} catch {}
-	}
-
-	function toggleTheme() {
-		currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-		document.documentElement.setAttribute('data-theme', currentTheme);
-		localStorage.setItem('pad-theme', currentTheme);
-	}
-
 	function handleTouchStart(e: TouchEvent) {
+		// Don't initiate swipe-to-close if the touch started inside a
+		// horizontally scrollable element (e.g. the mobile workspace list)
+		let el = e.target as HTMLElement | null;
+		while (el && el !== sidebarEl) {
+			if (el.scrollWidth > el.clientWidth + 1) return;
+			el = el.parentElement;
+		}
 		touchStartX = e.touches[0].clientX;
 		touchCurrentX = touchStartX;
 		isSwiping = true;
@@ -260,10 +244,6 @@
 	ontouchend={handleTouchEnd}
 >
 	<div class="sidebar-inner">
-		<div class="sidebar-header">
-			<WorkspaceSwitcher />
-		</div>
-
 		{#if wsSlug}
 			<nav class="collection-nav">
 				<a
@@ -358,26 +338,16 @@
 			{/if}
 		{/if}
 
-		{#if currentAuthUser}
-			<div class="user-section">
-				<span class="user-name">{currentAuthUser.name}</span>
-				<button class="logout-btn" onclick={handleLogout}>Sign out</button>
-			</div>
-		{/if}
-
 		<div class="sidebar-footer">
 			<button class="search-btn" onclick={() => { uiStore.openSearch(); uiStore.onNavigate(); }}>
 				🔍 Search <kbd>⌘K</kbd>
 			</button>
-			{#if wsSlug}
-				<a href="/{wsSlug}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
-					⚙ Settings
-				</a>
-			{/if}
 			<div class="footer-row">
-				<button class="theme-btn" onclick={toggleTheme}>
-					{currentTheme === 'dark' ? '☀️ Light' : '🌙 Dark'}
-				</button>
+				{#if wsSlug}
+					<a href="/{wsSlug}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
+						⚙ Settings
+					</a>
+				{/if}
 				<button
 					class="bell-btn"
 					onclick={() => { notificationPanelOpen = !notificationPanelOpen; }}
@@ -392,6 +362,12 @@
 					{/if}
 				</button>
 			</div>
+			{#if uiStore.isMobile && authStore.user}
+				<div class="mobile-user-row">
+					<span class="mobile-user-name">{authStore.user.name}</span>
+					<button class="mobile-logout-btn" onclick={handleLogout}>Sign out</button>
+				</div>
+			{/if}
 			{#if versionLabel}
 				<span class="version-label">{versionLabel}</span>
 			{/if}
@@ -409,8 +385,7 @@
 		border-right: 1px solid var(--border);
 		display: flex;
 		flex-direction: column;
-		height: 100vh;
-		height: 100dvh;
+		height: 100%;
 		overflow: hidden;
 		transition: transform 0.25s ease;
 		transform: translateX(0);
@@ -423,7 +398,9 @@
 		position: fixed;
 		z-index: 30;
 		left: 0;
-		top: 0;
+		top: var(--topbar-height);
+		height: calc(100vh - var(--topbar-height));
+		height: calc(100dvh - var(--topbar-height));
 		box-shadow: 4px 0 24px rgba(0, 0, 0, 0.3);
 	}
 	.sidebar.mobile.collapsed {
@@ -431,7 +408,10 @@
 	}
 	.backdrop {
 		position: fixed;
-		inset: 0;
+		top: var(--topbar-height);
+		left: 0;
+		right: 0;
+		bottom: 0;
 		background: rgba(0, 0, 0, 0.4);
 		z-index: 25;
 	}
@@ -443,15 +423,6 @@
 		gap: var(--space-3);
 		overflow: hidden;
 		min-height: 0;
-	}
-	.sidebar-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex-shrink: 0;
-	}
-	.sidebar-header :global(.workspace-switcher) {
-		flex: 1;
 	}
 
 	/* Collection navigation */
@@ -596,23 +567,24 @@
 		font-size: 0.85em;
 	}
 	.search-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
-	.settings-btn {
-		display: block;
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		border-radius: var(--radius);
-		color: var(--text-muted);
-		font-size: 0.85em;
-		text-decoration: none;
-		margin-top: var(--space-2);
-	}
-	.settings-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
 	.footer-row {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
 		margin-top: var(--space-2);
 	}
+	.settings-btn {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		font-size: 0.85em;
+		text-decoration: none;
+	}
+	.settings-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
 	.version-label {
 		display: block;
 		text-align: center;
@@ -622,17 +594,6 @@
 		margin-top: var(--space-2);
 		user-select: text;
 	}
-	.theme-btn {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border-radius: var(--radius);
-		color: var(--text-muted);
-		font-size: 0.85em;
-	}
-	.theme-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
 	.bell-btn {
 		position: relative;
 		display: flex;
@@ -667,28 +628,28 @@
 		border-radius: 8px;
 		pointer-events: none;
 	}
-	/* User section */
-	.user-section {
+	/* Mobile sign-out row */
+	.mobile-user-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: var(--space-2) var(--space-4);
+		padding: var(--space-2) var(--space-3);
+		margin-top: var(--space-2);
 		border-top: 1px solid var(--border);
 		font-size: 0.8em;
 		color: var(--text-muted);
 	}
-	.user-name {
+	.mobile-user-name {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.logout-btn {
+	.mobile-logout-btn {
 		color: var(--text-muted);
 		font-size: 0.85em;
-		cursor: pointer;
 		flex-shrink: 0;
 	}
-	.logout-btn:hover {
+	.mobile-logout-btn:hover {
 		color: var(--text-secondary);
 	}
 	kbd {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 
@@ -132,7 +133,14 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Admin users (or fresh-install with no users) see all workspaces.
-	workspaces, err := s.store.ListWorkspaces()
+	// Pass user ID when available so sort_order is included.
+	var workspaces []models.Workspace
+	var err error
+	if user != nil {
+		workspaces, err = s.store.ListWorkspacesForUser(user.ID)
+	} else {
+		workspaces, err = s.store.ListWorkspaces()
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -141,6 +149,45 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		workspaces = []models.Workspace{}
 	}
 	writeJSON(w, http.StatusOK, workspaces)
+}
+
+func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
+
+	var input []struct {
+		Slug      string `json:"slug"`
+		SortOrder int    `json:"sort_order"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	for _, item := range input {
+		ws, err := s.store.GetWorkspaceBySlug(item.Slug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if ws == nil {
+			continue
+		}
+		// Skip silently if user is not a member of this workspace
+		// (e.g. admin sees all workspaces but may not be joined to all)
+		if err := s.store.UpdateWorkspaceSortOrder(userID, ws.ID, item.SortOrder); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			writeInternalError(w, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
