@@ -146,7 +146,13 @@ export const api = {
 			}),
 
 		delete: (slug: string) =>
-			request<void>(`/workspaces/${slug}`, { method: 'DELETE' })
+			request<void>(`/workspaces/${slug}`, { method: 'DELETE' }),
+
+		reorder: (updates: { slug: string; sort_order: number }[]) =>
+			request<void>('/workspaces/reorder', {
+				method: 'PUT',
+				body: JSON.stringify(updates)
+			})
 	},
 
 	// ── Collections ───────────────────────────────────────────────────────────

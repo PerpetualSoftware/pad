@@ -95,14 +95,16 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 	return result, rows.Err()
 }
 
-// GetUserWorkspaces returns all workspaces a user has access to.
+// GetUserWorkspaces returns all workspaces a user has access to,
+// sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		       wm.sort_order
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
 		WHERE wm.user_id = ? AND w.deleted_at IS NULL
-		ORDER BY w.name ASC
+		ORDER BY wm.sort_order ASC, w.name ASC
 	`), userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user workspaces: %w", err)
@@ -117,6 +119,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		if err := rows.Scan(
 			&ws.ID, &ws.Name, &ws.Slug, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
+			&ws.SortOrder,
 		); err != nil {
 			return nil, fmt.Errorf("scan workspace: %w", err)
 		}
@@ -126,6 +129,22 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		result = append(result, ws)
 	}
 	return result, rows.Err()
+}
+
+// UpdateWorkspaceSortOrder sets the sort_order for a workspace in a user's membership.
+func (s *Store) UpdateWorkspaceSortOrder(userID, workspaceID string, sortOrder int) error {
+	result, err := s.db.Exec(
+		s.q("UPDATE workspace_members SET sort_order = ? WHERE user_id = ? AND workspace_id = ?"),
+		sortOrder, userID, workspaceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update workspace sort order: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // IsWorkspaceMember checks if a user is a member of a workspace.

@@ -40,6 +40,7 @@ export interface Workspace {
 	slug: string;
 	description: string;
 	settings: string;
+	sort_order: number;
 	context?: WorkspaceContext;
 	created_at: string;
 	updated_at: string;
