@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -84,6 +85,12 @@
 
 	const unsubscribe = sseService.onItemEvent(async (event) => {
 		if (relevantEvents.has(event.type)) {
+			// Skip self-triggered item_updated events (content saves) to avoid
+			// re-fetching the timeline while the user is actively typing.
+			if (event.type === 'item_updated') {
+				const timeSinceLastSave = Date.now() - editorStore.lastSaveTime;
+				if (timeSinceLastSave < 3000) return;
+			}
 			// Fetch the newest page and merge with existing entries, preserving paginated state.
 			try {
 				const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
