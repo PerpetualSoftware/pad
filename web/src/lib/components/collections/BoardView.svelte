@@ -110,9 +110,12 @@
 		return result;
 	});
 
+	// Cooldown after a drop — suppress syncs while reorder API calls + SSE events settle
+	let dropCooldown = $state(false);
+
 	$effect(() => {
 		const data = propColumnData;
-		if (!isDragging) {
+		if (!isDragging && !dropCooldown) {
 			columnData = data;
 		}
 	});
@@ -130,28 +133,41 @@
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
 		columnData[columnValue] = e.detail.items;
 
-		// Capture the desired order BEFORE setting isDragging = false or awaiting,
-		// because both can trigger reactive effects that overwrite columnData.
 		const reorderUpdates = columnData[columnValue]
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ slug: item.id, sort_order: index }));
 
-		isDragging = false;
-
 		const { id: itemId, trigger } = e.detail.info;
+
+		isDragging = false;
+		dropCooldown = true;
+
+		let moveSucceeded = true;
 
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			const originalItem = items.find((i) => i.id === itemId);
 			if (originalItem) {
 				const fields = parseFields(originalItem);
 				if (fields[groupField] !== columnValue) {
-					await onStatusChange(originalItem, columnValue);
+					try {
+						await onStatusChange(originalItem, columnValue);
+					} catch {
+						moveSucceeded = false;
+					}
 				}
 			}
 		}
 
-		if (onReorder && reorderUpdates.length > 0) {
-			onReorder(reorderUpdates);
+		if (moveSucceeded) {
+			// Only persist reorder after a successful move
+			if (onReorder && reorderUpdates.length > 0) {
+				onReorder(reorderUpdates);
+			}
+			// Let SSE events settle before re-syncing from props
+			setTimeout(() => { dropCooldown = false; }, 2000);
+		} else {
+			// Move failed — immediately restore original positions
+			dropCooldown = false;
 		}
 	}
 

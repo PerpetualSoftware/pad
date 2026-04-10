@@ -400,23 +400,26 @@
 		} catch (e) {
 			console.error('Failed to update item:', e);
 			toastStore.show('Failed to update status', 'error');
+			throw e; // Re-throw so BoardView knows the move failed
 		}
 	}
 
 	async function handleReorder(updates: { slug: string; sort_order: number }[]) {
 		if (!wsSlug) return;
-		// Optimistically update local sort_order values
+		// Only persist items whose sort_order actually changed
+		const dirty: { id: string; sort_order: number }[] = [];
 		for (const { slug, sort_order } of updates) {
 			const item = items.find((i) => i.slug === slug || i.id === slug);
-			if (item) {
+			if (item && item.sort_order !== sort_order) {
 				item.sort_order = sort_order;
+				dirty.push({ id: item.id, sort_order });
 			}
 		}
+		if (dirty.length === 0) return;
 		// Persist to API sequentially (SQLite can't handle concurrent writes)
 		try {
-			for (const { slug, sort_order } of updates) {
-				const item = items.find((i) => i.slug === slug || i.id === slug);
-				await api.items.update(wsSlug, item?.id ?? slug, { sort_order });
+			for (const { id, sort_order } of dirty) {
+				await api.items.update(wsSlug, id, { sort_order });
 			}
 		} catch (e) {
 			console.error('Failed to persist sort order:', e);
