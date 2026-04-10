@@ -75,12 +75,18 @@
 				}
 
 				case 'item_updated': {
+					// Skip all side-effects for self-triggered content saves
+					const isSelfSave = activeItem
+						&& activeItem.id === event.item_id
+						&& (editorStore.dirty || Date.now() - editorStore.lastSaveTime < 5000);
+
+					if (isSelfSave) break;
+
+					// Only reload collections for external/non-editor updates
+					// (e.g. status changes, field edits from another tab)
 					collectionStore.loadCollections(wsSlug);
 
 					if (activeItem && activeItem.id === event.item_id) {
-						const timeSinceLastSave = Date.now() - editorStore.lastSaveTime;
-						if (timeSinceLastSave < 2000) break;
-
 						if (editorStore.dirty) {
 							editorStore.setExternalChange(true);
 						} else {

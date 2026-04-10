@@ -302,6 +302,9 @@
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
 			saveStatus = 'saving';
+			// Set lastSaveTime BEFORE the API call so the SSE guard works
+			// even if the SSE event arrives before the response.
+			editorStore.setLastSaveTime(Date.now());
 			const allItems = collectionStore.items ?? [];
 			let toSave = markdown;
 			if (allItems.length > 0) {
@@ -327,6 +330,7 @@
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
 			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			api.items.update(wsSlug, item.id, { content: markdown }).then((updated) => {
 				item = updated;

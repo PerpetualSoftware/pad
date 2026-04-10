@@ -3,7 +3,6 @@
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -75,49 +74,50 @@
 		loadTimeline();
 	});
 
+	// Only refresh the timeline for comment/reaction events — NOT item_updated.
+	// Content saves create version-diff entries that appear on next natural
+	// refresh (new comment, page load). Refreshing on every content save caused
+	// visible shakiness and rate-limit errors from rapid SSE replay.
 	const relevantEvents = new Set([
-		'item_updated',
 		'comment_created',
 		'comment_deleted',
 		'reaction_added',
 		'reaction_removed'
 	]);
 
-	const unsubscribe = sseService.onItemEvent(async (event) => {
+	// Debounce SSE-driven refreshes so rapid-fire event replays (e.g. on
+	// page reconnect) don't hammer the timeline endpoint.
+	let sseRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+	const unsubscribe = sseService.onItemEvent((event) => {
 		if (relevantEvents.has(event.type)) {
-			// Skip self-triggered item_updated events (content saves) to avoid
-			// re-fetching the timeline while the user is actively typing.
-			if (event.type === 'item_updated') {
-				const timeSinceLastSave = Date.now() - editorStore.lastSaveTime;
-				if (timeSinceLastSave < 3000) return;
-			}
-			// Fetch the newest page and merge with existing entries, preserving paginated state.
-			try {
-				const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
-				const freshIds = new Set(resp.entries.map((e) => e.id));
-				const existingIds = new Set(entries.map((e) => e.id));
+			clearTimeout(sseRefreshTimer);
+			sseRefreshTimer = setTimeout(async () => {
+				try {
+					const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
+					const freshIds = new Set(resp.entries.map((e) => e.id));
+					const existingIds = new Set(entries.map((e) => e.id));
 
-				// Prepend genuinely new entries.
-				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+					// Prepend genuinely new entries.
+					const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
-				// Update existing entries from the fresh response (e.g., reaction changes).
-				// Remove entries that were previously on the first page but are now gone (deleted).
-				// Keep all entries from older pages (loaded via "Load more") untouched.
-				const freshById = new Map(resp.entries.map((e) => [e.id, e]));
-				const updatedExisting = entries
-					.filter((e) => {
-						// If this entry was in the previous first page and is no longer in
-						// the fresh response, it was deleted — remove it.
-						if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
-						return true;
-					})
-					.map((e) => freshById.get(e.id) ?? e);
+					// Update existing entries from the fresh response (e.g., reaction changes).
+					// Remove entries that were previously on the first page but are now gone (deleted).
+					// Keep all entries from older pages (loaded via "Load more") untouched.
+					const freshById = new Map(resp.entries.map((e) => [e.id, e]));
+					const updatedExisting = entries
+						.filter((e) => {
+							if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
+							return true;
+						})
+						.map((e) => freshById.get(e.id) ?? e);
 
-				entries = [...newEntries, ...updatedExisting];
-				firstPageIds = freshIds;
-			} catch {
-				// Silently ignore SSE refresh failures.
-			}
+					entries = [...newEntries, ...updatedExisting];
+					firstPageIds = freshIds;
+				} catch {
+					// Silently ignore SSE refresh failures.
+				}
+			}, 500);
 		}
 	});
 
