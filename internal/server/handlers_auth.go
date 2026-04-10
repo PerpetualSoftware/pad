@@ -548,6 +548,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 
 	var input struct {
 		Name            *string `json:"name,omitempty"`
+		Username        *string `json:"username,omitempty"`
 		CurrentPassword string  `json:"current_password,omitempty"`
 		NewPassword     string  `json:"new_password,omitempty"`
 	}
@@ -564,6 +565,29 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		input.Name = &trimmed
+	}
+
+	// Validate username if provided
+	if input.Username != nil {
+		trimmed := strings.ToLower(strings.TrimSpace(*input.Username))
+		input.Username = &trimmed
+
+		if err := ValidateUsername(trimmed); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		// Check uniqueness (skip if unchanged)
+		if trimmed != user.Username {
+			existing, err := s.store.GetUserByUsername(trimmed)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check username")
+				return
+			}
+			if existing != nil {
+				writeError(w, http.StatusConflict, "conflict", "Username is already taken")
+				return
+			}
+		}
 	}
 
 	// Validate password change
@@ -592,7 +616,8 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 
 	// Build update
 	update := models.UserUpdate{
-		Name: input.Name,
+		Name:     input.Name,
+		Username: input.Username,
 	}
 	if input.NewPassword != "" {
 		update.Password = &input.NewPassword

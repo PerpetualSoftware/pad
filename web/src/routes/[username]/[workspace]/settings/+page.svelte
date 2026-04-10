@@ -39,9 +39,19 @@
 	// Account
 	let profileName = $state('');
 	let profileEmail = $state('');
+	let profileUsername = $state('');
+	let originalUsername = $state('');
 	let profileRole = $state('');
 	let savingProfile = $state(false);
 	let profileStatus = $state<'idle' | 'saved' | 'error'>('idle');
+	let profileError = $state('');
+
+	// Username availability checking
+	let usernameChecking = $state(false);
+	let usernameAvailable = $state<boolean | null>(null);
+	let usernameError = $state('');
+	let usernameCheckTimeout = $state<ReturnType<typeof setTimeout> | null>(null);
+	let usernameChanged = $derived(profileUsername !== originalUsername);
 
 	let currentPassword = $state('');
 	let newPassword = $state('');
@@ -120,6 +130,8 @@
 			const me = await api.auth.me();
 			profileName = me.name;
 			profileEmail = me.email;
+			profileUsername = me.username;
+			originalUsername = me.username;
 			profileRole = me.role;
 		} catch {}
 		try {
@@ -313,16 +325,62 @@
 		}
 	}
 
+	function checkUsernameAvailability() {
+		if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout);
+		usernameAvailable = null;
+		usernameError = '';
+
+		if (!usernameChanged) {
+			usernameChecking = false;
+			return;
+		}
+
+		if (!profileUsername || profileUsername.length < 3) {
+			usernameChecking = false;
+			if (profileUsername.length > 0) {
+				usernameError = 'Username must be at least 3 characters';
+			}
+			return;
+		}
+
+		usernameChecking = true;
+		usernameCheckTimeout = setTimeout(async () => {
+			try {
+				const result = await api.auth.checkUsername(profileUsername);
+				usernameAvailable = result.available;
+				usernameError = result.message || '';
+			} catch {
+				usernameError = '';
+				usernameAvailable = null;
+			} finally {
+				usernameChecking = false;
+			}
+		}, 400);
+	}
+
 	async function saveProfile() {
 		if (!profileName.trim() || savingProfile) return;
+		if (usernameChanged && usernameAvailable === false) return;
+		if (usernameChanged && profileUsername.length > 0 && profileUsername.length < 3) return;
 		savingProfile = true;
 		profileStatus = 'idle';
+		profileError = '';
 		try {
-			await api.auth.updateProfile({ name: profileName.trim() });
+			const update: { name: string; username?: string } = { name: profileName.trim() };
+			if (usernameChanged) {
+				update.username = profileUsername.trim();
+			}
+			await api.auth.updateProfile(update);
+			if (usernameChanged) {
+				originalUsername = profileUsername.trim();
+				usernameAvailable = null;
+				usernameError = '';
+			}
 			profileStatus = 'saved';
 			setTimeout(() => (profileStatus = 'idle'), 2000);
-		} catch {
+		} catch (err: unknown) {
 			profileStatus = 'error';
+			profileError = err instanceof Error ? err.message : 'Failed to save profile';
 		} finally {
 			savingProfile = false;
 		}
@@ -588,13 +646,46 @@
 						<label for="profile-name">Name</label>
 						<div class="inline-edit">
 							<input id="profile-name" type="text" bind:value={profileName} onkeydown={(e) => e.key === 'Enter' && saveProfile()} />
-							<button class="btn btn-small" onclick={saveProfile} disabled={savingProfile}>
+						</div>
+					</div>
+					<div class="field-row">
+						<label for="profile-username">Username</label>
+						<div class="inline-edit">
+							<div class="username-input-wrapper">
+								<span class="username-prefix">@</span>
+								<input
+									id="profile-username"
+									type="text"
+									bind:value={profileUsername}
+									oninput={checkUsernameAvailability}
+									onkeydown={(e) => e.key === 'Enter' && saveProfile()}
+									placeholder="username"
+									autocomplete="username"
+								/>
+							</div>
+							{#if usernameChanged}
+								{#if usernameChecking}
+									<span class="username-status checking">checking...</span>
+								{:else if usernameAvailable === true}
+									<span class="username-status available">available</span>
+								{:else if usernameAvailable === false}
+									<span class="username-status taken">{usernameError || 'not available'}</span>
+								{:else if usernameError}
+									<span class="username-status taken">{usernameError}</span>
+								{/if}
+							{/if}
+						</div>
+					</div>
+					<div class="field-row profile-actions-row">
+						<span class="field-label"></span>
+						<div class="inline-edit">
+							<button class="btn btn-small" onclick={saveProfile} disabled={savingProfile || (usernameChanged && usernameAvailable === false) || (usernameChanged && profileUsername.length > 0 && profileUsername.length < 3)}>
 								{savingProfile ? 'Saving...' : 'Save'}
 							</button>
 							{#if profileStatus === 'saved'}
 								<span class="status-saved">Saved</span>
 							{:else if profileStatus === 'error'}
-								<span class="status-error">Error</span>
+								<span class="status-error">{profileError || 'Error'}</span>
 							{/if}
 						</div>
 					</div>
@@ -1090,6 +1181,17 @@
 	.token-secret-warning { font-size: 0.82em; color: var(--accent-orange); margin: 0 0 var(--space-2); font-weight: 500; }
 	.token-secret-row { display: flex; align-items: center; gap: var(--space-2); }
 	.token-secret { font-size: 0.82em; background: var(--bg-tertiary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); word-break: break-all; flex: 1; }
+	/* ── Username field ──── */
+	.username-input-wrapper { display: flex; align-items: center; flex: 1; min-width: 120px; max-width: 300px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+	.username-input-wrapper:focus-within { border-color: var(--accent-blue); }
+	.username-prefix { padding: var(--space-1) 0 var(--space-1) var(--space-2); font-size: 0.9em; color: var(--text-muted); flex-shrink: 0; user-select: none; }
+	.username-input-wrapper input { border: none; background: none; padding-left: var(--space-1); min-width: 0; flex: 1; }
+	.username-input-wrapper input:focus { outline: none; box-shadow: none; }
+	.username-status { font-size: 0.78em; white-space: nowrap; }
+	.username-status.checking { color: var(--text-muted); }
+	.username-status.available { color: var(--accent-green); }
+	.username-status.taken { color: #ef4444; }
+	.profile-actions-row { border-top: none !important; padding-top: 0; }
 	/* ── Platform ──── */
 	.platform-actions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }
 </style>
