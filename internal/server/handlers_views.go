@@ -27,6 +27,17 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check collection visibility
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
 	views, err := s.store.ListViews(workspaceID, coll.ID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -60,6 +71,17 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check collection visibility
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
 	var input models.ViewCreate
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -82,17 +104,43 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, view)
 }
 
+// requireViewVisible looks up a view by ID, verifies it belongs to the
+// workspace, and checks that its collection is visible. Returns the view
+// or writes an error and returns nil.
+func (s *Server) requireViewVisible(w http.ResponseWriter, r *http.Request, workspaceID, viewID string) *models.View {
+	view, err := s.store.GetView(viewID)
+	if err != nil || view == nil || view.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "View not found")
+		return nil
+	}
+	if view.CollectionID != nil {
+		visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+		if visErr != nil {
+			writeInternalError(w, visErr)
+			return nil
+		}
+		if !isCollectionVisible(*view.CollectionID, visibleIDs) {
+			writeError(w, http.StatusNotFound, "not_found", "View not found")
+			return nil
+		}
+	}
+	return view
+}
+
 // handleUpdateView modifies an existing saved view.
 func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "editor") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	viewID := chi.URLParam(r, "viewID")
+	if s.requireViewVisible(w, r, workspaceID, viewID) == nil {
+		return
+	}
 
 	var input models.ViewUpdate
 	if err := decodeJSON(r, &input); err != nil {
@@ -118,12 +166,15 @@ func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "editor") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	viewID := chi.URLParam(r, "viewID")
+	if s.requireViewVisible(w, r, workspaceID, viewID) == nil {
+		return
+	}
 
 	if err := s.store.DeleteView(viewID); err != nil {
 		if err == sql.ErrNoRows {

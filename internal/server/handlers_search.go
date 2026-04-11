@@ -41,7 +41,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			// Apply per-workspace collection visibility filtering.
 			// Collect all visible collection IDs across user's workspaces.
-			var allVisibleCollIDs []string
+			allVisibleCollIDs := []string{} // non-nil empty = "no access" by default
 			needsCollFilter := false
 			for _, ws := range workspaces {
 				visIDs, err := s.store.VisibleCollectionIDs(ws.ID, user.ID)

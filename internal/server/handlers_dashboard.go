@@ -243,9 +243,21 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				Title: plan.Title,
 			}
 
-			// Compute progress from child items linked via parent link
-			total, done, err := s.store.GetItemProgress(plan.ID)
-			if err == nil && total > 0 {
+			// Compute progress from visible child items only
+			total, done := 0, 0
+			if planChildren, cerr := s.store.GetChildItems(plan.ID); cerr == nil {
+				for _, child := range planChildren {
+					if !isCollectionVisible(child.CollectionID, visibleIDs) {
+						continue
+					}
+					total++
+					childStatus := extractFieldValue(child.Fields, "status")
+					if isItemTerminal(childStatus, child.CollectionID, schemaMap) {
+						done++
+					}
+				}
+			}
+			if total > 0 {
 				dp.TaskCount = total
 				dp.DoneCount = done
 				dp.Progress = (done * 100) / total
@@ -481,6 +493,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, task := range tasks {
+			// Skip tasks from hidden collections
+			if !isCollectionVisible(task.CollectionID, visibleIDs) {
+				continue
+			}
 			taskStatus := extractFieldValue(task.Fields, "status")
 			if taskStatus == "open" {
 				pri := extractFieldValue(task.Fields, "priority")

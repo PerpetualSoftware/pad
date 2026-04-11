@@ -25,7 +25,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
-	if err := s.resolveParentFilter(workspaceID, &params); err != nil {
+	if err := s.resolveParentFilter(r, workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -87,7 +87,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if coll.Schema != "" {
 		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
 	}
-	if err := s.resolveParentFilter(workspaceID, &params, collSchema); err != nil {
+	if err := s.resolveParentFilter(r, workspaceID, &params, collSchema); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -183,18 +183,20 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 					}
 					parentValue = resolvedParent.ID
 				} else {
-					parentValue = pvStr
 					resolvedParent, _ = s.store.GetItem(pvStr)
-				}
-				// Ensure parent item belongs to this workspace and is visible
-				if resolvedParent != nil {
-					if resolvedParent.WorkspaceID != workspaceID {
+					if resolvedParent == nil {
 						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
 						return
 					}
-					if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
-						return
-					}
+					parentValue = resolvedParent.ID
+				}
+				// Ensure parent item belongs to this workspace and is visible
+				if resolvedParent.WorkspaceID != workspaceID {
+					writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+					return
+				}
+				if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+					return
 				}
 			}
 			delete(fieldMap, key)
@@ -349,18 +351,20 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 							}
 							parentValue = resolvedParent.ID
 						} else {
-							parentValue = pvStr
 							resolvedParent, _ = s.store.GetItem(pvStr)
-						}
-						// Ensure parent item belongs to this workspace and is visible
-						if resolvedParent != nil {
-							if resolvedParent.WorkspaceID != workspaceID {
+							if resolvedParent == nil {
 								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
 								return
 							}
-							if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
-								return
-							}
+							parentValue = resolvedParent.ID
+						}
+						// Ensure parent item belongs to this workspace and is visible
+						if resolvedParent.WorkspaceID != workspaceID {
+							writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+							return
+						}
+						if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+							return
 						}
 					}
 				}
@@ -728,6 +732,38 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// When user has restricted visibility, compute progress from visible
+	// children only so hidden child counts don't leak.
+	if visibleIDs != nil {
+		allProgress, err := s.store.GetAllItemProgress(workspaceID, "plans")
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// Recompute each plan's progress using only visible children
+		for i, p := range allProgress {
+			children, cerr := s.store.GetChildItems(p.ItemID)
+			if cerr != nil {
+				continue
+			}
+			total, done := 0, 0
+			for _, child := range children {
+				if !isCollectionVisible(child.CollectionID, visibleIDs) {
+					continue
+				}
+				total++
+				status := extractStatus(child.Fields)
+				if models.IsTerminalStatusDefault(status) {
+					done++
+				}
+			}
+			allProgress[i].Total = total
+			allProgress[i].Done = done
+		}
+		writeJSON(w, http.StatusOK, allProgress)
+		return
+	}
+
 	progress, err := s.store.GetAllItemProgress(workspaceID, "plans")
 	if err != nil {
 		writeInternalError(w, err)
@@ -814,12 +850,15 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 	// visible children only so hidden child counts don't leak.
 	progVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if progVisIDs != nil {
-		// Restricted: compute from visible children in Go
+		// Restricted: compute from visible children in Go using per-collection
+		// schemas to determine terminal statuses correctly.
 		children, cerr := s.store.GetChildItems(item.ID)
 		if cerr != nil {
 			writeInternalError(w, cerr)
 			return
 		}
+		// Cache collection schemas for terminal status lookup
+		schemaCache := make(map[string]models.CollectionSchema)
 		total, done := 0, 0
 		for _, child := range children {
 			if !isCollectionVisible(child.CollectionID, progVisIDs) {
@@ -827,7 +866,14 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 			}
 			total++
 			status := extractStatus(child.Fields)
-			if models.IsTerminalStatusDefault(status) {
+			schema, cached := schemaCache[child.CollectionID]
+			if !cached {
+				if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
+					_ = json.Unmarshal([]byte(coll.Schema), &schema)
+				}
+				schemaCache[child.CollectionID] = schema
+			}
+			if models.IsTerminalStatus(status, schema) {
 				done++
 			}
 		}
@@ -865,7 +911,7 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 // filters and converts it to a ParentLinkID filter (which uses item_links instead of json_extract).
 // An optional schema can be passed; if the schema defines a field with the key,
 // that key is left as a normal field filter instead of being treated as a parent link.
-func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemListParams, schemas ...models.CollectionSchema) error {
+func (s *Server) resolveParentFilter(r *http.Request, workspaceID string, params *models.ItemListParams, schemas ...models.CollectionSchema) error {
 	if params.Fields == nil {
 		return nil
 	}
@@ -892,15 +938,31 @@ func (s *Server) resolveParentFilter(workspaceID string, params *models.ItemList
 	}
 
 	// Resolve slug/ref to UUID
+	var resolved *models.Item
 	if !isUUID(val) {
-		resolved, err := s.store.ResolveItem(workspaceID, val)
-		if err != nil || resolved == nil {
+		var rerr error
+		resolved, rerr = s.store.ResolveItem(workspaceID, val)
+		if rerr != nil || resolved == nil {
 			return fmt.Errorf("parent %q not found", val)
 		}
 		params.ParentLinkID = resolved.ID
 	} else {
 		params.ParentLinkID = val
+		resolved, _ = s.store.GetItem(val)
 	}
+
+	// Ensure the parent is visible — return the same not-found error for
+	// hidden parents so restricted users can't probe hidden item existence.
+	if resolved != nil {
+		visIDs, verr := s.visibleCollectionIDs(r, workspaceID)
+		if verr != nil {
+			return verr
+		}
+		if !isCollectionVisible(resolved.CollectionID, visIDs) {
+			return fmt.Errorf("parent %q not found", val)
+		}
+	}
+
 	return nil
 }
 

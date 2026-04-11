@@ -22,6 +22,22 @@ func (s *Server) handleListAgentRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When visibility is restricted, recompute item counts from visible items only
+	visibleIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if visibleIDs != nil {
+		visibleItems, _ := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: visibleIDs})
+		// Build role → count map from visible items
+		roleCounts := make(map[string]int)
+		for _, item := range visibleItems {
+			if item.AgentRoleID != nil && *item.AgentRoleID != "" {
+				roleCounts[*item.AgentRoleID]++
+			}
+		}
+		for i := range roles {
+			roles[i].ItemCount = roleCounts[roles[i].ID]
+		}
+	}
+
 	writeJSON(w, http.StatusOK, roles)
 }
 
