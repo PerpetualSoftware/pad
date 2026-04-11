@@ -303,7 +303,12 @@ func (s *Server) handleGetMemberCollectionAccess(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Only workspace owners or the user themselves can view collection access
 	userID := chi.URLParam(r, "userID")
+	if !requireRole(r, "owner") && currentUserID(r) != userID {
+		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can view other members' collection access")
+		return
+	}
 	member, err := s.store.GetWorkspaceMember(workspaceID, userID)
 	if err != nil {
 		writeInternalError(w, err)

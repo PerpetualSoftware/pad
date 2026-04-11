@@ -161,12 +161,36 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "editor") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	linkID := chi.URLParam(r, "linkID")
+
+	// Look up the link and verify it belongs to this workspace
+	link, err := s.store.GetItemLinkByID(linkID)
+	if err != nil || link == nil || link.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Link not found")
+		return
+	}
+
+	// Verify both linked items are in visible collections
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if visibleIDs != nil {
+		for _, itemID := range []string{link.SourceID, link.TargetID} {
+			item, ierr := s.store.GetItem(itemID)
+			if ierr != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
+				writeError(w, http.StatusNotFound, "not_found", "Link not found")
+				return
+			}
+		}
+	}
+
 	if err := s.store.DeleteItemLink(linkID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Link not found")

@@ -395,6 +395,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if err != nil || blocker == nil {
 				continue
 			}
+			// Skip blockers from hidden collections
+			if !isCollectionVisible(blocker.CollectionID, visibleIDs) {
+				continue
+			}
 			blockerStatus := extractFieldValue(blocker.Fields, "status")
 			if isItemTerminal(blockerStatus, blocker.CollectionID, schemaMap) {
 				continue

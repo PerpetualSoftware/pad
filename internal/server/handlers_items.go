@@ -186,9 +186,15 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 					parentValue = pvStr
 					resolvedParent, _ = s.store.GetItem(pvStr)
 				}
-				// Ensure parent item is in a visible collection
-				if resolvedParent != nil && !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
-					return
+				// Ensure parent item belongs to this workspace and is visible
+				if resolvedParent != nil {
+					if resolvedParent.WorkspaceID != workspaceID {
+						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+						return
+					}
+					if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+						return
+					}
 				}
 			}
 			delete(fieldMap, key)
@@ -232,7 +238,8 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
-	if err := s.enrichItemForResponse(item); err != nil {
+	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(item, createVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -261,7 +268,8 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.enrichItemForResponse(item); err != nil {
+	enrichVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(item, enrichVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -344,9 +352,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 							parentValue = pvStr
 							resolvedParent, _ = s.store.GetItem(pvStr)
 						}
-						// Ensure parent item is in a visible collection
-						if resolvedParent != nil && !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
-							return
+						// Ensure parent item belongs to this workspace and is visible
+						if resolvedParent != nil {
+							if resolvedParent.WorkspaceID != workspaceID {
+								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+								return
+							}
+							if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+								return
+							}
 						}
 					}
 				}
@@ -449,7 +463,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.enrichItemForResponse(updated); err != nil {
+	updateVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(updated, updateVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -534,7 +549,8 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	s.logActivity(workspaceID, restored.ID, "restored", r)
 	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source)
 
-	if err := s.enrichItemForResponse(restored); err != nil {
+	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(restored, restoreVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -659,7 +675,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
-	if err := s.enrichItemForResponse(moved); err != nil {
+	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(moved, moveVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}

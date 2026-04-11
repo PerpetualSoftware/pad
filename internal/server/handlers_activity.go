@@ -59,9 +59,15 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		}
 		filtered := make([]models.Activity, 0, len(activities))
 		for _, a := range activities {
-			if a.CollectionSlug == "" || visibleSlugs[a.CollectionSlug] {
+			if a.CollectionSlug != "" && visibleSlugs[a.CollectionSlug] {
+				// Known collection that's visible — include
+				filtered = append(filtered, a)
+			} else if a.CollectionSlug == "" && a.ItemSlug == "" {
+				// Workspace-level activity (no item) — include
 				filtered = append(filtered, a)
 			}
+			// Drop: empty collection slug with an item (unresolved hidden item),
+			// or known collection slug that's not visible.
 		}
 		activities = filtered
 	}

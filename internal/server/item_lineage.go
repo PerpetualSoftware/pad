@@ -66,31 +66,52 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 	}
 }
 
-func (s *Server) enrichItemForResponse(item *models.Item) error {
+// enrichItemForResponse populates derived closure and parent info on a single item.
+// An optional visibleIDs slice filters related items so hidden-collection metadata
+// is not leaked. Pass nil (or omit) for full access.
+func (s *Server) enrichItemForResponse(item *models.Item, visibleIDs ...[]string) error {
 	if item == nil {
 		return nil
 	}
-	closure, err := s.deriveItemClosure(item)
+
+	var vis []string
+	hasVis := len(visibleIDs) > 0 && visibleIDs[0] != nil
+	if hasVis {
+		vis = visibleIDs[0]
+	}
+
+	closure, err := s.deriveItemClosure(item, vis)
 	if err != nil {
 		return err
 	}
 	item.DerivedClosure = closure
 
-	// Populate parent link info
+	// Populate parent link info — skip if parent is in a hidden collection
 	parentLink, err := s.store.GetParentForItem(item.ID)
 	if err != nil {
 		return err
 	}
 	if parentLink != nil {
-		item.ParentLinkID = parentLink.TargetID
-		item.ParentRef = parentLink.TargetRef
-		item.ParentTitle = parentLink.TargetTitle
+		parentVisible := true
+		if hasVis {
+			if parent, perr := s.store.GetItem(parentLink.TargetID); perr == nil && parent != nil {
+				parentVisible = isCollectionVisible(parent.CollectionID, vis)
+			}
+		}
+		if parentVisible {
+			item.ParentLinkID = parentLink.TargetID
+			item.ParentRef = parentLink.TargetRef
+			item.ParentTitle = parentLink.TargetTitle
+		}
 	}
 
 	return nil
 }
 
-func (s *Server) deriveItemClosure(item *models.Item) (*models.ItemDerivedClosure, error) {
+// deriveItemClosure computes derived closure (superseded, implemented, split)
+// from item links. When vis is non-nil, links to items in hidden collections
+// are excluded.
+func (s *Server) deriveItemClosure(item *models.Item, vis []string) (*models.ItemDerivedClosure, error) {
 	links, err := s.store.GetItemLinks(item.ID)
 	if err != nil {
 		return nil, err
@@ -102,6 +123,19 @@ func (s *Server) deriveItemClosure(item *models.Item) (*models.ItemDerivedClosur
 	allSplitChildrenDone := true
 
 	for _, link := range links {
+		// If visibility is restricted, check that the "other side" is visible
+		if vis != nil {
+			otherID := link.SourceID
+			if otherID == item.ID {
+				otherID = link.TargetID
+			}
+			if other, oerr := s.store.GetItem(otherID); oerr == nil && other != nil {
+				if !isCollectionVisible(other.CollectionID, vis) {
+					continue
+				}
+			}
+		}
+
 		linkType, err := models.NormalizeItemLinkType(link.LinkType)
 		if err != nil {
 			continue

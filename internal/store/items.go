@@ -1042,6 +1042,25 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 	return links, rows.Err()
 }
 
+// GetItemLinkByID returns a single item link by its ID, or nil if not found.
+func (s *Store) GetItemLinkByID(id string) (*models.ItemLink, error) {
+	var link models.ItemLink
+	var createdAt string
+	err := s.db.QueryRow(s.q(`
+		SELECT id, workspace_id, source_id, target_id, link_type, created_by, created_at
+		FROM item_links WHERE id = ?
+	`), id).Scan(&link.ID, &link.WorkspaceID, &link.SourceID, &link.TargetID,
+		&link.LinkType, &link.CreatedBy, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get item link by id: %w", err)
+	}
+	link.CreatedAt = parseTime(createdAt)
+	return &link, nil
+}
+
 func (s *Store) DeleteItemLink(id string) error {
 	result, err := s.db.Exec(s.q("DELETE FROM item_links WHERE id = ?"), id)
 	if err != nil {
