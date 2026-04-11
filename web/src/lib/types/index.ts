@@ -34,6 +34,28 @@ export interface APITokenWithSecret extends APIToken {
 	token: string;
 }
 
+// ─── Share Links ────────────────────────────────────────────────────────────
+
+export interface ShareLink {
+	id: string;
+	token?: string;
+	target_type: string;
+	target_id: string;
+	workspace_id: string;
+	permission: string;
+	created_by: string;
+	has_password: boolean;
+	expires_at?: string;
+	max_views?: number;
+	require_auth: boolean;
+	view_count: number;
+	unique_viewers: number;
+	last_viewed_at?: string;
+	created_at: string;
+	url?: string;
+	target_title?: string;
+}
+
 // ─── Grants ──────────────────────────────────────────────────────────────────
 
 export interface CollectionGrant {

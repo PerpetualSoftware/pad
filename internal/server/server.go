@@ -209,7 +209,7 @@ func (s *Server) setupRouter() {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
 			AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password"},
 			AllowCredentials: true,
 			MaxAge:           300,
 		}))
@@ -279,6 +279,9 @@ func (s *Server) setupRouter() {
 		// Invitations (outside workspace scope)
 		r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
 
+		// Share link resolution (outside workspace scope, no auth required)
+		r.Get("/s/{token}", s.handleResolveShareLink)
+
 		// Workspaces
 		r.Route("/workspaces", func(r chi.Router) {
 			r.Get("/", s.handleListWorkspaces)
@@ -332,6 +335,8 @@ func (s *Server) setupRouter() {
 						r.Get("/grants", s.handleListCollectionGrants)
 						r.Post("/grants", s.handleCreateCollectionGrant)
 						r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
+						r.Get("/share-links", s.handleListCollectionShareLinks)
+						r.Post("/share-links", s.handleCreateCollectionShareLink)
 						// Saved views within collection
 						r.Get("/views", s.handleListViews)
 						r.Post("/views", s.handleCreateView)
@@ -370,10 +375,16 @@ func (s *Server) setupRouter() {
 					r.Get("/grants", s.handleListItemGrants)
 					r.Post("/grants", s.handleCreateItemGrant)
 					r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
+					r.Get("/share-links", s.handleListItemShareLinks)
+					r.Post("/share-links", s.handleCreateItemShareLink)
 				})
 
 				// Links (v2)
 				r.Delete("/links/{linkID}", s.handleDeleteItemLink)
+
+				// Share links (workspace-scoped management)
+				r.Delete("/share-links/{linkID}", s.handleDeleteShareLink)
+				r.Get("/share-links/{linkID}/views", s.handleShareLinkViews)
 
 				// Comments (v2)
 				r.Route("/comments/{commentID}", func(r chi.Router) {
