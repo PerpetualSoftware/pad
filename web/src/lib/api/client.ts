@@ -35,7 +35,8 @@ import type {
 	RoleBoardLane,
 	ChangesResponse,
 	CollectionGrant,
-	ItemGrant
+	ItemGrant,
+	ShareLink
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -552,6 +553,35 @@ export const api = {
 			request<void>(`/workspaces/${ws}/items/${itemSlug}/grants/${grantId}`, { method: 'DELETE' }),
 		listUserGrants: (ws: string, userId: string) =>
 			request<{ collection_grants: CollectionGrant[]; item_grants: ItemGrant[] }>(`/workspaces/${ws}/users/${userId}/grants`),
+	},
+
+	// ── Share Links ─────────────────────────────────────────────────────────
+
+	shareLinks: {
+		listItemShareLinks: (ws: string, itemSlug: string) =>
+			request<ShareLink[]>(`/workspaces/${ws}/items/${itemSlug}/share-links`),
+		createItemShareLink: (ws: string, itemSlug: string) =>
+			request<ShareLink>(`/workspaces/${ws}/items/${itemSlug}/share-links`, { method: 'POST' }),
+		listCollectionShareLinks: (ws: string, collSlug: string) =>
+			request<ShareLink[]>(`/workspaces/${ws}/collections/${collSlug}/share-links`),
+		createCollectionShareLink: (ws: string, collSlug: string) =>
+			request<ShareLink>(`/workspaces/${ws}/collections/${collSlug}/share-links`, { method: 'POST' }),
+		deleteShareLink: (ws: string, linkId: string) =>
+			request<void>(`/workspaces/${ws}/share-links/${linkId}`, { method: 'DELETE' }),
+	},
+
+	// ── Public Share (no auth) ──────────────────────────────────────────────
+
+	share: {
+		get: (token: string) =>
+			fetch(`${BASE}/s/${token}`, { credentials: 'same-origin' }).then(async (resp) => {
+				if (!resp.ok) {
+					const body = await resp.json().catch(() => null);
+					if (body?.error) throw new PadApiError(body.error);
+					throw new Error(`API error: ${resp.status}`);
+				}
+				return resp.json();
+			}),
 	},
 
 	// ── Auth ──────────────────────────────────────────────────────────────────

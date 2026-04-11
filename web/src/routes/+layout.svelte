@@ -19,6 +19,7 @@
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
 	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/'));
+	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 
 	onMount(async () => {
 		// Initialize theme
@@ -27,6 +28,12 @@
 			document.documentElement.setAttribute('data-theme', savedTheme);
 		} else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
 			document.documentElement.setAttribute('data-theme', 'light');
+		}
+
+		// Share pages bypass auth entirely
+		if (isSharePage) {
+			authReady = true;
+			return;
 		}
 
 		// Check auth status before loading the app
@@ -113,7 +120,7 @@
 
 {#if !authReady}
 	<!-- Auth check in progress — blank screen to avoid flash -->
-{:else if isAuthPage}
+{:else if isAuthPage || isSharePage}
 	{@render children()}
 {:else}
 	{#if uiStore.isMobile && uiStore.sidebarOpen}
