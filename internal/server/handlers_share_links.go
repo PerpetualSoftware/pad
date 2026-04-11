@@ -1,8 +1,12 @@
 package server
 
 import (
+	"database/sql"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
@@ -39,14 +43,15 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 		RequireAuth     bool    `json:"require_auth,omitempty"`
 		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
 	}
-	if err := decodeJSON(r, &input); err != nil && r.ContentLength > 0 {
+	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
 
-	// Force require_auth when restrict_to_email is set — otherwise the
-	// email restriction would be silently ignored.
+	// Normalize and force require_auth when restrict_to_email is set —
+	// otherwise the email restriction would be silently ignored.
 	if input.RestrictToEmail != "" {
+		input.RestrictToEmail = strings.ToLower(strings.TrimSpace(input.RestrictToEmail))
 		input.RequireAuth = true
 	}
 
@@ -99,13 +104,14 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 		RequireAuth     bool    `json:"require_auth,omitempty"`
 		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
 	}
-	if err := decodeJSON(r, &collInput); err != nil && r.ContentLength > 0 {
+	if err := decodeJSON(r, &collInput); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
 
-	// Force require_auth when restrict_to_email is set
+	// Normalize and force require_auth when restrict_to_email is set
 	if collInput.RestrictToEmail != "" {
+		collInput.RestrictToEmail = strings.ToLower(strings.TrimSpace(collInput.RestrictToEmail))
 		collInput.RequireAuth = true
 	}
 
@@ -206,7 +212,11 @@ func (s *Server) handleDeleteShareLink(w http.ResponseWriter, r *http.Request) {
 
 	linkID := chi.URLParam(r, "linkID")
 	if err := s.store.DeleteShareLink(linkID, workspaceID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		} else {
+			writeInternalError(w, err)
+		}
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -239,12 +249,10 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Password check — prefer X-Share-Password header, fall back to query param
+	// Password check — via X-Share-Password header (never query string, to
+	// avoid leaking passwords in logs, browser history, and referrers).
 	if link.HasPassword {
 		password := r.Header.Get("X-Share-Password")
-		if password == "" {
-			password = r.URL.Query().Get("password")
-		}
 		if password == "" {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"require_password": true,
@@ -268,18 +276,15 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
-		// Restrict to specific email
-		if link.RestrictToEmail != "" && user.Email != link.RestrictToEmail {
+		// Restrict to specific email (stored normalized; normalize user email too)
+		if link.RestrictToEmail != "" && strings.ToLower(strings.TrimSpace(user.Email)) != link.RestrictToEmail {
 			writeError(w, http.StatusForbidden, "forbidden", "This link is restricted")
 			return
 		}
 	}
 
 	// Atomically record the view and enforce max_views
-	fingerprint := r.Header.Get("X-Forwarded-For")
-	if fingerprint == "" {
-		fingerprint = r.RemoteAddr
-	}
+	fingerprint := clientIP(r)
 	userID := ""
 	if user := currentUser(r); user != nil {
 		userID = user.ID
@@ -316,7 +321,6 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			},
 			"permission": "view",
 			"share_link": map[string]interface{}{
-				"id":          link.ID,
 				"target_type": link.TargetType,
 			},
 		})
@@ -331,7 +335,8 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			CollectionSlug: coll.Slug,
 		})
 		if err != nil {
-			items = []models.Item{}
+			writeInternalError(w, err)
+			return
 		}
 		// Build public item list with only safe fields
 		publicItems := make([]map[string]interface{}, 0, len(items))
@@ -353,7 +358,6 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			"items":      publicItems,
 			"permission": "view",
 			"share_link": map[string]interface{}{
-				"id":          link.ID,
 				"target_type": link.TargetType,
 			},
 		})

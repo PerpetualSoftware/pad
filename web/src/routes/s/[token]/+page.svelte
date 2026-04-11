@@ -37,7 +37,9 @@
 			const raw = marked(itemData.content) as string;
 			return typeof window !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
 		} catch {
-			return itemData.content;
+			// Sanitize the fallback too — never pass user content to {@html} raw
+			const fallback = itemData.content;
+			return typeof window !== 'undefined' ? DOMPurify.sanitize(fallback) : fallback;
 		}
 	});
 
