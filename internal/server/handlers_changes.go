@@ -54,6 +54,43 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter by collection visibility so restricted members only see
+	// changes from collections they have access to.
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if visibleIDs != nil {
+		filtered := updated[:0]
+		allowedDeleted := deletedIDs[:0]
+		visibleSet := make(map[string]bool, len(visibleIDs))
+		for _, id := range visibleIDs {
+			visibleSet[id] = true
+		}
+		for _, item := range updated {
+			if visibleSet[item.CollectionID] {
+				filtered = append(filtered, item)
+			}
+		}
+		updated = filtered
+		// For deleted items, re-query with collection filter since we
+		// only have IDs. Fetch their collection_ids from the soft-deleted rows.
+		if len(deletedIDs) > 0 {
+			delItems, delErr := s.store.GetDeletedItemsWithCollection(workspaceID, deletedIDs)
+			if delErr != nil {
+				writeInternalError(w, delErr)
+				return
+			}
+			for _, item := range delItems {
+				if visibleSet[item.CollectionID] {
+					allowedDeleted = append(allowedDeleted, item.ID)
+				}
+			}
+			deletedIDs = allowedDeleted
+		}
+	}
+
 	// Convert to interface slice for JSON marshaling.
 	updatedItems := make([]interface{}, len(updated))
 	for i, item := range updated {

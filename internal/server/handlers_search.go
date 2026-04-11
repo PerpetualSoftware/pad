@@ -39,6 +39,32 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+			// Apply per-workspace collection visibility filtering.
+			// Collect all visible collection IDs across user's workspaces.
+			var allVisibleCollIDs []string
+			needsCollFilter := false
+			for _, ws := range workspaces {
+				visIDs, err := s.store.VisibleCollectionIDs(ws.ID, user.ID)
+				if err != nil {
+					// Fail closed: skip this workspace entirely on error
+					// rather than searching it without a collection filter.
+					params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
+					continue
+				}
+				if visIDs != nil {
+					needsCollFilter = true
+					allVisibleCollIDs = append(allVisibleCollIDs, visIDs...)
+				} else {
+					// "all" access — include all collections from this workspace
+					colls, _ := s.store.ListCollections(ws.ID)
+					for _, c := range colls {
+						allVisibleCollIDs = append(allVisibleCollIDs, c.ID)
+					}
+				}
+			}
+			if needsCollFilter {
+				params.CollectionIDs = allVisibleCollIDs
+			}
 		}
 		// If no user (fresh install, no auth), allow unscoped search
 	}
@@ -48,9 +74,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
 		if ws != nil {
 			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
-			if visErr == nil {
-				params.CollectionIDs = visibleIDs
+			if visErr != nil {
+				writeInternalError(w, visErr)
+				return
 			}
+			params.CollectionIDs = visibleIDs
 		}
 	}
 
@@ -67,4 +95,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"results": results,
 		"total":   len(results),
 	})
+}
+
+func removeString(ss []string, s string) []string {
+	result := ss[:0]
+	for _, v := range ss {
+		if v != s {
+			result = append(result, v)
+		}
+	}
+	return result
 }

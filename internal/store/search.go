@@ -30,6 +30,12 @@ type SearchParams struct {
 }
 
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
+	// Non-nil empty CollectionIDs means "no visible collections" — return
+	// empty results immediately rather than skipping the filter clause.
+	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 {
+		return nil, nil
+	}
+
 	var results []SearchResult
 
 	// Check if the query looks like an item ref (e.g. "TASK-5", "BUG-8")

@@ -94,6 +94,17 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check collection visibility
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, coll)
 }
 

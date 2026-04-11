@@ -428,6 +428,12 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 }
 
 func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
+	// Non-nil empty CollectionIDs means "no visible collections" — return
+	// empty results immediately rather than skipping the filter clause.
+	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 {
+		return nil, nil
+	}
+
 	// When search is specified, use FTS
 	if params.Search != "" {
 		return s.listItemsFTS(workspaceID, params)
@@ -1717,6 +1723,44 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 	}
 
 	return updated, deletedIDs, delRows.Err()
+}
+
+// ItemCollectionRef is a minimal item reference with collection ID, used for
+// filtering deleted items by collection visibility.
+type ItemCollectionRef struct {
+	ID           string
+	CollectionID string
+}
+
+// GetDeletedItemsWithCollection returns minimal item info (ID + CollectionID)
+// for soft-deleted items, used to filter deleted item IDs by collection visibility.
+func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []string) ([]ItemCollectionRef, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(itemIDs))
+	args := []interface{}{workspaceID}
+	for i, id := range itemIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT id, collection_id FROM items
+		WHERE workspace_id = ? AND id IN (%s)
+	`, strings.Join(placeholders, ","))), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get deleted items with collection: %w", err)
+	}
+	defer rows.Close()
+	var results []ItemCollectionRef
+	for rows.Next() {
+		var r ItemCollectionRef
+		if err := rows.Scan(&r.ID, &r.CollectionID); err != nil {
+			return nil, fmt.Errorf("scan deleted item: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
 }
 
 func hydrateItemComputedMetadata(item *models.Item) {

@@ -203,6 +203,7 @@ func Defaults() []DefaultCollection {
 			Icon:        "📏",
 			Description: "Project rules and conventions that guide agent behavior",
 			SortOrder:   4,
+			IsSystem:    true,
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{
@@ -252,6 +253,7 @@ func Defaults() []DefaultCollection {
 			Icon:        "📘",
 			Description: "Multi-step workflows that agents follow for specific actions",
 			SortOrder:   5,
+			IsSystem:    true,
 			Schema: models.CollectionSchema{
 				Fields: []models.FieldDef{
 					{

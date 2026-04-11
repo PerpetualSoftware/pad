@@ -22,6 +22,22 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Verify all items being reordered are in visible collections
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if visibleIDs != nil {
+		for _, u := range updates {
+			item, err := s.store.GetItem(u.ItemID)
+			if err != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
+				writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
+				return
+			}
+		}
+	}
+
 	if err := s.store.UpdateRoleSortOrder(workspaceID, updates); err != nil {
 		writeInternalError(w, err)
 		return
@@ -62,8 +78,15 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+
 	params := store.RoleBoardParams{
 		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
+		CollectionIDs:  visibleIDs,
 	}
 
 	lanes, err := s.store.GetRoleBoardItems(workspaceID, params)

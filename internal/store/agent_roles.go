@@ -272,6 +272,7 @@ type RoleBoardLane struct {
 // RoleBoardParams configures the role board query.
 type RoleBoardParams struct {
 	AssignedUserID string
+	CollectionIDs  []string // permission filter: restrict to these collection IDs (nil = no filter)
 }
 
 // GetRoleBoardItems returns non-terminal items across all collections, grouped by role.
@@ -285,6 +286,7 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 	// Fetch all non-archived items
 	listParams := models.ItemListParams{
 		IncludeArchived: false,
+		CollectionIDs:   params.CollectionIDs,
 	}
 	if params.AssignedUserID != "" {
 		listParams.AssignedUserID = params.AssignedUserID

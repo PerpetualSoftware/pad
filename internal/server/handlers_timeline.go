@@ -26,6 +26,9 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {

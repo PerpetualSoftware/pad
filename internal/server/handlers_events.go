@@ -80,7 +80,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	var visibleSlugSet map[string]bool // nil = all access (no filtering)
 	visibleIDs, err := s.visibleCollectionIDs(r, ws.ID)
 	if err != nil {
-		slog.Warn("SSE: failed to resolve visible collections, allowing all", "error", err)
+		// Fail closed: if we can't determine visibility, deny all
+		// collection-scoped events rather than leaking hidden data.
+		slog.Warn("SSE: failed to resolve visible collections, denying all", "error", err)
+		visibleSlugSet = make(map[string]bool) // empty set = deny all
 	} else if visibleIDs != nil {
 		visibleSlugSet = make(map[string]bool, len(visibleIDs))
 		for _, id := range visibleIDs {

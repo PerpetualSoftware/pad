@@ -26,6 +26,9 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
 	if err != nil {
@@ -59,6 +62,9 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 

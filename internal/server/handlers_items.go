@@ -46,7 +46,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, result)
+	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -100,7 +100,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, result)
+	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -122,6 +122,17 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Check collection visibility
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
@@ -163,15 +174,21 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if pv, ok := fieldMap[key]; ok && pv != nil {
 			if pvStr, ok := pv.(string); ok && pvStr != "" {
+				var resolvedParent *models.Item
 				if !isUUID(pvStr) {
-					resolved, err := s.store.ResolveItem(workspaceID, pvStr)
-					if err != nil || resolved == nil {
+					resolvedParent, err = s.store.ResolveItem(workspaceID, pvStr)
+					if err != nil || resolvedParent == nil {
 						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
 						return
 					}
-					parentValue = resolved.ID
+					parentValue = resolvedParent.ID
 				} else {
 					parentValue = pvStr
+					resolvedParent, _ = s.store.GetItem(pvStr)
+				}
+				// Ensure parent item is in a visible collection
+				if resolvedParent != nil && !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+					return
 				}
 			}
 			delete(fieldMap, key)
@@ -240,6 +257,9 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	if err := s.enrichItemForResponse(item); err != nil {
 		writeInternalError(w, err)
@@ -267,6 +287,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 
@@ -309,15 +332,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				parentProvided = true
 				if pv != nil {
 					if pvStr, ok := pv.(string); ok && pvStr != "" {
+						var resolvedParent *models.Item
 						if !isUUID(pvStr) {
-							resolved, err := s.store.ResolveItem(workspaceID, pvStr)
-							if err != nil || resolved == nil {
+							resolvedParent, err = s.store.ResolveItem(workspaceID, pvStr)
+							if err != nil || resolvedParent == nil {
 								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
 								return
 							}
-							parentValue = resolved.ID
+							parentValue = resolvedParent.ID
 						} else {
 							parentValue = pvStr
+							resolvedParent, _ = s.store.GetItem(pvStr)
+						}
+						// Ensure parent item is in a visible collection
+						if resolvedParent != nil && !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+							return
 						}
 					}
 				}
@@ -448,6 +477,9 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	if err := s.store.DeleteItem(item.ID); err != nil {
 		writeInternalError(w, err)
@@ -482,6 +514,9 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found or not archived")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 
@@ -523,6 +558,9 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	var input struct {
 		TargetCollection string         `json:"target_collection"`
@@ -537,9 +575,18 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get target collection
+	// Get target collection and verify it's visible to the user
 	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
 	if err != nil || targetColl == nil {
+		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
+		return
+	}
+	targetVisibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if !isCollectionVisible(targetColl.ID, targetVisibleIDs) {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
 		return
 	}
@@ -650,6 +697,20 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check that the plans collection is visible to this user
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if visibleIDs != nil {
+		plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
+		if plansColl == nil || !isCollectionVisible(plansColl.ID, visibleIDs) {
+			writeJSON(w, http.StatusOK, []interface{}{})
+			return
+		}
+	}
+
 	progress, err := s.store.GetAllItemProgress(workspaceID, "plans")
 	if err != nil {
 		writeInternalError(w, err)
@@ -676,6 +737,9 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	children, err := s.store.GetChildItems(item.ID)
 	if err != nil {
@@ -685,7 +749,24 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 	if children == nil {
 		children = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, children)
+
+	// Filter children by collection visibility
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if visibleIDs != nil {
+		filtered := children[:0]
+		for _, child := range children {
+			if isCollectionVisible(child.CollectionID, visibleIDs) {
+				filtered = append(filtered, child)
+			}
+		}
+		children = filtered
+	}
+
+	s.enrichItemsWithParent(workspaceID, children, visibleIDs)
 	s.store.PopulateHasChildren(children)
 	writeJSON(w, http.StatusOK, children)
 }
@@ -706,6 +787,42 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+
+	// Get visibility filter; when restricted, compute progress from
+	// visible children only so hidden child counts don't leak.
+	progVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if progVisIDs != nil {
+		// Restricted: compute from visible children in Go
+		children, cerr := s.store.GetChildItems(item.ID)
+		if cerr != nil {
+			writeInternalError(w, cerr)
+			return
+		}
+		total, done := 0, 0
+		for _, child := range children {
+			if !isCollectionVisible(child.CollectionID, progVisIDs) {
+				continue
+			}
+			total++
+			status := extractStatus(child.Fields)
+			if models.IsTerminalStatusDefault(status) {
+				done++
+			}
+		}
+		pct := 0
+		if total > 0 {
+			pct = (done * 100) / total
+		}
+		writeJSON(w, http.StatusOK, map[string]int{
+			"total":      total,
+			"done":       done,
+			"percentage": pct,
+		})
 		return
 	}
 
@@ -1055,6 +1172,9 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	params := models.ActivityListParams{
 		Action: r.URL.Query().Get("action"),
@@ -1077,4 +1197,19 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, activities)
+}
+
+// extractStatus extracts the "status" field from an item's JSON fields string.
+func extractStatus(fields string) string {
+	if fields == "" || fields == "{}" {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(fields), &m); err != nil {
+		return ""
+	}
+	if v, ok := m["status"].(string); ok {
+		return v
+	}
+	return ""
 }

@@ -29,6 +29,9 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	comments, err := s.store.ListComments(item.ID)
 	if err != nil {
@@ -76,6 +79,9 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 
@@ -138,6 +144,9 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 		return
 	}
+	if !s.requireCommentVisible(w, r, workspaceID, comment) {
+		return
+	}
 
 	if err := s.store.DeleteComment(commentID); err != nil {
 		if err == sql.ErrNoRows {
@@ -169,6 +178,9 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 	if parentComment.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Parent comment not found")
+		return
+	}
+	if !s.requireCommentVisible(w, r, workspaceID, parentComment) {
 		return
 	}
 
@@ -204,7 +216,12 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, "", actor, source)
+	// Resolve the item's collection slug for SSE filtering
+	replyCollSlug := ""
+	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
+		replyCollSlug = replyItem.CollectionSlug
+	}
+	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
 
 	writeJSON(w, http.StatusCreated, comment)
 }
@@ -225,6 +242,9 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 	comment, err := s.store.GetComment(commentID)
 	if err != nil || comment == nil || comment.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
+	if !s.requireCommentVisible(w, r, workspaceID, comment) {
 		return
 	}
 
@@ -276,6 +296,9 @@ func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 		return
 	}
+	if !s.requireCommentVisible(w, r, workspaceID, commentObj) {
+		return
+	}
 
 	userID := currentUserID(r)
 
@@ -290,6 +313,17 @@ func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireCommentVisible checks that a comment's underlying item is in a visible
+// collection. Writes a 404 and returns false if not.
+func (s *Server) requireCommentVisible(w http.ResponseWriter, r *http.Request, workspaceID string, comment *models.Comment) bool {
+	item, err := s.store.GetItem(comment.ItemID)
+	if err != nil || item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return false
+	}
+	return s.requireItemVisible(w, r, workspaceID, item)
 }
 
 // publishCommentEvent publishes a real-time event for comment changes.
@@ -313,9 +347,15 @@ func (s *Server) publishReactionEvent(eventType string, comment *models.Comment)
 	if s.events == nil || comment == nil {
 		return
 	}
+	// Resolve the item's collection slug so SSE filtering can scope this event
+	collSlug := ""
+	if item, err := s.store.GetItem(comment.ItemID); err == nil && item != nil {
+		collSlug = item.CollectionSlug
+	}
 	s.events.Publish(events.Event{
 		Type:        eventType,
 		WorkspaceID: comment.WorkspaceID,
 		ItemID:      comment.ItemID,
+		Collection:  collSlug,
 	})
 }

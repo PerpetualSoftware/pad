@@ -27,6 +27,9 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	links, err := s.store.GetItemLinks(item.ID)
 	if err != nil {
@@ -35,6 +38,25 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	if links == nil {
 		links = []models.ItemLink{}
+	}
+
+	// Filter out links where the linked item is in a hidden collection
+	visibleIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if visibleIDs != nil {
+		filtered := links[:0]
+		for _, link := range links {
+			// Check the "other side" of the link
+			otherID := link.TargetID
+			if otherID == item.ID {
+				otherID = link.SourceID
+			}
+			if other, err := s.store.GetItem(otherID); err == nil && other != nil {
+				if isCollectionVisible(other.CollectionID, visibleIDs) {
+					filtered = append(filtered, link)
+				}
+			}
+		}
+		links = filtered
 	}
 
 	writeJSON(w, http.StatusOK, links)
@@ -60,6 +82,9 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	var input models.ItemLinkCreate
 	if err := decodeJSON(r, &input); err != nil {
@@ -79,7 +104,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	}
 	input.LinkType = linkType
 
-	// Verify target item exists
+	// Verify target item exists and is in a visible collection
 	target, err := s.store.GetItem(input.TargetID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -87,6 +112,9 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if target == nil || target.WorkspaceID != workspaceID {
 		writeError(w, http.StatusBadRequest, "bad_request", "Target item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, target) {
 		return
 	}
 	if target.ID == item.ID {

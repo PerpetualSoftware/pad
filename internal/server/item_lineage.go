@@ -9,10 +9,19 @@ import (
 
 // enrichItemsWithParent batch-populates parent link info on a slice of items.
 // Used by list endpoints where calling enrichItemForResponse per-item is too expensive.
-func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item) {
+// visibleIDs controls which parent collections are allowed; nil means all visible.
+func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, visibleIDs ...[]string) {
 	if len(items) == 0 {
 		return
 	}
+	// Extract the optional visibility filter
+	var vis []string
+	hasVis := false
+	if len(visibleIDs) > 0 && visibleIDs[0] != nil {
+		vis = visibleIDs[0]
+		hasVis = true
+	}
+
 	parentMap, err := s.store.GetParentMap(workspaceID)
 	if err != nil || len(parentMap) == 0 {
 		return
@@ -31,6 +40,10 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item) 
 	for pid := range parentIDs {
 		item, err := s.store.GetItem(pid)
 		if err != nil || item == nil {
+			continue
+		}
+		// Skip parents from hidden collections
+		if hasVis && !isCollectionVisible(item.CollectionID, vis) {
 			continue
 		}
 		ref := ""

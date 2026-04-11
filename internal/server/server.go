@@ -635,6 +635,22 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }
 
+// requireItemVisible checks that the item's collection is visible to the
+// requesting user. Writes a 404 and returns false if not. Callers should
+// invoke this immediately after resolving an item by slug/ID.
+func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if !isCollectionVisible(item.CollectionID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return false
+	}
+	return true
+}
+
 // isCollectionVisible checks if a collection ID is in the visible set.
 // If visibleIDs is nil, all collections are visible.
 func isCollectionVisible(collectionID string, visibleIDs []string) bool {

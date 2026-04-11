@@ -160,12 +160,31 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 }
 
 // SetMemberCollectionAccess updates a member's collection_access mode and
-// replaces their specific collection grants.
+// replaces their specific collection grants atomically.
 func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, collectionIDs []string) error {
 	ts := now()
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Validate that all collection IDs belong to this workspace
+	if mode == "specific" && len(collectionIDs) > 0 {
+		for _, collID := range collectionIDs {
+			var count int
+			if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM collections WHERE id = ? AND workspace_id = ?`), collID, workspaceID).Scan(&count); err != nil {
+				return fmt.Errorf("validate collection: %w", err)
+			}
+			if count == 0 {
+				return fmt.Errorf("collection %s does not belong to workspace", collID)
+			}
+		}
+	}
+
 	// Update the mode on workspace_members
-	_, err := s.db.Exec(s.q(`
+	_, err = tx.Exec(s.q(`
 		UPDATE workspace_members SET collection_access = ?
 		WHERE workspace_id = ? AND user_id = ?
 	`), mode, workspaceID, userID)
@@ -174,7 +193,7 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 	}
 
 	// Clear existing grants
-	_, err = s.db.Exec(s.q(`
+	_, err = tx.Exec(s.q(`
 		DELETE FROM member_collection_access
 		WHERE workspace_id = ? AND user_id = ?
 	`), workspaceID, userID)
@@ -185,7 +204,7 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 	// Insert new grants (only if mode is "specific")
 	if mode == "specific" {
 		for _, collID := range collectionIDs {
-			_, err := s.db.Exec(s.q(`
+			_, err := tx.Exec(s.q(`
 				INSERT INTO member_collection_access (workspace_id, user_id, collection_id, created_at)
 				VALUES (?, ?, ?, ?)
 			`), workspaceID, userID, collID, ts)
@@ -195,7 +214,7 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // GetMemberCollectionAccess returns the collection IDs a member has been
