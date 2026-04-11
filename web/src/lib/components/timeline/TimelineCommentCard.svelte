@@ -6,6 +6,7 @@
 	interface Props {
 		comment: Comment;
 		wsSlug: string;
+		username?: string;
 		items: Item[];
 		currentUserId?: string;
 		onDelete: (commentId: string) => void;
@@ -14,7 +15,7 @@
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, items, currentUserId = '', onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let replyBody = $state('');
@@ -148,7 +149,7 @@
 	{/if}
 
 	<div class="comment-body markdown-body">
-		{@html renderMarkdown(comment.body, items, wsSlug)}
+		{@html renderMarkdown(comment.body, items, wsSlug, username)}
 	</div>
 
 	<div class="comment-footer">
@@ -219,7 +220,7 @@
 					</div>
 
 					<div class="reply-body markdown-body">
-						{@html renderMarkdown(reply.body, items, wsSlug)}
+						{@html renderMarkdown(reply.body, items, wsSlug, username)}
 					</div>
 
 						<div class="reactions-row">
