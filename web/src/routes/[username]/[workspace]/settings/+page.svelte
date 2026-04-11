@@ -36,6 +36,13 @@
 	let inviteResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
 	let currentUserRole = $state('');
 
+	// Collection Access
+	let expandedAccessUserId = $state<string | null>(null);
+	let accessMode = $state<'all' | 'specific'>('all');
+	let accessCollectionIds = $state<string[]>([]);
+	let accessLoading = $state(false);
+	let accessSaving = $state(false);
+
 	// Account
 	let profileName = $state('');
 	let profileEmail = $state('');
@@ -303,6 +310,64 @@
 			toastStore.show('Role updated', 'success');
 		} catch {
 			toastStore.show('Failed to update role', 'error');
+		}
+	}
+
+	let nonSystemCollections = $derived(collections.filter(c => !c.is_system));
+	let systemCollections = $derived(collections.filter(c => c.is_system));
+
+	async function toggleAccessPanel(userId: string) {
+		if (expandedAccessUserId === userId) {
+			expandedAccessUserId = null;
+			return;
+		}
+		expandedAccessUserId = userId;
+		accessLoading = true;
+		accessMode = 'all';
+		accessCollectionIds = [];
+		try {
+			const data = await api.members.getMemberCollectionAccess(wsSlug, userId);
+			accessMode = data.collection_access === 'specific' ? 'specific' : 'all';
+			accessCollectionIds = data.collection_ids ?? [];
+		} catch {
+			accessMode = 'all';
+			accessCollectionIds = [];
+		} finally {
+			accessLoading = false;
+		}
+	}
+
+	function toggleAccessCollection(collId: string) {
+		if (accessCollectionIds.includes(collId)) {
+			accessCollectionIds = accessCollectionIds.filter(id => id !== collId);
+		} else {
+			accessCollectionIds = [...accessCollectionIds, collId];
+		}
+	}
+
+	async function saveCollectionAccess() {
+		if (!expandedAccessUserId || accessSaving) return;
+		accessSaving = true;
+		const userId = expandedAccessUserId;
+		const prevMode = accessMode;
+		const prevIds = [...accessCollectionIds];
+		try {
+			const result = await api.members.setMemberCollectionAccess(
+				wsSlug,
+				userId,
+				accessMode,
+				accessMode === 'specific' ? accessCollectionIds : []
+			);
+			accessMode = result.collection_access === 'specific' ? 'specific' : 'all';
+			accessCollectionIds = result.collection_ids ?? [];
+			toastStore.show('Collection access updated', 'success');
+		} catch {
+			// Revert on error
+			accessMode = prevMode;
+			accessCollectionIds = prevIds;
+			toastStore.show('Failed to update collection access', 'error');
+		} finally {
+			accessSaving = false;
 		}
 	}
 
@@ -782,32 +847,97 @@
 				{:else}
 					<div class="members-list">
 						{#each members as member (member.user_id)}
-							<div class="card member-row">
-								<div class="member-info">
-									<span class="member-avatar">{member.user_name.charAt(0).toUpperCase()}</span>
-									<div class="member-details">
-										<span class="member-name">{member.user_name}</span>
-										<span class="member-email">{member.user_email}</span>
+							<div class="member-card-wrapper">
+								<div class="card member-row">
+									<div class="member-info">
+										<span class="member-avatar">{member.user_name.charAt(0).toUpperCase()}</span>
+										<div class="member-details">
+											<span class="member-name">{member.user_name}</span>
+											<span class="member-email">{member.user_email}</span>
+										</div>
+										{#if expandedAccessUserId === member.user_id && !accessLoading}
+											<span class="access-badge" class:access-badge-specific={accessMode === 'specific'}>
+												{accessMode === 'all' ? 'All collections' : `${accessCollectionIds.length} collection${accessCollectionIds.length !== 1 ? 's' : ''}`}
+											</span>
+										{/if}
+									</div>
+									<div class="member-actions">
+										{#if isOwner}
+											<button
+												class="btn btn-small btn-access"
+												class:btn-access-active={expandedAccessUserId === member.user_id}
+												onclick={() => toggleAccessPanel(member.user_id)}
+											>
+												Manage access
+											</button>
+											<select
+												class="role-select"
+												value={member.role}
+												onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value)}
+											>
+												<option value="owner">Owner</option>
+												<option value="editor">Editor</option>
+												<option value="viewer">Viewer</option>
+											</select>
+											<button class="btn btn-small btn-remove" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
+												Remove
+											</button>
+										{:else}
+											<span class="role-badge">{member.role}</span>
+										{/if}
 									</div>
 								</div>
-								<div class="member-actions">
-									{#if isOwner}
-										<select
-											class="role-select"
-											value={member.role}
-											onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value)}
-										>
-											<option value="owner">Owner</option>
-											<option value="editor">Editor</option>
-											<option value="viewer">Viewer</option>
-										</select>
-										<button class="btn btn-small btn-remove" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
-											Remove
-										</button>
-									{:else}
-										<span class="role-badge">{member.role}</span>
-									{/if}
-								</div>
+								{#if isOwner && expandedAccessUserId === member.user_id}
+									<div class="access-panel">
+										{#if accessLoading}
+											<p class="access-loading">Loading collection access...</p>
+										{:else}
+											<div class="access-mode-row">
+												<label class="access-mode-label" for="access-mode-{member.user_id}">Collection visibility</label>
+												<select
+													id="access-mode-{member.user_id}"
+													class="role-select"
+													value={accessMode}
+													onchange={(e) => { accessMode = (e.target as HTMLSelectElement).value as 'all' | 'specific'; }}
+												>
+													<option value="all">All collections</option>
+													<option value="specific">Specific collections</option>
+												</select>
+											</div>
+											{#if accessMode === 'specific'}
+												<div class="access-coll-list">
+													{#each nonSystemCollections as coll (coll.id)}
+														<label class="access-coll-item">
+															<input
+																type="checkbox"
+																checked={accessCollectionIds.includes(coll.id)}
+																onchange={() => toggleAccessCollection(coll.id)}
+															/>
+															<span class="access-coll-icon">{coll.icon || '#'}</span>
+															<span class="access-coll-name">{coll.name}</span>
+														</label>
+													{/each}
+													{#each systemCollections as coll (coll.id)}
+														<label class="access-coll-item access-coll-system" title="System collection — always visible">
+															<input type="checkbox" checked disabled />
+															<span class="access-coll-icon">{coll.icon || '#'}</span>
+															<span class="access-coll-name">{coll.name}</span>
+															<span class="access-system-tag">system</span>
+														</label>
+													{/each}
+												</div>
+											{/if}
+											<div class="access-actions">
+												<button class="btn btn-primary btn-small" onclick={saveCollectionAccess} disabled={accessSaving}>
+													{accessSaving ? 'Saving...' : 'Save'}
+												</button>
+												<button class="btn btn-small" onclick={() => { expandedAccessUserId = null; }}>
+													Cancel
+												</button>
+											</div>
+										{/if}
+									</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -1116,7 +1246,7 @@
 	.context-error { margin: 0; font-size: 0.82em; color: #ef4444; }
 	.context-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 	/* ── Members ──── */
-	.members-list { display: flex; flex-direction: column; gap: var(--space-3); }
+	.members-list { display: flex; flex-direction: column; }
 	.member-row { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); gap: var(--space-3); }
 	.member-info { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 	.member-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-blue); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.85em; flex-shrink: 0; }
@@ -1128,6 +1258,30 @@
 	.role-badge { font-size: 0.8em; background: var(--bg-tertiary); color: var(--text-secondary); padding: 2px 10px; border-radius: 10px; }
 	.btn-remove { color: #ef4444; border-color: transparent; background: none; }
 	.btn-remove:hover { background: color-mix(in srgb, #ef4444 15%, transparent); }
+	/* ── Collection Access ──── */
+	.member-card-wrapper { display: flex; flex-direction: column; }
+	.member-card-wrapper + .member-card-wrapper { margin-top: var(--space-3); }
+	.member-card-wrapper .card.member-row { border-radius: var(--radius); }
+	.member-card-wrapper:has(.access-panel) .card.member-row { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+	.access-badge { font-size: 0.72em; padding: 2px 8px; border-radius: 10px; background: var(--bg-tertiary); color: var(--text-muted); white-space: nowrap; margin-left: var(--space-2); }
+	.access-badge-specific { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); color: var(--accent-blue); }
+	.btn-access { color: var(--accent-blue); border-color: var(--accent-blue); background: none; }
+	.btn-access:hover { background: color-mix(in srgb, var(--accent-blue) 10%, transparent); }
+	.btn-access-active { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); }
+	.access-panel { background: color-mix(in srgb, var(--bg-secondary) 80%, var(--bg-tertiary)); border: 1px solid var(--border); border-top: none; border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+	.access-loading { font-size: 0.85em; color: var(--text-muted); margin: 0; }
+	.access-mode-row { display: flex; align-items: center; gap: var(--space-3); }
+	.access-mode-label { font-size: 0.85em; color: var(--text-secondary); white-space: nowrap; }
+	.access-coll-list { display: flex; flex-direction: column; gap: var(--space-1); max-height: 240px; overflow-y: auto; padding: var(--space-2); background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: var(--radius); }
+	.access-coll-item { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85em; }
+	.access-coll-item:hover { background: var(--bg-hover); }
+	.access-coll-item input[type="checkbox"] { margin: 0; cursor: pointer; }
+	.access-coll-icon { font-size: 0.95em; }
+	.access-coll-name { flex: 1; }
+	.access-coll-system { opacity: 0.6; cursor: default; }
+	.access-coll-system:hover { background: none; }
+	.access-system-tag { font-size: 0.7em; background: var(--bg-secondary); color: var(--text-muted); padding: 1px 5px; border-radius: 8px; }
+	.access-actions { display: flex; align-items: center; gap: var(--space-2); }
 	.invitations-section { margin-top: var(--space-4); }
 	.invitations-section h3 { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-2); }
 	.invitation-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); font-size: 0.85em; }

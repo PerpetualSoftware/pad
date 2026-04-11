@@ -413,6 +413,8 @@ func (s *Server) setupRouter() {
 					r.Delete("/invitations/{invID}", s.handleCancelInvitation)
 					r.Delete("/{userID}", s.handleRemoveMember)
 					r.Patch("/{userID}", s.handleUpdateMemberRole)
+					r.Get("/{userID}/collection-access", s.handleGetMemberCollectionAccess)
+					r.Put("/{userID}/collection-access", s.handleSetMemberCollectionAccess)
 				})
 
 				// Dashboard (v2)

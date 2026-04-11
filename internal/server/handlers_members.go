@@ -295,3 +295,82 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		"role":         inv.Role,
 	})
 }
+
+// handleGetMemberCollectionAccess returns a member's collection access mode and granted IDs.
+func (s *Server) handleGetMemberCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	member, err := s.store.GetWorkspaceMember(workspaceID, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if member == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Member not found")
+		return
+	}
+
+	grants, err := s.store.GetMemberCollectionAccess(workspaceID, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"collection_access": member.CollectionAccess,
+		"collection_ids":    grants,
+	})
+}
+
+// handleSetMemberCollectionAccess updates a member's collection visibility.
+// Only workspace owners can change other members' access.
+func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	if !requireRole(r, "owner") {
+		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can manage collection access")
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	member, err := s.store.GetWorkspaceMember(workspaceID, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if member == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Member not found")
+		return
+	}
+
+	var input struct {
+		Mode          string   `json:"mode"`           // "all" or "specific"
+		CollectionIDs []string `json:"collection_ids"` // only for "specific"
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	if input.Mode != "all" && input.Mode != "specific" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Mode must be 'all' or 'specific'")
+		return
+	}
+
+	if err := s.store.SetMemberCollectionAccess(workspaceID, userID, input.Mode, input.CollectionIDs); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"collection_access": input.Mode,
+		"collection_ids":    input.CollectionIDs,
+	})
+}

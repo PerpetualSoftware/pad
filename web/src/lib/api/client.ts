@@ -517,6 +517,13 @@ export const api = {
 		acceptInvitation: (code: string) =>
 			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
 				method: 'POST'
+			}),
+		getMemberCollectionAccess: (ws: string, userId: string) =>
+			request<{ collection_access: string; collection_ids: string[] }>(`/workspaces/${ws}/members/${userId}/collection-access`),
+		setMemberCollectionAccess: (ws: string, userId: string, mode: string, collectionIDs: string[]) =>
+			request<{ collection_access: string; collection_ids: string[] }>(`/workspaces/${ws}/members/${userId}/collection-access`, {
+				method: 'PUT',
+				body: JSON.stringify({ mode, collection_ids: collectionIDs })
 			})
 	},
 
