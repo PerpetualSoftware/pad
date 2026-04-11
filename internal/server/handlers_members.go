@@ -191,7 +191,19 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(map[string]string{"user_id": userID}))
+	// D4: Owner chooses at member removal time.
+	// ?revoke_grants=true → delete all collection/item grants (full removal)
+	// ?revoke_grants=false or omitted → keep grants (user becomes a guest)
+	revokeGrants := r.URL.Query().Get("revoke_grants") == "true"
+	if revokeGrants {
+		_ = s.store.RevokeAllUserGrants(workspaceID, userID)
+	}
+
+	meta := map[string]string{"user_id": userID}
+	if revokeGrants {
+		meta["revoked_grants"] = "true"
+	}
+	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(meta))
 
 	w.WriteHeader(http.StatusNoContent)
 }
