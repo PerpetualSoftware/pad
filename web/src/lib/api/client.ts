@@ -33,7 +33,9 @@ import type {
 	AgentRoleCreate,
 	AgentRoleUpdate,
 	RoleBoardLane,
-	ChangesResponse
+	ChangesResponse,
+	CollectionGrant,
+	ItemGrant
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -525,6 +527,31 @@ export const api = {
 				method: 'PUT',
 				body: JSON.stringify({ mode, collection_ids: collectionIDs })
 			})
+	},
+
+	// ── Grants ───────────────────────────────────────────────────────────────
+
+	grants: {
+		listCollectionGrants: (ws: string, collSlug: string) =>
+			request<CollectionGrant[]>(`/workspaces/${ws}/collections/${collSlug}/grants`),
+		createCollectionGrant: (ws: string, collSlug: string, email: string, permission: string) =>
+			request<CollectionGrant>(`/workspaces/${ws}/collections/${collSlug}/grants`, {
+				method: 'POST',
+				body: JSON.stringify({ email, permission })
+			}),
+		deleteCollectionGrant: (ws: string, collSlug: string, grantId: string) =>
+			request<void>(`/workspaces/${ws}/collections/${collSlug}/grants/${grantId}`, { method: 'DELETE' }),
+		listItemGrants: (ws: string, itemSlug: string) =>
+			request<ItemGrant[]>(`/workspaces/${ws}/items/${itemSlug}/grants`),
+		createItemGrant: (ws: string, itemSlug: string, email: string, permission: string) =>
+			request<ItemGrant>(`/workspaces/${ws}/items/${itemSlug}/grants`, {
+				method: 'POST',
+				body: JSON.stringify({ email, permission })
+			}),
+		deleteItemGrant: (ws: string, itemSlug: string, grantId: string) =>
+			request<void>(`/workspaces/${ws}/items/${itemSlug}/grants/${grantId}`, { method: 'DELETE' }),
+		listUserGrants: (ws: string, userId: string) =>
+			request<{ collection_grants: CollectionGrant[]; item_grants: ItemGrant[] }>(`/workspaces/${ws}/users/${userId}/grants`),
 	},
 
 	// ── Auth ──────────────────────────────────────────────────────────────────

@@ -34,6 +34,34 @@ export interface APITokenWithSecret extends APIToken {
 	token: string;
 }
 
+// ─── Grants ──────────────────────────────────────────────────────────────────
+
+export interface CollectionGrant {
+	id: string;
+	collection_id: string;
+	workspace_id: string;
+	user_id: string;
+	permission: string;
+	granted_by: string;
+	created_at: string;
+	user_name?: string;
+	user_email?: string;
+	user_username?: string;
+}
+
+export interface ItemGrant {
+	id: string;
+	item_id: string;
+	workspace_id: string;
+	user_id: string;
+	permission: string;
+	granted_by: string;
+	created_at: string;
+	user_name?: string;
+	user_email?: string;
+	user_username?: string;
+}
+
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 export interface Workspace {

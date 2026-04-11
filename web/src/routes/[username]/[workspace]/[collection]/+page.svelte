@@ -13,6 +13,8 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -35,9 +37,13 @@
 	let saveViewName = $state('');
 	let saveViewInput = $state<HTMLInputElement>();
 
+	let shareDialogOpen = $state(false);
+	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
+
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
+	let isOwner = $derived(workspaceMembers.some(m => m.user_id === authStore.userId && m.role === 'owner'));
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {
@@ -220,14 +226,16 @@
 		loading = true;
 		try {
 			const listParams = includeArchived ? { include_archived: true } : undefined;
-			const [collData, itemsData, viewsData] = await Promise.all([
+			const [collData, itemsData, viewsData, membersData] = await Promise.all([
 				api.collections.get(ws, coll),
 				api.items.listByCollection(ws, coll, listParams),
-				api.views.list(ws, coll).catch(() => [] as View[])
+				api.views.list(ws, coll).catch(() => [] as View[]),
+				api.members.list(ws).catch(() => ({ members: [], invitations: [] }))
 			]);
 			collection = collData;
 			items = itemsData;
 			savedViews = viewsData;
+			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
 
 			// Fetch plan progress if viewing plans collection
@@ -795,6 +803,17 @@
 						<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
 					{/if}
 
+					{#if isOwner}
+						<button
+							class="share-btn-header"
+							onclick={() => { shareDialogOpen = true; }}
+							title="Share collection"
+						>
+							<svg class="share-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+							<span class="share-btn-label">Share</span>
+						</button>
+					{/if}
+
 					<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
 						+ <span class="new-btn-label">New {singularName()}</span>
 					</button>
@@ -936,6 +955,16 @@
 		{/if}
 	{/if}
 </div>
+
+{#if isOwner && collection}
+	<ShareDialog
+		{wsSlug}
+		type="collection"
+		targetSlug={collection.slug}
+		targetName={collection.name}
+		bind:open={shareDialogOpen}
+	/>
+{/if}
 
 <style>
 	.collection-page {
@@ -1341,5 +1370,34 @@
 		.save-view-label {
 			display: none;
 		}
+
+		.share-btn-label {
+			display: none;
+		}
+	}
+
+	/* Share button */
+	.share-btn-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		transition: border-color 0.15s, color 0.15s;
+	}
+
+	.share-btn-header:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
+	}
+
+	.share-icon {
+		flex-shrink: 0;
 	}
 </style>

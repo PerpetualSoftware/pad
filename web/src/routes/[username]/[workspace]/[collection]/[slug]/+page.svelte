@@ -19,6 +19,8 @@
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
+	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -77,12 +79,14 @@
 	let showMoveMenu = $state(false);
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
-	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string }[]>([]);
+	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
+	let shareDialogOpen = $state(false);
 	let agentRoles = $state<AgentRole[]>([]);
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
 	let codeContext = $derived(item?.code_context ?? null);
+	let isOwner = $derived(workspaceMembers.some(m => m.user_id === authStore.userId && m.role === 'owner'));
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -662,6 +666,11 @@
 					</div>
 				{/if}
 			</div>
+			{#if isOwner}
+				<button class="action-btn" onclick={() => { shareDialogOpen = true; }}>
+					Share
+				</button>
+			{/if}
 			{#if confirmDelete}
 				<span class="delete-confirm">
 					Delete this item?
@@ -936,6 +945,16 @@
 		</div>
 
 	</div>
+
+	{#if isOwner && item}
+		<ShareDialog
+			{wsSlug}
+			type="item"
+			targetSlug={item.slug}
+			targetName={formatItemRef(item) || item.title}
+			bind:open={shareDialogOpen}
+		/>
+	{/if}
 {/if}
 
 <style>
