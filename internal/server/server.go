@@ -621,6 +621,32 @@ func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) (*models.W
 	return ws, true
 }
 
+// visibleCollectionIDs returns the set of collection IDs the current user can
+// see in the given workspace. Returns nil if the user has "all" access (no
+// filtering needed), or a non-nil slice for "specific" access. Admins and
+// unauthenticated users (fresh install) always get nil (all access).
+func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
+	user := currentUser(r)
+	if user == nil || user.Role == "admin" {
+		return nil, nil // No filtering for admins or unauthenticated
+	}
+	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
+}
+
+// isCollectionVisible checks if a collection ID is in the visible set.
+// If visibleIDs is nil, all collections are visible.
+func isCollectionVisible(collectionID string, visibleIDs []string) bool {
+	if visibleIDs == nil {
+		return true
+	}
+	for _, id := range visibleIDs {
+		if id == collectionID {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveWorkspace resolves a workspace by slug or UUID, scoped to the
 // authenticated user's accessible workspaces when a user context is present.
 // Returns nil (not an error) if no workspace is found.

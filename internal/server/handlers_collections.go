@@ -24,6 +24,23 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	if colls == nil {
 		colls = []models.Collection{}
 	}
+
+	// Filter by collection visibility
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if visibleIDs != nil {
+		filtered := make([]models.Collection, 0, len(colls))
+		for _, c := range colls {
+			if isCollectionVisible(c.ID, visibleIDs) {
+				filtered = append(filtered, c)
+			}
+		}
+		colls = filtered
+	}
+
 	writeJSON(w, http.StatusOK, colls)
 }
 

@@ -134,11 +134,28 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute collection visibility once for the entire dashboard
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	// Build a schema map for terminal status lookups
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	// Filter collections by visibility
+	if visibleIDs != nil {
+		filtered := make([]models.Collection, 0, len(collections))
+		for _, c := range collections {
+			if isCollectionVisible(c.ID, visibleIDs) {
+				filtered = append(filtered, c)
+			}
+		}
+		collections = filtered
 	}
 	schemaMap := buildSchemaMap(collections)
 
@@ -154,7 +171,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Summary: items grouped by collection slug and status field
-	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{})
+	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: visibleIDs})
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -215,6 +232,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// Active plans: items in "plans" collection where status=active
 	plans, err := s.store.ListItems(workspaceID, models.ItemListParams{
 		CollectionSlug: "plans",
+		CollectionIDs:  visibleIDs,
 		Fields:         map[string]string{"status": "active"},
 	})
 	if err == nil {
@@ -254,7 +272,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// (a) Stalled: status is in-progress or in_progress, updated_at older than 3 days
 	for _, statusVal := range []string{"in-progress", "in_progress"} {
 		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			Fields: map[string]string{"status": statusVal},
+			CollectionIDs: visibleIDs,
+			Fields:        map[string]string{"status": statusVal},
 		})
 		if err != nil {
 			continue
@@ -331,6 +350,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
+			CollectionIDs:  visibleIDs,
 		})
 		if err == nil {
 			for _, task := range allTasks {
@@ -392,11 +412,27 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recent activity — enriched with item titles and user names
+	// Fetch more than needed since some may be filtered out by visibility
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, models.ActivityListParams{
-		Limit: 10,
+		Limit: 30,
 	})
 	if err == nil && activities != nil {
+		// Build visible slug set for filtering
+		var visibleSlugSet map[string]bool
+		if visibleIDs != nil {
+			visibleSlugSet = make(map[string]bool)
+			for _, id := range visibleIDs {
+				coll, _ := s.store.GetCollection(id)
+				if coll != nil {
+					visibleSlugSet[coll.Slug] = true
+				}
+			}
+		}
+
 		for _, a := range activities {
+			if len(resp.RecentActivity) >= 10 {
+				break
+			}
 			da := DashboardActivity{
 				Action:    a.Action,
 				Actor:     a.Actor,
@@ -409,6 +445,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if a.DocumentID != "" {
 				item, err := s.store.GetItem(a.DocumentID)
 				if err == nil && item != nil {
+					// Skip items in hidden collections
+					if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
+						continue
+					}
 					da.ItemTitle = item.Title
 					da.ItemSlug = item.Slug
 					da.CollectionSlug = item.CollectionSlug

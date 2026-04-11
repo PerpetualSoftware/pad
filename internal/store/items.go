@@ -458,6 +458,15 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.CollectionSlug)
 	}
 
+	if len(params.CollectionIDs) > 0 {
+		placeholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
 	if params.Tag != "" {
 		tagExpr, tagArg := s.dialect.JSONArrayContains("i.tags", params.Tag)
 		query += " AND " + tagExpr
@@ -582,6 +591,15 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
+	}
+
+	if len(params.CollectionIDs) > 0 {
+		placeholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).

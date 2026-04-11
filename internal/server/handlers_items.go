@@ -29,6 +29,15 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+
+	// Apply collection visibility filter
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	params.CollectionIDs = visibleIDs
+
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -56,6 +65,17 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Gate check: is this collection visible to the user?
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}

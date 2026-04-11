@@ -43,6 +43,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// If no user (fresh install, no auth), allow unscoped search
 	}
 
+	// Apply collection visibility filter when searching a specific workspace
+	if params.Workspace != "" {
+		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
+		if ws != nil {
+			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
+			if visErr == nil {
+				params.CollectionIDs = visibleIDs
+			}
+		}
+	}
+
 	results, err := s.store.Search(params)
 	if err != nil {
 		writeInternalError(w, err)

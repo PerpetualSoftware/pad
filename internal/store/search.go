@@ -23,9 +23,10 @@ func placeholders(n int) string {
 }
 
 type SearchParams struct {
-	Query        string
-	Workspace    string   // workspace slug, optional — scopes to single workspace
-	WorkspaceIDs []string // workspace IDs to scope results to (used when no specific workspace is given)
+	Query         string
+	Workspace     string   // workspace slug, optional — scopes to single workspace
+	WorkspaceIDs  []string // workspace IDs to scope results to (used when no specific workspace is given)
+	CollectionIDs []string // permission filter: restrict to these collection IDs (nil = no filter)
 }
 
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
@@ -56,6 +57,13 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		} else if len(params.WorkspaceIDs) > 0 {
 			refQuery += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
 			for _, id := range params.WorkspaceIDs {
+				refArgs = append(refArgs, id)
+			}
+		}
+
+		if len(params.CollectionIDs) > 0 {
+			refQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
+			for _, id := range params.CollectionIDs {
 				refArgs = append(refArgs, id)
 			}
 		}
@@ -161,6 +169,13 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	} else if len(params.WorkspaceIDs) > 0 {
 		query += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
 		for _, id := range params.WorkspaceIDs {
+			args = append(args, id)
+		}
+	}
+
+	if len(params.CollectionIDs) > 0 {
+		query += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
+		for _, id := range params.CollectionIDs {
 			args = append(args, id)
 		}
 	}
