@@ -382,8 +382,9 @@ func (s *Server) setupRouter() {
 				// Links (v2)
 				r.Delete("/links/{linkID}", s.handleDeleteItemLink)
 
-				// Share links (workspace-scoped delete)
+				// Share links (workspace-scoped management)
 				r.Delete("/share-links/{linkID}", s.handleDeleteShareLink)
+				r.Get("/share-links/{linkID}/views", s.handleShareLinkViews)
 
 				// Comments (v2)
 				r.Route("/comments/{commentID}", func(r chi.Router) {

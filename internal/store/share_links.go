@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xarmian/pad/internal/models"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // generateShareToken creates a cryptographically random URL-safe token
@@ -32,9 +33,18 @@ func hashShareToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// ShareLinkOptions holds optional constraint fields for creating a share link.
+type ShareLinkOptions struct {
+	Password        string  // Raw password (will be bcrypt-hashed if non-empty)
+	ExpiresAt       *string // ISO 8601 timestamp
+	MaxViews        *int
+	RequireAuth     bool
+	RestrictToEmail string
+}
+
 // CreateShareLink creates a new share link and returns it with the raw token.
 // The raw token is only available in this response — it is not stored.
-func (s *Store) CreateShareLink(workspaceID, targetType, targetID, permission, createdBy string) (*models.ShareLink, error) {
+func (s *Store) CreateShareLink(workspaceID, targetType, targetID, permission, createdBy string, opts *ShareLinkOptions) (*models.ShareLink, error) {
 	rawToken, tokenHash, err := generateShareToken()
 	if err != nil {
 		return nil, err
@@ -43,10 +53,35 @@ func (s *Store) CreateShareLink(workspaceID, targetType, targetID, permission, c
 	id := newID()
 	ts := now()
 
+	var passwordHash *string
+	var expiresAt *string
+	var maxViews *int
+	requireAuth := false
+	var restrictToEmail *string
+
+	if opts != nil {
+		if opts.Password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(opts.Password), 10)
+			if err != nil {
+				return nil, fmt.Errorf("hash share link password: %w", err)
+			}
+			h := string(hash)
+			passwordHash = &h
+		}
+		expiresAt = opts.ExpiresAt
+		maxViews = opts.MaxViews
+		requireAuth = opts.RequireAuth
+		if opts.RestrictToEmail != "" {
+			restrictToEmail = &opts.RestrictToEmail
+		}
+	}
+
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO share_links (id, token_hash, target_type, target_id, workspace_id, permission, created_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, tokenHash, targetType, targetID, workspaceID, permission, createdBy, ts)
+		INSERT INTO share_links (id, token_hash, target_type, target_id, workspace_id, permission, created_by,
+		                         password_hash, expires_at, max_views, require_auth, restrict_to_email, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, tokenHash, targetType, targetID, workspaceID, permission, createdBy,
+		passwordHash, expiresAt, maxViews, s.dialect.BoolToInt(requireAuth), restrictToEmail, ts)
 	if err != nil {
 		return nil, fmt.Errorf("create share link: %w", err)
 	}
@@ -217,6 +252,44 @@ func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string) error {
 	}
 
 	return nil
+}
+
+// ValidateShareLinkPassword checks a password against the share link's stored hash.
+func (s *Store) ValidateShareLinkPassword(link *models.ShareLink, password string) bool {
+	if link.PasswordHash == nil || *link.PasswordHash == "" {
+		return true // No password required
+	}
+	return bcrypt.CompareHashAndPassword([]byte(*link.PasswordHash), []byte(password)) == nil
+}
+
+// ListShareLinkViews returns view history for a share link.
+func (s *Store) ListShareLinkViews(linkID string, limit int) ([]models.ShareLinkView, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(s.q(`
+		SELECT id, share_link_id, COALESCE(viewer_fingerprint, ''), COALESCE(viewer_user_id, ''), viewed_at
+		FROM share_link_views
+		WHERE share_link_id = ?
+		ORDER BY viewed_at DESC
+		LIMIT ?
+	`), linkID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list share link views: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.ShareLinkView
+	for rows.Next() {
+		var v models.ShareLinkView
+		var viewedAt string
+		if err := rows.Scan(&v.ID, &v.ShareLinkID, &v.ViewerFingerprint, &v.ViewerUserID, &viewedAt); err != nil {
+			return nil, err
+		}
+		v.ViewedAt = parseTime(viewedAt)
+		result = append(result, v)
+	}
+	return result, rows.Err()
 }
 
 // ValidateShareLink checks if a share link is valid (not expired, not over max views).

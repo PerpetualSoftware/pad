@@ -2,9 +2,11 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/store"
 )
 
 // handleCreateShareLink creates a new share link for an item or collection.
@@ -30,7 +32,24 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	link, err := s.store.CreateShareLink(workspaceID, "item", item.ID, "view", currentUserID(r))
+	var input struct {
+		Password        string  `json:"password,omitempty"`
+		ExpiresAt       *string `json:"expires_at,omitempty"`
+		MaxViews        *int    `json:"max_views,omitempty"`
+		RequireAuth     bool    `json:"require_auth,omitempty"`
+		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+	}
+	_ = decodeJSON(r, &input) // Optional body — defaults are fine
+
+	opts := &store.ShareLinkOptions{
+		Password:        input.Password,
+		ExpiresAt:       input.ExpiresAt,
+		MaxViews:        input.MaxViews,
+		RequireAuth:     input.RequireAuth,
+		RestrictToEmail: input.RestrictToEmail,
+	}
+
+	link, err := s.store.CreateShareLink(workspaceID, "item", item.ID, "view", currentUserID(r), opts)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -64,7 +83,24 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 		return
 	}
 
-	link, err := s.store.CreateShareLink(workspaceID, "collection", coll.ID, "view", currentUserID(r))
+	var collInput struct {
+		Password        string  `json:"password,omitempty"`
+		ExpiresAt       *string `json:"expires_at,omitempty"`
+		MaxViews        *int    `json:"max_views,omitempty"`
+		RequireAuth     bool    `json:"require_auth,omitempty"`
+		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+	}
+	_ = decodeJSON(r, &collInput)
+
+	collOpts := &store.ShareLinkOptions{
+		Password:        collInput.Password,
+		ExpiresAt:       collInput.ExpiresAt,
+		MaxViews:        collInput.MaxViews,
+		RequireAuth:     collInput.RequireAuth,
+		RestrictToEmail: collInput.RestrictToEmail,
+	}
+
+	link, err := s.store.CreateShareLink(workspaceID, "collection", coll.ID, "view", currentUserID(r), collOpts)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -186,6 +222,22 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Password check
+	if link.HasPassword {
+		password := r.URL.Query().Get("password")
+		if password == "" {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"require_password": true,
+				"message":          "Password required to view this content",
+			})
+			return
+		}
+		if !s.store.ValidateShareLinkPassword(link, password) {
+			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
+			return
+		}
+	}
+
 	// Require auth check
 	if link.RequireAuth {
 		user := currentUser(r)
@@ -259,4 +311,50 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "Not found")
 	}
+}
+
+// handleShareLinkViews returns view history for a share link.
+// GET /workspaces/{ws}/share-links/{linkID}/views
+func (s *Server) handleShareLinkViews(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	linkID := chi.URLParam(r, "linkID")
+	link, err := s.store.GetShareLink(linkID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if link == nil || link.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		return
+	}
+
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	views, err := s.store.ListShareLinkViews(linkID, limit)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if views == nil {
+		views = []models.ShareLinkView{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"views":          views,
+		"total_views":    link.ViewCount,
+		"unique_viewers": link.UniqueViewers,
+		"last_viewed_at": link.LastViewedAt,
+	})
 }
