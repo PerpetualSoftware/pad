@@ -328,6 +328,10 @@ func (s *Server) setupRouter() {
 						// Items within collection
 						r.Get("/items", s.handleListCollectionItems)
 						r.Post("/items", s.handleCreateItem)
+						// Collection grants
+						r.Get("/grants", s.handleListCollectionGrants)
+						r.Post("/grants", s.handleCreateCollectionGrant)
+						r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
 						// Saved views within collection
 						r.Get("/views", s.handleListViews)
 						r.Post("/views", s.handleCreateView)
@@ -340,6 +344,9 @@ func (s *Server) setupRouter() {
 
 				// Plans progress
 				r.Get("/plans-progress", s.handlePlansProgress)
+
+				// User grants (all grants for a specific user in this workspace)
+				r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
 				// Items (cross-collection, v2)
 				r.Get("/items", s.handleListItems)
@@ -360,6 +367,9 @@ func (s *Server) setupRouter() {
 					r.Get("/children", s.handleGetItemChildren)
 					r.Get("/progress", s.handleGetItemProgress)
 					r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
+					r.Get("/grants", s.handleListItemGrants)
+					r.Post("/grants", s.handleCreateItemGrant)
+					r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
 				})
 
 				// Links (v2)
