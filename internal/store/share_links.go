@@ -211,22 +211,29 @@ func (s *Store) DeleteShareLink(id, workspaceID string) error {
 }
 
 // RecordShareLinkView atomically increments the view counter (respecting max_views)
-// and records a view entry. Returns true if the view was allowed, false if the
-// max_views limit has been reached.
+// and records a view entry inside a single transaction. Returns true if the view
+// was allowed, false if the max_views limit has been reached. If any step after
+// the increment fails, the entire transaction is rolled back so a view is never
+// consumed without being fully recorded.
 func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string, maxViews *int) (bool, error) {
 	ts := now()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin share view tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
 
 	// Atomically increment view_count, respecting max_views if set.
 	// The WHERE condition ensures we never exceed the limit.
 	var result sql.Result
-	var err error
 	if maxViews != nil {
-		result, err = s.db.Exec(s.q(`
+		result, err = tx.Exec(s.q(`
 			UPDATE share_links SET view_count = view_count + 1, last_viewed_at = ?
 			WHERE id = ? AND view_count < ?
 		`), ts, linkID, *maxViews)
 	} else {
-		result, err = s.db.Exec(s.q(`
+		result, err = tx.Exec(s.q(`
 			UPDATE share_links SET view_count = view_count + 1, last_viewed_at = ?
 			WHERE id = ?
 		`), ts, linkID)
@@ -243,32 +250,40 @@ func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string, maxViews
 	// Check unique viewers (by fingerprint or user ID)
 	var existingCount int
 	if userID != "" {
-		s.db.QueryRow(s.q(
+		if err := tx.QueryRow(s.q(
 			"SELECT COUNT(*) FROM share_link_views WHERE share_link_id = ? AND viewer_user_id = ?"),
-			linkID, userID).Scan(&existingCount)
+			linkID, userID).Scan(&existingCount); err != nil {
+			return false, fmt.Errorf("check unique viewer: %w", err)
+		}
 	} else if fingerprint != "" {
-		s.db.QueryRow(s.q(
+		if err := tx.QueryRow(s.q(
 			"SELECT COUNT(*) FROM share_link_views WHERE share_link_id = ? AND viewer_fingerprint = ?"),
-			linkID, fingerprint).Scan(&existingCount)
+			linkID, fingerprint).Scan(&existingCount); err != nil {
+			return false, fmt.Errorf("check unique viewer: %w", err)
+		}
 	}
 
 	if existingCount == 0 {
-		_, _ = s.db.Exec(s.q(`
+		if _, err := tx.Exec(s.q(`
 			UPDATE share_links SET unique_viewers = unique_viewers + 1 WHERE id = ?
-		`), linkID)
+		`), linkID); err != nil {
+			return false, fmt.Errorf("increment unique viewers: %w", err)
+		}
 	}
 
 	// Record the view
 	viewID := newID()
 	viewerUserID := sql.NullString{String: userID, Valid: userID != ""}
-	_, err = s.db.Exec(s.q(`
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO share_link_views (id, share_link_id, viewer_fingerprint, viewer_user_id, viewed_at)
 		VALUES (?, ?, ?, ?, ?)
-	`), viewID, linkID, fingerprint, viewerUserID, ts)
-	if err != nil {
-		return true, fmt.Errorf("record share link view: %w", err)
+	`), viewID, linkID, fingerprint, viewerUserID, ts); err != nil {
+		return false, fmt.Errorf("record share link view: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit share view tx: %w", err)
+	}
 	return true, nil
 }
 

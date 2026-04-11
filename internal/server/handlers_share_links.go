@@ -7,11 +7,26 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
 	"github.com/xarmian/pad/internal/store"
 )
+
+// validateShareLinkOpts checks that share link creation constraints are sane.
+// Returns an error message string (empty if valid).
+func validateShareLinkOpts(expiresAt *string, maxViews *int) string {
+	if expiresAt != nil {
+		if _, err := time.Parse(time.RFC3339, *expiresAt); err != nil {
+			return "expires_at must be a valid RFC3339 timestamp"
+		}
+	}
+	if maxViews != nil && *maxViews <= 0 {
+		return "max_views must be a positive integer"
+	}
+	return ""
+}
 
 // handleCreateShareLink creates a new share link for an item or collection.
 // POST /workspaces/{ws}/items/{slug}/share-links or
@@ -53,6 +68,11 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	if input.RestrictToEmail != "" {
 		input.RestrictToEmail = strings.ToLower(strings.TrimSpace(input.RestrictToEmail))
 		input.RequireAuth = true
+	}
+
+	if msg := validateShareLinkOpts(input.ExpiresAt, input.MaxViews); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return
 	}
 
 	opts := &store.ShareLinkOptions{
@@ -113,6 +133,11 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	if collInput.RestrictToEmail != "" {
 		collInput.RestrictToEmail = strings.ToLower(strings.TrimSpace(collInput.RestrictToEmail))
 		collInput.RequireAuth = true
+	}
+
+	if msg := validateShareLinkOpts(collInput.ExpiresAt, collInput.MaxViews); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return
 	}
 
 	collOpts := &store.ShareLinkOptions{
@@ -249,6 +274,24 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Auth check first — prevent unauthenticated callers from probing
+	// passwords (which burns bcrypt CPU) before being rejected by the gate.
+	if link.RequireAuth {
+		user := currentUser(r)
+		if user == nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"require_auth": true,
+				"message":      "Authentication required to view this content",
+			})
+			return
+		}
+		// Restrict to specific email (stored normalized; normalize user email too)
+		if link.RestrictToEmail != "" && strings.ToLower(strings.TrimSpace(user.Email)) != link.RestrictToEmail {
+			writeError(w, http.StatusForbidden, "forbidden", "This link is restricted")
+			return
+		}
+	}
+
 	// Password check — via X-Share-Password header (never query string, to
 	// avoid leaking passwords in logs, browser history, and referrers).
 	if link.HasPassword {
@@ -262,23 +305,6 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 		if !s.store.ValidateShareLinkPassword(link, password) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
-			return
-		}
-	}
-
-	// Require auth check
-	if link.RequireAuth {
-		user := currentUser(r)
-		if user == nil {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"require_auth": true,
-				"message":      "Authentication required to view this content",
-			})
-			return
-		}
-		// Restrict to specific email (stored normalized; normalize user email too)
-		if link.RestrictToEmail != "" && strings.ToLower(strings.TrimSpace(user.Email)) != link.RestrictToEmail {
-			writeError(w, http.StatusForbidden, "forbidden", "This link is restricted")
 			return
 		}
 	}
@@ -389,11 +415,15 @@ func (s *Server) handleShareLinkViews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	const maxViewLimit = 1000
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
 			limit = parsed
 		}
+	}
+	if limit > maxViewLimit {
+		limit = maxViewLimit
 	}
 
 	views, err := s.store.ListShareLinkViews(linkID, limit)

@@ -209,7 +209,7 @@ func (s *Server) setupRouter() {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
 			AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password"},
 			AllowCredentials: true,
 			MaxAge:           300,
 		}))
