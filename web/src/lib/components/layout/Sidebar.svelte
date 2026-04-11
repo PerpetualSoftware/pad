@@ -24,6 +24,7 @@
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
 	let isDashboardPage = $derived(wsPrefix ? page.url.pathname === wsPrefix : false);
 	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
 	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
@@ -303,6 +304,7 @@
 	<div class="sidebar-inner">
 		{#if wsSlug}
 			<nav class="collection-nav">
+				{#if !isGuest}
 				<a
 					href="{wsPrefix}"
 					class="nav-item dashboard"
@@ -330,8 +332,16 @@
 					<span class="nav-icon">📋</span>
 					<span class="nav-label">Activity</span>
 				</a>
+				{/if}
+
+				{#if isGuest}
+					<div class="section-header">
+						<span class="section-label">Shared with you</span>
+					</div>
+				{/if}
 
 				{#if sidebarCollections.length > 0}
+					{#if !isGuest}
 					<div class="section-header">
 						<span class="section-label">Collections</span>
 						<button
@@ -341,6 +351,7 @@
 							title="New collection"
 						>+</button>
 					</div>
+					{/if}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="nav-section"
@@ -411,7 +422,7 @@
 				🔍 Search <kbd>⌘K</kbd>
 			</button>
 			<div class="footer-row">
-				{#if wsSlug}
+				{#if wsSlug && !isGuest}
 					<a href="{wsPrefix}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
 						⚙ Settings
 					</a>

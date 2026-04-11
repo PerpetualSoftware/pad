@@ -40,6 +40,37 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	return nil
 }
 
+// RemoveWorkspaceMemberAndRevokeGrants atomically removes a user from a workspace
+// and revokes all their grants in a single transaction. This prevents the user
+// from retaining guest access if the member removal succeeds but grant revocation fails.
+func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Revoke grants first (before removing membership)
+	if _, err := tx.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID); err != nil {
+		return fmt.Errorf("revoke collection grants: %w", err)
+	}
+	if _, err := tx.Exec(s.q("DELETE FROM item_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID); err != nil {
+		return fmt.Errorf("revoke item grants: %w", err)
+	}
+
+	// Remove membership
+	result, err := tx.Exec(s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("remove workspace member: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+
+	return tx.Commit()
+}
+
 // GetWorkspaceMember retrieves a single membership record.
 func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.WorkspaceMember, error) {
 	var m models.WorkspaceMember
@@ -104,7 +135,8 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 		return nil, err
 	}
 	if member == nil {
-		return []string{}, nil // Not a member — no access
+		// Not a member — check for guest access via grants
+		return s.GuestVisibleCollectionIDs(workspaceID, userID)
 	}
 
 	// "all" access — return nil to indicate no filtering needed
@@ -150,6 +182,55 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 			return nil, err
 		}
 		ids[id] = true
+	}
+
+	// Also include collections from direct collection grants. This ensures
+	// that members with "specific" access who are granted additional
+	// collections can see them even if they aren't in member_collection_access.
+	// Note: we only merge full collection grants here, NOT collections derived
+	// from item grants. Item grants should not promote to collection-wide
+	// visibility for members — the item-level filtering in handlers handles that.
+	collGrantRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT collection_id FROM collection_grants
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get member collection grants: %w", err)
+	}
+	defer collGrantRows.Close()
+	for collGrantRows.Next() {
+		var id string
+		if err := collGrantRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	if err := collGrantRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Also include collections that contain items with item grants, so the
+	// collection appears in navigation. The actual item-level filtering is
+	// handled by the request handlers for members who also have item grants.
+	itemCollRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT i.collection_id
+		FROM item_grants ig
+		JOIN items i ON i.id = ig.item_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get member item grant collections: %w", err)
+	}
+	defer itemCollRows.Close()
+	for itemCollRows.Next() {
+		var id string
+		if err := itemCollRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	if err := itemCollRows.Err(); err != nil {
+		return nil, err
 	}
 
 	result := make([]string, 0, len(ids))
@@ -240,6 +321,29 @@ func (s *Store) GetMemberCollectionAccess(workspaceID, userID string) ([]string,
 	return ids, rows.Err()
 }
 
+// ListSystemCollectionIDs returns the IDs of system collections in a workspace.
+// System collections are always visible to members regardless of collection_access mode.
+func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id FROM collections
+		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
+	`), workspaceID, s.dialect.BoolToInt(true))
+	if err != nil {
+		return nil, fmt.Errorf("list system collections: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetUserWorkspaces returns all workspaces a user has access to,
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
@@ -274,7 +378,64 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		result = append(result, ws)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Also include workspaces where the user has grants but is NOT a member (guest access)
+	memberIDs := make(map[string]bool)
+	for _, ws := range result {
+		memberIDs[ws.ID] = true
+	}
+
+	guestRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE w.deleted_at IS NULL AND (
+			EXISTS (
+				SELECT 1 FROM collection_grants cg
+				JOIN collections c ON c.id = cg.collection_id
+				WHERE cg.workspace_id = w.id AND cg.user_id = ? AND c.deleted_at IS NULL
+			)
+			OR EXISTS (
+				SELECT 1 FROM item_grants ig
+				JOIN items i ON i.id = ig.item_id
+				JOIN collections c ON c.id = i.collection_id
+				WHERE ig.workspace_id = w.id AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
+			)
+		)
+	`), userID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get guest workspaces: %w", err)
+	}
+	defer guestRows.Close()
+
+	for guestRows.Next() {
+		var ws models.Workspace
+		var createdAt, updatedAt string
+		var deletedAt *string
+		if err := guestRows.Scan(
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&createdAt, &updatedAt, &deletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan guest workspace: %w", err)
+		}
+		// Skip workspaces the user is already a member of
+		if memberIDs[ws.ID] {
+			continue
+		}
+		ws.CreatedAt = parseTime(createdAt)
+		ws.UpdatedAt = parseTime(updatedAt)
+		ws.DeletedAt = parseTimePtr(deletedAt)
+		ws.IsGuest = true
+		result = append(result, ws)
+	}
+	if err := guestRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate guest workspaces: %w", err)
+	}
+
+	return result, nil
 }
 
 // UpdateWorkspaceSortOrder sets the sort_order for a workspace in a user's membership.

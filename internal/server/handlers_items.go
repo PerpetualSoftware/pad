@@ -38,6 +38,18 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 	params.CollectionIDs = visibleIDs
 
+	// Apply item-level filtering for users with item grants (guests or
+	// restricted members) so item grants don't leak entire collections.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		params.CollectionIDs = fullCollIDs
+		params.ItemIDs = grantedItemIDs
+	}
+
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -83,6 +95,37 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
 
+	// For users with item-level grants, if this collection's visibility comes
+	// from item-level grants (not a full collection grant), restrict to only
+	// the granted items. Applies to both guests and restricted members.
+	lcFullCollIDs, lcGrantedItemIDs, lcGrantErr := s.guestResourceFilter(r, workspaceID)
+	if lcGrantErr != nil {
+		writeInternalError(w, lcGrantErr)
+		return
+	}
+	if len(lcGrantedItemIDs) > 0 {
+		hasFullCollectionGrant := false
+		for _, id := range lcFullCollIDs {
+			if id == coll.ID {
+				hasFullCollectionGrant = true
+				break
+			}
+		}
+		// Also check member_collection_access for restricted members
+		if !hasFullCollectionGrant && workspaceRole(r) != "guest" {
+			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
+			for _, id := range memberColls {
+				if id == coll.ID {
+					hasFullCollectionGrant = true
+					break
+				}
+			}
+		}
+		if !hasFullCollectionGrant {
+			params.ItemIDs = lcGrantedItemIDs
+		}
+	}
+
 	var collSchema models.CollectionSchema
 	if coll.Schema != "" {
 		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
@@ -107,9 +150,6 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 // handleCreateItem creates a new item in a collection, validating fields against the schema.
 func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -123,6 +163,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, "", coll.ID) {
 		return
 	}
 
@@ -281,9 +326,6 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateItem updates an existing item (fields, content, or both).
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -300,6 +342,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -478,9 +524,6 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItem archives (soft-deletes) an item.
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -499,6 +542,10 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
 
 	if err := s.store.DeleteItem(item.ID); err != nil {
 		writeInternalError(w, err)
@@ -515,9 +562,6 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 // handleRestoreItem restores an archived item.
 func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -536,6 +580,10 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -564,9 +612,6 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 // handleMoveItem moves an item to a different collection with field migration.
 func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -579,6 +624,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -595,7 +644,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get target collection and verify it's visible to the user
+	// Get target collection, verify it's visible, and check edit permission
 	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
 	if err != nil || targetColl == nil {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
@@ -608,6 +657,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isCollectionVisible(targetColl.ID, targetVisibleIDs) {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
+		return
+	}
+	// Require edit permission on the target collection (not just visibility)
+	if !s.requireEditPermission(w, r, workspaceID, "", targetColl.ID) {
 		return
 	}
 
@@ -724,6 +777,11 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	ppFullCollIDs, ppGrantedItemIDs, ppGrantErr := s.guestResourceFilter(r, workspaceID)
+	if ppGrantErr != nil {
+		writeInternalError(w, ppGrantErr)
+		return
+	}
 	if visibleIDs != nil {
 		plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
 		if plansColl == nil || !isCollectionVisible(plansColl.ID, visibleIDs) {
@@ -740,6 +798,30 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+
+		// For guests with item-level grants, filter plans themselves
+		if len(ppGrantedItemIDs) > 0 {
+			ppGrantedSet := make(map[string]bool, len(ppGrantedItemIDs))
+			for _, id := range ppGrantedItemIDs {
+				ppGrantedSet[id] = true
+			}
+			ppFullSet := make(map[string]bool, len(ppFullCollIDs))
+			for _, id := range ppFullCollIDs {
+				ppFullSet[id] = true
+			}
+			// Check if plans collection has a full grant
+			plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
+			if plansColl != nil && !ppFullSet[plansColl.ID] {
+				filtered := allProgress[:0]
+				for _, p := range allProgress {
+					if ppGrantedSet[p.ItemID] {
+						filtered = append(filtered, p)
+					}
+				}
+				allProgress = filtered
+			}
+		}
+
 		// Recompute each plan's progress using only visible children
 		for i, p := range allProgress {
 			children, cerr := s.store.GetChildItems(p.ItemID)
@@ -749,6 +831,9 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 			total, done := 0, 0
 			for _, child := range children {
 				if !isCollectionVisible(child.CollectionID, visibleIDs) {
+					continue
+				}
+				if !s.isItemVisibleToGuest(r, workspaceID, &child, ppFullCollIDs, ppGrantedItemIDs) {
 					continue
 				}
 				total++
@@ -803,18 +888,27 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		children = []models.Item{}
 	}
 
-	// Filter children by collection visibility
+	// Filter children by collection visibility and item-level grants
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
 		return
 	}
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
 	if visibleIDs != nil {
 		filtered := children[:0]
 		for _, child := range children {
-			if isCollectionVisible(child.CollectionID, visibleIDs) {
-				filtered = append(filtered, child)
+			if !isCollectionVisible(child.CollectionID, visibleIDs) {
+				continue
 			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &child, fullCollIDs, grantedItemIDs) {
+				continue
+			}
+			filtered = append(filtered, child)
 		}
 		children = filtered
 	}
@@ -826,10 +920,14 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 			grandchildren, _ := s.store.GetChildItems(children[i].ID)
 			children[i].HasChildren = false
 			for _, gc := range grandchildren {
-				if isCollectionVisible(gc.CollectionID, visibleIDs) {
-					children[i].HasChildren = true
-					break
+				if !isCollectionVisible(gc.CollectionID, visibleIDs) {
+					continue
 				}
+				if !s.isItemVisibleToGuest(r, workspaceID, &gc, fullCollIDs, grantedItemIDs) {
+					continue
+				}
+				children[i].HasChildren = true
+				break
 			}
 		}
 	} else {
@@ -863,6 +961,11 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 	// Get visibility filter; when restricted, compute progress from
 	// visible children only so hidden child counts don't leak.
 	progVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	progFullCollIDs, progGrantedItemIDs, progGrantErr := s.guestResourceFilter(r, workspaceID)
+	if progGrantErr != nil {
+		writeInternalError(w, progGrantErr)
+		return
+	}
 	if progVisIDs != nil {
 		// Restricted: compute from visible children in Go using per-collection
 		// schemas to determine terminal statuses correctly.
@@ -876,6 +979,9 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 		total, done := 0, 0
 		for _, child := range children {
 			if !isCollectionVisible(child.CollectionID, progVisIDs) {
+				continue
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &child, progFullCollIDs, progGrantedItemIDs) {
 				continue
 			}
 			total++

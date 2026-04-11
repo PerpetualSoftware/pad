@@ -328,6 +328,10 @@ func (s *Server) setupRouter() {
 						// Items within collection
 						r.Get("/items", s.handleListCollectionItems)
 						r.Post("/items", s.handleCreateItem)
+						// Collection grants
+						r.Get("/grants", s.handleListCollectionGrants)
+						r.Post("/grants", s.handleCreateCollectionGrant)
+						r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
 						// Saved views within collection
 						r.Get("/views", s.handleListViews)
 						r.Post("/views", s.handleCreateView)
@@ -340,6 +344,9 @@ func (s *Server) setupRouter() {
 
 				// Plans progress
 				r.Get("/plans-progress", s.handlePlansProgress)
+
+				// User grants (all grants for a specific user in this workspace)
+				r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
 				// Items (cross-collection, v2)
 				r.Get("/items", s.handleListItems)
@@ -360,6 +367,9 @@ func (s *Server) setupRouter() {
 					r.Get("/children", s.handleGetItemChildren)
 					r.Get("/progress", s.handleGetItemProgress)
 					r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
+					r.Get("/grants", s.handleListItemGrants)
+					r.Post("/grants", s.handleCreateItemGrant)
+					r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
 				})
 
 				// Links (v2)
@@ -635,9 +645,25 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }
 
+// guestVisibleItemIDs returns the item IDs a guest has item-level grants on.
+// Returns nil for non-guests or if the guest has no item-level grants.
+func (s *Server) guestVisibleItemIDs(r *http.Request, workspaceID string) ([]string, error) {
+	if workspaceRole(r) != "guest" {
+		return nil, nil
+	}
+	user := currentUser(r)
+	if user == nil {
+		return nil, nil
+	}
+	_, itemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	return itemIDs, err
+}
+
 // requireItemVisible checks that the item's collection is visible to the
-// requesting user. Writes a 404 and returns false if not. Callers should
-// invoke this immediately after resolving an item by slug/ID.
+// requesting user. For guests with item-level grants, also verifies that the
+// specific item is granted (not just the collection). Writes a 404 and returns
+// false if not. Callers should invoke this immediately after resolving an item
+// by slug/ID.
 func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
@@ -648,7 +674,143 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return false
 	}
+
+	// For users with item-level grants (guests or restricted members),
+	// collection visibility may come from item-level grants.
+	// We need to verify the user actually has a grant on this specific item
+	// (not just another item in the same collection).
+	// Uses guestResourceFilter which skips this check for members with "all" access.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return false
+	}
+	if len(grantedItemIDs) > 0 {
+		// If the collection has a full collection grant, the item is visible
+		for _, id := range fullCollIDs {
+			if id == item.CollectionID {
+				return true
+			}
+		}
+		// Check if this collection came from member_collection_access (not grants)
+		if workspaceRole(r) != "guest" {
+			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
+			for _, id := range memberColls {
+				if id == item.CollectionID {
+					return true
+				}
+			}
+		}
+		// Otherwise, the specific item must be in the granted items list
+		for _, id := range grantedItemIDs {
+			if id == item.ID {
+				return true
+			}
+		}
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return false
+	}
+
 	return true
+}
+
+// isItemVisibleToGuest checks if an item is visible given grant-based access,
+// considering both full-collection grants and individual item grants.
+// When fullCollIDs and grantedItemIDs are both nil, always returns true (no grant filtering).
+func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item *models.Item, fullCollIDs, grantedItemIDs []string) bool {
+	if fullCollIDs == nil && grantedItemIDs == nil {
+		return true
+	}
+	// Full collection grant covers all items in the collection
+	for _, id := range fullCollIDs {
+		if id == item.CollectionID {
+			return true
+		}
+	}
+	// Otherwise, the specific item must be in the granted items list
+	for _, id := range grantedItemIDs {
+		if id == item.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// guestResourceFilter returns the full-collection IDs and granted item IDs for
+// the current user if they need item-level grant filtering. Returns nil/nil for:
+// - unauthenticated users
+// - admin users
+// - members with "all" collection access (grants should merge, not replace)
+// For guests: returns direct collection grants as fullCollIDs + item grants.
+// For restricted members: returns member_collection_access + system collections
+// + direct collection grants as fullCollIDs, plus item grants as grantedItemIDs.
+// This ensures item grants are additive to the member's existing access.
+func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
+	user := currentUser(r)
+	if user == nil || user.Role == "admin" {
+		return nil, nil, nil
+	}
+
+	role := workspaceRole(r)
+
+	// For workspace members with "all" collection access, item grants should
+	// not restrict their existing full visibility.
+	if role != "guest" {
+		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if member != nil && (member.CollectionAccess == "all" || member.CollectionAccess == "") {
+			return nil, nil, nil
+		}
+	}
+
+	// Get grant-based resources
+	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// For guests, grant resources are the only source of access
+	if role == "guest" {
+		return grantCollIDs, grantedItemIDs, nil
+	}
+
+	// For restricted members ("specific" access), merge their normal
+	// member_collection_access + system collections into fullCollIDs so
+	// item grants are additive, not a replacement. This is critical:
+	// without this merge, a member with access to collection A plus one
+	// item grant in collection B would lose collection A in cross-collection
+	// queries that use these IDs.
+	fullCollSet := make(map[string]bool)
+	for _, id := range grantCollIDs {
+		fullCollSet[id] = true
+	}
+
+	// Add member_collection_access collections
+	memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range memberColls {
+		fullCollSet[id] = true
+	}
+
+	// Add system collections (always visible to members)
+	sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range sysColls {
+		fullCollSet[id] = true
+	}
+
+	fullCollIDs = make([]string, 0, len(fullCollSet))
+	for id := range fullCollSet {
+		fullCollIDs = append(fullCollIDs, id)
+	}
+
+	return fullCollIDs, grantedItemIDs, nil
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.
@@ -663,6 +825,40 @@ func isCollectionVisible(collectionID string, visibleIDs []string) bool {
 		}
 	}
 	return false
+}
+
+// requireEditPermission checks if the user has edit access to the given item.
+// For regular members (editor/owner), this uses the standard role check.
+// For members with insufficient roles (e.g., viewers), it falls back to
+// grant-based permissions so grants can override the base role.
+// For guests, it resolves the effective permission from grants directly.
+// Returns true if the request should continue, false if it was rejected with a 403.
+func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
+	role := workspaceRole(r)
+
+	// Editors and owners always have edit access
+	if role != "guest" && requireRole(r, "editor") {
+		return true
+	}
+
+	// For guests and members with insufficient role (e.g., viewers),
+	// check grant-based permissions as an override.
+	user := currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+		return false
+	}
+
+	perm, err := s.store.ResolveUserPermission(workspaceID, user.ID, itemID, collectionID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if permissionLevel(perm) < permissionLevel("edit") {
+		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+		return false
+	}
+	return true
 }
 
 // resolveWorkspace resolves a workspace by slug or UUID, scoped to the

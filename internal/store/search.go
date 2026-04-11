@@ -27,12 +27,15 @@ type SearchParams struct {
 	Workspace     string   // workspace slug, optional — scopes to single workspace
 	WorkspaceIDs  []string // workspace IDs to scope results to (used when no specific workspace is given)
 	CollectionIDs []string // permission filter: restrict to these collection IDs (nil = no filter)
+	ItemIDs       []string // permission filter: additionally allow these specific item IDs (for item-level grants)
 }
 
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 	// Non-nil empty CollectionIDs means "no visible collections" — return
-	// empty results immediately rather than skipping the filter clause.
-	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 {
+	// empty results immediately, unless ItemIDs are also provided (item-level
+	// grants may still allow access to specific items even without full
+	// collection access).
+	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 && len(params.ItemIDs) == 0 {
 		return nil, nil
 	}
 
@@ -67,9 +70,22 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			}
 		}
 
-		if len(params.CollectionIDs) > 0 {
+		if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+			refQuery += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
+			for _, id := range params.CollectionIDs {
+				refArgs = append(refArgs, id)
+			}
+			for _, id := range params.ItemIDs {
+				refArgs = append(refArgs, id)
+			}
+		} else if len(params.CollectionIDs) > 0 {
 			refQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
 			for _, id := range params.CollectionIDs {
+				refArgs = append(refArgs, id)
+			}
+		} else if len(params.ItemIDs) > 0 {
+			refQuery += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
+			for _, id := range params.ItemIDs {
 				refArgs = append(refArgs, id)
 			}
 		}
@@ -179,9 +195,22 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		}
 	}
 
-	if len(params.CollectionIDs) > 0 {
+	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+		query += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
+		for _, id := range params.CollectionIDs {
+			args = append(args, id)
+		}
+		for _, id := range params.ItemIDs {
+			args = append(args, id)
+		}
+	} else if len(params.CollectionIDs) > 0 {
 		query += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
 		for _, id := range params.CollectionIDs {
+			args = append(args, id)
+		}
+	} else if len(params.ItemIDs) > 0 {
+		query += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
+		for _, id := range params.ItemIDs {
 			args = append(args, id)
 		}
 	}

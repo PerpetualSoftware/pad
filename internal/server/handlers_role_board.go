@@ -7,10 +7,9 @@ import (
 )
 
 // handleRoleBoardReorder updates role_sort_order for items within a lane.
+// Permission is checked per-item via requireEditPermission (grant-aware),
+// so guests/viewers with edit grants can reorder their granted items.
 func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -22,19 +21,20 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify all items being reordered are in visible collections
-	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-	if visErr != nil {
-		writeInternalError(w, visErr)
-		return
-	}
-	if visibleIDs != nil {
-		for _, u := range updates {
-			item, err := s.store.GetItem(u.ItemID)
-			if err != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
-				writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
-				return
-			}
+	// Verify all items being reordered are visible and editable.
+	// Uses grant-aware edit check so restricted members/guests with
+	// item-only grants can't reorder items they don't have edit access to.
+	for _, u := range updates {
+		item, err := s.store.GetItem(u.ItemID)
+		if err != nil || item == nil {
+			writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
+			return
+		}
+		if !s.requireItemVisible(w, r, workspaceID, item) {
+			return
+		}
+		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+			return
 		}
 	}
 
@@ -84,9 +84,23 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For users with item-level grants, use item-level filtering
+	rbCollIDs := visibleIDs
+	var rbItemIDs []string
+	rbFullCollIDs, rbGrantedItemIDs, rbGrantErr := s.guestResourceFilter(r, workspaceID)
+	if rbGrantErr != nil {
+		writeInternalError(w, rbGrantErr)
+		return
+	}
+	if len(rbGrantedItemIDs) > 0 {
+		rbCollIDs = rbFullCollIDs
+		rbItemIDs = rbGrantedItemIDs
+	}
+
 	params := store.RoleBoardParams{
 		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
-		CollectionIDs:  visibleIDs,
+		CollectionIDs:  rbCollIDs,
+		ItemIDs:        rbItemIDs,
 	}
 
 	lanes, err := s.store.GetRoleBoardItems(workspaceID, params)

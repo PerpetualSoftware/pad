@@ -105,15 +105,88 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// For users with item-level grants (guests or restricted members), build
+	// a set of granted item IDs for event filtering at item granularity.
+	var sseGrantedItemSet map[string]bool // nil = no item-level filtering
+	var sseFullCollSet map[string]bool    // collection slugs with full grants
+	isGuestSSE := false
+	if user := currentUser(r); user != nil {
+		member, _ := s.store.GetWorkspaceMember(ws.ID, user.ID)
+		if member == nil {
+			isGuestSSE = true
+		}
+
+		// Determine if this user needs item-level filtering:
+		// - guests always do
+		// - restricted members only if they have item grants
+		needsItemFilter := member == nil // guest
+		if member != nil && member.CollectionAccess == "specific" {
+			_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
+			needsItemFilter = len(itemGrants) > 0
+		}
+
+		if needsItemFilter {
+			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+			if grantErr != nil {
+				// Fail closed: if we can't resolve grants, install an empty
+				// item filter so no collection-scoped events leak through.
+				slog.Warn("SSE: failed to resolve item grants, denying item-scoped events", "error", grantErr)
+				sseGrantedItemSet = make(map[string]bool) // empty = deny all
+				sseFullCollSet = make(map[string]bool)    // empty = no full-access collections
+			} else if len(grantedItemIDs) > 0 {
+				sseGrantedItemSet = make(map[string]bool, len(grantedItemIDs))
+				for _, id := range grantedItemIDs {
+					sseGrantedItemSet[id] = true
+				}
+				// Build the full-access collection slug set. For restricted members,
+				// include their member_collection_access + system collections too.
+				fullCollIDSet := make(map[string]bool)
+				for _, id := range fullCollIDs {
+					fullCollIDSet[id] = true
+				}
+				if member != nil {
+					memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+					sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
+					for _, id := range memberColls {
+						fullCollIDSet[id] = true
+					}
+					for _, id := range sysColls {
+						fullCollIDSet[id] = true
+					}
+				}
+				sseFullCollSet = make(map[string]bool, len(fullCollIDSet))
+				for id := range fullCollIDSet {
+					coll, _ := s.store.GetCollection(id)
+					if coll != nil {
+						sseFullCollSet[coll.Slug] = true
+					}
+				}
+			}
+		}
+	}
+
 	// sseEventVisible checks if an event should be sent to this client.
-	sseEventVisible := func(collection string) bool {
+	sseEventVisible := func(collection, itemID string) bool {
 		if visibleSlugSet == nil {
 			return true // all access
 		}
 		if collection == "" {
-			return true // events without a collection are always sent
+			// Events without a collection (workspace-level, legacy docs) are
+			// only sent to actual members, not guests — they may contain
+			// operational metadata like member invites, role changes, etc.
+			if isGuestSSE {
+				return false
+			}
+			return true
 		}
-		return visibleSlugSet[collection]
+		if !visibleSlugSet[collection] {
+			return false
+		}
+		// For guests with item-level grants, additionally check the item ID
+		if sseGrantedItemSet != nil && !sseFullCollSet[collection] && itemID != "" {
+			return sseGrantedItemSet[itemID]
+		}
+		return true
 	}
 
 	// Send initial connected event
@@ -141,7 +214,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				slog.Info("SSE replaying missed events",
 					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
 				for _, event := range missed {
-					if sseEventVisible(event.Collection) {
+					if sseEventVisible(event.Collection, event.ItemID) {
 						writeSSEEvent(w, event.Type, event.ID, event)
 						flusher.Flush()
 					}
@@ -167,7 +240,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Channel closed (unsubscribed)
 				return
 			}
-			if sseEventVisible(event.Collection) {
+			if sseEventVisible(event.Collection, event.ItemID) {
 				writeSSEEvent(w, event.Type, event.ID, event)
 				flusher.Flush()
 			}

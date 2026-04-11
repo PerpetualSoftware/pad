@@ -507,6 +507,7 @@ type ItemUpdate struct {
 type ItemListParams struct {
 	CollectionSlug  string
 	CollectionIDs   []string          // permission filter: restrict to these collection IDs (nil = no filter)
+	ItemIDs         []string          // permission filter: additionally restrict to these item IDs (for item-level grants)
 	Fields          map[string]string // field filters: key=value
 	Sort            string            // e.g. "priority:desc,created_at:asc"
 	GroupBy         string

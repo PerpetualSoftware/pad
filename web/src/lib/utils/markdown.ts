@@ -16,11 +16,27 @@ renderer.link = ({ href, title, tokens }: Tokens.Link) => {
 
 marked.use({ renderer });
 
-export function renderMarkdown(content: string, items: Item[], workspaceSlug: string): string {
+/**
+ * Render markdown with wiki-link resolution.
+ * @param visibleCollectionSlugs - Set of collection slugs the user can see.
+ *   undefined = all visible (no filtering). Empty set = nothing visible (anonymous).
+ */
+export function renderMarkdown(
+	content: string,
+	items: Item[],
+	workspaceSlug: string,
+	username?: string,
+	visibleCollectionSlugs?: Set<string>
+): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
 		const item = items.find(i => i.title === title);
 		if (item && item.collection_slug) {
-			return `<a href="/${workspaceSlug}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${title}</a>`;
+			// Check visibility: if a visibility set is provided, check it
+			if (visibleCollectionSlugs !== undefined && !visibleCollectionSlugs.has(item.collection_slug)) {
+				return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${title}</span>`;
+			}
+			const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
+			return `<a href="${prefix}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${title}</a>`;
 		}
 		return `<span class="doc-link broken">${title}</span>`;
 	});

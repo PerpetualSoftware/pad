@@ -71,7 +71,7 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check collection visibility
+	// Check collection visibility and edit permission (grant-aware)
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
@@ -79,6 +79,9 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isCollectionVisible(coll.ID, visibleIDs) {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireEditPermission(w, r, workspaceID, "", coll.ID) {
 		return
 	}
 
@@ -127,18 +130,30 @@ func (s *Server) requireViewVisible(w http.ResponseWriter, r *http.Request, work
 	return view
 }
 
+// requireViewEditable is like requireViewVisible but also checks edit permission
+// on the view's collection (grant-aware for guests/restricted members).
+func (s *Server) requireViewEditable(w http.ResponseWriter, r *http.Request, workspaceID, viewID string) *models.View {
+	view := s.requireViewVisible(w, r, workspaceID, viewID)
+	if view == nil {
+		return nil
+	}
+	if view.CollectionID != nil {
+		if !s.requireEditPermission(w, r, workspaceID, "", *view.CollectionID) {
+			return nil
+		}
+	}
+	return view
+}
+
 // handleUpdateView modifies an existing saved view.
 func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	viewID := chi.URLParam(r, "viewID")
-	if s.requireViewVisible(w, r, workspaceID, viewID) == nil {
+	if s.requireViewEditable(w, r, workspaceID, viewID) == nil {
 		return
 	}
 
@@ -163,16 +178,13 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteView removes a saved view.
 func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	viewID := chi.URLParam(r, "viewID")
-	if s.requireViewVisible(w, r, workspaceID, viewID) == nil {
+	if s.requireViewEditable(w, r, workspaceID, viewID) == nil {
 		return
 	}
 

@@ -11,20 +11,18 @@ import (
 )
 
 // handleListMembers returns all members of a workspace.
+// Requires at least viewer role (guests are blocked).
+// Invitation details are only included for workspace owners.
 func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
 	members, err := s.store.ListWorkspaceMembers(workspaceID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	// Include pending invitations, enriched with join URLs
-	invitations, err := s.store.ListWorkspaceInvitations(workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -38,24 +36,39 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		JoinURL   string `json:"join_url,omitempty"`
 		CreatedAt string `json:"created_at"`
 	}
-	enrichedInvs := make([]invWithURL, len(invitations))
-	for i, inv := range invitations {
-		// For hashed invitations (code == id placeholder), the plaintext
-		// code is not recoverable — only show code/join_url for legacy invites.
-		code := inv.Code
-		if code == inv.ID {
-			code = ""
+
+	// Only owners can see pending invitations (which contain emails and join codes)
+	var enrichedInvs []invWithURL
+	if requireRole(r, "owner") {
+		invitations, err := s.store.ListWorkspaceInvitations(workspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
 		}
-		enrichedInvs[i] = invWithURL{
-			ID:        inv.ID,
-			Email:     inv.Email,
-			Role:      inv.Role,
-			Code:      code,
-			CreatedAt: inv.CreatedAt.Format("2006-01-02T15:04:05Z"),
+
+		enrichedInvs = make([]invWithURL, len(invitations))
+		for i, inv := range invitations {
+			// For hashed invitations (code == id placeholder), the plaintext
+			// code is not recoverable — only show code/join_url for legacy invites.
+			code := inv.Code
+			if code == inv.ID {
+				code = ""
+			}
+			enrichedInvs[i] = invWithURL{
+				ID:        inv.ID,
+				Email:     inv.Email,
+				Role:      inv.Role,
+				Code:      code,
+				CreatedAt: inv.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			}
+			if s.baseURL != "" && code != "" {
+				enrichedInvs[i].JoinURL = s.baseURL + "/join/" + code
+			}
 		}
-		if s.baseURL != "" && code != "" {
-			enrichedInvs[i].JoinURL = s.baseURL + "/join/" + code
-		}
+	}
+
+	if enrichedInvs == nil {
+		enrichedInvs = []invWithURL{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -186,12 +199,29 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.RemoveWorkspaceMember(workspaceID, userID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Member not found")
-		return
+	// Default to revoking grants on member removal to prevent the removed user
+	// from silently becoming a guest with continued access.
+	// ?revoke_grants=false → explicitly keep grants (user becomes a guest)
+	// ?revoke_grants=true or omitted → delete all grants (full removal)
+	revokeGrants := r.URL.Query().Get("revoke_grants") != "false"
+	if revokeGrants {
+		// Atomic: remove member and revoke all grants in one transaction
+		if err := s.store.RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "Member not found")
+			return
+		}
+	} else {
+		if err := s.store.RemoveWorkspaceMember(workspaceID, userID); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "Member not found")
+			return
+		}
 	}
 
-	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(map[string]string{"user_id": userID}))
+	meta := map[string]string{"user_id": userID}
+	if revokeGrants {
+		meta["revoked_grants"] = "true"
+	}
+	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(meta))
 
 	w.WriteHeader(http.StatusNoContent)
 }

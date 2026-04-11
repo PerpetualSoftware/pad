@@ -314,7 +314,19 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 		if member == nil {
-			writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+			// Not a member — check for guest access via grants
+			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
+			if grantErr != nil {
+				slog.Error("failed to check guest grants", "workspace_id", ws.ID, "user_id", user.ID, "error", grantErr)
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+				return
+			}
+			if !hasGrants {
+				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+				return
+			}
+			ctx = context.WithValue(ctx, ctxWorkspaceRole, "guest")
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
@@ -359,6 +371,28 @@ func roleLevel(role string) int {
 	case "editor":
 		return 2
 	case "viewer":
+		return 1
+	case "guest":
+		return 0 // Guests have grant-based access only, no role-based permissions
+	default:
+		return 0
+	}
+}
+
+// permissionLevel returns a numeric level for grant permission comparison.
+func permissionLevel(perm string) int {
+	switch perm {
+	case "owner":
+		return 4
+	case "admin":
+		return 3
+	case "editor":
+		return 2
+	case "edit":
+		return 2
+	case "viewer":
+		return 1
+	case "view":
 		return 1
 	default:
 		return 0

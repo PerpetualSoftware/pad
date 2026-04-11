@@ -7,11 +7,12 @@
 
 	interface Props {
 		wsSlug: string;
+		username?: string;
 		itemSlug: string;
 		items?: Item[];
 	}
 
-	let { wsSlug, itemSlug, items = [] }: Props = $props();
+	let { wsSlug, username = '', itemSlug, items = [] }: Props = $props();
 
 	let comments = $state<Comment[]>([]);
 	let loading = $state(true);
@@ -147,7 +148,7 @@
 						</button>
 					</div>
 					<div class="comment-body prose">
-						{@html renderMarkdown(comment.body, items, wsSlug)}
+						{@html renderMarkdown(comment.body, items, wsSlug, username)}
 					</div>
 				</div>
 			{:else}

@@ -35,6 +35,9 @@ func (s *Server) getTokenExpirySettings() (defaultDays, maxDays int) {
 // handleCreateToken creates a new API token scoped to a workspace.
 // The token is owned by the authenticated user (if any).
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -68,6 +71,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 // handleListTokens returns all API tokens for a workspace (without secrets).
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -87,6 +93,9 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteToken revokes an API token by ID.
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	_, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

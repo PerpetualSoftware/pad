@@ -41,9 +41,15 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter out links where the linked item is in a hidden collection
+	// or (for guests with item-level grants) the linked item is not granted.
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
+		return
+	}
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
 		return
 	}
 	if visibleIDs != nil {
@@ -55,9 +61,15 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 				otherID = link.SourceID
 			}
 			if other, err := s.store.GetItem(otherID); err == nil && other != nil {
-				if isCollectionVisible(other.CollectionID, visibleIDs) {
-					filtered = append(filtered, link)
+				if !isCollectionVisible(other.CollectionID, visibleIDs) {
+					continue
 				}
+				// For guests: if the collection is only visible via item grants,
+				// check the specific item is granted.
+				if !s.isItemVisibleToGuest(r, workspaceID, other, fullCollIDs, grantedItemIDs) {
+					continue
+				}
+				filtered = append(filtered, link)
 			}
 		}
 		links = filtered
@@ -68,9 +80,6 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateItemLink creates a new link between two items.
 func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -87,6 +96,10 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -162,9 +175,6 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItemLink removes a link between items.
 func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -179,16 +189,34 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify both linked items are in visible collections
+	// Check edit permission on the source item (grant-aware for guests)
+	if sourceItem, ierr := s.store.GetItem(link.SourceID); ierr == nil && sourceItem != nil {
+		if !s.requireEditPermission(w, r, workspaceID, sourceItem.ID, sourceItem.CollectionID) {
+			return
+		}
+	} else if !requireMinRole(w, r, "editor") {
+		return
+	}
+
+	// Verify both linked items are in visible collections (with item-level checks for guests)
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
+		return
+	}
+	delFullCollIDs, delGrantedItemIDs, delGrantErr := s.guestResourceFilter(r, workspaceID)
+	if delGrantErr != nil {
+		writeInternalError(w, delGrantErr)
 		return
 	}
 	if visibleIDs != nil {
 		for _, itemID := range []string{link.SourceID, link.TargetID} {
 			item, ierr := s.store.GetItem(itemID)
 			if ierr != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
+				writeError(w, http.StatusNotFound, "not_found", "Link not found")
+				return
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, item, delFullCollIDs, delGrantedItemIDs) {
 				writeError(w, http.StatusNotFound, "not_found", "Link not found")
 				return
 			}

@@ -41,19 +41,54 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			// Apply per-workspace collection visibility filtering.
 			// Collect all visible collection IDs across user's workspaces.
+			// For guest workspaces, also collect item-level grants.
 			allVisibleCollIDs := []string{} // non-nil empty = "no access" by default
+			var allVisibleItemIDs []string
 			needsCollFilter := false
 			for _, ws := range workspaces {
+				if ws.IsGuest {
+					// Guest workspace: use item-level filtering
+					fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+					if grantErr != nil {
+						params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
+						continue
+					}
+					needsCollFilter = true
+					allVisibleCollIDs = append(allVisibleCollIDs, fullCollIDs...)
+					allVisibleItemIDs = append(allVisibleItemIDs, grantedItemIDs...)
+					continue
+				}
 				visIDs, err := s.store.VisibleCollectionIDs(ws.ID, user.ID)
 				if err != nil {
-					// Fail closed: skip this workspace entirely on error
-					// rather than searching it without a collection filter.
 					params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
 					continue
 				}
 				if visIDs != nil {
 					needsCollFilter = true
-					allVisibleCollIDs = append(allVisibleCollIDs, visIDs...)
+					// For restricted members with item grants, separate full-access
+					// collections from item-granted collections
+					_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
+					if len(itemGrants) > 0 {
+						memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+						sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
+						collGrants, _, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
+						fullSet := make(map[string]bool)
+						for _, id := range memberColls {
+							fullSet[id] = true
+						}
+						for _, id := range sysColls {
+							fullSet[id] = true
+						}
+						for _, id := range collGrants {
+							fullSet[id] = true
+						}
+						for id := range fullSet {
+							allVisibleCollIDs = append(allVisibleCollIDs, id)
+						}
+						allVisibleItemIDs = append(allVisibleItemIDs, itemGrants...)
+					} else {
+						allVisibleCollIDs = append(allVisibleCollIDs, visIDs...)
+					}
 				} else {
 					// "all" access — include all collections from this workspace
 					colls, _ := s.store.ListCollections(ws.ID)
@@ -65,6 +100,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if needsCollFilter {
 				params.CollectionIDs = allVisibleCollIDs
 			}
+			if len(allVisibleItemIDs) > 0 {
+				params.ItemIDs = allVisibleItemIDs
+			}
 		}
 		// If no user (fresh install, no auth), allow unscoped search
 	}
@@ -73,12 +111,62 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if params.Workspace != "" {
 		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
 		if ws != nil {
+			user := currentUser(r)
 			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
 			if visErr != nil {
 				writeInternalError(w, visErr)
 				return
 			}
 			params.CollectionIDs = visibleIDs
+
+			// For users with item grants (guests or restricted members),
+			// apply item-level filtering so item grants don't leak entire
+			// collections in search results.
+			// Note: /search is not behind RequireWorkspaceAccess, so we
+			// can't use guestResourceFilter (needs workspaceRole). We check
+			// membership and collection access directly.
+			if user != nil {
+				needsItemFilter := false
+				member, _ := s.store.GetWorkspaceMember(ws.ID, user.ID)
+				if member == nil {
+					// Guest (non-member)
+					needsItemFilter = true
+				} else if member.CollectionAccess == "specific" {
+					// Restricted member — check if they have item grants
+					_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
+					needsItemFilter = len(itemGrants) > 0
+				}
+
+				if needsItemFilter {
+					grantCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+					if grantErr != nil {
+						writeInternalError(w, grantErr)
+						return
+					}
+					// For restricted members, merge member collections into full access set
+					fullCollIDs := grantCollIDs
+					if member != nil {
+						memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+						sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
+						fullSet := make(map[string]bool)
+						for _, id := range grantCollIDs {
+							fullSet[id] = true
+						}
+						for _, id := range memberColls {
+							fullSet[id] = true
+						}
+						for _, id := range sysColls {
+							fullSet[id] = true
+						}
+						fullCollIDs = make([]string, 0, len(fullSet))
+						for id := range fullSet {
+							fullCollIDs = append(fullCollIDs, id)
+						}
+					}
+					params.CollectionIDs = fullCollIDs
+					params.ItemIDs = grantedItemIDs
+				}
+			}
 		}
 	}
 

@@ -169,16 +169,18 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 }
 
 // GetWorkspacesBySlugForUser finds workspaces matching a slug that are accessible
-// to the given user (owned by them or where they are a member).
+// to the given user (owned, member, or guest with grants).
 func (s *Store) GetWorkspacesBySlugForUser(slug, userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at
 		FROM workspaces w
 		LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
+		LEFT JOIN collection_grants cg ON cg.workspace_id = w.id AND cg.user_id = ?
+		LEFT JOIN item_grants ig ON ig.workspace_id = w.id AND ig.user_id = ?
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.slug = ? AND w.deleted_at IS NULL
-		AND (w.owner_id = ? OR wm.user_id IS NOT NULL)
-	`), userID, slug, userID)
+		AND (w.owner_id = ? OR wm.user_id IS NOT NULL OR cg.user_id IS NOT NULL OR ig.user_id IS NOT NULL)
+	`), userID, userID, userID, slug, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get workspaces by slug for user: %w", err)
 	}
