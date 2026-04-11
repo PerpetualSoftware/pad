@@ -31,7 +31,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, err := s.store.GetWorkspaceBySlug(slug)
+	ws, err := s.resolveWorkspace(slug, currentUser(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -39,6 +39,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if ws == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
 		return
+	}
+
+	// Verify workspace access for legacy API tokens (no user context).
+	// User-based access is checked by resolveWorkspace above, but
+	// legacy tokens store the workspace ID in context — verify it matches.
+	if currentUser(r) == nil {
+		tokenWsID := tokenWorkspaceID(r)
+		if tokenWsID != "" && tokenWsID != ws.ID {
+			writeError(w, http.StatusForbidden, "forbidden", "Token not authorized for this workspace")
+			return
+		}
 	}
 
 	// Verify streaming support

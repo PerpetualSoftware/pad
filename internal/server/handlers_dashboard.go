@@ -534,10 +534,52 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Role breakdown: items per role with assigned users
-	roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
-	if err == nil && len(roleBreakdown) > 0 {
-		resp.ByRole = roleBreakdown
+	// Role breakdown: items per role with assigned users.
+	// When visibility is restricted, recompute from visible items only.
+	if visibleIDs != nil {
+		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
+		if err == nil {
+			// Recount from visible items
+			roleCounts := make(map[string]int)
+			roleUsers := make(map[string]map[string]bool)
+			for _, item := range allItems {
+				roleID := ""
+				if item.AgentRoleID != nil {
+					roleID = *item.AgentRoleID
+				}
+				status := extractFieldValue(item.Fields, "status")
+				if isItemTerminal(status, item.CollectionID, schemaMap) {
+					continue
+				}
+				roleCounts[roleID]++
+				if item.AssignedUserName != "" {
+					if roleUsers[roleID] == nil {
+						roleUsers[roleID] = make(map[string]bool)
+					}
+					roleUsers[roleID][item.AssignedUserName] = true
+				}
+			}
+			for i := range roleBreakdown {
+				rid := ""
+				if roleBreakdown[i].RoleID != nil {
+					rid = *roleBreakdown[i].RoleID
+				}
+				roleBreakdown[i].ItemCount = roleCounts[rid]
+				users := make([]string, 0)
+				for u := range roleUsers[rid] {
+					users = append(users, u)
+				}
+				roleBreakdown[i].Users = users
+			}
+			if len(roleBreakdown) > 0 {
+				resp.ByRole = roleBreakdown
+			}
+		}
+	} else {
+		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
+		if err == nil && len(roleBreakdown) > 0 {
+			resp.ByRole = roleBreakdown
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)

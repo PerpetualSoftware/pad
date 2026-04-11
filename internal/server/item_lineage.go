@@ -52,14 +52,15 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 		}
 		parents[pid] = parentInfo{title: item.Title, ref: ref}
 	}
-	// Populate items
+	// Populate items — only set parent fields when the parent passed
+	// the visibility filter (i.e. is in the parents map)
 	for i := range items {
 		pid, ok := parentMap[items[i].ID]
 		if !ok {
 			continue
 		}
-		items[i].ParentLinkID = pid
 		if info, ok := parents[pid]; ok {
+			items[i].ParentLinkID = pid
 			items[i].ParentTitle = info.title
 			items[i].ParentRef = info.ref
 		}

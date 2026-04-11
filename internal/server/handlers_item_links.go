@@ -41,7 +41,11 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter out links where the linked item is in a hidden collection
-	visibleIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
 	if visibleIDs != nil {
 		filtered := links[:0]
 		for _, link := range links {

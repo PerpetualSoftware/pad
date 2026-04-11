@@ -820,7 +820,21 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.enrichItemsWithParent(workspaceID, children, visibleIDs)
-	s.store.PopulateHasChildren(children)
+	if visibleIDs != nil {
+		// Visibility-aware has_children: only count visible grandchildren
+		for i := range children {
+			grandchildren, _ := s.store.GetChildItems(children[i].ID)
+			children[i].HasChildren = false
+			for _, gc := range grandchildren {
+				if isCollectionVisible(gc.CollectionID, visibleIDs) {
+					children[i].HasChildren = true
+					break
+				}
+			}
+		}
+	} else {
+		s.store.PopulateHasChildren(children)
+	}
 	writeJSON(w, http.StatusOK, children)
 }
 
