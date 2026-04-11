@@ -345,15 +345,19 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	return "", nil
 }
 
-// UserHasGrantsInWorkspace checks if a user has any collection or item grants
-// in a workspace (even though they are not a member). Used to detect guests.
+// UserHasGrantsInWorkspace checks if a user has any active collection or item
+// grants in a workspace (even though they are not a member). Used to detect guests.
+// Item grants on soft-deleted items are excluded so archived items don't create
+// phantom guest access to a workspace shell with no visible content.
 func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM (
 			SELECT 1 FROM collection_grants WHERE workspace_id = ? AND user_id = ?
 			UNION ALL
-			SELECT 1 FROM item_grants WHERE workspace_id = ? AND user_id = ?
+			SELECT 1 FROM item_grants ig
+			JOIN items i ON i.id = ig.item_id
+			WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
 			LIMIT 1
 		) AS grant_check
 	`), workspaceID, userID, workspaceID, userID).Scan(&count)

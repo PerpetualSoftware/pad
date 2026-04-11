@@ -38,20 +38,16 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 	params.CollectionIDs = visibleIDs
 
-	// For guests, apply item-level filtering so item grants don't leak
-	// entire collections. GuestVisibleResources returns both full-collection
-	// IDs and individual item IDs; we set CollectionIDs to only the
-	// full-collection grants and add ItemIDs for specific item grants.
-	if workspaceRole(r) == "guest" {
-		if user := currentUser(r); user != nil {
-			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
-			if grantErr != nil {
-				writeInternalError(w, grantErr)
-				return
-			}
-			params.CollectionIDs = fullCollIDs
-			params.ItemIDs = grantedItemIDs
-		}
+	// Apply item-level filtering for users with item grants (guests or
+	// restricted members) so item grants don't leak entire collections.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		params.CollectionIDs = fullCollIDs
+		params.ItemIDs = grantedItemIDs
 	}
 
 	result, err := s.store.ListItems(workspaceID, params)
@@ -99,26 +95,34 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
 
-	// For guests, if this collection's visibility comes from item-level grants
-	// (not a full collection grant), restrict to only the granted items.
-	if workspaceRole(r) == "guest" {
-		if user := currentUser(r); user != nil {
-			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
-			if grantErr != nil {
-				writeInternalError(w, grantErr)
-				return
+	// For users with item-level grants, if this collection's visibility comes
+	// from item-level grants (not a full collection grant), restrict to only
+	// the granted items. Applies to both guests and restricted members.
+	lcFullCollIDs, lcGrantedItemIDs, lcGrantErr := s.guestResourceFilter(r, workspaceID)
+	if lcGrantErr != nil {
+		writeInternalError(w, lcGrantErr)
+		return
+	}
+	if len(lcGrantedItemIDs) > 0 {
+		hasFullCollectionGrant := false
+		for _, id := range lcFullCollIDs {
+			if id == coll.ID {
+				hasFullCollectionGrant = true
+				break
 			}
-			hasFullCollectionGrant := false
-			for _, id := range fullCollIDs {
+		}
+		// Also check member_collection_access for restricted members
+		if !hasFullCollectionGrant && workspaceRole(r) != "guest" {
+			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
+			for _, id := range memberColls {
 				if id == coll.ID {
 					hasFullCollectionGrant = true
 					break
 				}
 			}
-			if !hasFullCollectionGrant {
-				// Only show the specific items the guest has grants on
-				params.ItemIDs = grantedItemIDs
-			}
+		}
+		if !hasFullCollectionGrant {
+			params.ItemIDs = lcGrantedItemIDs
 		}
 	}
 

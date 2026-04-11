@@ -675,21 +675,32 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 		return false
 	}
 
-	// For guests, collection visibility may come from item-level grants.
+	// For users with item-level grants (guests or restricted members),
+	// collection visibility may come from item-level grants.
 	// We need to verify the user actually has a grant on this specific item
 	// (not just another item in the same collection).
-	if workspaceRole(r) == "guest" {
-		user := currentUser(r)
-		if user != nil {
-			fullCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
-			if err != nil {
-				writeInternalError(w, err)
-				return false
-			}
+	user := currentUser(r)
+	if user != nil {
+		_, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return false
+		}
+		if len(grantedItemIDs) > 0 {
+			fullCollIDs, _, _ := s.store.GuestVisibleResources(workspaceID, user.ID)
 			// If the collection has a full collection grant, the item is visible
 			for _, id := range fullCollIDs {
 				if id == item.CollectionID {
 					return true
+				}
+			}
+			// Check if this collection came from member_collection_access (not grants)
+			if workspaceRole(r) != "guest" {
+				memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+				for _, id := range memberColls {
+					if id == item.CollectionID {
+						return true
+					}
 				}
 			}
 			// Otherwise, the specific item must be in the granted items list
@@ -706,10 +717,11 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 	return true
 }
 
-// isItemVisibleToGuest checks if an item is visible to a guest, considering both
-// full-collection grants and individual item grants. For non-guests, always returns true.
+// isItemVisibleToGuest checks if an item is visible given grant-based access,
+// considering both full-collection grants and individual item grants.
+// When fullCollIDs and grantedItemIDs are both nil, always returns true (no grant filtering).
 func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item *models.Item, fullCollIDs, grantedItemIDs []string) bool {
-	if workspaceRole(r) != "guest" {
+	if fullCollIDs == nil && grantedItemIDs == nil {
 		return true
 	}
 	// Full collection grant covers all items in the collection
@@ -728,12 +740,9 @@ func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item 
 }
 
 // guestResourceFilter returns the full-collection IDs and granted item IDs for
-// the current user if they are a guest. For non-guests both slices are nil.
-// This is a convenience method for handlers that need to post-filter items.
+// the current user if they have item-level grants. For users with no item grants,
+// both slices are nil. Works for both guests and restricted members.
 func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
-	if workspaceRole(r) != "guest" {
-		return nil, nil, nil
-	}
 	user := currentUser(r)
 	if user == nil {
 		return nil, nil, nil

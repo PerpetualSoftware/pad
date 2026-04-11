@@ -156,10 +156,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		dashFullCollSet[id] = true
 	}
 
-	// For guests, use item-level filtering in ListItems queries
+	// For users with item-level grants, use item-level filtering in ListItems queries
 	dashCollIDs := visibleIDs
 	var dashItemIDs []string
-	if workspaceRole(r) == "guest" {
+	if len(dashGrantedItemIDs) > 0 {
 		dashCollIDs = dashFullCollIDs
 		dashItemIDs = dashGrantedItemIDs
 	}

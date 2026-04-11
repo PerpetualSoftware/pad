@@ -8,6 +8,11 @@ import (
 )
 
 func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Request) {
+	// Guests should not see workspace-level activity, which includes
+	// audit events (member invites, role changes, etc.) with operational metadata.
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

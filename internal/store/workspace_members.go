@@ -184,16 +184,53 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 		ids[id] = true
 	}
 
-	// Also include collections from direct grants (collection grants +
-	// collections containing items with item grants). This ensures that
-	// members with "specific" access who are granted additional collections
-	// or items can see them even if they aren't in member_collection_access.
-	grantIDs, err := s.GuestVisibleCollectionIDs(workspaceID, userID)
+	// Also include collections from direct collection grants. This ensures
+	// that members with "specific" access who are granted additional
+	// collections can see them even if they aren't in member_collection_access.
+	// Note: we only merge full collection grants here, NOT collections derived
+	// from item grants. Item grants should not promote to collection-wide
+	// visibility for members — the item-level filtering in handlers handles that.
+	collGrantRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT collection_id FROM collection_grants
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("get grant-based collections: %w", err)
+		return nil, fmt.Errorf("get member collection grants: %w", err)
 	}
-	for _, id := range grantIDs {
+	defer collGrantRows.Close()
+	for collGrantRows.Next() {
+		var id string
+		if err := collGrantRows.Scan(&id); err != nil {
+			return nil, err
+		}
 		ids[id] = true
+	}
+	if err := collGrantRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Also include collections that contain items with item grants, so the
+	// collection appears in navigation. The actual item-level filtering is
+	// handled by the request handlers for members who also have item grants.
+	itemCollRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT i.collection_id
+		FROM item_grants ig
+		JOIN items i ON i.id = ig.item_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get member item grant collections: %w", err)
+	}
+	defer itemCollRows.Close()
+	for itemCollRows.Next() {
+		var id string
+		if err := itemCollRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	if err := itemCollRows.Err(); err != nil {
+		return nil, err
 	}
 
 	result := make([]string, 0, len(ids))
