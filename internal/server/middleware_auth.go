@@ -314,7 +314,14 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 		if member == nil {
-			writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+			// Not a member — check for guest access via grants
+			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
+			if grantErr != nil || !hasGrants {
+				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+				return
+			}
+			ctx = context.WithValue(ctx, ctxWorkspaceRole, "guest")
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
@@ -360,6 +367,8 @@ func roleLevel(role string) int {
 		return 2
 	case "viewer":
 		return 1
+	case "guest":
+		return 0 // Guests have grant-based access only, no role-based permissions
 	default:
 		return 0
 	}

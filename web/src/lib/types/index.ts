@@ -70,6 +70,7 @@ export interface Workspace {
 	slug: string;
 	owner_id?: string;
 	owner_username?: string;
+	is_guest?: boolean;
 	description: string;
 	settings: string;
 	sort_order: number;

@@ -104,7 +104,8 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 		return nil, err
 	}
 	if member == nil {
-		return []string{}, nil // Not a member — no access
+		// Not a member — check for guest access via grants
+		return s.GuestVisibleCollectionIDs(workspaceID, userID)
 	}
 
 	// "all" access — return nil to indicate no filtering needed
@@ -274,7 +275,52 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		result = append(result, ws)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Also include workspaces where the user has grants but is NOT a member (guest access)
+	memberIDs := make(map[string]bool)
+	for _, ws := range result {
+		memberIDs[ws.ID] = true
+	}
+
+	guestRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE w.deleted_at IS NULL AND (
+			EXISTS (SELECT 1 FROM collection_grants cg WHERE cg.workspace_id = w.id AND cg.user_id = ?)
+			OR EXISTS (SELECT 1 FROM item_grants ig WHERE ig.workspace_id = w.id AND ig.user_id = ?)
+		)
+	`), userID, userID)
+	if err != nil {
+		return result, nil // Non-fatal: return member workspaces even if guest query fails
+	}
+	defer guestRows.Close()
+
+	for guestRows.Next() {
+		var ws models.Workspace
+		var createdAt, updatedAt string
+		var deletedAt *string
+		if err := guestRows.Scan(
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&createdAt, &updatedAt, &deletedAt,
+		); err != nil {
+			continue
+		}
+		// Skip workspaces the user is already a member of
+		if memberIDs[ws.ID] {
+			continue
+		}
+		ws.CreatedAt = parseTime(createdAt)
+		ws.UpdatedAt = parseTime(updatedAt)
+		ws.DeletedAt = parseTimePtr(deletedAt)
+		ws.IsGuest = true
+		result = append(result, ws)
+	}
+
+	return result, nil
 }
 
 // UpdateWorkspaceSortOrder sets the sort_order for a workspace in a user's membership.

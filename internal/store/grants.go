@@ -344,3 +344,70 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	// 5. Deny
 	return "", nil
 }
+
+// UserHasGrantsInWorkspace checks if a user has any collection or item grants
+// in a workspace (even though they are not a member). Used to detect guests.
+func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM collection_grants WHERE workspace_id = ? AND user_id = ?
+			UNION ALL
+			SELECT 1 FROM item_grants WHERE workspace_id = ? AND user_id = ?
+			LIMIT 1
+		)
+	`), workspaceID, userID, workspaceID, userID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check user grants: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GuestVisibleCollectionIDs returns the collection IDs a guest (non-member with
+// grants) can see. Includes collections with direct collection_grants and
+// collections that contain items the user has item_grants on.
+func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
+	ids := make(map[string]bool)
+
+	// Collections with direct grants
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT collection_id FROM collection_grants
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("guest collection grants: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+
+	// Collections containing items with direct grants
+	itemRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT i.collection_id
+		FROM item_grants ig
+		JOIN items i ON i.id = ig.item_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("guest item grant collections: %w", err)
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var id string
+		if err := itemRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	return result, nil
+}
