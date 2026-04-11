@@ -105,21 +105,51 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// For guests with item-level grants, build a set of granted item IDs
-	// so we can filter events at item granularity, not just collection.
+	// For users with item-level grants (guests or restricted members), build
+	// a set of granted item IDs for event filtering at item granularity.
 	var sseGrantedItemSet map[string]bool // nil = no item-level filtering
 	var sseFullCollSet map[string]bool    // collection slugs with full grants
+	isGuestSSE := false
 	if user := currentUser(r); user != nil {
-		isMember, _ := s.store.IsWorkspaceMember(ws.ID, user.ID)
-		if !isMember {
+		member, _ := s.store.GetWorkspaceMember(ws.ID, user.ID)
+		if member == nil {
+			isGuestSSE = true
+		}
+
+		// Determine if this user needs item-level filtering:
+		// - guests always do
+		// - restricted members only if they have item grants
+		needsItemFilter := member == nil // guest
+		if member != nil && member.CollectionAccess == "specific" {
+			_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
+			needsItemFilter = len(itemGrants) > 0
+		}
+
+		if needsItemFilter {
 			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
 			if grantErr == nil && len(grantedItemIDs) > 0 {
 				sseGrantedItemSet = make(map[string]bool, len(grantedItemIDs))
 				for _, id := range grantedItemIDs {
 					sseGrantedItemSet[id] = true
 				}
-				sseFullCollSet = make(map[string]bool, len(fullCollIDs))
+				// Build the full-access collection slug set. For restricted members,
+				// include their member_collection_access + system collections too.
+				fullCollIDSet := make(map[string]bool)
 				for _, id := range fullCollIDs {
+					fullCollIDSet[id] = true
+				}
+				if member != nil {
+					memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+					sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
+					for _, id := range memberColls {
+						fullCollIDSet[id] = true
+					}
+					for _, id := range sysColls {
+						fullCollIDSet[id] = true
+					}
+				}
+				sseFullCollSet = make(map[string]bool, len(fullCollIDSet))
+				for id := range fullCollIDSet {
 					coll, _ := s.store.GetCollection(id)
 					if coll != nil {
 						sseFullCollSet[coll.Slug] = true
@@ -127,13 +157,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	}
-
-	// isGuestSSE is true when the connected user is a guest (non-member with grants).
-	isGuestSSE := false
-	if user := currentUser(r); user != nil {
-		isMem, _ := s.store.IsWorkspaceMember(ws.ID, user.ID)
-		isGuestSSE = !isMem
 	}
 
 	// sseEventVisible checks if an event should be sent to this client.

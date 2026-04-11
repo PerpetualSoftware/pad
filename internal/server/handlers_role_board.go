@@ -22,19 +22,20 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify all items being reordered are in visible collections
-	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-	if visErr != nil {
-		writeInternalError(w, visErr)
-		return
-	}
-	if visibleIDs != nil {
-		for _, u := range updates {
-			item, err := s.store.GetItem(u.ItemID)
-			if err != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
-				writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
-				return
-			}
+	// Verify all items being reordered are visible and editable.
+	// Uses grant-aware edit check so restricted members/guests with
+	// item-only grants can't reorder items they don't have edit access to.
+	for _, u := range updates {
+		item, err := s.store.GetItem(u.ItemID)
+		if err != nil || item == nil {
+			writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
+			return
+		}
+		if !s.requireItemVisible(w, r, workspaceID, item) {
+			return
+		}
+		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+			return
 		}
 	}
 

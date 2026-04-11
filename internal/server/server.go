@@ -741,17 +741,20 @@ func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item 
 // - unauthenticated users
 // - admin users
 // - members with "all" collection access (grants should merge, not replace)
-// Returns grant resources for guests and members with "specific" collection access.
+// For guests: returns direct collection grants as fullCollIDs + item grants.
+// For restricted members: returns member_collection_access + system collections
+// + direct collection grants as fullCollIDs, plus item grants as grantedItemIDs.
+// This ensures item grants are additive to the member's existing access.
 func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
 	if user == nil || user.Role == "admin" {
 		return nil, nil, nil
 	}
 
-	// For workspace members with "all" collection access, item grants should
-	// not restrict their existing full visibility. Only guests and members
-	// with "specific" access need item-level filtering.
 	role := workspaceRole(r)
+
+	// For workspace members with "all" collection access, item grants should
+	// not restrict their existing full visibility.
 	if role != "guest" {
 		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
 		if err != nil {
@@ -762,7 +765,52 @@ func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullC
 		}
 	}
 
-	return s.store.GuestVisibleResources(workspaceID, user.ID)
+	// Get grant-based resources
+	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// For guests, grant resources are the only source of access
+	if role == "guest" {
+		return grantCollIDs, grantedItemIDs, nil
+	}
+
+	// For restricted members ("specific" access), merge their normal
+	// member_collection_access + system collections into fullCollIDs so
+	// item grants are additive, not a replacement. This is critical:
+	// without this merge, a member with access to collection A plus one
+	// item grant in collection B would lose collection A in cross-collection
+	// queries that use these IDs.
+	fullCollSet := make(map[string]bool)
+	for _, id := range grantCollIDs {
+		fullCollSet[id] = true
+	}
+
+	// Add member_collection_access collections
+	memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range memberColls {
+		fullCollSet[id] = true
+	}
+
+	// Add system collections (always visible to members)
+	sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range sysColls {
+		fullCollSet[id] = true
+	}
+
+	fullCollIDs = make([]string, 0, len(fullCollSet))
+	for id := range fullCollSet {
+		fullCollIDs = append(fullCollIDs, id)
+	}
+
+	return fullCollIDs, grantedItemIDs, nil
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.

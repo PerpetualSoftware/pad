@@ -321,6 +321,29 @@ func (s *Store) GetMemberCollectionAccess(workspaceID, userID string) ([]string,
 	return ids, rows.Err()
 }
 
+// ListSystemCollectionIDs returns the IDs of system collections in a workspace.
+// System collections are always visible to members regardless of collection_access mode.
+func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id FROM collections
+		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
+	`), workspaceID, s.dialect.BoolToInt(true))
+	if err != nil {
+		return nil, fmt.Errorf("list system collections: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetUserWorkspaces returns all workspaces a user has access to,
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
@@ -370,8 +393,17 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.deleted_at IS NULL AND (
-			EXISTS (SELECT 1 FROM collection_grants cg WHERE cg.workspace_id = w.id AND cg.user_id = ?)
-			OR EXISTS (SELECT 1 FROM item_grants ig WHERE ig.workspace_id = w.id AND ig.user_id = ?)
+			EXISTS (
+				SELECT 1 FROM collection_grants cg
+				JOIN collections c ON c.id = cg.collection_id
+				WHERE cg.workspace_id = w.id AND cg.user_id = ? AND c.deleted_at IS NULL
+			)
+			OR EXISTS (
+				SELECT 1 FROM item_grants ig
+				JOIN items i ON i.id = ig.item_id
+				JOIN collections c ON c.id = i.collection_id
+				WHERE ig.workspace_id = w.id AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
+			)
 		)
 	`), userID, userID)
 	if err != nil {
