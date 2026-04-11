@@ -573,15 +573,18 @@ export const api = {
 	// ── Public Share (no auth) ──────────────────────────────────────────────
 
 	share: {
-		get: (token: string) =>
-			fetch(`${BASE}/s/${token}`, { credentials: 'same-origin' }).then(async (resp) => {
+		get: (token: string, password?: string) => {
+			const headers: Record<string, string> = {};
+			if (password) headers['X-Share-Password'] = password;
+			return fetch(`${BASE}/s/${token}`, { credentials: 'same-origin', headers }).then(async (resp) => {
 				if (!resp.ok) {
 					const body = await resp.json().catch(() => null);
 					if (body?.error) throw new PadApiError(body.error);
 					throw new Error(`API error: ${resp.status}`);
 				}
 				return resp.json();
-			}),
+			});
+		},
 	},
 
 	// ── Auth ──────────────────────────────────────────────────────────────────

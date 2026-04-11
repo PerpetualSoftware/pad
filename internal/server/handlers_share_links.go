@@ -39,7 +39,16 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 		RequireAuth     bool    `json:"require_auth,omitempty"`
 		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
 	}
-	_ = decodeJSON(r, &input) // Optional body — defaults are fine
+	if err := decodeJSON(r, &input); err != nil && r.ContentLength > 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+		return
+	}
+
+	// Force require_auth when restrict_to_email is set — otherwise the
+	// email restriction would be silently ignored.
+	if input.RestrictToEmail != "" {
+		input.RequireAuth = true
+	}
 
 	opts := &store.ShareLinkOptions{
 		Password:        input.Password,
@@ -90,7 +99,15 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 		RequireAuth     bool    `json:"require_auth,omitempty"`
 		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
 	}
-	_ = decodeJSON(r, &collInput)
+	if err := decodeJSON(r, &collInput); err != nil && r.ContentLength > 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+		return
+	}
+
+	// Force require_auth when restrict_to_email is set
+	if collInput.RestrictToEmail != "" {
+		collInput.RequireAuth = true
+	}
 
 	collOpts := &store.ShareLinkOptions{
 		Password:        collInput.Password,
@@ -222,9 +239,12 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Password check
+	// Password check — prefer X-Share-Password header, fall back to query param
 	if link.HasPassword {
-		password := r.URL.Query().Get("password")
+		password := r.Header.Get("X-Share-Password")
+		if password == "" {
+			password = r.URL.Query().Get("password")
+		}
 		if password == "" {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"require_password": true,
@@ -255,7 +275,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Record the view
+	// Atomically record the view and enforce max_views
 	fingerprint := r.Header.Get("X-Forwarded-For")
 	if fingerprint == "" {
 		fingerprint = r.RemoteAddr
@@ -264,9 +284,19 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	if user := currentUser(r); user != nil {
 		userID = user.ID
 	}
-	_ = s.store.RecordShareLinkView(link.ID, fingerprint, userID)
+	allowed, err := s.store.RecordShareLinkView(link.ID, fingerprint, userID, link.MaxViews)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !allowed {
+		// max_views reached — treat as expired
+		writeError(w, http.StatusNotFound, "not_found", "Not found")
+		return
+	}
 
-	// Resolve and return the shared content
+	// Resolve and return the shared content using public DTOs
+	// to avoid leaking internal IDs, creator info, and other sensitive fields.
 	switch link.TargetType {
 	case "item":
 		item, err := s.store.GetItem(link.TargetID)
@@ -275,9 +305,16 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"type":       "item",
-			"item":       item,
-			"permission": "view", // D8: anonymous always read-only
+			"type": "item",
+			"item": map[string]interface{}{
+				"title":           item.Title,
+				"content":         item.Content,
+				"fields":          item.Fields,
+				"ref":             item.Ref,
+				"collection_name": item.CollectionName,
+				"collection_icon": item.CollectionIcon,
+			},
+			"permission": "view",
 			"share_link": map[string]interface{}{
 				"id":          link.ID,
 				"target_type": link.TargetType,
@@ -290,18 +327,31 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
-		// Get items in the collection
 		items, err := s.store.ListItems(link.WorkspaceID, models.ItemListParams{
 			CollectionSlug: coll.Slug,
 		})
 		if err != nil {
 			items = []models.Item{}
 		}
+		// Build public item list with only safe fields
+		publicItems := make([]map[string]interface{}, 0, len(items))
+		for _, it := range items {
+			publicItem := map[string]interface{}{
+				"title":  it.Title,
+				"ref":    it.Ref,
+				"fields": it.Fields,
+			}
+			publicItems = append(publicItems, publicItem)
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"type":       "collection",
-			"collection": coll,
-			"items":      items,
-			"permission": "view", // D8: anonymous always read-only
+			"type": "collection",
+			"collection": map[string]interface{}{
+				"name":        coll.Name,
+				"icon":        coll.Icon,
+				"description": coll.Description,
+			},
+			"items":      publicItems,
+			"permission": "view",
 			"share_link": map[string]interface{}{
 				"id":          link.ID,
 				"target_type": link.TargetType,

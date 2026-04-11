@@ -210,16 +210,34 @@ func (s *Store) DeleteShareLink(id, workspaceID string) error {
 	return nil
 }
 
-// RecordShareLinkView increments the view counter and records a view entry.
-func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string) error {
+// RecordShareLinkView atomically increments the view counter (respecting max_views)
+// and records a view entry. Returns true if the view was allowed, false if the
+// max_views limit has been reached.
+func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string, maxViews *int) (bool, error) {
 	ts := now()
 
-	// Increment view_count and update last_viewed_at
-	_, err := s.db.Exec(s.q(`
-		UPDATE share_links SET view_count = view_count + 1, last_viewed_at = ? WHERE id = ?
-	`), ts, linkID)
+	// Atomically increment view_count, respecting max_views if set.
+	// The WHERE condition ensures we never exceed the limit.
+	var result sql.Result
+	var err error
+	if maxViews != nil {
+		result, err = s.db.Exec(s.q(`
+			UPDATE share_links SET view_count = view_count + 1, last_viewed_at = ?
+			WHERE id = ? AND view_count < ?
+		`), ts, linkID, *maxViews)
+	} else {
+		result, err = s.db.Exec(s.q(`
+			UPDATE share_links SET view_count = view_count + 1, last_viewed_at = ?
+			WHERE id = ?
+		`), ts, linkID)
+	}
 	if err != nil {
-		return fmt.Errorf("increment view count: %w", err)
+		return false, fmt.Errorf("increment view count: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		// max_views limit reached — no row was updated
+		return false, nil
 	}
 
 	// Check unique viewers (by fingerprint or user ID)
@@ -248,10 +266,10 @@ func (s *Store) RecordShareLinkView(linkID, fingerprint, userID string) error {
 		VALUES (?, ?, ?, ?, ?)
 	`), viewID, linkID, fingerprint, viewerUserID, ts)
 	if err != nil {
-		return fmt.Errorf("record share link view: %w", err)
+		return true, fmt.Errorf("record share link view: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // ValidateShareLinkPassword checks a password against the share link's stored hash.
@@ -292,7 +310,8 @@ func (s *Store) ListShareLinkViews(linkID string, limit int) ([]models.ShareLink
 	return result, rows.Err()
 }
 
-// ValidateShareLink checks if a share link is valid (not expired, not over max views).
+// ValidateShareLink checks if a share link is valid (not expired).
+// Max views enforcement is handled atomically by RecordShareLinkView.
 // Returns nil error if valid, or an error describing why it's invalid.
 func (s *Store) ValidateShareLink(link *models.ShareLink) error {
 	if link == nil {
@@ -302,11 +321,6 @@ func (s *Store) ValidateShareLink(link *models.ShareLink) error {
 	// Check expiry
 	if link.ExpiresAt != nil && time.Now().After(*link.ExpiresAt) {
 		return fmt.Errorf("share link has expired")
-	}
-
-	// Check max views
-	if link.MaxViews != nil && link.ViewCount >= *link.MaxViews {
-		return fmt.Errorf("share link has reached maximum views")
 	}
 
 	return nil

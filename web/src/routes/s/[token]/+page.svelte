@@ -3,12 +3,17 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 
 	let token = $derived(page.params.token ?? '');
 
 	let loading = $state(true);
 	let error = $state('');
 	let requireAuth = $state(false);
+	let requirePassword = $state(false);
+	let passwordInput = $state('');
+	let passwordError = $state('');
+	let passwordLoading = $state(false);
 
 	let shareType = $state<'item' | 'collection' | ''>('');
 	let itemData = $state<{
@@ -29,7 +34,8 @@
 	let renderedContent = $derived.by(() => {
 		if (!itemData?.content) return '';
 		try {
-			return marked(itemData.content) as string;
+			const raw = marked(itemData.content) as string;
+			return typeof window !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
 		} catch {
 			return itemData.content;
 		}
@@ -51,6 +57,12 @@
 				return;
 			}
 
+			if (data.require_password) {
+				requirePassword = true;
+				loading = false;
+				return;
+			}
+
 			if (data.type === 'item') {
 				shareType = 'item';
 				let fields: Record<string, any> = {};
@@ -67,15 +79,29 @@
 					content: data.item?.content ?? '',
 					collection_name: data.item?.collection_name,
 					collection_icon: data.item?.collection_icon,
-					item_ref: data.item?.item_ref
+					item_ref: data.item?.ref ?? data.item?.item_ref
 				};
 			} else if (data.type === 'collection') {
 				shareType = 'collection';
+				const rawItems = (data.items ?? []).map((item: any) => {
+					let status = '';
+					if (item.fields) {
+						try {
+							const fields = typeof item.fields === 'string' ? JSON.parse(item.fields) : item.fields;
+							status = fields.status ?? '';
+						} catch { /* ignore */ }
+					}
+					return {
+						title: item.title ?? 'Untitled',
+						item_ref: item.ref ?? item.item_ref ?? '',
+						status
+					};
+				});
 				collectionData = {
 					name: data.collection?.name ?? 'Collection',
 					icon: data.collection?.icon,
 					description: data.collection?.description,
-					items: data.collection?.items ?? []
+					items: rawItems
 				};
 			} else {
 				error = 'Unknown share type.';
@@ -99,6 +125,67 @@
 
 	function formatFieldLabel(key: string): string {
 		return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+	}
+
+	async function submitPassword() {
+		passwordError = '';
+		passwordLoading = true;
+		try {
+			const resp = await fetch(`/api/v1/s/${token}`, {
+				credentials: 'same-origin',
+				headers: { 'X-Share-Password': passwordInput }
+			});
+			const data = await resp.json();
+			if (!resp.ok) {
+				passwordError = data?.error?.message ?? 'Incorrect password';
+				return;
+			}
+			if (data.require_password) {
+				passwordError = 'Incorrect password';
+				return;
+			}
+			// Re-process the data exactly like onMount does
+			requirePassword = false;
+			if (data.type === 'item') {
+				shareType = 'item';
+				let fields: Record<string, any> = {};
+				if (data.item?.fields) {
+					try {
+						fields = typeof data.item.fields === 'string' ? JSON.parse(data.item.fields) : data.item.fields;
+					} catch { fields = {}; }
+				}
+				itemData = {
+					title: data.item?.title ?? 'Untitled',
+					fields,
+					content: data.item?.content ?? '',
+					collection_name: data.item?.collection_name,
+					collection_icon: data.item?.collection_icon,
+					item_ref: data.item?.ref ?? data.item?.item_ref
+				};
+			} else if (data.type === 'collection') {
+				shareType = 'collection';
+				const rawItems = (data.items ?? []).map((item: any) => {
+					let status = '';
+					if (item.fields) {
+						try {
+							const fields = typeof item.fields === 'string' ? JSON.parse(item.fields) : item.fields;
+							status = fields.status ?? '';
+						} catch { /* ignore */ }
+					}
+					return { title: item.title ?? 'Untitled', item_ref: item.ref ?? item.item_ref ?? '', status };
+				});
+				collectionData = {
+					name: data.collection?.name ?? 'Collection',
+					icon: data.collection?.icon,
+					description: data.collection?.description,
+					items: rawItems
+				};
+			}
+		} catch (e: any) {
+			passwordError = e.message ?? 'Failed to verify password';
+		} finally {
+			passwordLoading = false;
+		}
 	}
 </script>
 
@@ -130,6 +217,32 @@
 				<h1>Sign in to view</h1>
 				<p>This shared content requires authentication.</p>
 				<a href="/login" class="auth-link">Sign in</a>
+			</div>
+		{:else if requirePassword}
+			<div class="share-auth">
+				<div class="auth-icon">
+					<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+						<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+						<path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+					</svg>
+				</div>
+				<h1>Password required</h1>
+				<p>Enter the password to view this shared content.</p>
+				<form class="password-form" onsubmit={(e) => { e.preventDefault(); submitPassword(); }}>
+					<input
+						type="password"
+						bind:value={passwordInput}
+						placeholder="Enter password"
+						class="password-input"
+						disabled={passwordLoading}
+					/>
+					{#if passwordError}
+						<p class="password-error">{passwordError}</p>
+					{/if}
+					<button type="submit" class="auth-link" disabled={passwordLoading || !passwordInput}>
+						{passwordLoading ? 'Verifying...' : 'View content'}
+					</button>
+				</form>
 			</div>
 		{:else if error}
 			<div class="share-error">
@@ -568,6 +681,37 @@
 
 	.share-footer a:hover {
 		color: var(--accent-blue);
+	}
+
+	.password-form {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-3);
+		width: 100%;
+		max-width: 320px;
+	}
+
+	.password-input {
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		font-size: 0.95em;
+		text-align: center;
+	}
+
+	.password-input:focus {
+		outline: none;
+		border-color: var(--accent-blue);
+	}
+
+	.password-error {
+		color: var(--accent-red, #e53e3e);
+		font-size: 0.85em;
+		margin: 0;
 	}
 
 	@media (max-width: 640px) {
