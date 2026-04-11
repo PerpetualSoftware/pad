@@ -49,6 +49,7 @@ type Collection struct {
 	Prefix      string     `json:"prefix"`
 	SortOrder   int        `json:"sort_order"`
 	IsDefault   bool       `json:"is_default"`
+	IsSystem    bool       `json:"is_system"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
@@ -67,6 +68,7 @@ type CollectionCreate struct {
 	Schema      string `json:"schema,omitempty"`
 	Settings    string `json:"settings,omitempty"`
 	IsDefault   bool   `json:"is_default,omitempty"`
+	IsSystem    bool   `json:"is_system,omitempty"`
 }
 
 // FieldMigration describes a bulk update to apply to existing items when

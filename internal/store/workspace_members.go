@@ -46,11 +46,11 @@ func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.Workspac
 	var createdAt string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT workspace_id, user_id, role, created_at
+		SELECT workspace_id, user_id, role, collection_access, created_at
 		FROM workspace_members
 		WHERE workspace_id = ? AND user_id = ?
 	`), workspaceID, userID).Scan(
-		&m.WorkspaceID, &m.UserID, &m.Role, &createdAt,
+		&m.WorkspaceID, &m.UserID, &m.Role, &m.CollectionAccess, &createdAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -67,7 +67,7 @@ func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.Workspac
 // user name and email from a join.
 func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT wm.workspace_id, wm.user_id, wm.role, wm.created_at,
+		SELECT wm.workspace_id, wm.user_id, wm.role, wm.collection_access, wm.created_at,
 		       u.name, u.email, u.username
 		FROM workspace_members wm
 		JOIN users u ON u.id = wm.user_id
@@ -84,7 +84,7 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 		var m models.WorkspaceMember
 		var createdAt string
 		if err := rows.Scan(
-			&m.WorkspaceID, &m.UserID, &m.Role, &createdAt,
+			&m.WorkspaceID, &m.UserID, &m.Role, &m.CollectionAccess, &createdAt,
 			&m.UserName, &m.UserEmail, &m.UserUsername,
 		); err != nil {
 			return nil, fmt.Errorf("scan workspace member: %w", err)
@@ -93,6 +93,132 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 		result = append(result, m)
 	}
 	return result, rows.Err()
+}
+
+// VisibleCollectionIDs returns the set of collection IDs a member can see.
+// Returns nil if the member has "all" access (meaning no filtering needed).
+// System collections (conventions, playbooks) are always included for members.
+func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
+	member, err := s.GetWorkspaceMember(workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if member == nil {
+		return []string{}, nil // Not a member — no access
+	}
+
+	// "all" access — return nil to indicate no filtering needed
+	if member.CollectionAccess == "all" || member.CollectionAccess == "" {
+		return nil, nil
+	}
+
+	// "specific" access — get the granted collection IDs + system collections
+	rows, err := s.db.Query(s.q(`
+		SELECT collection_id FROM member_collection_access
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get member collection access: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Always include system collections for members
+	sysRows, err := s.db.Query(s.q(`
+		SELECT id FROM collections
+		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
+	`), workspaceID, s.dialect.BoolToInt(true))
+	if err != nil {
+		return nil, fmt.Errorf("get system collections: %w", err)
+	}
+	defer sysRows.Close()
+
+	for sysRows.Next() {
+		var id string
+		if err := sysRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// SetMemberCollectionAccess updates a member's collection_access mode and
+// replaces their specific collection grants.
+func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, collectionIDs []string) error {
+	ts := now()
+
+	// Update the mode on workspace_members
+	_, err := s.db.Exec(s.q(`
+		UPDATE workspace_members SET collection_access = ?
+		WHERE workspace_id = ? AND user_id = ?
+	`), mode, workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("update collection_access: %w", err)
+	}
+
+	// Clear existing grants
+	_, err = s.db.Exec(s.q(`
+		DELETE FROM member_collection_access
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("clear collection access: %w", err)
+	}
+
+	// Insert new grants (only if mode is "specific")
+	if mode == "specific" {
+		for _, collID := range collectionIDs {
+			_, err := s.db.Exec(s.q(`
+				INSERT INTO member_collection_access (workspace_id, user_id, collection_id, created_at)
+				VALUES (?, ?, ?, ?)
+			`), workspaceID, userID, collID, ts)
+			if err != nil {
+				return fmt.Errorf("insert collection access: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetMemberCollectionAccess returns the collection IDs a member has been
+// explicitly granted access to (only meaningful when collection_access = "specific").
+func (s *Store) GetMemberCollectionAccess(workspaceID, userID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT collection_id FROM member_collection_access
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get member collection access: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // GetUserWorkspaces returns all workspaces a user has access to,

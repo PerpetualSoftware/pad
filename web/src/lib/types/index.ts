@@ -166,6 +166,7 @@ export interface Collection {
 	settings: string;
 	sort_order: number;
 	is_default: boolean;
+	is_system: boolean;
 	created_at: string;
 	updated_at: string;
 	item_count?: number;

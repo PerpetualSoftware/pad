@@ -59,10 +59,11 @@ type WorkspaceInvitation struct {
 
 // WorkspaceMember represents a user's membership in a workspace.
 type WorkspaceMember struct {
-	WorkspaceID string    `json:"workspace_id"`
-	UserID      string    `json:"user_id"`
-	Role        string    `json:"role"` // "owner", "editor", or "viewer"
-	CreatedAt   time.Time `json:"created_at"`
+	WorkspaceID      string    `json:"workspace_id"`
+	UserID           string    `json:"user_id"`
+	Role             string    `json:"role"`              // "owner", "editor", or "viewer"
+	CollectionAccess string    `json:"collection_access"` // "all" or "specific"
+	CreatedAt        time.Time `json:"created_at"`
 
 	// Populated by joins (not stored)
 	UserName     string `json:"user_name,omitempty"`

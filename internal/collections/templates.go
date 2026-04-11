@@ -104,6 +104,7 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 			ListSortBy:  "trigger",
 			ListGroupBy: "trigger",
 		},
+		IsSystem: true,
 	}
 }
 
@@ -146,6 +147,7 @@ func playbooksCollection(sortOrder int) DefaultCollection {
 			ListSortBy:  "updated_at",
 			ListGroupBy: "trigger",
 		},
+		IsSystem: true,
 	}
 }
 

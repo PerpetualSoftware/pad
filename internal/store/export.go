@@ -31,7 +31,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 
 	// Collections
 	rows, err := s.db.Query(s.q(`
-		SELECT id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, created_at, updated_at
+		SELECT id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at
 		FROM collections WHERE workspace_id = ? AND deleted_at IS NULL
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
@@ -40,11 +40,12 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var c models.CollectionExport
-		var isDefault bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var isDefault, isSystem bool
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
+		c.IsSystem = isSystem
 		export.Collections = append(export.Collections, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -187,9 +188,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		collMap[c.ID] = newCollID
 
 		_, err := tx.Exec(s.q(`
-			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault),
+			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
 			c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)

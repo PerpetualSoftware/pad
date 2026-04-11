@@ -46,9 +46,9 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	}
 
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, s.dialect.BoolToInt(input.IsDefault), ts, ts)
+		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
 	}
@@ -63,12 +63,12 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	var isDefault bool
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, created_at, updated_at, deleted_at
+		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
 		FROM collections
 		WHERE id = ? AND deleted_at IS NULL
 	`), id).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &c.Settings, &c.SortOrder, &isDefault,
+		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
 		&createdAt, &updatedAt, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -106,7 +106,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
-		       c.schema, c.settings, c.sort_order, c.is_default, c.created_at, c.updated_at,
+		       c.schema, c.settings, c.sort_order, c.is_default, c.is_system, c.created_at, c.updated_at,
 		       COUNT(i.id) as item_count,
 		       COUNT(CASE WHEN LOWER(COALESCE(%s, '')) NOT IN
 		           (%s)
@@ -129,7 +129,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		var isDefault bool
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-			&c.Schema, &c.Settings, &c.SortOrder, &isDefault,
+			&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
 			&createdAt, &updatedAt, &c.ItemCount, &c.ActiveItemCount,
 		); err != nil {
 			return nil, err
@@ -320,6 +320,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			Schema:      string(schemaJSON),
 			Settings:    string(settingsJSON),
 			IsDefault:   true,
+			IsSystem:    def.IsSystem,
 		})
 		if err != nil {
 			return fmt.Errorf("create default collection %s: %w", def.Slug, err)

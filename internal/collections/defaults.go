@@ -12,6 +12,7 @@ type DefaultCollection struct {
 	Schema      models.CollectionSchema
 	Settings    models.CollectionSettings
 	SortOrder   int
+	IsSystem    bool // System collections (conventions, playbooks) are always visible to members
 }
 
 // Defaults returns the six default collections for a new workspace.

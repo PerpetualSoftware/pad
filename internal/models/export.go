@@ -32,6 +32,7 @@ type CollectionExport struct {
 	Prefix      string `json:"prefix"`
 	SortOrder   int    `json:"sort_order"`
 	IsDefault   bool   `json:"is_default"`
+	IsSystem    bool   `json:"is_system"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 }
