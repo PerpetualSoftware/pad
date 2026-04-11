@@ -75,6 +75,33 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Compute the user's visible collection set for event filtering.
+	// Build a slug-based set since events carry collection slugs, not IDs.
+	var visibleSlugSet map[string]bool // nil = all access (no filtering)
+	visibleIDs, err := s.visibleCollectionIDs(r, ws.ID)
+	if err != nil {
+		slog.Warn("SSE: failed to resolve visible collections, allowing all", "error", err)
+	} else if visibleIDs != nil {
+		visibleSlugSet = make(map[string]bool, len(visibleIDs))
+		for _, id := range visibleIDs {
+			coll, _ := s.store.GetCollection(id)
+			if coll != nil {
+				visibleSlugSet[coll.Slug] = true
+			}
+		}
+	}
+
+	// sseEventVisible checks if an event should be sent to this client.
+	sseEventVisible := func(collection string) bool {
+		if visibleSlugSet == nil {
+			return true // all access
+		}
+		if collection == "" {
+			return true // events without a collection are always sent
+		}
+		return visibleSlugSet[collection]
+	}
+
 	// Send initial connected event
 	writeSSEEvent(w, "connected", 0, map[string]string{
 		"workspace_id": ws.ID,
@@ -100,8 +127,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				slog.Info("SSE replaying missed events",
 					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
 				for _, event := range missed {
-					writeSSEEvent(w, event.Type, event.ID, event)
-					flusher.Flush()
+					if sseEventVisible(event.Collection) {
+						writeSSEEvent(w, event.Type, event.ID, event)
+						flusher.Flush()
+					}
 				}
 			}
 			// If len(missed) == 0: client is caught up, nothing to replay.
@@ -124,8 +153,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Channel closed (unsubscribed)
 				return
 			}
-			writeSSEEvent(w, event.Type, event.ID, event)
-			flusher.Flush()
+			if sseEventVisible(event.Collection) {
+				writeSSEEvent(w, event.Type, event.ID, event)
+				flusher.Flush()
+			}
 
 		case <-keepalive.C:
 			// Send keepalive comment to prevent proxy/LB timeouts
