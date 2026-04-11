@@ -773,6 +773,11 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	ppFullCollIDs, ppGrantedItemIDs, ppGrantErr := s.guestResourceFilter(r, workspaceID)
+	if ppGrantErr != nil {
+		writeInternalError(w, ppGrantErr)
+		return
+	}
 	if visibleIDs != nil {
 		plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
 		if plansColl == nil || !isCollectionVisible(plansColl.ID, visibleIDs) {
@@ -789,6 +794,30 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+
+		// For guests with item-level grants, filter plans themselves
+		if len(ppGrantedItemIDs) > 0 {
+			ppGrantedSet := make(map[string]bool, len(ppGrantedItemIDs))
+			for _, id := range ppGrantedItemIDs {
+				ppGrantedSet[id] = true
+			}
+			ppFullSet := make(map[string]bool, len(ppFullCollIDs))
+			for _, id := range ppFullCollIDs {
+				ppFullSet[id] = true
+			}
+			// Check if plans collection has a full grant
+			plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
+			if plansColl != nil && !ppFullSet[plansColl.ID] {
+				filtered := allProgress[:0]
+				for _, p := range allProgress {
+					if ppGrantedSet[p.ItemID] {
+						filtered = append(filtered, p)
+					}
+				}
+				allProgress = filtered
+			}
+		}
+
 		// Recompute each plan's progress using only visible children
 		for i, p := range allProgress {
 			children, cerr := s.store.GetChildItems(p.ItemID)
@@ -798,6 +827,9 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 			total, done := 0, 0
 			for _, child := range children {
 				if !isCollectionVisible(child.CollectionID, visibleIDs) {
+					continue
+				}
+				if !s.isItemVisibleToGuest(r, workspaceID, &child, ppFullCollIDs, ppGrantedItemIDs) {
 					continue
 				}
 				total++

@@ -84,9 +84,25 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For guests, use item-level filtering
+	rbCollIDs := visibleIDs
+	var rbItemIDs []string
+	if workspaceRole(r) == "guest" {
+		if user := currentUser(r); user != nil {
+			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
+			if grantErr != nil {
+				writeInternalError(w, grantErr)
+				return
+			}
+			rbCollIDs = fullCollIDs
+			rbItemIDs = grantedItemIDs
+		}
+	}
+
 	params := store.RoleBoardParams{
 		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
-		CollectionIDs:  visibleIDs,
+		CollectionIDs:  rbCollIDs,
+		ItemIDs:        rbItemIDs,
 	}
 
 	lanes, err := s.store.GetRoleBoardItems(workspaceID, params)

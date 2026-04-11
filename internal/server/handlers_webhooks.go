@@ -56,7 +56,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListWebhooks returns all webhooks for a workspace.
+// Restricted to owners since webhook URLs may contain secret tokens.
 func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

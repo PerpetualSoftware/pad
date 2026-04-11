@@ -29,7 +29,21 @@ func (s *Server) handleListAgentRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if visibleIDs != nil {
-		visibleItems, _ := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: visibleIDs})
+		// For guests, use item-level filtering
+		arCollIDs := visibleIDs
+		var arItemIDs []string
+		if workspaceRole(r) == "guest" {
+			if user := currentUser(r); user != nil {
+				fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
+				if grantErr != nil {
+					writeInternalError(w, grantErr)
+					return
+				}
+				arCollIDs = fullCollIDs
+				arItemIDs = grantedItemIDs
+			}
+		}
+		visibleItems, _ := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: arCollIDs, ItemIDs: arItemIDs})
 		// Build role → count map from visible items
 		roleCounts := make(map[string]int)
 		for _, item := range visibleItems {

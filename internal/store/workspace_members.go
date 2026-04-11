@@ -184,6 +184,18 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 		ids[id] = true
 	}
 
+	// Also include collections from direct grants (collection grants +
+	// collections containing items with item grants). This ensures that
+	// members with "specific" access who are granted additional collections
+	// or items can see them even if they aren't in member_collection_access.
+	grantIDs, err := s.GuestVisibleCollectionIDs(workspaceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get grant-based collections: %w", err)
+	}
+	for _, id := range grantIDs {
+		ids[id] = true
+	}
+
 	result := make([]string, 0, len(ids))
 	for id := range ids {
 		result = append(result, id)

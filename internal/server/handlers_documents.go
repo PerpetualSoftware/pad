@@ -14,6 +14,10 @@ import (
 )
 
 func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	// Legacy documents are not covered by the grants model — block guests.
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -91,6 +95,9 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -263,6 +270,9 @@ func (s *Server) handleQuickSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBulkRead(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	var input struct {
 		IDs []string `json:"ids"`
 	}
@@ -283,6 +293,9 @@ func (s *Server) handleBulkRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetBacklinks(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -312,6 +325,9 @@ func (s *Server) handleGetBacklinks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -329,6 +345,9 @@ func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetContext(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

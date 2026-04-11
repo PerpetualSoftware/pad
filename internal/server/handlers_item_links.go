@@ -198,16 +198,25 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify both linked items are in visible collections
+	// Verify both linked items are in visible collections (with item-level checks for guests)
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
+		return
+	}
+	delFullCollIDs, delGrantedItemIDs, delGrantErr := s.guestResourceFilter(r, workspaceID)
+	if delGrantErr != nil {
+		writeInternalError(w, delGrantErr)
 		return
 	}
 	if visibleIDs != nil {
 		for _, itemID := range []string{link.SourceID, link.TargetID} {
 			item, ierr := s.store.GetItem(itemID)
 			if ierr != nil || item == nil || !isCollectionVisible(item.CollectionID, visibleIDs) {
+				writeError(w, http.StatusNotFound, "not_found", "Link not found")
+				return
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, item, delFullCollIDs, delGrantedItemIDs) {
 				writeError(w, http.StatusNotFound, "not_found", "Link not found")
 				return
 			}

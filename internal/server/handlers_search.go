@@ -41,9 +41,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			// Apply per-workspace collection visibility filtering.
 			// Collect all visible collection IDs across user's workspaces.
+			// For guest workspaces, also collect item-level grants.
 			allVisibleCollIDs := []string{} // non-nil empty = "no access" by default
+			var allVisibleItemIDs []string
 			needsCollFilter := false
 			for _, ws := range workspaces {
+				if ws.IsGuest {
+					// Guest workspace: use item-level filtering
+					fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+					if grantErr != nil {
+						params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
+						continue
+					}
+					needsCollFilter = true
+					allVisibleCollIDs = append(allVisibleCollIDs, fullCollIDs...)
+					allVisibleItemIDs = append(allVisibleItemIDs, grantedItemIDs...)
+					continue
+				}
 				visIDs, err := s.store.VisibleCollectionIDs(ws.ID, user.ID)
 				if err != nil {
 					// Fail closed: skip this workspace entirely on error
@@ -65,6 +79,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if needsCollFilter {
 				params.CollectionIDs = allVisibleCollIDs
 			}
+			if len(allVisibleItemIDs) > 0 {
+				params.ItemIDs = allVisibleItemIDs
+			}
 		}
 		// If no user (fresh install, no auth), allow unscoped search
 	}
@@ -73,6 +90,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if params.Workspace != "" {
 		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
 		if ws != nil {
+			user := currentUser(r)
 			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
 			if visErr != nil {
 				writeInternalError(w, visErr)
@@ -80,10 +98,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			params.CollectionIDs = visibleIDs
 
-			// For guests, use item-level filtering so item grants don't
-			// leak the entire collection's items in search results.
-			if workspaceRole(r) == "guest" {
-				if user := currentUser(r); user != nil {
+			// For guests (non-members with grants), use item-level filtering
+			// so item grants don't leak entire collections in search results.
+			// Note: /search is not behind RequireWorkspaceAccess, so we check
+			// membership directly instead of relying on workspaceRole().
+			if user != nil {
+				isMember, _ := s.store.IsWorkspaceMember(ws.ID, user.ID)
+				if !isMember {
 					fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
 					if grantErr != nil {
 						writeInternalError(w, grantErr)

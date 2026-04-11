@@ -105,15 +105,46 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// For guests with item-level grants, build a set of granted item IDs
+	// so we can filter events at item granularity, not just collection.
+	var sseGrantedItemSet map[string]bool // nil = no item-level filtering
+	var sseFullCollSet map[string]bool    // collection slugs with full grants
+	if user := currentUser(r); user != nil {
+		isMember, _ := s.store.IsWorkspaceMember(ws.ID, user.ID)
+		if !isMember {
+			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+			if grantErr == nil && len(grantedItemIDs) > 0 {
+				sseGrantedItemSet = make(map[string]bool, len(grantedItemIDs))
+				for _, id := range grantedItemIDs {
+					sseGrantedItemSet[id] = true
+				}
+				sseFullCollSet = make(map[string]bool, len(fullCollIDs))
+				for _, id := range fullCollIDs {
+					coll, _ := s.store.GetCollection(id)
+					if coll != nil {
+						sseFullCollSet[coll.Slug] = true
+					}
+				}
+			}
+		}
+	}
+
 	// sseEventVisible checks if an event should be sent to this client.
-	sseEventVisible := func(collection string) bool {
+	sseEventVisible := func(collection, itemID string) bool {
 		if visibleSlugSet == nil {
 			return true // all access
 		}
 		if collection == "" {
 			return true // events without a collection are always sent
 		}
-		return visibleSlugSet[collection]
+		if !visibleSlugSet[collection] {
+			return false
+		}
+		// For guests with item-level grants, additionally check the item ID
+		if sseGrantedItemSet != nil && !sseFullCollSet[collection] && itemID != "" {
+			return sseGrantedItemSet[itemID]
+		}
+		return true
 	}
 
 	// Send initial connected event
@@ -141,7 +172,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				slog.Info("SSE replaying missed events",
 					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
 				for _, event := range missed {
-					if sseEventVisible(event.Collection) {
+					if sseEventVisible(event.Collection, event.ItemID) {
 						writeSSEEvent(w, event.Type, event.ID, event)
 						flusher.Flush()
 					}
@@ -167,7 +198,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Channel closed (unsubscribed)
 				return
 			}
-			if sseEventVisible(event.Collection) {
+			if sseEventVisible(event.Collection, event.ItemID) {
 				writeSSEEvent(w, event.Type, event.ID, event)
 				flusher.Flush()
 			}
