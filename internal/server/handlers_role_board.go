@@ -7,10 +7,9 @@ import (
 )
 
 // handleRoleBoardReorder updates role_sort_order for items within a lane.
+// Permission is checked per-item via requireEditPermission (grant-aware),
+// so guests/viewers with edit grants can reorder their granted items.
 func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return

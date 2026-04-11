@@ -127,7 +127,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 		if needsItemFilter {
 			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
-			if grantErr == nil && len(grantedItemIDs) > 0 {
+			if grantErr != nil {
+				// Fail closed: if we can't resolve grants, install an empty
+				// item filter so no collection-scoped events leak through.
+				slog.Warn("SSE: failed to resolve item grants, denying item-scoped events", "error", grantErr)
+				sseGrantedItemSet = make(map[string]bool) // empty = deny all
+				sseFullCollSet = make(map[string]bool)    // empty = no full-access collections
+			} else if len(grantedItemIDs) > 0 {
 				sseGrantedItemSet = make(map[string]bool, len(grantedItemIDs))
 				for _, id := range grantedItemIDs {
 					sseGrantedItemSet[id] = true

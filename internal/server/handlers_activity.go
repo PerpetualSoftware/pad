@@ -102,6 +102,10 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleListDocumentActivity(w http.ResponseWriter, r *http.Request) {
+	// Legacy documents are not covered by the grants model — block guests.
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return

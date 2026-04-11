@@ -11,6 +11,9 @@ import (
 )
 
 func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
@@ -30,6 +33,9 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	_, doc, ok := s.getWorkspaceDocument(w, r)
 	if !ok {
 		return
