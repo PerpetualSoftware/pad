@@ -347,17 +347,20 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 
 // UserHasGrantsInWorkspace checks if a user has any active collection or item
 // grants in a workspace (even though they are not a member). Used to detect guests.
-// Item grants on soft-deleted items are excluded so archived items don't create
-// phantom guest access to a workspace shell with no visible content.
+// Grants on soft-deleted items or soft-deleted collections are excluded so
+// archived resources don't create phantom guest access.
 func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM (
-			SELECT 1 FROM collection_grants WHERE workspace_id = ? AND user_id = ?
+			SELECT 1 FROM collection_grants cg
+			JOIN collections c ON c.id = cg.collection_id
+			WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
 			UNION ALL
 			SELECT 1 FROM item_grants ig
 			JOIN items i ON i.id = ig.item_id
-			WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+			JOIN collections c ON c.id = i.collection_id
+			WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 			LIMIT 1
 		) AS grant_check
 	`), workspaceID, userID, workspaceID, userID).Scan(&count)
@@ -373,10 +376,11 @@ func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, erro
 func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
 	ids := make(map[string]bool)
 
-	// Collections with direct grants
+	// Collections with direct grants (excluding soft-deleted collections)
 	rows, err := s.db.Query(s.q(`
-		SELECT DISTINCT collection_id FROM collection_grants
-		WHERE workspace_id = ? AND user_id = ?
+		SELECT DISTINCT cg.collection_id FROM collection_grants cg
+		JOIN collections c ON c.id = cg.collection_id
+		WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("guest collection grants: %w", err)
@@ -390,12 +394,13 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 		ids[id] = true
 	}
 
-	// Collections containing items with direct grants
+	// Collections containing items with direct grants (excluding soft-deleted)
 	itemRows, err := s.db.Query(s.q(`
 		SELECT DISTINCT i.collection_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id
-		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+		JOIN collections c ON c.id = i.collection_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("guest item grant collections: %w", err)
@@ -421,10 +426,11 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 // - grantedItemIDs: specific item IDs the user has item-level grants on
 // This allows callers to distinguish between full-collection access and item-only access.
 func (s *Store) GuestVisibleResources(workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
-	// Collections with direct grants (full collection access)
+	// Collections with direct grants (full collection access, excluding soft-deleted)
 	rows, err := s.db.Query(s.q(`
-		SELECT DISTINCT collection_id FROM collection_grants
-		WHERE workspace_id = ? AND user_id = ?
+		SELECT DISTINCT cg.collection_id FROM collection_grants cg
+		JOIN collections c ON c.id = cg.collection_id
+		WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("guest collection grants: %w", err)
@@ -441,12 +447,13 @@ func (s *Store) GuestVisibleResources(workspaceID, userID string) (fullCollectio
 		return nil, nil, err
 	}
 
-	// Individual item IDs with direct grants
+	// Individual item IDs with direct grants (excluding soft-deleted items/collections)
 	itemRows, err := s.db.Query(s.q(`
 		SELECT DISTINCT ig.item_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id
-		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+		JOIN collections c ON c.id = i.collection_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("guest item grants: %w", err)

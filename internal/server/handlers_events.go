@@ -129,13 +129,26 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// isGuestSSE is true when the connected user is a guest (non-member with grants).
+	isGuestSSE := false
+	if user := currentUser(r); user != nil {
+		isMem, _ := s.store.IsWorkspaceMember(ws.ID, user.ID)
+		isGuestSSE = !isMem
+	}
+
 	// sseEventVisible checks if an event should be sent to this client.
 	sseEventVisible := func(collection, itemID string) bool {
 		if visibleSlugSet == nil {
 			return true // all access
 		}
 		if collection == "" {
-			return true // events without a collection are always sent
+			// Events without a collection (workspace-level, legacy docs) are
+			// only sent to actual members, not guests — they may contain
+			// operational metadata like member invites, role changes, etc.
+			if isGuestSSE {
+				return false
+			}
+			return true
 		}
 		if !visibleSlugSet[collection] {
 			return false

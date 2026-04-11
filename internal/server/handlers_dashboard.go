@@ -497,7 +497,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
 						continue
 					}
-					// For guests: skip items not directly granted
+					// For users with item grants: skip items not directly granted
 					if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
 						continue
 					}
@@ -505,6 +505,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					da.ItemSlug = item.Slug
 					da.CollectionSlug = item.CollectionSlug
 				}
+			} else if workspaceRole(r) == "guest" {
+				// Workspace-level activity (no item) — skip for guests since
+				// it may contain audit metadata (member invites, role changes).
+				continue
 			}
 			resp.RecentActivity = append(resp.RecentActivity, da)
 		}

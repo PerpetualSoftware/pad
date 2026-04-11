@@ -679,39 +679,36 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 	// collection visibility may come from item-level grants.
 	// We need to verify the user actually has a grant on this specific item
 	// (not just another item in the same collection).
-	user := currentUser(r)
-	if user != nil {
-		_, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
-		if err != nil {
-			writeInternalError(w, err)
-			return false
+	// Uses guestResourceFilter which skips this check for members with "all" access.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return false
+	}
+	if len(grantedItemIDs) > 0 {
+		// If the collection has a full collection grant, the item is visible
+		for _, id := range fullCollIDs {
+			if id == item.CollectionID {
+				return true
+			}
 		}
-		if len(grantedItemIDs) > 0 {
-			fullCollIDs, _, _ := s.store.GuestVisibleResources(workspaceID, user.ID)
-			// If the collection has a full collection grant, the item is visible
-			for _, id := range fullCollIDs {
+		// Check if this collection came from member_collection_access (not grants)
+		if workspaceRole(r) != "guest" {
+			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
+			for _, id := range memberColls {
 				if id == item.CollectionID {
 					return true
 				}
 			}
-			// Check if this collection came from member_collection_access (not grants)
-			if workspaceRole(r) != "guest" {
-				memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
-				for _, id := range memberColls {
-					if id == item.CollectionID {
-						return true
-					}
-				}
-			}
-			// Otherwise, the specific item must be in the granted items list
-			for _, id := range grantedItemIDs {
-				if id == item.ID {
-					return true
-				}
-			}
-			writeError(w, http.StatusNotFound, "not_found", "Item not found")
-			return false
 		}
+		// Otherwise, the specific item must be in the granted items list
+		for _, id := range grantedItemIDs {
+			if id == item.ID {
+				return true
+			}
+		}
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return false
 	}
 
 	return true
@@ -740,13 +737,31 @@ func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item 
 }
 
 // guestResourceFilter returns the full-collection IDs and granted item IDs for
-// the current user if they have item-level grants. For users with no item grants,
-// both slices are nil. Works for both guests and restricted members.
+// the current user if they need item-level grant filtering. Returns nil/nil for:
+// - unauthenticated users
+// - admin users
+// - members with "all" collection access (grants should merge, not replace)
+// Returns grant resources for guests and members with "specific" collection access.
 func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
-	if user == nil {
+	if user == nil || user.Role == "admin" {
 		return nil, nil, nil
 	}
+
+	// For workspace members with "all" collection access, item grants should
+	// not restrict their existing full visibility. Only guests and members
+	// with "specific" access need item-level filtering.
+	role := workspaceRole(r)
+	if role != "guest" {
+		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if member != nil && (member.CollectionAccess == "all" || member.CollectionAccess == "") {
+			return nil, nil, nil
+		}
+	}
+
 	return s.store.GuestVisibleResources(workspaceID, user.ID)
 }
 
