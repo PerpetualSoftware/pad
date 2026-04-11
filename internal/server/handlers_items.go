@@ -640,7 +640,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get target collection and verify it's visible to the user
+	// Get target collection, verify it's visible, and check edit permission
 	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
 	if err != nil || targetColl == nil {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
@@ -653,6 +653,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isCollectionVisible(targetColl.ID, targetVisibleIDs) {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
+		return
+	}
+	// Require edit permission on the target collection (not just visibility)
+	if !s.requireEditPermission(w, r, workspaceID, "", targetColl.ID) {
 		return
 	}
 
@@ -848,18 +852,27 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		children = []models.Item{}
 	}
 
-	// Filter children by collection visibility
+	// Filter children by collection visibility and item-level grants
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
 		return
 	}
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
 	if visibleIDs != nil {
 		filtered := children[:0]
 		for _, child := range children {
-			if isCollectionVisible(child.CollectionID, visibleIDs) {
-				filtered = append(filtered, child)
+			if !isCollectionVisible(child.CollectionID, visibleIDs) {
+				continue
 			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &child, fullCollIDs, grantedItemIDs) {
+				continue
+			}
+			filtered = append(filtered, child)
 		}
 		children = filtered
 	}
@@ -871,10 +884,14 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 			grandchildren, _ := s.store.GetChildItems(children[i].ID)
 			children[i].HasChildren = false
 			for _, gc := range grandchildren {
-				if isCollectionVisible(gc.CollectionID, visibleIDs) {
-					children[i].HasChildren = true
-					break
+				if !isCollectionVisible(gc.CollectionID, visibleIDs) {
+					continue
 				}
+				if !s.isItemVisibleToGuest(r, workspaceID, &gc, fullCollIDs, grantedItemIDs) {
+					continue
+				}
+				children[i].HasChildren = true
+				break
 			}
 		}
 	} else {
@@ -908,6 +925,11 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 	// Get visibility filter; when restricted, compute progress from
 	// visible children only so hidden child counts don't leak.
 	progVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	progFullCollIDs, progGrantedItemIDs, progGrantErr := s.guestResourceFilter(r, workspaceID)
+	if progGrantErr != nil {
+		writeInternalError(w, progGrantErr)
+		return
+	}
 	if progVisIDs != nil {
 		// Restricted: compute from visible children in Go using per-collection
 		// schemas to determine terminal statuses correctly.
@@ -921,6 +943,9 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 		total, done := 0, 0
 		for _, child := range children {
 			if !isCollectionVisible(child.CollectionID, progVisIDs) {
+				continue
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &child, progFullCollIDs, progGrantedItemIDs) {
 				continue
 			}
 			total++

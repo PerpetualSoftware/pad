@@ -706,6 +706,41 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 	return true
 }
 
+// isItemVisibleToGuest checks if an item is visible to a guest, considering both
+// full-collection grants and individual item grants. For non-guests, always returns true.
+func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item *models.Item, fullCollIDs, grantedItemIDs []string) bool {
+	if workspaceRole(r) != "guest" {
+		return true
+	}
+	// Full collection grant covers all items in the collection
+	for _, id := range fullCollIDs {
+		if id == item.CollectionID {
+			return true
+		}
+	}
+	// Otherwise, the specific item must be in the granted items list
+	for _, id := range grantedItemIDs {
+		if id == item.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// guestResourceFilter returns the full-collection IDs and granted item IDs for
+// the current user if they are a guest. For non-guests both slices are nil.
+// This is a convenience method for handlers that need to post-filter items.
+func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
+	if workspaceRole(r) != "guest" {
+		return nil, nil, nil
+	}
+	user := currentUser(r)
+	if user == nil {
+		return nil, nil, nil
+	}
+	return s.store.GuestVisibleResources(workspaceID, user.ID)
+}
+
 // isCollectionVisible checks if a collection ID is in the visible set.
 // If visibleIDs is nil, all collections are visible.
 func isCollectionVisible(collectionID string, visibleIDs []string) bool {
@@ -722,16 +757,20 @@ func isCollectionVisible(collectionID string, visibleIDs []string) bool {
 
 // requireEditPermission checks if the user has edit access to the given item.
 // For regular members (editor/owner), this uses the standard role check.
-// For guests, it resolves the effective permission from grants and checks
-// whether the resolved permission is at least "edit".
+// For members with insufficient roles (e.g., viewers), it falls back to
+// grant-based permissions so grants can override the base role.
+// For guests, it resolves the effective permission from grants directly.
 // Returns true if the request should continue, false if it was rejected with a 403.
 func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
-	// Non-guest users: standard role check
-	if workspaceRole(r) != "guest" {
-		return requireMinRole(w, r, "editor")
+	role := workspaceRole(r)
+
+	// Editors and owners always have edit access
+	if role != "guest" && requireRole(r, "editor") {
+		return true
 	}
 
-	// Guest users: check grant-based permissions
+	// For guests and members with insufficient role (e.g., viewers),
+	// check grant-based permissions as an override.
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")

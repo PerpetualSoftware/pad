@@ -41,9 +41,15 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter out links where the linked item is in a hidden collection
+	// or (for guests with item-level grants) the linked item is not granted.
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
+		return
+	}
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
 		return
 	}
 	if visibleIDs != nil {
@@ -55,9 +61,15 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 				otherID = link.SourceID
 			}
 			if other, err := s.store.GetItem(otherID); err == nil && other != nil {
-				if isCollectionVisible(other.CollectionID, visibleIDs) {
-					filtered = append(filtered, link)
+				if !isCollectionVisible(other.CollectionID, visibleIDs) {
+					continue
 				}
+				// For guests: if the collection is only visible via item grants,
+				// check the specific item is granted.
+				if !s.isItemVisibleToGuest(r, workspaceID, other, fullCollIDs, grantedItemIDs) {
+					continue
+				}
+				filtered = append(filtered, link)
 			}
 		}
 		links = filtered

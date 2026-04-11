@@ -199,22 +199,20 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.RemoveWorkspaceMember(workspaceID, userID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Member not found")
-		return
-	}
-
 	// Default to revoking grants on member removal to prevent the removed user
 	// from silently becoming a guest with continued access.
 	// ?revoke_grants=false → explicitly keep grants (user becomes a guest)
 	// ?revoke_grants=true or omitted → delete all grants (full removal)
 	revokeGrants := r.URL.Query().Get("revoke_grants") != "false"
 	if revokeGrants {
-		if err := s.store.RevokeAllUserGrants(workspaceID, userID); err != nil {
-			// Member was already removed but grant revocation failed.
-			// Return an error so the caller knows the operation was partial.
-			slog.Error("failed to revoke grants on member removal", "workspace_id", workspaceID, "user_id", userID, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal_error", "Member removed but failed to revoke grants")
+		// Atomic: remove member and revoke all grants in one transaction
+		if err := s.store.RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "Member not found")
+			return
+		}
+	} else {
+		if err := s.store.RemoveWorkspaceMember(workspaceID, userID); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "Member not found")
 			return
 		}
 	}

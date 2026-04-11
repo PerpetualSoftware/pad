@@ -61,6 +61,19 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, visErr)
 		return
 	}
+
+	// For guests with item-level grants, apply item-level filtering
+	// so they only see changes to items they actually have grants on.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	grantedItemSet := make(map[string]bool, len(grantedItemIDs))
+	for _, id := range grantedItemIDs {
+		grantedItemSet[id] = true
+	}
+
 	if visibleIDs != nil {
 		filtered := updated[:0]
 		allowedDeleted := deletedIDs[:0]
@@ -68,10 +81,24 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 		for _, id := range visibleIDs {
 			visibleSet[id] = true
 		}
+
+		// For guests, build a set of full-collection-grant IDs to distinguish
+		// between full-collection access and item-only access.
+		fullCollSet := make(map[string]bool, len(fullCollIDs))
+		for _, id := range fullCollIDs {
+			fullCollSet[id] = true
+		}
+
 		for _, item := range updated {
-			if visibleSet[item.CollectionID] {
-				filtered = append(filtered, item)
+			if !visibleSet[item.CollectionID] {
+				continue
 			}
+			// For guests: if the collection is only visible via item grants,
+			// check the specific item is granted.
+			if len(grantedItemIDs) > 0 && !fullCollSet[item.CollectionID] && !grantedItemSet[item.ID] {
+				continue
+			}
+			filtered = append(filtered, item)
 		}
 		updated = filtered
 		// For deleted items, re-query with collection filter since we
@@ -83,9 +110,13 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, item := range delItems {
-				if visibleSet[item.CollectionID] {
-					allowedDeleted = append(allowedDeleted, item.ID)
+				if !visibleSet[item.CollectionID] {
+					continue
 				}
+				if len(grantedItemIDs) > 0 && !fullCollSet[item.CollectionID] && !grantedItemSet[item.ID] {
+					continue
+				}
+				allowedDeleted = append(allowedDeleted, item.ID)
 			}
 			deletedIDs = allowedDeleted
 		}

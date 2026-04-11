@@ -79,6 +79,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params.CollectionIDs = visibleIDs
+
+			// For guests, use item-level filtering so item grants don't
+			// leak the entire collection's items in search results.
+			if workspaceRole(r) == "guest" {
+				if user := currentUser(r); user != nil {
+					fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
+					if grantErr != nil {
+						writeInternalError(w, grantErr)
+						return
+					}
+					params.CollectionIDs = fullCollIDs
+					params.ItemIDs = grantedItemIDs
+				}
+			}
 		}
 	}
 

@@ -141,6 +141,29 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For guests, compute item-level grant filtering
+	dashFullCollIDs, dashGrantedItemIDs, dashGrantErr := s.guestResourceFilter(r, workspaceID)
+	if dashGrantErr != nil {
+		writeInternalError(w, dashGrantErr)
+		return
+	}
+	dashGrantedItemSet := make(map[string]bool, len(dashGrantedItemIDs))
+	for _, id := range dashGrantedItemIDs {
+		dashGrantedItemSet[id] = true
+	}
+	dashFullCollSet := make(map[string]bool, len(dashFullCollIDs))
+	for _, id := range dashFullCollIDs {
+		dashFullCollSet[id] = true
+	}
+
+	// For guests, use item-level filtering in ListItems queries
+	dashCollIDs := visibleIDs
+	var dashItemIDs []string
+	if workspaceRole(r) == "guest" {
+		dashCollIDs = dashFullCollIDs
+		dashItemIDs = dashGrantedItemIDs
+	}
+
 	// Build a schema map for terminal status lookups
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
@@ -171,7 +194,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Summary: items grouped by collection slug and status field
-	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: visibleIDs})
+	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -232,7 +255,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// Active plans: items in "plans" collection where status=active
 	plans, err := s.store.ListItems(workspaceID, models.ItemListParams{
 		CollectionSlug: "plans",
-		CollectionIDs:  visibleIDs,
+		CollectionIDs:  dashCollIDs,
+		ItemIDs:        dashItemIDs,
 		Fields:         map[string]string{"status": "active"},
 	})
 	if err == nil {
@@ -248,6 +272,9 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if planChildren, cerr := s.store.GetChildItems(plan.ID); cerr == nil {
 				for _, child := range planChildren {
 					if !isCollectionVisible(child.CollectionID, visibleIDs) {
+						continue
+					}
+					if !s.isItemVisibleToGuest(r, workspaceID, &child, dashFullCollIDs, dashGrantedItemIDs) {
 						continue
 					}
 					total++
@@ -284,7 +311,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// (a) Stalled: status is in-progress or in_progress, updated_at older than 3 days
 	for _, statusVal := range []string{"in-progress", "in_progress"} {
 		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionIDs: visibleIDs,
+			CollectionIDs: dashCollIDs,
+			ItemIDs:       dashItemIDs,
 			Fields:        map[string]string{"status": statusVal},
 		})
 		if err != nil {
@@ -362,7 +390,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
-			CollectionIDs:  visibleIDs,
+			CollectionIDs:  dashCollIDs,
+			ItemIDs:        dashItemIDs,
 		})
 		if err == nil {
 			for _, task := range allTasks {
@@ -407,8 +436,11 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if err != nil || blocker == nil {
 				continue
 			}
-			// Skip blockers from hidden collections
+			// Skip blockers from hidden collections or ungrantable items
 			if !isCollectionVisible(blocker.CollectionID, visibleIDs) {
+				continue
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, blocker, dashFullCollIDs, dashGrantedItemIDs) {
 				continue
 			}
 			blockerStatus := extractFieldValue(blocker.Fields, "status")
@@ -465,6 +497,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
 						continue
 					}
+					// For guests: skip items not directly granted
+					if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
+						continue
+					}
 					da.ItemTitle = item.Title
 					da.ItemSlug = item.Slug
 					da.CollectionSlug = item.CollectionSlug
@@ -495,6 +531,9 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		for _, task := range tasks {
 			// Skip tasks from hidden collections
 			if !isCollectionVisible(task.CollectionID, visibleIDs) {
+				continue
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &task, dashFullCollIDs, dashGrantedItemIDs) {
 				continue
 			}
 			taskStatus := extractFieldValue(task.Fields, "status")

@@ -316,7 +316,12 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		if member == nil {
 			// Not a member — check for guest access via grants
 			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
-			if grantErr != nil || !hasGrants {
+			if grantErr != nil {
+				slog.Error("failed to check guest grants", "workspace_id", ws.ID, "user_id", user.ID, "error", grantErr)
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+				return
+			}
+			if !hasGrants {
 				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
 				return
 			}

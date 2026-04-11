@@ -40,6 +40,37 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	return nil
 }
 
+// RemoveWorkspaceMemberAndRevokeGrants atomically removes a user from a workspace
+// and revokes all their grants in a single transaction. This prevents the user
+// from retaining guest access if the member removal succeeds but grant revocation fails.
+func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Revoke grants first (before removing membership)
+	if _, err := tx.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID); err != nil {
+		return fmt.Errorf("revoke collection grants: %w", err)
+	}
+	if _, err := tx.Exec(s.q("DELETE FROM item_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID); err != nil {
+		return fmt.Errorf("revoke item grants: %w", err)
+	}
+
+	// Remove membership
+	result, err := tx.Exec(s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("remove workspace member: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+
+	return tx.Commit()
+}
+
 // GetWorkspaceMember retrieves a single membership record.
 func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.WorkspaceMember, error) {
 	var m models.WorkspaceMember
