@@ -5469,7 +5469,7 @@ Steps:
 				stats := fmt.Sprintf("%d collections, %d items, %d comments",
 					len(data.Collections), len(data.Items), len(data.Comments))
 
-				if _, err := dstStore.ImportWorkspace(data, ""); err != nil {
+				if _, err := dstStore.ImportWorkspace(data, "", ""); err != nil {
 					fmt.Fprintf(os.Stderr, "  ERROR importing %s: %v (skipping)\n", ws.Slug, err)
 					continue
 				}

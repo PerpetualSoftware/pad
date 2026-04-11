@@ -592,13 +592,48 @@ func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string,
 	return ws.ID, true
 }
 
+// getWorkspace returns the full workspace object resolved by middleware.
+// Falls back to direct resolution for routes without RequireWorkspaceAccess.
+func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) (*models.Workspace, bool) {
+	// Fast path: use middleware-resolved ID
+	if wsID, ok := r.Context().Value(ctxResolvedWorkspaceID).(string); ok && wsID != "" {
+		ws, err := s.store.GetWorkspaceByID(wsID)
+		if err != nil {
+			writeInternalError(w, err)
+			return nil, false
+		}
+		if ws != nil {
+			return ws, true
+		}
+	}
+
+	// Slow path: resolve from URL param
+	slugOrID := chi.URLParam(r, "slug")
+	ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
+	if err != nil {
+		writeInternalError(w, err)
+		return nil, false
+	}
+	if ws == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		return nil, false
+	}
+	return ws, true
+}
+
 // resolveWorkspace resolves a workspace by slug or UUID, scoped to the
 // authenticated user's accessible workspaces when a user context is present.
 // Returns nil (not an error) if no workspace is found.
 func (s *Server) resolveWorkspace(slugOrID string, user *models.User) (*models.Workspace, error) {
-	// 1. Is it a UUID? Resolve by ID directly.
+	// 1. Is it a UUID? Try resolving by ID first, then fall back to slug.
+	//    A workspace slug could be UUID-shaped (e.g. imported data), so we
+	//    can't short-circuit here.
 	if isUUID(slugOrID) {
-		return s.store.GetWorkspaceByID(slugOrID)
+		ws, err := s.store.GetWorkspaceByID(slugOrID)
+		if ws != nil || err != nil {
+			return ws, err
+		}
+		// Not found by ID — fall through to slug-based resolution
 	}
 
 	// 2. No authenticated user — fall back to global slug lookup

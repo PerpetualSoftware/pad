@@ -146,7 +146,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 // ImportWorkspace imports a workspace from an exported data structure.
 // It creates a new workspace with regenerated IDs, remapping all references.
 // If newName is non-empty, it overrides the workspace name and slug.
-func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*models.Workspace, error) {
+func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
 	}
@@ -164,6 +164,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string) (*
 		Slug:        wsSlug,
 		Description: data.Workspace.Description,
 		Settings:    data.Workspace.Settings,
+		OwnerID:     ownerID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)

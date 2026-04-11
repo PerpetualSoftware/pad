@@ -219,7 +219,11 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-generate username from name (D1: no prompt for bootstrap)
-	username := store.GenerateUsername(input.Name, input.Email)
+	username, err := s.store.EnsureUniqueUsername(store.GenerateUsername(input.Name, input.Email))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to generate username")
+		return
+	}
 
 	user, err := s.store.CreateUser(models.UserCreate{
 		Email:    input.Email,
@@ -346,7 +350,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		input.Username = store.GenerateUsername(input.Name, input.Email)
+		candidate := store.GenerateUsername(input.Name, input.Email)
+		unique, err := s.store.EnsureUniqueUsername(candidate)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to generate username")
+			return
+		}
+		input.Username = unique
 	}
 
 	// Create user

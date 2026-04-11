@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/xarmian/pad/internal/collections"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/models"
@@ -232,14 +230,8 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "slug")
-	ws, err := s.store.GetWorkspaceBySlug(slug)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+	ws, ok := s.getWorkspace(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
@@ -249,7 +241,10 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	slug := chi.URLParam(r, "slug")
+	existing, ok := s.getWorkspace(w, r)
+	if !ok {
+		return
+	}
 
 	var input models.WorkspaceUpdate
 	if err := decodeJSON(r, &input); err != nil {
@@ -261,7 +256,7 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, err := s.store.UpdateWorkspace(slug, input)
+	ws, err := s.store.UpdateWorkspace(existing.Slug, input)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -280,8 +275,11 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	slug := chi.URLParam(r, "slug")
-	err := s.store.DeleteWorkspace(slug)
+	ws, ok := s.getWorkspace(w, r)
+	if !ok {
+		return
+	}
+	err := s.store.DeleteWorkspace(ws.Slug)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
 		return
@@ -293,14 +291,17 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	slug := chi.URLParam(r, "slug")
-	export, err := s.store.ExportWorkspace(slug)
+	ws, ok := s.getWorkspace(w, r)
+	if !ok {
+		return
+	}
+	export, err := s.store.ExportWorkspace(ws.Slug)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.json"`, slug))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.json"`, ws.Slug))
 	writeJSON(w, http.StatusOK, export)
 }
 
@@ -314,10 +315,18 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Optional: override workspace name via query param
 	newName := r.URL.Query().Get("name")
 
-	ws, err := s.store.ImportWorkspace(&data, newName)
+	// Set the authenticated user as owner so the imported workspace is
+	// accessible and has correct owner_username for URL routing.
+	userID := currentUserID(r)
+	ws, err := s.store.ImportWorkspace(&data, newName, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
 		return
+	}
+
+	// Add the importer as workspace owner (mirrors handleCreateWorkspace)
+	if userID != "" {
+		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
 	}
 
 	writeJSON(w, http.StatusCreated, ws)

@@ -232,6 +232,24 @@ func GenerateUsername(name, email string) string {
 	return u
 }
 
+// EnsureUniqueUsername takes a candidate username and returns a unique variant
+// by appending -2, -3, etc. if the candidate already exists in the database.
+func (s *Store) EnsureUniqueUsername(base string) (string, error) {
+	username := base
+	suffix := 2
+	for {
+		existing, err := s.GetUserByUsername(username)
+		if err != nil {
+			return "", fmt.Errorf("check username uniqueness: %w", err)
+		}
+		if existing == nil {
+			return username, nil
+		}
+		username = fmt.Sprintf("%s-%d", base, suffix)
+		suffix++
+	}
+}
+
 // backfillUsernames generates usernames for existing users that don't have one.
 // Idempotent: skips users who already have a non-empty username.
 func (s *Store) backfillUsernames() error {
