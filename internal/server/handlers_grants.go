@@ -10,6 +10,9 @@ import (
 // --- Collection Grant handlers ---
 
 func (s *Server) handleListCollectionGrants(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -104,9 +107,13 @@ func (s *Server) handleDeleteCollectionGrant(w http.ResponseWriter, r *http.Requ
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
 
 	grantID := chi.URLParam(r, "grantID")
-	if err := s.store.DeleteCollectionGrant(grantID); err != nil {
+	if err := s.store.DeleteCollectionGrant(grantID, workspaceID); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}
@@ -116,6 +123,9 @@ func (s *Server) handleDeleteCollectionGrant(w http.ResponseWriter, r *http.Requ
 // --- Item Grant handlers ---
 
 func (s *Server) handleListItemGrants(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -209,9 +219,13 @@ func (s *Server) handleDeleteItemGrant(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
 
 	grantID := chi.URLParam(r, "grantID")
-	if err := s.store.DeleteItemGrant(grantID); err != nil {
+	if err := s.store.DeleteItemGrant(grantID, workspaceID); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}
@@ -227,6 +241,13 @@ func (s *Server) handleListUserGrants(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := chi.URLParam(r, "userID")
+
+	// Only workspace owners or the user themselves can view grants
+	if !requireRole(r, "owner") && currentUserID(r) != userID {
+		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+		return
+	}
+
 	collGrants, itemGrants, err := s.store.ListUserGrants(workspaceID, userID)
 	if err != nil {
 		writeInternalError(w, err)

@@ -68,9 +68,6 @@ func (s *Server) handleGetItemLinks(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateItemLink creates a new link between two items.
 func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -87,6 +84,10 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -162,9 +163,6 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItemLink removes a link between items.
 func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -176,6 +174,15 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 	link, err := s.store.GetItemLinkByID(linkID)
 	if err != nil || link == nil || link.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Link not found")
+		return
+	}
+
+	// Check edit permission on the source item (grant-aware for guests)
+	if sourceItem, ierr := s.store.GetItem(link.SourceID); ierr == nil && sourceItem != nil {
+		if !s.requireEditPermission(w, r, workspaceID, sourceItem.ID, sourceItem.CollectionID) {
+			return
+		}
+	} else if !requireMinRole(w, r, "editor") {
 		return
 	}
 

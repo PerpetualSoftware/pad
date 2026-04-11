@@ -38,6 +38,22 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 	params.CollectionIDs = visibleIDs
 
+	// For guests, apply item-level filtering so item grants don't leak
+	// entire collections. GuestVisibleResources returns both full-collection
+	// IDs and individual item IDs; we set CollectionIDs to only the
+	// full-collection grants and add ItemIDs for specific item grants.
+	if workspaceRole(r) == "guest" {
+		if user := currentUser(r); user != nil {
+			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
+			if grantErr != nil {
+				writeInternalError(w, grantErr)
+				return
+			}
+			params.CollectionIDs = fullCollIDs
+			params.ItemIDs = grantedItemIDs
+		}
+	}
+
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -83,6 +99,29 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
 
+	// For guests, if this collection's visibility comes from item-level grants
+	// (not a full collection grant), restrict to only the granted items.
+	if workspaceRole(r) == "guest" {
+		if user := currentUser(r); user != nil {
+			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
+			if grantErr != nil {
+				writeInternalError(w, grantErr)
+				return
+			}
+			hasFullCollectionGrant := false
+			for _, id := range fullCollIDs {
+				if id == coll.ID {
+					hasFullCollectionGrant = true
+					break
+				}
+			}
+			if !hasFullCollectionGrant {
+				// Only show the specific items the guest has grants on
+				params.ItemIDs = grantedItemIDs
+			}
+		}
+	}
+
 	var collSchema models.CollectionSchema
 	if coll.Schema != "" {
 		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
@@ -107,9 +146,6 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 // handleCreateItem creates a new item in a collection, validating fields against the schema.
 func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -123,6 +159,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, "", coll.ID) {
 		return
 	}
 
@@ -281,9 +322,6 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateItem updates an existing item (fields, content, or both).
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -300,6 +338,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -478,9 +520,6 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteItem archives (soft-deletes) an item.
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -499,6 +538,10 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
 
 	if err := s.store.DeleteItem(item.ID); err != nil {
 		writeInternalError(w, err)
@@ -515,9 +558,6 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 // handleRestoreItem restores an archived item.
 func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -536,6 +576,10 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 
@@ -564,9 +608,6 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 // handleMoveItem moves an item to a different collection with field migration.
 func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -579,6 +620,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 

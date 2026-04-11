@@ -464,13 +464,35 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.CollectionSlug)
 	}
 
-	if len(params.CollectionIDs) > 0 {
+	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+		// Guest with both collection-level and item-level grants:
+		// item must be in a fully-granted collection OR be a specifically granted item
+		collPlaceholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (i.collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR i.id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(params.CollectionIDs) > 0 {
 		placeholders := make([]string, len(params.CollectionIDs))
 		for i, id := range params.CollectionIDs {
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
 		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(params.ItemIDs) > 0 {
+		// Guest with only item-level grants (no collection-level grants)
+		placeholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	if params.Tag != "" {
@@ -599,13 +621,32 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.CollectionSlug)
 	}
 
-	if len(params.CollectionIDs) > 0 {
+	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+		collPlaceholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (i.collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR i.id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(params.CollectionIDs) > 0 {
 		placeholders := make([]string, len(params.CollectionIDs))
 		for i, id := range params.CollectionIDs {
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
 		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(params.ItemIDs) > 0 {
+		placeholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).

@@ -295,7 +295,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		)
 	`), userID, userID)
 	if err != nil {
-		return result, nil // Non-fatal: return member workspaces even if guest query fails
+		return nil, fmt.Errorf("get guest workspaces: %w", err)
 	}
 	defer guestRows.Close()
 
@@ -307,7 +307,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("scan guest workspace: %w", err)
 		}
 		// Skip workspaces the user is already a member of
 		if memberIDs[ws.ID] {
@@ -318,6 +318,9 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		ws.IsGuest = true
 		result = append(result, ws)
+	}
+	if err := guestRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate guest workspaces: %w", err)
 	}
 
 	return result, nil

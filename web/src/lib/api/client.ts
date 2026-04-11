@@ -507,8 +507,8 @@ export const api = {
 				`/workspaces/${ws}/members/invite`,
 				{ method: 'POST', body: JSON.stringify({ email, role }) }
 			),
-		remove: (ws: string, userId: string) =>
-			request<void>(`/workspaces/${ws}/members/${userId}`, { method: 'DELETE' }),
+		remove: (ws: string, userId: string, revokeGrants: boolean = true) =>
+			request<void>(`/workspaces/${ws}/members/${userId}?revoke_grants=${revokeGrants}`, { method: 'DELETE' }),
 		updateRole: (ws: string, userId: string, role: string) =>
 			request<{ user_id: string; role: string }>(`/workspaces/${ws}/members/${userId}`, {
 				method: 'PATCH',

@@ -44,9 +44,6 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 
 // handleRestoreItemVersion restores an item's content from a specific version.
 func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -65,6 +62,10 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	// Check edit permission (grant-aware for guests)
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
 

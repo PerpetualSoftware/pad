@@ -374,6 +374,26 @@ func roleLevel(role string) int {
 	}
 }
 
+// permissionLevel returns a numeric level for grant permission comparison.
+func permissionLevel(perm string) int {
+	switch perm {
+	case "owner":
+		return 4
+	case "admin":
+		return 3
+	case "editor":
+		return 2
+	case "edit":
+		return 2
+	case "viewer":
+		return 1
+	case "view":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // sha256hex returns the SHA-256 hex digest of a string.
 func sha256hex(s string) string {
 	h := sha256.Sum256([]byte(s))

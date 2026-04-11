@@ -82,9 +82,9 @@ func (s *Store) ListCollectionGrants(collectionID string) ([]models.CollectionGr
 	return result, rows.Err()
 }
 
-// DeleteCollectionGrant revokes a collection grant by ID.
-func (s *Store) DeleteCollectionGrant(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM collection_grants WHERE id = ?"), id)
+// DeleteCollectionGrant revokes a collection grant by ID, scoped to a workspace.
+func (s *Store) DeleteCollectionGrant(id, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM collection_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete collection grant: %w", err)
 	}
@@ -170,9 +170,9 @@ func (s *Store) ListItemGrants(itemID string) ([]models.ItemGrant, error) {
 	return result, rows.Err()
 }
 
-// DeleteItemGrant revokes an item grant by ID.
-func (s *Store) DeleteItemGrant(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM item_grants WHERE id = ?"), id)
+// DeleteItemGrant revokes an item grant by ID, scoped to a workspace.
+func (s *Store) DeleteItemGrant(id, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM item_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete item grant: %w", err)
 	}
@@ -355,7 +355,7 @@ func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, erro
 			UNION ALL
 			SELECT 1 FROM item_grants WHERE workspace_id = ? AND user_id = ?
 			LIMIT 1
-		)
+		) AS grant_check
 	`), workspaceID, userID, workspaceID, userID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("check user grants: %w", err)
@@ -410,4 +410,54 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 		result = append(result, id)
 	}
 	return result, nil
+}
+
+// GuestVisibleResources returns the two-level visibility for a guest:
+// - fullCollectionIDs: collections where the user has a direct collection grant (full access)
+// - grantedItemIDs: specific item IDs the user has item-level grants on
+// This allows callers to distinguish between full-collection access and item-only access.
+func (s *Store) GuestVisibleResources(workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
+	// Collections with direct grants (full collection access)
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT collection_id FROM collection_grants
+		WHERE workspace_id = ? AND user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guest collection grants: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		fullCollectionIDs = append(fullCollectionIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Individual item IDs with direct grants
+	itemRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT ig.item_id
+		FROM item_grants ig
+		JOIN items i ON i.id = ig.item_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guest item grants: %w", err)
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var id string
+		if err := itemRows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		grantedItemIDs = append(grantedItemIDs, id)
+	}
+	if err := itemRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return fullCollectionIDs, grantedItemIDs, nil
 }
