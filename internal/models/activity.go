@@ -25,6 +25,10 @@ const (
 	ActionMemberRemoved   = "member_removed"
 	ActionRoleChanged     = "role_changed"
 	ActionSettingsChanged = "settings_changed"
+	ActionOAuthLogin      = "oauth_login"
+	ActionOAuthLoginFailed = "oauth_login_failed"
+	ActionPlanChanged      = "plan_changed"
+	ActionAccountDeleted   = "account_deleted"
 )
 
 type Activity struct {

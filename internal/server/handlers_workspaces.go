@@ -58,7 +58,7 @@ func normalizeWorkspaceUpdateInput(input *models.WorkspaceUpdate) error {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	resp := map[string]string{"status": "ok"}
+	resp := map[string]interface{}{"status": "ok"}
 	if s.version != "" {
 		resp["version"] = s.version
 	}
@@ -68,6 +68,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.buildTime != "" {
 		resp["build_time"] = s.buildTime
 	}
+	resp["cloud_mode"] = s.cloudMode
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -207,6 +208,13 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Set owner to the authenticated user
 	if userID := currentUserID(r); userID != "" {
 		input.OwnerID = userID
+	}
+
+	// Enforce workspace count limit (user-scoped)
+	if userID := currentUserID(r); userID != "" {
+		if !s.enforceUserPlanLimit(w, userID, "workspaces") {
+			return
+		}
 	}
 
 	ws, err := s.store.CreateWorkspace(input)

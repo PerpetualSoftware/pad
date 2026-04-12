@@ -8,6 +8,7 @@ export const authStore = {
 	get user() { return session?.user ?? null; },
 	get userId() { return session?.user?.id ?? ''; },
 	get authenticated() { return session?.authenticated ?? false; },
+	get cloudMode() { return session?.cloud_mode ?? false; },
 	get loading() { return loading; },
 
 	async load() {

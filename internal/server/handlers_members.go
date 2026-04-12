@@ -107,6 +107,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		input.Role = "editor"
 	}
 
+	// Enforce member count limit (workspace-scoped)
+	if !s.enforcePlanLimit(w, workspaceID, "members_per_workspace") {
+		return
+	}
+
 	inviterID := currentUserID(r)
 
 	// Check if user with this email already exists

@@ -42,6 +42,8 @@ type Server struct {
 	metrics            *metrics.Metrics      // Prometheus metrics (optional)
 	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
+	cloudMode           bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
+	cloudSecrets        []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
 	version            string               // release version (e.g. "dev", "1.2.3")
 	commit              string               // git commit hash
 	buildTime           string               // build timestamp
@@ -101,6 +103,25 @@ func (s *Server) Init2FASecret() error {
 	s.twoFAChallengeSecret = decoded
 	slog.Info("initialized 2FA challenge signing key")
 	return nil
+}
+
+// SetCloudMode enables cloud mode with the shared sidecar secret(s).
+// Accepts a comma-separated list of secrets for rotation support:
+// "new-key,old-key" — both are accepted during rollover.
+// The sidecar should always send the first (newest) key.
+func (s *Server) SetCloudMode(secret string) {
+	s.cloudMode = true
+	for _, k := range strings.Split(secret, ",") {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			s.cloudSecrets = append(s.cloudSecrets, k)
+		}
+	}
+}
+
+// IsCloud reports whether the server is running in cloud mode.
+func (s *Server) IsCloud() bool {
+	return s.cloudMode
 }
 
 // SetVersion stores the build version info for the health endpoint.
@@ -250,11 +271,18 @@ func (s *Server) setupRouter() {
 			r.Post("/2fa/disable", s.handleTOTPDisable)
 			r.Post("/2fa/login-verify", s.handleTOTPLoginVerify)
 
+			// Account management (GDPR)
+			r.Post("/delete-account", s.handleDeleteAccount)
+			r.Get("/export", s.handleExportAccount)
+
 			// User-scoped API tokens
 			r.Get("/tokens", s.handleListUserTokens)
 			r.Post("/tokens", s.handleCreateUserToken)
 			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 			r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
+
+			// Cloud: OAuth login (called by pad-cloud sidecar, protected by cloud secret)
+			r.Post("/oauth-login", s.handleOAuthLogin)
 		})
 
 		// Admin endpoints (admin-only, handlers check role internally)
@@ -262,6 +290,19 @@ func (s *Server) setupRouter() {
 			r.Get("/settings", s.handleGetPlatformSettings)
 			r.Patch("/settings", s.handleUpdatePlatformSettings)
 			r.Post("/test-email", s.handleTestEmail)
+			r.Post("/plan", s.handleSetPlan) // Cloud: sidecar sets user plans; also accessible to admins
+
+			// User management
+			r.Get("/users", s.handleAdminListUsers)
+			r.Get("/users/{userID}", s.handleAdminGetUser)
+			r.Patch("/users/{userID}", s.handleAdminUpdateUser)
+
+			// Plan limits
+			r.Get("/limits", s.handleAdminGetLimits)
+			r.Patch("/limits", s.handleAdminUpdateLimits)
+
+			// Platform stats
+			r.Get("/stats", s.handleAdminStats)
 		})
 
 		// Audit log (admin-only)

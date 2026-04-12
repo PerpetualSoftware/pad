@@ -4,18 +4,22 @@ import "time"
 
 // User represents a registered user in the system.
 type User struct {
-	ID             string    `json:"id"`
-	Email          string    `json:"email"`
-	Username       string    `json:"username"`                // Unique handle; empty until set
-	Name           string    `json:"name"`
-	PasswordHash   string    `json:"-"`                       // Never serialized
-	Role           string    `json:"role"`                    // "admin" or "member"
-	AvatarURL      string    `json:"avatar_url,omitempty"`
-	TOTPSecret     string    `json:"-"`                       // Never serialized
-	TOTPEnabled    bool      `json:"totp_enabled"`
-	RecoveryCodes  string    `json:"-"`                       // Never serialized
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	Email            string    `json:"email"`
+	Username         string    `json:"username"`                // Unique handle; empty until set
+	Name             string    `json:"name"`
+	PasswordHash     string    `json:"-"`                       // Never serialized
+	Role             string    `json:"role"`                    // "admin" or "member"
+	AvatarURL        string    `json:"avatar_url,omitempty"`
+	TOTPSecret       string    `json:"-"`                       // Never serialized
+	TOTPEnabled      bool      `json:"totp_enabled"`
+	RecoveryCodes    string    `json:"-"`                       // Never serialized
+	Plan             string    `json:"plan"`                    // "free", "pro", or "self-hosted"
+	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
+	StripeCustomerID string    `json:"-"`                       // Never serialized
+	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // UserCreate is the input for registering a new user.

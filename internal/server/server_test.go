@@ -64,10 +64,14 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Errorf("expected 200, got %d", rr.Code)
 	}
 
-	var resp map[string]string
+	var resp map[string]interface{}
 	parseJSON(t, rr, &resp)
 	if resp["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %q", resp["status"])
+		t.Errorf("expected status 'ok', got %v", resp["status"])
+	}
+	// cloud_mode should default to false when not configured
+	if resp["cloud_mode"] != false {
+		t.Errorf("expected cloud_mode false, got %v", resp["cloud_mode"])
 	}
 }
 

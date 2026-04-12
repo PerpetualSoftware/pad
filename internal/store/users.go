@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -17,9 +18,11 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 const bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
+// Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
+// scanning if you need the plaintext secret for validation.
 func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error) {
 	var u models.User
 	var createdAt, updatedAt string
@@ -27,6 +30,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
+		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides,
 		&createdAt, &updatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -39,6 +43,19 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	u.CreatedAt = parseTime(createdAt)
 	u.UpdatedAt = parseTime(updatedAt)
 	return &u, nil
+}
+
+// decryptUserTOTP decrypts the TOTP secret on a User struct in place.
+func (s *Store) decryptUserTOTP(u *models.User) error {
+	if u == nil || u.TOTPSecret == "" {
+		return nil
+	}
+	decrypted, err := s.decrypt(u.TOTPSecret)
+	if err != nil {
+		return fmt.Errorf("decrypt user TOTP: %w", err)
+	}
+	u.TOTPSecret = decrypted
+	return nil
 }
 
 // CreateUser creates a new user with a hashed password.
@@ -73,6 +90,9 @@ func (s *Store) GetUser(id string) (*models.User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
+	if err := s.decryptUserTOTP(u); err != nil {
+		return nil, err
+	}
 	return u, nil
 }
 
@@ -82,6 +102,9 @@ func (s *Store) GetUserByEmail(email string) (*models.User, error) {
 		strings.ToLower(strings.TrimSpace(email))))
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	if err := s.decryptUserTOTP(u); err != nil {
+		return nil, err
 	}
 	return u, nil
 }
@@ -95,6 +118,9 @@ func (s *Store) GetUserByUsername(username string) (*models.User, error) {
 	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE LOWER(username) = ?`), username))
 	if err != nil {
 		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	if err := s.decryptUserTOTP(u); err != nil {
+		return nil, err
 	}
 	return u, nil
 }
@@ -178,6 +204,7 @@ func (s *Store) ListUsers() ([]models.User, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
+		_ = s.decryptUserTOTP(u) // Best-effort decrypt for list (TOTP secret is json:"-" anyway)
 		result = append(result, *u)
 	}
 	return result, rows.Err()
@@ -191,6 +218,49 @@ func (s *Store) UserCount() (int, error) {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
 	return count, nil
+}
+
+// CreateOAuthUser creates a user from an OAuth provider with a random unusable password.
+// OAuth users can later set a password via the password reset flow if they want.
+func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, error) {
+	// Generate a random 64-byte password the user will never use
+	randomPwd := make([]byte, 64)
+	if _, err := rand.Read(randomPwd); err != nil {
+		return nil, fmt.Errorf("generate random password: %w", err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword(randomPwd, bcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("hash password: %w", err)
+	}
+
+	id := newID()
+	ts := now()
+
+	username := GenerateUsername(name, email)
+	username, err = s.EnsureUniqueUsername(username)
+	if err != nil {
+		return nil, fmt.Errorf("generate username: %w", err)
+	}
+
+	_, err = s.db.Exec(s.q(`
+		INSERT INTO users (id, email, username, name, password_hash, role, avatar_url, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, strings.ToLower(strings.TrimSpace(email)), username, strings.TrimSpace(name), string(hash), "member", avatarURL, ts, ts)
+	if err != nil {
+		return nil, fmt.Errorf("insert oauth user: %w", err)
+	}
+
+	return s.GetUser(id)
+}
+
+// DeleteUser permanently deletes a user by ID.
+func (s *Store) DeleteUser(id string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
 }
 
 // --- Username backfill ---
@@ -319,14 +389,14 @@ func (s *Store) backfillUsernames() error {
 
 // --- TOTP 2FA ---
 
-// TODO: Encrypt TOTP secret at rest using an app-level encryption key
-// (e.g., AES-256-GCM with a key from PAD_ENCRYPTION_KEY env var).
-// The secret must remain decryptable for TOTP validation, so hashing
-// is not an option here. For now, it is stored as plaintext.
-
 // SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
+// The secret is encrypted at rest if an encryption key is configured.
 func (s *Store) SetTOTPSecret(userID, secret string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?`), secret, now(), userID)
+	encrypted, err := s.encrypt(secret)
+	if err != nil {
+		return fmt.Errorf("encrypt totp secret: %w", err)
+	}
+	_, err = s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?`), encrypted, now(), userID)
 	if err != nil {
 		return fmt.Errorf("set totp secret: %w", err)
 	}
@@ -334,19 +404,37 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 }
 
 // EnableTOTP atomically enables 2FA for a user and stores hashed recovery codes.
-// The expectedSecret must match the currently stored totp_secret to prevent
-// TOCTOU races (e.g., a concurrent setup call overwriting the secret).
+// The expectedSecret is the plaintext secret — it's compared against the stored
+// (possibly encrypted) value to prevent TOCTOU races.
 func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) error {
+	// Read the stored (possibly encrypted) secret to compare
+	var storedSecret string
+	err := s.db.QueryRow(s.q(`SELECT totp_secret FROM users WHERE id = ? AND totp_enabled = ?`),
+		userID, s.dialect.BoolToInt(false)).Scan(&storedSecret)
+	if err != nil {
+		return fmt.Errorf("enable totp: read secret: %w", err)
+	}
+
+	// Decrypt stored secret for comparison
+	decrypted, err := s.decrypt(storedSecret)
+	if err != nil {
+		return fmt.Errorf("enable totp: decrypt stored secret: %w", err)
+	}
+	if decrypted != expectedSecret {
+		return fmt.Errorf("enable totp: secret mismatch or user not found")
+	}
+
+	// Update — use the stored (encrypted) value in WHERE for atomicity
 	result, err := s.db.Exec(s.q(
 		`UPDATE users SET totp_enabled = ?, recovery_codes = ?, updated_at = ?
 		 WHERE id = ? AND totp_secret = ? AND totp_enabled = ?`),
-		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, expectedSecret, s.dialect.BoolToInt(false))
+		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, storedSecret, s.dialect.BoolToInt(false))
 	if err != nil {
 		return fmt.Errorf("enable totp: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("enable totp: secret mismatch or user not found")
+		return fmt.Errorf("enable totp: concurrent modification or user not found")
 	}
 	return nil
 }

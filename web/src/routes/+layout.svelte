@@ -20,6 +20,7 @@
 	let authReady = $state(false);
 	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/'));
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
+	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
 
 	onMount(async () => {
 		// Initialize theme
@@ -120,7 +121,7 @@
 
 {#if !authReady}
 	<!-- Auth check in progress — blank screen to avoid flash -->
-{:else if isAuthPage || isSharePage}
+{:else if isAuthPage || isSharePage || isConsolePage}
 	{@render children()}
 {:else}
 	{#if uiStore.isMobile && uiStore.sidebarOpen}

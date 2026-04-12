@@ -101,6 +101,7 @@ export interface HealthResponse {
 	version?: string;
 	commit?: string;
 	build_time?: string;
+	cloud_mode?: boolean;
 }
 
 export interface AuthSession {
@@ -108,11 +109,12 @@ export interface AuthSession {
 	setup_required: boolean;
 	setup_method?: 'local_cli' | 'docker_exec' | 'cloud';
 	auth_method: 'password' | 'cloud';
-	user?: { id: string; email: string; username: string; name: string; role: string };
+	cloud_mode?: boolean;
+	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
 export interface LoginResponse {
-	user?: { id: string; email: string; username: string; name: string; role: string };
+	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 	token?: string;
 	requires_2fa?: boolean;
 	challenge_token?: string;

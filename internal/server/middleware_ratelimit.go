@@ -1,6 +1,8 @@
 package server
 
 import (
+	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,6 +78,8 @@ type RateLimiters struct {
 	PasswordReset *ipRateLimiter
 	// Registration: per-IP
 	Register *ipRateLimiter
+	// OAuth login: per-IP (higher limit since pad-cloud sidecar calls this)
+	OAuthLogin *ipRateLimiter
 	// API: per-user (authenticated)
 	API *ipRateLimiter
 	// Search: per-user or per-IP
@@ -99,6 +103,11 @@ func NewRateLimiters() *RateLimiters {
 		Register: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(5.0 / 3600.0),
 			Burst: 5,
+		}),
+		// OAuth login: 20 per minute per IP (sidecar calls this — higher than regular auth)
+		OAuthLogin: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(20.0 / 60.0),
+			Burst: 20,
 		}),
 		// API: 600 requests per minute per user/IP (= 10 per second, burst 60)
 		// Local-first tool with SSE-driven UI needs headroom for cascading refreshes.
@@ -143,14 +152,20 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				limiter = s.rateLimiters.PasswordReset
 			case path == "/api/v1/auth/register":
 				limiter = s.rateLimiters.Register
+			case path == "/api/v1/auth/oauth-login":
+				limiter = s.rateLimiters.OAuthLogin
 			default:
 				// Other auth endpoints (session check, logout) — use general API limit
 				limiter = s.rateLimiters.API
 			}
 
-			if limiter != nil && !limiter.getLimiter(ip).Allow() {
-				writeTooManyRequests(w)
-				return
+			if limiter != nil {
+				l := limiter.getLimiter(ip)
+				if !l.Allow() {
+					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "auth")
+					writeRateLimitResponse(w, limiter.config)
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 			return
@@ -160,7 +175,8 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if path == "/api/v1/search" {
 			key := rateLimitKey(r, ip)
 			if !s.rateLimiters.Search.getLimiter(key).Allow() {
-				writeTooManyRequests(w)
+				slog.Warn("rate limited", "key", key, "path", path, "limiter", "search")
+				writeRateLimitResponse(w, s.rateLimiters.Search.config)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -170,7 +186,8 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// General API rate limit
 		key := rateLimitKey(r, ip)
 		if !s.rateLimiters.API.getLimiter(key).Allow() {
-			writeTooManyRequests(w)
+			slog.Warn("rate limited", "key", key, "path", path, "limiter", "api")
+			writeRateLimitResponse(w, s.rateLimiters.API.config)
 			return
 		}
 
@@ -199,8 +216,28 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// writeTooManyRequests sends a 429 response with a Retry-After header.
+// writeRateLimitResponse sends a 429 response with Retry-After and X-RateLimit-* headers.
+func writeRateLimitResponse(w http.ResponseWriter, cfg rateLimitConfig) {
+	// Calculate retry-after from the rate (seconds until one token is available)
+	retryAfter := int(math.Ceil(1.0 / float64(cfg.Rate)))
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	if retryAfter > 3600 {
+		retryAfter = 3600
+	}
+
+	// Calculate requests per minute for the limit header
+	limitPerMinute := int(math.Ceil(float64(cfg.Rate) * 60))
+
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limitPerMinute))
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Please try again later.")
+}
+
+// writeTooManyRequests sends a basic 429 response (for backward compatibility in tests).
 func writeTooManyRequests(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", strconv.Itoa(60)) // suggest retry after 60s
+	w.Header().Set("Retry-After", strconv.Itoa(60))
 	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Please try again later.")
 }
