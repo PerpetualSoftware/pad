@@ -30,4 +30,4 @@ EXPOSE 7777
 VOLUME /data
 
 ENTRYPOINT ["pad"]
-CMD ["server"]
+CMD ["server", "start"]
