@@ -193,8 +193,13 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 // on the server host or from inside the container.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if s.cloudMode {
-		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is disabled in cloud mode — users register via OAuth or invitation")
-		return
+		// Allow bootstrap in cloud mode ONLY when no users exist yet.
+		// A fresh cloud instance needs at least one admin before OAuth can work.
+		count, err := s.store.UserCount()
+		if err != nil || count > 0 {
+			writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is disabled in cloud mode — users register via OAuth or invitation")
+			return
+		}
 	}
 	if !requestIsLoopback(r) {
 		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost on the server host")
