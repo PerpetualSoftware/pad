@@ -8,8 +8,7 @@ import (
 )
 
 const (
-	csrfCookie = "pad_csrf"
-	csrfHeader = "X-CSRF-Token"
+	csrfHeader   = "X-CSRF-Token"
 	csrfTokenLen = 32 // 32 bytes = 64 hex chars
 )
 
@@ -61,7 +60,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		}
 
 		// Cookie-based session: require CSRF token
-		cookie, err := r.Cookie(csrfCookie)
+		cookie, err := r.Cookie(csrfCookieName(s.secureCookies))
 		if err != nil || cookie.Value == "" {
 			writeError(w, http.StatusForbidden, "csrf_error", "Missing CSRF token")
 			return
@@ -87,7 +86,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 func setCSRFCookie(w http.ResponseWriter, ttl int, secure bool) {
 	token := generateCSRFToken()
 	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookie,
+		Name:     csrfCookieName(secure),
 		Value:    token,
 		Path:     "/",
 		MaxAge:   ttl,
@@ -98,15 +97,18 @@ func setCSRFCookie(w http.ResponseWriter, ttl int, secure bool) {
 }
 
 // clearCSRFCookie removes the CSRF cookie (e.g. on logout).
+// Must clear both prefixed and unprefixed names to handle upgrades cleanly.
 func clearCSRFCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookie,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-	})
+	for _, name := range []string{"pad_csrf", "__Host-pad_csrf"} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: false,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
 }
 
 // generateCSRFToken returns a cryptographically random hex string.

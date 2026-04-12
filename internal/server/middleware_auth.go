@@ -132,7 +132,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		}
 
 		// Try session cookie
-		cookie, err := r.Cookie(sessionCookie)
+		cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
 		if err != nil {
 			next.ServeHTTP(w, r)
 			return
@@ -157,7 +157,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// This can happen when cookies expire at different times or are selectively cleared.
 		// Skip for auth endpoints — they manage their own CSRF cookies (login sets, logout clears).
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
-			if _, csrfErr := r.Cookie(csrfCookie); csrfErr != nil {
+			if _, csrfErr := r.Cookie(csrfCookieName(s.secureCookies)); csrfErr != nil {
 				setCSRFCookie(w, 7*24*60*60, s.secureCookies)
 			}
 		}

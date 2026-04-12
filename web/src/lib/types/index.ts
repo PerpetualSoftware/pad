@@ -7,6 +7,7 @@ export interface User {
 	name: string;
 	role: string;
 	avatar_url?: string;
+	oauth_providers?: string[];
 	created_at: string;
 	updated_at: string;
 }

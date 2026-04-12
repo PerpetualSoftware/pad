@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -18,7 +19,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 const bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -30,7 +31,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
-		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides,
+		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&createdAt, &updatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -210,6 +211,83 @@ func (s *Store) ListUsers() ([]models.User, error) {
 	return result, rows.Err()
 }
 
+// AdminUserSearchParams holds parameters for the admin user search query.
+type AdminUserSearchParams struct {
+	Query  string // Search in email, name, username
+	Plan   string // Filter by plan (free, pro, self-hosted)
+	Limit  int    // Max results (default 50, max 200)
+	Offset int    // Pagination offset
+}
+
+// AdminUserSearchResult holds the paginated search results.
+type AdminUserSearchResult struct {
+	Users []models.User `json:"users"`
+	Total int           `json:"total"`
+}
+
+// SearchUsers returns a filtered, paginated list of users for admin management.
+// Filters and pagination are pushed into SQL to avoid loading all users into memory.
+func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResult, error) {
+	if params.Limit <= 0 || params.Limit > 200 {
+		params.Limit = 50
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	var where []string
+	var args []interface{}
+
+	if params.Query != "" {
+		q := "%" + strings.ToLower(params.Query) + "%"
+		where = append(where, "(LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(username) LIKE ?)")
+		args = append(args, q, q, q)
+	}
+	if params.Plan != "" {
+		where = append(where, "plan = ?")
+		args = append(args, params.Plan)
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	// Get total count
+	countQuery := s.q("SELECT COUNT(*) FROM users " + whereClause)
+	var total int
+	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("search users count: %w", err)
+	}
+
+	// Get paginated results
+	query := s.q("SELECT " + userColumns + " FROM users " + whereClause + " ORDER BY created_at DESC LIMIT ? OFFSET ?")
+	fullArgs := append(args, params.Limit, params.Offset)
+	rows, err := s.db.Query(query, fullArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("search users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("search users scan: %w", err)
+		}
+		_ = s.decryptUserTOTP(u)
+		users = append(users, *u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search users rows: %w", err)
+	}
+
+	return &AdminUserSearchResult{
+		Users: users,
+		Total: total,
+	}, nil
+}
+
 // UserCount returns the total number of registered users.
 func (s *Store) UserCount() (int, error) {
 	var count int
@@ -254,11 +332,125 @@ func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, er
 	return s.GetUser(id)
 }
 
+// AddOAuthProvider adds a provider to the user's oauth_providers list.
+// No-op if the provider is already linked.
+func (s *Store) AddOAuthProvider(userID, provider string) error {
+	user, err := s.GetUser(userID)
+	if err != nil {
+		return fmt.Errorf("add oauth provider: %w", err)
+	}
+	if user == nil {
+		return fmt.Errorf("add oauth provider: user not found")
+	}
+
+	if user.HasOAuthProvider(provider) {
+		return nil // Already linked
+	}
+
+	providers := user.GetOAuthProviders()
+	providers = append(providers, provider)
+	data, err := json.Marshal(providers)
+	if err != nil {
+		return fmt.Errorf("add oauth provider: marshal: %w", err)
+	}
+
+	_, err = s.db.Exec(s.q(`UPDATE users SET oauth_providers = ?, updated_at = ? WHERE id = ?`),
+		string(data), now(), userID)
+	if err != nil {
+		return fmt.Errorf("add oauth provider: %w", err)
+	}
+	return nil
+}
+
+// RemoveOAuthProvider removes a provider from the user's oauth_providers list.
+func (s *Store) RemoveOAuthProvider(userID, provider string) error {
+	user, err := s.GetUser(userID)
+	if err != nil {
+		return fmt.Errorf("remove oauth provider: %w", err)
+	}
+	if user == nil {
+		return fmt.Errorf("remove oauth provider: user not found")
+	}
+
+	providers := user.GetOAuthProviders()
+	var filtered []string
+	for _, p := range providers {
+		if p != provider {
+			filtered = append(filtered, p)
+		}
+	}
+
+	var val string
+	if len(filtered) > 0 {
+		data, err := json.Marshal(filtered)
+		if err != nil {
+			return fmt.Errorf("remove oauth provider: marshal: %w", err)
+		}
+		val = string(data)
+	}
+
+	_, err = s.db.Exec(s.q(`UPDATE users SET oauth_providers = ?, updated_at = ? WHERE id = ?`),
+		val, now(), userID)
+	if err != nil {
+		return fmt.Errorf("remove oauth provider: %w", err)
+	}
+	return nil
+}
+
 // DeleteUser permanently deletes a user by ID.
 func (s *Store) DeleteUser(id string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
+}
+
+// DeleteAccountAtomic deletes a user and all their owned workspaces in a single
+// transaction. If any step fails, the entire operation is rolled back and no data
+// is modified. This prevents orphaned workspaces from partial deletions.
+func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete account: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	ts := now()
+
+	// 1. Soft-delete all owned workspaces
+	for _, slug := range ownedWorkspaceSlugs {
+		result, err := tx.Exec(s.q(`
+			UPDATE workspaces SET deleted_at = ?, updated_at = ?
+			WHERE slug = ? AND deleted_at IS NULL
+		`), ts, ts, slug)
+		if err != nil {
+			return fmt.Errorf("delete account: delete workspace %s: %w", slug, err)
+		}
+		rows, _ := result.RowsAffected()
+		if rows == 0 {
+			// Workspace already deleted or not found — not an error
+			continue
+		}
+	}
+
+	// 2. Revoke all sessions
+	if _, err := tx.Exec(s.q("DELETE FROM sessions WHERE user_id = ?"), userID); err != nil {
+		return fmt.Errorf("delete account: delete sessions: %w", err)
+	}
+
+	// 3. Revoke all API tokens
+	if _, err := tx.Exec(s.q("DELETE FROM api_tokens WHERE user_id = ?"), userID); err != nil {
+		return fmt.Errorf("delete account: delete api tokens: %w", err)
+	}
+
+	// 4. Delete the user record
+	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
+		return fmt.Errorf("delete account: delete user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete account: commit: %w", err)
 	}
 	return nil
 }

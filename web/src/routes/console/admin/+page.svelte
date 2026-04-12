@@ -4,9 +4,12 @@
 
 	const BASE = '/api/v1';
 
-	function csrfToken(): string {
+	function getCSRFToken(): string | null {
+		// Check __Host- prefixed cookie first (secure/TLS mode), fall back to unprefixed
+		const hostMatch = document.cookie.match(/(?:^|;\s*)__Host-pad_csrf=([^;]+)/);
+		if (hostMatch) return hostMatch[1];
 		const match = document.cookie.match(/(?:^|;\s*)pad_csrf=([^;]+)/);
-		return match?.[1] ?? '';
+		return match ? match[1] : null;
 	}
 
 	async function adminFetch(path: string, opts?: RequestInit) {
@@ -16,9 +19,12 @@
 	}
 
 	async function adminPatch(path: string, body: unknown) {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		const csrf = getCSRFToken();
+		if (csrf) headers['X-CSRF-Token'] = csrf;
 		return adminFetch(path, {
 			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
+			headers,
 			body: JSON.stringify(body)
 		});
 	}

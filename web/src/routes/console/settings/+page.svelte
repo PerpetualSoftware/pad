@@ -20,6 +20,23 @@
 	let passwordMsg = $state('');
 	let passwordError = $state('');
 
+	// OAuth providers
+	let providerMsg = $state('');
+	let providerError = $state('');
+
+	async function unlinkProvider(provider: string) {
+		providerMsg = '';
+		providerError = '';
+		try {
+			await api.auth.unlinkProvider(provider);
+			// Refresh profile to get updated providers list
+			profile = await api.auth.me();
+			providerMsg = `${provider === 'github' ? 'GitHub' : 'Google'} unlinked.`;
+		} catch (err) {
+			providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
+		}
+	}
+
 	// Tokens
 	let tokens = $state<APIToken[]>([]);
 	let newTokenName = $state('');
@@ -200,6 +217,36 @@
 				</button>
 			</div>
 		</section>
+
+		<!-- Linked Accounts (cloud mode only) -->
+		{#if authStore.cloudMode}
+			<section class="card">
+				<h2 class="card-title">Linked Accounts</h2>
+				<div class="card-body">
+					<p class="section-desc">Link OAuth providers for single sign-on. You can sign in with any linked provider.</p>
+					{#each ['github', 'google'] as provider (provider)}
+						{@const linked = profile?.oauth_providers?.includes(provider) ?? false}
+						<div class="provider-row">
+							<div class="provider-info">
+								<span class="provider-name">{provider === 'github' ? 'GitHub' : 'Google'}</span>
+								{#if linked}
+									<span class="provider-badge linked">Linked</span>
+								{:else}
+									<span class="provider-badge">Not linked</span>
+								{/if}
+							</div>
+							{#if linked}
+								<button class="delete-btn" onclick={() => unlinkProvider(provider)}>Unlink</button>
+							{:else}
+								<a href="/auth/{provider}/link" class="primary-btn small">Link {provider === 'github' ? 'GitHub' : 'Google'}</a>
+							{/if}
+						</div>
+					{/each}
+					{#if providerMsg}<p class="success">{providerMsg}</p>{/if}
+					{#if providerError}<p class="error">{providerError}</p>{/if}
+				</div>
+			</section>
+		{/if}
 
 		<!-- API Tokens -->
 		<section class="card">
@@ -450,5 +497,52 @@
 	.empty-text {
 		color: var(--text-muted);
 		font-size: 0.85rem;
+	}
+
+	.provider-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-3) var(--space-4);
+		background: var(--bg-tertiary);
+		border-radius: var(--radius);
+	}
+
+	.provider-info {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.provider-name {
+		font-weight: 500;
+		font-size: 0.9rem;
+		color: var(--text-primary);
+	}
+
+	.provider-badge {
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-sm);
+		font-size: 0.75rem;
+		font-weight: 500;
+		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
+		color: var(--text-muted);
+	}
+
+	.provider-badge.linked {
+		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+		color: var(--accent-green);
+	}
+
+	.section-desc {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		margin-top: calc(-1 * var(--space-2));
+	}
+
+	.primary-btn.small {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.8rem;
+		text-decoration: none;
 	}
 </style>

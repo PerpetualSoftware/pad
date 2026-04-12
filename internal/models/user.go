@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // User represents a registered user in the system.
 type User struct {
@@ -18,8 +21,31 @@ type User struct {
 	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
 	StripeCustomerID string    `json:"-"`                       // Never serialized
 	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
+	OAuthProviders   string    `json:"-"`                       // JSON array of linked providers, e.g. ["github","google"]
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// GetOAuthProviders parses the JSON oauth_providers field into a string slice.
+func (u *User) GetOAuthProviders() []string {
+	if u.OAuthProviders == "" {
+		return nil
+	}
+	var providers []string
+	if err := json.Unmarshal([]byte(u.OAuthProviders), &providers); err != nil {
+		return nil
+	}
+	return providers
+}
+
+// HasOAuthProvider returns true if the user has linked the given provider.
+func (u *User) HasOAuthProvider(provider string) bool {
+	for _, p := range u.GetOAuthProviders() {
+		if p == provider {
+			return true
+		}
+	}
+	return false
 }
 
 // UserCreate is the input for registering a new user.

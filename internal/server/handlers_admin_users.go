@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
@@ -20,44 +19,47 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users, err := s.store.ListUsers()
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	result, err := s.store.SearchUsers(store.AdminUserSearchParams{
+		Query:  r.URL.Query().Get("q"),
+		Plan:   r.URL.Query().Get("plan"),
+		Limit:  limit,
+		Offset: offset,
+	})
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 
-	// Filter by plan if specified
-	planFilter := r.URL.Query().Get("plan")
-	searchQuery := strings.ToLower(r.URL.Query().Get("q"))
-
 	type adminUser struct {
-		ID             string `json:"id"`
-		Email          string `json:"email"`
-		Username       string `json:"username"`
-		Name           string `json:"name"`
-		Role           string `json:"role"`
-		Plan           string `json:"plan"`
-		PlanExpiresAt  string `json:"plan_expires_at,omitempty"`
-		PlanOverrides  string `json:"plan_overrides,omitempty"`
-		TOTPEnabled    bool   `json:"totp_enabled"`
-		CreatedAt      string `json:"created_at"`
-		UpdatedAt      string `json:"updated_at"`
+		ID            string `json:"id"`
+		Email         string `json:"email"`
+		Username      string `json:"username"`
+		Name          string `json:"name"`
+		Role          string `json:"role"`
+		Plan          string `json:"plan"`
+		PlanExpiresAt string `json:"plan_expires_at,omitempty"`
+		PlanOverrides string `json:"plan_overrides,omitempty"`
+		TOTPEnabled   bool   `json:"totp_enabled"`
+		CreatedAt     string `json:"created_at"`
+		UpdatedAt     string `json:"updated_at"`
 	}
 
-	var result []adminUser
-	for _, u := range users {
-		// Filter
-		if planFilter != "" && u.Plan != planFilter {
-			continue
-		}
-		if searchQuery != "" &&
-			!strings.Contains(strings.ToLower(u.Email), searchQuery) &&
-			!strings.Contains(strings.ToLower(u.Name), searchQuery) &&
-			!strings.Contains(strings.ToLower(u.Username), searchQuery) {
-			continue
-		}
-
-		result = append(result, adminUser{
+	users := make([]adminUser, 0, len(result.Users))
+	for _, u := range result.Users {
+		users = append(users, adminUser{
 			ID:            u.ID,
 			Email:         u.Email,
 			Username:      u.Username,
@@ -72,11 +74,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if result == nil {
-		result = []adminUser{}
-	}
-
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, users)
 }
 
 // handleAdminGetUser returns a single user with full detail.

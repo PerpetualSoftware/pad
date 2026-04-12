@@ -80,6 +80,8 @@ type RateLimiters struct {
 	Register *ipRateLimiter
 	// OAuth login: per-IP (higher limit since pad-cloud sidecar calls this)
 	OAuthLogin *ipRateLimiter
+	// Cloud admin: per-IP for sidecar-to-pad admin endpoints (plan, stripe, user lookup)
+	CloudAdmin *ipRateLimiter
 	// API: per-user (authenticated)
 	API *ipRateLimiter
 	// Search: per-user or per-IP
@@ -104,10 +106,16 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(5.0 / 3600.0),
 			Burst: 5,
 		}),
-		// OAuth login: 20 per minute per IP (sidecar calls this — higher than regular auth)
+		// OAuth login/link: 20 per minute per IP (sidecar calls this — higher than regular auth)
 		OAuthLogin: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(20.0 / 60.0),
 			Burst: 20,
+		}),
+		// Cloud admin: 30 per minute per IP for sidecar admin calls (plan changes, Stripe mapping)
+		// These are cloud-secret gated but rate-limited for defense in depth.
+		CloudAdmin: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(30.0 / 60.0),
+			Burst: 10,
 		}),
 		// API: 600 requests per minute per user/IP (= 10 per second, burst 60)
 		// Local-first tool with SSE-driven UI needs headroom for cascading refreshes.
@@ -152,8 +160,10 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				limiter = s.rateLimiters.PasswordReset
 			case path == "/api/v1/auth/register":
 				limiter = s.rateLimiters.Register
-			case path == "/api/v1/auth/oauth-login":
+			case path == "/api/v1/auth/oauth-login" || path == "/api/v1/auth/oauth-link":
 				limiter = s.rateLimiters.OAuthLogin
+			case path == "/api/v1/auth/oauth-unlink":
+				limiter = s.rateLimiters.Auth // Same as login — 5/min, user-initiated
 			default:
 				// Other auth endpoints (session check, logout) — use general API limit
 				limiter = s.rateLimiters.API
@@ -169,6 +179,20 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		// Cloud admin endpoints (sidecar → pad): plan changes, Stripe mapping, user lookup
+		if strings.HasPrefix(path, "/api/v1/admin/") {
+			switch path {
+			case "/api/v1/admin/plan", "/api/v1/admin/stripe-customer-id", "/api/v1/admin/user-by-customer":
+				l := s.rateLimiters.CloudAdmin.getLimiter(ip)
+				if !l.Allow() {
+					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "cloud_admin")
+					writeRateLimitResponse(w, s.rateLimiters.CloudAdmin.config)
+					return
+				}
+			}
+			// Other admin endpoints fall through to general API limit below
 		}
 
 		// Search endpoint

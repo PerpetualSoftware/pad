@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
 // PlanLimits defines the limits for a billing plan tier.
@@ -327,4 +330,21 @@ func (s *Store) SetUserStripeCustomerID(userID, customerID string) error {
 		return fmt.Errorf("set stripe customer id: %w", err)
 	}
 	return nil
+}
+
+// GetUserByStripeCustomerID retrieves a user by their Stripe customer ID.
+// Returns nil if no user is found with the given customer ID.
+func (s *Store) GetUserByStripeCustomerID(customerID string) (*models.User, error) {
+	customerID = strings.TrimSpace(customerID)
+	if customerID == "" {
+		return nil, nil
+	}
+	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE stripe_customer_id = ?`), customerID))
+	if err != nil {
+		return nil, fmt.Errorf("get user by stripe customer id: %w", err)
+	}
+	if err := s.decryptUserTOTP(u); err != nil {
+		return nil, err
+	}
+	return u, nil
 }

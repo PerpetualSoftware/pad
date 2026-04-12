@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	sessionCookie = "pad_session"
 	webSessionTTL = 7 * 24 * time.Hour  // 7 days for web sessions
 	cliSessionTTL = 30 * 24 * time.Hour // 30 days for CLI tokens
 
@@ -26,6 +25,25 @@ const (
 )
 
 var emailRegexp = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
+// sessionCookieName returns the session cookie name. When running over TLS
+// (secureCookies=true), the __Host- prefix is used to prevent subdomain
+// cookie injection attacks.
+func sessionCookieName(secure bool) string {
+	if secure {
+		return "__Host-pad_session"
+	}
+	return "pad_session"
+}
+
+// csrfCookieName returns the CSRF cookie name. Uses the same __Host- prefix
+// strategy as the session cookie.
+func csrfCookieName(secure bool) string {
+	if secure {
+		return "__Host-pad_csrf"
+	}
+	return "pad_csrf"
+}
 
 func sessionUserPayload(user *models.User) map[string]interface{} {
 	if user == nil {
@@ -128,9 +146,13 @@ func requestIsLoopback(r *http.Request) bool {
 // (User-Agent check). Returns the user if valid, nil otherwise. This must be
 // used instead of calling ValidateSession directly to ensure binding is enforced.
 func (s *Server) validateSessionCookie(r *http.Request) *models.User {
-	cookie, err := r.Cookie(sessionCookie)
+	cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
 	if err != nil {
-		return nil
+		// Fallback: check the unprefixed name for sessions created before the upgrade
+		cookie, err = r.Cookie("pad_session")
+		if err != nil {
+			return nil
+		}
 	}
 	session, _ := s.store.ValidateSession(cookie.Value)
 	if session == nil || session.User == nil {
@@ -151,7 +173,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
+		Name:     sessionCookieName(s.secureCookies),
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(ttl.Seconds()),
@@ -507,7 +529,7 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 // It handles both cookie-based sessions (web) and Bearer token sessions (CLI).
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Revoke cookie-based session
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
+	if cookie, err := r.Cookie(sessionCookieName(s.secureCookies)); err == nil {
 		_ = s.store.DeleteSession(cookie.Value)
 	}
 
@@ -520,7 +542,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
+		Name:     sessionCookieName(s.secureCookies),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -551,7 +573,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"id":         user.ID,
 		"email":      user.Email,
 		"username":   user.Username,
@@ -560,7 +582,23 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"avatar_url": user.AvatarURL,
 		"created_at": user.CreatedAt,
 		"updated_at": user.UpdatedAt,
-	})
+	}
+
+	// Include Stripe customer ID when present (used by pad-cloud sidecar
+	// to create billing portal sessions without accepting customer_id from
+	// the client, preventing users from accessing other users' portals).
+	if user.StripeCustomerID != "" {
+		resp["stripe_customer_id"] = user.StripeCustomerID
+	}
+
+	// Include linked OAuth providers (used by settings UI for link/unlink)
+	if providers := user.GetOAuthProviders(); len(providers) > 0 {
+		resp["oauth_providers"] = providers
+	} else {
+		resp["oauth_providers"] = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleUpdateCurrentUser updates the authenticated user's profile.
@@ -786,7 +824,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
+		Name:     sessionCookieName(s.secureCookies),
 		Value:    sessionToken,
 		Path:     "/",
 		MaxAge:   int(webSessionTTL.Seconds()),
