@@ -10,14 +10,16 @@
 	let saving = $state(false);
 	let saveMsg = $state('');
 	let loading = $state(true);
+	let error = $state('');
 
 	async function loadUsers() {
 		loading = true;
+		error = '';
 		try {
 			const result = await adminFetch('/admin/users');
 			users = result.users ?? result;
-		} catch {
-			/* keep empty */
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load users';
 		} finally {
 			loading = false;
 		}
@@ -73,6 +75,11 @@
 <div class="users-page">
 	{#if loading}
 		<div class="loading-msg">Loading users...</div>
+	{:else if error}
+		<div class="error-msg">
+			<p>{error}</p>
+			<button class="btn" onclick={loadUsers}>Retry</button>
+		</div>
 	{:else}
 		<div class="search-row">
 			<input
@@ -306,5 +313,19 @@
 		padding: var(--space-6) 0;
 		text-align: center;
 		font-size: 0.9rem;
+	}
+	.error-msg {
+		color: #ef4444;
+		padding: var(--space-6);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.error-msg p {
+		margin: 0;
+		font-size: 0.85rem;
 	}
 </style>
