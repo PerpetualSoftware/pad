@@ -13,6 +13,7 @@ import (
 
 	pad "github.com/xarmian/pad"
 	"github.com/xarmian/pad/internal/cli"
+	"github.com/xarmian/pad/internal/collections"
 	"github.com/xarmian/pad/internal/config"
 	"github.com/xarmian/pad/internal/models"
 )
@@ -42,6 +43,24 @@ Examples:
   pad init --template scrum   # Use scrum template for new workspace`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate template name up front before any state changes
+			if templateFlag != "" {
+				tmpl := collections.GetTemplate(templateFlag)
+				if tmpl == nil {
+					fmt.Fprintf(os.Stderr, "Unknown template: %s\n\n", templateFlag)
+					tmpls := collections.ListTemplates()
+					fmt.Fprintln(os.Stderr, "Available templates:")
+					for _, t := range tmpls {
+						def := ""
+						if t.Name == "startup" {
+							def = " (default)"
+						}
+						fmt.Fprintf(os.Stderr, "  %-10s %s%s\n", t.Name, t.Description, def)
+					}
+					return fmt.Errorf("unknown template %q", templateFlag)
+				}
+			}
+
 			green := color.New(color.FgGreen)
 			bold := color.New(color.Bold)
 
