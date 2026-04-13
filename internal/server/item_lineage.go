@@ -176,9 +176,11 @@ func (s *Server) deriveItemClosure(item *models.Item, vis []string) (*models.Ite
 			RelatedItems: implementedBy,
 		}, nil
 	}
+	// NOTE: split_into does NOT auto-close the original item. Splitting work
+	// out doesn't mean the original is done — it still stands on its own.
 	if len(splitChildren) > 0 && allSplitChildrenDone {
 		return &models.ItemDerivedClosure{
-			IsClosed:     true,
+			IsClosed:     false,
 			Kind:         "split_into",
 			Summary:      "Split into completed items " + summarizeRelationRefs(splitChildren),
 			RelatedItems: splitChildren,
