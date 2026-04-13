@@ -59,6 +59,13 @@
 	let saveMsg = $state('');
 	let limitMsg = $state('');
 
+	// Email settings
+	let platformSettings = $state<Record<string, string>>({});
+	let savingPlatform = $state(false);
+	let platformStatus = $state<'idle' | 'saved' | 'error'>('idle');
+	let testingEmail = $state(false);
+	let testEmailResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
+
 	function formatDate(d: string): string {
 		return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
@@ -139,8 +146,66 @@
 		limits[tier] = { ...limits[tier], [key]: isNaN(num) ? 0 : num };
 	}
 
+	async function loadEmailSettings() {
+		try {
+			const resp = await fetch(BASE + '/admin/settings', { credentials: 'same-origin' });
+			if (resp.ok) platformSettings = await resp.json();
+		} catch {}
+	}
+
+	async function savePlatformSettings() {
+		if (savingPlatform) return;
+		savingPlatform = true;
+		platformStatus = 'idle';
+		try {
+			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+			const csrf = getCSRFToken();
+			if (csrf) headers['X-CSRF-Token'] = csrf;
+			await fetch(BASE + '/admin/settings', {
+				method: 'PATCH',
+				credentials: 'same-origin',
+				headers,
+				body: JSON.stringify(platformSettings)
+			});
+			platformStatus = 'saved';
+			setTimeout(() => (platformStatus = 'idle'), 2000);
+		} catch {
+			platformStatus = 'error';
+		} finally {
+			savingPlatform = false;
+		}
+	}
+
+	async function sendTestEmail() {
+		testingEmail = true;
+		testEmailResult = null;
+		try {
+			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+			const csrf = getCSRFToken();
+			if (csrf) headers['X-CSRF-Token'] = csrf;
+			const resp = await fetch(BASE + '/admin/test-email', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers
+			});
+			if (!resp.ok) throw new Error('Failed to send test email');
+			const result = await resp.json();
+			testEmailResult = { message: `Test email sent to ${result.sent_to}`, type: 'success' };
+		} catch (err: unknown) {
+			testEmailResult = {
+				message: err instanceof Error ? err.message : 'Failed to send test email',
+				type: 'error'
+			};
+		} finally {
+			testingEmail = false;
+		}
+	}
+
 	onMount(() => {
-		if (isAdmin) loadData();
+		if (isAdmin) {
+			loadData();
+			loadEmailSettings();
+		}
 	});
 </script>
 
@@ -240,8 +305,8 @@
 			</div>
 		</section>
 
-		<!-- Plan Limits section -->
-		{#if limits}
+		<!-- Plan Limits section (cloud mode only) -->
+		{#if limits && stats?.cloud_mode}
 			<section class="section">
 				<h2 class="section-title">Plan Limits</h2>
 				<p class="section-desc">Use -1 for unlimited.</p>
@@ -283,6 +348,66 @@
 				</div>
 			</section>
 		{/if}
+
+		<!-- Email Configuration -->
+		<section class="section">
+			<h2 class="section-title">Email Configuration</h2>
+			<p class="section-desc">Configure transactional email for invitations, password resets, and notifications.</p>
+			<div class="email-card">
+				<div class="email-field">
+					<label for="email-provider">Provider</label>
+					<select id="email-provider" bind:value={platformSettings['email_provider']}
+						onchange={() => { if (!platformSettings['email_provider']) platformSettings['email_provider'] = ''; }}>
+						<option value="">Disabled</option>
+						<option value="maileroo">Maileroo</option>
+					</select>
+				</div>
+				{#if platformSettings['email_provider'] === 'maileroo'}
+					<div class="email-field">
+						<label for="maileroo-key">API Key</label>
+						<input id="maileroo-key" type="password" bind:value={platformSettings['maileroo_api_key']}
+							placeholder="Enter Maileroo sending key" />
+					</div>
+				{/if}
+				<div class="email-field">
+					<label for="email-from">From Address</label>
+					<input id="email-from" type="email" bind:value={platformSettings['email_from']}
+						placeholder="noreply@yourdomain.com" />
+				</div>
+				<div class="email-field">
+					<label for="email-name">From Name</label>
+					<input id="email-name" type="text" bind:value={platformSettings['email_from_name']}
+						placeholder="Pad" />
+				</div>
+				<div class="edit-actions">
+					<button class="btn primary" onclick={savePlatformSettings} disabled={savingPlatform}>
+						{savingPlatform ? 'Saving...' : 'Save Email Settings'}
+					</button>
+					{#if platformStatus === 'saved'}
+						<span class="save-msg" style="color: var(--accent-green);">Saved</span>
+					{:else if platformStatus === 'error'}
+						<span class="save-msg" style="color: #ef4444;">Error</span>
+					{/if}
+				</div>
+			</div>
+
+			{#if platformSettings['email_provider']}
+				<div class="email-card">
+					<h3 class="email-subheading">Test Email</h3>
+					<p class="section-desc">Send a test email to verify your configuration is working.</p>
+					<div class="edit-actions">
+						<button class="btn" onclick={sendTestEmail} disabled={testingEmail}>
+							{testingEmail ? 'Sending...' : 'Send Test Email'}
+						</button>
+						{#if testEmailResult}
+							<span class="save-msg" style="color: {testEmailResult.type === 'success' ? 'var(--accent-green)' : '#ef4444'};">
+								{testEmailResult.message}
+							</span>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</section>
 	{/if}
 </div>
 
@@ -384,4 +509,20 @@
 		font-size: 0.85rem; outline: none;
 	}
 	.limit-input:focus { border-color: var(--accent-blue); }
+
+	/* Email config */
+	.email-card {
+		padding: var(--space-4) var(--space-5); background: var(--bg-secondary);
+		border: 1px solid var(--border); border-radius: var(--radius);
+		display: flex; flex-direction: column; gap: var(--space-3);
+	}
+	.email-card + .email-card { margin-top: var(--space-3); }
+	.email-field { display: flex; flex-direction: column; gap: var(--space-1); }
+	.email-field label { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+	.email-field select, .email-field input {
+		padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border);
+		border-radius: var(--radius); color: var(--text-primary); font-size: 0.85rem; max-width: 400px;
+	}
+	.email-field select:focus, .email-field input:focus { outline: none; border-color: var(--accent-blue); }
+	.email-subheading { font-size: 0.95rem; font-weight: 600; color: var(--text-primary); margin: 0; }
 </style>

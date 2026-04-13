@@ -27,7 +27,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto('/', { replaceState: true });
+				goto('/console', { replaceState: true });
 				return;
 			}
 		} catch {}
@@ -56,7 +56,7 @@
 			}
 
 			await authStore.load();
-			await goto('/', { replaceState: true });
+			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid email or password.';
@@ -88,7 +88,7 @@
 			}
 
 			await authStore.load();
-			await goto('/', { replaceState: true });
+			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid code. Please try again.';

@@ -198,9 +198,20 @@
 								<span class="user-dropdown-email">{authStore.user.email}</span>
 							</div>
 							<div class="dropdown-divider"></div>
-							{#if currentSlug}
-								<a href="/{currentUsername}/{currentSlug}/settings" class="dropdown-item" onclick={closeUserMenu}>
-									Settings
+							<a href="/console" class="dropdown-item" onclick={closeUserMenu}>
+								Workspaces
+							</a>
+							<a href="/console/settings" class="dropdown-item" onclick={closeUserMenu}>
+								Settings
+							</a>
+							{#if authStore.cloudMode}
+								<a href="/console/billing" class="dropdown-item" onclick={closeUserMenu}>
+									Billing
+								</a>
+							{/if}
+							{#if authStore.user?.role === 'admin'}
+								<a href="/console/admin" class="dropdown-item" onclick={closeUserMenu}>
+									Admin
 								</a>
 							{/if}
 							<button class="dropdown-item" onclick={toggleTheme}>

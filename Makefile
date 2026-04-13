@@ -1,4 +1,4 @@
-.PHONY: build test dev clean web dev-web serve restart lint install
+.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -30,6 +30,16 @@ install: build
 
 test:
 	go test ./... -v
+
+# Run tests against PostgreSQL (starts a container automatically).
+# Uses port 5445 to avoid conflicts with any local PostgreSQL.
+test-pg:
+	docker compose -f docker-compose.test.yml up -d --wait
+	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test ./... -v -count=1
+	docker compose -f docker-compose.test.yml down -v
+
+test-pg-down:
+	docker compose -f docker-compose.test.yml down -v
 
 dev: build-go
 	./$(BINARY) server start --host $(HOST)

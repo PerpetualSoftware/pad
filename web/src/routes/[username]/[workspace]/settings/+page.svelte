@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import type { Collection, APIToken, WorkspaceContext } from '$lib/types';
+	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
@@ -43,56 +43,14 @@
 	let accessLoading = $state(false);
 	let accessSaving = $state(false);
 
-	// Account
-	let profileName = $state('');
-	let profileEmail = $state('');
-	let profileUsername = $state('');
-	let originalUsername = $state('');
-	let profileRole = $state('');
-	let savingProfile = $state(false);
-	let profileStatus = $state<'idle' | 'saved' | 'error'>('idle');
-	let profileError = $state('');
-
-	// Username availability checking
-	let usernameChecking = $state(false);
-	let usernameAvailable = $state<boolean | null>(null);
-	let usernameError = $state('');
-	let usernameCheckTimeout = $state<ReturnType<typeof setTimeout> | null>(null);
-	let usernameChanged = $derived(profileUsername !== originalUsername);
-
-	let currentPassword = $state('');
-	let newPassword = $state('');
-	let confirmPassword = $state('');
-	let changingPassword = $state(false);
-	let passwordStatus = $state<'idle' | 'saved' | 'error'>('idle');
-	let passwordError = $state('');
-
-	let tokens = $state<APIToken[]>([]);
-	let newTokenName = $state('');
-	let creatingToken = $state(false);
-	let newTokenSecret = $state('');
-
-	// Platform (admin-only)
-	let platformSettings = $state<Record<string, string>>({});
-	let savingPlatform = $state(false);
-	let platformStatus = $state<'idle' | 'saved' | 'error'>('idle');
-	let testingEmail = $state(false);
-	let testEmailResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
-
 	// Tabs
 	let activeTab = $state('general');
-	const baseTabs = [
+	const tabs = [
 		{ id: 'general', label: 'General', icon: '\u2699\uFE0F' },
-		{ id: 'account', label: 'Account', icon: '\uD83D\uDC64' },
 		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65' },
 		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1' },
+		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' },
 	];
-	const dangerTab = { id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' };
-	let tabs = $derived(
-		profileRole === 'admin'
-			? [...baseTabs, { id: 'platform', label: 'Platform', icon: '\uD83D\uDD27' }, dangerTab]
-			: [...baseTabs, dangerTab]
-	);
 	let validTabIds = $derived(tabs.map(t => t.id));
 
 	function switchTab(tabId: string) {
@@ -132,24 +90,6 @@
 					currentUserRole = me?.role ?? '';
 				}
 			} catch {}
-		// Load account data
-		try {
-			const me = await api.auth.me();
-			profileName = me.name;
-			profileEmail = me.email;
-			profileUsername = me.username;
-			originalUsername = me.username;
-			profileRole = me.role;
-		} catch {}
-		try {
-			tokens = await api.auth.tokens.list();
-		} catch {}
-		// Load platform settings (admin only)
-		if (profileRole === 'admin') {
-			try {
-				platformSettings = await api.admin.getSettings();
-			} catch {}
-		}
 		} catch { /* allow partial render */
 		} finally {
 			loading = false;
@@ -383,172 +323,10 @@
 		try {
 			await api.workspaces.delete(wsSlug);
 			toastStore.show(`Workspace "${wsName}" archived`, 'success');
-			goto('/');
+			goto('/console');
 		} catch {
 			toastStore.show('Failed to archive workspace', 'error');
 			deleting = false;
-		}
-	}
-
-	function checkUsernameAvailability() {
-		if (usernameCheckTimeout) clearTimeout(usernameCheckTimeout);
-		usernameAvailable = null;
-		usernameError = '';
-
-		if (!usernameChanged) {
-			usernameChecking = false;
-			return;
-		}
-
-		if (!profileUsername || profileUsername.length < 3) {
-			usernameChecking = false;
-			if (profileUsername.length > 0) {
-				usernameError = 'Username must be at least 3 characters';
-			}
-			return;
-		}
-
-		usernameChecking = true;
-		usernameCheckTimeout = setTimeout(async () => {
-			try {
-				const result = await api.auth.checkUsername(profileUsername);
-				usernameAvailable = result.available;
-				usernameError = result.message || '';
-			} catch {
-				usernameError = '';
-				usernameAvailable = null;
-			} finally {
-				usernameChecking = false;
-			}
-		}, 400);
-	}
-
-	async function saveProfile() {
-		if (!profileName.trim() || savingProfile) return;
-		if (usernameChanged && usernameAvailable === false) return;
-		if (usernameChanged && profileUsername.length > 0 && profileUsername.length < 3) return;
-		savingProfile = true;
-		profileStatus = 'idle';
-		profileError = '';
-		try {
-			const update: { name: string; username?: string } = { name: profileName.trim() };
-			if (usernameChanged) {
-				update.username = profileUsername.trim();
-			}
-			await api.auth.updateProfile(update);
-			if (usernameChanged) {
-				originalUsername = profileUsername.trim();
-				usernameAvailable = null;
-				usernameError = '';
-			}
-			profileStatus = 'saved';
-			setTimeout(() => (profileStatus = 'idle'), 2000);
-		} catch (err: unknown) {
-			profileStatus = 'error';
-			profileError = err instanceof Error ? err.message : 'Failed to save profile';
-		} finally {
-			savingProfile = false;
-		}
-	}
-
-	async function changePassword() {
-		passwordError = '';
-		if (!currentPassword || !newPassword || !confirmPassword) {
-			passwordError = 'All fields are required';
-			return;
-		}
-		if (newPassword.length < 8) {
-			passwordError = 'New password must be at least 8 characters';
-			return;
-		}
-		if (newPassword !== confirmPassword) {
-			passwordError = 'Passwords do not match';
-			return;
-		}
-		changingPassword = true;
-		passwordStatus = 'idle';
-		try {
-			await api.auth.updateProfile({
-				current_password: currentPassword,
-				new_password: newPassword
-			});
-			passwordStatus = 'saved';
-			currentPassword = '';
-			newPassword = '';
-			confirmPassword = '';
-			setTimeout(() => (passwordStatus = 'idle'), 3000);
-		} catch (err: unknown) {
-			passwordStatus = 'error';
-			if (err instanceof Error && err.message.includes('incorrect')) {
-				passwordError = 'Current password is incorrect';
-			} else {
-				passwordError = 'Failed to change password';
-			}
-		} finally {
-			changingPassword = false;
-		}
-	}
-
-	async function createToken() {
-		if (!newTokenName.trim() || creatingToken) return;
-		creatingToken = true;
-		newTokenSecret = '';
-		try {
-			const result = await api.auth.tokens.create(newTokenName.trim());
-			newTokenSecret = result.token;
-			newTokenName = '';
-			tokens = await api.auth.tokens.list();
-		} catch {
-			toastStore.show('Failed to create token', 'error');
-		} finally {
-			creatingToken = false;
-		}
-	}
-
-	async function deleteToken(tokenId: string, name: string) {
-		if (!confirm(`Revoke token "${name}"? This cannot be undone.`)) return;
-		try {
-			await api.auth.tokens.delete(tokenId);
-			tokens = tokens.filter(t => t.id !== tokenId);
-			toastStore.show('Token revoked', 'success');
-		} catch {
-			toastStore.show('Failed to revoke token', 'error');
-		}
-	}
-
-	async function copyToken() {
-		const ok = await copyToClipboard(newTokenSecret);
-		toastStore.show(ok ? 'Token copied to clipboard' : 'Failed to copy token', ok ? 'success' : 'error');
-	}
-
-	async function savePlatformSettings() {
-		if (savingPlatform) return;
-		savingPlatform = true;
-		platformStatus = 'idle';
-		try {
-			await api.admin.updateSettings(platformSettings);
-			platformStatus = 'saved';
-			setTimeout(() => (platformStatus = 'idle'), 2000);
-		} catch {
-			platformStatus = 'error';
-		} finally {
-			savingPlatform = false;
-		}
-	}
-
-	async function sendTestEmail() {
-		testingEmail = true;
-		testEmailResult = null;
-		try {
-			const result = await api.admin.testEmail();
-			testEmailResult = { message: `Test email sent to ${result.sent_to}`, type: 'success' };
-		} catch (err: unknown) {
-			testEmailResult = {
-				message: err instanceof Error ? err.message : 'Failed to send test email',
-				type: 'error'
-			};
-		} finally {
-			testingEmail = false;
 		}
 	}
 
@@ -692,151 +470,6 @@
 						{:else if contextStatus === 'error' && !contextError}
 							<span class="status-error">Error</span>
 						{/if}
-					</div>
-				</div>
-			</section>
-		{:else if activeTab === 'account'}
-			<section class="section">
-				<h2>Profile</h2>
-				<div class="card">
-					<div class="field-row">
-						<span class="field-label">Email</span>
-						<span class="field-value">{profileEmail}</span>
-					</div>
-					<div class="field-row">
-						<span class="field-label">Role</span>
-						<span class="field-value"><span class="role-badge">{profileRole}</span></span>
-					</div>
-					<div class="field-row">
-						<label for="profile-name">Name</label>
-						<div class="inline-edit">
-							<input id="profile-name" type="text" bind:value={profileName} onkeydown={(e) => e.key === 'Enter' && saveProfile()} />
-						</div>
-					</div>
-					<div class="field-row">
-						<label for="profile-username">Username</label>
-						<div class="inline-edit">
-							<div class="username-input-wrapper">
-								<span class="username-prefix">@</span>
-								<input
-									id="profile-username"
-									type="text"
-									bind:value={profileUsername}
-									oninput={checkUsernameAvailability}
-									onkeydown={(e) => e.key === 'Enter' && saveProfile()}
-									placeholder="username"
-									autocomplete="username"
-								/>
-							</div>
-							{#if usernameChanged}
-								{#if usernameChecking}
-									<span class="username-status checking">checking...</span>
-								{:else if usernameAvailable === true}
-									<span class="username-status available">available</span>
-								{:else if usernameAvailable === false}
-									<span class="username-status taken">{usernameError || 'not available'}</span>
-								{:else if usernameError}
-									<span class="username-status taken">{usernameError}</span>
-								{/if}
-							{/if}
-						</div>
-					</div>
-					<div class="field-row profile-actions-row">
-						<span class="field-label"></span>
-						<div class="inline-edit">
-							<button class="btn btn-small" onclick={saveProfile} disabled={savingProfile || (usernameChanged && usernameAvailable === false) || (usernameChanged && profileUsername.length > 0 && profileUsername.length < 3)}>
-								{savingProfile ? 'Saving...' : 'Save'}
-							</button>
-							{#if profileStatus === 'saved'}
-								<span class="status-saved">Saved</span>
-							{:else if profileStatus === 'error'}
-								<span class="status-error">{profileError || 'Error'}</span>
-							{/if}
-						</div>
-					</div>
-				</div>
-			</section>
-
-			<section class="section">
-				<h2>Change Password</h2>
-				<div class="card">
-					<div class="password-form">
-						<div class="password-field">
-							<label for="current-pw">Current password</label>
-							<input id="current-pw" type="password" bind:value={currentPassword} placeholder="Enter current password" />
-						</div>
-						<div class="password-field">
-							<label for="new-pw">New password</label>
-							<input id="new-pw" type="password" bind:value={newPassword} placeholder="At least 8 characters" />
-						</div>
-						<div class="password-field">
-							<label for="confirm-pw">Confirm new password</label>
-							<input id="confirm-pw" type="password" bind:value={confirmPassword} placeholder="Confirm new password"
-								onkeydown={(e) => e.key === 'Enter' && changePassword()} />
-						</div>
-						{#if passwordError}
-							<p class="password-error">{passwordError}</p>
-						{/if}
-						<div class="password-actions">
-							<button class="btn btn-primary" onclick={changePassword} disabled={changingPassword}>
-								{changingPassword ? 'Changing...' : 'Change Password'}
-							</button>
-							{#if passwordStatus === 'saved'}
-								<span class="status-saved">Password updated</span>
-							{/if}
-						</div>
-					</div>
-				</div>
-			</section>
-
-			<section class="section">
-				<h2>API Tokens</h2>
-				<p class="section-desc">Personal tokens for CLI and API access. Tokens are not tied to a specific workspace.</p>
-				{#if tokens.length > 0}
-					<div class="token-list">
-						{#each tokens as token (token.id)}
-							<div class="card token-row">
-								<div class="token-info">
-									<span class="token-name">{token.name}</span>
-									<code class="token-prefix">{token.prefix}...</code>
-									{#if token.last_used_at}
-										<span class="token-meta">Last used {new Date(token.last_used_at).toLocaleDateString()}</span>
-									{:else}
-										<span class="token-meta">Never used</span>
-									{/if}
-								</div>
-								<button class="btn btn-small btn-remove" onclick={() => deleteToken(token.id, token.name)}>
-									Revoke
-								</button>
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="empty-text">No API tokens yet.</p>
-				{/if}
-
-				{#if newTokenSecret}
-					<div class="card token-secret-card">
-						<p class="token-secret-warning">Copy this token now — it won't be shown again.</p>
-						<div class="token-secret-row">
-							<code class="token-secret">{newTokenSecret}</code>
-							<button class="btn btn-small" onclick={copyToken}>Copy</button>
-						</div>
-					</div>
-				{/if}
-
-				<div class="card token-create">
-					<div class="token-create-row">
-						<input
-							type="text"
-							placeholder="Token name (e.g. my-laptop)"
-							bind:value={newTokenName}
-							onkeydown={(e) => e.key === 'Enter' && createToken()}
-							disabled={creatingToken}
-						/>
-						<button class="btn btn-primary btn-small" onclick={createToken} disabled={creatingToken || !newTokenName.trim()}>
-							{creatingToken ? 'Creating...' : 'Create Token'}
-						</button>
 					</div>
 				</div>
 			</section>
@@ -1079,75 +712,6 @@
 					{/if}
 				</div>
 			</section>
-		{:else if activeTab === 'platform'}
-			<section class="section">
-				<h2>Email</h2>
-				<p class="section-desc">Configure transactional email for invitations, password resets, and notifications.</p>
-				<div class="card">
-					<div class="field-row">
-						<label for="email-provider">Provider</label>
-						<div class="inline-edit">
-							<select id="email-provider" class="role-select" bind:value={platformSettings['email_provider']}
-								onchange={() => { if (!platformSettings['email_provider']) platformSettings['email_provider'] = ''; }}>
-								<option value="">Disabled</option>
-								<option value="maileroo">Maileroo</option>
-							</select>
-						</div>
-					</div>
-					{#if platformSettings['email_provider'] === 'maileroo'}
-						<div class="field-row">
-							<label for="maileroo-key">API Key</label>
-							<div class="inline-edit">
-								<input id="maileroo-key" type="password" bind:value={platformSettings['maileroo_api_key']}
-									placeholder="Enter Maileroo sending key" />
-							</div>
-						</div>
-					{/if}
-					<div class="field-row">
-						<label for="email-from">From</label>
-						<div class="inline-edit">
-							<input id="email-from" type="email" bind:value={platformSettings['email_from']}
-								placeholder="noreply@yourdomain.com" />
-						</div>
-					</div>
-					<div class="field-row">
-						<label for="email-name">Name</label>
-						<div class="inline-edit">
-							<input id="email-name" type="text" bind:value={platformSettings['email_from_name']}
-								placeholder="Pad" />
-						</div>
-					</div>
-					<div class="platform-actions">
-						<button class="btn btn-primary" onclick={savePlatformSettings} disabled={savingPlatform}>
-							{savingPlatform ? 'Saving...' : 'Save Email Settings'}
-						</button>
-						{#if platformStatus === 'saved'}
-							<span class="status-saved">Saved</span>
-						{:else if platformStatus === 'error'}
-							<span class="status-error">Error</span>
-						{/if}
-					</div>
-				</div>
-			</section>
-
-			{#if platformSettings['email_provider']}
-				<section class="section">
-					<h2>Test Email</h2>
-					<p class="section-desc">Send a test email to verify your configuration is working.</p>
-					<div class="card">
-						<div class="platform-actions">
-							<button class="btn" onclick={sendTestEmail} disabled={testingEmail}>
-								{testingEmail ? 'Sending...' : 'Send Test Email'}
-							</button>
-							{#if testEmailResult}
-								<span class={testEmailResult.type === 'success' ? 'status-saved' : 'status-error'}>
-									{testEmailResult.message}
-								</span>
-							{/if}
-						</div>
-					</div>
-				</section>
-			{/if}
 		{/if}
 	{/if}
 </div>
@@ -1314,38 +878,5 @@
 	.danger-input { flex: 1; min-width: 180px; max-width: 300px; padding: var(--space-2); font-size: 0.88em; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); }
 	.danger-input:focus { outline: none; border-color: #ef4444; }
 	.danger-actions { display: flex; gap: var(--space-2); }
-	/* ── Account ──── */
-	.password-form { display: flex; flex-direction: column; gap: var(--space-3); }
-	.password-field { display: flex; flex-direction: column; gap: var(--space-1); }
-	.password-field label { font-size: 0.82em; color: var(--text-secondary); }
-	.password-field input { max-width: 300px; }
-	.password-error { font-size: 0.82em; color: #ef4444; margin: 0; }
-	.password-actions { display: flex; align-items: center; gap: var(--space-3); }
 	.section-desc { font-size: 0.85em; color: var(--text-muted); margin-bottom: var(--space-3); }
-	.token-list { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
-	.token-row { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); gap: var(--space-3); }
-	.token-info { display: flex; align-items: center; gap: var(--space-3); min-width: 0; flex-wrap: wrap; }
-	.token-name { font-weight: 500; font-size: 0.9em; }
-	.token-prefix { font-size: 0.8em; background: var(--bg-tertiary); padding: 1px 6px; border-radius: var(--radius-sm); color: var(--text-muted); }
-	.token-meta { font-size: 0.78em; color: var(--text-muted); }
-	.token-create { margin-top: var(--space-3); }
-	.token-create-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
-	.token-create-row input { flex: 1; min-width: 180px; max-width: 300px; }
-	.token-secret-card { margin-top: var(--space-3); border-color: var(--accent-green); background: color-mix(in srgb, var(--accent-green) 5%, var(--bg-secondary)); }
-	.token-secret-warning { font-size: 0.82em; color: var(--accent-orange); margin: 0 0 var(--space-2); font-weight: 500; }
-	.token-secret-row { display: flex; align-items: center; gap: var(--space-2); }
-	.token-secret { font-size: 0.82em; background: var(--bg-tertiary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); word-break: break-all; flex: 1; }
-	/* ── Username field ──── */
-	.username-input-wrapper { display: flex; align-items: center; flex: 1; min-width: 120px; max-width: 300px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-	.username-input-wrapper:focus-within { border-color: var(--accent-blue); }
-	.username-prefix { padding: var(--space-1) 0 var(--space-1) var(--space-2); font-size: 0.9em; color: var(--text-muted); flex-shrink: 0; user-select: none; }
-	.username-input-wrapper input { border: none; background: none; padding-left: var(--space-1); min-width: 0; flex: 1; }
-	.username-input-wrapper input:focus { outline: none; box-shadow: none; }
-	.username-status { font-size: 0.78em; white-space: nowrap; }
-	.username-status.checking { color: var(--text-muted); }
-	.username-status.available { color: var(--accent-green); }
-	.username-status.taken { color: #ef4444; }
-	.profile-actions-row { border-top: none !important; padding-top: 0; }
-	/* ── Platform ──── */
-	.platform-actions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }
 </style>

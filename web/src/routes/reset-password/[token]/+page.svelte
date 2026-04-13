@@ -25,7 +25,7 @@
 		loading = true;
 		try {
 			await api.auth.resetPassword(token, password);
-			await goto('/', { replaceState: true });
+			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Failed to reset password.';

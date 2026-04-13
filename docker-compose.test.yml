@@ -1,0 +1,21 @@
+# PostgreSQL for integration tests.
+# Usage: docker compose -f docker-compose.test.yml up -d
+#        make test-pg
+#        docker compose -f docker-compose.test.yml down -v
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: pad
+      POSTGRES_PASSWORD: pad
+      POSTGRES_DB: pad
+    ports:
+      - "5445:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pad"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data  # RAM-backed for speed

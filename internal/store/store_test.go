@@ -2,15 +2,26 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/xarmian/pad/internal/models"
 )
 
+// testStore creates a Store for testing. When PAD_TEST_POSTGRES_URL is set,
+// it creates an isolated PostgreSQL database; otherwise it falls back to a
+// temporary SQLite file. Every test gets its own database so tests never
+// interfere with each other.
 func testStore(t *testing.T) *Store {
 	t.Helper()
+
+	if pgURL := os.Getenv("PAD_TEST_POSTGRES_URL"); pgURL != "" {
+		return testStorePostgres(t, pgURL)
+	}
+
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	s, err := New(dbPath)
@@ -19,6 +30,100 @@ func testStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// testStorePostgres creates an isolated test database on the PostgreSQL server.
+// It connects to the base URL, creates a randomly-named database, runs
+// migrations, and drops the database when the test finishes.
+func testStorePostgres(t *testing.T, baseURL string) *Store {
+	t.Helper()
+
+	// Generate a unique database name for this test.
+	dbName := "pad_test_" + uuid.New().String()[:8]
+
+	// Connect to the default "pad" database to issue CREATE/DROP DATABASE.
+	adminStore, err := newPostgresConn(baseURL)
+	if err != nil {
+		t.Fatalf("connect to postgres for admin: %v", err)
+	}
+
+	// CREATE DATABASE cannot run inside a transaction.
+	if _, err := adminStore.db.Exec(fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+		adminStore.Close()
+		t.Fatalf("create test database %s: %v", dbName, err)
+	}
+	adminStore.Close()
+
+	// Build the connection string for the new database.
+	testURL := replaceDBName(baseURL, dbName)
+
+	s, err := NewPostgres(testURL)
+	if err != nil {
+		// Clean up the database we just created.
+		if admin2, err2 := newPostgresConn(baseURL); err2 == nil {
+			admin2.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
+			admin2.Close()
+		}
+		t.Fatalf("open test postgres store: %v", err)
+	}
+
+	t.Cleanup(func() {
+		s.Close()
+		// Drop the test database.
+		if admin, err := newPostgresConn(baseURL); err == nil {
+			admin.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+			admin.Close()
+		}
+	})
+
+	return s
+}
+
+// newPostgresConn opens a raw postgres connection (no migrations).
+func newPostgresConn(connStr string) (*Store, error) {
+	db, err := openPostgresDB(connStr)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db, dialect: &postgresDialect{}}, nil
+}
+
+// replaceDBName swaps the database name in a postgres:// URL.
+// e.g. "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+// becomes "postgres://pad:pad@localhost:5432/newdb?sslmode=disable"
+func replaceDBName(connStr, newDB string) string {
+	// Find the last '/' before any '?' query string.
+	query := ""
+	base := connStr
+	if idx := len(connStr) - len(connStr); idx >= 0 {
+		if qIdx := indexOf(connStr, '?'); qIdx >= 0 {
+			query = connStr[qIdx:]
+			base = connStr[:qIdx]
+		}
+	}
+	// Find the last '/' in the base to replace the db name.
+	if lastSlash := lastIndexOf(base, '/'); lastSlash >= 0 {
+		return base[:lastSlash+1] + newDB + query
+	}
+	return connStr
+}
+
+func indexOf(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastIndexOf(s string, c byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 func createTestWorkspace(t *testing.T, s *Store, name string) *models.Workspace {
@@ -60,6 +165,9 @@ func schemaFieldKeys(t *testing.T, schemaJSON string) []string {
 }
 
 func TestNewStore(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("skipping SQLite-specific test when running against PostgreSQL")
+	}
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	s, err := New(dbPath)
@@ -71,6 +179,23 @@ func TestNewStore(t *testing.T) {
 	// DB file should exist
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Error("database file was not created")
+	}
+}
+
+func TestNewStorePostgres(t *testing.T) {
+	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set, skipping PostgreSQL test")
+	}
+
+	s := testStorePostgres(t, pgURL)
+
+	// Verify we can ping and the dialect is correct.
+	if err := s.Ping(); err != nil {
+		t.Fatalf("Ping() error: %v", err)
+	}
+	if s.dialect.Driver() != DriverPostgres {
+		t.Errorf("expected DriverPostgres, got %v", s.dialect.Driver())
 	}
 }
 
