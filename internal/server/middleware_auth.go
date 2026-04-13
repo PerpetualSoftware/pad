@@ -131,11 +131,14 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Try session cookie
+		// Try session cookie (with fallback to unprefixed name for upgrade path)
 		cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
 		if err != nil {
-			next.ServeHTTP(w, r)
-			return
+			cookie, err = r.Cookie("pad_session")
+			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		session, err := s.store.ValidateSession(cookie.Value)
@@ -178,6 +181,7 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		// Cloud sidecar endpoints authenticate via cloud_secret (in body or header),
 		// so they must bypass RequireAuth which runs before handlers can read the body.
 		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
+			path == "/api/v1/plan-limits" || // Public endpoint for billing page
 			path == "/api/v1/admin/plan" || path == "/api/v1/admin/stripe-customer-id" || path == "/api/v1/admin/user-by-customer" {
 			next.ServeHTTP(w, r)
 			return

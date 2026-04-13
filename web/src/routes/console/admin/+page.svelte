@@ -72,7 +72,7 @@
 				adminFetch('/admin/users'),
 				adminFetch('/admin/limits')
 			]);
-			stats = s; users = u; limits = l;
+			stats = s; users = u.users ?? u; limits = l;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load';
 		} finally {
@@ -82,7 +82,8 @@
 
 	async function searchUsers() {
 		try {
-			users = await adminFetch(`/admin/users?q=${encodeURIComponent(search)}`);
+			const result = await adminFetch(`/admin/users?q=${encodeURIComponent(search)}`);
+			users = result.users ?? result;
 		} catch { /* keep existing */ }
 	}
 
