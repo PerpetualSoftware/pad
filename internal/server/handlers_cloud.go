@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,7 +180,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	s.logAuditEventForUser(models.ActionOAuthLogin, r, user.ID, auditMeta(map[string]string{
 		"provider": input.Provider,
 		"email":    input.Email,
-		"new_user": boolStr(isNewUser),
+		"new_user": strconv.FormatBool(isNewUser),
 	}))
 
 	// 8. Return session info
@@ -225,6 +226,14 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 	if !validPlans[input.Plan] {
 		writeError(w, http.StatusBadRequest, "bad_request", "plan must be 'free', 'pro', or 'self-hosted'")
 		return
+	}
+
+	// 2b. Validate expires_at format if provided
+	if input.ExpiresAt != "" {
+		if _, err := time.Parse(time.RFC3339, input.ExpiresAt); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "expires_at must be a valid RFC3339 timestamp")
+			return
+		}
 	}
 
 	// 3. Verify user exists
@@ -352,10 +361,3 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 }
 
 // --- Helpers ---
-
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}

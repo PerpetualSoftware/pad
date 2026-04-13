@@ -217,6 +217,11 @@ func (s *Server) handleAdminGetLimits(w http.ResponseWriter, r *http.Request) {
 	}
 	plans := []string{"free", "pro"}
 
+	defaults := map[string]store.PlanLimits{
+		"free": store.DefaultFreeLimits,
+		"pro":  store.DefaultProLimits,
+	}
+
 	result := make(map[string]map[string]int)
 	for _, plan := range plans {
 		result[plan] = make(map[string]int)
@@ -224,30 +229,12 @@ func (s *Server) handleAdminGetLimits(w http.ResponseWriter, r *http.Request) {
 			key := "plan_limits_" + plan + "_" + feature
 			val, err := s.store.GetPlatformSetting(key)
 			if err != nil || val == "" {
-				// Fall back to hardcoded default
-				result[plan][feature] = store.DefaultFreeLimits.Workspaces // placeholder
+				// Fall back to hardcoded default for this plan+feature
+				result[plan][feature] = planLimitDefault(defaults[plan], feature)
 				continue
 			}
 			v, _ := strconv.Atoi(val)
 			result[plan][feature] = v
-		}
-	}
-
-	// Fill in proper hardcoded defaults for unset values
-	for _, feature := range features {
-		if result["free"][feature] == 0 {
-			switch feature {
-			case "workspaces":
-				result["free"][feature] = store.DefaultFreeLimits.Workspaces
-			case "items_per_workspace":
-				result["free"][feature] = store.DefaultFreeLimits.ItemsPerWorkspace
-			case "members_per_workspace":
-				result["free"][feature] = store.DefaultFreeLimits.MembersPerWorkspace
-			case "api_tokens":
-				result["free"][feature] = store.DefaultFreeLimits.APITokens
-			case "storage_bytes":
-				result["free"][feature] = store.DefaultFreeLimits.StorageBytes
-			}
 		}
 	}
 
@@ -304,10 +291,18 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userCount, _ := s.store.UserCount()
+	userCount, err := s.store.UserCount()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 
 	// Count users by plan
-	users, _ := s.store.ListUsers()
+	users, err := s.store.ListUsers()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	planCounts := map[string]int{}
 	for _, u := range users {
 		plan := u.Plan
@@ -317,7 +312,11 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		planCounts[plan]++
 	}
 
-	workspaces, _ := s.store.ListWorkspaces()
+	workspaces, err := s.store.ListWorkspaces()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"users":          userCount,
@@ -336,6 +335,28 @@ func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// planLimitDefault returns the hardcoded default for a plan+feature pair.
+func planLimitDefault(limits store.PlanLimits, feature string) int {
+	switch feature {
+	case "workspaces":
+		return limits.Workspaces
+	case "items_per_workspace":
+		return limits.ItemsPerWorkspace
+	case "members_per_workspace":
+		return limits.MembersPerWorkspace
+	case "api_tokens":
+		return limits.APITokens
+	case "storage_bytes":
+		return limits.StorageBytes
+	case "webhooks":
+		return limits.Webhooks
+	case "automated_backups":
+		return limits.AutomatedBackups
+	default:
+		return 0
+	}
 }
 
 // auditMeta is defined in handlers_documents.go

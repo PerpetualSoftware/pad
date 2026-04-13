@@ -58,11 +58,11 @@
 			</div>
 			<div class="usage-row">
 				<span class="usage-label">Workspaces</span>
-				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 3'}</span>
+				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 5'}</span>
 			</div>
 			<div class="usage-row">
 				<span class="usage-label">Members per workspace</span>
-				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 5'}</span>
+				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 3'}</span>
 			</div>
 		</div>
 	</section>
