@@ -171,6 +171,8 @@ func (s *Store) migrate() error {
 		"035_plan_fields.sql",
 		"036_stripe_customer_index.sql",
 		"037_oauth_providers.sql",
+		"038_email_optouts.sql",
+		"039_cli_auth_sessions.sql",
 	}
 
 	for _, name := range migrations {
@@ -232,6 +234,8 @@ func (s *Store) migratePostgres() error {
 		"015_plan_fields.sql",
 		"016_stripe_customer_index.sql",
 		"017_oauth_providers.sql",
+		"018_email_optouts.sql",
+		"019_cli_auth_sessions.sql",
 	}
 
 	for _, name := range migrations {

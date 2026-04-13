@@ -293,6 +293,11 @@ func (s *Server) setupRouter() {
 			r.Post("/oauth-login", s.handleOAuthLogin)
 			r.Post("/oauth-link", s.handleOAuthLink)
 			r.Post("/oauth-unlink", s.handleOAuthUnlink)
+
+			// CLI browser-based auth flow
+			r.Post("/cli/sessions", s.handleCreateCLIAuthSession)
+			r.Get("/cli/sessions/{code}", s.handlePollCLIAuthSession)
+			r.Post("/cli/sessions/{code}/approve", s.handleApproveCLIAuthSession)
 		})
 
 		// Admin endpoints (admin-only, handlers check role internally)

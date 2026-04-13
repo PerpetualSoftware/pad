@@ -18,7 +18,7 @@
 
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
-	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/'));
+	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/') || page.url.pathname.startsWith('/auth/cli/'));
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
 
