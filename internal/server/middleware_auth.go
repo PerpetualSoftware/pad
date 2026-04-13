@@ -175,9 +175,10 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		path := r.URL.Path
 
 		// Auth endpoints, share link resolution, and cloud sidecar endpoints are always exempt.
-		// The cloud plan endpoint uses cloud_secret in the body for authentication,
-		// so it must bypass RequireAuth (which runs before the handler can read the body).
-		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") || path == "/api/v1/admin/plan" {
+		// Cloud sidecar endpoints authenticate via cloud_secret (in body or header),
+		// so they must bypass RequireAuth which runs before handlers can read the body.
+		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
+			path == "/api/v1/admin/plan" || path == "/api/v1/admin/stripe-customer-id" || path == "/api/v1/admin/user-by-customer" {
 			next.ServeHTTP(w, r)
 			return
 		}

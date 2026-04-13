@@ -74,7 +74,10 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"users": users,
+		"total": result.Total,
+	})
 }
 
 // handleAdminGetUser returns a single user with full detail.

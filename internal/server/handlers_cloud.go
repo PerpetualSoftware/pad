@@ -379,8 +379,14 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure user won't be locked out: they must have a usable password
-	// or another linked provider remaining.
+	// Ensure user won't be locked out: they must have another linked
+	// provider remaining. All users have a password hash (OAuth users get
+	// a random one), so we can't distinguish "has usable password" from
+	// "has unusable random hash". Requiring another provider is the safe
+	// default. Users who set a real password via the reset flow can unlink
+	// their last provider since they'll still have password-based login.
+	// TODO: track whether the user has explicitly set a password to allow
+	// unlinking the last provider in that case.
 	providers := user.GetOAuthProviders()
 	hasOtherProvider := false
 	for _, p := range providers {
@@ -389,13 +395,9 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// A user has a "usable" password if they set one explicitly.
-	// OAuth-created users have a random unusable password but may have
-	// set one later via the password reset flow.
-	// We can't easily distinguish, so we require at least one other auth method.
-	if !hasOtherProvider && user.PasswordHash == "" {
+	if !hasOtherProvider {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			"Cannot unlink your only authentication method. Set a password first.")
+			"Cannot unlink your only sign-in method. Link another provider or set a password first.")
 		return
 	}
 
@@ -497,7 +499,9 @@ func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Reques
 // Called by the pad-cloud sidecar during Stripe subscription webhook processing
 // to resolve a Stripe customer back to a Pad user.
 func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Request) {
-	// 1. Validate cloud secret (via header or query param) or admin auth
+	// 1. Validate cloud secret (via header preferred, query param fallback) or admin auth.
+	// NOTE: query param is supported for GET convenience but may appear in access logs.
+	// Prefer X-Cloud-Secret header in production.
 	user := currentUser(r)
 	isAdmin := user != nil && user.Role == "admin"
 	if !isAdmin {
