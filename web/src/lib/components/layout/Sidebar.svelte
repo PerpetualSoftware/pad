@@ -108,8 +108,10 @@
 	// Watch for Cmd-N quick-add requests from the layout
 	$effect(() => {
 		if (uiStore.quickAddRequested) {
+			const targetSlug = uiStore.quickAddTargetSlug;
 			uiStore.clearQuickAddRequest();
-			const target = activeColl
+			const target = (targetSlug ? regularCollections.find(c => c.slug === targetSlug) : null)
+				?? activeColl
 				?? regularCollections.find(c => c.slug === 'tasks')
 				?? regularCollections[0];
 			if (target) startQuickAdd(target);

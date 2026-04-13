@@ -78,6 +78,7 @@
 	}
 
 	let totalItems = $derived(dashboard?.summary.total_items ?? 0);
+	let firstCollection = $derived(collections.filter(c => !c.is_system && c.slug !== 'tasks').sort((a, b) => a.sort_order - b.sort_order)[0]);
 
 	function statusColor(status: string): string {
 		const s = status.toLowerCase().replace(/-/g, '_');
@@ -176,8 +177,10 @@
 				<span class="item-count">{totalItems} item{totalItems !== 1 ? 's' : ''}</span>
 			</div>
 			<div class="dash-header-actions">
-				<button class="btn btn-secondary" onclick={() => uiStore.requestQuickAdd()}>💡 New Idea</button>
-				<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd()}>+ New Task</button>
+				{#if firstCollection}
+					<button class="btn btn-secondary" onclick={() => uiStore.requestQuickAdd(firstCollection.slug)}>{firstCollection.icon} New {firstCollection.name.replace(/s$/, '')}</button>
+				{/if}
+				<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd('tasks')}>+ New Task</button>
 			</div>
 		</header>
 
