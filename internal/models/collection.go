@@ -55,8 +55,8 @@ type Collection struct {
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 
 	// Computed (not stored)
-	ItemCount       int `json:"item_count,omitempty"`
-	ActiveItemCount int `json:"active_item_count,omitempty"`
+	ItemCount       int `json:"item_count"`
+	ActiveItemCount int `json:"active_item_count"`
 }
 
 type CollectionCreate struct {
