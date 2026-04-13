@@ -77,6 +77,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://api.getpad.dev)")
 
 	rootCmd.AddCommand(
+		padInitCmd(),
 		authCmd(),
 		serverCmd(),
 		workspaceCmd(),
@@ -989,7 +990,10 @@ func initCmd() *cobra.Command {
 Use --template to choose a workspace template:
   pad workspace init myproject --template scrum
 
-Use --list-templates to see available templates.`,
+Use --list-templates to see available templates.
+
+Tip: 'pad init' handles everything — configure, authenticate, and create
+a workspace in one step.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Handle --list-templates
@@ -1038,6 +1042,8 @@ Use --list-templates to see available templates.`,
 			}
 			if session.SetupRequired {
 				printSetupRequiredHint(cfg)
+				dim := color.New(color.Faint)
+				fmt.Println(dim.Sprint("\nTip: Run 'pad init' to set up everything at once."))
 				return fmt.Errorf("this Pad instance has not been initialized yet")
 			} else if !session.Authenticated {
 				fmt.Println("Log in to continue.")
@@ -1056,60 +1062,13 @@ Use --list-templates to see available templates.`,
 				name = filepath.Base(cwd)
 			}
 
-			// Check if this directory is already linked to a valid workspace
-			existingSlug, err := cli.DetectWorkspace("")
-			if err == nil {
-				ws, err := client.GetWorkspace(existingSlug)
-				if err == nil && ws != nil {
-					fmt.Printf("Already linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
-					offerSkillInstall()
-					return nil
-				}
+			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, name, templateFlag)
+			if err != nil {
+				return err
 			}
 
-			// Check if a workspace with this name already exists
-			var ws *models.Workspace
-			workspaces, err := client.ListWorkspaces()
-			if err == nil {
-				for i := range workspaces {
-					if strings.EqualFold(workspaces[i].Name, name) {
-						ws = &workspaces[i]
-						break
-					}
-				}
-			}
-
-			green := color.New(color.FgGreen)
-			bold := color.New(color.Bold)
-			dim := color.New(color.Faint)
-
-			newlyCreated := false
-			if ws != nil {
-				if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
-					return fmt.Errorf("write .pad.toml: %w", err)
-				}
-				fmt.Printf("Workspace %q already exists (slug: %s). Linked to %s\n", ws.Name, ws.Slug, cwd)
-			} else {
-				ws, err = client.CreateWorkspace(models.WorkspaceCreate{
-					Name:     name,
-					Template: templateFlag,
-				})
-				if err != nil {
-					return fmt.Errorf("create workspace: %w", err)
-				}
-
-				if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
-					return fmt.Errorf("write .pad.toml: %w", err)
-				}
-
-				tmplMsg := ""
-				if templateFlag != "" && templateFlag != "startup" {
-					tmplMsg = dim.Sprintf(" with %s template", templateFlag)
-				}
-				green.Printf("✓ Created workspace %q", ws.Name)
-				fmt.Printf(" %s%s\n", dim.Sprintf("(slug: %s)", ws.Slug), tmplMsg)
-				fmt.Printf("  Linked to %s\n", bold.Sprint(cwd))
-				newlyCreated = true
+			if !newlyCreated && ws != nil {
+				fmt.Printf("Already linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
 			}
 
 			offerSkillInstall()
