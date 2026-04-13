@@ -4,6 +4,11 @@
 
 	const BASE = '/api/v1';
 
+	function csrfToken(): string {
+		const match = document.cookie.match(/(?:^|;\s*)pad_csrf=([^;]+)/);
+		return match?.[1] ?? '';
+	}
+
 	async function adminFetch(path: string, opts?: RequestInit) {
 		const resp = await fetch(BASE + path, { credentials: 'same-origin', ...opts });
 		if (!resp.ok) throw new Error(`${resp.status}`);
@@ -13,7 +18,7 @@
 	async function adminPatch(path: string, body: unknown) {
 		return adminFetch(path, {
 			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
 			body: JSON.stringify(body)
 		});
 	}
@@ -88,13 +93,14 @@
 		saving = true;
 		saveMsg = '';
 		try {
-			let overrides: Record<string, number> | null = null;
+			// Validate JSON syntax before sending
 			if (editOverrides.trim()) {
-				overrides = JSON.parse(editOverrides);
+				JSON.parse(editOverrides); // throws if invalid
 			}
+			// Backend expects plan_overrides as a JSON string, not an object
 			await adminPatch(`/admin/users/${selectedId}`, {
 				plan: editPlan,
-				plan_overrides: overrides
+				plan_overrides: editOverrides.trim() || null
 			});
 			const updated = await adminFetch(`/admin/users/${selectedId}`);
 			users = users.map((u) => u.id === selectedId ? { ...u, ...updated } : u);

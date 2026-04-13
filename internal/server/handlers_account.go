@@ -45,11 +45,13 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}
-	} else if input.Confirm {
-		// Explicit confirmation without password (for OAuth-only users)
-		// The session itself is the proof of identity
+	} else if input.Confirm && s.cloudMode {
+		// Cloud mode only: allow confirm-only deletion for OAuth-registered users
+		// who never set a password. The session itself is the proof of identity.
+		// In self-hosted mode, password is always required to prevent accidental
+		// or coerced account deletion.
 	} else {
-		writeError(w, http.StatusBadRequest, "bad_request", "Password or explicit confirmation is required")
+		writeError(w, http.StatusBadRequest, "bad_request", "Password is required to delete your account")
 		return
 	}
 

@@ -174,8 +174,10 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Auth endpoints and share link resolution are always exempt
-		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") {
+		// Auth endpoints, share link resolution, and cloud sidecar endpoints are always exempt.
+		// The cloud plan endpoint uses cloud_secret in the body for authentication,
+		// so it must bypass RequireAuth (which runs before the handler can read the body).
+		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") || path == "/api/v1/admin/plan" {
 			next.ServeHTTP(w, r)
 			return
 		}
