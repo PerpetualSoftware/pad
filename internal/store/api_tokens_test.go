@@ -113,7 +113,7 @@ func TestValidateTokenExpired(t *testing.T) {
 	}
 
 	// Manually expire it
-	_, err = s.db.Exec("UPDATE api_tokens SET expires_at = '2020-01-01T00:00:00Z' WHERE id = ?", tok.ID)
+	_, err = s.db.Exec(s.q("UPDATE api_tokens SET expires_at = '2020-01-01T00:00:00Z' WHERE id = ?"), tok.ID)
 	if err != nil {
 		t.Fatalf("manual expire error: %v", err)
 	}

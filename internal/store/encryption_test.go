@@ -130,7 +130,7 @@ func TestTOTPEncryptionRoundTrip(t *testing.T) {
 
 	// Verify the raw value in DB is encrypted
 	var rawSecret string
-	s.db.QueryRow("SELECT totp_secret FROM users WHERE id = ?", u.ID).Scan(&rawSecret)
+	s.db.QueryRow(s.q("SELECT totp_secret FROM users WHERE id = ?"), u.ID).Scan(&rawSecret)
 	if rawSecret == secret {
 		t.Error("raw DB value should be encrypted, not plaintext")
 	}

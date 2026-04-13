@@ -89,7 +89,21 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+
+	resp := map[string]interface{}{
+		"status": "ready",
+	}
+
+	// Include connection pool stats (useful for debugging, not required for pass/fail).
+	dbStats := s.store.DB().Stats()
+	resp["db"] = map[string]interface{}{
+		"open_connections": dbStats.OpenConnections,
+		"in_use":           dbStats.InUse,
+		"idle":             dbStats.Idle,
+		"driver":           string(s.store.D().Driver()),
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {

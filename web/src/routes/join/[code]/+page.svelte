@@ -54,7 +54,7 @@
 			const result = await api.members.acceptInvitation(code);
 			// Find the workspace slug to redirect to
 			// The API returns workspace_id, but we need the slug — redirect to root and let the app figure it out
-			await goto('/', { replaceState: true });
+			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
 			status = 'error';
@@ -124,7 +124,7 @@
 				await api.auth.register(email.trim(), name.trim(), password, username || undefined, code);
 				// Registration with invitation_code already accepted the invite,
 				// so redirect directly instead of calling acceptInvitation().
-				await goto('/', { replaceState: true });
+				await goto('/console', { replaceState: true });
 				return;
 			} else {
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }

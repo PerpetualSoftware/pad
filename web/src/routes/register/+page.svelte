@@ -29,7 +29,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto('/', { replaceState: true });
+				goto('/console', { replaceState: true });
 				return;
 			}
 		} catch {}
@@ -104,7 +104,7 @@
 		loading = true;
 		try {
 			await api.auth.register(email, name, password, username || undefined);
-			await goto('/', { replaceState: true });
+			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Registration failed.';

@@ -59,7 +59,7 @@ func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agen
 
 // maxItemNumberRetries is the number of times CreateItem will retry when a
 // concurrent insert claims the same workspace-global item_number.
-const maxItemNumberRetries = 3
+const maxItemNumberRetries = 10
 
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	// Validate assignment scope before writing
@@ -113,7 +113,9 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 }
 
 // tryCreateItem attempts a single transactional insert of an item with the
-// next available workspace-global item_number.
+// next available workspace-global item_number. The item_number is computed
+// atomically via a subquery in the INSERT to avoid races between concurrent
+// inserts reading the same MAX(item_number).
 func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -121,21 +123,30 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 	}
 	defer tx.Rollback()
 
-	// Assign the next item_number within this workspace (global counter)
-	var nextNum int
-	err = tx.QueryRow(s.q("SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?"), workspaceID).Scan(&nextNum)
-	if err != nil {
-		return fmt.Errorf("get next item number: %w", err)
+	// PostgreSQL: take an advisory lock keyed on the workspace to serialize
+	// item_number assignment. This eliminates the race between concurrent
+	// transactions reading the same MAX(item_number). The lock is released
+	// automatically when the transaction commits or rolls back.
+	// SQLite: single-writer by design, no advisory locks needed.
+	if s.dialect.Driver() == DriverPostgres {
+		// Use a hash of the workspace ID as the advisory lock key.
+		_, err = tx.Exec("SELECT pg_advisory_xact_lock(hashtext($1))", workspaceID)
+		if err != nil {
+			return fmt.Errorf("advisory lock: %w", err)
+		}
 	}
 
+	// Compute and insert the next item_number atomically within the lock.
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
+		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
+		        ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
-		createdBy, createdBy, source, nextNum, ts, ts)
+		createdBy, createdBy, source, workspaceID, ts, ts)
 	if err != nil {
 		return err
 	}
@@ -653,8 +664,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
+	// PostgreSQL FTSRank embeds a plainto_tsquery(?) that needs the search term.
 	if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC"
+		args = append(args, params.Search)
 	} else {
 		query += " ORDER BY " + ftsRank
 	}

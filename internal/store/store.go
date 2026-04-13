@@ -68,23 +68,31 @@ func New(dbPath string) (*Store, error) {
 	return s, nil
 }
 
-// NewPostgres creates a Store backed by PostgreSQL.
-// The connStr should be a PostgreSQL connection string (e.g. "postgres://user:pass@host/db").
-func NewPostgres(connStr string) (*Store, error) {
+// openPostgresDB opens and configures a PostgreSQL connection pool.
+func openPostgresDB(connStr string) (*sql.DB, error) {
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
-	// Verify connection
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	// Connection pool tuning for cloud deployment
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
+
+	return db, nil
+}
+
+// NewPostgres creates a Store backed by PostgreSQL.
+// The connStr should be a PostgreSQL connection string (e.g. "postgres://user:pass@host/db").
+func NewPostgres(connStr string) (*Store, error) {
+	db, err := openPostgresDB(connStr)
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Store{db: db, dialect: &postgresDialect{}}
 	if err := s.migratePostgres(); err != nil {
