@@ -618,6 +618,11 @@
 	.section-header:hover .section-add-btn {
 		opacity: 1;
 	}
+	@media (hover: none) {
+		.section-add-btn {
+			opacity: 1;
+		}
+	}
 	.section-add-btn:hover {
 		color: var(--text-primary);
 		background: var(--bg-hover);
@@ -642,6 +647,11 @@
 	}
 	.nav-item:hover .nav-quick-add {
 		visibility: visible;
+	}
+	@media (hover: none) {
+		.nav-quick-add {
+			visibility: visible;
+		}
 	}
 	.nav-quick-add:hover {
 		color: var(--text-primary);

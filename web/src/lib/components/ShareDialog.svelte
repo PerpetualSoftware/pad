@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { CollectionGrant, ItemGrant, ShareLink } from '$lib/types';
 
 	interface Props {
@@ -128,11 +129,11 @@
 		return '';
 	}
 
-	async function copyToClipboard(text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
+	async function handleCopyLink(text: string) {
+		const success = await copyToClipboard(text);
+		if (success) {
 			toastStore.show('Link copied to clipboard', 'success');
-		} catch {
+		} else {
 			toastStore.show('Failed to copy link', 'error');
 		}
 	}
@@ -331,7 +332,7 @@
 												<button
 													class="copy-btn"
 													type="button"
-													onclick={() => copyToClipboard(linkUrl)}
+													onclick={() => handleCopyLink(linkUrl)}
 													title="Copy link"
 												>
 													Copy
@@ -346,7 +347,7 @@
 													<button
 														class="copy-btn-small"
 														type="button"
-														onclick={() => copyToClipboard(linkUrl)}
+														onclick={() => handleCopyLink(linkUrl)}
 														title="Copy link"
 													>
 														<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
