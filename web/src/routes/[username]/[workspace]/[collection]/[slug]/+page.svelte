@@ -584,7 +584,7 @@
 		try {
 			const moved = await api.items.move(wsSlug, item.slug, targetSlug);
 			toastStore.show(`Moved to ${targetSlug}`, 'success');
-			goto(`/${username}/${wsSlug}/${targetSlug}/${moved.slug}`);
+			goto(`/${username}/${wsSlug}/${targetSlug}/${moved.slug}`, { replaceState: true });
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to move item', 'error');
 		} finally {

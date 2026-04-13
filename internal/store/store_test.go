@@ -766,6 +766,8 @@ func TestSlugify(t *testing.T) {
 		{"UPPERCASE", "uppercase"},
 		{"already-slugified", "already-slugified"},
 		{"dots.and.more", "dots-and-more"},
+		{"Dave's Workspace", "daves-workspace"},
+		{"it's a test", "its-a-test"},
 	}
 	for _, tt := range tests {
 		got := slugify(tt.input)

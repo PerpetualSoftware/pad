@@ -439,6 +439,9 @@ func slugify(s string) string {
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
 			result = append(result, byte(c))
 			prevHyphen = false
+		} else if c == '\'' {
+			// Strip apostrophes without inserting a hyphen
+			continue
 		} else if !prevHyphen && len(result) > 0 {
 			result = append(result, '-')
 			prevHyphen = true
