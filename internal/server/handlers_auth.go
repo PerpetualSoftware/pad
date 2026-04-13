@@ -38,6 +38,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"name":         user.Name,
 		"role":         user.Role,
 		"totp_enabled": user.TOTPEnabled,
+		"plan":         user.Plan,
 	}
 }
 
@@ -91,20 +92,22 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func setupStatePayload(setupMethod string) map[string]interface{} {
+func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 	return map[string]interface{}{
 		"authenticated":  false,
 		"setup_required": true,
 		"setup_method":   setupMethod,
 		"auth_method":    authMethodPassword,
+		"cloud_mode":     s.cloudMode,
 	}
 }
 
-func sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
+func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
 	payload := map[string]interface{}{
 		"authenticated":  authenticated,
 		"setup_required": false,
 		"auth_method":    authMethodPassword,
+		"cloud_mode":     s.cloudMode,
 	}
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)
@@ -167,6 +170,10 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 // It is only allowed from loopback-local requests so setup must happen
 // on the server host or from inside the container.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.cloudMode {
+		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is disabled in cloud mode — users register via OAuth or invitation")
+		return
+	}
 	if !requestIsLoopback(r) {
 		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost on the server host")
 		return
@@ -195,6 +202,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(input.Password) < 8 {
 		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+		return
+	}
+	if len(input.Password) > 128 {
+		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
 		return
 	}
 
@@ -244,6 +255,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	s.logAuditEventForUser(models.ActionBootstrap, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 
+	// Auto-create default workspace in cloud mode
+	s.autoCreateWorkspace(user)
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
@@ -282,6 +296,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(input.Password) < 8 {
 		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+		return
+	}
+	if len(input.Password) > 128 {
+		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
 		return
 	}
 
@@ -386,6 +404,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.logAuditEventForUser(models.ActionRegister, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 
+	// Auto-create default workspace in cloud mode
+	s.autoCreateWorkspace(user)
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
@@ -462,24 +483,24 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 
 	// No users → needs setup (first-time experience)
 	if count == 0 {
-		writeJSON(w, http.StatusOK, setupStatePayload(setupMethodLocalCLI))
+		writeJSON(w, http.StatusOK, s.setupStatePayload(setupMethodLocalCLI))
 		return
 	}
 
 	// Try to resolve user from context (set by middleware)
 	user := currentUser(r)
 	if user != nil {
-		writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
+		writeJSON(w, http.StatusOK, s.sessionStatePayload(true, user))
 		return
 	}
 
 	// Try session cookie directly (since auth endpoints are exempt from middleware)
 	if user := s.validateSessionCookie(r); user != nil {
-		writeJSON(w, http.StatusOK, sessionStatePayload(true, user))
+		writeJSON(w, http.StatusOK, s.sessionStatePayload(true, user))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sessionStatePayload(false, nil))
+	writeJSON(w, http.StatusOK, s.sessionStatePayload(false, nil))
 }
 
 // handleLogout destroys the session and clears the cookie.
@@ -726,6 +747,10 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(input.Password) < 8 {
 		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+		return
+	}
+	if len(input.Password) > 128 {
+		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
 		return
 	}
 

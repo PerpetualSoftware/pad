@@ -37,6 +37,12 @@ type Config struct {
 	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
 	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
 
+	// Cloud mode
+	CloudSecret string `toml:"cloud_secret"` // Shared secret for pad-cloud sidecar communication
+
+	// Encryption
+	EncryptionKey string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+
 	// Security
 	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
 	SecureCookies  bool   `toml:"secure_cookies"`  // Set Secure flag on cookies (requires TLS)
@@ -128,6 +134,17 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_EMAIL_FROM_NAME"); v != "" {
 		cfg.EmailFromName = v
 	}
+	// PAD_CLOUD=true is a convenience alias for PAD_MODE=cloud
+	if v := os.Getenv("PAD_CLOUD"); v == "true" || v == "1" {
+		cfg.Mode = ModeCloud
+		cfg.LoadedFromEnv = true
+	}
+	if v := os.Getenv("PAD_CLOUD_SECRET"); v != "" {
+		cfg.CloudSecret = v
+	}
+	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
+		cfg.EncryptionKey = v
+	}
 	if v := os.Getenv("PAD_CORS_ORIGINS"); v != "" {
 		cfg.CORSOrigins = v
 	}
@@ -157,7 +174,7 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	f, err := os.Create(c.ConfigPath)
+	f, err := os.OpenFile(c.ConfigPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -190,6 +207,12 @@ func ValidMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+// IsCloud reports whether the server is running in cloud mode.
+// Cloud mode is enabled by PAD_MODE=cloud or PAD_CLOUD=true.
+func (c *Config) IsCloud() bool {
+	return c.Mode == ModeCloud
 }
 
 // Addr returns the host:port listen address.

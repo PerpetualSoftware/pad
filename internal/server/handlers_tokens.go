@@ -157,6 +157,11 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce API token count limit (user-scoped)
+	if !s.enforceUserPlanLimit(w, userID, "api_tokens") {
+		return
+	}
+
 	defaultDays, maxDays := s.getTokenExpirySettings()
 
 	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays)

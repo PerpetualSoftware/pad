@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -207,6 +208,25 @@ func serveCmd() *cobra.Command {
 			}
 			defer s.Close()
 
+			// Configure encryption key for sensitive fields (TOTP secrets)
+			if cfg.EncryptionKey != "" {
+				keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
+				if err != nil || len(keyBytes) != 32 {
+					return fmt.Errorf("PAD_ENCRYPTION_KEY must be a 64-character hex string (32 bytes / 256 bits)")
+				}
+				s.SetEncryptionKey(keyBytes)
+				slog.Info("Encryption key configured for sensitive fields")
+
+				// Backfill: encrypt any plaintext TOTP secrets
+				if n, err := s.BackfillEncryptTOTPSecrets(); err != nil {
+					return fmt.Errorf("backfill TOTP encryption: %w", err)
+				} else if n > 0 {
+					slog.Info("Encrypted plaintext TOTP secrets", "count", n)
+				}
+			} else {
+				slog.Warn("No PAD_ENCRYPTION_KEY configured — TOTP secrets stored in plaintext. Set PAD_ENCRYPTION_KEY for production use.")
+			}
+
 			// Auto-upgrade: ensure all default collections exist in every workspace.
 			// This is safe because SeedDefaultCollections skips collections that already exist.
 			if workspaces, err := s.ListWorkspaces(); err == nil {
@@ -226,6 +246,31 @@ func serveCmd() *cobra.Command {
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
+
+			// Cloud mode: enable cloud-specific endpoints and behavior
+			if cfg.IsCloud() {
+				if cfg.CloudSecret == "" {
+					return fmt.Errorf("PAD_CLOUD_SECRET is required when running in cloud mode (PAD_MODE=cloud or PAD_CLOUD=true)")
+				}
+				srv.SetCloudMode(cfg.CloudSecret)
+				slog.Info("Cloud mode enabled")
+
+				// Seed default plan limits (idempotent — won't overwrite admin changes)
+				if err := s.SeedPlanLimits(); err != nil {
+					return fmt.Errorf("seed plan limits: %w", err)
+				}
+
+				// Backfill: set existing users with empty plan to 'free'
+				// (first cloud-mode boot after upgrade from self-hosted)
+				if err := s.BackfillUserPlans("free"); err != nil {
+					slog.Warn("failed to backfill user plans", "error", err)
+				}
+			} else {
+				// Self-hosted mode: ensure all users have 'self-hosted' plan (no limits)
+				if err := s.BackfillUserPlans("self-hosted"); err != nil {
+					slog.Warn("failed to set self-hosted plans", "error", err)
+				}
+			}
 
 			// Initialize Prometheus metrics
 			m := metrics.New()

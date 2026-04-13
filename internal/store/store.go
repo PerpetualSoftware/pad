@@ -20,8 +20,9 @@ var migrationsFS embed.FS
 var pgMigrationsFS embed.FS
 
 type Store struct {
-	db      *sql.DB
-	dialect Dialect
+	db            *sql.DB
+	dialect       Dialect
+	encryptionKey []byte // 32-byte AES-256 key for encrypting sensitive fields (e.g., TOTP secrets)
 }
 
 // D returns the store's dialect for building backend-specific SQL.
@@ -159,6 +160,7 @@ func (s *Store) migrate() error {
 		"032_permission_indexes.sql",
 		"033_grants.sql",
 		"034_share_links.sql",
+		"035_plan_fields.sql",
 	}
 
 	for _, name := range migrations {
@@ -217,6 +219,7 @@ func (s *Store) migratePostgres() error {
 		"012_permission_indexes.sql",
 		"013_grants.sql",
 		"014_share_links.sql",
+		"015_plan_fields.sql",
 	}
 
 	for _, name := range migrations {

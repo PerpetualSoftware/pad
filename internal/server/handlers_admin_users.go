@@ -1,0 +1,362 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/store"
+)
+
+// --- Admin User Management (TASK-502) ---
+
+// handleAdminListUsers returns a paginated list of users with plan info.
+// GET /api/v1/admin/users?q=search&plan=free&offset=0&limit=50
+func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	users, err := s.store.ListUsers()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Filter by plan if specified
+	planFilter := r.URL.Query().Get("plan")
+	searchQuery := strings.ToLower(r.URL.Query().Get("q"))
+
+	type adminUser struct {
+		ID             string `json:"id"`
+		Email          string `json:"email"`
+		Username       string `json:"username"`
+		Name           string `json:"name"`
+		Role           string `json:"role"`
+		Plan           string `json:"plan"`
+		PlanExpiresAt  string `json:"plan_expires_at,omitempty"`
+		PlanOverrides  string `json:"plan_overrides,omitempty"`
+		TOTPEnabled    bool   `json:"totp_enabled"`
+		CreatedAt      string `json:"created_at"`
+		UpdatedAt      string `json:"updated_at"`
+	}
+
+	var result []adminUser
+	for _, u := range users {
+		// Filter
+		if planFilter != "" && u.Plan != planFilter {
+			continue
+		}
+		if searchQuery != "" &&
+			!strings.Contains(strings.ToLower(u.Email), searchQuery) &&
+			!strings.Contains(strings.ToLower(u.Name), searchQuery) &&
+			!strings.Contains(strings.ToLower(u.Username), searchQuery) {
+			continue
+		}
+
+		result = append(result, adminUser{
+			ID:            u.ID,
+			Email:         u.Email,
+			Username:      u.Username,
+			Name:          u.Name,
+			Role:          u.Role,
+			Plan:          u.Plan,
+			PlanExpiresAt: u.PlanExpiresAt,
+			PlanOverrides: u.PlanOverrides,
+			TOTPEnabled:   u.TOTPEnabled,
+			CreatedAt:     u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:     u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+
+	if result == nil {
+		result = []adminUser{}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAdminGetUser returns a single user with full detail.
+// GET /api/v1/admin/users/{userID}
+func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	// Get workspace count for this user
+	workspaces, err := s.store.GetUserWorkspaces(user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":              user.ID,
+		"email":           user.Email,
+		"username":        user.Username,
+		"name":            user.Name,
+		"role":            user.Role,
+		"plan":            user.Plan,
+		"plan_expires_at": user.PlanExpiresAt,
+		"plan_overrides":  user.PlanOverrides,
+		"totp_enabled":    user.TOTPEnabled,
+		"created_at":      user.CreatedAt,
+		"updated_at":      user.UpdatedAt,
+		"workspace_count": len(workspaces),
+	})
+}
+
+// handleAdminUpdateUser updates a user's plan, overrides, or role.
+// PATCH /api/v1/admin/users/{userID}
+func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	var input struct {
+		Plan          *string `json:"plan"`
+		PlanExpiresAt *string `json:"plan_expires_at"`
+		PlanOverrides *string `json:"plan_overrides"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	if input.Plan != nil {
+		validPlans := map[string]bool{"free": true, "pro": true, "self-hosted": true}
+		if !validPlans[*input.Plan] {
+			writeError(w, http.StatusBadRequest, "bad_request", "plan must be 'free', 'pro', or 'self-hosted'")
+			return
+		}
+		expiresAt := ""
+		if input.PlanExpiresAt != nil {
+			expiresAt = *input.PlanExpiresAt
+		}
+		if err := s.store.SetUserPlan(userID, *input.Plan, expiresAt); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		s.logAuditEvent(models.ActionPlanChanged, r, auditMeta(map[string]string{
+			"target_user_id": userID,
+			"old_plan":       user.Plan,
+			"new_plan":       *input.Plan,
+		}))
+	}
+
+	if input.PlanOverrides != nil {
+		// Validate JSON
+		if *input.PlanOverrides != "" {
+			var overrides map[string]int
+			if err := json.Unmarshal([]byte(*input.PlanOverrides), &overrides); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "plan_overrides must be valid JSON (map of feature → limit)")
+				return
+			}
+		}
+		if err := s.store.SetUserPlanOverrides(userID, *input.PlanOverrides); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
+
+	// Return updated user
+	updated, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":              updated.ID,
+		"email":           updated.Email,
+		"plan":            updated.Plan,
+		"plan_overrides":  updated.PlanOverrides,
+		"plan_expires_at": updated.PlanExpiresAt,
+		"ok":              true,
+	})
+}
+
+// --- Admin Limits Management ---
+
+// handleAdminGetLimits returns the current default plan limits.
+// GET /api/v1/admin/limits
+func (s *Server) handleAdminGetLimits(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	features := []string{
+		"workspaces", "items_per_workspace", "members_per_workspace",
+		"api_tokens", "storage_bytes", "webhooks", "automated_backups",
+	}
+	plans := []string{"free", "pro"}
+
+	defaults := map[string]store.PlanLimits{
+		"free": store.DefaultFreeLimits,
+		"pro":  store.DefaultProLimits,
+	}
+
+	result := make(map[string]map[string]int)
+	for _, plan := range plans {
+		result[plan] = make(map[string]int)
+		for _, feature := range features {
+			key := "plan_limits_" + plan + "_" + feature
+			val, err := s.store.GetPlatformSetting(key)
+			if err != nil || val == "" {
+				// Fall back to hardcoded default for this plan+feature
+				result[plan][feature] = planLimitDefault(defaults[plan], feature)
+				continue
+			}
+			v, _ := strconv.Atoi(val)
+			result[plan][feature] = v
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAdminUpdateLimits updates default plan limits.
+// PATCH /api/v1/admin/limits
+// Body: {"free": {"workspaces": 10, ...}, "pro": {"workspaces": -1, ...}}
+func (s *Server) handleAdminUpdateLimits(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	var input map[string]map[string]int
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	validPlans := map[string]bool{"free": true, "pro": true}
+	validFeatures := map[string]bool{
+		"workspaces": true, "items_per_workspace": true, "members_per_workspace": true,
+		"api_tokens": true, "storage_bytes": true, "webhooks": true, "automated_backups": true,
+	}
+
+	for plan, features := range input {
+		if !validPlans[plan] {
+			continue
+		}
+		for feature, value := range features {
+			if !validFeatures[feature] {
+				continue
+			}
+			key := "plan_limits_" + plan + "_" + feature
+			if err := s.store.SetPlatformSetting(key, strconv.Itoa(value)); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+	}
+
+	s.logAuditEvent(models.ActionSettingsChanged, r, auditMeta(map[string]string{"scope": "plan_limits"}))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+// --- Admin Platform Stats ---
+
+// handleAdminStats returns platform-level statistics.
+// GET /api/v1/admin/stats
+func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userCount, err := s.store.UserCount()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Count users by plan
+	users, err := s.store.ListUsers()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	planCounts := map[string]int{}
+	for _, u := range users {
+		plan := u.Plan
+		if plan == "" {
+			plan = "free"
+		}
+		planCounts[plan]++
+	}
+
+	workspaces, err := s.store.ListWorkspaces()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"users":          userCount,
+		"users_by_plan":  planCounts,
+		"workspaces":     len(workspaces),
+		"cloud_mode":     s.cloudMode,
+	})
+}
+
+// --- Helpers ---
+
+func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	user := currentUser(r)
+	if user == nil || user.Role != "admin" {
+		writeError(w, http.StatusForbidden, "forbidden", "Admin access required")
+		return false
+	}
+	return true
+}
+
+// planLimitDefault returns the hardcoded default for a plan+feature pair.
+func planLimitDefault(limits store.PlanLimits, feature string) int {
+	switch feature {
+	case "workspaces":
+		return limits.Workspaces
+	case "items_per_workspace":
+		return limits.ItemsPerWorkspace
+	case "members_per_workspace":
+		return limits.MembersPerWorkspace
+	case "api_tokens":
+		return limits.APITokens
+	case "storage_bytes":
+		return limits.StorageBytes
+	case "webhooks":
+		return limits.Webhooks
+	case "automated_backups":
+		return limits.AutomatedBackups
+	default:
+		return 0
+	}
+}
+
+// auditMeta is defined in handlers_documents.go

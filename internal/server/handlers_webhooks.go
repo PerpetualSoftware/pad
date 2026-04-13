@@ -29,6 +29,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce webhook count limit (workspace-scoped)
+	if !s.enforcePlanLimit(w, workspaceID, "webhooks") {
+		return
+	}
+
 	var input models.WebhookCreate
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())

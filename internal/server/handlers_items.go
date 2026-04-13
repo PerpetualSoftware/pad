@@ -193,6 +193,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce item count limit (workspace-scoped)
+	if !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+		return
+	}
+
 	// Parse collection schema
 	var schema models.CollectionSchema
 	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {

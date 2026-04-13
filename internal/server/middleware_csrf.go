@@ -39,8 +39,10 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		}
 
 		// Auth endpoints that need to work before a CSRF token exists
-		// (login, register, bootstrap, password reset)
-		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+		// (login, register, bootstrap, password reset).
+		// The cloud plan endpoint is also exempt — the sidecar authenticates
+		// via cloud_secret in the body, not via cookies.
+		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") || r.URL.Path == "/api/v1/admin/plan" {
 			next.ServeHTTP(w, r)
 			return
 		}
