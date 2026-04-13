@@ -583,9 +583,13 @@
 							<div class="card invitation-row">
 								<span class="inv-email">{inv.email}</span>
 								<span class="role-badge">{inv.role}</span>
-								<button class="btn btn-small copy-link-btn" onclick={async () => { const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
-									Copy invite link
-								</button>
+								{#if inv.join_url || inv.code}
+									<button class="btn btn-small copy-link-btn" onclick={async () => { const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
+										Copy invite link
+									</button>
+								{:else}
+									<span class="inv-sent-label">Sent via email</span>
+								{/if}
 								{#if isOwner}
 									<button class="btn btn-small btn-remove" onclick={() => handleCancelInvitation(inv.id, inv.email)}>
 										Cancel
@@ -852,6 +856,7 @@
 	.inv-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.copy-link-btn { color: var(--accent-blue); border-color: var(--accent-blue); background: none; }
 	.copy-link-btn:hover { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); }
+	.inv-sent-label { font-size: 0.8em; color: var(--text-muted); font-style: italic; }
 	.invite-form { margin-top: var(--space-4); }
 	.invite-form h3 { font-size: 0.9em; color: var(--text-secondary); margin-bottom: var(--space-3); }
 	.invite-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
