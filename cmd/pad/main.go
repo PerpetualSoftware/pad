@@ -5383,50 +5383,113 @@ func dbBackupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "Back up the PostgreSQL database using pg_dump",
-		Long: `Creates a SQL dump of the Pad PostgreSQL database.
-Requires pg_dump to be installed and PAD_DATABASE_URL or PAD_DB_DRIVER=postgres to be configured.
+		Short: "Back up the database",
+		Long: `Creates a backup of the Pad database.
 
-For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
+For PostgreSQL (PAD_DB_DRIVER=postgres): creates a SQL dump using pg_dump.
+For SQLite (default): copies the database file to a timestamped backup.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			dbDriver := os.Getenv("PAD_DB_DRIVER")
 			dbURL := os.Getenv("PAD_DATABASE_URL")
-			if dbURL == "" {
-				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.\nFor SQLite, copy the database file directly: cp ~/.pad/pad.db backup.db")
+
+			if dbDriver == "postgres" || dbURL != "" {
+				// PostgreSQL backup via pg_dump
+				if dbURL == "" {
+					return fmt.Errorf("PAD_DATABASE_URL is required when PAD_DB_DRIVER=postgres")
+				}
+
+				if output == "" {
+					output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
+				}
+
+				pgArgs := []string{
+					"--format", "plain",
+					"--clean",
+					"--if-exists",
+					"--file", output,
+				}
+
+				pgCmd := exec.Command("pg_dump", pgArgs...)
+				pgCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+				pgCmd.Stdout = os.Stdout
+				pgCmd.Stderr = os.Stderr
+
+				dbname := pgDbnameFromURL(dbURL)
+				if !cronMode {
+					fmt.Fprintf(os.Stderr, "Backing up PostgreSQL database %s to %s...\n", dbname, output)
+				}
+
+				if err := pgCmd.Run(); err != nil {
+					if cronMode {
+						slog.Error("backup failed", "error", err, "output", output)
+					}
+					return fmt.Errorf("pg_dump failed: %w", err)
+				}
+
+				if info, err := os.Stat(output); err == nil {
+					sizeMB := float64(info.Size()) / 1024 / 1024
+					if cronMode {
+						slog.Info("backup completed", "output", output, "size_mb", fmt.Sprintf("%.1f", sizeMB))
+					} else {
+						fmt.Fprintf(os.Stderr, "Backup complete: %s (%.1f MB)\n", output, sizeMB)
+					}
+				}
+
+				return nil
+			}
+
+			// SQLite backup via file copy
+			srcPath := filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+			if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+				return fmt.Errorf("SQLite database not found: %s", srcPath)
 			}
 
 			if output == "" {
-				output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
+				output = fmt.Sprintf("pad-backup-%s.db", time.Now().Format("20060102-150405"))
 			}
 
-			// Pass the connection URL via environment variable instead of
-			// command-line args, so credentials don't leak in ps/proc output.
-			// --clean emits DROP statements so the dump can be restored into an
-			// existing database, and --if-exists avoids errors on a fresh DB.
-			pgArgs := []string{
-				"--format", "plain",
-				"--clean",
-				"--if-exists",
-				"--file", output,
-			}
-
-			pgCmd := exec.Command("pg_dump", pgArgs...)
-			pgCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
-			pgCmd.Stdout = os.Stdout
-			pgCmd.Stderr = os.Stderr
-
-			dbname := pgDbnameFromURL(dbURL)
 			if !cronMode {
-				fmt.Fprintf(os.Stderr, "Backing up database %s to %s...\n", dbname, output)
+				fmt.Fprintf(os.Stderr, "Backing up SQLite database %s to %s...\n", srcPath, output)
 			}
 
-			if err := pgCmd.Run(); err != nil {
-				if cronMode {
-					slog.Error("backup failed", "error", err, "output", output)
+			src, err := os.Open(srcPath)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer src.Close()
+
+			dst, err := os.Create(output)
+			if err != nil {
+				return fmt.Errorf("create backup file: %w", err)
+			}
+			defer dst.Close()
+
+			if _, err := io.Copy(dst, src); err != nil {
+				return fmt.Errorf("copy database: %w", err)
+			}
+
+			// Also copy WAL and SHM files if they exist
+			for _, suffix := range []string{"-wal", "-shm"} {
+				walPath := srcPath + suffix
+				if _, err := os.Stat(walPath); err == nil {
+					walSrc, err := os.Open(walPath)
+					if err != nil {
+						return fmt.Errorf("open %s: %w", suffix, err)
+					}
+					walDst, err := os.Create(output + suffix)
+					if err != nil {
+						walSrc.Close()
+						return fmt.Errorf("create %s backup: %w", suffix, err)
+					}
+					_, copyErr := io.Copy(walDst, walSrc)
+					walSrc.Close()
+					walDst.Close()
+					if copyErr != nil {
+						return fmt.Errorf("copy %s: %w", suffix, copyErr)
+					}
 				}
-				return fmt.Errorf("pg_dump failed: %w", err)
 			}
 
-			// Get file size
 			if info, err := os.Stat(output); err == nil {
 				sizeMB := float64(info.Size()) / 1024 / 1024
 				if cronMode {
@@ -5440,7 +5503,7 @@ For SQLite, simply copy the database file (default: ~/.pad/pad.db).`,
 		},
 	}
 
-	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: pad-backup-YYYYMMDD-HHMMSS.sql)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: pad-backup-YYYYMMDD-HHMMSS.db or .sql)")
 	cmd.Flags().BoolVar(&cronMode, "cron", false, "cron mode: structured log output, no interactive messages")
 
 	return cmd
@@ -5450,10 +5513,12 @@ func dbRestoreCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "restore <file.sql>",
-		Short: "Restore a PostgreSQL database from a backup",
-		Long: `Restores a Pad PostgreSQL database from a SQL dump created by 'pad db backup'.
-Requires psql to be installed and PAD_DATABASE_URL to be configured.
+		Use:   "restore <file>",
+		Short: "Restore a database from a backup",
+		Long: `Restores a Pad database from a backup created by 'pad db backup'.
+
+For PostgreSQL: restores from a SQL dump using psql. Requires PAD_DATABASE_URL.
+For SQLite (default): copies the backup file over the database at ~/.pad/pad.db.
 
 WARNING: This will overwrite the current database contents.`,
 		Args: cobra.ExactArgs(1),
@@ -5463,14 +5528,53 @@ WARNING: This will overwrite the current database contents.`,
 				return fmt.Errorf("backup file not found: %s", inputFile)
 			}
 
+			dbDriver := os.Getenv("PAD_DB_DRIVER")
 			dbURL := os.Getenv("PAD_DATABASE_URL")
-			if dbURL == "" {
-				return fmt.Errorf("PAD_DATABASE_URL is not set. This command requires PostgreSQL.")
+
+			if dbDriver == "postgres" || dbURL != "" {
+				// PostgreSQL restore via psql
+				if dbURL == "" {
+					return fmt.Errorf("PAD_DATABASE_URL is required when PAD_DB_DRIVER=postgres")
+				}
+
+				dbname := pgDbnameFromURL(dbURL)
+				if !force {
+					fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the PostgreSQL database '%s' with data from %s.\n", dbname, inputFile)
+					fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
+					fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
+					var confirm string
+					fmt.Scanln(&confirm)
+					if confirm != "y" && confirm != "Y" {
+						fmt.Fprintln(os.Stderr, "Aborted.")
+						return nil
+					}
+				}
+
+				psqlArgs := []string{
+					"--file", inputFile,
+					"--single-transaction",
+				}
+
+				psqlCmd := exec.Command("psql", psqlArgs...)
+				psqlCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+				psqlCmd.Stdout = os.Stdout
+				psqlCmd.Stderr = os.Stderr
+
+				fmt.Fprintf(os.Stderr, "Restoring database %s from %s...\n", dbname, inputFile)
+
+				if err := psqlCmd.Run(); err != nil {
+					return fmt.Errorf("psql restore failed: %w", err)
+				}
+
+				fmt.Fprintln(os.Stderr, "Restore complete.")
+				return nil
 			}
 
-			dbname := pgDbnameFromURL(dbURL)
+			// SQLite restore via file copy
+			dstPath := filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+
 			if !force {
-				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the database '%s' with data from %s.\n", dbname, inputFile)
+				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the SQLite database at %s with data from %s.\n", dstPath, inputFile)
 				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
 				fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
 				var confirm string
@@ -5481,25 +5585,50 @@ WARNING: This will overwrite the current database contents.`,
 				}
 			}
 
-			// Pass the connection URL via environment variable instead of
-			// command-line args, so credentials don't leak in ps/proc output.
-			psqlArgs := []string{
-				"--file", inputFile,
-				"--single-transaction",
+			fmt.Fprintf(os.Stderr, "Restoring SQLite database %s from %s...\n", dstPath, inputFile)
+
+			src, err := os.Open(inputFile)
+			if err != nil {
+				return fmt.Errorf("open backup file: %w", err)
+			}
+			defer src.Close()
+
+			dst, err := os.Create(dstPath)
+			if err != nil {
+				return fmt.Errorf("open database for writing: %w", err)
+			}
+			defer dst.Close()
+
+			if _, err := io.Copy(dst, src); err != nil {
+				return fmt.Errorf("copy backup: %w", err)
 			}
 
-			psqlCmd := exec.Command("psql", psqlArgs...)
-			psqlCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
-			psqlCmd.Stdout = os.Stdout
-			psqlCmd.Stderr = os.Stderr
-
-			fmt.Fprintf(os.Stderr, "Restoring database %s from %s...\n", dbname, inputFile)
-
-			if err := psqlCmd.Run(); err != nil {
-				return fmt.Errorf("psql restore failed: %w", err)
+			// Also restore WAL and SHM files if they exist alongside the backup
+			for _, suffix := range []string{"-wal", "-shm"} {
+				walPath := inputFile + suffix
+				if _, err := os.Stat(walPath); err == nil {
+					walSrc, err := os.Open(walPath)
+					if err != nil {
+						return fmt.Errorf("open %s: %w", suffix, err)
+					}
+					walDst, err := os.Create(dstPath + suffix)
+					if err != nil {
+						walSrc.Close()
+						return fmt.Errorf("create %s: %w", suffix, err)
+					}
+					_, copyErr := io.Copy(walDst, walSrc)
+					walSrc.Close()
+					walDst.Close()
+					if copyErr != nil {
+						return fmt.Errorf("copy %s: %w", suffix, copyErr)
+					}
+				} else {
+					// No WAL/SHM in backup — remove stale ones from the target
+					os.Remove(dstPath + suffix)
+				}
 			}
 
-			fmt.Fprintln(os.Stderr, "Restore complete.")
+			fmt.Fprintln(os.Stderr, "Restore complete. Restart the Pad server to pick up the restored database.")
 			return nil
 		},
 	}
