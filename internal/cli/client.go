@@ -462,6 +462,34 @@ func (c *Client) Bootstrap(email, name, password string) (*LoginResponse, error)
 	return &result, err
 }
 
+// CLIAuthSessionResponse is the response from POST /auth/cli/sessions.
+type CLIAuthSessionResponse struct {
+	SessionCode string `json:"session_code"`
+	AuthURL     string `json:"auth_url"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+// CLIAuthSessionStatus is the response from GET /auth/cli/sessions/{code}.
+type CLIAuthSessionStatus struct {
+	Status string    `json:"status"` // "pending", "approved", "expired"
+	Token  string    `json:"token,omitempty"`
+	User   LoginUser `json:"user,omitempty"`
+}
+
+// CreateCLIAuthSession creates a new pending CLI auth session.
+func (c *Client) CreateCLIAuthSession() (*CLIAuthSessionResponse, error) {
+	var result CLIAuthSessionResponse
+	err := c.post("/auth/cli/sessions", nil, &result)
+	return &result, err
+}
+
+// PollCLIAuthSession checks the status of a CLI auth session.
+func (c *Client) PollCLIAuthSession(code string) (*CLIAuthSessionStatus, error) {
+	var result CLIAuthSessionStatus
+	err := c.get("/auth/cli/sessions/"+code, &result)
+	return &result, err
+}
+
 // Logout destroys the current session.
 func (c *Client) Logout() error {
 	return c.post("/auth/logout", nil, nil)

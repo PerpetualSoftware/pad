@@ -644,6 +644,14 @@ export const api = {
 				}),
 			delete: (tokenId: string) =>
 				request<void>(`/auth/tokens/${tokenId}`, { method: 'DELETE' })
+		},
+		cli: {
+			getSession: (code: string) =>
+				request<{ status: string; token?: string; user?: { id: string; email: string; name: string; role: string } }>(`/auth/cli/sessions/${code}`),
+			approveSession: (code: string) =>
+				request<{ approved: boolean; user: { id: string; email: string; name: string; role: string } }>(`/auth/cli/sessions/${code}/approve`, {
+					method: 'POST'
+				})
 		}
 	},
 

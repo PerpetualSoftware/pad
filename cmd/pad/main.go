@@ -497,7 +497,7 @@ func setupCmd() *cobra.Command {
 }
 
 func loginCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Pad",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -529,13 +529,89 @@ func loginCmd() *cobra.Command {
 				return fmt.Errorf("this Pad instance has not been initialized yet")
 			}
 
-			// Prompt for login
-			return doLogin(client, cfg)
+			interactive, _ := cmd.Flags().GetBool("interactive")
+			if interactive {
+				return doInteractiveLogin(client, cfg)
+			}
+			return doBrowserLogin(client, cfg)
 		},
+	}
+	cmd.Flags().BoolP("interactive", "i", false, "Use email/password prompt instead of browser-based login")
+	return cmd
+}
+
+// doBrowserLogin implements the browser-based CLI auth flow.
+// It creates a pending session, prints the auth URL, and polls until approved.
+func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
+	// Create a CLI auth session on the server
+	sess, err := client.CreateCLIAuthSession()
+	if err != nil {
+		return fmt.Errorf("failed to start login session: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("  Open this URL in your browser to authenticate:")
+	fmt.Println()
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Printf("  %s\n", bold(sess.AuthURL))
+	fmt.Println()
+	fmt.Println("  Waiting for authentication...")
+
+	// Set up signal handling for clean Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	// Poll until approved, expired, or cancelled
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\n  Login cancelled.")
+			return fmt.Errorf("login cancelled")
+		case <-ticker.C:
+			status, err := client.PollCLIAuthSession(sess.SessionCode)
+			if err != nil {
+				// Transient network errors — keep polling
+				continue
+			}
+
+			switch status.Status {
+			case "approved":
+				// Save credentials
+				if err := cli.SaveCredentials(&cli.Credentials{
+					ServerURL: cfg.BaseURL(),
+					Token:     status.Token,
+					UserID:    status.User.ID,
+					Email:     status.User.Email,
+					Name:      status.User.Name,
+				}); err != nil {
+					return fmt.Errorf("save credentials: %w", err)
+				}
+
+				green := color.New(color.FgGreen).SprintFunc()
+				fmt.Printf("  %s Logged in as %s (%s)\n", green("✓"), status.User.Name, status.User.Email)
+				return nil
+
+			case "expired":
+				return fmt.Errorf("login session expired — run 'pad auth login' to try again")
+
+			case "pending":
+				// Keep polling
+			}
+		}
 	}
 }
 
-func doLogin(client *cli.Client, cfg *config.Config) error {
+// doInteractiveLogin implements the classic email/password prompt login.
+func doInteractiveLogin(client *cli.Client, cfg *config.Config) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Print("  Email: ")
@@ -966,7 +1042,7 @@ Use --list-templates to see available templates.`,
 			} else if !session.Authenticated {
 				fmt.Println("Log in to continue.")
 				fmt.Println()
-				if err := doLogin(client, cfg); err != nil {
+				if err := doBrowserLogin(client, cfg); err != nil {
 					return err
 				}
 				fmt.Println()

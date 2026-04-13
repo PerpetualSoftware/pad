@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
@@ -17,6 +18,15 @@
 	let challengeToken = $state('');
 	let totpCode = $state('');
 
+	function getRedirectTarget(): string {
+		const redirect = $page.url.searchParams.get('redirect');
+		// Only allow relative redirects (prevent open redirect)
+		if (redirect && redirect.startsWith('/')) {
+			return redirect;
+		}
+		return '/console';
+	}
+
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
@@ -27,7 +37,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto('/console', { replaceState: true });
+				goto(getRedirectTarget(), { replaceState: true });
 				return;
 			}
 		} catch {}
@@ -56,7 +66,7 @@
 			}
 
 			await authStore.load();
-			await goto('/console', { replaceState: true });
+			await goto(getRedirectTarget(), { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid email or password.';
@@ -88,7 +98,7 @@
 			}
 
 			await authStore.load();
-			await goto('/console', { replaceState: true });
+			await goto(getRedirectTarget(), { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid code. Please try again.';
