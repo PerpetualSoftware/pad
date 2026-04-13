@@ -161,12 +161,13 @@
 			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
-			await fetch(BASE + '/admin/settings', {
+			const resp = await fetch(BASE + '/admin/settings', {
 				method: 'PATCH',
 				credentials: 'same-origin',
 				headers,
 				body: JSON.stringify(platformSettings)
 			});
+			if (!resp.ok) throw new Error(`${resp.status}`);
 			platformStatus = 'saved';
 			setTimeout(() => (platformStatus = 'idle'), 2000);
 		} catch {
