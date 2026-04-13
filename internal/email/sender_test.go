@@ -148,7 +148,7 @@ func TestSendInvitation_ContextualFromName(t *testing.T) {
 
 	s := newTestSender(ts)
 
-	err := s.SendInvitation(context.Background(), "invitee@example.com", "Alice", "My Project", "https://example.com/join/abc123")
+	err := s.SendInvitation(context.Background(), "invitee@example.com", "Alice", "My Project", "https://example.com/join/abc123", "")
 	if err != nil {
 		t.Fatalf("SendInvitation failed: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestSendWelcome(t *testing.T) {
 
 	s := newTestSender(ts)
 
-	err := s.SendWelcome(context.Background(), "alice@example.com", "Alice")
+	err := s.SendWelcome(context.Background(), "alice@example.com", "Alice", "")
 	if err != nil {
 		t.Fatalf("SendWelcome failed: %v", err)
 	}

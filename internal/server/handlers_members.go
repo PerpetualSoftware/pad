@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/models"
 )
 
@@ -169,6 +170,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	// Send invitation email asynchronously (fire-and-forget)
 	if s.email != nil && joinURL != "" {
 		go func() {
+			// Check if the recipient has opted out of emails
+			if optedOut, err := s.store.IsEmailOptedOut(inv.Email); err == nil && optedOut {
+				slog.Info("skipping invitation email: recipient opted out", "email", inv.Email)
+				return
+			}
 			inviterName := "A team member"
 			wsName := "a workspace"
 			if user, err := s.store.GetUser(inviterID); err == nil && user != nil {
@@ -177,7 +183,8 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			if ws, err := s.store.GetWorkspaceByID(workspaceID); err == nil && ws != nil {
 				wsName = ws.Name
 			}
-			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL); err != nil {
+			unsubURL := email.UnsubscribeURL(s.baseURL, inv.Email, s.unsubscribeSecret())
+			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL, unsubURL); err != nil {
 				slog.Error("failed to send invitation email", "error", err)
 			}
 		}()
