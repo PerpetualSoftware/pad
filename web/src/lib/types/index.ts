@@ -379,6 +379,8 @@ export interface Item {
 	parent_link_id?: string;
 	parent_ref?: string;
 	parent_title?: string;
+	parent_slug?: string;
+	parent_collection_slug?: string;
 	has_children?: boolean;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
