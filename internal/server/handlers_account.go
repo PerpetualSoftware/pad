@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/xarmian/pad/internal/models"
 	"golang.org/x/crypto/bcrypt"
@@ -55,32 +57,31 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete all owned workspaces
+	// Delete all owned workspaces, sessions, and the user atomically.
+	// If any workspace deletion fails, the entire operation is aborted.
 	workspaces, err := s.store.GetUserWorkspaces(user.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+
+	var ownedSlugs []string
 	for _, ws := range workspaces {
 		if ws.OwnerID == user.ID {
-			if err := s.store.DeleteWorkspace(ws.Slug); err != nil {
-				slog.Error("delete account: failed to delete workspace", "workspace", ws.Slug, "error", err)
-			}
+			ownedSlugs = append(ownedSlugs, ws.Slug)
 		}
 	}
 
-	// Revoke all sessions
-	_ = s.store.DeleteUserSessions(user.ID)
-
-	// Delete the user
-	if err := s.store.DeleteUser(user.ID); err != nil {
-		writeInternalError(w, err)
+	if err := s.store.DeleteAccountAtomic(user.ID, ownedSlugs); err != nil {
+		slog.Error("delete account: atomic deletion failed", "user_id", user.ID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Account deletion failed. No data was removed. Please try again or contact support.")
 		return
 	}
 
 	// Clear session cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
+		Name:     sessionCookieName(s.secureCookies),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -101,7 +102,8 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 // --- Data Export (GDPR Article 20 — Right to Portability) ---
 
 // handleExportAccount handles GET /api/v1/auth/export.
-// Returns all user data as a JSON object.
+// Streams user data as JSON, processing one workspace at a time to avoid
+// loading everything into memory. Enforces a 60-second timeout.
 func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil {
@@ -112,30 +114,51 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect all user data
-	export := map[string]interface{}{
-		"user": map[string]interface{}{
-			"id":           user.ID,
-			"email":        user.Email,
-			"username":     user.Username,
-			"name":         user.Name,
-			"role":         user.Role,
-			"plan":         user.Plan,
-			"totp_enabled": user.TOTPEnabled,
-			"created_at":   user.CreatedAt,
-			"updated_at":   user.UpdatedAt,
-		},
-	}
+	// Enforce a 60-second timeout for the entire export
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
 
-	// Export owned workspaces with all items
+	// Prefetch workspace list (small) before starting the streaming response
 	workspaces, err := s.store.GetUserWorkspaces(user.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 
-	var wsExports []interface{}
-	for _, ws := range workspaces {
+	// Stream the response — once we start writing, we can't send error status codes
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"pad-export.json\"")
+	w.WriteHeader(http.StatusOK)
+
+	enc := json.NewEncoder(w)
+
+	// Write opening structure
+	w.Write([]byte("{\n  \"user\": "))
+	enc.Encode(map[string]interface{}{
+		"id":           user.ID,
+		"email":        user.Email,
+		"username":     user.Username,
+		"name":         user.Name,
+		"role":         user.Role,
+		"plan":         user.Plan,
+		"totp_enabled": user.TOTPEnabled,
+		"created_at":   user.CreatedAt,
+		"updated_at":   user.UpdatedAt,
+	})
+
+	w.Write([]byte(",\n  \"workspaces\": [\n"))
+
+	for i, ws := range workspaces {
+		// Check timeout between workspaces
+		if ctx.Err() != nil {
+			slog.Warn("export timeout", "user_id", user.ID, "workspaces_exported", i)
+			break
+		}
+
+		if i > 0 {
+			w.Write([]byte(",\n"))
+		}
+
 		wsData := map[string]interface{}{
 			"id":         ws.ID,
 			"name":       ws.Name,
@@ -146,23 +169,32 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 
 		// Only export full data for owned workspaces
 		if ws.OwnerID == user.ID {
-			// Get collections
 			collections, _ := s.store.ListCollections(ws.ID)
 			wsData["collections"] = collections
 
-			// Get all items
-			items, _ := s.store.ListItems(ws.ID, models.ItemListParams{IncludeArchived: true})
-			wsData["items"] = items
+			// Stream items per workspace (each workspace loaded individually, then GC'd)
+			items, err := s.store.ListItems(ws.ID, models.ItemListParams{IncludeArchived: true})
+			if err != nil {
+				slog.Error("export: failed to list items", "workspace", ws.Slug, "error", err)
+				wsData["items"] = []interface{}{}
+				wsData["export_error"] = "failed to export items"
+			} else {
+				wsData["items"] = items
+			}
 		}
 
-		wsExports = append(wsExports, wsData)
-	}
-	export["workspaces"] = wsExports
+		w.Write([]byte("    "))
+		enc.Encode(wsData)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"pad-export.json\"")
-	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	enc.Encode(export)
+		// Flush after each workspace to free memory and show progress
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+
+	w.Write([]byte("\n  ]\n}\n"))
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

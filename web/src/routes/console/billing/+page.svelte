@@ -3,12 +3,35 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
+	interface PlanLimits {
+		workspaces: number;
+		items_per_workspace: number;
+		members_per_workspace: number;
+		api_tokens: number;
+		storage_bytes: number;
+	}
+
 	let plan = $derived(authStore.user?.plan ?? 'free');
 	let isPro = $derived(plan === 'pro');
+	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
 
-	onMount(() => {
+	function formatLimit(value: number | undefined): string {
+		if (value === undefined) return '...';
+		if (value === -1) return 'Unlimited';
+		return value.toLocaleString();
+	}
+
+	onMount(async () => {
 		if (!authStore.cloudMode) {
 			goto('/console', { replaceState: true });
+			return;
+		}
+
+		try {
+			const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin' });
+			if (resp.ok) limits = await resp.json();
+		} catch {
+			/* use fallback rendering */
 		}
 	});
 </script>
@@ -58,11 +81,15 @@
 			</div>
 			<div class="usage-row">
 				<span class="usage-label">Workspaces</span>
-				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 5'}</span>
+				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.workspaces) : formatLimit(limits?.free?.workspaces)}</span>
+			</div>
+			<div class="usage-row">
+				<span class="usage-label">Items per workspace</span>
+				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.items_per_workspace) : formatLimit(limits?.free?.items_per_workspace)}</span>
 			</div>
 			<div class="usage-row">
 				<span class="usage-label">Members per workspace</span>
-				<span class="usage-value">{isPro ? 'Unlimited' : 'Up to 3'}</span>
+				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.members_per_workspace) : formatLimit(limits?.free?.members_per_workspace)}</span>
 			</div>
 		</div>
 	</section>

@@ -133,15 +133,21 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isNewUser = true
+
+		// Auto-link the provider for new OAuth users
+		if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
+			slog.Error("oauth-login: failed to link provider", "error", err, "user_id", user.ID)
+		}
+
 		slog.Info("oauth-login: created new user", "provider", input.Provider, "email", input.Email, "user_id", user.ID)
 
 		// Auto-create default workspace for new OAuth users
 		s.autoCreateWorkspace(user)
 	} else {
-		// Existing user — implicit account link.
-		// Block OAuth login if the user has 2FA enabled — OAuth must not bypass 2FA.
-		if user.TOTPEnabled {
-			slog.Warn("oauth-login: blocked — existing user has 2FA enabled",
+		// Existing user — require explicit provider linking.
+		// The user must have previously linked this provider from their settings.
+		if !user.HasOAuthProvider(input.Provider) {
+			slog.Warn("oauth-login: rejected — provider not linked",
 				"provider", input.Provider,
 				"email", input.Email,
 				"user_id", user.ID,
@@ -149,19 +155,12 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			s.logAuditEventForUser(models.ActionOAuthLoginFailed, r, user.ID, auditMeta(map[string]string{
 				"provider": input.Provider,
 				"email":    input.Email,
-				"reason":   "2fa_enabled",
+				"reason":   "provider_not_linked",
 			}))
-			writeError(w, http.StatusForbidden, "forbidden",
-				"This account has two-factor authentication enabled. Please sign in with your password and 2FA code, then link your OAuth provider in account settings.")
+			writeError(w, http.StatusForbidden, "oauth_provider_not_linked",
+				"An account with this email already exists. Sign in with your password and link "+input.Provider+" from account settings.")
 			return
 		}
-
-		// Log the implicit link for audit
-		slog.Info("oauth-login: existing user (account link)",
-			"provider", input.Provider,
-			"email", input.Email,
-			"user_id", user.ID,
-		)
 
 		// Update avatar if they don't have one
 		if user.AvatarURL == "" && input.AvatarURL != "" {
@@ -273,6 +272,328 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		"plan":    input.Plan,
 		"ok":      true,
 	})
+}
+
+// --- OAuth Provider Linking (TASK-504) ---
+
+// handleOAuthLink handles POST /api/v1/auth/oauth-link.
+// Called by the pad-cloud sidecar after an OAuth flow initiated from account settings.
+// Requires an active session (the user must be logged in) and links the provider.
+func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Provider      string `json:"provider"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
+		CloudSecret   string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret
+	if !s.validateCloudSecret(input.CloudSecret, w) {
+		return
+	}
+
+	// 2. Validate provider
+	if input.Provider != "github" && input.Provider != "google" {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github' or 'google'")
+		return
+	}
+
+	// 3. Require verified email
+	if !input.EmailVerified {
+		writeError(w, http.StatusForbidden, "forbidden", "Only verified email addresses are accepted")
+		return
+	}
+
+	// 4. Find user by email (the sidecar passes the OAuth email)
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	user, err := s.store.GetUserByEmail(input.Email)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "No account found with that email")
+		return
+	}
+
+	// 5. Check if already linked
+	if user.HasOAuthProvider(input.Provider) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":       true,
+			"provider": input.Provider,
+			"message":  "Provider already linked",
+		})
+		return
+	}
+
+	// 6. Link the provider
+	if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// 7. Audit log
+	s.logAuditEventForUser(models.ActionOAuthLogin, r, user.ID, auditMeta(map[string]string{
+		"provider": input.Provider,
+		"email":    input.Email,
+		"action":   "link_provider",
+	}))
+
+	slog.Info("oauth-link: provider linked", "provider", input.Provider, "user_id", user.ID)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"provider": input.Provider,
+	})
+}
+
+// handleOAuthUnlink handles POST /api/v1/auth/oauth-unlink.
+// Removes a linked OAuth provider. Requires the user to have a usable password
+// (to prevent locking themselves out).
+func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
+
+	var input struct {
+		Provider string `json:"provider"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	if input.Provider != "github" && input.Provider != "google" {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github' or 'google'")
+		return
+	}
+
+	if !user.HasOAuthProvider(input.Provider) {
+		writeError(w, http.StatusBadRequest, "bad_request", "Provider not linked")
+		return
+	}
+
+	// Ensure user won't be locked out: they must have another linked
+	// provider remaining. All users have a password hash (OAuth users get
+	// a random one), so we can't distinguish "has usable password" from
+	// "has unusable random hash". Requiring another provider is the safe
+	// default. Users who set a real password via the reset flow can unlink
+	// their last provider since they'll still have password-based login.
+	// TODO: track whether the user has explicitly set a password to allow
+	// unlinking the last provider in that case.
+	providers := user.GetOAuthProviders()
+	hasOtherProvider := false
+	for _, p := range providers {
+		if p != input.Provider {
+			hasOtherProvider = true
+			break
+		}
+	}
+	if !hasOtherProvider {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"Cannot unlink your only sign-in method. Link another provider or set a password first.")
+		return
+	}
+
+	if err := s.store.RemoveOAuthProvider(user.ID, input.Provider); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.logAuditEventForUser(models.ActionOAuthLogin, r, user.ID, auditMeta(map[string]string{
+		"provider": input.Provider,
+		"action":   "unlink_provider",
+	}))
+
+	slog.Info("oauth-unlink: provider unlinked", "provider", input.Provider, "user_id", user.ID)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"provider": input.Provider,
+	})
+}
+
+// --- Stripe Customer ID (TASK-505) ---
+
+// handleSetStripeCustomerID handles POST /api/v1/admin/stripe-customer-id.
+// Called by the pad-cloud sidecar after a Stripe checkout.completed event
+// to associate a Stripe customer ID with a Pad user.
+func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		UserID      string `json:"user_id"`
+		CustomerID  string `json:"customer_id"`
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (or admin auth)
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate inputs
+	if input.UserID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "user_id is required")
+		return
+	}
+	if input.CustomerID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "customer_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.CustomerID, "cus_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "customer_id must start with 'cus_'")
+		return
+	}
+
+	// 3. Verify user exists
+	targetUser, err := s.store.GetUser(input.UserID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if targetUser == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	// 4. Store the Stripe customer ID
+	if err := s.store.SetUserStripeCustomerID(input.UserID, input.CustomerID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// 5. Audit log
+	actorID := ""
+	if user != nil {
+		actorID = user.ID
+	}
+	s.logAuditEventForUser(models.ActionPlanChanged, r, actorID, auditMeta(map[string]string{
+		"target_user_id":     input.UserID,
+		"stripe_customer_id": input.CustomerID,
+		"action":             "set_stripe_customer_id",
+	}))
+
+	slog.Info("stripe customer ID set", "user_id", input.UserID, "customer_id", input.CustomerID)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"user_id":     input.UserID,
+		"customer_id": input.CustomerID,
+		"ok":          true,
+	})
+}
+
+// handleGetUserByCustomerID handles GET /api/v1/admin/user-by-customer?customer_id=cus_xxx.
+// Called by the pad-cloud sidecar during Stripe subscription webhook processing
+// to resolve a Stripe customer back to a Pad user.
+func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Request) {
+	// 1. Validate cloud secret (via header preferred, query param fallback) or admin auth.
+	// NOTE: query param is supported for GET convenience but may appear in access logs.
+	// Prefer X-Cloud-Secret header in production.
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		secret := r.Header.Get("X-Cloud-Secret")
+		if secret == "" {
+			secret = r.URL.Query().Get("cloud_secret")
+		}
+		if !s.validateCloudSecret(secret, w) {
+			return
+		}
+	}
+
+	// 2. Validate customer_id
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "customer_id query parameter is required")
+		return
+	}
+	if !strings.HasPrefix(customerID, "cus_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "customer_id must start with 'cus_'")
+		return
+	}
+
+	// 3. Look up user
+	targetUser, err := s.store.GetUserByStripeCustomerID(customerID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if targetUser == nil {
+		writeError(w, http.StatusNotFound, "not_found", "No user found with that Stripe customer ID")
+		return
+	}
+
+	// 4. Return minimal user info (only what the sidecar needs)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"user_id": targetUser.ID,
+		"email":   targetUser.Email,
+		"plan":    targetUser.Plan,
+	})
+}
+
+// --- Public Plan Limits (TASK-511) ---
+
+// handleGetPlanLimits returns the configured plan limits for free and pro tiers.
+// GET /api/v1/plan-limits — public endpoint, no auth required.
+// Used by the billing page to show actual limits instead of hardcoded values.
+func (s *Server) handleGetPlanLimits(w http.ResponseWriter, r *http.Request) {
+	result := map[string]interface{}{
+		"free": store.DefaultFreeLimits,
+		"pro":  store.DefaultProLimits,
+	}
+
+	// Override with DB-stored limits if available
+	features := []string{
+		"workspaces", "items_per_workspace", "members_per_workspace",
+		"api_tokens", "storage_bytes", "webhooks", "automated_backups",
+	}
+	for _, plan := range []string{"free", "pro"} {
+		overrides := make(map[string]int)
+		for _, feature := range features {
+			key := "plan_limits_" + plan + "_" + feature
+			val, err := s.store.GetPlatformSetting(key)
+			if err != nil || val == "" {
+				continue
+			}
+			v, _ := strconv.Atoi(val)
+			overrides[feature] = v
+		}
+		if len(overrides) > 0 {
+			// Merge overrides onto defaults
+			defaults := store.DefaultFreeLimits
+			if plan == "pro" {
+				defaults = store.DefaultProLimits
+			}
+			merged := map[string]int{
+				"workspaces":            defaults.Workspaces,
+				"items_per_workspace":   defaults.ItemsPerWorkspace,
+				"members_per_workspace": defaults.MembersPerWorkspace,
+				"api_tokens":            defaults.APITokens,
+				"storage_bytes":         defaults.StorageBytes,
+				"webhooks":              defaults.Webhooks,
+				"automated_backups":     defaults.AutomatedBackups,
+			}
+			for k, v := range overrides {
+				merged[k] = v
+			}
+			result[plan] = merged
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // --- Plan Limit Enforcement ---

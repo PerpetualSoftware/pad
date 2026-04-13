@@ -51,6 +51,9 @@ class PadApiError extends Error {
 
 function getCSRFToken(): string | null {
 	if (typeof document === 'undefined') return null;
+	// Check __Host- prefixed cookie first (secure/TLS mode), fall back to unprefixed
+	const hostMatch = document.cookie.match(/(?:^|;\s*)__Host-pad_csrf=([^;]+)/);
+	if (hostMatch) return hostMatch[1];
 	const match = document.cookie.match(/(?:^|;\s*)pad_csrf=([^;]+)/);
 	return match ? match[1] : null;
 }
@@ -626,6 +629,11 @@ export const api = {
 			request<User>('/auth/me', {
 				method: 'PATCH',
 				body: JSON.stringify(data)
+			}),
+		unlinkProvider: (provider: string) =>
+			request<{ ok: boolean; provider: string }>('/auth/oauth-unlink', {
+				method: 'POST',
+				body: JSON.stringify({ provider })
 			}),
 		tokens: {
 			list: () => request<APIToken[]>('/auth/tokens'),

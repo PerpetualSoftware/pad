@@ -131,11 +131,14 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Try session cookie
-		cookie, err := r.Cookie(sessionCookie)
+		// Try session cookie (with fallback to unprefixed name for upgrade path)
+		cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
 		if err != nil {
-			next.ServeHTTP(w, r)
-			return
+			cookie, err = r.Cookie("pad_session")
+			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		session, err := s.store.ValidateSession(cookie.Value)
@@ -157,7 +160,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// This can happen when cookies expire at different times or are selectively cleared.
 		// Skip for auth endpoints — they manage their own CSRF cookies (login sets, logout clears).
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
-			if _, csrfErr := r.Cookie(csrfCookie); csrfErr != nil {
+			if _, csrfErr := r.Cookie(csrfCookieName(s.secureCookies)); csrfErr != nil {
 				setCSRFCookie(w, 7*24*60*60, s.secureCookies)
 			}
 		}
@@ -175,9 +178,11 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		path := r.URL.Path
 
 		// Auth endpoints, share link resolution, and cloud sidecar endpoints are always exempt.
-		// The cloud plan endpoint uses cloud_secret in the body for authentication,
-		// so it must bypass RequireAuth (which runs before the handler can read the body).
-		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") || path == "/api/v1/admin/plan" {
+		// Cloud sidecar endpoints authenticate via cloud_secret (in body or header),
+		// so they must bypass RequireAuth which runs before handlers can read the body.
+		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
+			path == "/api/v1/plan-limits" || // Public endpoint for billing page
+			path == "/api/v1/admin/plan" || path == "/api/v1/admin/stripe-customer-id" || path == "/api/v1/admin/user-by-customer" {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -249,6 +249,7 @@ func (s *Server) setupRouter() {
 		r.Get("/health", s.handleHealth)
 		r.Get("/health/live", s.handleHealthLive)
 		r.Get("/health/ready", s.handleHealthReady)
+		r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
 
 		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {
@@ -281,8 +282,10 @@ func (s *Server) setupRouter() {
 			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 			r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
 
-			// Cloud: OAuth login (called by pad-cloud sidecar, protected by cloud secret)
+			// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected by cloud secret)
 			r.Post("/oauth-login", s.handleOAuthLogin)
+			r.Post("/oauth-link", s.handleOAuthLink)
+			r.Post("/oauth-unlink", s.handleOAuthUnlink)
 		})
 
 		// Admin endpoints (admin-only, handlers check role internally)
@@ -290,7 +293,9 @@ func (s *Server) setupRouter() {
 			r.Get("/settings", s.handleGetPlatformSettings)
 			r.Patch("/settings", s.handleUpdatePlatformSettings)
 			r.Post("/test-email", s.handleTestEmail)
-			r.Post("/plan", s.handleSetPlan) // Cloud: sidecar sets user plans; also accessible to admins
+			r.Post("/plan", s.handleSetPlan)                       // Cloud: sidecar sets user plans; also accessible to admins
+			r.Post("/stripe-customer-id", s.handleSetStripeCustomerID) // Cloud: sidecar stores Stripe customer ID after checkout
+			r.Get("/user-by-customer", s.handleGetUserByCustomerID)    // Cloud: sidecar looks up user by Stripe customer ID
 
 			// User management
 			r.Get("/users", s.handleAdminListUsers)
