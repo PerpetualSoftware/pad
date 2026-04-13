@@ -7,8 +7,16 @@ import (
 )
 
 // SendInvitation sends a workspace invitation email.
-func (s *Sender) SendInvitation(ctx context.Context, to, inviterName, workspaceName, joinURL string) error {
+// If unsubscribeURL is non-empty, an unsubscribe link is included in the footer.
+func (s *Sender) SendInvitation(ctx context.Context, to, inviterName, workspaceName, joinURL, unsubscribeURL string) error {
 	subject := fmt.Sprintf("%s invited you to %s on Pad", inviterName, workspaceName)
+
+	unsubHTML := ""
+	unsubPlain := ""
+	if unsubscribeURL != "" {
+		unsubHTML = fmt.Sprintf(` <a href="%s" style="color: #999; text-decoration: underline;">Unsubscribe</a> from future emails.`, unsubscribeURL)
+		unsubPlain = fmt.Sprintf("\nUnsubscribe from future emails: %s", unsubscribeURL)
+	}
 
 	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
 <html>
@@ -31,7 +39,7 @@ func (s *Sender) SendInvitation(ctx context.Context, to, inviterName, workspaceN
   <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 32px 0;" />
   <p style="font-size: 12px; color: #999;">
     You received this email because someone invited you to a Pad workspace.
-    If you didn't expect this, you can safely ignore it.
+    If you didn't expect this, you can safely ignore it.%s
   </p>
 </body>
 </html>`,
@@ -40,6 +48,7 @@ func (s *Sender) SendInvitation(ctx context.Context, to, inviterName, workspaceN
 		joinURL,
 		joinURL,
 		joinURL,
+		unsubHTML,
 	)
 
 	plainBody := fmt.Sprintf(`%s has invited you to join %s on Pad.
@@ -48,8 +57,8 @@ Accept the invitation: %s
 
 ---
 You received this email because someone invited you to a Pad workspace.
-If you didn't expect this, you can safely ignore it.`,
-		inviterName, workspaceName, joinURL,
+If you didn't expect this, you can safely ignore it.%s`,
+		inviterName, workspaceName, joinURL, unsubPlain,
 	)
 
 	// Use inviter's name as the sender display name: "Dave via Pad"
@@ -58,8 +67,16 @@ If you didn't expect this, you can safely ignore it.`,
 }
 
 // SendWelcome sends a welcome email after registration.
-func (s *Sender) SendWelcome(ctx context.Context, to, name string) error {
+// If unsubscribeURL is non-empty, an unsubscribe link is included in the footer.
+func (s *Sender) SendWelcome(ctx context.Context, to, name, unsubscribeURL string) error {
 	subject := "Welcome to Pad"
+
+	unsubHTML := ""
+	unsubPlain := ""
+	if unsubscribeURL != "" {
+		unsubHTML = fmt.Sprintf(` <a href="%s" style="color: #999; text-decoration: underline;">Unsubscribe</a> from future emails.`, unsubscribeURL)
+		unsubPlain = fmt.Sprintf("\nUnsubscribe from future emails: %s", unsubscribeURL)
+	}
 
 	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
 <html>
@@ -81,20 +98,21 @@ func (s *Sender) SendWelcome(ctx context.Context, to, name string) error {
   </p>
   <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 32px 0;" />
   <p style="font-size: 12px; color: #999;">
-    You received this because an account was created with this email address.
+    You received this because an account was created with this email address.%s
   </p>
 </body>
 </html>`,
 		html.EscapeString(name),
 		s.baseURL,
+		unsubHTML,
 	)
 
 	plainBody := fmt.Sprintf(`Hi %s, welcome to Pad!
 
 Your account has been created. You can now create workspaces, manage projects, and collaborate with your team.
 
-Open Pad: %s`,
-		name, s.baseURL,
+Open Pad: %s%s`,
+		name, s.baseURL, unsubPlain,
 	)
 
 	return s.Send(ctx, to, name, subject, htmlBody, plainBody)

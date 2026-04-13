@@ -35,6 +35,7 @@ type Server struct {
 	events        events.EventBus       // real-time event bus (optional)
 	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
 	email         *email.Sender        // transactional email sender (optional)
+	emailAPIKey   string               // Maileroo API key (used for unsubscribe HMAC)
 	rateLimiters  *RateLimiters        // per-endpoint rate limiters
 	baseURL       string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
@@ -147,8 +148,12 @@ func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 }
 
 // SetEmailSender attaches a transactional email sender.
-func (s *Server) SetEmailSender(e *email.Sender) {
+// The apiKey is stored separately for deriving the unsubscribe HMAC secret.
+func (s *Server) SetEmailSender(e *email.Sender, apiKey ...string) {
 	s.email = e
+	if len(apiKey) > 0 {
+		s.emailAPIKey = apiKey[0]
+	}
 }
 
 // SetCORSOrigins configures allowed CORS origins (comma-separated).
@@ -185,6 +190,7 @@ func (s *Server) reconfigureEmail() {
 		return // No API key — leave email as-is (may still have env var config)
 	}
 
+	s.emailAPIKey = apiKey
 	if s.email == nil {
 		// Create a new sender from platform settings
 		s.email = email.NewSender(apiKey, fromAddr, fromName, s.baseURL)
@@ -250,6 +256,7 @@ func (s *Server) setupRouter() {
 		r.Get("/health/live", s.handleHealthLive)
 		r.Get("/health/ready", s.handleHealthReady)
 		r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
+		r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
 
 		// Auth endpoints (exempt from auth middleware)
 		r.Route("/auth", func(r chi.Router) {

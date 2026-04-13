@@ -312,7 +312,7 @@ func serveCmd() *cobra.Command {
 				if fromName == "" {
 					fromName = "Pad"
 				}
-				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()))
+				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()), cfg.MailerooAPIKey)
 				slog.Info("Email sending enabled via Maileroo (env)")
 			}
 			// Platform settings can override or provide email config
