@@ -371,10 +371,8 @@
 								<span class="drag-handle" title="Drag to reorder">⠿</span>
 								<span class="nav-icon">{collection.icon}</span>
 								<span class="nav-label">{collection.name}</span>
-								{#if collection.active_item_count != null && collection.active_item_count > 0}
+								{#if collection.item_count != null && collection.item_count > 0}
 									<span class="nav-count">{collection.active_item_count}</span>
-								{:else if collection.active_item_count == null && collection.item_count != null && collection.item_count > 0}
-									<span class="nav-count">{collection.item_count}</span>
 								{/if}
 								<button
 									class="nav-quick-add"

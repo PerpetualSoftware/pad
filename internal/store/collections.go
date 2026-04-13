@@ -101,22 +101,16 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 }
 
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
-	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
-	queryArgs := append(termArgs, workspaceID)
-	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
-	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
 		       c.schema, c.settings, c.sort_order, c.is_default, c.is_system, c.created_at, c.updated_at,
-		       COUNT(i.id) as item_count,
-		       COUNT(CASE WHEN LOWER(COALESCE(%s, '')) NOT IN
-		           (%s)
-		           THEN i.id END) as active_item_count
+		       COUNT(i.id) as item_count
 		FROM collections c
 		LEFT JOIN items i ON i.collection_id = c.id AND i.deleted_at IS NULL
 		WHERE c.workspace_id = ? AND c.deleted_at IS NULL
 		GROUP BY c.id
 		ORDER BY c.sort_order ASC, c.created_at ASC
-	`, jsonExtractStatus, termPlaceholders)), queryArgs...)
+	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
@@ -130,7 +124,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
 			&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
-			&createdAt, &updatedAt, &c.ItemCount, &c.ActiveItemCount,
+			&createdAt, &updatedAt, &c.ItemCount,
 		); err != nil {
 			return nil, err
 		}
@@ -139,7 +133,33 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		c.UpdatedAt = parseTime(updatedAt)
 		result = append(result, c)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Compute active_item_count per collection using each collection's own
+	// terminal statuses from its schema (not the global default list).
+	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	for idx := range result {
+		c := &result[idx]
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(c.Schema), &schema); err != nil {
+			// If schema can't be parsed, fall back to default terminal statuses
+			schema = models.CollectionSchema{}
+		}
+		termPlaceholders, termArgs := models.TerminalStatusPlaceholders(schema)
+		args := append([]any{c.ID}, termArgs...)
+		err := s.db.QueryRow(s.q(fmt.Sprintf(`
+			SELECT COUNT(*) FROM items i
+			WHERE i.collection_id = ? AND i.deleted_at IS NULL
+			AND LOWER(COALESCE(%s, '')) NOT IN (%s)
+		`, jsonExtractStatus, termPlaceholders)), args...).Scan(&c.ActiveItemCount)
+		if err != nil {
+			return nil, fmt.Errorf("count active items for collection %s: %w", c.Slug, err)
+		}
+	}
+
+	return result, nil
 }
 
 func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*models.Collection, error) {
