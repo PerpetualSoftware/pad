@@ -35,8 +35,10 @@ test:
 # Uses port 5445 to avoid conflicts with any local PostgreSQL.
 test-pg:
 	docker compose -f docker-compose.test.yml up -d --wait
-	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test ./... -v -count=1
-	docker compose -f docker-compose.test.yml down -v
+	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test ./... -v -count=1; \
+		EXIT_CODE=$$?; \
+		docker compose -f docker-compose.test.yml down -v; \
+		exit $$EXIT_CODE
 
 test-pg-down:
 	docker compose -f docker-compose.test.yml down -v

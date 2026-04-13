@@ -22,12 +22,4 @@
 		color: var(--text-secondary);
 		gap: var(--space-3);
 	}
-	h1 { font-size: 1.8em; color: var(--text-primary); }
-	code {
-		background: var(--bg-tertiary);
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		font-family: var(--font-mono);
-	}
-	.hint { font-size: 0.9em; color: var(--text-muted); }
 </style>
