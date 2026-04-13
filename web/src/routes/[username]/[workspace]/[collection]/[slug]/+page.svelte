@@ -603,8 +603,16 @@
 		<nav class="breadcrumb">
 			<a href="/{username}/{wsSlug}">Home</a>
 			<span class="sep">/</span>
-			<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
-			<span class="sep">/</span>
+			{#if item.parent_collection_slug && item.parent_slug}
+				{@const parentColl = allCollections.find(c => c.slug === item.parent_collection_slug)}
+				<a href="/{username}/{wsSlug}/{item.parent_collection_slug}">{parentColl?.icon ?? ''} {parentColl?.name ?? item.parent_collection_slug}</a>
+				<span class="sep">/</span>
+				<a href="/{username}/{wsSlug}/{item.parent_collection_slug}/{item.parent_slug}">{item.parent_ref || item.parent_title}</a>
+				<span class="sep">/</span>
+			{:else}
+				<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
+				<span class="sep">/</span>
+			{/if}
 			<span class="current">{formatItemRef(item) || item.title}</span>
 		</nav>
 

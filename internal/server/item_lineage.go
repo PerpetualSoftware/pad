@@ -33,8 +33,10 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 	}
 	// Fetch parent item details (title, ref) in bulk
 	type parentInfo struct {
-		title string
-		ref   string
+		title          string
+		ref            string
+		slug           string
+		collectionSlug string
 	}
 	parents := make(map[string]parentInfo)
 	for pid := range parentIDs {
@@ -50,7 +52,7 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 		if item.CollectionPrefix != "" && item.ItemNumber != nil {
 			ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
 		}
-		parents[pid] = parentInfo{title: item.Title, ref: ref}
+		parents[pid] = parentInfo{title: item.Title, ref: ref, slug: item.Slug, collectionSlug: item.CollectionSlug}
 	}
 	// Populate items — only set parent fields when the parent passed
 	// the visibility filter (i.e. is in the parents map)
@@ -63,6 +65,8 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 			items[i].ParentLinkID = pid
 			items[i].ParentTitle = info.title
 			items[i].ParentRef = info.ref
+			items[i].ParentSlug = info.slug
+			items[i].ParentCollectionSlug = info.collectionSlug
 		}
 	}
 }
@@ -103,6 +107,8 @@ func (s *Server) enrichItemForResponse(item *models.Item, visibleIDs ...[]string
 			item.ParentLinkID = parentLink.TargetID
 			item.ParentRef = parentLink.TargetRef
 			item.ParentTitle = parentLink.TargetTitle
+			item.ParentSlug = parentLink.TargetSlug
+			item.ParentCollectionSlug = parentLink.TargetCollectionSlug
 		}
 	}
 
