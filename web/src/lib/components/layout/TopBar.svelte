@@ -370,6 +370,7 @@
 		left: 0;
 		right: 0;
 		z-index: 35;
+		padding-right: var(--space-3);
 	}
 
 	/* Workspace list — scrollable horizontally */
