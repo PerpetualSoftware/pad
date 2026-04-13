@@ -270,6 +270,51 @@
 				</svg>
 			</button>
 		{/if}
+		{#if authStore.user}
+			<div class="user-menu-container">
+				<button
+					class="user-trigger"
+					onclick={() => userMenuOpen = !userMenuOpen}
+				>
+					<span class="user-avatar" style="background: {wsColor(authStore.user.name || authStore.user.email)}">
+						{(authStore.user.name || authStore.user.email).charAt(0).toUpperCase()}
+					</span>
+				</button>
+
+				{#if userMenuOpen}
+					<div class="user-dropdown">
+						<div class="user-info">
+							<span class="user-dropdown-name">{authStore.user.name}</span>
+							<span class="user-dropdown-email">{authStore.user.email}</span>
+						</div>
+						<div class="dropdown-divider"></div>
+						<a href="/console" class="dropdown-item" onclick={closeUserMenu}>
+							Workspaces
+						</a>
+						<a href="/console/settings" class="dropdown-item" onclick={closeUserMenu}>
+							Settings
+						</a>
+						{#if authStore.cloudMode}
+							<a href="/console/billing" class="dropdown-item" onclick={closeUserMenu}>
+								Billing
+							</a>
+						{/if}
+						{#if authStore.user?.role === 'admin'}
+							<a href="/console/admin" class="dropdown-item" onclick={closeUserMenu}>
+								Admin
+							</a>
+						{/if}
+						<button class="dropdown-item" onclick={toggleTheme}>
+							{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
+						</button>
+						<div class="dropdown-divider"></div>
+						<button class="dropdown-item logout" onclick={handleLogout}>
+							Sign out
+						</button>
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</header>
 
 	<!-- Full-screen reorder overlay -->
@@ -454,7 +499,7 @@
 		z-index: 1;
 	}
 
-	/* Right side — user menu (desktop only) */
+	/* Right side — user menu */
 	.topbar-right {
 		position: absolute;
 		right: var(--space-3);
