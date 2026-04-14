@@ -11,10 +11,14 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 
-	let items = $state<Item[]>([]);
+	let fetchedItems = $state<Item[]>([]);
 	let collections = $state<Collection[]>([]);
 	let loading = $state(true);
 	let includeTerminal = $state(false);
+	let loadSeq = 0;
+
+	// Filter fetched items by current starred state so unstars are reflected immediately
+	let items = $derived(fetchedItems.filter(i => starredStore.isStarred(i.id)));
 
 	$effect(() => {
 		if (wsSlug) {
@@ -30,17 +34,19 @@
 
 	async function loadStarred(slug: string) {
 		loading = true;
+		const seq = ++loadSeq;
 		try {
 			const [starredItems, colls] = await Promise.all([
 				api.items.starred(slug, { include_terminal: includeTerminal }),
 				api.collections.list(slug)
 			]);
-			items = starredItems;
+			if (seq !== loadSeq) return;
+			fetchedItems = starredItems;
 			collections = colls;
 		} catch {
-			// allow partial render
+			if (seq !== loadSeq) return;
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 
@@ -73,11 +79,8 @@
 		return groups;
 	});
 
-	function handleUnstar(item: Item) {
-		starredStore.toggle(wsSlug, item.slug, item.id);
-		// Remove from local list immediately
-		items = items.filter(i => i.id !== item.id);
-	}
+	// No explicit handleUnstar needed — items is derived from starredStore.isStarred,
+	// so unstarring via ItemCard's toggle automatically removes the item from the list.
 </script>
 
 <svelte:head>
