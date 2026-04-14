@@ -28,6 +28,7 @@
 	let isDashboardPage = $derived(wsPrefix ? page.url.pathname === wsPrefix : false);
 	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
 	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
+	let isStarredPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/starred` : false);
 
 	let activeCollectionSlug = $derived.by(() => {
 		if (!wsPrefix) return null;
@@ -36,7 +37,7 @@
 		if (!path.startsWith(prefix)) return null;
 		const rest = path.slice(prefix.length);
 		const slug = rest.split('/')[0];
-		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === '') return null;
+		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'roles' || slug === '') return null;
 		return slug;
 	});
 
@@ -347,6 +348,15 @@
 				>
 					<span class="nav-icon">📋</span>
 					<span class="nav-label">Activity</span>
+				</a>
+				<a
+					href="{wsPrefix}/starred"
+					class="nav-item"
+					class:active={isStarredPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">⭐</span>
+					<span class="nav-label">Starred</span>
 				</a>
 				{/if}
 
