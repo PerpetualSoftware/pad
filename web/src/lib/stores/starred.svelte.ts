@@ -3,6 +3,10 @@ import { api } from '$lib/api/client';
 // Set of starred item IDs for the current user in the current workspace
 let starredIds = $state<Set<string>>(new Set());
 let loaded = $state(false);
+let currentWs = $state('');
+
+// Monotonic request counter to discard stale responses on workspace switch
+let requestSeq = 0;
 
 export const starredStore = {
 	get ids() { return starredIds; },
@@ -14,12 +18,17 @@ export const starredStore = {
 
 	/** Load all starred item IDs for a workspace. Call once on workspace load. */
 	async load(wsSlug: string) {
+		currentWs = wsSlug;
+		const seq = ++requestSeq;
+
 		try {
 			const items = await api.items.starred(wsSlug, { include_terminal: true });
+			// Discard if a newer load was initiated while this one was in flight
+			if (seq !== requestSeq) return;
 			starredIds = new Set(items.map(i => i.id));
 			loaded = true;
 		} catch {
-			// Silently fail — starring is non-critical
+			if (seq !== requestSeq) return;
 			starredIds = new Set();
 			loaded = true;
 		}
@@ -45,7 +54,8 @@ export const starredStore = {
 				await api.items.star(wsSlug, itemSlug);
 			}
 		} catch {
-			// Revert on failure
+			// Revert on failure (only if still on the same workspace)
+			if (currentWs !== wsSlug) return;
 			const reverted = new Set(starredIds);
 			if (wasStarred) {
 				reverted.add(itemId);
@@ -59,5 +69,6 @@ export const starredStore = {
 	clear() {
 		starredIds = new Set();
 		loaded = false;
+		currentWs = '';
 	}
 };
