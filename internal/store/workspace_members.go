@@ -754,3 +754,39 @@ func (s *Store) backfillWorkspaceOwners() error {
 
 	return nil
 }
+
+// AdminUserWorkspace is a lightweight workspace membership for admin views.
+type AdminUserWorkspace struct {
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
+	WorkspaceSlug string `json:"workspace_slug"`
+	OwnerUsername string `json:"owner_username"`
+	Role          string `json:"role"`
+	JoinedAt      string `json:"joined_at"`
+}
+
+// GetUserWorkspaceMemberships returns workspace memberships for admin user detail.
+func (s *Store) GetUserWorkspaceMemberships(userID string) ([]AdminUserWorkspace, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT w.id, w.name, w.slug, COALESCE(ou.username, ''), wm.role, wm.created_at
+		FROM workspace_members wm
+		JOIN workspaces w ON w.id = wm.workspace_id
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE wm.user_id = ? AND w.deleted_at IS NULL
+		ORDER BY w.name ASC
+	`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user workspace memberships: %w", err)
+	}
+	defer rows.Close()
+
+	var result []AdminUserWorkspace
+	for rows.Next() {
+		var m AdminUserWorkspace
+		if err := rows.Scan(&m.WorkspaceID, &m.WorkspaceName, &m.WorkspaceSlug, &m.OwnerUsername, &m.Role, &m.JoinedAt); err != nil {
+			return nil, fmt.Errorf("scan workspace membership: %w", err)
+		}
+		result = append(result, m)
+	}
+	return result, rows.Err()
+}

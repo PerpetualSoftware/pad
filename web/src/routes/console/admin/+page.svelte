@@ -22,6 +22,8 @@
 	let disableConfirm = $state(false);
 	let disableSaving = $state(false);
 	let disableMsg = $state('');
+	let userWorkspaces = $state<{ workspace_name: string; workspace_slug: string; owner_username: string; role: string; joined_at: string }[]>([]);
+	let workspacesLoading = $state(false);
 
 	async function loadUsers() {
 		loading = true;
@@ -62,6 +64,22 @@
 		resetError = '';
 		disableConfirm = false;
 		disableMsg = '';
+		userWorkspaces = [];
+		loadUserWorkspaces(u.id);
+	}
+
+	async function loadUserWorkspaces(userId: string) {
+		workspacesLoading = true;
+		try {
+			const result = await adminFetch(`/admin/users/${userId}/workspaces`);
+			if (selectedId === userId) {
+				userWorkspaces = result.workspaces ?? [];
+			}
+		} catch {
+			userWorkspaces = [];
+		} finally {
+			workspacesLoading = false;
+		}
 	}
 
 	function selectedUser(): AdminUser | undefined {
@@ -382,6 +400,24 @@
 											</button>
 											{#if saveMsg}<span class="save-msg">{saveMsg}</span>{/if}
 										</div>
+										<div class="edit-field">
+											<span class="field-label">Workspaces</span>
+											{#if workspacesLoading}
+												<span class="ws-loading">Loading...</span>
+											{:else if userWorkspaces.length === 0}
+												<span class="ws-empty">No workspace memberships</span>
+											{:else}
+												<div class="ws-list">
+													{#each userWorkspaces as ws}
+														<div class="ws-item">
+															<a class="ws-name" href="/{ws.owner_username}/{ws.workspace_slug}">{ws.workspace_name}</a>
+															<span class="badge" class:owner={ws.role === 'owner'}>{ws.role}</span>
+															<span class="ws-joined">joined {formatDate(ws.joined_at)}</span>
+														</div>
+													{/each}
+												</div>
+											{/if}
+										</div>
 									</div>
 								</td>
 							</tr>
@@ -621,6 +657,40 @@
 	.reset-note {
 		font-size: 0.75rem;
 		color: var(--text-muted);
+	}
+
+	.ws-loading,
+	.ws-empty {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+	.ws-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	.ws-item {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.8rem;
+		padding: var(--space-1) 0;
+	}
+	.ws-name {
+		color: var(--accent-blue);
+		text-decoration: none;
+		font-weight: 500;
+	}
+	.ws-name:hover {
+		text-decoration: underline;
+	}
+	.badge.owner {
+		background: color-mix(in srgb, var(--accent-green, #22c55e) 15%, transparent);
+		color: var(--accent-green, #22c55e);
+	}
+	.ws-joined {
+		color: var(--text-muted);
+		font-size: 0.75rem;
 	}
 
 	.users-page {
