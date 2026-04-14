@@ -1,11 +1,9 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -273,11 +271,10 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		}
 
 		resetURL := s.baseURL + "/reset-password/" + token
-		go func() {
-			if err := s.email.SendPasswordReset(context.Background(), user.Email, user.Name, resetURL); err != nil {
-				slog.Error("failed to send admin password reset email", "error", err, "user_id", userID)
-			}
-		}()
+		if err := s.email.SendPasswordReset(r.Context(), user.Email, user.Name, resetURL); err != nil {
+			writeError(w, http.StatusInternalServerError, "email_failed", "Failed to send password reset email")
+			return
+		}
 
 		s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
 			"target_user_id": userID,
@@ -308,7 +305,8 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 
 	// Invalidate all existing sessions so the user must log in with the new password
 	if err := s.store.DeleteUserSessions(userID); err != nil {
-		slog.Error("failed to invalidate sessions after admin password reset", "error", err, "user_id", userID)
+		writeInternalError(w, err)
+		return
 	}
 
 	s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
