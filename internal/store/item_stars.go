@@ -159,21 +159,30 @@ func (s *Store) CountStarredItems(userID, workspaceID string) (int, error) {
 	return count, nil
 }
 
-// buildCollectionSchemaMap loads all collections for a workspace and returns
-// a map from collection ID to parsed schema, for terminal status lookups.
+// buildCollectionSchemaMap loads only collection IDs and schemas for a workspace,
+// avoiding the heavier ListCollections which runs per-collection COUNT queries.
 func (s *Store) buildCollectionSchemaMap(workspaceID string) (map[string]models.CollectionSchema, error) {
-	collections, err := s.ListCollections(workspaceID)
+	rows, err := s.db.Query(
+		s.q("SELECT id, schema FROM collections WHERE workspace_id = ?"),
+		workspaceID,
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load collection schemas: %w", err)
 	}
-	m := make(map[string]models.CollectionSchema, len(collections))
-	for _, c := range collections {
+	defer rows.Close()
+
+	m := make(map[string]models.CollectionSchema)
+	for rows.Next() {
+		var id, rawSchema string
+		if err := rows.Scan(&id, &rawSchema); err != nil {
+			return nil, err
+		}
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(c.Schema), &schema); err == nil {
-			m[c.ID] = schema
+		if err := json.Unmarshal([]byte(rawSchema), &schema); err == nil {
+			m[id] = schema
 		}
 	}
-	return m, nil
+	return m, rows.Err()
 }
 
 // extractStatusFromFields extracts the "status" value from an item's fields JSON.
