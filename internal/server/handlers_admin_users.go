@@ -129,6 +129,28 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminGetUserWorkspaces returns workspace memberships for a user.
+// GET /api/v1/admin/users/{userID}/workspaces
+func (s *Server) handleAdminGetUserWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	memberships, err := s.store.GetUserWorkspaceMemberships(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if memberships == nil {
+		memberships = []store.AdminUserWorkspace{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"workspaces": memberships,
+	})
+}
+
 // handleAdminUpdateUser updates a user's plan, overrides, or role.
 // PATCH /api/v1/admin/users/{userID}
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
