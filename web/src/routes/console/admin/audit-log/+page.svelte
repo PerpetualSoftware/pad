@@ -62,6 +62,7 @@
 	let offset = $state(0);
 	let hasMore = $state(false);
 	let loadingMore = $state(false);
+	let requestCounter = 0;
 
 	function formatAction(action: string): string {
 		return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -145,10 +146,12 @@
 		if (entry.actor_name) return entry.actor_name;
 		if (entry.actor === 'system') return 'System';
 		if (entry.user_id) return entry.user_id.length > 12 ? entry.user_id.slice(0, 12) + '\u2026' : entry.user_id;
-		return 'System';
+		return 'Unknown';
 	}
 
 	async function loadEntries(append = false) {
+		const thisRequest = ++requestCounter;
+
 		if (append) {
 			loadingMore = true;
 		} else {
@@ -164,6 +167,10 @@
 			params.set('limit', String(LIMIT));
 			params.set('offset', String(append ? offset : 0));
 			const result = await adminFetch(`/audit-log?${params}`);
+
+			// Discard stale responses from superseded requests
+			if (thisRequest !== requestCounter) return;
+
 			const items: Activity[] = Array.isArray(result) ? result : [];
 			if (append) {
 				entries = [...entries, ...items];
@@ -177,12 +184,15 @@
 				offset = items.length;
 			}
 		} catch (e) {
+			if (thisRequest !== requestCounter) return;
 			if (!append) {
 				error = e instanceof Error ? e.message : 'Failed to load audit log';
 			}
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (thisRequest === requestCounter) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
