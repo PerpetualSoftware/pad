@@ -113,8 +113,11 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Log activity first so we can link the comment to the activity record.
 	// This prevents duplicate timeline entries (one for the comment, one for the activity).
-	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, item.ID, "commented", r, "")
-	input.ActivityID = activityID
+	// Only set ActivityID on success — comments.activity_id has a FK constraint,
+	// and CreateActivity returns an ID even on insert failure.
+	if activityID, err := s.logActivityWithMetaReturningID(workspaceID, item.ID, "commented", r, ""); err == nil && activityID != "" {
+		input.ActivityID = activityID
+	}
 
 	comment, err := s.store.CreateComment(workspaceID, item.ID, input)
 	if err != nil {
