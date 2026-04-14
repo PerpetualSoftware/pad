@@ -75,13 +75,14 @@
 	}
 
 	async function changeRole() {
-		if (!selectedId) return;
+		const userId = selectedId;
+		if (!userId) return;
 		roleSaving = true;
 		roleMsg = '';
 		try {
-			await adminPatch(`/admin/users/${selectedId}`, { role: editRole });
-			const updated = await adminFetch(`/admin/users/${selectedId}`);
-			users = users.map((u) => (u.id === selectedId ? { ...u, ...updated } : u));
+			await adminPatch(`/admin/users/${userId}`, { role: editRole });
+			const updated = await adminFetch(`/admin/users/${userId}`);
+			users = users.map((u) => (u.id === userId ? { ...u, ...updated } : u));
 			roleMsg = 'Role updated';
 			roleConfirm = false;
 		} catch (e) {
@@ -92,12 +93,13 @@
 	}
 
 	async function resetPassword() {
-		if (!selectedId) return;
+		const userId = selectedId;
+		if (!userId) return;
 		resetSaving = true;
 		resetError = '';
 		resetResult = null;
 		try {
-			const result = await adminPost(`/admin/users/${selectedId}/reset-password`);
+			const result = await adminPost(`/admin/users/${userId}/reset-password`);
 			resetResult = result;
 		} catch (e) {
 			resetError = e instanceof Error ? e.message : 'Password reset failed';
@@ -108,17 +110,19 @@
 	}
 
 	async function toggleDisable() {
-		if (!selectedId) return;
+		const userId = selectedId;
+		if (!userId) return;
 		const user = selectedUser();
 		if (!user) return;
+		const wasDisabled = !!user.disabled_at;
 		disableSaving = true;
 		disableMsg = '';
 		try {
-			const action = user.disabled_at ? 'enable' : 'disable';
-			await adminPost(`/admin/users/${selectedId}/${action}`);
-			const updated = await adminFetch(`/admin/users/${selectedId}`);
-			users = users.map((u) => (u.id === selectedId ? { ...u, ...updated } : u));
-			disableMsg = user.disabled_at ? 'User re-enabled' : 'User disabled';
+			const action = wasDisabled ? 'enable' : 'disable';
+			await adminPost(`/admin/users/${userId}/${action}`);
+			const updated = await adminFetch(`/admin/users/${userId}`);
+			users = users.map((u) => (u.id === userId ? { ...u, ...updated } : u));
+			disableMsg = wasDisabled ? 'User re-enabled' : 'User disabled';
 			disableConfirm = false;
 		} catch (e) {
 			disableMsg = e instanceof Error ? e.message : 'Action failed';

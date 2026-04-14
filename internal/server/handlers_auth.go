@@ -475,6 +475,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject disabled accounts
+	if user.IsDisabled() {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
+
 	// If 2FA is enabled, return a challenge token instead of a full session.
 	// The challenge token is HMAC-signed, IP-bound, and expires in 5 minutes.
 	if user.TOTPEnabled {
