@@ -1,13 +1,23 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { adminFetch, adminPatch, adminPost, formatDate, type AdminUser } from '$lib/stores/admin.svelte';
+	import { adminFetch, adminPatch, adminPost, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 
 	let users = $state<AdminUser[]>([]);
 	let search = $state('');
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
 	let editRole = $state('member');
-	let editOverrides = $state('');
+	// Plan override fields — empty string means "use plan default", a number overrides it
+	const overrideFields = [
+		{ key: 'workspaces', label: 'Workspaces', hint: 'Max workspaces owned' },
+		{ key: 'items_per_workspace', label: 'Items per workspace', hint: 'Max items in each workspace' },
+		{ key: 'members_per_workspace', label: 'Members per workspace', hint: 'Max members per workspace' },
+		{ key: 'api_tokens', label: 'API tokens', hint: 'Max API tokens' },
+		{ key: 'webhooks', label: 'Webhooks', hint: 'Max webhooks per workspace' },
+	];
+	const overrideFieldKeys = new Set(overrideFields.map(f => f.key));
+	let editOverrides = $state<Record<string, string>>({});
+	let extraOverrides = $state<Record<string, number>>({});
 	let saving = $state(false);
 	let saveMsg = $state('');
 	let loading = $state(true);
@@ -55,7 +65,19 @@
 		selectedId = u.id;
 		editPlan = u.plan || 'free';
 		editRole = u.role || 'member';
-		editOverrides = u.plan_overrides ? JSON.stringify(u.plan_overrides, null, 2) : '';
+		// Populate override fields from the user's plan_overrides object
+		const ov = u.plan_overrides ?? {};
+		editOverrides = {};
+		extraOverrides = {};
+		for (const f of overrideFields) {
+			editOverrides[f.key] = f.key in ov ? String(ov[f.key]) : '';
+		}
+		// Preserve any override keys not in our UI fields
+		for (const [k, v] of Object.entries(ov)) {
+			if (!overrideFieldKeys.has(k)) {
+				extraOverrides[k] = v;
+			}
+		}
 		saveMsg = '';
 		roleConfirm = false;
 		roleMsg = '';
@@ -158,12 +180,24 @@
 		saving = true;
 		saveMsg = '';
 		try {
-			if (editOverrides.trim()) {
-				JSON.parse(editOverrides);
+			// Build plan_overrides JSON from structured fields, preserving unknown keys
+			const overrides: Record<string, number> = { ...extraOverrides };
+			for (const f of overrideFields) {
+				const val = editOverrides[f.key]?.trim();
+				if (val !== '' && val !== undefined) {
+					const num = Number(val);
+					if (isNaN(num) || !Number.isInteger(num)) {
+						saveMsg = `"${f.label}" must be a whole number`;
+						saving = false;
+						return;
+					}
+					overrides[f.key] = num;
+				}
 			}
+			const overridesJSON = Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null;
 			await adminPatch(`/admin/users/${selectedId}`, {
 				plan: editPlan,
-				plan_overrides: editOverrides.trim() || null
+				plan_overrides: overridesJSON
 			});
 			const updated = await adminFetch(`/admin/users/${selectedId}`);
 			users = users.map((u) => (u.id === selectedId ? { ...u, ...updated } : u));
@@ -224,7 +258,9 @@
 						<th>Name</th>
 						<th>Role</th>
 						<th>Email</th>
-						<th>Plan</th>
+						{#if adminStore.stats?.cloud_mode}
+							<th>Plan</th>
+						{/if}
 						<th>Last Active</th>
 						<th>Created</th>
 					</tr>
@@ -249,11 +285,13 @@
 								></td
 							>
 							<td>{user.email}</td>
-							<td
-								><span class="badge" class:pro={user.plan === 'pro'}
-									>{user.plan || 'free'}</span
-								></td
-							>
+							{#if adminStore.stats?.cloud_mode}
+								<td
+									><span class="badge" class:pro={user.plan === 'pro'}
+										>{user.plan || 'free'}</span
+									></td
+								>
+							{/if}
 							<td class="date-cell muted"
 								title={user.last_active_at || ''}
 								>{relativeTime(user.last_active_at)}</td>
@@ -261,7 +299,7 @@
 						</tr>
 						{#if selectedId === user.id}
 							<tr class="edit-row">
-								<td colspan="6">
+								<td colspan={adminStore.stats?.cloud_mode ? 6 : 5}>
 									<div class="edit-panel">
 										<div class="edit-field">
 											<label for="edit-role">Role</label>
@@ -382,28 +420,38 @@
 												{#if disableMsg}<span class="save-msg">{disableMsg}</span>{/if}
 											</div>
 										</div>
-										<div class="edit-field">
-											<label for="edit-plan">Plan</label>
-											<select id="edit-plan" bind:value={editPlan}>
-												<option value="free">free</option>
-												<option value="pro">pro</option>
-											</select>
-										</div>
-										<div class="edit-field">
-											<label for="edit-overrides">Plan overrides (JSON)</label>
-											<textarea
-												id="edit-overrides"
-												bind:value={editOverrides}
-												rows="3"
-												placeholder={'{"workspaces": 10}'}
-											></textarea>
-										</div>
-										<div class="edit-actions">
-											<button class="btn primary" onclick={saveUser} disabled={saving}>
-												{saving ? 'Saving...' : 'Save'}
-											</button>
-											{#if saveMsg}<span class="save-msg">{saveMsg}</span>{/if}
-										</div>
+										{#if adminStore.stats?.cloud_mode}
+											<div class="edit-field">
+												<label for="edit-plan">Plan</label>
+												<select id="edit-plan" bind:value={editPlan}>
+													<option value="free">free</option>
+													<option value="pro">pro</option>
+												</select>
+											</div>
+											<div class="edit-field">
+												<span class="field-label">Plan overrides</span>
+												<p class="field-hint">Override individual limits for this user. Leave blank to use plan defaults. Use -1 for unlimited.</p>
+												<div class="overrides-grid">
+													{#each overrideFields as field (field.key)}
+														<div class="override-field">
+															<label for="override-{field.key}">{field.label}</label>
+															<input
+																id="override-{field.key}"
+																type="number"
+																bind:value={editOverrides[field.key]}
+																placeholder="default"
+															/>
+														</div>
+													{/each}
+												</div>
+											</div>
+											<div class="edit-actions">
+												<button class="btn primary" onclick={saveUser} disabled={saving}>
+													{saving ? 'Saving...' : 'Save Plan'}
+												</button>
+												{#if saveMsg}<span class="save-msg">{saveMsg}</span>{/if}
+											</div>
+										{/if}
 										<div class="edit-field">
 											<span class="field-label">Workspaces</span>
 											{#if workspacesLoading}
@@ -587,7 +635,8 @@
 		font-weight: 500;
 	}
 	.edit-field select,
-	.edit-field textarea {
+	.edit-field textarea,
+	.edit-field input[type='number'] {
 		padding: var(--space-2) var(--space-3);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
@@ -600,6 +649,43 @@
 		resize: vertical;
 		font-family: monospace;
 		font-size: 0.8rem;
+	}
+	.field-hint {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		margin: 0;
+	}
+	.overrides-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-2) var(--space-4);
+	}
+	.override-field {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.override-field label {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		font-weight: 500;
+	}
+	.override-field input {
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		font-family: var(--font-mono, monospace);
+		outline: none;
+	}
+	.override-field input:focus {
+		border-color: var(--accent-blue);
+	}
+	.override-field input::placeholder {
+		color: var(--text-muted);
+		font-family: inherit;
 	}
 	.edit-actions {
 		display: flex;
