@@ -585,14 +585,15 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"id":         user.ID,
-		"email":      user.Email,
-		"username":   user.Username,
-		"name":       user.Name,
-		"role":       user.Role,
-		"avatar_url": user.AvatarURL,
-		"created_at": user.CreatedAt,
-		"updated_at": user.UpdatedAt,
+		"id":           user.ID,
+		"email":        user.Email,
+		"username":     user.Username,
+		"name":         user.Name,
+		"role":         user.Role,
+		"avatar_url":   user.AvatarURL,
+		"totp_enabled": user.TOTPEnabled,
+		"created_at":   user.CreatedAt,
+		"updated_at":   user.UpdatedAt,
 	}
 
 	// Include Stripe customer ID when present (used by pad-cloud sidecar

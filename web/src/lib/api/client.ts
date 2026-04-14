@@ -36,7 +36,10 @@ import type {
 	ChangesResponse,
 	CollectionGrant,
 	ItemGrant,
-	ShareLink
+	ShareLink,
+	TOTPSetupResponse,
+	TOTPVerifyResponse,
+	TOTPDisableResponse
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -635,6 +638,19 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ provider })
 			}),
+		totp: {
+			setup: () => request<TOTPSetupResponse>('/auth/2fa/setup', { method: 'POST' }),
+			verify: (code: string, secret: string) =>
+				request<TOTPVerifyResponse>('/auth/2fa/verify', {
+					method: 'POST',
+					body: JSON.stringify({ code, secret })
+				}),
+			disable: (password: string) =>
+				request<TOTPDisableResponse>('/auth/2fa/disable', {
+					method: 'POST',
+					body: JSON.stringify({ password })
+				})
+		},
 		tokens: {
 			list: () => request<APIToken[]>('/auth/tokens'),
 			create: (name: string) =>
