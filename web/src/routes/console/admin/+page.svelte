@@ -15,7 +15,9 @@
 		{ key: 'api_tokens', label: 'API tokens', hint: 'Max API tokens' },
 		{ key: 'webhooks', label: 'Webhooks', hint: 'Max webhooks per workspace' },
 	];
+	const overrideFieldKeys = new Set(overrideFields.map(f => f.key));
 	let editOverrides = $state<Record<string, string>>({});
+	let extraOverrides = $state<Record<string, number>>({});
 	let saving = $state(false);
 	let saveMsg = $state('');
 	let loading = $state(true);
@@ -66,8 +68,15 @@
 		// Populate override fields from the user's plan_overrides object
 		const ov = u.plan_overrides ?? {};
 		editOverrides = {};
+		extraOverrides = {};
 		for (const f of overrideFields) {
 			editOverrides[f.key] = f.key in ov ? String(ov[f.key]) : '';
+		}
+		// Preserve any override keys not in our UI fields
+		for (const [k, v] of Object.entries(ov)) {
+			if (!overrideFieldKeys.has(k)) {
+				extraOverrides[k] = v;
+			}
 		}
 		saveMsg = '';
 		roleConfirm = false;
@@ -171,14 +180,14 @@
 		saving = true;
 		saveMsg = '';
 		try {
-			// Build plan_overrides JSON from structured fields
-			const overrides: Record<string, number> = {};
+			// Build plan_overrides JSON from structured fields, preserving unknown keys
+			const overrides: Record<string, number> = { ...extraOverrides };
 			for (const f of overrideFields) {
 				const val = editOverrides[f.key]?.trim();
 				if (val !== '' && val !== undefined) {
-					const num = parseInt(val, 10);
-					if (isNaN(num)) {
-						saveMsg = `Invalid number for "${f.label}"`;
+					const num = Number(val);
+					if (isNaN(num) || !Number.isInteger(num)) {
+						saveMsg = `"${f.label}" must be a whole number`;
 						saving = false;
 						return;
 					}
@@ -290,7 +299,7 @@
 						</tr>
 						{#if selectedId === user.id}
 							<tr class="edit-row">
-								<td colspan={adminStore.stats?.cloud_mode ? 7 : 6}>
+								<td colspan={adminStore.stats?.cloud_mode ? 6 : 5}>
 									<div class="edit-panel">
 										<div class="edit-field">
 											<label for="edit-role">Role</label>
