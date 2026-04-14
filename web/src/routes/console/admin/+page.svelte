@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { adminFetch, adminPatch, formatDate, type AdminUser } from '$lib/stores/admin.svelte';
+	import { adminFetch, adminPatch, adminPost, formatDate, type AdminUser } from '$lib/stores/admin.svelte';
 
 	let users = $state<AdminUser[]>([]);
 	let search = $state('');
@@ -15,6 +15,10 @@
 	let roleConfirm = $state(false);
 	let roleSaving = $state(false);
 	let roleMsg = $state('');
+	let resetConfirm = $state(false);
+	let resetSaving = $state(false);
+	let resetResult = $state<{ method: string; temp_password?: string; message: string } | null>(null);
+	let resetError = $state('');
 
 	async function loadUsers() {
 		loading = true;
@@ -50,6 +54,9 @@
 		saveMsg = '';
 		roleConfirm = false;
 		roleMsg = '';
+		resetConfirm = false;
+		resetResult = null;
+		resetError = '';
 	}
 
 	function selectedUser(): AdminUser | undefined {
@@ -76,6 +83,22 @@
 			roleMsg = e instanceof Error ? e.message : 'Role change failed';
 		} finally {
 			roleSaving = false;
+		}
+	}
+
+	async function resetPassword() {
+		if (!selectedId) return;
+		resetSaving = true;
+		resetError = '';
+		resetResult = null;
+		try {
+			const result = await adminPost(`/admin/users/${selectedId}/reset-password`);
+			resetResult = result;
+		} catch (e) {
+			resetError = e instanceof Error ? e.message : 'Password reset failed';
+		} finally {
+			resetSaving = false;
+			resetConfirm = false;
 		}
 	}
 
@@ -208,6 +231,43 @@
 													{/if}
 												{/if}
 												{#if roleMsg}<span class="save-msg">{roleMsg}</span>{/if}
+											</div>
+										</div>
+										<div class="edit-field">
+											<span class="field-label">Password</span>
+											<div class="role-row">
+												{#if !resetConfirm && !resetResult}
+													<button class="btn role-btn" onclick={() => { resetConfirm = true; resetError = ''; }}>
+														Reset Password
+													</button>
+												{/if}
+												{#if resetConfirm && !resetResult}
+													<div class="role-confirm">
+														<span class="role-confirm-msg">
+															Send password reset for <strong>{user.name || user.username}</strong>?
+														</span>
+														<button class="btn primary" onclick={resetPassword} disabled={resetSaving}>
+															{resetSaving ? 'Resetting...' : 'Confirm'}
+														</button>
+														<button class="btn" onclick={() => { resetConfirm = false; }}>
+															Cancel
+														</button>
+													</div>
+												{/if}
+												{#if resetResult}
+													<div class="reset-result">
+														{#if resetResult.method === 'email'}
+															<span class="reset-success">{resetResult.message}</span>
+														{:else}
+															<div class="temp-password-result">
+																<span class="reset-success">Temporary password generated:</span>
+																<code class="temp-password">{resetResult.temp_password}</code>
+																<span class="reset-note">User's sessions have been invalidated. Share this password securely.</span>
+															</div>
+														{/if}
+													</div>
+												{/if}
+												{#if resetError}<span class="save-msg" style="color: #ef4444">{resetError}</span>{/if}
 											</div>
 										</div>
 										<div class="edit-field">
@@ -363,7 +423,8 @@
 		flex-direction: column;
 		gap: var(--space-1);
 	}
-	.edit-field label {
+	.edit-field label,
+	.edit-field .field-label {
 		font-size: 0.8rem;
 		color: var(--text-muted);
 		font-weight: 500;
@@ -415,6 +476,34 @@
 	.role-confirm .btn {
 		font-size: 0.8rem;
 		padding: var(--space-1) var(--space-3);
+	}
+	.reset-result {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	.reset-success {
+		font-size: 0.8rem;
+		color: var(--accent-green, #22c55e);
+	}
+	.temp-password-result {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	.temp-password {
+		font-family: monospace;
+		font-size: 0.85rem;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-primary);
+		user-select: all;
+	}
+	.reset-note {
+		font-size: 0.75rem;
+		color: var(--text-muted);
 	}
 
 	.users-page {
