@@ -1007,7 +1007,7 @@
 	.sticky-header {
 		position: sticky;
 		top: 0;
-		z-index: 10;
+		z-index: 4;
 		background: var(--bg-primary);
 		margin: 0 calc(-1 * var(--space-6));
 		padding: var(--space-2) var(--space-6);
