@@ -318,6 +318,11 @@ func (s *Server) setupRouter() {
 			r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
 			r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
 
+			// Invitations
+			r.Get("/invitations", s.handleAdminListInvitations)
+			r.Post("/invitations/{invID}/resend", s.handleAdminResendInvitation)
+			r.Delete("/invitations/{invID}", s.handleAdminDeleteInvitation)
+
 			// Plan limits
 			r.Get("/limits", s.handleAdminGetLimits)
 			r.Patch("/limits", s.handleAdminUpdateLimits)
