@@ -10,7 +10,7 @@
 		open: boolean;
 		collection: Collection;
 		wsSlug: string;
-		onupdated: () => void;
+		onupdated: (updated?: Collection) => void;
 		onclose: () => void;
 	}
 
@@ -336,9 +336,9 @@
 				data.migrations = migrations;
 			}
 
-			await api.collections.update(wsSlug, collection.slug, data);
+			const updated = await api.collections.update(wsSlug, collection.slug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
-			onupdated();
+			onupdated(updated);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to update collection';
 		} finally {

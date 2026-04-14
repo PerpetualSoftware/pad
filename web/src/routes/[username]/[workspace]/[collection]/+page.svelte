@@ -984,7 +984,13 @@
 		bind:open={editCollectionOpen}
 		{collection}
 		{wsSlug}
-		onupdated={() => loadCollection(wsSlug, collSlug, showArchived)}
+		onupdated={(updated) => {
+			if (updated && updated.slug !== collSlug) {
+				goto(`/${username}/${wsSlug}/${updated.slug}`);
+			} else {
+				loadCollection(wsSlug, collSlug, showArchived);
+			}
+		}}
 		onclose={() => { editCollectionOpen = false; }}
 	/>
 {/if}
