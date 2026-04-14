@@ -140,6 +140,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
+		Role          *string `json:"role"`
 		Plan          *string `json:"plan"`
 		PlanExpiresAt *string `json:"plan_expires_at"`
 		PlanOverrides *string `json:"plan_overrides"`
@@ -147,6 +148,45 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
+	}
+
+	if input.Role != nil {
+		validRoles := map[string]bool{"admin": true, "member": true}
+		if !validRoles[*input.Role] {
+			writeError(w, http.StatusBadRequest, "bad_request", "role must be 'admin' or 'member'")
+			return
+		}
+
+		// Guard: cannot demote yourself
+		caller := currentUser(r)
+		if caller != nil && caller.ID == userID {
+			writeError(w, http.StatusBadRequest, "bad_request", "Cannot change your own role")
+			return
+		}
+
+		// Guard: must always have at least one admin
+		if *input.Role == "member" && user.Role == "admin" {
+			adminCount, err := s.store.CountAdminUsers()
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			if adminCount <= 1 {
+				writeError(w, http.StatusBadRequest, "bad_request", "Cannot demote the last admin")
+				return
+			}
+		}
+
+		if err := s.store.SetUserRole(userID, *input.Role); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		s.logAuditEvent(models.ActionRoleChanged, r, auditMeta(map[string]string{
+			"target_user_id": userID,
+			"old_role":       user.Role,
+			"new_role":       *input.Role,
+		}))
 	}
 
 	if input.Plan != nil {
@@ -196,9 +236,15 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":              updated.ID,
 		"email":           updated.Email,
+		"username":        updated.Username,
+		"name":            updated.Name,
+		"role":            updated.Role,
 		"plan":            updated.Plan,
 		"plan_overrides":  updated.PlanOverrides,
 		"plan_expires_at": updated.PlanExpiresAt,
+		"totp_enabled":    updated.TOTPEnabled,
+		"created_at":      updated.CreatedAt,
+		"updated_at":      updated.UpdatedAt,
 		"ok":              true,
 	})
 }

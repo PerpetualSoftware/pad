@@ -397,6 +397,26 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 	return nil
 }
 
+// SetUserRole updates a user's role (admin or member).
+func (s *Store) SetUserRole(userID, role string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET role = ?, updated_at = ? WHERE id = ?`),
+		role, now(), userID)
+	if err != nil {
+		return fmt.Errorf("set user role: %w", err)
+	}
+	return nil
+}
+
+// CountAdminUsers returns the number of users with the "admin" role.
+func (s *Store) CountAdminUsers() (int, error) {
+	var count int
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM users WHERE role = 'admin'")).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count admin users: %w", err)
+	}
+	return count, nil
+}
+
 // DeleteUser permanently deletes a user by ID.
 func (s *Store) DeleteUser(id string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)
