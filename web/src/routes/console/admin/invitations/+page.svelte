@@ -75,9 +75,10 @@
 	async function confirmResend(id: string) {
 		actionSaving = true;
 		try {
-			const result = await adminPost(`/admin/invitations/${id}/resend`);
-			actionMsg = { ...actionMsg, [id]: result.message || 'Invitation resent' };
+			await adminPost(`/admin/invitations/${id}/resend`);
 			cancelAction();
+			// Reload because resend creates a new invitation with a different ID
+			await loadInvitations();
 		} catch (e) {
 			actionMsg = { ...actionMsg, [id]: e instanceof Error ? e.message : 'Resend failed' };
 			cancelAction();

@@ -52,8 +52,11 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Delete old and create fresh invitation with new code
-	_ = s.store.DeleteInvitationAdmin(invID)
+	// Delete old invitation — abort if it's already gone (accepted or revoked concurrently)
+	if err := s.store.DeleteInvitationAdmin(invID); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation is no longer pending")
+		return
+	}
 
 	caller := currentUser(r)
 	inviterID := old.InvitedBy
@@ -74,6 +77,16 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 	}
 
 	if s.email != nil && joinURL != "" {
+		// Respect email opt-out preferences
+		if optedOut, err := s.store.IsEmailOptedOut(inv.Email); err == nil && optedOut {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"method":  "code",
+				"message": "Invitation recreated but email not sent (recipient opted out)",
+			})
+			return
+		}
+
 		inviterName := "An administrator"
 		wsName := "a workspace"
 		if caller != nil {
