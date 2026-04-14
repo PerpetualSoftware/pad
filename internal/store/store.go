@@ -173,6 +173,7 @@ func (s *Store) migrate() error {
 		"037_oauth_providers.sql",
 		"038_email_optouts.sql",
 		"039_cli_auth_sessions.sql",
+		"040_user_disabled_at.sql",
 	}
 
 	for _, name := range migrations {
@@ -236,6 +237,7 @@ func (s *Store) migratePostgres() error {
 		"017_oauth_providers.sql",
 		"018_email_optouts.sql",
 		"019_cli_auth_sessions.sql",
+		"020_user_disabled_at.sql",
 	}
 
 	for _, name := range migrations {

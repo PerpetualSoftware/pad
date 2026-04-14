@@ -29,6 +29,8 @@ const (
 	ActionOAuthLoginFailed = "oauth_login_failed"
 	ActionPlanChanged      = "plan_changed"
 	ActionPasswordResetByAdmin = "password_reset_by_admin"
+	ActionUserDisabled         = "user_disabled"
+	ActionUserEnabled          = "user_enabled"
 	ActionAccountDeleted       = "account_deleted"
 )
 

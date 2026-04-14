@@ -19,6 +19,9 @@
 	let resetSaving = $state(false);
 	let resetResult = $state<{ method: string; temp_password?: string; message: string } | null>(null);
 	let resetError = $state('');
+	let disableConfirm = $state(false);
+	let disableSaving = $state(false);
+	let disableMsg = $state('');
 
 	async function loadUsers() {
 		loading = true;
@@ -57,6 +60,8 @@
 		resetConfirm = false;
 		resetResult = null;
 		resetError = '';
+		disableConfirm = false;
+		disableMsg = '';
 	}
 
 	function selectedUser(): AdminUser | undefined {
@@ -99,6 +104,26 @@
 		} finally {
 			resetSaving = false;
 			resetConfirm = false;
+		}
+	}
+
+	async function toggleDisable() {
+		if (!selectedId) return;
+		const user = selectedUser();
+		if (!user) return;
+		disableSaving = true;
+		disableMsg = '';
+		try {
+			const action = user.disabled_at ? 'enable' : 'disable';
+			await adminPost(`/admin/users/${selectedId}/${action}`);
+			const updated = await adminFetch(`/admin/users/${selectedId}`);
+			users = users.map((u) => (u.id === selectedId ? { ...u, ...updated } : u));
+			disableMsg = user.disabled_at ? 'User re-enabled' : 'User disabled';
+			disableConfirm = false;
+		} catch (e) {
+			disableMsg = e instanceof Error ? e.message : 'Action failed';
+		} finally {
+			disableSaving = false;
 		}
 	}
 
@@ -167,9 +192,15 @@
 						<tr
 							class="user-row"
 							class:selected={selectedId === user.id}
+							class:disabled-row={!!user.disabled_at}
 							onclick={() => selectUser(user)}
 						>
-							<td>{user.name || user.username}</td>
+							<td>
+								{user.name || user.username}
+								{#if user.disabled_at}
+									<span class="badge disabled">disabled</span>
+								{/if}
+							</td>
 							<td
 								><span class="badge" class:admin={user.role === 'admin'}
 									>{user.role || 'member'}</span
@@ -268,6 +299,42 @@
 													</div>
 												{/if}
 												{#if resetError}<span class="save-msg" style="color: #ef4444">{resetError}</span>{/if}
+											</div>
+										</div>
+										<div class="edit-field">
+											<span class="field-label">Account Status</span>
+											<div class="role-row">
+												{#if !disableConfirm}
+													<button
+														class="btn role-btn"
+														class:danger={!user.disabled_at}
+														onclick={() => { disableConfirm = true; disableMsg = ''; }}
+													>
+														{user.disabled_at ? 'Enable Account' : 'Disable Account'}
+													</button>
+												{:else}
+													<div class="role-confirm">
+														<span class="role-confirm-msg">
+															{#if user.disabled_at}
+																Re-enable <strong>{user.name || user.username}</strong>?
+															{:else}
+																Disable <strong>{user.name || user.username}</strong>? Their sessions will be invalidated.
+															{/if}
+														</span>
+														<button
+															class="btn primary"
+															class:danger={!user.disabled_at}
+															onclick={toggleDisable}
+															disabled={disableSaving}
+														>
+															{disableSaving ? 'Saving...' : 'Confirm'}
+														</button>
+														<button class="btn" onclick={() => { disableConfirm = false; }}>
+															Cancel
+														</button>
+													</div>
+												{/if}
+												{#if disableMsg}<span class="save-msg">{disableMsg}</span>{/if}
 											</div>
 										</div>
 										<div class="edit-field">
@@ -404,6 +471,29 @@
 	.badge.admin {
 		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
 		color: var(--accent-orange, #f59e0b);
+	}
+	.badge.disabled {
+		background: color-mix(in srgb, #ef4444 15%, transparent);
+		color: #ef4444;
+		margin-left: var(--space-2);
+	}
+	.disabled-row {
+		opacity: 0.6;
+	}
+	.btn.danger {
+		border-color: #ef4444;
+		color: #ef4444;
+	}
+	.btn.danger:hover {
+		background: color-mix(in srgb, #ef4444 10%, transparent);
+	}
+	.btn.primary.danger {
+		background: #ef4444;
+		color: #fff;
+		border-color: transparent;
+	}
+	.btn.primary.danger:hover {
+		opacity: 0.9;
 	}
 
 	/* Edit panel */

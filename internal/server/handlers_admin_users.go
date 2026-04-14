@@ -55,6 +55,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		PlanExpiresAt string `json:"plan_expires_at,omitempty"`
 		PlanOverrides string `json:"plan_overrides,omitempty"`
 		TOTPEnabled   bool   `json:"totp_enabled"`
+		DisabledAt    string `json:"disabled_at,omitempty"`
 		CreatedAt     string `json:"created_at"`
 		UpdatedAt     string `json:"updated_at"`
 	}
@@ -71,6 +72,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			PlanExpiresAt: u.PlanExpiresAt,
 			PlanOverrides: u.PlanOverrides,
 			TOTPEnabled:   u.TOTPEnabled,
+			DisabledAt:    u.DisabledAt,
 			CreatedAt:     u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:     u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		})
@@ -117,6 +119,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"plan_expires_at": user.PlanExpiresAt,
 		"plan_overrides":  user.PlanOverrides,
 		"totp_enabled":    user.TOTPEnabled,
+		"disabled_at":     user.DisabledAt,
 		"created_at":      user.CreatedAt,
 		"updated_at":      user.UpdatedAt,
 		"workspace_count": len(workspaces),
@@ -319,6 +322,94 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		"method":         "temporary_password",
 		"temp_password":  tempPassword,
 		"message":        "Temporary password generated. The user's existing sessions have been invalidated.",
+	})
+}
+
+// handleAdminDisableUser soft-disables a user account.
+// POST /api/v1/admin/users/{userID}/disable
+func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+
+	// Guard: cannot disable yourself
+	caller := currentUser(r)
+	if caller != nil && caller.ID == userID {
+		writeError(w, http.StatusBadRequest, "bad_request", "Cannot disable your own account")
+		return
+	}
+
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+	if user.IsDisabled() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "User is already disabled"})
+		return
+	}
+
+	if err := s.store.DisableUser(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Invalidate all sessions
+	if err := s.store.DeleteUserSessions(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.logAuditEvent(models.ActionUserDisabled, r, auditMeta(map[string]string{
+		"target_user_id": userID,
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "User disabled and sessions invalidated",
+	})
+}
+
+// handleAdminEnableUser re-enables a disabled user account.
+// POST /api/v1/admin/users/{userID}/enable
+func (s *Server) handleAdminEnableUser(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+	if !user.IsDisabled() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "User is already enabled"})
+		return
+	}
+
+	if err := s.store.EnableUser(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.logAuditEvent(models.ActionUserEnabled, r, auditMeta(map[string]string{
+		"target_user_id": userID,
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "User re-enabled",
 	})
 }
 

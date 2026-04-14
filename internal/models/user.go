@@ -22,8 +22,14 @@ type User struct {
 	StripeCustomerID string    `json:"-"`                       // Never serialized
 	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
 	OAuthProviders   string    `json:"-"`                       // JSON array of linked providers, e.g. ["github","google"]
+	DisabledAt       string    `json:"disabled_at,omitempty"`   // Non-empty = account disabled
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// IsDisabled returns true if the user account has been disabled.
+func (u *User) IsDisabled() bool {
+	return u.DisabledAt != ""
 }
 
 // GetOAuthProviders parses the JSON oauth_providers field into a string slice.
