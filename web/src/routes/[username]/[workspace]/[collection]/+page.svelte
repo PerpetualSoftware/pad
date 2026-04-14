@@ -14,7 +14,9 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -38,6 +40,7 @@
 	let saveViewInput = $state<HTMLInputElement>();
 
 	let shareDialogOpen = $state(false);
+	let editCollectionOpen = $state(false);
 	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -805,6 +808,17 @@
 
 					{#if isOwner}
 						<button
+							class="edit-collection-btn"
+							onclick={() => { editCollectionOpen = true; }}
+							title="Edit collection"
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+							<span class="edit-collection-label">Edit</span>
+						</button>
+					{/if}
+
+					{#if isOwner}
+						<button
 							class="share-btn-header"
 							onclick={() => { shareDialogOpen = true; }}
 							title="Share collection"
@@ -963,6 +977,23 @@
 		targetSlug={collection.slug}
 		targetName={collection.name}
 		bind:open={shareDialogOpen}
+	/>
+{/if}
+
+{#if isOwner && collection}
+	<EditCollectionModal
+		bind:open={editCollectionOpen}
+		{collection}
+		{wsSlug}
+		onupdated={(updated) => {
+			collectionStore.loadCollections(wsSlug);
+			if (updated && updated.slug !== collSlug) {
+				goto(`/${username}/${wsSlug}/${updated.slug}`);
+			} else {
+				loadCollection(wsSlug, collSlug, showArchived);
+			}
+		}}
+		onclose={() => { editCollectionOpen = false; }}
 	/>
 {/if}
 
@@ -1374,6 +1405,10 @@
 		.share-btn-label {
 			display: none;
 		}
+
+		.edit-collection-label {
+			display: none;
+		}
 	}
 
 	/* Share button */
@@ -1399,5 +1434,26 @@
 
 	.share-icon {
 		flex-shrink: 0;
+	}
+
+	/* Edit collection button */
+	.edit-collection-btn {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		transition: border-color 0.15s, color 0.15s;
+	}
+
+	.edit-collection-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
 	}
 </style>
