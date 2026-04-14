@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
@@ -212,6 +213,13 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 				writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 				return
 			}
+			// Use a short-lived context so the write is cancelled if the DB is slow,
+			// preventing goroutine/connection buildup under load.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				s.store.TouchUserActivity(ctx, user.ID)
+			}()
 			next.ServeHTTP(w, r)
 			return
 		}

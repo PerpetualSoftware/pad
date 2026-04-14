@@ -23,6 +23,7 @@ type User struct {
 	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
 	OAuthProviders   string    `json:"-"`                       // JSON array of linked providers, e.g. ["github","google"]
 	DisabledAt       string    `json:"disabled_at,omitempty"`   // Non-empty = account disabled
+	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
