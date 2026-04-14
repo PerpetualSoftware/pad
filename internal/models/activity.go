@@ -28,7 +28,8 @@ const (
 	ActionOAuthLogin      = "oauth_login"
 	ActionOAuthLoginFailed = "oauth_login_failed"
 	ActionPlanChanged      = "plan_changed"
-	ActionAccountDeleted   = "account_deleted"
+	ActionPasswordResetByAdmin = "password_reset_by_admin"
+	ActionAccountDeleted       = "account_deleted"
 )
 
 type Activity struct {

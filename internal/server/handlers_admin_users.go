@@ -1,7 +1,11 @@
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -238,6 +242,85 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		"created_at":      updated.CreatedAt,
 		"updated_at":      updated.UpdatedAt,
 		"ok":              true,
+	})
+}
+
+// handleAdminResetPassword force-resets a user's password.
+// If email is configured, sends a reset link. Otherwise returns a temporary password.
+// POST /api/v1/admin/users/{userID}/reset-password
+func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	if s.email != nil && s.baseURL != "" {
+		// Email configured: generate reset token and send link
+		token, err := s.store.CreatePasswordReset(user.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+
+		resetURL := s.baseURL + "/reset-password/" + token
+		go func() {
+			if err := s.email.SendPasswordReset(context.Background(), user.Email, user.Name, resetURL); err != nil {
+				slog.Error("failed to send admin password reset email", "error", err, "user_id", userID)
+			}
+		}()
+
+		s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
+			"target_user_id": userID,
+			"method":         "email",
+		}))
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"method":  "email",
+			"message": "Password reset email sent to " + user.Email,
+		})
+		return
+	}
+
+	// No email: generate a temporary password
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	tempPassword := hex.EncodeToString(raw)
+
+	pwd := tempPassword
+	if _, err := s.store.UpdateUser(userID, models.UserUpdate{Password: &pwd}); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Invalidate all existing sessions so the user must log in with the new password
+	if err := s.store.DeleteUserSessions(userID); err != nil {
+		slog.Error("failed to invalidate sessions after admin password reset", "error", err, "user_id", userID)
+	}
+
+	s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
+		"target_user_id": userID,
+		"method":         "temporary_password",
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":             true,
+		"method":         "temporary_password",
+		"temp_password":  tempPassword,
+		"message":        "Temporary password generated. The user's existing sessions have been invalidated.",
 	})
 }
 

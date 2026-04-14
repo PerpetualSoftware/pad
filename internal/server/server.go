@@ -313,6 +313,7 @@ func (s *Server) setupRouter() {
 			r.Get("/users", s.handleAdminListUsers)
 			r.Get("/users/{userID}", s.handleAdminGetUser)
 			r.Patch("/users/{userID}", s.handleAdminUpdateUser)
+			r.Post("/users/{userID}/reset-password", s.handleAdminResetPassword)
 
 			// Plan limits
 			r.Get("/limits", s.handleAdminGetLimits)
