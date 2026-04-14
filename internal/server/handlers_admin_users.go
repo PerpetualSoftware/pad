@@ -350,17 +350,12 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "User not found")
 		return
 	}
-	if user.IsDisabled() {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "User is already disabled"})
-		return
-	}
-
 	if err := s.store.DisableUser(userID); err != nil {
 		writeInternalError(w, err)
 		return
 	}
 
-	// Invalidate all sessions
+	// Always invalidate sessions (also handles retry after partial failure)
 	if err := s.store.DeleteUserSessions(userID); err != nil {
 		writeInternalError(w, err)
 		return

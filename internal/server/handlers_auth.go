@@ -814,6 +814,12 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject disabled accounts
+	if user.IsDisabled() {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
+
 	// Update password
 	password := input.Password
 	update := models.UserUpdate{Password: &password}
