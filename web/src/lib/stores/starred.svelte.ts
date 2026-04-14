@@ -42,6 +42,9 @@ export const starredStore = {
 		currentWs = wsSlug;
 		const seq = ++requestSeq;
 		pendingToggles.clear();
+		// Clear stale state immediately to avoid showing a previous user/workspace's stars
+		starredIds = new Set();
+		loaded = false;
 
 		try {
 			const items = await api.items.starred(wsSlug, { include_terminal: true });
