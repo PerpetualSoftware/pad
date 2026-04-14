@@ -87,17 +87,24 @@
 	}
 
 	async function handleCollectionFinalize(e: CustomEvent<DndEvent<Collection>>) {
-		sidebarCollections = e.detail.items;
-		isDraggingSidebar = false;
+		const reordered = e.detail.items;
+		sidebarCollections = reordered;
 
-		if (!wsSlug) return;
-		for (let i = 0; i < sidebarCollections.length; i++) {
-			const coll = sidebarCollections[i];
-			if (coll.sort_order !== i) {
-				await api.collections.update(wsSlug, coll.slug, { sort_order: i });
-			}
+		if (!wsSlug) {
+			isDraggingSidebar = false;
+			return;
 		}
-		collectionStore.loadCollections(wsSlug);
+
+		await Promise.all(
+			reordered.map((coll, i) =>
+				coll.sort_order !== i
+					? api.collections.update(wsSlug, coll.slug, { sort_order: i })
+					: Promise.resolve()
+			)
+		);
+
+		await collectionStore.loadCollections(wsSlug);
+		isDraggingSidebar = false;
 	}
 
 	function startQuickAdd(coll: Collection) {
