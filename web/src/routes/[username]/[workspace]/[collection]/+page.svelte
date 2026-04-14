@@ -16,6 +16,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -985,6 +986,7 @@
 		{collection}
 		{wsSlug}
 		onupdated={(updated) => {
+			collectionStore.loadCollections(wsSlug);
 			if (updated && updated.slug !== collSlug) {
 				goto(`/${username}/${wsSlug}/${updated.slug}`);
 			} else {
