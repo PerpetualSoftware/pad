@@ -153,6 +153,21 @@
 		}
 	}
 
+	function relativeTime(dateStr: string | null): string {
+		if (!dateStr) return 'Never';
+		const now = Date.now();
+		const then = new Date(dateStr).getTime();
+		const seconds = Math.floor((now - then) / 1000);
+		if (seconds < 60) return 'Just now';
+		const minutes = Math.floor(seconds / 60);
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		if (days < 30) return `${days}d ago`;
+		return formatDate(dateStr);
+	}
+
 	onMount(() => {
 		loadUsers();
 	});
@@ -188,6 +203,7 @@
 						<th>Role</th>
 						<th>Email</th>
 						<th>Plan</th>
+						<th>Last Active</th>
 						<th>Created</th>
 					</tr>
 				</thead>
@@ -216,11 +232,14 @@
 									>{user.plan || 'free'}</span
 								></td
 							>
+							<td class="date-cell muted"
+								title={user.last_active_at || ''}
+								>{relativeTime(user.last_active_at)}</td>
 							<td class="date-cell">{formatDate(user.created_at)}</td>
 						</tr>
 						{#if selectedId === user.id}
 							<tr class="edit-row">
-								<td colspan="5">
+								<td colspan="6">
 									<div class="edit-panel">
 										<div class="edit-field">
 											<label for="edit-role">Role</label>
@@ -459,6 +478,10 @@
 	}
 	.date-cell {
 		white-space: nowrap;
+	}
+	.date-cell.muted {
+		color: var(--text-muted);
+		font-size: 0.8rem;
 	}
 	.badge {
 		padding: 2px var(--space-2);

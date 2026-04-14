@@ -56,6 +56,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		PlanOverrides string `json:"plan_overrides,omitempty"`
 		TOTPEnabled   bool   `json:"totp_enabled"`
 		DisabledAt    string `json:"disabled_at,omitempty"`
+		LastActiveAt  string `json:"last_active_at,omitempty"`
 		CreatedAt     string `json:"created_at"`
 		UpdatedAt     string `json:"updated_at"`
 	}
@@ -73,6 +74,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			PlanOverrides: u.PlanOverrides,
 			TOTPEnabled:   u.TOTPEnabled,
 			DisabledAt:    u.DisabledAt,
+			LastActiveAt:  u.LastActiveAt,
 			CreatedAt:     u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:     u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		})
@@ -120,6 +122,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"plan_overrides":  user.PlanOverrides,
 		"totp_enabled":    user.TOTPEnabled,
 		"disabled_at":     user.DisabledAt,
+		"last_active_at":  user.LastActiveAt,
 		"created_at":      user.CreatedAt,
 		"updated_at":      user.UpdatedAt,
 		"workspace_count": len(workspaces),

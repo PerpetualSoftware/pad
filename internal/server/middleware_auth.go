@@ -212,6 +212,7 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 				writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 				return
 			}
+			go s.store.TouchUserActivity(user.ID)
 			next.ServeHTTP(w, r)
 			return
 		}
