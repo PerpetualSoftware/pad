@@ -420,6 +420,9 @@ func (s *Server) setupRouter() {
 				// User grants (all grants for a specific user in this workspace)
 				r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
+				// Starred items
+				r.Get("/starred", s.handleListStarredItems)
+
 				// Items (cross-collection, v2)
 				r.Get("/items", s.handleListItems)
 				r.Route("/items/{itemSlug}", func(r chi.Router) {
@@ -444,6 +447,10 @@ func (s *Server) setupRouter() {
 					r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
 					r.Get("/share-links", s.handleListItemShareLinks)
 					r.Post("/share-links", s.handleCreateItemShareLink)
+					// Stars
+					r.Get("/star", s.handleGetItemStarStatus)
+					r.Post("/star", s.handleStarItem)
+					r.Delete("/star", s.handleUnstarItem)
 				})
 
 				// Links (v2)
