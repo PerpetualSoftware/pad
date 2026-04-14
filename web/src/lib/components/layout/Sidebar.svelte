@@ -64,6 +64,7 @@
 	// Drag-and-drop reordering state
 	let sidebarCollections: Collection[] = $state([]);
 	let isDraggingSidebar = $state(false);
+	let reorderGeneration = 0;
 	const flipDurationMs = 150;
 
 	const agentSlugs = ['conventions', 'playbooks'];
@@ -89,6 +90,7 @@
 	async function handleCollectionFinalize(e: CustomEvent<DndEvent<Collection>>) {
 		const reordered = e.detail.items;
 		sidebarCollections = reordered;
+		const generation = ++reorderGeneration;
 
 		if (!wsSlug) {
 			isDraggingSidebar = false;
@@ -106,7 +108,9 @@
 
 			await collectionStore.loadCollections(wsSlug);
 		} finally {
-			isDraggingSidebar = false;
+			if (reorderGeneration === generation) {
+				isDraggingSidebar = false;
+			}
 		}
 	}
 
