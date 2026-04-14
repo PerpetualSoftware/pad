@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
 	// Profile
@@ -133,20 +134,25 @@
 		try {
 			totpSetup = await api.auth.totp.setup();
 			totpStep = 'setup';
-			// Generate QR code
+		} catch (err) {
+			totpError = err instanceof Error ? err.message : 'Failed to start 2FA setup';
+			totpStep = 'idle';
+			return;
+		} finally {
+			totpSaving = false;
+		}
+
+		// Render QR code separately — failure here should not abort setup
+		// since the user can still enter the secret manually
+		try {
 			const QRCode = (await import('qrcode')).default;
-			const canvas = document.getElementById('qr-canvas') as HTMLCanvasElement;
-			// Wait for canvas to be rendered
 			await new Promise(r => setTimeout(r, 50));
 			const el = document.getElementById('qr-canvas') as HTMLCanvasElement;
 			if (el) {
 				await QRCode.toCanvas(el, totpSetup.url, { width: 200, margin: 2 });
 			}
-		} catch (err) {
-			totpError = err instanceof Error ? err.message : 'Failed to start 2FA setup';
-			totpStep = 'idle';
-		} finally {
-			totpSaving = false;
+		} catch {
+			// QR rendering failed — manual entry still available
 		}
 	}
 
@@ -224,10 +230,14 @@
 		recoveryCodes = [];
 	}
 
-	function copyRecoveryCodes() {
+	async function copyRecoveryCodes() {
 		const text = recoveryCodes.join('\n');
-		navigator.clipboard.writeText(text);
-		totpMsg = 'Recovery codes copied to clipboard.';
+		const ok = await copyToClipboard(text);
+		if (ok) {
+			totpMsg = 'Recovery codes copied to clipboard.';
+		} else {
+			totpError = 'Failed to copy — please select and copy the codes manually.';
+		}
 	}
 
 	function downloadRecoveryCodes() {
