@@ -64,6 +64,7 @@
 	// Drag-and-drop reordering state
 	let sidebarCollections: Collection[] = $state([]);
 	let isDraggingSidebar = $state(false);
+	let reorderGeneration = 0;
 	const flipDurationMs = 150;
 
 	const agentSlugs = ['conventions', 'playbooks'];
@@ -87,17 +88,30 @@
 	}
 
 	async function handleCollectionFinalize(e: CustomEvent<DndEvent<Collection>>) {
-		sidebarCollections = e.detail.items;
-		isDraggingSidebar = false;
+		const reordered = e.detail.items;
+		sidebarCollections = reordered;
+		const generation = ++reorderGeneration;
 
-		if (!wsSlug) return;
-		for (let i = 0; i < sidebarCollections.length; i++) {
-			const coll = sidebarCollections[i];
-			if (coll.sort_order !== i) {
-				await api.collections.update(wsSlug, coll.slug, { sort_order: i });
+		if (!wsSlug) {
+			isDraggingSidebar = false;
+			return;
+		}
+
+		try {
+			await Promise.all(
+				reordered.map((coll, i) =>
+					coll.sort_order !== i
+						? api.collections.update(wsSlug, coll.slug, { sort_order: i })
+						: Promise.resolve()
+				)
+			);
+
+			await collectionStore.loadCollections(wsSlug);
+		} finally {
+			if (reorderGeneration === generation) {
+				isDraggingSidebar = false;
 			}
 		}
-		collectionStore.loadCollections(wsSlug);
 	}
 
 	function startQuickAdd(coll: Collection) {
