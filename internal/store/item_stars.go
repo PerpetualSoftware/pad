@@ -125,9 +125,16 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 	}
 
 	if !includeTerminal {
+		// Build a schema map from workspace collections for per-collection terminal status checks
+		schemaMap, err := s.buildCollectionSchemaMap(workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("list starred items: build schema map: %w", err)
+		}
+
 		filtered := make([]models.Item, 0, len(items))
 		for _, item := range items {
-			if !isItemFieldTerminal(item.Fields) {
+			status := extractStatusFromFields(item.Fields)
+			if !isTerminalWithSchema(status, item.CollectionID, schemaMap) {
 				filtered = append(filtered, item)
 			}
 		}
@@ -152,19 +159,44 @@ func (s *Store) CountStarredItems(userID, workspaceID string) (int, error) {
 	return count, nil
 }
 
-// isItemFieldTerminal extracts the status from an item's fields JSON and checks
-// whether it is a terminal status using the default terminal status list.
-func isItemFieldTerminal(fields string) bool {
+// buildCollectionSchemaMap loads all collections for a workspace and returns
+// a map from collection ID to parsed schema, for terminal status lookups.
+func (s *Store) buildCollectionSchemaMap(workspaceID string) (map[string]models.CollectionSchema, error) {
+	collections, err := s.ListCollections(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]models.CollectionSchema, len(collections))
+	for _, c := range collections {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(c.Schema), &schema); err == nil {
+			m[c.ID] = schema
+		}
+	}
+	return m, nil
+}
+
+// extractStatusFromFields extracts the "status" value from an item's fields JSON.
+func extractStatusFromFields(fields string) string {
 	if fields == "" || fields == "{}" {
-		return false
+		return ""
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(fields), &m); err != nil {
+		return ""
+	}
+	status, _ := m["status"].(string)
+	return status
+}
+
+// isTerminalWithSchema checks if a status is terminal using the collection's schema.
+// Falls back to default terminal statuses if the collection is not in the schema map.
+func isTerminalWithSchema(status, collectionID string, schemaMap map[string]models.CollectionSchema) bool {
+	if status == "" {
 		return false
 	}
-	status, ok := m["status"].(string)
-	if !ok {
-		return false
+	if schema, ok := schemaMap[collectionID]; ok {
+		return models.IsTerminalStatus(status, schema)
 	}
 	return models.IsTerminalStatusDefault(status)
 }
