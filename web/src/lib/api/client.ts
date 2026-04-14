@@ -304,7 +304,27 @@ export const api = {
 
 		/** @deprecated Use progress() per-item instead */
 		plansProgress: (ws: string) =>
-			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/plans-progress`)
+			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/plans-progress`),
+
+		/** Star an item for the current user (idempotent) */
+		star: (ws: string, itemSlug: string) =>
+			request<void>(`/workspaces/${ws}/items/${itemSlug}/star`, {
+				method: 'POST'
+			}),
+
+		/** Unstar an item for the current user */
+		unstar: (ws: string, itemSlug: string) =>
+			request<void>(`/workspaces/${ws}/items/${itemSlug}/star`, {
+				method: 'DELETE'
+			}),
+
+		/** Check if an item is starred by the current user */
+		starStatus: (ws: string, itemSlug: string) =>
+			request<{starred: boolean}>(`/workspaces/${ws}/items/${itemSlug}/star`),
+
+		/** List all starred items in a workspace for the current user */
+		starred: (ws: string, params?: {include_terminal?: boolean}) =>
+			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`)
 	},
 
 	// ── Versions ──────────────────────────────────────────────────────────────

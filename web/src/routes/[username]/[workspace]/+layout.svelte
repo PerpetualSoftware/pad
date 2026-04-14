@@ -8,6 +8,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { starredStore } from '$lib/stores/starred.svelte';
 
 	let { children } = $props();
 
@@ -42,6 +43,7 @@
 		if (wsSlug) {
 			workspaceStore.setCurrent(wsSlug);
 			collectionStore.loadCollections(wsSlug);
+			starredStore.load(wsSlug);
 			syncService.setWorkspace(wsSlug);
 			connectSSE();
 		}

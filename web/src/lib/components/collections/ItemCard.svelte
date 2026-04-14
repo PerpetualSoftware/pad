@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import type { Item, Collection } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef, itemUrlId } from '$lib/types';
+	import { starredStore } from '$lib/stores/starred.svelte';
 
 	interface Props {
 		item: Item;
@@ -26,6 +27,7 @@
 	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
 	let itemUrl = $derived(`/${username}/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
+	let starred = $derived(starredStore.isStarred(item.id));
 
 	let statusCyclable = $derived(
 		!!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
@@ -70,10 +72,24 @@
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
+
+	function toggleStar(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		starredStore.toggle(wsSlug, item.slug, item.id);
+	}
 </script>
 
 <a href={itemUrl} class="item-card" class:compact class:focused>
 	<div class="card-top-row">
+		<button
+			class="star-btn"
+			class:starred
+			onclick={toggleStar}
+			title={starred ? 'Unstar' : 'Star'}
+		>
+			{starred ? '★' : '☆'}
+		</button>
 		{#if showCollection && item.collection_name}
 			<span class="collection-badge">
 				{#if item.collection_icon}{item.collection_icon} {/if}{item.collection_name}
@@ -304,5 +320,31 @@
 		color: var(--text-muted);
 		white-space: nowrap;
 		flex-shrink: 0;
+	}
+
+	.star-btn {
+		border: none;
+		background: none;
+		cursor: pointer;
+		padding: 0;
+		font-size: 0.95em;
+		line-height: 1;
+		color: var(--text-muted);
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s;
+		flex-shrink: 0;
+	}
+
+	.item-card:hover .star-btn,
+	.star-btn.starred {
+		opacity: 1;
+	}
+
+	.star-btn:hover {
+		color: var(--accent-amber);
+	}
+
+	.star-btn.starred {
+		color: var(--accent-amber);
 	}
 </style>
