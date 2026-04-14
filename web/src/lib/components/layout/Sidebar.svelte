@@ -95,16 +95,19 @@
 			return;
 		}
 
-		await Promise.all(
-			reordered.map((coll, i) =>
-				coll.sort_order !== i
-					? api.collections.update(wsSlug, coll.slug, { sort_order: i })
-					: Promise.resolve()
-			)
-		);
+		try {
+			await Promise.all(
+				reordered.map((coll, i) =>
+					coll.sort_order !== i
+						? api.collections.update(wsSlug, coll.slug, { sort_order: i })
+						: Promise.resolve()
+				)
+			);
 
-		await collectionStore.loadCollections(wsSlug);
-		isDraggingSidebar = false;
+			await collectionStore.loadCollections(wsSlug);
+		} finally {
+			isDraggingSidebar = false;
+		}
 	}
 
 	function startQuickAdd(coll: Collection) {
