@@ -755,6 +755,77 @@ func (s *Store) backfillWorkspaceOwners() error {
 	return nil
 }
 
+// AdminInvitation holds enriched invitation data for the admin panel.
+type AdminInvitation struct {
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	Role          string `json:"role"`
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
+	WorkspaceSlug string `json:"workspace_slug"`
+	InvitedByID   string `json:"invited_by_id"`
+	InvitedByName string `json:"invited_by_name"`
+	CreatedAt     string `json:"created_at"`
+}
+
+// ListPendingInvitationsAdmin returns all pending invitations across all workspaces
+// with workspace and inviter details for the admin panel.
+func (s *Store) ListPendingInvitationsAdmin(query string) ([]AdminInvitation, error) {
+	var where []string
+	var args []interface{}
+
+	where = append(where, "i.accepted_at IS NULL")
+	where = append(where, "w.deleted_at IS NULL")
+
+	if query != "" {
+		q := "%" + strings.ToLower(query) + "%"
+		where = append(where, "(LOWER(i.email) LIKE ? OR LOWER(w.name) LIKE ?)")
+		args = append(args, q, q)
+	}
+
+	whereClause := "WHERE " + strings.Join(where, " AND ")
+
+	rows, err := s.db.Query(s.q(`
+		SELECT i.id, i.email, i.role, w.id, w.name, w.slug, i.invited_by, COALESCE(u.name, ''), i.created_at
+		FROM workspace_invitations i
+		JOIN workspaces w ON w.id = i.workspace_id
+		LEFT JOIN users u ON u.id = i.invited_by
+		`+whereClause+`
+		ORDER BY i.created_at DESC
+	`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list pending invitations admin: %w", err)
+	}
+	defer rows.Close()
+
+	var result []AdminInvitation
+	for rows.Next() {
+		var inv AdminInvitation
+		if err := rows.Scan(&inv.ID, &inv.Email, &inv.Role, &inv.WorkspaceID, &inv.WorkspaceName,
+			&inv.WorkspaceSlug, &inv.InvitedByID, &inv.InvitedByName, &inv.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan admin invitation: %w", err)
+		}
+		result = append(result, inv)
+	}
+	return result, rows.Err()
+}
+
+// DeleteInvitationAdmin removes a pending invitation by ID (no workspace scoping).
+func (s *Store) DeleteInvitationAdmin(invitationID string) error {
+	result, err := s.db.Exec(
+		s.q("DELETE FROM workspace_invitations WHERE id = ? AND accepted_at IS NULL"),
+		invitationID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete invitation admin: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // AdminUserWorkspace is a lightweight workspace membership for admin views.
 type AdminUserWorkspace struct {
 	WorkspaceID   string `json:"workspace_id"`
