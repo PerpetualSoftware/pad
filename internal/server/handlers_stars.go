@@ -110,8 +110,53 @@ func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Apply RBAC visibility filtering (same as handleListItems)
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Build visibility sets for filtering
+	visibleSet := make(map[string]bool, len(visibleIDs))
+	if visibleIDs != nil {
+		for _, id := range visibleIDs {
+			visibleSet[id] = true
+		}
+	}
+
+	// Apply item-level grant filtering for guests/restricted members
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+
+	fullCollSet := make(map[string]bool, len(fullCollIDs))
+	for _, id := range fullCollIDs {
+		fullCollSet[id] = true
+	}
+	grantedItemSet := make(map[string]bool, len(grantedItemIDs))
+	for _, id := range grantedItemIDs {
+		grantedItemSet[id] = true
+	}
+
+	// Filter items by visibility
+	filtered := make([]models.Item, 0, len(items))
+	for _, item := range items {
+		if len(grantedItemIDs) > 0 {
+			// Guest with item-level grants: allow if collection has full access OR item is explicitly granted
+			if fullCollSet[item.CollectionID] || grantedItemSet[item.ID] {
+				filtered = append(filtered, item)
+			}
+		} else if visibleIDs == nil || visibleSet[item.CollectionID] {
+			// Regular member: allow if no visibility filter (full access) or collection is visible
+			filtered = append(filtered, item)
+		}
+	}
+	items = filtered
+
 	// Hydrate items with parent links and computed refs
-	visibleIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	s.enrichItemsWithParent(workspaceID, items, visibleIDs)
 
 	if len(items) == 0 {
