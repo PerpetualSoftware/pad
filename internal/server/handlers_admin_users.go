@@ -164,20 +164,12 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Guard: must always have at least one admin
-		if *input.Role == "member" && user.Role == "admin" {
-			adminCount, err := s.store.CountAdminUsers()
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			if adminCount <= 1 {
+		// SetUserRole atomically guards against demoting the last admin.
+		if err := s.store.SetUserRole(userID, *input.Role); err != nil {
+			if err == store.ErrLastAdmin {
 				writeError(w, http.StatusBadRequest, "bad_request", "Cannot demote the last admin")
 				return
 			}
-		}
-
-		if err := s.store.SetUserRole(userID, *input.Role); err != nil {
 			writeInternalError(w, err)
 			return
 		}
