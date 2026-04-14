@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
+	"sort"
 	"strings"
 	"time"
 
@@ -123,6 +125,22 @@ func (s *Store) Ping() error {
 	return s.db.Ping()
 }
 
+// readMigrationNames returns sorted .sql filenames from an embedded FS directory.
+func readMigrationNames(fsys embed.FS, dir string) ([]string, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil, fmt.Errorf("read migration dir %s: %w", dir, err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 func (s *Store) migrate() error {
 	// Create migrations tracking table
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -133,47 +151,9 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
 
-	migrations := []string{
-		"001_initial.sql",
-		"002_version_diffs.sql",
-		"003_custom_templates.sql",
-		"004_progress_snapshots.sql",
-		"005_collections.sql",
-		"006_item_numbers.sql",
-		"007_comments.sql",
-		"008_tasks_phase_field.sql",
-		"009_ideas_implemented_status.sql",
-		"010_webhooks.sql",
-		"011_api_tokens.sql",
-		"012_users.sql",
-		"013_workspace_invitations.sql",
-		"014_platform_settings.sql",
-		"015_password_resets.sql",
-		"016_timeline.sql",
-		"017_agent_roles.sql",
-		"018_conventions_role_field.sql",
-		"019_agent_roles_tools.sql",
-		"020_role_sort_order.sql",
-		"021_phase_to_links.sql",
-		"022_audit_trail.sql",
-		"023_parent_link_type.sql",
-		"024_phases_to_plans.sql",
-		"025_doc_type_plan.sql",
-		"026_session_binding.sql",
-		"027_totp.sql",
-		"028_workspace_sort_order.sql",
-		"029_username.sql",
-		"030_workspace_owner.sql",
-		"031_collection_access.sql",
-		"032_permission_indexes.sql",
-		"033_grants.sql",
-		"034_share_links.sql",
-		"035_plan_fields.sql",
-		"036_stripe_customer_index.sql",
-		"037_oauth_providers.sql",
-		"038_email_optouts.sql",
-		"039_cli_auth_sessions.sql",
-		"040_user_disabled_at.sql",
+	migrations, err := readMigrationNames(migrationsFS, "migrations")
+	if err != nil {
+		return err
 	}
 
 	for _, name := range migrations {
@@ -217,27 +197,9 @@ func (s *Store) migratePostgres() error {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
 
-	migrations := []string{
-		"001_initial.sql",
-		"002_audit_trail.sql",
-		"003_parent_link_type.sql",
-		"004_doc_type_plan.sql",
-		"005_phases_to_plans.sql",
-		"006_session_binding.sql",
-		"007_totp.sql",
-		"008_workspace_sort_order.sql",
-		"009_username.sql",
-		"010_workspace_owner.sql",
-		"011_collection_access.sql",
-		"012_permission_indexes.sql",
-		"013_grants.sql",
-		"014_share_links.sql",
-		"015_plan_fields.sql",
-		"016_stripe_customer_index.sql",
-		"017_oauth_providers.sql",
-		"018_email_optouts.sql",
-		"019_cli_auth_sessions.sql",
-		"020_user_disabled_at.sql",
+	migrations, err := readMigrationNames(pgMigrationsFS, "pgmigrations")
+	if err != nil {
+		return err
 	}
 
 	for _, name := range migrations {
