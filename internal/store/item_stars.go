@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -118,7 +119,22 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 	}
 	defer rows.Close()
 
-	return scanItems(rows)
+	items, err := scanItems(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	if !includeTerminal {
+		filtered := make([]models.Item, 0, len(items))
+		for _, item := range items {
+			if !isItemFieldTerminal(item.Fields) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+
+	return items, nil
 }
 
 // CountStarredItems returns the number of starred items for a user in a workspace.
@@ -134,6 +150,23 @@ func (s *Store) CountStarredItems(userID, workspaceID string) (int, error) {
 		return 0, fmt.Errorf("count starred items: %w", err)
 	}
 	return count, nil
+}
+
+// isItemFieldTerminal extracts the status from an item's fields JSON and checks
+// whether it is a terminal status using the default terminal status list.
+func isItemFieldTerminal(fields string) bool {
+	if fields == "" || fields == "{}" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(fields), &m); err != nil {
+		return false
+	}
+	status, ok := m["status"].(string)
+	if !ok {
+		return false
+	}
+	return models.IsTerminalStatusDefault(status)
 }
 
 // DeleteStarsForItem removes all stars for a given item (used when deleting an item).

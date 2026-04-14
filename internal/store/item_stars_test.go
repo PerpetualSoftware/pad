@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"testing"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
 func TestStarItem(t *testing.T) {
@@ -156,6 +158,44 @@ func TestListStarredItems(t *testing.T) {
 		if item.CollectionName == "" {
 			t.Error("expected collection name to be populated")
 		}
+	}
+}
+
+func TestListStarredItemsExcludesTerminal(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	user := createTestUser(t, s, "alice@test.com", "Alice", "password123")
+	item1 := createTestItem(t, s, ws.ID, col.ID, "Open task", "")
+	item2 := createTestItem(t, s, ws.ID, col.ID, "Done task", "")
+
+	// Mark item2 as done (terminal status)
+	doneFields := `{"status":"done"}`
+	s.UpdateItem(item2.ID, models.ItemUpdate{Fields: &doneFields})
+
+	// Star both
+	s.StarItem(user.ID, item1.ID)
+	s.StarItem(user.ID, item2.ID)
+
+	// includeTerminal=true returns both
+	all, err := s.ListStarredItems(user.ID, ws.ID, true)
+	if err != nil {
+		t.Fatalf("ListStarredItems (all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 items with includeTerminal=true, got %d", len(all))
+	}
+
+	// includeTerminal=false excludes the done item
+	active, err := s.ListStarredItems(user.ID, ws.ID, false)
+	if err != nil {
+		t.Fatalf("ListStarredItems (active): %v", err)
+	}
+	if len(active) != 1 {
+		t.Errorf("expected 1 item with includeTerminal=false, got %d", len(active))
+	}
+	if len(active) > 0 && active[0].Title != "Open task" {
+		t.Errorf("expected 'Open task', got %q", active[0].Title)
 	}
 }
 
