@@ -8,8 +8,23 @@ export interface User {
 	role: string;
 	avatar_url?: string;
 	oauth_providers?: string[];
+	totp_enabled?: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface TOTPSetupResponse {
+	secret: string;
+	url: string;
+}
+
+export interface TOTPVerifyResponse {
+	enabled: boolean;
+	recovery_codes: string[];
+}
+
+export interface TOTPDisableResponse {
+	enabled: boolean;
 }
 
 export interface UserProfileUpdate {
