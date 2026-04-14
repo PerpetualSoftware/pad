@@ -169,7 +169,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 6. Create session (30-day TTL for OAuth sessions)
+	// 6. Reject disabled accounts
+	if user.IsDisabled() {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
+
+	// 7. Create session (30-day TTL for OAuth sessions)
 	token, err := s.createAuthSession(w, r, user, 30*24*time.Hour)
 	if err != nil {
 		return // Error already written by createAuthSession

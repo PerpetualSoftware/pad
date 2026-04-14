@@ -19,7 +19,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 const bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, disabled_at, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -28,12 +28,16 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var u models.User
 	var createdAt, updatedAt string
 
+	var disabledAt sql.NullString
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
-		&createdAt, &updatedAt,
+		&disabledAt, &createdAt, &updatedAt,
 	)
+	if disabledAt.Valid {
+		u.DisabledAt = disabledAt.String
+	}
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -399,6 +403,26 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 
 // ErrLastAdmin is returned when a role change would leave zero admins.
 var ErrLastAdmin = fmt.Errorf("cannot demote the last admin")
+
+// DisableUser soft-disables a user account by setting disabled_at.
+func (s *Store) DisableUser(userID string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?`),
+		now(), now(), userID)
+	if err != nil {
+		return fmt.Errorf("disable user: %w", err)
+	}
+	return nil
+}
+
+// EnableUser re-enables a disabled user account by clearing disabled_at.
+func (s *Store) EnableUser(userID string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = NULL, updated_at = ? WHERE id = ?`),
+		now(), userID)
+	if err != nil {
+		return fmt.Errorf("enable user: %w", err)
+	}
+	return nil
+}
 
 // SetUserRole updates a user's role (admin or member).
 // When demoting an admin to member, the update is conditional: it only

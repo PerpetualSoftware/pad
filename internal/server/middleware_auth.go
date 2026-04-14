@@ -207,7 +207,15 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		}
 
 		// Already authenticated via token or session
-		if currentUser(r) != nil || tokenWorkspaceID(r) != "" {
+		if user := currentUser(r); user != nil {
+			if user.IsDisabled() {
+				writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if tokenWorkspaceID(r) != "" {
 			next.ServeHTTP(w, r)
 			return
 		}

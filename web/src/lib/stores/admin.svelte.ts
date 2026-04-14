@@ -14,6 +14,7 @@ export interface AdminUser {
 	plan_expires_at: string | null;
 	plan_overrides: Record<string, number> | null;
 	totp_enabled: boolean;
+	disabled_at: string | null;
 	created_at: string;
 }
 
