@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -410,10 +411,11 @@ var ErrLastAdmin = fmt.Errorf("cannot demote the last admin")
 
 // TouchUserActivity updates last_active_at for a user, throttled to avoid
 // write amplification. Only writes if the stored value is older than 5 minutes.
-func (s *Store) TouchUserActivity(userID string) {
+// Accepts a context so callers can bound the write duration.
+func (s *Store) TouchUserActivity(ctx context.Context, userID string) {
 	ts := now()
 	// Conditional update: only write if NULL or older than 5 minutes
-	s.db.Exec(s.q(`
+	s.db.ExecContext(ctx, s.q(`
 		UPDATE users SET last_active_at = ?
 		WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)
 	`), ts, userID, throttleTime(ts))
