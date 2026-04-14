@@ -20,6 +20,7 @@
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { authStore } from '$lib/stores/auth.svelte';
 
 	type RelationshipEntry = {
@@ -84,6 +85,17 @@
 	let agentRoles = $state<AgentRole[]>([]);
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
+	let copied = $state(false);
+
+	async function handleCopyRef() {
+		const ref = formatItemRef(item!);
+		if (!ref) return;
+		const success = await copyToClipboard(ref);
+		if (success) {
+			copied = true;
+			setTimeout(() => { copied = false; }, 1500);
+		}
+	}
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
 	let codeContext = $derived(item?.code_context ?? null);
 	let isOwner = $derived(workspaceMembers.some(m => m.user_id === authStore.userId && m.role === 'owner'));
@@ -600,21 +612,33 @@
 {:else if item && collection}
 	<div class="item-page">
 		<!-- Breadcrumb -->
-		<nav class="breadcrumb">
-			<a href="/{username}/{wsSlug}">Home</a>
-			<span class="sep">/</span>
-			{#if item.parent_collection_slug && item.parent_slug}
-				{@const parentColl = allCollections.find(c => c.slug === item.parent_collection_slug)}
-				<a href="/{username}/{wsSlug}/{item.parent_collection_slug}">{parentColl?.icon ?? ''} {parentColl?.name ?? item.parent_collection_slug}</a>
+		<div class="sticky-header">
+			<nav class="breadcrumb">
+				<a href="/{username}/{wsSlug}">Home</a>
 				<span class="sep">/</span>
-				<a href="/{username}/{wsSlug}/{item.parent_collection_slug}/{item.parent_slug}">{item.parent_ref || item.parent_title}</a>
-				<span class="sep">/</span>
-			{:else}
-				<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
-				<span class="sep">/</span>
-			{/if}
-			<span class="current">{formatItemRef(item) || item.title}</span>
-		</nav>
+				{#if item.parent_collection_slug && item.parent_slug}
+					{@const parentColl = allCollections.find(c => c.slug === item.parent_collection_slug)}
+					<a href="/{username}/{wsSlug}/{item.parent_collection_slug}">{parentColl?.icon ?? ''} {parentColl?.name ?? item.parent_collection_slug}</a>
+					<span class="sep">/</span>
+					<a href="/{username}/{wsSlug}/{item.parent_collection_slug}/{item.parent_slug}">{item.parent_ref || item.parent_title}</a>
+					<span class="sep">/</span>
+				{:else}
+					<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
+					<span class="sep">/</span>
+				{/if}
+				<span class="current">{formatItemRef(item) || item.title}</span>
+				{#if formatItemRef(item)}
+					<button class="copy-ref-btn" onclick={handleCopyRef} title="Copy item ID">
+						{#if copied}
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+							<span class="copied-tooltip">Copied!</span>
+						{:else}
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+						{/if}
+					</button>
+				{/if}
+			</nav>
+		</div>
 
 		<!-- Title -->
 		<div class="title-row">
@@ -980,6 +1004,17 @@
 		padding: var(--space-6) var(--space-6) var(--space-10);
 	}
 
+	.sticky-header {
+		position: sticky;
+		top: 0;
+		z-index: 10;
+		background: var(--bg-primary);
+		margin: 0 calc(-1 * var(--space-6));
+		padding: var(--space-2) var(--space-6);
+		border-bottom: 1px solid transparent;
+		transition: border-color 0.15s ease;
+	}
+
 	/* Breadcrumb */
 	.breadcrumb {
 		display: flex;
@@ -987,7 +1022,7 @@
 		gap: var(--space-1);
 		font-size: 0.85em;
 		color: var(--text-muted);
-		margin-bottom: var(--space-4);
+		margin-bottom: 0;
 	}
 	.breadcrumb a {
 		color: var(--text-secondary);
@@ -999,6 +1034,42 @@
 	}
 	.sep { color: var(--text-muted); }
 	.current { color: var(--text-primary); }
+	.copy-ref-btn {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		margin-left: 2px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: color 0.15s ease, background 0.15s ease;
+	}
+	.copy-ref-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+	}
+	.copied-tooltip {
+		position: absolute;
+		top: 100%;
+		left: 50%;
+		transform: translateX(-50%);
+		margin-top: 4px;
+		padding: 2px 8px;
+		font-size: 0.75em;
+		font-family: var(--font-sans);
+		color: var(--text-on-accent);
+		background: var(--accent-green, #22c55e);
+		border-radius: var(--radius-sm);
+		white-space: nowrap;
+		pointer-events: none;
+		z-index: 20;
+	}
 
 	/* Title */
 	.title-row { margin-bottom: var(--space-2); display: flex; align-items: baseline; gap: var(--space-2); }
