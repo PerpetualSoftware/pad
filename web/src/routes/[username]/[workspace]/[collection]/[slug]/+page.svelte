@@ -22,6 +22,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { starredStore } from '$lib/stores/starred.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -674,6 +675,14 @@
 
 		<!-- Actions -->
 		<div class="meta-actions">
+			<button
+				class="action-btn star-btn"
+				class:starred={starredStore.isStarred(item.id)}
+				onclick={() => starredStore.toggle(wsSlug, item.slug, item.id)}
+				title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
+			>
+				{starredStore.isStarred(item.id) ? '★' : '☆'}
+			</button>
 			{#if quickActions.length > 0 && collection}
 				<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
 			{/if}
@@ -1619,6 +1628,12 @@
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
+	}
+	.star-btn.starred {
+		color: var(--accent-amber);
+	}
+	.star-btn:hover {
+		color: var(--accent-amber);
 	}
 	.move-wrapper {
 		position: relative;
