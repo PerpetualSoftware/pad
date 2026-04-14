@@ -13,6 +13,22 @@ let requestSeq = 0;
 // Map of itemId → true (starred) or false (unstarred) since load started.
 let pendingToggles = new Map<string, boolean>();
 
+// Per-item toggle locks to serialize rapid clicks on the same item
+let toggleInFlight = new Set<string>();
+
+/** Apply pending toggles on top of a base set. */
+function applyPendingToggles(base: Set<string>): Set<string> {
+	for (const [itemId, starred] of pendingToggles) {
+		if (starred) {
+			base.add(itemId);
+		} else {
+			base.delete(itemId);
+		}
+	}
+	pendingToggles.clear();
+	return base;
+}
+
 export const starredStore = {
 	get ids() { return starredIds; },
 	get loaded() { return loaded; },
@@ -29,29 +45,22 @@ export const starredStore = {
 
 		try {
 			const items = await api.items.starred(wsSlug, { include_terminal: true });
-			// Discard if a newer load was initiated while this one was in flight
 			if (seq !== requestSeq) return;
-			const result = new Set(items.map(i => i.id));
-			// Merge any toggles that happened while loading
-			for (const [itemId, starred] of pendingToggles) {
-				if (starred) {
-					result.add(itemId);
-				} else {
-					result.delete(itemId);
-				}
-			}
-			pendingToggles.clear();
-			starredIds = result;
+			starredIds = applyPendingToggles(new Set(items.map(i => i.id)));
 			loaded = true;
 		} catch {
 			if (seq !== requestSeq) return;
-			starredIds = new Set();
+			// Preserve any optimistic toggles even if the load failed
+			starredIds = applyPendingToggles(new Set());
 			loaded = true;
 		}
 	},
 
-	/** Toggle star with optimistic update. */
+	/** Toggle star with optimistic update. Serialized per item. */
 	async toggle(wsSlug: string, itemSlug: string, itemId: string) {
+		// Drop rapid duplicate clicks while a toggle is in flight for this item
+		if (toggleInFlight.has(itemId)) return;
+
 		const wasStarred = starredIds.has(itemId);
 		const nowStarred = !wasStarred;
 
@@ -67,6 +76,7 @@ export const starredStore = {
 		}
 		starredIds = next;
 
+		toggleInFlight.add(itemId);
 		try {
 			if (wasStarred) {
 				await api.items.unstar(wsSlug, itemSlug);
@@ -84,6 +94,8 @@ export const starredStore = {
 				reverted.delete(itemId);
 			}
 			starredIds = reverted;
+		} finally {
+			toggleInFlight.delete(itemId);
 		}
 	},
 
@@ -92,5 +104,6 @@ export const starredStore = {
 		loaded = false;
 		currentWs = '';
 		pendingToggles.clear();
+		toggleInFlight.clear();
 	}
 };
