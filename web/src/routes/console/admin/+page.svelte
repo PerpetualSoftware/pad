@@ -76,9 +76,13 @@
 				userWorkspaces = result.workspaces ?? [];
 			}
 		} catch {
-			userWorkspaces = [];
+			if (selectedId === userId) {
+				userWorkspaces = [];
+			}
 		} finally {
-			workspacesLoading = false;
+			if (selectedId === userId) {
+				workspacesLoading = false;
+			}
 		}
 	}
 
