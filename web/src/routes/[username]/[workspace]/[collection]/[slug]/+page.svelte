@@ -1007,12 +1007,17 @@
 	.sticky-header {
 		position: sticky;
 		top: 0;
-		z-index: 4;
+		z-index: 10;
 		background: var(--bg-primary);
 		margin: 0 calc(-1 * var(--space-6));
 		padding: var(--space-2) var(--space-6);
 		border-bottom: 1px solid transparent;
 		transition: border-color 0.15s ease;
+	}
+	@media (max-width: 768px) {
+		.sticky-header {
+			top: 45px;
+		}
 	}
 
 	/* Breadcrumb */
