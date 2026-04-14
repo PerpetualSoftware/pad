@@ -397,6 +397,41 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 	return nil
 }
 
+// ErrLastAdmin is returned when a role change would leave zero admins.
+var ErrLastAdmin = fmt.Errorf("cannot demote the last admin")
+
+// SetUserRole updates a user's role (admin or member).
+// When demoting an admin to member, the update is conditional: it only
+// proceeds if at least one other admin exists, preventing a race where
+// two concurrent demotions could leave zero admins.
+func (s *Store) SetUserRole(userID, role string) error {
+	var result sql.Result
+	var err error
+
+	if role == "member" {
+		// Atomic guard: only demote if another admin remains.
+		result, err = s.db.Exec(s.q(`
+			UPDATE users SET role = ?, updated_at = ?
+			WHERE id = ? AND (
+				role != 'admin'
+				OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND id != ?) > 0
+			)
+		`), role, now(), userID, userID)
+	} else {
+		result, err = s.db.Exec(s.q(`UPDATE users SET role = ?, updated_at = ? WHERE id = ?`),
+			role, now(), userID)
+	}
+	if err != nil {
+		return fmt.Errorf("set user role: %w", err)
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
+
 // DeleteUser permanently deletes a user by ID.
 func (s *Store) DeleteUser(id string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)

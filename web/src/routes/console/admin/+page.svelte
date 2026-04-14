@@ -6,11 +6,15 @@
 	let search = $state('');
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
+	let editRole = $state('member');
 	let editOverrides = $state('');
 	let saving = $state(false);
 	let saveMsg = $state('');
 	let loading = $state(true);
 	let error = $state('');
+	let roleConfirm = $state(false);
+	let roleSaving = $state(false);
+	let roleMsg = $state('');
 
 	async function loadUsers() {
 		loading = true;
@@ -41,8 +45,38 @@
 		}
 		selectedId = u.id;
 		editPlan = u.plan || 'free';
+		editRole = u.role || 'member';
 		editOverrides = u.plan_overrides ? JSON.stringify(u.plan_overrides, null, 2) : '';
 		saveMsg = '';
+		roleConfirm = false;
+		roleMsg = '';
+	}
+
+	function selectedUser(): AdminUser | undefined {
+		return users.find((u) => u.id === selectedId);
+	}
+
+	function roleAction(): string {
+		const user = selectedUser();
+		if (!user) return '';
+		return editRole === 'admin' ? 'Promote' : 'Demote';
+	}
+
+	async function changeRole() {
+		if (!selectedId) return;
+		roleSaving = true;
+		roleMsg = '';
+		try {
+			await adminPatch(`/admin/users/${selectedId}`, { role: editRole });
+			const updated = await adminFetch(`/admin/users/${selectedId}`);
+			users = users.map((u) => (u.id === selectedId ? { ...u, ...updated } : u));
+			roleMsg = 'Role updated';
+			roleConfirm = false;
+		} catch (e) {
+			roleMsg = e instanceof Error ? e.message : 'Role change failed';
+		} finally {
+			roleSaving = false;
+		}
 	}
 
 	async function saveUser() {
@@ -99,6 +133,7 @@
 				<thead>
 					<tr>
 						<th>Name</th>
+						<th>Role</th>
 						<th>Email</th>
 						<th>Plan</th>
 						<th>Created</th>
@@ -112,6 +147,11 @@
 							onclick={() => selectUser(user)}
 						>
 							<td>{user.name || user.username}</td>
+							<td
+								><span class="badge" class:admin={user.role === 'admin'}
+									>{user.role || 'member'}</span
+								></td
+							>
 							<td>{user.email}</td>
 							<td
 								><span class="badge" class:pro={user.plan === 'pro'}
@@ -122,8 +162,54 @@
 						</tr>
 						{#if selectedId === user.id}
 							<tr class="edit-row">
-								<td colspan="4">
+								<td colspan="5">
 									<div class="edit-panel">
+										<div class="edit-field">
+											<label for="edit-role">Role</label>
+											<div class="role-row">
+												<select id="edit-role" bind:value={editRole}>
+													<option value="member">member</option>
+													<option value="admin">admin</option>
+												</select>
+												{#if editRole !== (user.role || 'member')}
+													{#if !roleConfirm}
+														<button
+															class="btn role-btn"
+															onclick={() => {
+																roleConfirm = true;
+																roleMsg = '';
+															}}
+														>
+															Change Role
+														</button>
+													{:else}
+														<div class="role-confirm">
+															<span class="role-confirm-msg">
+																{roleAction()}
+																<strong>{user.name || user.username}</strong> to {editRole}?
+															</span>
+															<button
+																class="btn primary"
+																onclick={changeRole}
+																disabled={roleSaving}
+															>
+																{roleSaving ? 'Saving...' : 'Confirm'}
+															</button>
+															<button
+																class="btn"
+																onclick={() => {
+																	roleConfirm = false;
+																	roleMsg = '';
+																}}
+															>
+																Cancel
+															</button>
+														</div>
+													{/if}
+												{/if}
+												{#if roleMsg}<span class="save-msg">{roleMsg}</span>{/if}
+											</div>
+										</div>
 										<div class="edit-field">
 											<label for="edit-plan">Plan</label>
 											<select id="edit-plan" bind:value={editPlan}>
@@ -255,6 +341,10 @@
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
 		color: var(--accent-blue);
 	}
+	.badge.admin {
+		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
+		color: var(--accent-orange, #f59e0b);
+	}
 
 	/* Edit panel */
 	.edit-row td {
@@ -301,6 +391,30 @@
 	.save-msg {
 		font-size: 0.8rem;
 		color: var(--text-muted);
+	}
+	.role-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+	.role-btn {
+		font-size: 0.8rem;
+		padding: var(--space-1) var(--space-3);
+	}
+	.role-confirm {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+	.role-confirm-msg {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+	}
+	.role-confirm .btn {
+		font-size: 0.8rem;
+		padding: var(--space-1) var(--space-3);
 	}
 
 	.users-page {
