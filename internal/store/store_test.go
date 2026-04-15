@@ -966,6 +966,67 @@ func TestSearchSorting(t *testing.T) {
 	}
 }
 
+func TestSearchFacets(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID, ideasID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+		}
+		if c.Slug == "ideas" {
+			ideasID = c.ID
+		}
+	}
+
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix auth widget", Fields: `{"status":"open","priority":"high"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Refactor widget module", Fields: `{"status":"done","priority":"medium"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Widget tests", Fields: `{"status":"open","priority":"low"}`})
+	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Widget dashboard", Fields: `{"status":"new"}`})
+
+	resp, err := s.Search(SearchParams{Query: "widget", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if resp.Facets == nil {
+		t.Fatal("expected facets, got nil")
+	}
+
+	// Collection facets
+	if resp.Facets.Collections["tasks"] != 3 {
+		t.Errorf("expected tasks=3, got %d", resp.Facets.Collections["tasks"])
+	}
+	if resp.Facets.Collections["ideas"] != 1 {
+		t.Errorf("expected ideas=1, got %d", resp.Facets.Collections["ideas"])
+	}
+
+	// Status facets
+	if resp.Facets.Statuses["open"] != 2 {
+		t.Errorf("expected open=2, got %d", resp.Facets.Statuses["open"])
+	}
+	if resp.Facets.Statuses["done"] != 1 {
+		t.Errorf("expected done=1, got %d", resp.Facets.Statuses["done"])
+	}
+	if resp.Facets.Statuses["new"] != 1 {
+		t.Errorf("expected new=1, got %d", resp.Facets.Statuses["new"])
+	}
+
+	// Facets should reflect full result set even with pagination
+	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 1})
+	if err != nil {
+		t.Fatalf("paginated search: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("expected 1 result on page, got %d", len(resp.Results))
+	}
+	if resp.Facets.Collections["tasks"] != 3 {
+		t.Errorf("facets should be unpaginated: expected tasks=3, got %d", resp.Facets.Collections["tasks"])
+	}
+}
+
 func TestContext(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
