@@ -42,6 +42,9 @@
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
+	let searchInputEl = $state<HTMLInputElement>();
+	let searchResultIds = $state<Set<string> | null>(null);
+	let searchTimeout: ReturnType<typeof setTimeout>;
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -327,8 +330,11 @@
 			});
 		}
 
-		// Apply search query
-		if (searchQuery.trim()) {
+		// Apply search query (API-backed FTS)
+		if (searchQuery.trim() && searchResultIds !== null) {
+			result = result.filter((item) => searchResultIds!.has(item.id));
+		} else if (searchQuery.trim()) {
+			// Fallback to client-side search while API response is pending
 			const q = searchQuery.trim().toLowerCase();
 			result = result.filter((item) => {
 				if (item.title.toLowerCase().includes(q)) return true;
@@ -393,6 +399,25 @@
 	function handleSearchChange(query: string) {
 		searchQuery = query;
 		updateUrlFilters();
+
+		// API-backed search with debounce for FTS (searches content, not just titles)
+		clearTimeout(searchTimeout);
+		if (!query.trim()) {
+			searchResultIds = null; // null = no search active, show all items
+			return;
+		}
+		searchTimeout = setTimeout(async () => {
+			try {
+				const resp = await api.search(query, {
+					workspace: wsSlug,
+					collection: collSlug,
+					limit: 200,
+				});
+				searchResultIds = new Set(resp.results.map((r) => r.item.id));
+			} catch {
+				searchResultIds = null;
+			}
+		}, 200);
 	}
 
 	async function handleStatusChange(item: Item, newValue: string) {
@@ -550,6 +575,13 @@
 	});
 
 	function handlePageKeydown(e: KeyboardEvent) {
+		// Cmd+F / Ctrl+F: focus collection search instead of browser search
+		if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+			e.preventDefault();
+			searchInputEl?.focus();
+			return;
+		}
+
 		// Don't capture when typing in inputs/textareas or when quick-create is open
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -656,6 +688,7 @@
 		}
 		activeFilters = newFilters;
 		searchQuery = '';
+		searchResultIds = null;
 
 		// Open filters panel if the view has filters
 		if (Object.keys(newFilters).length > 0) {
@@ -670,6 +703,7 @@
 		activeViewId = null;
 		activeFilters = {};
 		searchQuery = '';
+		searchResultIds = null;
 		filtersOpen = false;
 		updateUrlFilters();
 	}
@@ -843,6 +877,7 @@
 						onFilterChange={handleFilterChange}
 						onSearchChange={handleSearchChange}
 						{relationLabels}
+						bind:searchInputEl
 					/>
 				</div>
 			{/if}
@@ -922,7 +957,7 @@
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultIds = null; }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}
