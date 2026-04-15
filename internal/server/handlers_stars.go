@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/models"
 )
 
@@ -40,6 +41,21 @@ func (s *Server) handleStarItem(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.StarItem(userID, item.ID); err != nil {
 		writeInternalError(w, err)
 		return
+	}
+
+	if s.events != nil {
+		actor, source := actorFromRequest(r)
+		s.events.Publish(events.Event{
+			Type:        events.ItemStarred,
+			WorkspaceID: workspaceID,
+			ItemID:      item.ID,
+			Title:       item.Title,
+			Collection:  item.CollectionSlug,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Source:      source,
+			UserID:      userID,
+		})
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -81,6 +97,21 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeInternalError(w, err)
 		return
+	}
+
+	if s.events != nil {
+		actor, source := actorFromRequest(r)
+		s.events.Publish(events.Event{
+			Type:        events.ItemUnstarred,
+			WorkspaceID: workspaceID,
+			ItemID:      item.ID,
+			Title:       item.Title,
+			Collection:  item.CollectionSlug,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Source:      source,
+			UserID:      userID,
+		})
 	}
 
 	w.WriteHeader(http.StatusNoContent)

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/xarmian/pad/internal/events"
 )
 
 // handleSSE streams Server-Sent Events for a workspace.
@@ -165,8 +167,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	sseUserID := currentUserID(r)
+
 	// sseEventVisible checks if an event should be sent to this client.
-	sseEventVisible := func(collection, itemID string) bool {
+	sseEventVisible := func(event events.Event) bool {
+		// User-scoped events (e.g. star/unstar) are only sent to the user who triggered them
+		if event.UserID != "" && event.UserID != sseUserID {
+			return false
+		}
+		collection := event.Collection
+		itemID := event.ItemID
 		if visibleSlugSet == nil {
 			return true // all access
 		}
@@ -214,7 +224,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				slog.Info("SSE replaying missed events",
 					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
 				for _, event := range missed {
-					if sseEventVisible(event.Collection, event.ItemID) {
+					if sseEventVisible(event) {
 						writeSSEEvent(w, event.Type, event.ID, event)
 						flusher.Flush()
 					}
@@ -240,7 +250,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Channel closed (unsubscribed)
 				return
 			}
-			if sseEventVisible(event.Collection, event.ItemID) {
+			if sseEventVisible(event) {
 				writeSSEEvent(w, event.Type, event.ID, event)
 				flusher.Flush()
 			}

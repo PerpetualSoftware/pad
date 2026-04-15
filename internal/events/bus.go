@@ -29,6 +29,10 @@ const (
 	ReactionAdded   = "reaction_added"
 	ReactionRemoved = "reaction_removed"
 
+	// Star events
+	ItemStarred   = "item_starred"
+	ItemUnstarred = "item_unstarred"
+
 	// Composite events
 	ItemUpdatedWithComment = "item_updated_with_comment"
 )
@@ -52,6 +56,7 @@ type Event struct {
 	Actor       string `json:"actor,omitempty"`
 	ActorName   string `json:"actor_name,omitempty"`
 	Source      string `json:"source,omitempty"`
+	UserID      string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
 	Timestamp   int64  `json:"timestamp"`
 }
 
