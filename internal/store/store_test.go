@@ -688,6 +688,158 @@ func TestFTSSearchScoped(t *testing.T) {
 	}
 }
 
+func TestSearchCollectionFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID, ideasID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+		}
+		if c.Slug == "ideas" {
+			ideasID = c.ID
+		}
+	}
+
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix authentication bug", Fields: `{"status":"open","priority":"high"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Refactor authentication module", Fields: `{"status":"done","priority":"medium"}`})
+	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "New authentication provider", Fields: `{"status":"new"}`})
+
+	// Unfiltered — should find all 3
+	results, err := s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("unfiltered search: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("unfiltered: expected 3 results, got %d", len(results))
+	}
+
+	// Filter by collection slug — only tasks
+	results, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "tasks"})
+	if err != nil {
+		t.Fatalf("collection filter search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("collection=tasks: expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Item.CollectionSlug != "tasks" {
+			t.Errorf("expected collection 'tasks', got %q", r.Item.CollectionSlug)
+		}
+	}
+
+	// Filter by collection slug — only ideas
+	results, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "ideas"})
+	if err != nil {
+		t.Fatalf("collection=ideas search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("collection=ideas: expected 1 result, got %d", len(results))
+	}
+}
+
+func TestSearchFieldFilters(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix login bug", Fields: `{"status":"open","priority":"high"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix logout bug", Fields: `{"status":"open","priority":"low"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix signup bug", Fields: `{"status":"done","priority":"high"}`})
+
+	// Filter by status=open — should find 2
+	results, err := s.Search(SearchParams{
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"status": "open"},
+	})
+	if err != nil {
+		t.Fatalf("field filter search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("status=open: expected 2 results, got %d", len(results))
+	}
+
+	// Filter by priority=high — should find 2
+	results, err = s.Search(SearchParams{
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"priority": "high"},
+	})
+	if err != nil {
+		t.Fatalf("priority filter search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("priority=high: expected 2 results, got %d", len(results))
+	}
+
+	// Combine filters: status=open AND priority=high — should find 1
+	results, err = s.Search(SearchParams{
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"status": "open", "priority": "high"},
+	})
+	if err != nil {
+		t.Fatalf("combined filter search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("status=open+priority=high: expected 1 result, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].Item.Title != "Fix login bug" {
+		t.Errorf("expected 'Fix login bug', got %q", results[0].Item.Title)
+	}
+}
+
+func TestSearchCollectionAndFieldFilters(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID, ideasID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+		}
+		if c.Slug == "ideas" {
+			ideasID = c.ID
+		}
+	}
+
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Improve search speed", Fields: `{"status":"open","priority":"high"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Search UI redesign", Fields: `{"status":"done","priority":"medium"}`})
+	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Search autocomplete feature", Fields: `{"status":"new"}`})
+
+	// Collection + field filter: tasks with status=open
+	results, err := s.Search(SearchParams{
+		Query:        "search",
+		Workspace:    ws.Slug,
+		Collection:   "tasks",
+		FieldFilters: map[string]string{"status": "open"},
+	})
+	if err != nil {
+		t.Fatalf("combined collection+field filter: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("tasks+status=open: expected 1 result, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].Item.Title != "Improve search speed" {
+		t.Errorf("expected 'Improve search speed', got %q", results[0].Item.Title)
+	}
+}
+
 func TestContext(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

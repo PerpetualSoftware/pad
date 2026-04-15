@@ -2,10 +2,14 @@ package store
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/xarmian/pad/internal/models"
 )
+
+// validFieldKey matches safe JSON field keys: alphanumeric, underscores, hyphens only.
+var validFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 type SearchResult struct {
 	Item    models.Item `json:"item"`
@@ -28,6 +32,10 @@ type SearchParams struct {
 	WorkspaceIDs  []string // workspace IDs to scope results to (used when no specific workspace is given)
 	CollectionIDs []string // permission filter: restrict to these collection IDs (nil = no filter)
 	ItemIDs       []string // permission filter: additionally allow these specific item IDs (for item-level grants)
+
+	// Content filters (applied on top of permission filters)
+	Collection   string            // collection slug — scope search to a single collection
+	FieldFilters map[string]string // field key → value filters (e.g. {"status": "open", "priority": "high"})
 }
 
 func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
@@ -88,6 +96,19 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			for _, id := range params.ItemIDs {
 				refArgs = append(refArgs, id)
 			}
+		}
+
+		// Apply content filters to ref lookup too
+		if params.Collection != "" {
+			refQuery += ` AND c.slug = ?`
+			refArgs = append(refArgs, params.Collection)
+		}
+		for key, value := range params.FieldFilters {
+			if !validFieldKey.MatchString(key) {
+				continue // skip unsafe keys
+			}
+			refQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
+			refArgs = append(refArgs, value)
 		}
 
 		refRows, err := s.db.Query(s.q(refQuery), refArgs...)
@@ -213,6 +234,21 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 		for _, id := range params.ItemIDs {
 			args = append(args, id)
 		}
+	}
+
+	// Collection slug filter — scope to a single collection by slug.
+	if params.Collection != "" {
+		query += ` AND c.slug = ?`
+		args = append(args, params.Collection)
+	}
+
+	// Field filters — filter by structured field values in the JSON fields column.
+	for key, value := range params.FieldFilters {
+		if !validFieldKey.MatchString(key) {
+			continue // skip unsafe keys
+		}
+		query += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
+		args = append(args, value)
 	}
 
 	// SQLite bm25() returns negative values (more negative = more relevant) → ASC.

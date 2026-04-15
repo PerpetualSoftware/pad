@@ -556,7 +556,7 @@
 		}
 		addLinkLoading = true;
 		try {
-			const results = await api.search(addLinkSearch, wsSlug);
+			const results = await api.search(addLinkSearch, { workspace: wsSlug });
 			// Filter out self and items already linked
 			const linkedIds = new Set(itemLinks.flatMap(l => [l.source_id, l.target_id]));
 			addLinkResults = (results.results || [])

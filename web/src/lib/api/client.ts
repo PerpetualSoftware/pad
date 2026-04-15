@@ -15,6 +15,7 @@ import type {
 	Version,
 	DashboardResponse,
 	SearchResponse,
+	SearchFilters,
 	Activity,
 	ApiError,
 	WorkspaceTemplate,
@@ -450,9 +451,17 @@ export const api = {
 
 	// ── Search ────────────────────────────────────────────────────────────────
 
-	search: (query: string, workspace?: string) => {
+	search: (query: string, filters?: SearchFilters) => {
 		const params: Record<string, string> = { q: query };
-		if (workspace) params.workspace = workspace;
+		if (filters?.workspace) params.workspace = filters.workspace;
+		if (filters?.collection) params.collection = filters.collection;
+		if (filters?.status) params.status = filters.status;
+		if (filters?.priority) params.priority = filters.priority;
+		if (filters?.fields) {
+			for (const [key, value] of Object.entries(filters.fields)) {
+				params[`field.${key}`] = value;
+			}
+		}
 		return request<SearchResponse>(`/search?${new URLSearchParams(params).toString()}`);
 	},
 

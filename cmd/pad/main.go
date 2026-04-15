@@ -2959,7 +2959,11 @@ Example:
 // --- search ---
 
 func searchCmd() *cobra.Command {
-	return &cobra.Command{
+	var collection string
+	var status string
+	var priority string
+
+	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Full-text search across all items",
 		Args:  cobra.MinimumNArgs(1),
@@ -2970,6 +2974,15 @@ func searchCmd() *cobra.Command {
 			params := url.Values{}
 			params.Set("q", strings.Join(args, " "))
 			params.Set("workspace", ws)
+			if collection != "" {
+				params.Set("collection", normalizeCollectionSlug(collection))
+			}
+			if status != "" {
+				params.Set("status", status)
+			}
+			if priority != "" {
+				params.Set("priority", priority)
+			}
 
 			result, err := client.SearchItems(params)
 			if err != nil {
@@ -3015,6 +3028,12 @@ func searchCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVarP(&collection, "collection", "c", "", "filter by collection (e.g. tasks, ideas)")
+	cmd.Flags().StringVar(&status, "status", "", "filter by status (e.g. open, done)")
+	cmd.Flags().StringVar(&priority, "priority", "", "filter by priority (e.g. high, medium)")
+
+	return cmd
 }
 
 // --- status ---

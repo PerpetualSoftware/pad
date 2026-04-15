@@ -31,7 +31,7 @@
 		searchTimeout = setTimeout(async () => {
 			const ws = workspaceStore.current?.slug;
 			try {
-				const resp = await api.search(query, ws);
+				const resp = await api.search(query, { workspace: ws });
 				results = resp.results;
 				selectedIdx = 0;
 			} catch {
