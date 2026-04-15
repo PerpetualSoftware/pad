@@ -652,6 +652,9 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 					si.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
 				}
 				starredItems = append(starredItems, si)
+				if len(starredItems) >= 10 {
+					break
+				}
 			}
 			if len(starredItems) > 0 {
 				resp.StarredItems = starredItems
