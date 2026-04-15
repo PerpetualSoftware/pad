@@ -43,8 +43,20 @@ func (s *Server) handleStarItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, source := actorFromRequest(r)
-	s.publishItemEventWithName(events.ItemStarred, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source)
+	if s.events != nil {
+		actor, source := actorFromRequest(r)
+		s.events.Publish(events.Event{
+			Type:        events.ItemStarred,
+			WorkspaceID: workspaceID,
+			ItemID:      item.ID,
+			Title:       item.Title,
+			Collection:  item.CollectionSlug,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Source:      source,
+			UserID:      userID,
+		})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -87,8 +99,20 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, source := actorFromRequest(r)
-	s.publishItemEventWithName(events.ItemUnstarred, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source)
+	if s.events != nil {
+		actor, source := actorFromRequest(r)
+		s.events.Publish(events.Event{
+			Type:        events.ItemUnstarred,
+			WorkspaceID: workspaceID,
+			ItemID:      item.ID,
+			Title:       item.Title,
+			Collection:  item.CollectionSlug,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Source:      source,
+			UserID:      userID,
+		})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

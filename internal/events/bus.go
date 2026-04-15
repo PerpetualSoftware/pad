@@ -56,6 +56,7 @@ type Event struct {
 	Actor       string `json:"actor,omitempty"`
 	ActorName   string `json:"actor_name,omitempty"`
 	Source      string `json:"source,omitempty"`
+	UserID      string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
 	Timestamp   int64  `json:"timestamp"`
 }
 
