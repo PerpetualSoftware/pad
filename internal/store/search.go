@@ -334,24 +334,41 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 
 	// --- Sorting (with deterministic tie-breaker for stable pagination) ---
-	orderClause := s.searchOrderClause(params)
-	query += orderClause
+	query += s.searchOrderClause(params)
 
 	// --- Pagination ---
-	// Ref hits (if any) occupy slots on page 0. Adjust FTS limit/offset
-	// so the combined result set respects the requested pagination.
-	refCount := len(results)
+	// Direct ref hits (e.g. searching "TASK-5") are prepended to results
+	// and always appear first. They occupy slots on page 0; on subsequent
+	// pages we exclude them and adjust the FTS offset accordingly.
+	refHits := results           // save ref results before FTS
+	refCount := len(refHits)
+	refIDs := make(map[string]bool, refCount)
+	for _, r := range refHits {
+		refIDs[r.Item.ID] = true
+	}
+
+	// Include ref hits in total: the FTS count query may not have found them.
+	if total < 0 {
+		total = 0
+	}
+	if refCount > 0 {
+		// Count how many ref hits are NOT also in the FTS results.
+		// We conservatively add all ref hits; duplicates are handled below.
+		total += refCount
+	}
+
+	// Adjust FTS pagination to account for ref hit slots on page 0.
 	ftsLimit := params.Limit
 	ftsOffset := params.Offset
 	if refCount > 0 {
 		if params.Offset == 0 {
-			// Page 0: ref hits fill first slots, FTS fills the rest
+			// Page 0: ref hits take first slots, FTS fills the rest.
 			ftsLimit = params.Limit - refCount
 			if ftsLimit < 0 {
 				ftsLimit = 0
 			}
 		} else {
-			// Subsequent pages: ref hits were on page 0, adjust offset
+			// Pages after 0: ref hits were shown on page 0, shift offset.
 			ftsOffset = params.Offset - refCount
 			if ftsOffset < 0 {
 				ftsOffset = 0
@@ -360,31 +377,23 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", ftsLimit, ftsOffset)
 
-	// On pages after 0, ref hits were already shown — don't include them again.
-	if params.Offset > 0 && refCount > 0 {
+	// Start building final results: page 0 includes ref hits, later pages don't.
+	if params.Offset > 0 {
 		results = nil
 	}
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
-		// If we already have a ref match, return that instead of failing
+		// If we already have ref matches, return those instead of failing
 		// (FTS5 may reject queries like "TASK-5" due to special syntax)
 		if len(results) > 0 {
-			if total < 0 {
-				total = len(results)
-			}
 			return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset}, nil
 		}
 		return nil, fmt.Errorf("search: %w", err)
 	}
 	defer rows.Close()
 
-	// Track IDs we already have from the ref lookup to avoid duplicates
-	seen := make(map[string]bool)
-	for _, r := range results {
-		seen[r.Item.ID] = true
-	}
-
+	ftsDeduped := 0 // count FTS rows that were also ref hits (avoid double-counting in total)
 	for rows.Next() {
 		var r SearchResult
 		var createdAt, updatedAt string
@@ -403,15 +412,15 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		); err != nil {
 			return nil, err
 		}
-		// Skip if already included from ref lookup
-		if seen[r.Item.ID] {
+		// Skip items already included from ref lookup
+		if refIDs[r.Item.ID] {
+			ftsDeduped++
 			continue
 		}
 		r.Item.Pinned = pinned
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
 		hydrateItemComputedMetadata(&r.Item)
-		// Don't include full content in search results
 		r.Item.Content = ""
 		results = append(results, r)
 	}
@@ -419,14 +428,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		return nil, err
 	}
 
-	if total < 0 {
-		total = len(results)
-	}
-
-	// The count query only covers FTS hits, but direct ref lookups (e.g.
-	// searching "TASK-5") can return matches not in the FTS index. Ensure
-	// total is never less than actual results returned.
-	if len(seen) > 0 && total < len(results) {
+	// Correct total for ref hits that were also in the FTS count (avoid double-counting).
+	total -= ftsDeduped
+	if total < len(results) {
 		total = len(results)
 	}
 
