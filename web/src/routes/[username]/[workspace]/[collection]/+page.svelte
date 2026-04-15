@@ -406,16 +406,19 @@
 			searchResultIds = null; // null = no search active, show all items
 			return;
 		}
+		const snapshotQuery = query;
 		searchTimeout = setTimeout(async () => {
 			try {
-				const resp = await api.search(query, {
+				const resp = await api.search(snapshotQuery, {
 					workspace: wsSlug,
 					collection: collSlug,
 					limit: 200,
 				});
+				// Discard if query changed while loading
+				if (searchQuery !== snapshotQuery) return;
 				searchResultIds = new Set(resp.results.map((r) => r.item.id));
 			} catch {
-				searchResultIds = null;
+				if (searchQuery === snapshotQuery) searchResultIds = null;
 			}
 		}, 200);
 	}
@@ -577,8 +580,12 @@
 	function handlePageKeydown(e: KeyboardEvent) {
 		// Cmd+F / Ctrl+F: focus collection search instead of browser search
 		if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+			if (!filtersOpen) {
+				filtersOpen = true;
+			}
 			e.preventDefault();
-			searchInputEl?.focus();
+			// Wait for FilterBar to mount before focusing
+			requestAnimationFrame(() => searchInputEl?.focus());
 			return;
 		}
 
