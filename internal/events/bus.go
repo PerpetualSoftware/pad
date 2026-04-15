@@ -29,6 +29,10 @@ const (
 	ReactionAdded   = "reaction_added"
 	ReactionRemoved = "reaction_removed"
 
+	// Star events
+	ItemStarred   = "item_starred"
+	ItemUnstarred = "item_unstarred"
+
 	// Composite events
 	ItemUpdatedWithComment = "item_updated_with_comment"
 )
