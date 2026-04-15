@@ -227,6 +227,38 @@
 			</section>
 		{/if}
 
+		<!-- Starred Items -->
+		{#if dashboard.starred_items && dashboard.starred_items.length > 0}
+			<section class="section">
+				<div class="section-header">
+					<span class="section-label">⭐ Starred</span>
+					<span class="section-badge">{dashboard.starred_items.length}</span>
+					<a href="/{username}/{wsSlug}/starred" class="section-link">View all</a>
+				</div>
+				<div class="active-grid">
+					{#each dashboard.starred_items as item (item.slug)}
+						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
+							<div class="active-card-top">
+								{#if item.item_ref}
+									<span class="active-ref">{item.item_ref}</span>
+								{/if}
+								<span class="active-icon">{item.collection_icon}</span>
+							</div>
+							<div class="active-title">{item.title}</div>
+							<div class="active-card-bottom">
+								<span class="status-pill" style="background: color-mix(in srgb, {statusColor(item.status)} 15%, transparent); color: {statusColor(item.status)};">
+									{item.status.replace(/-/g, ' ')}
+								</span>
+								{#if item.priority}
+									<span class="active-priority" style="color: {priorityColor(item.priority)};">{item.priority}</span>
+								{/if}
+							</div>
+						</a>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<!-- 4. Active Plans -->
 		{#if dashboard.active_plans.length > 0}
 			<section class="section">
@@ -495,12 +527,11 @@
 	}
 	.section-link {
 		font-size: 0.8em;
-		color: var(--text-muted);
+		color: var(--accent-blue);
 		text-decoration: none;
 		margin-left: auto;
 	}
 	.section-link:hover {
-		color: var(--accent-blue);
 		text-decoration: underline;
 	}
 
