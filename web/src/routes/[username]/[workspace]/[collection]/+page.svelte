@@ -407,6 +407,8 @@
 			searchResultIds = null; // null = no search active, show all items
 			return;
 		}
+		// Clear stale results immediately so client-side fallback kicks in
+		searchResultIds = null;
 		const snapshotQuery = query;
 		searchTimeout = setTimeout(async () => {
 			try {
