@@ -18,6 +18,7 @@ type DashboardResponse struct {
 	Summary        DashboardSummary       `json:"summary"`
 	ActiveItems    []DashboardActiveItem  `json:"active_items"`
 	ActivePlans    []DashboardPlan         `json:"active_plans"`
+	StarredItems   []DashboardActiveItem  `json:"starred_items,omitempty"`
 	ByRole         []store.RoleBreakdown  `json:"by_role,omitempty"`
 	Attention      []DashboardAttention   `json:"attention"`
 	RecentActivity []DashboardActivity    `json:"recent_activity"`
@@ -622,6 +623,42 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
 		if err == nil && len(roleBreakdown) > 0 {
 			resp.ByRole = roleBreakdown
+		}
+	}
+
+	// Starred items: non-terminal items starred by the current user
+	if userID := currentUserID(r); userID != "" {
+		starred, err := s.store.ListStarredItems(userID, workspaceID, false)
+		if err == nil && len(starred) > 0 {
+			starredItems := []DashboardActiveItem{}
+			for _, item := range starred {
+				// Apply same visibility filter as the rest of the dashboard
+				if visibleIDs != nil && !isCollectionVisible(item.CollectionID, visibleIDs) {
+					continue
+				}
+				if len(dashGrantedItemIDs) > 0 && !dashFullCollSet[item.CollectionID] && !dashGrantedItemSet[item.ID] {
+					continue
+				}
+				si := DashboardActiveItem{
+					Slug:           item.Slug,
+					Title:          item.Title,
+					CollectionSlug: item.CollectionSlug,
+					CollectionIcon: item.CollectionIcon,
+					Status:         extractFieldValue(item.Fields, "status"),
+					UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+				}
+				si.Priority = extractFieldValue(item.Fields, "priority")
+				if item.CollectionPrefix != "" && item.ItemNumber != nil {
+					si.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+				}
+				starredItems = append(starredItems, si)
+				if len(starredItems) >= 10 {
+					break
+				}
+			}
+			if len(starredItems) > 0 {
+				resp.StarredItems = starredItems
+			}
 		}
 	}
 

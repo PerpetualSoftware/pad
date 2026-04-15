@@ -589,6 +589,7 @@ export interface DashboardResponse {
 		by_collection: Record<string, Record<string, number>>;
 	};
 	active_items: DashboardActiveItem[];
+	starred_items?: DashboardActiveItem[];
 	active_plans: {
 		slug: string;
 		title: string;
