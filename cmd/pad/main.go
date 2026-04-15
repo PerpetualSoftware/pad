@@ -5792,3 +5792,98 @@ func auditLogCmd() *cobra.Command {
 
 	return cmd
 }
+
+func starCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "star <ref>",
+		Short: "Star an item for quick access",
+		Long:  `Star an item to mark it as personally important. Starred items appear on your dashboard and in the Starred sidebar page.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve item first so we can show its ref in output
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return fmt.Errorf("resolve %q: %w", args[0], err)
+			}
+
+			if err := client.StarItem(ws, item.Slug); err != nil {
+				return err
+			}
+
+			ref := cli.ItemRef(*item)
+			if ref != "" {
+				fmt.Printf("⭐ Starred %s %q\n", ref, item.Title)
+			} else {
+				fmt.Printf("⭐ Starred %q\n", item.Title)
+			}
+			return nil
+		},
+	}
+}
+
+func unstarCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unstar <ref>",
+		Short: "Remove a star from an item",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return fmt.Errorf("resolve %q: %w", args[0], err)
+			}
+
+			if err := client.UnstarItem(ws, item.Slug); err != nil {
+				return err
+			}
+
+			ref := cli.ItemRef(*item)
+			if ref != "" {
+				fmt.Printf("Unstarred %s %q\n", ref, item.Title)
+			} else {
+				fmt.Printf("Unstarred %q\n", item.Title)
+			}
+			return nil
+		},
+	}
+}
+
+func starredCmd() *cobra.Command {
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "starred",
+		Short: "List your starred items",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			items, err := client.ListStarredItems(ws, all)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(items)
+			}
+
+			if len(items) == 0 {
+				fmt.Println("No starred items.")
+				return nil
+			}
+
+			cli.PrintItemTable(items)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&all, "all", false, "include completed/terminal items")
+
+	return cmd
+}

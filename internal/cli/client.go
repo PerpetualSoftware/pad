@@ -156,6 +156,26 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug)
 }
 
+// StarItem stars an item for the current user.
+func (c *Client) StarItem(wsSlug, itemSlug string) error {
+	return c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/star", nil, nil)
+}
+
+// UnstarItem removes a star from an item for the current user.
+func (c *Client) UnstarItem(wsSlug, itemSlug string) error {
+	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/star")
+}
+
+// ListStarredItems returns the current user's starred items in a workspace.
+func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models.Item, error) {
+	var result []models.Item
+	path := "/workspaces/" + wsSlug + "/starred"
+	if includeTerminal {
+		path += "?include_terminal=true"
+	}
+	return result, c.get(path, &result)
+}
+
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {
 	var result models.Item
 	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/move", input, &result)
