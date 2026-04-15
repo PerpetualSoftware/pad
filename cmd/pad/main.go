@@ -3040,7 +3040,9 @@ func searchCmd() *cobra.Command {
 			}
 
 			showing := len(searchResp.Results)
-			if searchResp.Offset > 0 || showing < searchResp.Total {
+			if showing == 0 && searchResp.Total > 0 {
+				fmt.Printf("No results on this page (%d total, offset %d)\n", searchResp.Total, searchResp.Offset)
+			} else if searchResp.Offset > 0 || showing < searchResp.Total {
 				fmt.Printf("Showing %d-%d of %d result(s)\n", searchResp.Offset+1, searchResp.Offset+showing, searchResp.Total)
 			} else {
 				fmt.Printf("%d result(s)\n", searchResp.Total)

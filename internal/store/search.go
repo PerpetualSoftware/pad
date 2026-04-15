@@ -397,6 +397,14 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	if total < 0 {
 		total = len(results)
 	}
+
+	// The count query only covers FTS hits, but direct ref lookups (e.g.
+	// searching "TASK-5") can return matches not in the FTS index. Ensure
+	// total is never less than actual results returned.
+	if len(seen) > 0 && total < len(results) {
+		total = len(results)
+	}
+
 	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset}, nil
 }
 
