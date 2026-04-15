@@ -40,6 +40,10 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if baseSlug == "" {
 		baseSlug = "collection"
 	}
+	// Avoid slugs that collide with workspace-level UI routes
+	if isReservedCollectionSlug(baseSlug) {
+		baseSlug = baseSlug + "-collection"
+	}
 	slug, err := s.uniqueSlug("collections", "workspace_id", workspaceID, baseSlug)
 	if err != nil {
 		return nil, fmt.Errorf("unique slug: %w", err)
@@ -182,6 +186,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		baseSlug := slugify(*input.Name)
 		if baseSlug == "" {
 			baseSlug = "collection"
+		}
+		if isReservedCollectionSlug(baseSlug) {
+			baseSlug = baseSlug + "-collection"
 		}
 		newSlug, err := s.uniqueSlugExcluding("collections", "workspace_id", existing.WorkspaceID, baseSlug, id)
 		if err != nil {
@@ -366,4 +373,21 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	}
 
 	return nil
+}
+
+// reservedCollectionSlugs are workspace-level UI route paths that must not
+// be used as collection slugs, to avoid routing collisions.
+var reservedCollectionSlugs = map[string]bool{
+	"settings": true,
+	"activity": true,
+	"roles":    true,
+	"starred":  true,
+	"library":  true,
+	"new":      true,
+}
+
+// isReservedCollectionSlug checks whether a slug would collide with a
+// workspace-level UI route.
+func isReservedCollectionSlug(slug string) bool {
+	return reservedCollectionSlugs[strings.ToLower(slug)]
 }
