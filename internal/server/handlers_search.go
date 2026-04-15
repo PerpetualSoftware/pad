@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/xarmian/pad/internal/store"
@@ -46,6 +47,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		params.FieldFilters = fieldFilters
 	}
 
+	// Parse pagination params
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			params.Limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			params.Offset = n
+		}
+	}
+
+	// Parse sort params
+	params.Sort = r.URL.Query().Get("sort")
+	params.Order = r.URL.Query().Get("order")
+
+	// Normalize defaults early so early-return paths have correct values.
+	params.Normalize()
+
 	// When no specific workspace is given, scope search to the user's
 	// workspaces so results never leak across workspace boundaries.
 	if params.Workspace == "" {
@@ -61,9 +81,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			// If user has no workspaces, return empty results
 			if len(params.WorkspaceIDs) == 0 {
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"results": []store.SearchResult{},
-					"total":   0,
+				writeJSON(w, http.StatusOK, &store.SearchResponse{
+					Results: []store.SearchResult{},
+					Limit:   params.Limit,
+					Offset:  params.Offset,
 				})
 				return
 			}
@@ -198,19 +219,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results, err := s.store.Search(params)
+	resp, err := s.store.Search(params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if results == nil {
-		results = []store.SearchResult{}
-	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"results": results,
-		"total":   len(results),
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func removeString(ss []string, s string) []string {

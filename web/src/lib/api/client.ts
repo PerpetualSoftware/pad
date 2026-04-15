@@ -457,6 +457,10 @@ export const api = {
 		if (filters?.collection) params.collection = filters.collection;
 		if (filters?.status) params.status = filters.status;
 		if (filters?.priority) params.priority = filters.priority;
+		if (filters?.limit) params.limit = String(filters.limit);
+		if (filters?.offset) params.offset = String(filters.offset);
+		if (filters?.sort) params.sort = filters.sort;
+		if (filters?.order) params.order = filters.order;
 		if (filters?.fields) {
 			for (const [key, value] of Object.entries(filters.fields)) {
 				params[`field.${key}`] = value;

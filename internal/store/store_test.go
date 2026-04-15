@@ -637,15 +637,15 @@ func TestFTSSearch(t *testing.T) {
 	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Auth Flow", Content: "OAuth2 authentication flow for API"})
 	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Data Model", Content: "Database schema and models"})
 
-	results, err := s.Search(SearchParams{Query: "authentication"})
+	resp, err := s.Search(SearchParams{Query: "authentication"})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+	if len(resp.Results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(resp.Results))
 	}
-	if len(results) > 0 && results[0].Item.Title != "Auth Flow" {
-		t.Errorf("expected 'Auth Flow', got %q", results[0].Item.Title)
+	if len(resp.Results) > 0 && resp.Results[0].Item.Title != "Auth Flow" {
+		t.Errorf("expected 'Auth Flow', got %q", resp.Results[0].Item.Title)
 	}
 }
 
@@ -676,15 +676,15 @@ func TestFTSSearchScoped(t *testing.T) {
 	s.CreateItem(ws2.ID, docs2ID, models.ItemCreate{Title: "Doc B", Content: "authentication in workspace 2"})
 
 	// Unscoped — should find both
-	results, _ := s.Search(SearchParams{Query: "authentication"})
-	if len(results) != 2 {
-		t.Errorf("unscoped: expected 2 results, got %d", len(results))
+	resp, _ := s.Search(SearchParams{Query: "authentication"})
+	if len(resp.Results) != 2 {
+		t.Errorf("unscoped: expected 2 results, got %d", len(resp.Results))
 	}
 
 	// Scoped — should find one
-	results, _ = s.Search(SearchParams{Query: "authentication", Workspace: ws1.Slug})
-	if len(results) != 1 {
-		t.Errorf("scoped: expected 1 result, got %d", len(results))
+	resp, _ = s.Search(SearchParams{Query: "authentication", Workspace: ws1.Slug})
+	if len(resp.Results) != 1 {
+		t.Errorf("scoped: expected 1 result, got %d", len(resp.Results))
 	}
 }
 
@@ -709,35 +709,35 @@ func TestSearchCollectionFilter(t *testing.T) {
 	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "New authentication provider", Fields: `{"status":"new"}`})
 
 	// Unfiltered — should find all 3
-	results, err := s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("unfiltered search: %v", err)
 	}
-	if len(results) != 3 {
-		t.Errorf("unfiltered: expected 3 results, got %d", len(results))
+	if len(resp.Results) != 3 {
+		t.Errorf("unfiltered: expected 3 results, got %d", len(resp.Results))
 	}
 
 	// Filter by collection slug — only tasks
-	results, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "tasks"})
+	resp, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "tasks"})
 	if err != nil {
 		t.Fatalf("collection filter search: %v", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("collection=tasks: expected 2 results, got %d", len(results))
+	if len(resp.Results) != 2 {
+		t.Errorf("collection=tasks: expected 2 results, got %d", len(resp.Results))
 	}
-	for _, r := range results {
+	for _, r := range resp.Results {
 		if r.Item.CollectionSlug != "tasks" {
 			t.Errorf("expected collection 'tasks', got %q", r.Item.CollectionSlug)
 		}
 	}
 
 	// Filter by collection slug — only ideas
-	results, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "ideas"})
+	resp, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "ideas"})
 	if err != nil {
 		t.Fatalf("collection=ideas search: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("collection=ideas: expected 1 result, got %d", len(results))
+	if len(resp.Results) != 1 {
+		t.Errorf("collection=ideas: expected 1 result, got %d", len(resp.Results))
 	}
 }
 
@@ -760,7 +760,7 @@ func TestSearchFieldFilters(t *testing.T) {
 	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix signup bug", Fields: `{"status":"done","priority":"high"}`})
 
 	// Filter by status=open — should find 2
-	results, err := s.Search(SearchParams{
+	resp, err := s.Search(SearchParams{
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"status": "open"},
@@ -768,12 +768,12 @@ func TestSearchFieldFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("field filter search: %v", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("status=open: expected 2 results, got %d", len(results))
+	if len(resp.Results) != 2 {
+		t.Errorf("status=open: expected 2 results, got %d", len(resp.Results))
 	}
 
 	// Filter by priority=high — should find 2
-	results, err = s.Search(SearchParams{
+	resp, err = s.Search(SearchParams{
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"priority": "high"},
@@ -781,12 +781,12 @@ func TestSearchFieldFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("priority filter search: %v", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("priority=high: expected 2 results, got %d", len(results))
+	if len(resp.Results) != 2 {
+		t.Errorf("priority=high: expected 2 results, got %d", len(resp.Results))
 	}
 
 	// Combine filters: status=open AND priority=high — should find 1
-	results, err = s.Search(SearchParams{
+	resp, err = s.Search(SearchParams{
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"status": "open", "priority": "high"},
@@ -794,11 +794,11 @@ func TestSearchFieldFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("combined filter search: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("status=open+priority=high: expected 1 result, got %d", len(results))
+	if len(resp.Results) != 1 {
+		t.Errorf("status=open+priority=high: expected 1 result, got %d", len(resp.Results))
 	}
-	if len(results) > 0 && results[0].Item.Title != "Fix login bug" {
-		t.Errorf("expected 'Fix login bug', got %q", results[0].Item.Title)
+	if len(resp.Results) > 0 && resp.Results[0].Item.Title != "Fix login bug" {
+		t.Errorf("expected 'Fix login bug', got %q", resp.Results[0].Item.Title)
 	}
 }
 
@@ -823,7 +823,7 @@ func TestSearchCollectionAndFieldFilters(t *testing.T) {
 	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Search autocomplete feature", Fields: `{"status":"new"}`})
 
 	// Collection + field filter: tasks with status=open
-	results, err := s.Search(SearchParams{
+	resp, err := s.Search(SearchParams{
 		Query:        "search",
 		Workspace:    ws.Slug,
 		Collection:   "tasks",
@@ -832,11 +832,137 @@ func TestSearchCollectionAndFieldFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("combined collection+field filter: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("tasks+status=open: expected 1 result, got %d", len(results))
+	if len(resp.Results) != 1 {
+		t.Errorf("tasks+status=open: expected 1 result, got %d", len(resp.Results))
 	}
-	if len(results) > 0 && results[0].Item.Title != "Improve search speed" {
-		t.Errorf("expected 'Improve search speed', got %q", results[0].Item.Title)
+	if len(resp.Results) > 0 && resp.Results[0].Item.Title != "Improve search speed" {
+		t.Errorf("expected 'Improve search speed', got %q", resp.Results[0].Item.Title)
+	}
+}
+
+func TestSearchPagination(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	// Create 5 items all matching "widget"
+	for i := 0; i < 5; i++ {
+		s.CreateItem(ws.ID, tasksID, models.ItemCreate{
+			Title:  fmt.Sprintf("Widget task %d", i+1),
+			Fields: `{"status":"open","priority":"medium"}`,
+		})
+	}
+
+	// Default pagination — should get all 5
+	resp, err := s.Search(SearchParams{Query: "widget", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("default pagination: %v", err)
+	}
+	if resp.Total != 5 {
+		t.Errorf("expected total=5, got %d", resp.Total)
+	}
+	if len(resp.Results) != 5 {
+		t.Errorf("expected 5 results, got %d", len(resp.Results))
+	}
+	if resp.Limit != 50 {
+		t.Errorf("expected default limit=50, got %d", resp.Limit)
+	}
+
+	// Limit=2 — should get 2 results but total still 5
+	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 2})
+	if err != nil {
+		t.Fatalf("limit=2: %v", err)
+	}
+	if resp.Total != 5 {
+		t.Errorf("expected total=5, got %d", resp.Total)
+	}
+	if len(resp.Results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(resp.Results))
+	}
+	if resp.Limit != 2 {
+		t.Errorf("expected limit=2, got %d", resp.Limit)
+	}
+
+	// Offset=3, Limit=2 — should get 2 results (items 4 and 5)
+	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 2, Offset: 3})
+	if err != nil {
+		t.Fatalf("offset=3, limit=2: %v", err)
+	}
+	if resp.Total != 5 {
+		t.Errorf("expected total=5, got %d", resp.Total)
+	}
+	if len(resp.Results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(resp.Results))
+	}
+	if resp.Offset != 3 {
+		t.Errorf("expected offset=3, got %d", resp.Offset)
+	}
+
+	// Offset beyond results — should get 0 results
+	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Offset: 10})
+	if err != nil {
+		t.Fatalf("offset=10: %v", err)
+	}
+	if resp.Total != 5 {
+		t.Errorf("expected total=5, got %d", resp.Total)
+	}
+	if len(resp.Results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(resp.Results))
+	}
+}
+
+func TestSearchSorting(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Alpha gadget", Fields: `{"status":"open"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Charlie gadget", Fields: `{"status":"open"}`})
+	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Bravo gadget", Fields: `{"status":"open"}`})
+
+	// Sort by title ascending
+	resp, err := s.Search(SearchParams{Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "asc"})
+	if err != nil {
+		t.Fatalf("sort by title: %v", err)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(resp.Results))
+	}
+	if resp.Results[0].Item.Title != "Alpha gadget" {
+		t.Errorf("expected first='Alpha gadget', got %q", resp.Results[0].Item.Title)
+	}
+	if resp.Results[2].Item.Title != "Charlie gadget" {
+		t.Errorf("expected last='Charlie gadget', got %q", resp.Results[2].Item.Title)
+	}
+
+	// Sort by title descending
+	resp, err = s.Search(SearchParams{Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "desc"})
+	if err != nil {
+		t.Fatalf("sort by title desc: %v", err)
+	}
+	if resp.Results[0].Item.Title != "Charlie gadget" {
+		t.Errorf("expected first='Charlie gadget', got %q", resp.Results[0].Item.Title)
+	}
+	if resp.Results[2].Item.Title != "Alpha gadget" {
+		t.Errorf("expected last='Alpha gadget', got %q", resp.Results[2].Item.Title)
 	}
 }
 
