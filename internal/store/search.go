@@ -333,12 +333,37 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		total = -1
 	}
 
-	// --- Sorting ---
+	// --- Sorting (with deterministic tie-breaker for stable pagination) ---
 	orderClause := s.searchOrderClause(params)
 	query += orderClause
 
 	// --- Pagination ---
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", params.Limit, params.Offset)
+	// Ref hits (if any) occupy slots on page 0. Adjust FTS limit/offset
+	// so the combined result set respects the requested pagination.
+	refCount := len(results)
+	ftsLimit := params.Limit
+	ftsOffset := params.Offset
+	if refCount > 0 {
+		if params.Offset == 0 {
+			// Page 0: ref hits fill first slots, FTS fills the rest
+			ftsLimit = params.Limit - refCount
+			if ftsLimit < 0 {
+				ftsLimit = 0
+			}
+		} else {
+			// Subsequent pages: ref hits were on page 0, adjust offset
+			ftsOffset = params.Offset - refCount
+			if ftsOffset < 0 {
+				ftsOffset = 0
+			}
+		}
+	}
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", ftsLimit, ftsOffset)
+
+	// On pages after 0, ref hits were already shown — don't include them again.
+	if params.Offset > 0 && refCount > 0 {
+		results = nil
+	}
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
@@ -458,21 +483,22 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 }
 
 // searchOrderClause returns the ORDER BY clause for search results.
+// Includes i.id as a tie-breaker for deterministic pagination.
 func (s *Store) searchOrderClause(params SearchParams) string {
 	switch params.Sort {
 	case "created_at":
-		return fmt.Sprintf(" ORDER BY i.created_at %s", params.Order)
+		return fmt.Sprintf(" ORDER BY i.created_at %s, i.id", params.Order)
 	case "updated_at":
-		return fmt.Sprintf(" ORDER BY i.updated_at %s", params.Order)
+		return fmt.Sprintf(" ORDER BY i.updated_at %s, i.id", params.Order)
 	case "title":
-		return fmt.Sprintf(" ORDER BY i.title %s", params.Order)
+		return fmt.Sprintf(" ORDER BY i.title %s, i.id", params.Order)
 	default: // "relevance"
 		// SQLite bm25() returns negative values (more negative = more relevant) → ASC.
 		// PostgreSQL ts_rank() returns positive values (higher = more relevant) → DESC.
 		if s.dialect.Driver() == DriverPostgres {
-			return " ORDER BY rank_score DESC"
+			return " ORDER BY rank_score DESC, i.id"
 		}
-		return " ORDER BY rank_score"
+		return " ORDER BY rank_score, i.id"
 	}
 }
 
