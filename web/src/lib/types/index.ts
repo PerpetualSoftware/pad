@@ -643,6 +643,8 @@ export interface SearchResult {
 export interface SearchResponse {
 	results: SearchResult[];
 	total: number;
+	limit: number;
+	offset: number;
 }
 
 export interface SearchFilters {
@@ -651,6 +653,10 @@ export interface SearchFilters {
 	status?: string;
 	priority?: string;
 	fields?: Record<string, string>;
+	limit?: number;
+	offset?: number;
+	sort?: 'relevance' | 'created_at' | 'updated_at' | 'title';
+	order?: 'asc' | 'desc';
 }
 
 // ─── Convention Library ──────────────────────────────────────────────────────

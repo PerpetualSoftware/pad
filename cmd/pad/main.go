@@ -2962,6 +2962,9 @@ func searchCmd() *cobra.Command {
 	var collection string
 	var status string
 	var priority string
+	var sort string
+	var limit int
+	var offset int
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -2983,6 +2986,15 @@ func searchCmd() *cobra.Command {
 			if priority != "" {
 				params.Set("priority", priority)
 			}
+			if sort != "" {
+				params.Set("sort", sort)
+			}
+			if limit > 0 {
+				params.Set("limit", fmt.Sprintf("%d", limit))
+			}
+			if offset > 0 {
+				params.Set("offset", fmt.Sprintf("%d", offset))
+			}
 
 			result, err := client.SearchItems(params)
 			if err != nil {
@@ -2999,7 +3011,9 @@ func searchCmd() *cobra.Command {
 					Item    models.Item `json:"item"`
 					Snippet string      `json:"snippet"`
 				} `json:"results"`
-				Total int `json:"total"`
+				Total  int `json:"total"`
+				Limit  int `json:"limit"`
+				Offset int `json:"offset"`
 			}
 
 			if err := json.Unmarshal(result, &searchResp); err != nil {
@@ -3024,7 +3038,13 @@ func searchCmd() *cobra.Command {
 				}
 				fmt.Println()
 			}
-			fmt.Printf("%d result(s)\n", searchResp.Total)
+
+			showing := len(searchResp.Results)
+			if searchResp.Offset > 0 || showing < searchResp.Total {
+				fmt.Printf("Showing %d-%d of %d result(s)\n", searchResp.Offset+1, searchResp.Offset+showing, searchResp.Total)
+			} else {
+				fmt.Printf("%d result(s)\n", searchResp.Total)
+			}
 			return nil
 		},
 	}
@@ -3032,6 +3052,9 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&collection, "collection", "c", "", "filter by collection (e.g. tasks, ideas)")
 	cmd.Flags().StringVar(&status, "status", "", "filter by status (e.g. open, done)")
 	cmd.Flags().StringVar(&priority, "priority", "", "filter by priority (e.g. high, medium)")
+	cmd.Flags().StringVar(&sort, "sort", "", "sort by: relevance (default), created_at, updated_at, title")
+	cmd.Flags().IntVar(&limit, "limit", 0, "max results to return (default 50, max 200)")
+	cmd.Flags().IntVar(&offset, "offset", 0, "skip this many results (for pagination)")
 
 	return cmd
 }
