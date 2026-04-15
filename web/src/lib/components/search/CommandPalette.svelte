@@ -87,6 +87,7 @@
 			total = 0;
 			facets = undefined;
 			selectedIdx = 0;
+			loading = false;
 			return;
 		}
 		loading = true;
@@ -110,8 +111,13 @@
 	async function loadMore() {
 		if (loadingMore || results.length >= total) return;
 		loadingMore = true;
+		const snapshotQuery = query;
+		const snapshotCollection = filterCollection;
+		const snapshotStatus = filterStatus;
 		try {
 			const resp = await api.search(query, buildFilters(results.length));
+			// Discard if query or filters changed while loading
+			if (query !== snapshotQuery || filterCollection !== snapshotCollection || filterStatus !== snapshotStatus) return;
 			results = [...results, ...resp.results];
 		} catch {
 			// ignore
