@@ -17,6 +17,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { uiStore } from '$lib/stores/ui.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -577,18 +578,18 @@
 		focusedIndex = -1;
 	});
 
-	function handlePageKeydown(e: KeyboardEvent) {
-		// Cmd+F / Ctrl+F: focus collection search instead of browser search
-		if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+	// Watch for Cmd+F signal from layout
+	$effect(() => {
+		if (uiStore.collectionSearchRequested) {
+			uiStore.clearCollectionSearchRequest();
 			if (!filtersOpen) {
 				filtersOpen = true;
 			}
-			e.preventDefault();
-			// Wait for FilterBar to mount before focusing
 			requestAnimationFrame(() => searchInputEl?.focus());
-			return;
 		}
+	});
 
+	function handlePageKeydown(e: KeyboardEvent) {
 		// Don't capture when typing in inputs/textareas or when quick-create is open
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
