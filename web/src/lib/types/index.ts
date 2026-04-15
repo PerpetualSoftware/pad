@@ -640,11 +640,17 @@ export interface SearchResult {
 	rank: number;
 }
 
+export interface SearchFacets {
+	collections: Record<string, number>;
+	statuses: Record<string, number>;
+}
+
 export interface SearchResponse {
 	results: SearchResult[];
 	total: number;
 	limit: number;
 	offset: number;
+	facets?: SearchFacets;
 }
 
 export interface SearchFilters {

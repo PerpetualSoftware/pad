@@ -17,11 +17,17 @@ type SearchResult struct {
 	Rank    float64     `json:"rank"`
 }
 
+type SearchFacets struct {
+	Collections map[string]int `json:"collections"` // collection slug → count
+	Statuses    map[string]int `json:"statuses"`    // status value → count
+}
+
 type SearchResponse struct {
 	Results []SearchResult `json:"results"`
 	Total   int            `json:"total"`
 	Limit   int            `json:"limit"`
 	Offset  int            `json:"offset"`
+	Facets  *SearchFacets  `json:"facets,omitempty"`
 }
 
 // placeholders returns a comma-separated string of SQL placeholders: "?, ?, ?"
@@ -333,6 +339,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		total = -1
 	}
 
+	// --- Faceted counts (full result set, not paginated) ---
+	facets := s.searchFacets(params)
+
 	// --- Sorting (with deterministic tie-breaker for stable pagination) ---
 	query += s.searchOrderClause(params)
 
@@ -381,7 +390,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		// If we already have ref matches, return those instead of failing
 		// (FTS5 may reject queries like "TASK-5" due to special syntax)
 		if len(results) > 0 {
-			return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset}, nil
+			return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset, Facets: facets}, nil
 		}
 		return nil, fmt.Errorf("search: %w", err)
 	}
@@ -427,7 +436,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		total = len(results)
 	}
 
-	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset}, nil
+	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset, Facets: facets}, nil
 }
 
 // appendSearchFilters adds workspace, collection, and field filter clauses to a query.
@@ -497,6 +506,76 @@ func (s *Store) searchOrderClause(params SearchParams) string {
 		}
 		return " ORDER BY rank_score, i.id"
 	}
+}
+
+// searchFacets runs two GROUP BY queries against the full (unpaginated) search
+// result set to produce collection and status breakdowns. Non-fatal — returns
+// nil if either query fails.
+func (s *Store) searchFacets(params SearchParams) *SearchFacets {
+	statusExtract := s.dialect.JSONExtractText("i.fields", "status")
+
+	var baseQuery string
+	var baseArgs []interface{}
+
+	if s.dialect.Driver() == DriverPostgres {
+		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		baseQuery = fmt.Sprintf(`
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			WHERE %s AND i.deleted_at IS NULL
+		`, ftsMatch)
+		baseArgs = []interface{}{params.Query}
+	} else {
+		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		baseQuery = fmt.Sprintf(`
+			FROM items_fts fts
+			JOIN items i ON i.rowid = fts.rowid
+			JOIN collections c ON c.id = i.collection_id
+			WHERE %s AND i.deleted_at IS NULL
+		`, ftsMatch)
+		baseArgs = []interface{}{sanitizeFTSQuery(params.Query)}
+	}
+
+	baseQuery, baseArgs = s.appendSearchFilters(baseQuery, baseArgs, params)
+
+	facets := &SearchFacets{
+		Collections: make(map[string]int),
+		Statuses:    make(map[string]int),
+	}
+
+	// Collection facets
+	collQuery := "SELECT c.slug, COUNT(*) " + baseQuery + " GROUP BY c.slug"
+	collRows, err := s.db.Query(s.q(collQuery), baseArgs...)
+	if err == nil {
+		defer collRows.Close()
+		for collRows.Next() {
+			var slug string
+			var count int
+			if collRows.Scan(&slug, &count) == nil {
+				facets.Collections[slug] = count
+			}
+		}
+	}
+
+	// Status facets
+	statusQuery := fmt.Sprintf("SELECT %s, COUNT(*) %s AND %s IS NOT NULL GROUP BY %s",
+		statusExtract, baseQuery, statusExtract, statusExtract)
+	// Need fresh copy of args since baseArgs may be consumed
+	statusArgs := make([]interface{}, len(baseArgs))
+	copy(statusArgs, baseArgs)
+	statusRows, err := s.db.Query(s.q(statusQuery), statusArgs...)
+	if err == nil {
+		defer statusRows.Close()
+		for statusRows.Next() {
+			var status string
+			var count int
+			if statusRows.Scan(&status, &count) == nil && status != "" {
+				facets.Statuses[status] = count
+			}
+		}
+	}
+
+	return facets
 }
 
 // sanitizeFTSQuery wraps each token in double quotes so FTS5 treats
