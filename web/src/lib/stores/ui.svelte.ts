@@ -9,6 +9,7 @@ let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') 
 let createWorkspaceOpen = $state(false);
 let quickAddRequested = $state(false);
 let quickAddTargetSlug = $state<string | null>(null);
+let collectionSearchRequested = $state(false);
 
 if (browser) {
 	window.addEventListener('resize', () => {
@@ -75,6 +76,11 @@ export const uiStore = {
 	get quickAddTargetSlug() { return quickAddTargetSlug; },
 	requestQuickAdd(collectionSlug?: string) { quickAddTargetSlug = collectionSlug ?? null; quickAddRequested = true; },
 	clearQuickAddRequest() { quickAddRequested = false; quickAddTargetSlug = null; },
+
+	// Collection search (Cmd+F) trigger — collection page watches this
+	get collectionSearchRequested() { return collectionSearchRequested; },
+	requestCollectionSearch() { collectionSearchRequested = true; },
+	clearCollectionSearchRequest() { collectionSearchRequested = false; },
 
 	/** Close sidebar on mobile after navigation */
 	onNavigate() {

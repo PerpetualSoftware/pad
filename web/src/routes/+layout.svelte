@@ -93,6 +93,11 @@
 			uiStore.requestQuickAdd();
 			return;
 		}
+		if (isMod(e) && e.key === 'f') {
+			e.preventDefault();
+			uiStore.requestCollectionSearch();
+			return;
+		}
 		if (e.key === '?' && !isInputFocused()) {
 			e.preventDefault();
 			showShortcuts = !showShortcuts;

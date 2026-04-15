@@ -9,9 +9,10 @@
 		onFilterChange: (filters: Record<string, string>) => void;
 		onSearchChange: (query: string) => void;
 		relationLabels?: Record<string, string>;
+		searchInputEl?: HTMLInputElement | undefined;
 	}
 
-	let { collection, activeFilters, searchQuery, onFilterChange, onSearchChange, relationLabels = {} }: Props = $props();
+	let { collection, activeFilters, searchQuery, onFilterChange, onSearchChange, relationLabels = {}, searchInputEl = $bindable() }: Props = $props();
 
 	let schema = $derived(parseSchema(collection));
 	let statusField = $derived(schema.fields.find((f) => f.key === 'status'));
@@ -83,11 +84,13 @@
 
 	<div class="search-wrapper">
 		<input
+			bind:this={searchInputEl}
 			type="text"
 			class="search-input"
 			placeholder="Search {collection.name.toLowerCase()}..."
 			value={searchQuery}
 			oninput={handleSearchInput}
+			onkeydown={(e) => { if (e.key === 'Escape') { onSearchChange(''); searchInputEl?.blur(); } }}
 		/>
 	</div>
 </div>
