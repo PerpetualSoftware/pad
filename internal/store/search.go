@@ -2,10 +2,14 @@ package store
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/xarmian/pad/internal/models"
 )
+
+// validFieldKey matches safe JSON field keys: alphanumeric, underscores, hyphens only.
+var validFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 type SearchResult struct {
 	Item    models.Item `json:"item"`
@@ -100,6 +104,9 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 			refArgs = append(refArgs, params.Collection)
 		}
 		for key, value := range params.FieldFilters {
+			if !validFieldKey.MatchString(key) {
+				continue // skip unsafe keys
+			}
 			refQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
 			refArgs = append(refArgs, value)
 		}
@@ -237,6 +244,9 @@ func (s *Store) Search(params SearchParams) ([]SearchResult, error) {
 
 	// Field filters — filter by structured field values in the JSON fields column.
 	for key, value := range params.FieldFilters {
+		if !validFieldKey.MatchString(key) {
+			continue // skip unsafe keys
+		}
 		query += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
 		args = append(args, value)
 	}

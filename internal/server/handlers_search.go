@@ -2,10 +2,14 @@ package server
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/xarmian/pad/internal/store"
 )
+
+// safeFieldKey matches safe JSON field keys: starts with a letter, alphanumeric/underscore/hyphen.
+var safeFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
@@ -32,6 +36,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for key, values := range r.URL.Query() {
 		if strings.HasPrefix(key, "field.") && len(values) > 0 && values[0] != "" {
 			fieldKey := strings.TrimPrefix(key, "field.")
+			if !safeFieldKey.MatchString(fieldKey) {
+				continue // skip keys with unsafe characters
+			}
 			fieldFilters[fieldKey] = values[0]
 		}
 	}
