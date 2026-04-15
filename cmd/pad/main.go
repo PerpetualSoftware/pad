@@ -3014,6 +3014,10 @@ func searchCmd() *cobra.Command {
 				Total  int `json:"total"`
 				Limit  int `json:"limit"`
 				Offset int `json:"offset"`
+				Facets *struct {
+					Collections map[string]int `json:"collections"`
+					Statuses    map[string]int `json:"statuses"`
+				} `json:"facets"`
 			}
 
 			if err := json.Unmarshal(result, &searchResp); err != nil {
@@ -3046,6 +3050,23 @@ func searchCmd() *cobra.Command {
 				fmt.Printf("Showing %d-%d of %d result(s)\n", searchResp.Offset+1, searchResp.Offset+showing, searchResp.Total)
 			} else {
 				fmt.Printf("%d result(s)\n", searchResp.Total)
+			}
+
+			// Show facet summary when not filtering by a specific collection
+			if collection == "" && searchResp.Facets != nil && len(searchResp.Facets.Collections) > 1 {
+				parts := []string{}
+				for slug, count := range searchResp.Facets.Collections {
+					parts = append(parts, fmt.Sprintf("%s: %d", slug, count))
+				}
+				// Simple sort for deterministic output
+				for i := 0; i < len(parts); i++ {
+					for j := i + 1; j < len(parts); j++ {
+						if parts[j] < parts[i] {
+							parts[i], parts[j] = parts[j], parts[i]
+						}
+					}
+				}
+				fmt.Printf("  %s\n", strings.Join(parts, ", "))
 			}
 			return nil
 		},
