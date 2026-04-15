@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -341,6 +342,26 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 
 	// --- Faceted counts (full result set, not paginated) ---
 	facets := s.searchFacets(params)
+
+	// Merge ref hits into facets. Ref hits may not be in the FTS index,
+	// so the FTS-based facet queries can miss them. We conservatively add
+	// them here; for the common case where the ref hit IS in FTS, this
+	// slightly overcounts by 1 — acceptable for facet display purposes.
+	if facets != nil {
+		for _, r := range results {
+			collSlug := r.Item.CollectionSlug
+			if collSlug != "" {
+				facets.Collections[collSlug]++
+			}
+			// Extract status from fields JSON
+			var fields map[string]interface{}
+			if err := json.Unmarshal([]byte(r.Item.Fields), &fields); err == nil {
+				if status, ok := fields["status"].(string); ok && status != "" {
+					facets.Statuses[status]++
+				}
+			}
+		}
+	}
 
 	// --- Sorting (with deterministic tie-breaker for stable pagination) ---
 	query += s.searchOrderClause(params)
