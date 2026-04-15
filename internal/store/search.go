@@ -347,14 +347,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		refIDs[r.Item.ID] = true
 	}
 
-	// Include ref hits in total: the FTS count query may not have found them.
 	if total < 0 {
 		total = 0
-	}
-	if refCount > 0 {
-		// Count how many ref hits are NOT also in the FTS results.
-		// We conservatively add all ref hits; duplicates are handled below.
-		total += refCount
 	}
 
 	// Adjust FTS pagination to account for ref hit slots on page 0.
@@ -393,7 +387,6 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 	defer rows.Close()
 
-	ftsDeduped := 0 // count FTS rows that were also ref hits (avoid double-counting in total)
 	for rows.Next() {
 		var r SearchResult
 		var createdAt, updatedAt string
@@ -414,7 +407,6 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 		// Skip items already included from ref lookup
 		if refIDs[r.Item.ID] {
-			ftsDeduped++
 			continue
 		}
 		r.Item.Pinned = pinned
@@ -428,8 +420,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		return nil, err
 	}
 
-	// Correct total for ref hits that were also in the FTS count (avoid double-counting).
-	total -= ftsDeduped
+	// Ensure total is never less than actual results. The FTS count query
+	// may miss direct ref hits that aren't in the FTS index, so the real
+	// total can exceed the count. This is a simple, safe floor.
 	if total < len(results) {
 		total = len(results)
 	}
