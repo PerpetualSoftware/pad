@@ -645,6 +645,14 @@ export interface SearchResponse {
 	total: number;
 }
 
+export interface SearchFilters {
+	workspace?: string;
+	collection?: string;
+	status?: string;
+	priority?: string;
+	fields?: Record<string, string>;
+}
+
 // ─── Convention Library ──────────────────────────────────────────────────────
 
 export interface LibraryConvention {

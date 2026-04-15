@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/xarmian/pad/internal/store"
 )
@@ -14,8 +15,28 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := store.SearchParams{
-		Query:     query,
-		Workspace: r.URL.Query().Get("workspace"),
+		Query:      query,
+		Workspace:  r.URL.Query().Get("workspace"),
+		Collection: r.URL.Query().Get("collection"),
+	}
+
+	// Parse field filters: status, priority as top-level params,
+	// plus generic field.* params (e.g. field.category=backend).
+	fieldFilters := make(map[string]string)
+	if v := r.URL.Query().Get("status"); v != "" {
+		fieldFilters["status"] = v
+	}
+	if v := r.URL.Query().Get("priority"); v != "" {
+		fieldFilters["priority"] = v
+	}
+	for key, values := range r.URL.Query() {
+		if strings.HasPrefix(key, "field.") && len(values) > 0 && values[0] != "" {
+			fieldKey := strings.TrimPrefix(key, "field.")
+			fieldFilters[fieldKey] = values[0]
+		}
+	}
+	if len(fieldFilters) > 0 {
+		params.FieldFilters = fieldFilters
 	}
 
 	// When no specific workspace is given, scope search to the user's
