@@ -17,8 +17,12 @@
 	let includeTerminal = $state(false);
 	let loadSeq = 0;
 
-	// Filter fetched items by current starred state so unstars are reflected immediately
-	let items = $derived(fetchedItems.filter(i => starredStore.isStarred(i.id)));
+	// Filter fetched items by current starred state so unstars are reflected immediately.
+	// If the store hasn't loaded yet, trust the API response (it only returns starred items).
+	let items = $derived(starredStore.loaded
+		? fetchedItems.filter(i => starredStore.isStarred(i.id))
+		: fetchedItems
+	);
 
 	$effect(() => {
 		if (wsSlug) {
