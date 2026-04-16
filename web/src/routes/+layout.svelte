@@ -19,6 +19,7 @@
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
 	let workspacesLoaded = $state(false);
+	let authLoadFailed = $state(false);
 	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/') || page.url.pathname.startsWith('/auth/cli/'));
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
@@ -63,7 +64,11 @@
 				return;
 			}
 		} catch {
-			// If auth check fails, proceed anyway (server may not support it)
+			// If auth check fails, proceed anyway (server may not support it).
+			// Track this so the workspace loader effect below can still fire — in
+			// this case authStore.authenticated stays false but we still want to
+			// load the workspace list.
+			authLoadFailed = true;
 		}
 
 		authReady = true;
@@ -75,11 +80,16 @@
 		// when the user moves from /login → /console → /{user}/{workspace}),
 		// which a one-shot onMount would miss. Fixes BUG-584.
 		//
-		// Note: we intentionally do NOT gate on authStore.authenticated, to
-		// preserve behavior on deployments where auth is unsupported and
-		// authStore.load() fails silently (see the try/catch in onMount).
+		// We gate on (authenticated || authLoadFailed) rather than !isAuthPage
+		// alone: authReady flips true inside the unauthenticated branches of
+		// onMount BEFORE the /login redirect completes, so during that window a
+		// logged-out user on a protected route would otherwise fire loadAll()
+		// and latch workspacesLoaded=true, blocking the retry after login.
+		// authLoadFailed covers the deployment case where the auth endpoint is
+		// unavailable and authStore.authenticated stays false by design.
 		if (
 			authReady &&
+			(authStore.authenticated || authLoadFailed) &&
 			!isAuthPage &&
 			!isSharePage &&
 			!workspacesLoaded &&
