@@ -70,13 +70,16 @@
 	});
 
 	$effect(() => {
-		// Load workspaces once the user is authenticated and on an app page.
+		// Load workspaces once auth is resolved and we're on an app page.
 		// This runs after onMount AND on subsequent navigation (e.g., post-login
 		// when the user moves from /login → /console → /{user}/{workspace}),
 		// which a one-shot onMount would miss. Fixes BUG-584.
+		//
+		// Note: we intentionally do NOT gate on authStore.authenticated, to
+		// preserve behavior on deployments where auth is unsupported and
+		// authStore.load() fails silently (see the try/catch in onMount).
 		if (
 			authReady &&
-			authStore.authenticated &&
 			!isAuthPage &&
 			!isSharePage &&
 			!workspacesLoaded &&
