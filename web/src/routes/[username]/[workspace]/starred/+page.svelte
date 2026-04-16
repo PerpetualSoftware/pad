@@ -93,7 +93,7 @@
 
 <div class="starred-page">
 	<div class="page-header">
-		<div class="header-top">
+		<div class="page-header-left">
 			<h1>⭐ Starred</h1>
 			<span class="item-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
 		</div>
@@ -141,24 +141,28 @@
 
 <style>
 	.starred-page {
-		max-width: 800px;
+		max-width: var(--content-max-width);
 		margin: 0 auto;
-		padding: var(--space-6) var(--space-6) var(--space-12);
+		padding: var(--space-8) var(--space-6);
 	}
 
 	.page-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-4);
 		margin-bottom: var(--space-6);
+		flex-wrap: wrap;
 	}
 
-	.header-top {
+	.page-header-left {
 		display: flex;
 		align-items: baseline;
 		gap: var(--space-3);
-		margin-bottom: var(--space-3);
 	}
 
 	.page-header h1 {
-		font-size: 1.5em;
+		font-size: 1.6em;
 		font-weight: 700;
 		color: var(--text-primary);
 		margin: 0;
