@@ -487,7 +487,7 @@
 							{#if linked}
 								<button class="delete-btn" onclick={() => unlinkProvider(provider)}>Unlink</button>
 							{:else}
-								<a href="/auth/{provider}/link" class="primary-btn small">Link {provider === 'github' ? 'GitHub' : 'Google'}</a>
+								<a href="/auth/{provider}/link" data-sveltekit-reload class="primary-btn small">Link {provider === 'github' ? 'GitHub' : 'Google'}</a>
 							{/if}
 						</div>
 					{/each}
