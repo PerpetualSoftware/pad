@@ -18,6 +18,8 @@
 
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
+	let workspacesLoaded = $state(false);
+	let authLoadFailed = $state(false);
 	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/') || page.url.pathname.startsWith('/auth/cli/'));
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
@@ -62,12 +64,39 @@
 				return;
 			}
 		} catch {
-			// If auth check fails, proceed anyway (server may not support it)
+			// If auth check fails, proceed anyway (server may not support it).
+			// Track this so the workspace loader effect below can still fire — in
+			// this case authStore.authenticated stays false but we still want to
+			// load the workspace list.
+			authLoadFailed = true;
 		}
 
 		authReady = true;
-		if (!isAuthPage) {
-			await workspaceStore.loadAll();
+	});
+
+	$effect(() => {
+		// Load workspaces once auth is resolved and we're on an app page.
+		// This runs after onMount AND on subsequent navigation (e.g., post-login
+		// when the user moves from /login → /console → /{user}/{workspace}),
+		// which a one-shot onMount would miss. Fixes BUG-584.
+		//
+		// We gate on (authenticated || authLoadFailed) rather than !isAuthPage
+		// alone: authReady flips true inside the unauthenticated branches of
+		// onMount BEFORE the /login redirect completes, so during that window a
+		// logged-out user on a protected route would otherwise fire loadAll()
+		// and latch workspacesLoaded=true, blocking the retry after login.
+		// authLoadFailed covers the deployment case where the auth endpoint is
+		// unavailable and authStore.authenticated stays false by design.
+		if (
+			authReady &&
+			(authStore.authenticated || authLoadFailed) &&
+			!isAuthPage &&
+			!isSharePage &&
+			!workspacesLoaded &&
+			!workspaceStore.loading
+		) {
+			workspacesLoaded = true;
+			workspaceStore.loadAll();
 		}
 	});
 
@@ -172,7 +201,7 @@
 								<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
 							</svg>
 						</button>
-						<a href="/{workspaceStore.current?.owner_username ?? ''}/${workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
+						<a href="/{workspaceStore.current?.owner_username ?? ''}/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
 					</div>
 				{/if}
 				{@render children()}
