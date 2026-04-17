@@ -92,37 +92,17 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 	return content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
 		const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
 
-		// Try to resolve the entire body as a literal title FIRST, before
-		// splitting on `|`. Legacy data may contain titles that include an
-		// unescaped pipe (e.g. "[[A|B]]" where the item's actual title is
-		// "A|B"), and the `key|display` split would otherwise break those.
-		const fullBody = unescapeWikiBody(body);
-		const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
-		if (fullTitleItem && fullTitleItem.collection_slug) {
-			return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
-		}
-
-		// Also try the collection-qualified legacy form on the full body,
-		// before the pipe split. Handles "[[tasks/A|B]]" where the actual
-		// title is literally "A|B" in the "tasks" collection.
-		if (fullBody.includes('/')) {
-			const [qualColl, ...qualRest] = fullBody.split('/');
-			const qualTitle = qualRest.join('/');
-			const qualItem = items.find(i =>
-				i.title.toLowerCase() === qualTitle.toLowerCase() &&
-				i.collection_slug === qualColl
-			);
-			if (qualItem && qualItem.collection_slug) {
-				return `[${escapeMarkdownLinkText(qualItem.title)}](${prefix}/${qualItem.collection_slug}/${itemUrlId(qualItem)})`;
-			}
-		}
-
-		// Split optional display override on the FIRST unescaped pipe.
+		// Split optional display override on the FIRST unescaped pipe. We do
+		// this up-front so REF_PATTERN can check the key alone (a ref like
+		// "BUG-585" contains no pipe, so this is a no-op for ref storage).
 		const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
 		const key = unescapeWikiBody(rawKey);
 		const displayOverride = rawDisplay == null ? null : unescapeWikiBody(rawDisplay);
 
-		// 1. Ref-based lookup (e.g. [[BUG-585]]) — the preferred form.
+		// 1. Ref-based lookup FIRST. Ref storage is our canonical form, so
+		//    it must win over any legacy title that happens to match the
+		//    ref literal — otherwise `[[BUG-585]]` could silently retarget
+		//    onto a user-created item whose title is "BUG-585".
 		if (REF_PATTERN.test(key.trim())) {
 			const ref = key.trim();
 			const byRef = items.find(i =>
@@ -137,11 +117,38 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 			return _match;
 		}
 
-		// 2. Legacy: the [[collection/Title]] disambiguation syntax. (Exact
-		//    full-title match was already tried above via fullBody.)
-		let item: Item | undefined;
+		// 2. Legacy: exact full-body title match, BEFORE the pipe split.
+		//    Handles pre-existing stored titles that contain a literal `|`
+		//    (e.g. "[[A|B]]" where the item's real title is "A|B"). Only
+		//    relevant when the body actually has a pipe — otherwise the
+		//    already-split `key` is identical to the full body.
+		if (rawDisplay != null) {
+			const fullBody = unescapeWikiBody(body);
+			const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
+			if (fullTitleItem && fullTitleItem.collection_slug) {
+				return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
+			}
+			// Collection-qualified legacy form whose title contains a pipe.
+			if (fullBody.includes('/')) {
+				const [qualColl, ...qualRest] = fullBody.split('/');
+				const qualTitle = qualRest.join('/');
+				const qualItem = items.find(i =>
+					i.title.toLowerCase() === qualTitle.toLowerCase() &&
+					i.collection_slug === qualColl
+				);
+				if (qualItem && qualItem.collection_slug) {
+					return `[${escapeMarkdownLinkText(qualItem.title)}](${prefix}/${qualItem.collection_slug}/${itemUrlId(qualItem)})`;
+				}
+			}
+		}
+
+		// 3. Legacy: exact title match on the key.
+		const titleLower = key.toLowerCase();
+		let item = items.find(i => i.title.toLowerCase() === titleLower);
 		let displayText = displayOverride ?? key;
-		if (key.includes('/')) {
+
+		// 4. Legacy: the [[collection/Title]] disambiguation syntax.
+		if (!item && key.includes('/')) {
 			const [collFilter, ...rest] = key.split('/');
 			const searchTitle = rest.join('/');
 			const found = items.find(i =>
