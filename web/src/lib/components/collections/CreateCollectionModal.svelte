@@ -60,6 +60,12 @@
 	});
 
 	async function loadCollectionOptions() {
+		// Clear the stale list from a previous open before the new request
+		// resolves. Without this, reopening the modal (especially after a
+		// workspace switch) briefly shows the old relation targets — and a
+		// fast user can pick one and persist a slug that doesn't belong to
+		// the current workspace.
+		collectionOptions = [];
 		try {
 			const list = await api.collections.list(wsSlug);
 			collectionOptions = list.map((c) => ({

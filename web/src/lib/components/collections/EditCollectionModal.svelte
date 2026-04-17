@@ -70,6 +70,10 @@
 	let collectionOptions = $state<CollectionOption[]>([]);
 
 	async function loadCollectionOptions() {
+		// Clear the stale list from a previous open so a fast user can't
+		// pick a relation target from a workspace we've since left before
+		// the new fetch lands.
+		collectionOptions = [];
 		try {
 			const list = await api.collections.list(wsSlug);
 			collectionOptions = list.map((c) => ({
