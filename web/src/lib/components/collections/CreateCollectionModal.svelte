@@ -342,8 +342,16 @@
 					...(a.icon.trim() ? { icon: a.icon.trim() } : {})
 				}));
 
+			// Strip `quick_actions` from the template base so it can't survive
+			// the "user removed all quick actions" case. Template quick actions
+			// are already mirrored into `quickActions` state when the template
+			// is picked, so `savedActions` is the single source of truth here —
+			// taking anything from selectedSettings.quick_actions would let
+			// stale rows resurrect.
+			const { quick_actions: _templateActions, ...baseSettings } = selectedSettings ?? {};
+
 			const settingsObj: CollectionSettings = {
-				...(selectedSettings ?? {}),
+				...baseSettings,
 				default_view: defaultView,
 				layout,
 				board_group_by: boardGroupBy || undefined,
