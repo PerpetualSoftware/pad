@@ -6,6 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
@@ -150,7 +151,7 @@
 </script>
 
 <svelte:head>
-	<title>Pad</title>
+	<title>{titleStore.title}</title>
 	<meta name="description" content="Project management for developers and AI agents" />
 	<meta property="og:title" content="Pad" />
 	<meta property="og:description" content="Project management for developers and AI agents" />
