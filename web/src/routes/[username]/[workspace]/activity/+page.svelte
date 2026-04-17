@@ -46,7 +46,13 @@
 	});
 
 	// Reflect the activity feed in the browser tab title.
+	// Track pathname so this re-runs on SPA navigation — the component is
+	// reused across workspaces (e.g. /alice/ws1/activity → /alice/ws2/activity)
+	// and the workspace layout clears `section` on every pathname change, so
+	// without this dep the title would drop to `{Workspace} · Pad` after a
+	// workspace switch.
 	$effect(() => {
+		page.url.pathname;
 		titleStore.setPageTitle({ section: 'Activity', item: null });
 	});
 
