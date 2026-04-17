@@ -21,7 +21,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 const bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, disabled_at, last_active_at, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, last_active_at, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -35,6 +35,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
+		&u.PasswordSet,
 		&disabledAt, &lastActiveAt, &createdAt, &updatedAt,
 	)
 	if disabledAt.Valid {
@@ -84,9 +85,9 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 	ts := now()
 
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO users (id, email, username, name, password_hash, role, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), string(hash), role, ts, ts)
+		INSERT INTO users (id, email, username, name, password_hash, role, password_set, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), string(hash), role, true, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
@@ -155,6 +156,10 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 		}
 		sets = append(sets, "password_hash = ?")
 		args = append(args, string(hash))
+		// Explicit password change — mark the user as having a usable password
+		// (clears the OAuth placeholder-hash state set by CreateOAuthUser).
+		sets = append(sets, "password_set = ?")
+		args = append(args, true)
 	}
 	if input.AvatarURL != nil {
 		sets = append(sets, "avatar_url = ?")
@@ -195,6 +200,18 @@ func (s *Store) ValidatePassword(email, password string) (*models.User, error) {
 
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		return nil, nil // wrong password — not an error
+	}
+
+	// A successful bcrypt compare with a user-supplied plaintext proves the
+	// stored hash is usable for real sign-ins (the random 64-byte placeholder
+	// set by CreateOAuthUser cannot be guessed). Auto-upgrade password_set so
+	// users who pre-date the password_set column — or who linked OAuth after
+	// signing up with email/password — don't get trapped in the OAuth-unlink
+	// check. Failure here is non-fatal: login succeeds regardless.
+	if !u.PasswordSet {
+		if _, err := s.db.Exec(s.q(`UPDATE users SET password_set = ? WHERE id = ?`), true, u.ID); err == nil {
+			u.PasswordSet = true
+		}
 	}
 
 	return u, nil

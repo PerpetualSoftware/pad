@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
+	import { page } from '$app/state';
 	import { Editor, mergeAttributes } from '@tiptap/core';
+	import { Plugin } from '@tiptap/pm/state';
 	import StarterKit from '@tiptap/starter-kit';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
@@ -8,6 +10,7 @@
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	// Serialized mermaid render queue — mermaid can't handle concurrent renders
 	let mermaidMod: typeof import('mermaid') | null = null;
@@ -40,21 +43,101 @@
 		});
 	}
 
+	// Build a hover-to-reveal "Copy" button for a code block.
+	// Reads the live code text from `codeEl` so it copies edits too.
+	function buildCopyButton(codeEl: HTMLElement): HTMLButtonElement {
+		const btn = document.createElement('button');
+		btn.type = 'button';
+		btn.className = 'code-copy-btn';
+		btn.setAttribute('contenteditable', 'false');
+		btn.setAttribute('aria-label', 'Copy code');
+		btn.title = 'Copy';
+		btn.textContent = 'Copy';
+		// mousedown + preventDefault avoids stealing focus / clobbering the selection
+		btn.addEventListener('mousedown', (e) => e.preventDefault());
+		btn.addEventListener('click', async (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const text = codeEl.textContent ?? '';
+			const ok = await copyToClipboard(text);
+			const prev = btn.textContent;
+			btn.textContent = ok ? 'Copied' : 'Failed';
+			btn.classList.toggle('copied', ok);
+			setTimeout(() => {
+				btn.textContent = prev;
+				btn.classList.remove('copied');
+			}, 1200);
+		});
+		return btn;
+	}
+
+	// ProseMirror plugin: when the user copies/cuts a selection that lives
+	// entirely inside a single code_block node, write the raw code text to the
+	// clipboard instead of letting tiptap-markdown wrap it in ``` fences.
+	const codeBlockCopyPlugin = new Plugin({
+		props: {
+			handleDOMEvents: {
+				copy: (view, event) => writeCodeBlockClipboard(view, event as ClipboardEvent, false),
+				cut: (view, event) => writeCodeBlockClipboard(view, event as ClipboardEvent, true),
+			},
+		},
+	});
+
+	function writeCodeBlockClipboard(view: any, event: ClipboardEvent, isCut: boolean): boolean {
+		const { state } = view;
+		const { from, to, empty } = state.selection;
+		if (empty) return false;
+
+		// Find the nearest code_block ancestor of the selection's from position.
+		const resolvedFrom = state.doc.resolve(from);
+		let codeBlockDepth = -1;
+		for (let d = resolvedFrom.depth; d >= 0; d--) {
+			if (resolvedFrom.node(d).type.name === 'codeBlock') {
+				codeBlockDepth = d;
+				break;
+			}
+		}
+		if (codeBlockDepth < 0) return false;
+
+		// Selection must be entirely within that same code block.
+		const blockStart = resolvedFrom.start(codeBlockDepth);
+		const blockEnd = resolvedFrom.end(codeBlockDepth);
+		if (from < blockStart || to > blockEnd) return false;
+
+		const text = state.doc.textBetween(from, to, '\n');
+		if (!event.clipboardData) return false;
+
+		event.preventDefault();
+		event.clipboardData.setData('text/plain', text);
+		// Clearing HTML prevents tiptap-markdown from re-decorating the paste target.
+		event.clipboardData.setData('text/html', '');
+
+		if (isCut) {
+			const tr = state.tr.delete(from, to);
+			view.dispatch(tr);
+		}
+		return true;
+	}
+
 	// CodeBlock with inline mermaid rendering via NodeView.
 	// Key: ignoreMutation prevents ProseMirror's MutationObserver from
 	// detecting our SVG insertion and triggering an infinite re-parse loop.
 	const MermaidCodeBlock = CodeBlock.extend({
+		addProseMirrorPlugins() {
+			return [codeBlockCopyPlugin];
+		},
 		addNodeView() {
 			return (({ node }: any) => {
 				const lang = node.attrs.language;
 
-				// Non-mermaid: default rendering
+				// Non-mermaid: default rendering + hover Copy button
 				if (lang !== 'mermaid') {
 					const pre = document.createElement('pre');
 					pre.classList.add('code-block');
 					const code = document.createElement('code');
 					if (lang) code.classList.add(`language-${lang}`);
 					pre.appendChild(code);
+					pre.appendChild(buildCopyButton(code));
 					return { dom: pre, contentDOM: code };
 				}
 
@@ -123,7 +206,9 @@
 	});
 	import { Markdown } from 'tiptap-markdown';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
+	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
 
@@ -205,14 +290,52 @@
 		const items = collectionStore.items ?? [];
 		if (!linkQuery) return items.slice(0, 10);
 		const q = linkQuery.toLowerCase();
-		return items.filter(d => d.title.toLowerCase().includes(q)).slice(0, 10);
+		return items
+			.filter(d => {
+				if (d.title.toLowerCase().includes(q)) return true;
+				// Match on the issue ref (e.g. DOC-535) and its numeric part
+				const ref = (formatItemRef(d) ?? '').toLowerCase();
+				if (ref && ref.includes(q)) return true;
+				return false;
+			})
+			.slice(0, 10);
 	}
 
-	function execLink(title: string) {
+	function execLink(doc: Item) {
 		if (!editor) return;
+		// Build the URL in the same shape wikiLinksToMarkdown produces so the
+		// save round-trip (markdownToWikiLinks) reliably converts it back to
+		// [[Title]]. We read from the live route params (not workspaceStore)
+		// because that's what the slug page uses when converting wiki-links —
+		// keeping the two in sync is what lets the round-trip work.
+		const routeUsername = page.params.username ?? '';
+		const routeWorkspace = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const collSlug = doc.collection_slug ?? '';
+		const idSeg = itemUrlId(doc);
+		const prefix = routeUsername ? `/${routeUsername}/${routeWorkspace}` : `/${routeWorkspace}`;
+		const href = collSlug && idSeg && routeWorkspace ? `${prefix}/${collSlug}/${idSeg}` : '';
+
 		// Delete the [[ and any query text typed so far
 		const to = editor.state.selection.from;
-		editor.chain().focus().deleteRange({ from: linkStartPos, to }).insertContent(`[[${title}]]`).run();
+		const chain = editor.chain().focus().deleteRange({ from: linkStartPos, to });
+
+		if (href) {
+			// Insert the title as a real Tiptap link mark so it's clickable
+			// immediately (no reload needed). On save, tiptap-markdown emits
+			// [Title](href), which markdownToWikiLinks converts back to [[Title]].
+			chain.insertContent([
+				{
+					type: 'text',
+					text: doc.title,
+					marks: [{ type: 'link', attrs: { href } }],
+				},
+				// Trailing space drops the link mark so subsequent typing is plain text.
+				{ type: 'text', text: ' ' },
+			]).run();
+		} else {
+			// Fall back to [[Title]] text if we can't resolve a URL.
+			chain.insertContent(`[[${doc.title}]]`).run();
+		}
 		closeLink();
 	}
 
@@ -327,7 +450,7 @@
 						const items = getFilteredLinks();
 						if (event.key === 'ArrowDown') { event.preventDefault(); linkIdx = (linkIdx + 1) % Math.max(items.length, 1); return true; }
 						if (event.key === 'ArrowUp') { event.preventDefault(); linkIdx = (linkIdx - 1 + items.length) % Math.max(items.length, 1); return true; }
-						if (event.key === 'Enter') { event.preventDefault(); if (items[linkIdx]) execLink(items[linkIdx].title); return true; }
+						if (event.key === 'Enter') { event.preventDefault(); if (items[linkIdx]) execLink(items[linkIdx]); return true; }
 						if (event.key === 'Escape') { event.preventDefault(); closeLink(); return true; }
 						return false;
 					}
@@ -579,14 +702,17 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeLink}></div>
 	<div class="slash-menu" style:left="{linkX}px" style:top="{linkY}px">
-		{#each getFilteredLinks() as doc, i (doc.title)}
+		{#each getFilteredLinks() as doc, i (doc.id)}
 			<button
 				class="slash-item"
 				class:selected={i === linkIdx}
 				onmouseenter={() => linkIdx = i}
-				onclick={() => execLink(doc.title)}
+				onclick={() => execLink(doc)}
 			>
 				<span class="slash-icon">{doc.collection_icon ?? '📄'}</span>
+				{#if formatItemRef(doc)}
+					<span class="slash-ref">{formatItemRef(doc)}</span>
+				{/if}
 				<span class="slash-title">{doc.title}</span>
 			</button>
 		{:else}
@@ -907,7 +1033,50 @@
 		width: 24px; text-align: center; font-weight: 600; font-family: var(--font-mono);
 		font-size: 0.85em; color: var(--text-secondary);
 	}
-	.slash-title { font-weight: 500; }
+	.slash-title { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.slash-ref {
+		font-family: var(--font-mono);
+		font-size: 0.75em;
+		color: var(--text-secondary);
+		background: var(--bg-hover);
+		padding: 1px 6px;
+		border-radius: 4px;
+		flex-shrink: 0;
+	}
+
+	/* Hover-to-reveal copy button on code blocks inside the editor */
+	.editor-wrapper :global(pre.code-block) {
+		position: relative;
+	}
+	.editor-wrapper :global(pre.code-block .code-copy-btn) {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		padding: 2px 8px;
+		font-size: 0.75em;
+		font-family: var(--font-sans, inherit);
+		color: var(--text-secondary);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+		user-select: none;
+	}
+	.editor-wrapper :global(pre.code-block:hover .code-copy-btn),
+	.editor-wrapper :global(pre.code-block .code-copy-btn:focus-visible) {
+		opacity: 1;
+	}
+	.editor-wrapper :global(pre.code-block .code-copy-btn:hover) {
+		color: var(--text-primary);
+		border-color: var(--text-secondary);
+	}
+	.editor-wrapper :global(pre.code-block .code-copy-btn.copied) {
+		color: var(--accent, #10b981);
+		border-color: var(--accent, #10b981);
+		opacity: 1;
+	}
 
 	/* Table toolbar */
 	.table-toolbar {

@@ -70,59 +70,199 @@ export function unescapeDocLinks(markdown: string): string {
 	return markdown.replace(/\\\[\\\[([^\]]+)\\\]\\\]/g, '[[$1]]');
 }
 
+// Wiki-link reference pattern: uppercase/alphanumeric prefix, hyphen, digits.
+// Matches the item ref format produced by formatItemRef (e.g. TASK-5, BUG-585).
+// Anchored so it rejects anything else and falls back to title-based lookup,
+// which keeps legacy [[Title]] links working unchanged.
+const REF_PATTERN = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+
 /**
- * Convert [[Item Title]] to markdown links for Tiptap rendering.
- * Tiptap doesn't understand [[]] syntax, so we convert to standard
- * markdown links before feeding content to the editor.
+ * Convert wiki-link storage syntax into markdown links for Tiptap rendering.
+ * Supports three forms, in preference order:
+ *   - [[REF-123]]              → ref lookup; visible text = current item title
+ *   - [[REF-123|Display Text]] → ref lookup; visible text = Display Text
+ *   - [[Title]]                → legacy title lookup (also accepts [[coll/Title]])
+ * The ref-based forms are safe for titles containing any characters (brackets,
+ * slashes, quotes, etc.) because the stored key is the opaque item ref.
  */
 export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlug: string, username?: string): string {
-	return content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
-		// Support optional collection/ prefix: [[tasks/My Task]]
-		let searchTitle = title;
-		let collFilter: string | null = null;
-		if (title.includes('/')) {
-			const [coll, ...rest] = title.split('/');
-			collFilter = coll;
-			searchTitle = rest.join('/');
+	// Body may contain backslash-escaped chars (`\]`, `\\`, `\|`) so the tokens
+	// we emit can carry arbitrary display text. The capture is (\\.|[^\]\\])+,
+	// i.e. "a backslash-escaped char OR any non-`]`/non-`\` char".
+	return content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
+		const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
+
+		// Split optional display override on the FIRST unescaped pipe. We do
+		// this up-front so REF_PATTERN can check the key alone (a ref like
+		// "BUG-585" contains no pipe, so this is a no-op for ref storage).
+		const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
+		const key = unescapeWikiBody(rawKey);
+		const displayOverride = rawDisplay == null ? null : unescapeWikiBody(rawDisplay);
+
+		// 1. Ref-based lookup FIRST. Ref storage is our canonical form, so
+		//    it must win over any legacy title that happens to match the
+		//    ref literal — otherwise `[[BUG-585]]` could silently retarget
+		//    onto a user-created item whose title is "BUG-585". If the ref
+		//    doesn't resolve we FALL THROUGH to the legacy title path,
+		//    because a ref-shaped body like `[[ISO-9001]]` may legitimately
+		//    be a pre-existing title link.
+		if (REF_PATTERN.test(key.trim())) {
+			const ref = key.trim();
+			const byRef = items.find(i =>
+				!!i.item_number && !!i.collection_prefix &&
+				`${i.collection_prefix}-${i.item_number}`.toLowerCase() === ref.toLowerCase()
+			);
+			if (byRef && byRef.collection_slug) {
+				const text = displayOverride ?? byRef.title;
+				return `[${escapeMarkdownLinkText(text)}](${prefix}/${byRef.collection_slug}/${itemUrlId(byRef)})`;
+			}
+			// Intentional fall-through to the legacy title lookups below.
 		}
 
-		const item = items.find(i => {
-			const titleMatch = i.title.toLowerCase() === searchTitle.toLowerCase();
-			if (collFilter && i.collection_slug) {
-				return titleMatch && i.collection_slug === collFilter;
+		// 2. Legacy: exact full-body title match, BEFORE the pipe split.
+		//    Handles pre-existing stored titles that contain a literal `|`
+		//    (e.g. "[[A|B]]" where the item's real title is "A|B"). Only
+		//    relevant when the body actually has a pipe — otherwise the
+		//    already-split `key` is identical to the full body.
+		if (rawDisplay != null) {
+			const fullBody = unescapeWikiBody(body);
+			const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
+			if (fullTitleItem && fullTitleItem.collection_slug) {
+				return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
 			}
-			return titleMatch;
-		});
+			// Collection-qualified legacy form whose title contains a pipe.
+			if (fullBody.includes('/')) {
+				const [qualColl, ...qualRest] = fullBody.split('/');
+				const qualTitle = qualRest.join('/');
+				const qualItem = items.find(i =>
+					i.title.toLowerCase() === qualTitle.toLowerCase() &&
+					i.collection_slug === qualColl
+				);
+				if (qualItem && qualItem.collection_slug) {
+					return `[${escapeMarkdownLinkText(qualItem.title)}](${prefix}/${qualItem.collection_slug}/${itemUrlId(qualItem)})`;
+				}
+			}
+		}
+
+		// 3. Legacy: exact title match on the key.
+		const titleLower = key.toLowerCase();
+		let item = items.find(i => i.title.toLowerCase() === titleLower);
+		let displayText = displayOverride ?? key;
+
+		// 4. Legacy: the [[collection/Title]] disambiguation syntax.
+		if (!item && key.includes('/')) {
+			const [collFilter, ...rest] = key.split('/');
+			const searchTitle = rest.join('/');
+			const found = items.find(i =>
+				i.title.toLowerCase() === searchTitle.toLowerCase() &&
+				i.collection_slug === collFilter
+			);
+			if (found) {
+				item = found;
+				if (displayOverride == null) displayText = searchTitle;
+			}
+		}
 
 		if (item && item.collection_slug) {
-			const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
-				return `[${searchTitle}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
+			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
 		}
-		// Unresolved — render as styled text (editor will show it as plain text)
-		return `[${searchTitle}](broken)`;
+		// Unresolved: leave the original [[X]] text alone. Emitting a
+		// [text](broken) link here would hijack content that legitimately
+		// contains `[[` — for example a `[[` that appears inside another
+		// markdown link's text span. The regex is greedy and may grab a
+		// range that was never intended as a wiki-link, so the safe thing
+		// on miss is to restore the match verbatim.
+		return _match;
 	});
 }
 
 /**
- * Convert markdown links back to [[Item Title]] syntax for storage.
- * Reverses wikiLinksToMarkdown() so we store [[]] not []() in the database.
+ * Convert markdown links back to wiki-link storage syntax.
+ * When the link's URL resolves to an item with a ref, emit [[REF]] (or
+ * [[REF|Display]] if the visible text differs from the item's current
+ * title). Ref-based storage is preferred because it survives item renames
+ * and is robust against special characters in titles.
+ * Items without a ref fall back to the legacy [[Title]] form.
  */
 export function markdownToWikiLinks(markdown: string, items: Item[]): string {
-	// Match [Title](/username/workspace/collection/slug-or-REF) or [Title](/workspace/collection/slug-or-REF) pattern
-	return markdown.replace(/\[([^\]]+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, title: string, slugOrRef: string) => {
+	// Match [Title](/username/workspace/collection/slug-or-REF). Title may
+	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
+	// when serializing link text. The capture allows `\.` sequences so we
+	// don't terminate on an escaped `]` that's really part of the display.
+	return markdown.replace(/\[((?:\\.|[^\]\\])+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, rawText: string, slugOrRef: string) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
-			// Also match PREFIX-NUMBER refs
 			if (i.item_number && i.collection_prefix) {
 				return `${i.collection_prefix}-${i.item_number}` === slugOrRef;
 			}
 			return false;
 		});
-		if (item) {
-			return `[[${title}]]`;
+		if (!item) return _match;
+
+		// tiptap-markdown emits backslash-escaped brackets in the link text
+		// (e.g. "Use \[\[ to link"); unescape before comparing/emitting.
+		const displayText = unescapeMarkdownLinkText(rawText);
+
+		const ref = (item.item_number && item.collection_prefix)
+			? `${item.collection_prefix}-${item.item_number}`
+			: null;
+
+		if (ref) {
+			// Prefer ref-based storage. Omit |Display if it matches the
+			// current item title (renaming the item updates the link text
+			// automatically on next load).
+			if (displayText === item.title) {
+				return `[[${ref}]]`;
+			}
+			return `[[${ref}|${escapeWikiBody(displayText)}]]`;
 		}
-		return _match;
+		// Legacy fallback for items without a ref.
+		return `[[${escapeWikiBody(displayText)}]]`;
 	});
+}
+
+// Escape the characters that would terminate or unbalance a markdown link's
+// text span. `\` must be doubled first so it doesn't interfere with the
+// subsequent bracket escapes.
+function escapeMarkdownLinkText(s: string): string {
+	return s.replace(/\\/g, '\\\\').replace(/([\[\]])/g, '\\$1');
+}
+
+// Escape the characters that would terminate a [[...]] wiki-link body, or
+// collide with the `|` display separator. Order matters: backslash first.
+function escapeWikiBody(s: string): string {
+	return s.replace(/\\/g, '\\\\').replace(/([\]|])/g, '\\$1');
+}
+
+// Inverse of escapeWikiBody. Accepts `\]`, `\|`, and `\\` escapes.
+function unescapeWikiBody(s: string): string {
+	return s.replace(/\\(\\|\]|\|)/g, '$1');
+}
+
+// Split a wiki-link body on the FIRST unescaped `|`. Returns the raw key
+// and the raw display override (both still escape-encoded — caller should
+// unescape them). If there's no pipe, displayOverride is null.
+function splitWikiBody(body: string): { key: string; displayOverride: string | null } {
+	let i = 0;
+	while (i < body.length) {
+		const ch = body[i];
+		if (ch === '\\' && i + 1 < body.length) {
+			i += 2;
+			continue;
+		}
+		if (ch === '|') {
+			return { key: body.slice(0, i), displayOverride: body.slice(i + 1) };
+		}
+		i++;
+	}
+	return { key: body, displayOverride: null };
+}
+
+// Inverse of escapeMarkdownLinkText. Also undoes the \[\[ / \]\] escapes that
+// tiptap-markdown inserts to prevent its own output from looking like our
+// wiki-link sentinels.
+function unescapeMarkdownLinkText(s: string): string {
+	return s.replace(/\\(\[|\]|\\)/g, '$1');
 }
 
 /**

@@ -442,6 +442,13 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		total = len(results)
 	}
 
+	// Normalize nil → empty slice so JSON always serializes `results` as
+	// `[]` not `null`. Frontend consumers (CommandPalette) read .length
+	// without a null check.
+	if results == nil {
+		results = []SearchResult{}
+	}
+
 	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset, Facets: facets}, nil
 }
 

@@ -20,7 +20,14 @@
 	let authReady = $state(false);
 	let workspacesLoaded = $state(false);
 	let authLoadFailed = $state(false);
-	let isAuthPage = $derived(page.url.pathname === '/login' || page.url.pathname === '/register' || page.url.pathname.startsWith('/join/') || page.url.pathname.startsWith('/auth/cli/'));
+	let isAuthPage = $derived(
+		page.url.pathname === '/login'
+		|| page.url.pathname === '/register'
+		|| page.url.pathname === '/forgot-password'
+		|| page.url.pathname.startsWith('/reset-password/')
+		|| page.url.pathname.startsWith('/join/')
+		|| page.url.pathname.startsWith('/auth/cli/')
+	);
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
 

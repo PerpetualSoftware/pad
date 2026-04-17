@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
+	import { goto } from '$app/navigation';
 
 	let {
 		editor,
@@ -106,6 +107,27 @@
 		}
 	}
 
+	// Navigate in the current tab. Uses SvelteKit's goto() for internal
+	// (path-relative) URLs so the transition is a SPA navigation; external
+	// URLs fall back to a full-page load. The handler is attached to a
+	// real <a> element so middle-click / cmd-click / "copy link" behave
+	// naturally.
+	function handleHrefClick(e: MouseEvent) {
+		if (!href) return;
+		// Let the browser handle new-tab modifiers and middle-click itself.
+		if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const target = href;
+		visible = false;
+		editing = false;
+		if (target.startsWith('/') && !target.startsWith('//')) {
+			goto(target);
+		} else {
+			window.location.assign(target);
+		}
+	}
+
 	function startEdit() {
 		editValue = href;
 		editing = true;
@@ -179,7 +201,13 @@
 
 		{#if !editing}
 			<div class="link-display">
-				<span class="link-href" title={href}>{truncatedHref}</span>
+				<a
+					class="link-href"
+					href={href}
+					title="Open link in this tab — {href}"
+					onclick={handleHrefClick}
+					onmousedown={(e) => e.stopPropagation()}
+				>{truncatedHref}</a>
 				<div class="link-actions">
 					<button class="link-btn" onclick={openUrl} title="Open link">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -273,6 +301,10 @@
 	}
 
 	.link-href {
+		display: inline-block;
+		text-decoration: none;
+		cursor: pointer;
+
 		font-size: 0.82em;
 		color: var(--text-muted);
 		font-family: var(--font-mono);
@@ -280,7 +312,17 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		max-width: 180px;
-		padding: var(--space-1) 0;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+	}
+	.link-href:hover {
+		color: var(--accent-blue);
+		text-decoration: underline;
+		background: var(--bg-hover);
+	}
+	.link-href:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 1px;
 	}
 
 	.link-actions {
