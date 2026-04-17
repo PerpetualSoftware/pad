@@ -102,7 +102,10 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 		// 1. Ref-based lookup FIRST. Ref storage is our canonical form, so
 		//    it must win over any legacy title that happens to match the
 		//    ref literal — otherwise `[[BUG-585]]` could silently retarget
-		//    onto a user-created item whose title is "BUG-585".
+		//    onto a user-created item whose title is "BUG-585". If the ref
+		//    doesn't resolve we FALL THROUGH to the legacy title path,
+		//    because a ref-shaped body like `[[ISO-9001]]` may legitimately
+		//    be a pre-existing title link.
 		if (REF_PATTERN.test(key.trim())) {
 			const ref = key.trim();
 			const byRef = items.find(i =>
@@ -113,8 +116,7 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 				const text = displayOverride ?? byRef.title;
 				return `[${escapeMarkdownLinkText(text)}](${prefix}/${byRef.collection_slug}/${itemUrlId(byRef)})`;
 			}
-			// Unresolved ref — keep the original [[…]] so it round-trips.
-			return _match;
+			// Intentional fall-through to the legacy title lookups below.
 		}
 
 		// 2. Legacy: exact full-body title match, BEFORE the pipe split.
