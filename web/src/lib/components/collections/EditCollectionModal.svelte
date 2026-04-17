@@ -169,7 +169,11 @@
 				computed: f.computed,
 				collection: f.collection,
 				suffix: f.suffix,
-				default: f.default
+				default: f.default,
+				// Snapshot the load-time type so the save path can detect
+				// in-session type switches (used for the unsupported-type
+				// default preservation logic).
+				originalType: f.type
 			}));
 			newFields = [];
 			showEmojiPicker = false;
@@ -350,11 +354,18 @@
 				//   coerceDefault so stale values from a prior type don't leak
 				//   and select defaults are trimmed to match normalized
 				//   options.
-				// - If the active type is one the UI can't edit (multi_select,
-				//   relation), pass the existing default through verbatim.
+				// - If the active type is UI-unsupported for defaults
+				//   (multi_select, relation) AND the type hasn't changed
+				//   since load, pass the existing default through verbatim.
 				//   These defaults only arrive via API / imports, so silently
-				//   stripping them on save would mutate the schema in ways the
-				//   user didn't intend. Let them round-trip untouched.
+				//   stripping them on save would mutate the schema the user
+				//   didn't intend.
+				// - If the active type is UI-unsupported AND the type DID
+				//   change since load, drop the default. It was set against
+				//   the old type and is stale / meaningless now. Without
+				//   this, a user could set a text default, switch to
+				//   multi_select (hiding the default UI), save, and persist
+				//   a string default on a multi_select field.
 				//
 				// Pass the full normalized options array (including []) for
 				// select so that removing all options drops a stale default.
@@ -363,9 +374,10 @@
 						const optsForCoerce = f.type === 'select' ? normalizedOpts : undefined;
 						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
 						if (coerced !== undefined) def.default = coerced;
-					} else {
+					} else if (f.originalType === f.type) {
 						def.default = f.default;
 					}
+					// else: type changed to an UI-unsupported type — drop.
 				}
 				return def;
 			});

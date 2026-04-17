@@ -9,6 +9,11 @@ import type { FieldDef } from '$lib/types';
  *   build rename migrations on save.
  * - `terminalOptions` is always an array for easier binding (mirrors
  *   FieldDef.terminal_options).
+ * - `originalType` snapshots the field's type at load time. The
+ *   Edit-modal save path uses this to decide whether a default on an
+ *   otherwise-unsupported-for-UI type (multi_select, relation) is
+ *   opaque imported state to preserve or stale state from an in-session
+ *   type switch that should be dropped.
  * - `keyTouched` is a UI-only flag (not serialized) that tracks whether the
  *   user has manually edited the key. When false (and the field is new),
  *   FieldEditor auto-derives the key from the label on every change. Once
@@ -31,6 +36,8 @@ export interface EditableField {
 	collection?: string;
 	suffix?: string;
 	default?: unknown;
+	/** UI-only: the field's type at load time, used to detect in-session type switches. */
+	originalType?: FieldDef['type'];
 	/** UI-only: true once the user has manually edited the key. */
 	keyTouched?: boolean;
 }
@@ -218,14 +225,16 @@ export function coerceDefault(
 				return undefined;
 			}
 
-			// RFC3339 datetime: YYYY-MM-DDThh:mm[:ss[.frac]][Z|±hh:mm].
-			// Parse components explicitly and validate each against its
-			// valid range. `new Date(...)` alone is too permissive — it
-			// silently rolls invalid dates (e.g. "2026-02-31T10:00:00Z"
-			// becomes March 3), so a round-trip component check is
-			// required to reject impossible timestamps.
+			// Strict RFC3339 datetime: YYYY-MM-DDThh:mm:ss[.frac](Z|±hh:mm).
+			// Timezone is required. Offsets must include the colon
+			// separator (+01:00, not +0100). Seconds are required to match
+			// RFC3339 (the backend's time.RFC3339 parser also requires
+			// them). `new Date(...)` alone is too permissive — it silently
+			// rolls invalid dates (e.g. "2026-02-31T10:00:00Z" becomes
+			// March 3), so component-level round-trip verification is
+			// still needed.
 			const dt =
-				/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(
+				/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(
 					trimmed
 				);
 			if (dt) {
@@ -234,7 +243,7 @@ export function coerceDefault(
 				const day = Number(dt[3]);
 				const hour = Number(dt[4]);
 				const min = Number(dt[5]);
-				const sec = dt[6] !== undefined ? Number(dt[6]) : 0;
+				const sec = Number(dt[6]);
 				if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
 				if (hour > 23 || min > 59 || sec > 59) return undefined;
 				// Round-trip verify the date components: if the day is out
@@ -305,6 +314,7 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		collection: def.collection,
 		suffix: def.suffix,
 		default: def.default,
+		originalType: def.type,
 		// Both existing and template fields start with keyTouched=true so
 		// the key is preserved verbatim, not overwritten by slugify(label).
 		keyTouched: true
