@@ -189,14 +189,47 @@ export function coerceDefault(
 			return undefined;
 		}
 		case 'date': {
-			// Require ISO 8601 date or datetime format. HTML <input type="date">
-			// emits YYYY-MM-DD; we also accept a datetime suffix so imported
-			// schemas with RFC3339-style defaults round-trip. Server performs
-			// stricter validation; this gate just prevents obvious garbage like
-			// "soon" from surviving a type switch.
+			// Require a real calendar date in ISO 8601 form. HTML <input
+			// type="date"> emits YYYY-MM-DD; imported schemas may carry
+			// RFC3339 datetime strings. A regex alone isn't enough — it would
+			// accept impossible dates like "2026-99-99" or "2026-01-32",
+			// which then survive into the saved schema and get injected into
+			// new items by ValidateFields without re-checking.
 			if (typeof raw !== 'string') return undefined;
 			const trimmed = raw.trim();
-			return /^\d{4}-\d{2}-\d{2}(T.+)?$/.test(trimmed) ? trimmed : undefined;
+
+			// Plain date: YYYY-MM-DD. Round-trip verify against Date to
+			// reject out-of-range months/days (e.g. 2026-01-32 would be
+			// silently rolled to 2026-02-01 otherwise).
+			const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+			if (ymd) {
+				const year = Number(ymd[1]);
+				const month = Number(ymd[2]);
+				const day = Number(ymd[3]);
+				if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+				const parsed = new Date(Date.UTC(year, month - 1, day));
+				if (
+					parsed.getUTCFullYear() === year &&
+					parsed.getUTCMonth() + 1 === month &&
+					parsed.getUTCDate() === day
+				) {
+					return trimmed;
+				}
+				return undefined;
+			}
+
+			// RFC3339 datetime: YYYY-MM-DDThh:mm[:ss[.frac]][Z|±hh:mm].
+			// Shape-check first so we don't accept loose strings the Date
+			// constructor happens to parse (e.g. "2026 Apr 17").
+			const dt =
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(
+					trimmed
+				);
+			if (dt) {
+				const parsed = new Date(trimmed);
+				if (Number.isFinite(parsed.getTime())) return trimmed;
+			}
+			return undefined;
 		}
 		case 'checkbox':
 			return typeof raw === 'boolean' ? raw : undefined;
