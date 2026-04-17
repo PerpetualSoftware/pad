@@ -5,7 +5,11 @@
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor from './FieldEditor.svelte';
-	import { blankField, type EditableField } from './field-editor-types';
+	import {
+		blankField,
+		validateFieldKey,
+		type EditableField
+	} from './field-editor-types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -197,6 +201,56 @@
 		newFields[target] = temp;
 	}
 
+	// ── New-field key validation ─────────────────────────────────────────────
+	// Existing field keys are frozen, so validation only runs on newFields.
+	// A new field's key can collide with:
+	//   - another new field's key (duplicate within the add set)
+	//   - an existing field's key (collision with already-saved schema)
+	//   - a reserved key / structural violation
+
+	const newKeyErrors = $derived.by(() => {
+		const errors: (string | null)[] = [];
+		const existingKeys = new Set(existingFields.map((f) => f.key.trim()));
+		const newCounts = new Map<string, number>();
+		for (const f of newFields) {
+			const k = f.key.trim();
+			if (k) newCounts.set(k, (newCounts.get(k) ?? 0) + 1);
+		}
+		for (const f of newFields) {
+			if (!f.label.trim() && !f.key.trim()) {
+				errors.push(null);
+				continue;
+			}
+			const structural = validateFieldKey(f.key);
+			if (structural) {
+				errors.push(structural);
+				continue;
+			}
+			const k = f.key.trim();
+			if (existingKeys.has(k)) {
+				errors.push(`Key "${k}" is already used by an existing field`);
+				continue;
+			}
+			if ((newCounts.get(k) ?? 0) > 1) {
+				errors.push(`Duplicate key "${k}"`);
+				continue;
+			}
+			errors.push(null);
+		}
+		return errors;
+	});
+
+	/** True if any new field has a key error or is partially filled. */
+	const hasNewFieldBlockingErrors = $derived.by(() => {
+		if (newKeyErrors.some((e) => e !== null)) return true;
+		for (const f of newFields) {
+			const hasLabel = !!f.label.trim();
+			const hasKey = !!f.key.trim();
+			if (hasLabel !== hasKey) return true;
+		}
+		return false;
+	});
+
 	// ── Build migrations ─────────────────────────────────────────────────────
 
 	function buildMigrations(): FieldMigration[] {
@@ -226,7 +280,7 @@
 	// ── Save ─────────────────────────────────────────────────────────────────
 
 	async function handleSave() {
-		if (!name.trim() || saving) return;
+		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
 		saving = true;
 		error = '';
 		try {
@@ -252,19 +306,29 @@
 				return def;
 			});
 
-			// Build new fields
-			// T1 note: We now share the EditableField shape with existing fields.
-			// The user-typed value lives in `label`; we use it for both key and
-			// label to preserve pre-T1 behavior. T2 (TASK-595) will introduce a
-			// proper key/label split with slugification.
+			// Build new fields.
+			// T2: new fields now have a proper key/label split with slugified
+			// keys. `FieldEditor` auto-syncs key <- slugify(label) until the
+			// user manually edits the key, at which point the user's value is
+			// kept verbatim. `newKeyErrors` / `hasNewFieldBlockingErrors`
+			// prevent save when anything is invalid.
 			const addedFields: FieldDef[] = newFields
-				.filter((f) => f.label.trim())
+				.filter((f) => f.key.trim() && f.label.trim())
 				.map((f) => {
-					const name = f.label.trim();
-					const def: FieldDef = { key: name, label: name, type: f.type };
+					const key = f.key.trim();
+					const label = f.label.trim() || key;
+					const def: FieldDef = { key, label, type: f.type };
 					const opts = f.options.map((o) => o.trim()).filter(Boolean);
 					if ((f.type === 'select' || f.type === 'multi_select') && opts.length > 0) {
 						def.options = opts;
+					}
+					// Mirror the existing-fields path: persist terminal-option
+					// markings for newly-added status fields. Without this,
+					// choices made via the terminal toggle are silently dropped
+					// on save.
+					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
+						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
+						if (terms.length > 0) def.terminal_options = terms;
 					}
 					return def;
 				});
@@ -438,6 +502,7 @@
 										index={i}
 										total={newFields.length}
 										isNew
+										keyError={newKeyErrors[i]}
 										onmoveup={() => moveNewField(i, -1)}
 										onmovedown={() => moveNewField(i, 1)}
 										onremove={() => removeNewField(i)}
@@ -602,7 +667,12 @@
 					class="btn-save"
 					type="button"
 					onclick={handleSave}
-					disabled={!name.trim() || saving}
+					disabled={!name.trim() || saving || hasNewFieldBlockingErrors}
+					title={hasNewFieldBlockingErrors
+						? 'Resolve the new-field errors before saving'
+						: !name.trim()
+							? 'Collection name is required'
+							: ''}
 				>
 					{saving ? 'Saving...' : 'Save Changes'}
 				</button>

@@ -3,6 +3,13 @@
 	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import FieldEditor from './FieldEditor.svelte';
+	import {
+		blankField,
+		fieldFromDef,
+		validateFieldKey,
+		type EditableField
+	} from './field-editor-types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -14,17 +21,6 @@
 
 	let { open, wsSlug, oncreated, onclose }: Props = $props();
 
-	const FIELD_TYPES: FieldDef['type'][] = [
-		'text',
-		'number',
-		'select',
-		'multi_select',
-		'date',
-		'checkbox',
-		'url',
-		'relation'
-	];
-
 	// Step state: 'templates' or 'editor'
 	let step = $state<'templates' | 'editor'>('templates');
 
@@ -33,7 +29,7 @@
 	let selectedIcon = $state('');
 	let description = $state('');
 	let showEmojiPicker = $state(false);
-	let fields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
+	let fields = $state<EditableField[]>([]);
 	let selectedSettings = $state<CollectionSettings | null>(null);
 	let creating = $state(false);
 	let error = $state('');
@@ -73,11 +69,9 @@
 			selectedIcon = template.icon;
 			description = template.description;
 			selectedSettings = { ...template.settings };
-			fields = template.fields.map((f) => ({
-				key: f.key,
-				type: f.type,
-				options: f.options ? f.options.join(', ') : ''
-			}));
+			// Template fields already have valid keys — use fieldFromDef with
+			// existing=true so keyTouched=true and slugify doesn't overwrite.
+			fields = template.fields.map((f) => fieldFromDef(f, true));
 		}
 		step = 'editor';
 	}
@@ -88,27 +82,95 @@
 	}
 
 	function addField() {
-		fields.push({ key: '', type: 'text', options: '' });
+		fields.push(blankField());
 	}
 
 	function removeField(index: number) {
 		fields.splice(index, 1);
 	}
 
+	function moveField(index: number, direction: -1 | 1) {
+		const target = index + direction;
+		if (target < 0 || target >= fields.length) return;
+		const temp = fields[index];
+		fields[index] = fields[target];
+		fields[target] = temp;
+	}
+
+	// ── Key validation (per-field + cross-field duplicate detection) ────────
+
+	/**
+	 * Compute a per-field key error, or null if the key is valid.
+	 * - null: the field is empty (no label typed yet) — don't show an error,
+	 *   but `hasBlockingErrors` still treats it as incomplete so Create is
+	 *   disabled until the user fills it in.
+	 * - a string: structural error (reserved, bad chars) or duplicate.
+	 */
+	const keyErrors = $derived.by(() => {
+		const errors: (string | null)[] = [];
+		// Count occurrences of each non-empty key across all fields, so we
+		// can flag duplicates.
+		const counts = new Map<string, number>();
+		for (const f of fields) {
+			const k = f.key.trim();
+			if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+		}
+		for (const f of fields) {
+			// Skip empty fields — user is still typing.
+			if (!f.label.trim() && !f.key.trim()) {
+				errors.push(null);
+				continue;
+			}
+			const structural = validateFieldKey(f.key);
+			if (structural) {
+				errors.push(structural);
+				continue;
+			}
+			if ((counts.get(f.key.trim()) ?? 0) > 1) {
+				errors.push(`Duplicate key "${f.key.trim()}"`);
+				continue;
+			}
+			errors.push(null);
+		}
+		return errors;
+	});
+
+	/** True if any field has a key error OR is partially filled (one of label/key empty). */
+	const hasBlockingErrors = $derived.by(() => {
+		if (keyErrors.some((e) => e !== null)) return true;
+		// Any field with a label but no valid key, or vice versa, blocks save.
+		for (const f of fields) {
+			const hasLabel = !!f.label.trim();
+			const hasKey = !!f.key.trim();
+			if (hasLabel !== hasKey) return true;
+		}
+		return false;
+	});
+
 	async function handleCreate() {
-		if (!name.trim() || creating) return;
+		if (!name.trim() || creating || hasBlockingErrors) return;
 		creating = true;
 		error = '';
 		try {
 			const fieldDefs: FieldDef[] = fields
 				.filter((f) => f.key.trim())
 				.map((f) => {
-					const def: FieldDef = { key: f.key.trim(), label: f.key.trim(), type: f.type };
-					if ((f.type === 'select' || f.type === 'multi_select') && f.options.trim()) {
-						def.options = f.options
-							.split(',')
-							.map((o) => o.trim())
-							.filter(Boolean);
+					const key = f.key.trim();
+					const label = f.label.trim() || key;
+					const def: FieldDef = { key, label, type: f.type };
+					const opts = f.options.map((o) => o.trim()).filter(Boolean);
+					if ((f.type === 'select' || f.type === 'multi_select') && opts.length > 0) {
+						def.options = opts;
+					}
+					// Persist terminal-option markings for status fields. Templates
+					// may ship with terminal_options, and FieldEditor lets users
+					// toggle them on a status field during create. Without this
+					// the choices are silently dropped on save. Gated on
+					// `key === 'status'` to mirror the current UI; T4 generalizes
+					// this to any select field.
+					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
+						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
+						if (terms.length > 0) def.terminal_options = terms;
 					}
 					return def;
 				});
@@ -231,41 +293,24 @@
 					/>
 
 					<div class="fields-section">
-						<div class="fields-header">
-							<span class="fields-label">Fields</span>
-							<button class="add-field-btn" type="button" onclick={addField}>+ Add</button>
-						</div>
-
-						{#each fields as field, i (i)}
-							<div class="field-row">
-								<input
-									class="field-name-input"
-									type="text"
-									placeholder="Field name"
-									bind:value={field.key}
-								/>
-								<select class="field-type-select" bind:value={field.type}>
-									{#each FIELD_TYPES as ft (ft)}
-										<option value={ft}>{ft.replace('_', ' ')}</option>
-									{/each}
-								</select>
-								{#if field.type === 'select' || field.type === 'multi_select'}
-									<input
-										class="field-options-input"
-										type="text"
-										placeholder="option1, option2, ..."
-										bind:value={field.options}
+						<span class="fields-label">Fields</span>
+						{#if fields.length > 0}
+							<div class="fields-list">
+								{#each fields as _field, i (i)}
+									<FieldEditor
+										bind:field={fields[i]}
+										index={i}
+										total={fields.length}
+										isNew
+										keyError={keyErrors[i]}
+										onmoveup={() => moveField(i, -1)}
+										onmovedown={() => moveField(i, 1)}
+										onremove={() => removeField(i)}
 									/>
-								{/if}
-								<button
-									class="remove-field-btn"
-									type="button"
-									onclick={() => removeField(i)}
-								>
-									&#10005;
-								</button>
+								{/each}
 							</div>
-						{/each}
+						{/if}
+						<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
 					</div>
 				</div>
 
@@ -275,7 +320,12 @@
 						class="btn-create"
 						type="button"
 						onclick={handleCreate}
-						disabled={!name.trim() || creating}
+						disabled={!name.trim() || creating || hasBlockingErrors}
+						title={hasBlockingErrors
+							? 'Resolve the field errors before creating'
+							: !name.trim()
+								? 'Collection name is required'
+								: ''}
 					>
 						{creating ? 'Creating...' : 'Create Collection'}
 					</button>
@@ -540,12 +590,6 @@
 		gap: var(--space-2);
 	}
 
-	.fields-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
 	.fields-label {
 		font-size: 0.85em;
 		font-weight: 600;
@@ -554,99 +598,29 @@
 		letter-spacing: 0.04em;
 	}
 
+	.fields-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+
 	.add-field-btn {
+		margin-top: var(--space-1);
 		background: none;
-		border: none;
+		border: 1px dashed var(--border);
 		color: var(--accent-blue);
 		font-size: 0.85em;
+		font-weight: 500;
 		cursor: pointer;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
+		padding: var(--space-2) var(--space-4);
+		border-radius: var(--radius);
+		width: 100%;
+		text-align: center;
 	}
 
 	.add-field-btn:hover {
-		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-	}
-
-	.field-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-	}
-
-	.field-name-input {
-		flex: 1;
-		min-width: 120px;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.field-name-input:hover {
-		border-color: var(--border);
-	}
-
-	.field-name-input:focus {
+		background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.field-type-select {
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		color: var(--text-primary);
-		cursor: pointer;
-	}
-
-	.field-type-select:hover {
-		border-color: var(--border);
-	}
-
-	.field-type-select:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.field-options-input {
-		flex: 1 1 100%;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.field-options-input:hover {
-		border-color: var(--border);
-	}
-
-	.field-options-input:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.remove-field-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.85em;
-		cursor: pointer;
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		line-height: 1;
-	}
-
-	.remove-field-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
 	/* -- Footer ------------------------------------------------------------ */
