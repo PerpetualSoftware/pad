@@ -369,13 +369,6 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 
 	var input struct {
 		Provider string `json:"provider"`
-		// Optional: when the user is unlinking their only linked provider
-		// and password_set is not yet true (e.g. they signed up with
-		// email/password, then later linked OAuth, and are currently
-		// logged in via OAuth so ValidatePassword hasn't upgraded them),
-		// they can supply their password here to prove they can still
-		// sign in after the unlink. Verification also flips password_set.
-		Password string `json:"password,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -406,28 +399,9 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !hasOtherProvider && !user.HasPassword() {
-		// Last sign-in method and password_set isn't marked. If the user
-		// supplied their password, verify it — a successful bcrypt compare
-		// proves the hash is a real password (the random placeholder used
-		// by CreateOAuthUser can't match any user-supplied plaintext).
-		// ValidatePassword also flips password_set so subsequent logins
-		// take the fast path.
-		if input.Password != "" {
-			verified, err := s.store.ValidatePassword(user.Email, input.Password)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			if verified == nil {
-				writeError(w, http.StatusBadRequest, "invalid_password",
-					"Password verification failed. Check your password or link another provider first.")
-				return
-			}
-		} else {
-			writeError(w, http.StatusBadRequest, "password_required",
-				"Cannot unlink your only sign-in method. Provide your password to confirm, link another provider, or set a password first.")
-			return
-		}
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"Cannot unlink your only sign-in method. Link another provider or set a password first.")
+		return
 	}
 
 	if err := s.store.RemoveOAuthProvider(user.ID, input.Provider); err != nil {
