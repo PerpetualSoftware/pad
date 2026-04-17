@@ -26,6 +26,31 @@ const TEMPLATE_VARIABLE_SET: ReadonlySet<string> = new Set(TEMPLATE_VARIABLES);
 export type PreviewContext = Record<TemplateVariable, string>;
 
 /**
+ * Reshape an item-scope preview context into a collection-scope one by
+ * clearing all item-only variables. Mirrors the runtime in
+ * QuickActionsMenu.resolvePrompt where `item` is unset for collection-
+ * scope actions: `ref`, `title`, `status`, `priority`, `content`, `fields`,
+ * `plan`, `phase` all resolve to empty strings. Only `{collection}`
+ * survives.
+ *
+ * Used so the Quick Actions preview renders the same output the user
+ * will actually get when they click a collection action.
+ */
+export function toCollectionScope(ctx: PreviewContext): PreviewContext {
+	return {
+		ref: '',
+		title: '',
+		status: '',
+		priority: '',
+		collection: ctx.collection,
+		content: '',
+		fields: '',
+		plan: '',
+		phase: ''
+	};
+}
+
+/**
  * Placeholder context used when no real item is available — e.g. in the
  * Create modal (collection doesn't exist yet) or when the collection is
  * empty.

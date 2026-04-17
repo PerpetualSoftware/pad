@@ -17,6 +17,7 @@
 	import {
 		parsePrompt,
 		TEMPLATE_VARIABLES,
+		toCollectionScope,
 		type PreviewContext
 	} from '$lib/utils/quick-action-preview';
 
@@ -32,6 +33,13 @@
 	}
 
 	let { actions = $bindable(), previewContext }: Props = $props();
+
+	// Scope-aware preview contexts. Collection-scope actions run without
+	// an item in QuickActionsMenu, so item-only variables resolve to
+	// empty strings. We reshape the incoming context per scope so the
+	// preview matches runtime output exactly.
+	const itemScopeContext = $derived(previewContext);
+	const collectionScopeContext = $derived(toCollectionScope(previewContext));
 
 	let itemActions = $derived(
 		actions.map((a, i) => ({ action: a, index: i })).filter(({ action }) => action.scope === 'item')
@@ -116,7 +124,7 @@
 					bind:value={actions[index].prompt}
 				/>
 				{#if action.prompt.trim()}
-					{@const segments = parsePrompt(action.prompt, previewContext)}
+					{@const segments = parsePrompt(action.prompt, itemScopeContext)}
 					{@const hasUnknown = segments.some((s) => s.type === 'unknown')}
 					<div class="qa-preview" class:has-error={hasUnknown}>
 						<span class="qa-preview-label">Preview</span>
@@ -124,10 +132,14 @@
 							{#each segments as seg, i (i)}
 								{#if seg.type === 'text'}<span class="qa-seg-text"
 										>{seg.value}</span
-									>{:else if seg.type === 'known'}<span
-										class="qa-seg-known"
-										title={'{' + seg.name + '}'}>{seg.resolved || `{${seg.name}}`}</span
-									>{:else}<span
+									>{:else if seg.type === 'known'}{#if seg.resolved === ''}<span
+											class="qa-seg-empty"
+											title={'{' + seg.name + '} — resolves to an empty string at runtime'}
+											>(empty)</span
+										>{:else}<span
+											class="qa-seg-known"
+											title={'{' + seg.name + '}'}>{seg.resolved}</span
+										>{/if}{:else}<span
 										class="qa-seg-unknown"
 										title="Unknown variable — will copy literally">{'{' + seg.name + '}'}</span
 									>{/if}
@@ -202,7 +214,7 @@
 					bind:value={actions[index].prompt}
 				/>
 				{#if action.prompt.trim()}
-					{@const segments = parsePrompt(action.prompt, previewContext)}
+					{@const segments = parsePrompt(action.prompt, collectionScopeContext)}
 					{@const hasUnknown = segments.some((s) => s.type === 'unknown')}
 					<div class="qa-preview" class:has-error={hasUnknown}>
 						<span class="qa-preview-label">Preview</span>
@@ -210,10 +222,14 @@
 							{#each segments as seg, i (i)}
 								{#if seg.type === 'text'}<span class="qa-seg-text"
 										>{seg.value}</span
-									>{:else if seg.type === 'known'}<span
-										class="qa-seg-known"
-										title={'{' + seg.name + '}'}>{seg.resolved || `{${seg.name}}`}</span
-									>{:else}<span
+									>{:else if seg.type === 'known'}{#if seg.resolved === ''}<span
+											class="qa-seg-empty"
+											title={'{' + seg.name + '} — resolves to an empty string at runtime'}
+											>(empty)</span
+										>{:else}<span
+											class="qa-seg-known"
+											title={'{' + seg.name + '}'}>{seg.resolved}</span
+										>{/if}{:else}<span
 										class="qa-seg-unknown"
 										title="Unknown variable — will copy literally">{'{' + seg.name + '}'}</span
 									>{/if}
@@ -423,6 +439,21 @@
 		background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
 		padding: 0 2px;
 		border-radius: 2px;
+	}
+
+	/*
+	 * A known variable that resolves to an empty string at runtime (e.g.
+	 * {plan} with no plan set, or any item-only variable in a collection-
+	 * scope action). Renders "(empty)" in muted italic so the user sees
+	 * the variable was recognized but produces nothing — matches runtime
+	 * behavior exactly (runtime copies nothing for that position).
+	 */
+	.qa-seg-empty {
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+		padding: 0 2px;
+		border-radius: 2px;
+		font-style: italic;
 	}
 
 	.qa-seg-unknown {
