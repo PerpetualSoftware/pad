@@ -4,7 +4,7 @@
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
-	import FieldEditor from './FieldEditor.svelte';
+	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
 		validateFieldKey,
@@ -62,6 +62,23 @@
 
 	let existingFields = $state<EditableField[]>([]);
 	let newFields = $state<EditableField[]>([]);
+
+	// Workspace collections list, used to populate the relation target picker
+	// in FieldEditor for new relation-type fields. Fetched lazily on open.
+	let collectionOptions = $state<CollectionOption[]>([]);
+
+	async function loadCollectionOptions() {
+		try {
+			const list = await api.collections.list(wsSlug);
+			collectionOptions = list.map((c) => ({
+				slug: c.slug,
+				name: c.name,
+				icon: c.icon
+			}));
+		} catch {
+			collectionOptions = [];
+		}
+	}
 
 	// ── Display settings state ──────────────────────────────────────────────
 
@@ -166,6 +183,8 @@
 				scope: a.scope,
 				icon: a.icon ?? ''
 			}));
+
+			void loadCollectionOptions();
 		}
 	});
 
@@ -330,6 +349,13 @@
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
 					}
+					// Advanced controls (T3 / TASK-596). Only emit when set so
+					// payloads stay compact and round-trip with existing schemas.
+					if (f.required) def.required = true;
+					if (f.computed) def.computed = true;
+					if (f.suffix) def.suffix = f.suffix;
+					if (f.collection) def.collection = f.collection;
+					if (f.default !== undefined) def.default = f.default;
 					return def;
 				});
 
@@ -491,6 +517,7 @@
 										bind:field={existingFields[i]}
 										index={i}
 										total={existingFields.length}
+										collections={collectionOptions}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeExistingField(i)}
@@ -503,6 +530,7 @@
 										total={newFields.length}
 										isNew
 										keyError={newKeyErrors[i]}
+										collections={collectionOptions}
 										onmoveup={() => moveNewField(i, -1)}
 										onmovedown={() => moveNewField(i, 1)}
 										onremove={() => removeNewField(i)}

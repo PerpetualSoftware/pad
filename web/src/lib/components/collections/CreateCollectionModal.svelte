@@ -3,7 +3,7 @@
 	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
-	import FieldEditor from './FieldEditor.svelte';
+	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
 		fieldFromDef,
@@ -34,6 +34,10 @@
 	let creating = $state(false);
 	let error = $state('');
 
+	// Workspace collections list, used to populate the relation target picker
+	// in FieldEditor. Fetched lazily on modal open.
+	let collectionOptions = $state<CollectionOption[]>([]);
+
 	// Track previous open state to detect open transitions
 	let prevOpen = $state(false);
 
@@ -48,9 +52,24 @@
 			selectedSettings = null;
 			showEmojiPicker = false;
 			error = '';
+			void loadCollectionOptions();
 		}
 		prevOpen = open;
 	});
+
+	async function loadCollectionOptions() {
+		try {
+			const list = await api.collections.list(wsSlug);
+			collectionOptions = list.map((c) => ({
+				slug: c.slug,
+				name: c.name,
+				icon: c.icon
+			}));
+		} catch {
+			// Relation picker falls back to its empty-state hint.
+			collectionOptions = [];
+		}
+	}
 
 	function resetForm() {
 		name = '';
@@ -172,6 +191,13 @@
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
 					}
+					// Advanced controls (T3 / TASK-596). Only emit when set so
+					// payloads stay compact and round-trip with existing schemas.
+					if (f.required) def.required = true;
+					if (f.computed) def.computed = true;
+					if (f.suffix) def.suffix = f.suffix;
+					if (f.collection) def.collection = f.collection;
+					if (f.default !== undefined) def.default = f.default;
 					return def;
 				});
 
@@ -303,6 +329,7 @@
 										total={fields.length}
 										isNew
 										keyError={keyErrors[i]}
+										collections={collectionOptions}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeField(i)}
