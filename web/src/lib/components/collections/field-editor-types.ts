@@ -219,15 +219,35 @@ export function coerceDefault(
 			}
 
 			// RFC3339 datetime: YYYY-MM-DDThh:mm[:ss[.frac]][Z|±hh:mm].
-			// Shape-check first so we don't accept loose strings the Date
-			// constructor happens to parse (e.g. "2026 Apr 17").
+			// Parse components explicitly and validate each against its
+			// valid range. `new Date(...)` alone is too permissive — it
+			// silently rolls invalid dates (e.g. "2026-02-31T10:00:00Z"
+			// becomes March 3), so a round-trip component check is
+			// required to reject impossible timestamps.
 			const dt =
-				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(
+				/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(
 					trimmed
 				);
 			if (dt) {
-				const parsed = new Date(trimmed);
-				if (Number.isFinite(parsed.getTime())) return trimmed;
+				const year = Number(dt[1]);
+				const month = Number(dt[2]);
+				const day = Number(dt[3]);
+				const hour = Number(dt[4]);
+				const min = Number(dt[5]);
+				const sec = dt[6] !== undefined ? Number(dt[6]) : 0;
+				if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+				if (hour > 23 || min > 59 || sec > 59) return undefined;
+				// Round-trip verify the date components: if the day is out
+				// of range for the month (e.g. Feb 31), Date.UTC rolls it
+				// forward and the components won't match.
+				const parsed = new Date(Date.UTC(year, month - 1, day));
+				if (
+					parsed.getUTCFullYear() === year &&
+					parsed.getUTCMonth() + 1 === month &&
+					parsed.getUTCDate() === day
+				) {
+					return trimmed;
+				}
 			}
 			return undefined;
 		}

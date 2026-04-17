@@ -220,8 +220,15 @@
 					// both type-switch drift (boolean default left on a text
 					// field) and select whitespace drift (default raw text not
 					// matching the normalized options set).
+					//
+					// For select, always pass the full normalized options
+					// array (including []) so that a field with no options
+					// left can't retain a stale default. Using `def.options`
+					// here is wrong: it's omitted when the list is empty, and
+					// coerceDefault would then skip the membership check.
 					if (f.default !== undefined && typeSupportsDefault(f.type)) {
-						const coerced = coerceDefault(f.default, f.type, def.options);
+						const optsForCoerce = f.type === 'select' ? opts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
 						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;

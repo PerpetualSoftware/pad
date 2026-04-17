@@ -319,8 +319,18 @@
 					label: f.label.trim() || f.key,
 					type: f.type
 				};
-				if ((f.type === 'select' || f.type === 'multi_select') && f.options.length > 0) {
-					def.options = f.options.map((o) => o.trim()).filter(Boolean);
+				// Normalize options into a local so we can both emit them on
+				// def AND pass them to coerceDefault for select fields (even
+				// when empty — an empty list must drop stale defaults).
+				const normalizedOpts =
+					f.type === 'select' || f.type === 'multi_select'
+						? f.options.map((o) => o.trim()).filter(Boolean)
+						: [];
+				if (
+					(f.type === 'select' || f.type === 'multi_select') &&
+					normalizedOpts.length > 0
+				) {
+					def.options = normalizedOpts;
 				}
 				if (f.key === 'status' && f.terminalOptions.length > 0) {
 					// Only include terminal options that still exist in the options list
@@ -345,9 +355,13 @@
 				//   These defaults only arrive via API / imports, so silently
 				//   stripping them on save would mutate the schema in ways the
 				//   user didn't intend. Let them round-trip untouched.
+				//
+				// Pass the full normalized options array (including []) for
+				// select so that removing all options drops a stale default.
 				if (f.default !== undefined) {
 					if (typeSupportsDefault(f.type)) {
-						const coerced = coerceDefault(f.default, f.type, def.options);
+						const optsForCoerce = f.type === 'select' ? normalizedOpts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
 						if (coerced !== undefined) def.default = coerced;
 					} else {
 						def.default = f.default;
@@ -389,9 +403,12 @@
 					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
 					if (f.type === 'relation' && f.collection) def.collection = f.collection;
 					// Coerce default to the active type (and normalize select
-					// defaults against the normalized option set).
+					// defaults against the normalized option set). Pass the
+					// full opts array (including []) so defaults are dropped
+					// when the options list is empty.
 					if (f.default !== undefined && typeSupportsDefault(f.type)) {
-						const coerced = coerceDefault(f.default, f.type, def.options);
+						const optsForCoerce = f.type === 'select' ? opts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
 						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;
