@@ -37,8 +37,11 @@
 	let error = $state('');
 
 	// Workspace collections list, used to populate the relation target picker
-	// in FieldEditor. Fetched lazily on modal open.
+	// in FieldEditor. Fetched lazily on modal open. `collectionsRequestToken`
+	// monotonically increases per fetch so a slow older response can't
+	// overwrite a newer one (e.g. on rapid reopens / workspace switches).
 	let collectionOptions = $state<CollectionOption[]>([]);
+	let collectionsRequestToken = 0;
 
 	// Track previous open state to detect open transitions
 	let prevOpen = $state(false);
@@ -61,13 +64,15 @@
 
 	async function loadCollectionOptions() {
 		// Clear the stale list from a previous open before the new request
-		// resolves. Without this, reopening the modal (especially after a
-		// workspace switch) briefly shows the old relation targets — and a
-		// fast user can pick one and persist a slug that doesn't belong to
-		// the current workspace.
+		// resolves, and bump the request token so only this call's response
+		// is allowed to write state. Without the token guard, an older slow
+		// response (e.g. from a previous open or workspace) could land after
+		// a newer one and overwrite it.
+		const token = ++collectionsRequestToken;
 		collectionOptions = [];
 		try {
 			const list = await api.collections.list(wsSlug);
+			if (token !== collectionsRequestToken) return;
 			collectionOptions = list.map((c) => ({
 				slug: c.slug,
 				name: c.name,
@@ -75,6 +80,7 @@
 			}));
 		} catch {
 			// Relation picker falls back to its empty-state hint.
+			if (token !== collectionsRequestToken) return;
 			collectionOptions = [];
 		}
 	}

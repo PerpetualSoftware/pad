@@ -67,21 +67,24 @@
 
 	// Workspace collections list, used to populate the relation target picker
 	// in FieldEditor for new relation-type fields. Fetched lazily on open.
+	// `collectionsRequestToken` guards against a slow older response
+	// overwriting a newer one on rapid reopens.
 	let collectionOptions = $state<CollectionOption[]>([]);
+	let collectionsRequestToken = 0;
 
 	async function loadCollectionOptions() {
-		// Clear the stale list from a previous open so a fast user can't
-		// pick a relation target from a workspace we've since left before
-		// the new fetch lands.
+		const token = ++collectionsRequestToken;
 		collectionOptions = [];
 		try {
 			const list = await api.collections.list(wsSlug);
+			if (token !== collectionsRequestToken) return;
 			collectionOptions = list.map((c) => ({
 				slug: c.slug,
 				name: c.name,
 				icon: c.icon
 			}));
 		} catch {
+			if (token !== collectionsRequestToken) return;
 			collectionOptions = [];
 		}
 	}

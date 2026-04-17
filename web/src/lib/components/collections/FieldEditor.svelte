@@ -403,6 +403,22 @@
 								/>
 								<span>Checked by default</span>
 							</label>
+							<!--
+								Checkbox defaults are tri-state at the schema level:
+								no default / default false / default true. The
+								checkbox itself only toggles between true and false,
+								so we need an explicit "Clear" affordance to get
+								back to `undefined`. Shown only when a value is set.
+							-->
+							{#if field.default !== undefined}
+								<button
+									type="button"
+									class="advanced-clear"
+									onclick={() => (field.default = undefined)}
+									disabled={isComputed}
+									title="Remove the default — new items won't have this field pre-filled."
+								>Clear</button>
+							{/if}
 						{:else if isSelectSingle}
 							<select
 								class="advanced-input"
@@ -956,5 +972,24 @@
 
 	.advanced-inline-check input[type='checkbox']:disabled + span {
 		opacity: 0.5;
+	}
+
+	.advanced-clear {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.78em;
+		text-decoration: underline;
+		cursor: pointer;
+		padding: 0 var(--space-1);
+	}
+
+	.advanced-clear:hover:not(:disabled) {
+		color: var(--accent-red, #ef4444);
+	}
+
+	.advanced-clear:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>
