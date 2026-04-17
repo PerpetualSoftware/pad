@@ -2,7 +2,7 @@
 	import { api } from '$lib/api/client';
 	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
-	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
@@ -30,7 +30,6 @@
 	let name = $state('');
 	let selectedIcon = $state('');
 	let description = $state('');
-	let showEmojiPicker = $state(false);
 	let fields = $state<EditableField[]>([]);
 	let selectedSettings = $state<CollectionSettings | null>(null);
 	let creating = $state(false);
@@ -55,7 +54,6 @@
 			description = '';
 			fields = [];
 			selectedSettings = null;
-			showEmojiPicker = false;
 			error = '';
 			void loadCollectionOptions();
 		}
@@ -91,7 +89,6 @@
 		description = '';
 		fields = [];
 		selectedSettings = null;
-		showEmojiPicker = false;
 		error = '';
 	}
 
@@ -294,7 +291,11 @@
 							type="button"
 							onclick={() => selectTemplate(null)}
 						>
-							<span class="template-icon">+</span>
+							<span class="template-icon-wrap" aria-hidden="true">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+									<path d="M12 5v14M5 12h14" />
+								</svg>
+							</span>
 							<span class="template-name">Blank</span>
 							<span class="template-desc">Start from scratch</span>
 						</button>
@@ -304,7 +305,7 @@
 								type="button"
 								onclick={() => selectTemplate(template)}
 							>
-								<span class="template-icon">{template.icon}</span>
+								<span class="template-icon" aria-hidden="true">{template.icon}</span>
 								<span class="template-name">{template.name}</span>
 								<span class="template-desc">{template.description}</span>
 							</button>
@@ -318,17 +319,7 @@
 					{/if}
 
 					<div class="name-row">
-						<button
-							class="icon-btn"
-							type="button"
-							onclick={() => (showEmojiPicker = !showEmojiPicker)}
-						>
-							{#if selectedIcon}
-								<span class="icon-preview">{selectedIcon}</span>
-							{:else}
-								<span class="icon-placeholder">+</span>
-							{/if}
-						</button>
+						<EmojiPickerButton bind:value={selectedIcon} placeholder="+" size="md" />
 						<input
 							class="name-input"
 							type="text"
@@ -336,18 +327,6 @@
 							bind:value={name}
 						/>
 					</div>
-
-					{#if showEmojiPicker}
-						<div class="emoji-picker-container">
-							<EmojiPicker
-								selected={selectedIcon}
-								onselect={(emoji) => {
-									selectedIcon = emoji;
-									showEmojiPicker = false;
-								}}
-							/>
-						</div>
-					{/if}
 
 					<input
 						class="desc-input"
@@ -409,7 +388,8 @@
 		display: flex;
 		justify-content: center;
 		align-items: flex-start;
-		padding-top: 10vh;
+		padding: 10vh var(--space-4) var(--space-4);
+		animation: overlay-in 140ms ease-out;
 	}
 
 	.modal {
@@ -422,6 +402,22 @@
 		overflow: hidden;
 		max-height: 80vh;
 		overflow-y: auto;
+		animation: modal-in 160ms ease-out;
+	}
+
+	@keyframes overlay-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	@keyframes modal-in {
+		from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+		to { opacity: 1; transform: translateY(0) scale(1); }
+	}
+
+	/* Honor prefers-reduced-motion */
+	@media (prefers-reduced-motion: reduce) {
+		.overlay, .modal { animation: none; }
 	}
 
 	/* -- Header ------------------------------------------------------------ */
@@ -513,12 +509,19 @@
 		gap: var(--space-3);
 	}
 
+	/*
+	 * Unified card: both emoji-icon templates and the Blank card share the
+	 * same structure. Blank gets a muted circular icon wrapper instead of
+	 * a dashed outline so it feels like a first-class option rather than
+	 * a fallback.
+	 */
 	.template-card {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
 		gap: var(--space-1);
-		padding: var(--space-4);
+		padding: var(--space-3) var(--space-4);
+		min-height: 108px;
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -532,32 +535,49 @@
 		background: color-mix(in srgb, var(--accent-blue) 5%, var(--bg-tertiary));
 	}
 
-	.template-card--blank {
-		border-style: dashed;
-		border-color: var(--border);
-	}
-
-	.template-card--blank:hover {
-		border-style: dashed;
-		border-color: var(--accent-blue);
+	.template-card:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
 	}
 
 	.template-icon {
-		font-size: 1.5em;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		font-size: 1.4em;
 		line-height: 1;
+		margin-bottom: var(--space-1);
+	}
+
+	.template-icon-wrap {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+		color: var(--text-secondary);
+		margin-bottom: var(--space-1);
+	}
+
+	.template-card--blank:hover .template-icon-wrap {
+		background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
+		color: var(--accent-blue);
 	}
 
 	.template-name {
-		font-size: 0.9em;
+		font-size: 0.92em;
 		font-weight: 600;
 		color: var(--text-primary);
-		margin-top: var(--space-1);
 	}
 
 	.template-desc {
-		font-size: 0.78em;
+		font-size: 0.8em;
 		color: var(--text-muted);
-		line-height: 1.35;
+		line-height: 1.4;
 	}
 
 	/* -- Step 2: Icon + Name row ------------------------------------------- */
@@ -566,35 +586,6 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
-	}
-
-	.icon-btn {
-		width: 48px;
-		height: 48px;
-		min-width: 48px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		cursor: pointer;
-		font-size: 1.5em;
-		line-height: 1;
-		padding: 0;
-	}
-
-	.icon-btn:hover {
-		border-color: var(--border);
-	}
-
-	.icon-preview {
-		font-size: 1em;
-	}
-
-	.icon-placeholder {
-		color: var(--text-muted);
-		font-size: 0.8em;
 	}
 
 	.name-input {
@@ -614,12 +605,6 @@
 	.name-input:focus {
 		border-color: var(--accent-blue);
 		outline: none;
-	}
-
-	/* -- Emoji picker ------------------------------------------------------ */
-
-	.emoji-picker-container {
-		margin-bottom: var(--space-3);
 	}
 
 	/* -- Description ------------------------------------------------------- */
@@ -656,11 +641,11 @@
 	}
 
 	.fields-label {
-		font-size: 0.85em;
+		font-size: 0.75em;
 		font-weight: 600;
-		color: var(--text-secondary);
+		color: var(--text-muted);
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.05em;
 	}
 
 	.fields-list {
@@ -732,5 +717,32 @@
 	.btn-create:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* ── Responsive ────────────────────────────────────────────────────────── */
+
+	@media (max-width: 640px) {
+		.overlay {
+			padding: var(--space-3);
+			align-items: stretch;
+		}
+
+		.modal {
+			max-width: 100%;
+			max-height: calc(100vh - var(--space-6));
+		}
+
+		.template-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.modal-footer {
+			flex-wrap: wrap;
+			gap: var(--space-2);
+		}
+
+		.btn-cancel, .btn-create {
+			flex: 1 1 auto;
+		}
 	}
 </style>
