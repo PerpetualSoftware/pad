@@ -65,10 +65,12 @@
 	const showReorder = $derived(onmoveup !== undefined && onmovedown !== undefined);
 	const isSelectType = $derived(field.type === 'select' || field.type === 'multi_select');
 
-	// Terminal-option toggle is currently scoped to the `status` field only.
-	// This matches the existing EditCollectionModal behavior exactly.
-	// Generalizing to any select field is the job of T4 (TASK-597).
-	const showsTerminalColumn = $derived(field.key === 'status' && field.options.length > 0);
+	// Terminal-option toggle: available on any select/multi_select field
+	// that has at least one option. Marking an option as terminal persists
+	// it on the FieldDef's terminal_options; the semantics of how the
+	// backend uses it for done-detection are currently status-centric and
+	// are being generalized in TASK-604 (cross-field done-detection).
+	const showsTerminalColumn = $derived(isSelectType && field.options.length > 0);
 
 	// Auto-derive the key from the label for new fields, unless the user has
 	// manually edited the key. Once `keyTouched` flips to true the user owns
@@ -285,7 +287,9 @@
 					<span class="options-col-label">Options</span>
 					<span
 						class="options-col-terminal"
-						title="Terminal statuses are treated as done/closed"
+						title={'Mark options as terminal — values that mean "done" or "closed" for items. ' +
+							'Used for dashboard filtering, progress bars, and changelog generation. ' +
+							'Most useful on status-like fields; optional on others.'}
 					>Done?</span>
 					<span class="options-col-spacer"></span>
 				</div>
@@ -294,8 +298,7 @@
 				{#each field.options as _opt, oi (oi)}
 					<div
 						class="option-row"
-						class:option-terminal={field.key === 'status' &&
-							isTerminal(field.options[oi])}
+						class:option-terminal={isTerminal(field.options[oi])}
 					>
 						<input
 							class="option-name-input"
@@ -303,56 +306,54 @@
 							bind:value={field.options[oi]}
 							placeholder="option name"
 						/>
-						{#if field.key === 'status'}
-							<button
-								class="option-done-toggle"
-								class:active={isTerminal(field.options[oi])}
-								type="button"
-								onclick={() => toggleTerminal(field.options[oi])}
-								title={isTerminal(field.options[oi])
-									? 'Marked as terminal (click to unmark)'
-									: 'Mark as terminal — items with this status are considered done'}
-								aria-label={isTerminal(field.options[oi])
-									? 'Unmark as terminal'
-									: 'Mark as terminal'}
-							>
-								{#if isTerminal(field.options[oi])}
-									<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-										<rect
-											x="1"
-											y="1"
-											width="14"
-											height="14"
-											rx="3"
-											fill="currentColor"
-											opacity="0.15"
-											stroke="currentColor"
-											stroke-width="1.5"
-										/>
-										<path
-											d="M4.5 8L7 10.5L11.5 5.5"
-											stroke="currentColor"
-											stroke-width="1.8"
-											stroke-linecap="round"
-											stroke-linejoin="round"
-										/>
-									</svg>
-								{:else}
-									<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-										<rect
-											x="1.5"
-											y="1.5"
-											width="13"
-											height="13"
-											rx="2.5"
-											stroke="currentColor"
-											stroke-width="1"
-											opacity="0.4"
-										/>
-									</svg>
-								{/if}
-							</button>
-						{/if}
+						<button
+							class="option-done-toggle"
+							class:active={isTerminal(field.options[oi])}
+							type="button"
+							onclick={() => toggleTerminal(field.options[oi])}
+							title={isTerminal(field.options[oi])
+								? 'Marked as terminal (click to unmark)'
+								: 'Mark as terminal — items with this value are considered done / closed'}
+							aria-label={isTerminal(field.options[oi])
+								? 'Unmark as terminal'
+								: 'Mark as terminal'}
+						>
+							{#if isTerminal(field.options[oi])}
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+									<rect
+										x="1"
+										y="1"
+										width="14"
+										height="14"
+										rx="3"
+										fill="currentColor"
+										opacity="0.15"
+										stroke="currentColor"
+										stroke-width="1.5"
+									/>
+									<path
+										d="M4.5 8L7 10.5L11.5 5.5"
+										stroke="currentColor"
+										stroke-width="1.8"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
+							{:else}
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+									<rect
+										x="1.5"
+										y="1.5"
+										width="13"
+										height="13"
+										rx="2.5"
+										stroke="currentColor"
+										stroke-width="1"
+										opacity="0.4"
+									/>
+								</svg>
+							{/if}
+						</button>
 						<button
 							class="option-remove-btn"
 							type="button"

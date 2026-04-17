@@ -342,9 +342,17 @@
 				) {
 					def.options = normalizedOpts;
 				}
-				if (f.key === 'status' && f.terminalOptions.length > 0) {
-					// Only include terminal options that still exist in the options list
-					def.terminal_options = f.terminalOptions.filter(t => def.options?.includes(t));
+				// Persist terminal-option markings for any select/multi_select
+				// field (T4 / TASK-597). Filter to options that still exist
+				// in the saved set so renames/removals don't leave stale
+				// terminal pointers.
+				if (
+					(f.type === 'select' || f.type === 'multi_select') &&
+					f.terminalOptions.length > 0 &&
+					def.options
+				) {
+					const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
+					if (terms.length > 0) def.terminal_options = terms;
 				}
 				// Gate type-specific advanced values by the current type so
 				// stale hidden values from a previous type (e.g. a number
@@ -405,10 +413,14 @@
 						def.options = opts;
 					}
 					// Mirror the existing-fields path: persist terminal-option
-					// markings for newly-added status fields. Without this,
-					// choices made via the terminal toggle are silently dropped
-					// on save.
-					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
+					// markings for any new select/multi_select field (T4 /
+					// TASK-597). Filter to options that still exist in the
+					// saved set.
+					if (
+						(f.type === 'select' || f.type === 'multi_select') &&
+						f.terminalOptions.length > 0 &&
+						def.options
+					) {
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
 					}
