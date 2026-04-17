@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
+	import type { CollectionCreate, FieldDef, CollectionSettings, QuickAction } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
@@ -12,6 +12,9 @@
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
+	import DisplaySettingsEditor from './DisplaySettingsEditor.svelte';
+	import QuickActionsEditor, { type EditableQuickAction } from './QuickActionsEditor.svelte';
+	import { placeholderContext, type PreviewContext } from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -42,6 +45,56 @@
 	let collectionOptions = $state<CollectionOption[]>([]);
 	let collectionsRequestToken = 0;
 
+	// ── Advanced settings (Display + Quick Actions) ─────────────────────────
+	// Default view / layout / group-by / sort-by / quick-actions can all be
+	// configured at create time under a collapsible Advanced reveal. The
+	// reveal defaults closed so the fast-path "pick a template, name it,
+	// create" flow stays uncluttered.
+	let showAdvanced = $state(false);
+	let defaultView = $state<'list' | 'board' | 'table'>('list');
+	let layout = $state<'fields-primary' | 'content-primary' | 'balanced'>('balanced');
+	let boardGroupBy = $state('status');
+	let listGroupBy = $state('');
+	let listSortBy = $state('');
+	let quickActions = $state<EditableQuickAction[]>([]);
+
+	// The collection doesn't exist yet, so the preview context falls back to
+	// representative placeholder values. Updates live as the collection name
+	// changes so the {collection} token reflects what will be saved.
+	const previewContext = $derived<PreviewContext>(placeholderContext(name.trim()));
+
+	// Derive group-by / sort options from the fields the user has added so
+	// far. Mirrors the Edit modal's derivation but against EditableField[].
+	const selectFieldKeys = $derived(
+		fields
+			.filter((f) => (f.type === 'select' || f.type === 'multi_select') && f.key.trim())
+			.map((f) => ({ key: f.key.trim(), label: f.label.trim() || f.key.trim() }))
+	);
+	const sortableFieldKeys = $derived([
+		...fields
+			.filter((f) => f.key.trim())
+			.map((f) => ({ key: f.key.trim(), label: f.label.trim() || f.key.trim() })),
+		{ key: 'created_at', label: 'Created date' },
+		{ key: 'updated_at', label: 'Updated date' },
+		{ key: 'sort_order', label: 'Manual order' }
+	]);
+
+	// If the current boardGroupBy points at a field that no longer exists
+	// (or the user removed all select fields), fall back to the first
+	// available select field so the Display UI stays valid. We only do this
+	// when the advanced section is open to avoid surprise state mutations
+	// while the user hasn't engaged with it.
+	$effect(() => {
+		if (!showAdvanced) return;
+		if (selectFieldKeys.length === 0) return;
+		if (!selectFieldKeys.some((f) => f.key === boardGroupBy)) {
+			boardGroupBy = selectFieldKeys[0].key;
+		}
+		if (listGroupBy && !selectFieldKeys.some((f) => f.key === listGroupBy)) {
+			listGroupBy = '';
+		}
+	});
+
 	// Track previous open state to detect open transitions
 	let prevOpen = $state(false);
 
@@ -54,6 +107,13 @@
 			description = '';
 			fields = [];
 			selectedSettings = null;
+			showAdvanced = false;
+			defaultView = 'list';
+			layout = 'balanced';
+			boardGroupBy = 'status';
+			listGroupBy = '';
+			listSortBy = '';
+			quickActions = [];
 			error = '';
 			void loadCollectionOptions();
 		}
@@ -89,6 +149,13 @@
 		description = '';
 		fields = [];
 		selectedSettings = null;
+		showAdvanced = false;
+		defaultView = 'list';
+		layout = 'balanced';
+		boardGroupBy = 'status';
+		listGroupBy = '';
+		listSortBy = '';
+		quickActions = [];
 		error = '';
 	}
 
@@ -102,6 +169,31 @@
 			// Template fields already have valid keys — use fieldFromDef with
 			// existing=true so keyTouched=true and slugify doesn't overwrite.
 			fields = template.fields.map((f) => fieldFromDef(f, true));
+			// Pre-fill advanced state from the template's settings so the
+			// Display tab reflects what the template ships with. The user can
+			// still inspect/override via the Advanced reveal.
+			const s = template.settings;
+			if (s.default_view === 'list' || s.default_view === 'board' || s.default_view === 'table') {
+				defaultView = s.default_view;
+			}
+			if (
+				s.layout === 'fields-primary' ||
+				s.layout === 'content-primary' ||
+				s.layout === 'balanced'
+			) {
+				layout = s.layout;
+			}
+			if (s.board_group_by) boardGroupBy = s.board_group_by;
+			if (s.list_group_by) listGroupBy = s.list_group_by;
+			if (s.list_sort_by) listSortBy = s.list_sort_by;
+			if (s.quick_actions) {
+				quickActions = s.quick_actions.map((a) => ({
+					label: a.label,
+					prompt: a.prompt,
+					scope: a.scope,
+					icon: a.icon ?? ''
+				}));
+			}
 		}
 		step = 'editor';
 	}
@@ -236,12 +328,36 @@
 					return def;
 				});
 
+			// Bundle the Advanced reveal state into the saved settings. Start
+			// from any template-provided settings so template defaults (e.g.
+			// Bug Tracker's board_group_by) are preserved, then overlay the
+			// user's explicit choices. Quick actions are filtered to those
+			// with both a label and a prompt so we don't persist empty rows.
+			const savedActions: QuickAction[] = quickActions
+				.filter((a) => a.label.trim() && a.prompt.trim())
+				.map((a) => ({
+					label: a.label.trim(),
+					prompt: a.prompt.trim(),
+					scope: a.scope,
+					...(a.icon.trim() ? { icon: a.icon.trim() } : {})
+				}));
+
+			const settingsObj: CollectionSettings = {
+				...(selectedSettings ?? {}),
+				default_view: defaultView,
+				layout,
+				board_group_by: boardGroupBy || undefined,
+				list_group_by: listGroupBy || undefined,
+				list_sort_by: listSortBy || undefined,
+				...(savedActions.length > 0 ? { quick_actions: savedActions } : {})
+			};
+
 			const data: CollectionCreate = {
 				name: name.trim(),
 				icon: selectedIcon || undefined,
 				description: description.trim() || undefined,
 				schema: JSON.stringify({ fields: fieldDefs }),
-				settings: selectedSettings ? JSON.stringify(selectedSettings) : undefined
+				settings: JSON.stringify(settingsObj)
 			};
 			await api.collections.create(wsSlug, data);
 			toastStore.show(`Created ${name.trim()}`, 'success');
@@ -356,6 +472,57 @@
 						{/if}
 						<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
 					</div>
+
+					<!-- ── Advanced: Display settings + Quick Actions ─────────
+						Defaults collapsed so the simple path stays short. The
+						template pre-fill already lives in these states, so even
+						if the user never opens Advanced the saved settings from
+						a picked template are preserved.
+					-->
+					<section class="advanced-section">
+						<button
+							type="button"
+							class="advanced-toggle"
+							onclick={() => (showAdvanced = !showAdvanced)}
+							aria-expanded={showAdvanced}
+						>
+							<span class="advanced-chevron" class:open={showAdvanced} aria-hidden="true">
+								<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+									<path
+										d="M3 2L7 5L3 8"
+										stroke="currentColor"
+										stroke-width="1.5"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
+							</span>
+							<span>Advanced</span>
+							<span class="advanced-sub">Display settings · Quick actions</span>
+						</button>
+
+						{#if showAdvanced}
+							<div class="advanced-content">
+								<div class="advanced-block">
+									<h3 class="advanced-block-title">Display</h3>
+									<DisplaySettingsEditor
+										bind:defaultView
+										bind:layout
+										bind:boardGroupBy
+										bind:listGroupBy
+										bind:listSortBy
+										{selectFieldKeys}
+										{sortableFieldKeys}
+									/>
+								</div>
+
+								<div class="advanced-block">
+									<h3 class="advanced-block-title">Quick actions</h3>
+									<QuickActionsEditor bind:actions={quickActions} {previewContext} />
+								</div>
+							</div>
+						{/if}
+					</section>
 				</div>
 
 				<div class="modal-footer">
@@ -717,6 +884,67 @@
 	.btn-create:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* ── Advanced reveal ──────────────────────────────────────────────────── */
+
+	.advanced-section {
+		margin-top: var(--space-4);
+		border-top: 1px solid var(--border);
+		padding-top: var(--space-3);
+	}
+
+	.advanced-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		width: 100%;
+		padding: var(--space-2) 0;
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.advanced-toggle:hover {
+		color: var(--text-primary);
+	}
+
+	.advanced-chevron {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		transition: transform 0.15s ease;
+		color: var(--text-muted);
+	}
+
+	.advanced-chevron.open {
+		transform: rotate(90deg);
+	}
+
+	.advanced-sub {
+		color: var(--text-muted);
+		font-size: 0.82em;
+		font-weight: 400;
+	}
+
+	.advanced-content {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-5);
+		padding: var(--space-3) 0;
+	}
+
+	.advanced-block-title {
+		margin: 0 0 var(--space-2);
+		font-size: 0.75em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
 	}
 
 	/* ── Responsive ────────────────────────────────────────────────────────── */
