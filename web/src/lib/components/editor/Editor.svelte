@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
+	import { page } from '$app/state';
 	import { Editor, mergeAttributes } from '@tiptap/core';
 	import { Plugin } from '@tiptap/pm/state';
 	import StarterKit from '@tiptap/starter-kit';
@@ -205,8 +206,9 @@
 	});
 	import { Markdown } from 'tiptap-markdown';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
-	import { formatItemRef } from '$lib/types';
+	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
 
@@ -299,11 +301,41 @@
 			.slice(0, 10);
 	}
 
-	function execLink(title: string) {
+	function execLink(doc: Item) {
 		if (!editor) return;
+		// Build the URL in the same shape wikiLinksToMarkdown produces so the
+		// save round-trip (markdownToWikiLinks) reliably converts it back to
+		// [[Title]]. We read from the live route params (not workspaceStore)
+		// because that's what the slug page uses when converting wiki-links —
+		// keeping the two in sync is what lets the round-trip work.
+		const routeUsername = page.params.username ?? '';
+		const routeWorkspace = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const collSlug = doc.collection_slug ?? '';
+		const idSeg = itemUrlId(doc);
+		const prefix = routeUsername ? `/${routeUsername}/${routeWorkspace}` : `/${routeWorkspace}`;
+		const href = collSlug && idSeg && routeWorkspace ? `${prefix}/${collSlug}/${idSeg}` : '';
+
 		// Delete the [[ and any query text typed so far
 		const to = editor.state.selection.from;
-		editor.chain().focus().deleteRange({ from: linkStartPos, to }).insertContent(`[[${title}]]`).run();
+		const chain = editor.chain().focus().deleteRange({ from: linkStartPos, to });
+
+		if (href) {
+			// Insert the title as a real Tiptap link mark so it's clickable
+			// immediately (no reload needed). On save, tiptap-markdown emits
+			// [Title](href), which markdownToWikiLinks converts back to [[Title]].
+			chain.insertContent([
+				{
+					type: 'text',
+					text: doc.title,
+					marks: [{ type: 'link', attrs: { href } }],
+				},
+				// Trailing space drops the link mark so subsequent typing is plain text.
+				{ type: 'text', text: ' ' },
+			]).run();
+		} else {
+			// Fall back to [[Title]] text if we can't resolve a URL.
+			chain.insertContent(`[[${doc.title}]]`).run();
+		}
 		closeLink();
 	}
 
@@ -418,7 +450,7 @@
 						const items = getFilteredLinks();
 						if (event.key === 'ArrowDown') { event.preventDefault(); linkIdx = (linkIdx + 1) % Math.max(items.length, 1); return true; }
 						if (event.key === 'ArrowUp') { event.preventDefault(); linkIdx = (linkIdx - 1 + items.length) % Math.max(items.length, 1); return true; }
-						if (event.key === 'Enter') { event.preventDefault(); if (items[linkIdx]) execLink(items[linkIdx].title); return true; }
+						if (event.key === 'Enter') { event.preventDefault(); if (items[linkIdx]) execLink(items[linkIdx]); return true; }
 						if (event.key === 'Escape') { event.preventDefault(); closeLink(); return true; }
 						return false;
 					}
@@ -675,13 +707,13 @@
 				class="slash-item"
 				class:selected={i === linkIdx}
 				onmouseenter={() => linkIdx = i}
-				onclick={() => execLink(doc.title)}
+				onclick={() => execLink(doc)}
 			>
 				<span class="slash-icon">{doc.collection_icon ?? '📄'}</span>
-				<span class="slash-title">{doc.title}</span>
 				{#if formatItemRef(doc)}
 					<span class="slash-ref">{formatItemRef(doc)}</span>
 				{/if}
+				<span class="slash-title">{doc.title}</span>
 			</button>
 		{:else}
 			<div class="slash-item" style="color: var(--text-muted); cursor: default;">No matching documents</div>
