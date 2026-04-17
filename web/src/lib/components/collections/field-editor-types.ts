@@ -38,6 +38,13 @@ export interface EditableField {
 	default?: unknown;
 	/** UI-only: the field's type at load time, used to detect in-session type switches. */
 	originalType?: FieldDef['type'];
+	/**
+	 * UI-only: the field's default at load time. Paired with `originalType`
+	 * by the Edit-modal save path to detect when a default on a UI-
+	 * unsupported type has been altered in-session (e.g. via a
+	 * supported-type detour) and should be dropped rather than preserved.
+	 */
+	originalDefault?: unknown;
 	/** UI-only: true once the user has manually edited the key. */
 	keyTouched?: boolean;
 }
@@ -288,6 +295,25 @@ export function coerceDefault(
 	}
 }
 
+/**
+ * Deep-equality check for default values, tolerant of the polymorphic
+ * shapes a default can take (string | number | boolean | string[] for
+ * multi_select). Uses JSON stringification — fine for schema defaults,
+ * which are always JSON-serializable primitives and arrays.
+ *
+ * Used by the Edit modal to decide whether a default on a UI-
+ * unsupported-for-editing type has been mutated in-session.
+ */
+export function defaultsEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (a === undefined || b === undefined) return false;
+	try {
+		return JSON.stringify(a) === JSON.stringify(b);
+	} catch {
+		return false;
+	}
+}
+
 /** Create an empty EditableField for a new (unsaved) field. */
 export function blankField(): EditableField {
 	return {
@@ -325,6 +351,7 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		suffix: def.suffix,
 		default: def.default,
 		originalType: def.type,
+		originalDefault: def.default,
 		// Both existing and template fields start with keyTouched=true so
 		// the key is preserved verbatim, not overwritten by slugify(label).
 		keyTouched: true

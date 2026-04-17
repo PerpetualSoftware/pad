@@ -151,13 +151,13 @@
 		field.default = v === '' ? undefined : v;
 	}
 	function onDefaultNumberInput(e: Event) {
+		// Keep the raw string in field.default while editing. Coercing to
+		// Number on every keystroke destroys partial states like "-" or
+		// "1." (Number("1.") === 1, so the dot gets erased and users can't
+		// type decimals). `coerceDefault` converts the string to a number
+		// at save time, dropping garbage values.
 		const v = (e.currentTarget as HTMLInputElement).value;
-		if (v === '') {
-			field.default = undefined;
-			return;
-		}
-		const n = Number(v);
-		field.default = Number.isFinite(n) ? n : undefined;
+		field.default = v === '' ? undefined : v;
 	}
 	function onDefaultDateInput(e: Event) {
 		const v = (e.currentTarget as HTMLInputElement).value;

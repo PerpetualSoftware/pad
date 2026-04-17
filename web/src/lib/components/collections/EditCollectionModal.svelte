@@ -8,6 +8,7 @@
 	import {
 		blankField,
 		coerceDefault,
+		defaultsEqual,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -170,10 +171,15 @@
 				collection: f.collection,
 				suffix: f.suffix,
 				default: f.default,
-				// Snapshot the load-time type so the save path can detect
-				// in-session type switches (used for the unsupported-type
-				// default preservation logic).
-				originalType: f.type
+				// Snapshot the load-time type AND default so the save path
+				// can detect in-session type switches and default mutations
+				// (used for the unsupported-type default preservation
+				// logic). Without originalDefault, a user could round-trip
+				// the type (relation -> text -> relation) with a new
+				// default injected in the middle and we'd preserve the
+				// stale value because originalType still matches.
+				originalType: f.type,
+				originalDefault: f.default
 			}));
 			newFields = [];
 			showEmojiPicker = false;
@@ -355,17 +361,13 @@
 				//   and select defaults are trimmed to match normalized
 				//   options.
 				// - If the active type is UI-unsupported for defaults
-				//   (multi_select, relation) AND the type hasn't changed
-				//   since load, pass the existing default through verbatim.
-				//   These defaults only arrive via API / imports, so silently
-				//   stripping them on save would mutate the schema the user
-				//   didn't intend.
-				// - If the active type is UI-unsupported AND the type DID
-				//   change since load, drop the default. It was set against
-				//   the old type and is stale / meaningless now. Without
-				//   this, a user could set a text default, switch to
-				//   multi_select (hiding the default UI), save, and persist
-				//   a string default on a multi_select field.
+				//   (multi_select, relation), only preserve the default when
+				//   BOTH type AND default are unchanged from load-time.
+				//   Matching only on type misses the round-trip case:
+				//   relation → text → relation with a new default injected
+				//   in the middle. The UI hides default controls for the
+				//   final type, so any mutation must be discarded.
+				// - Anything else: drop the default.
 				//
 				// Pass the full normalized options array (including []) for
 				// select so that removing all options drops a stale default.
@@ -374,10 +376,14 @@
 						const optsForCoerce = f.type === 'select' ? normalizedOpts : undefined;
 						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
 						if (coerced !== undefined) def.default = coerced;
-					} else if (f.originalType === f.type) {
+					} else if (
+						f.originalType === f.type &&
+						defaultsEqual(f.default, f.originalDefault)
+					) {
 						def.default = f.default;
 					}
-					// else: type changed to an UI-unsupported type — drop.
+					// else: type or default was altered in-session on a type
+					// the UI can't represent — drop.
 				}
 				return def;
 			});
