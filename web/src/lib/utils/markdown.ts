@@ -92,6 +92,16 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 	return content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
 		const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
 
+		// Try to resolve the entire body as a literal title FIRST, before
+		// splitting on `|`. Legacy data may contain titles that include an
+		// unescaped pipe (e.g. "[[A|B]]" where the item's actual title is
+		// "A|B"), and the `key|display` split would otherwise break those.
+		const fullBody = unescapeWikiBody(body);
+		const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
+		if (fullTitleItem && fullTitleItem.collection_slug) {
+			return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
+		}
+
 		// Split optional display override on the FIRST unescaped pipe.
 		const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
 		const key = unescapeWikiBody(rawKey);
@@ -112,14 +122,11 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 			return _match;
 		}
 
-		// 2. Legacy: exact full-title match. Titles can contain slashes, so
-		//    this must win over the collection-filter fallback below.
-		const titleLower = key.toLowerCase();
-		let item = items.find(i => i.title.toLowerCase() === titleLower);
+		// 2. Legacy: the [[collection/Title]] disambiguation syntax. (Exact
+		//    full-title match was already tried above via fullBody.)
+		let item: Item | undefined;
 		let displayText = displayOverride ?? key;
-
-		// 3. Legacy: the [[collection/Title]] disambiguation syntax.
-		if (!item && key.includes('/')) {
+		if (key.includes('/')) {
 			const [collFilter, ...rest] = key.split('/');
 			const searchTitle = rest.join('/');
 			const found = items.find(i =>
