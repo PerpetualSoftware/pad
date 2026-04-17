@@ -3,10 +3,12 @@
 	import type { CollectionCreate, FieldDef, CollectionSettings } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
-	import FieldEditor from './FieldEditor.svelte';
+	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
+		coerceDefault,
 		fieldFromDef,
+		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
@@ -34,6 +36,13 @@
 	let creating = $state(false);
 	let error = $state('');
 
+	// Workspace collections list, used to populate the relation target picker
+	// in FieldEditor. Fetched lazily on modal open. `collectionsRequestToken`
+	// monotonically increases per fetch so a slow older response can't
+	// overwrite a newer one (e.g. on rapid reopens / workspace switches).
+	let collectionOptions = $state<CollectionOption[]>([]);
+	let collectionsRequestToken = 0;
+
 	// Track previous open state to detect open transitions
 	let prevOpen = $state(false);
 
@@ -48,9 +57,33 @@
 			selectedSettings = null;
 			showEmojiPicker = false;
 			error = '';
+			void loadCollectionOptions();
 		}
 		prevOpen = open;
 	});
+
+	async function loadCollectionOptions() {
+		// Clear the stale list from a previous open before the new request
+		// resolves, and bump the request token so only this call's response
+		// is allowed to write state. Without the token guard, an older slow
+		// response (e.g. from a previous open or workspace) could land after
+		// a newer one and overwrite it.
+		const token = ++collectionsRequestToken;
+		collectionOptions = [];
+		try {
+			const list = await api.collections.list(wsSlug);
+			if (token !== collectionsRequestToken) return;
+			collectionOptions = list.map((c) => ({
+				slug: c.slug,
+				name: c.name,
+				icon: c.icon
+			}));
+		} catch {
+			// Relation picker falls back to its empty-state hint.
+			if (token !== collectionsRequestToken) return;
+			collectionOptions = [];
+		}
+	}
 
 	function resetForm() {
 		name = '';
@@ -171,6 +204,32 @@
 					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
+					}
+					// Advanced controls (T3 / TASK-596). Only emit when set so
+					// payloads stay compact and round-trip with existing schemas.
+					// Type-specific values are gated by `f.type` so stale state
+					// from a prior type doesn't leak into the saved schema —
+					// e.g. a user sets a number default/suffix, switches to
+					// `relation`, and the hidden number values would otherwise
+					// still be persisted.
+					if (f.required) def.required = true;
+					if (f.computed) def.computed = true;
+					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// Coerce default to match the active type. This catches
+					// both type-switch drift (boolean default left on a text
+					// field) and select whitespace drift (default raw text not
+					// matching the normalized options set).
+					//
+					// For select, always pass the full normalized options
+					// array (including []) so that a field with no options
+					// left can't retain a stale default. Using `def.options`
+					// here is wrong: it's omitted when the list is empty, and
+					// coerceDefault would then skip the membership check.
+					if (f.default !== undefined && typeSupportsDefault(f.type)) {
+						const optsForCoerce = f.type === 'select' ? opts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
+						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;
 				});
@@ -303,6 +362,7 @@
 										total={fields.length}
 										isNew
 										keyError={keyErrors[i]}
+										collections={collectionOptions}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeField(i)}

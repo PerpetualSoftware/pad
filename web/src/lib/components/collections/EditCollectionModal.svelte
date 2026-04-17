@@ -4,9 +4,12 @@
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
-	import FieldEditor from './FieldEditor.svelte';
+	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
+		coerceDefault,
+		defaultsEqual,
+		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
@@ -62,6 +65,30 @@
 
 	let existingFields = $state<EditableField[]>([]);
 	let newFields = $state<EditableField[]>([]);
+
+	// Workspace collections list, used to populate the relation target picker
+	// in FieldEditor for new relation-type fields. Fetched lazily on open.
+	// `collectionsRequestToken` guards against a slow older response
+	// overwriting a newer one on rapid reopens.
+	let collectionOptions = $state<CollectionOption[]>([]);
+	let collectionsRequestToken = 0;
+
+	async function loadCollectionOptions() {
+		const token = ++collectionsRequestToken;
+		collectionOptions = [];
+		try {
+			const list = await api.collections.list(wsSlug);
+			if (token !== collectionsRequestToken) return;
+			collectionOptions = list.map((c) => ({
+				slug: c.slug,
+				name: c.name,
+				icon: c.icon
+			}));
+		} catch {
+			if (token !== collectionsRequestToken) return;
+			collectionOptions = [];
+		}
+	}
 
 	// ── Display settings state ──────────────────────────────────────────────
 
@@ -143,7 +170,16 @@
 				computed: f.computed,
 				collection: f.collection,
 				suffix: f.suffix,
-				default: f.default
+				default: f.default,
+				// Snapshot the load-time type AND default so the save path
+				// can detect in-session type switches and default mutations
+				// (used for the unsupported-type default preservation
+				// logic). Without originalDefault, a user could round-trip
+				// the type (relation -> text -> relation) with a new
+				// default injected in the middle and we'd preserve the
+				// stale value because originalType still matches.
+				originalType: f.type,
+				originalDefault: f.default
 			}));
 			newFields = [];
 			showEmojiPicker = false;
@@ -166,6 +202,8 @@
 				scope: a.scope,
 				icon: a.icon ?? ''
 			}));
+
+			void loadCollectionOptions();
 		}
 	});
 
@@ -291,18 +329,62 @@
 					label: f.label.trim() || f.key,
 					type: f.type
 				};
-				if ((f.type === 'select' || f.type === 'multi_select') && f.options.length > 0) {
-					def.options = f.options.map((o) => o.trim()).filter(Boolean);
+				// Normalize options into a local so we can both emit them on
+				// def AND pass them to coerceDefault for select fields (even
+				// when empty — an empty list must drop stale defaults).
+				const normalizedOpts =
+					f.type === 'select' || f.type === 'multi_select'
+						? f.options.map((o) => o.trim()).filter(Boolean)
+						: [];
+				if (
+					(f.type === 'select' || f.type === 'multi_select') &&
+					normalizedOpts.length > 0
+				) {
+					def.options = normalizedOpts;
 				}
 				if (f.key === 'status' && f.terminalOptions.length > 0) {
 					// Only include terminal options that still exist in the options list
 					def.terminal_options = f.terminalOptions.filter(t => def.options?.includes(t));
 				}
+				// Gate type-specific advanced values by the current type so
+				// stale hidden values from a previous type (e.g. a number
+				// default/suffix after switching to relation) don't leak
+				// into the saved schema.
 				if (f.required) def.required = true;
 				if (f.computed) def.computed = true;
-				if (f.collection) def.collection = f.collection;
-				if (f.suffix) def.suffix = f.suffix;
-				if (f.default !== undefined) def.default = f.default;
+				if (f.type === 'relation' && f.collection) def.collection = f.collection;
+				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+				// Default-value handling for existing fields:
+				//
+				// - If the active type has UI-editable defaults, run through
+				//   coerceDefault so stale values from a prior type don't leak
+				//   and select defaults are trimmed to match normalized
+				//   options.
+				// - If the active type is UI-unsupported for defaults
+				//   (multi_select, relation), only preserve the default when
+				//   BOTH type AND default are unchanged from load-time.
+				//   Matching only on type misses the round-trip case:
+				//   relation → text → relation with a new default injected
+				//   in the middle. The UI hides default controls for the
+				//   final type, so any mutation must be discarded.
+				// - Anything else: drop the default.
+				//
+				// Pass the full normalized options array (including []) for
+				// select so that removing all options drops a stale default.
+				if (f.default !== undefined) {
+					if (typeSupportsDefault(f.type)) {
+						const optsForCoerce = f.type === 'select' ? normalizedOpts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
+						if (coerced !== undefined) def.default = coerced;
+					} else if (
+						f.originalType === f.type &&
+						defaultsEqual(f.default, f.originalDefault)
+					) {
+						def.default = f.default;
+					}
+					// else: type or default was altered in-session on a type
+					// the UI can't represent — drop.
+				}
 				return def;
 			});
 
@@ -329,6 +411,23 @@
 					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
+					}
+					// Advanced controls (T3 / TASK-596). Only emit when set so
+					// payloads stay compact and round-trip with existing schemas.
+					// Type-specific values are gated by `f.type` so stale state
+					// from a prior type doesn't leak into the saved schema.
+					if (f.required) def.required = true;
+					if (f.computed) def.computed = true;
+					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// Coerce default to the active type (and normalize select
+					// defaults against the normalized option set). Pass the
+					// full opts array (including []) so defaults are dropped
+					// when the options list is empty.
+					if (f.default !== undefined && typeSupportsDefault(f.type)) {
+						const optsForCoerce = f.type === 'select' ? opts : undefined;
+						const coerced = coerceDefault(f.default, f.type, optsForCoerce);
+						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;
 				});
@@ -491,6 +590,7 @@
 										bind:field={existingFields[i]}
 										index={i}
 										total={existingFields.length}
+										collections={collectionOptions}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeExistingField(i)}
@@ -503,6 +603,7 @@
 										total={newFields.length}
 										isNew
 										keyError={newKeyErrors[i]}
+										collections={collectionOptions}
 										onmoveup={() => moveNewField(i, -1)}
 										onmovedown={() => moveNewField(i, 1)}
 										onremove={() => removeNewField(i)}

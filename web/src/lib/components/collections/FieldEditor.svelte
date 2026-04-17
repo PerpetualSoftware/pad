@@ -1,5 +1,19 @@
+<script lang="ts" module>
+	/** Minimal collection summary passed down from the modal for the relation picker. */
+	export interface CollectionOption {
+		slug: string;
+		name: string;
+		icon?: string;
+	}
+</script>
+
 <script lang="ts">
-	import { FIELD_TYPES, slugifyKey, type EditableField } from './field-editor-types';
+	import {
+		FIELD_TYPES,
+		slugifyKey,
+		typeSupportsDefault,
+		type EditableField
+	} from './field-editor-types';
 
 	interface Props {
 		/** The field being edited. Mutated in place via bindings. */
@@ -21,6 +35,13 @@
 		 * surfaced when `isNew` is true.
 		 */
 		keyError?: string | null;
+		/**
+		 * List of workspace collections, used to populate the relation target
+		 * dropdown when the field type is `relation`. The parent modal fetches
+		 * these once on open and passes them down. Undefined or empty = the
+		 * picker renders an empty-state hint.
+		 */
+		collections?: CollectionOption[];
 		/** Optional: parent provides a move-up handler. If omitted, the button is hidden. */
 		onmoveup?: () => void;
 		/** Optional: parent provides a move-down handler. If omitted, the button is hidden. */
@@ -35,6 +56,7 @@
 		total,
 		isNew = false,
 		keyError = null,
+		collections = [],
 		onmoveup,
 		onmovedown,
 		onremove
@@ -83,6 +105,103 @@
 	function isTerminal(option: string): boolean {
 		return field.terminalOptions.includes(option);
 	}
+
+	// ── Advanced section ─────────────────────────────────────────────────────
+	// Contains: required, default value, suffix (number only), relation target.
+	// Auto-expanded when the field already has any advanced value configured so
+	// the user sees what's set without hunting for it. The user can still
+	// collapse manually; the state is local to this component instance.
+
+	const hasAdvancedValues = $derived(
+		!!field.required ||
+			field.default !== undefined ||
+			!!field.suffix ||
+			!!field.collection
+	);
+	let showAdvanced = $state(false);
+	// Sync once on mount (and after field identity changes): open if the field
+	// has any pre-set advanced value. Tracked by `field.key` so reopening the
+	// modal or switching field order doesn't clobber the user's manual toggle.
+	let lastSyncedKey = $state<string | undefined>(undefined);
+	$effect.pre(() => {
+		if (field.key !== lastSyncedKey) {
+			lastSyncedKey = field.key;
+			showAdvanced = hasAdvancedValues;
+		}
+	});
+
+	// Default-value support depends on type. See typeSupportsDefault() for
+	// the full rules. We read through the shared helper so the gating logic
+	// in both modals' save paths matches the UI.
+	const supportsDefault = $derived(typeSupportsDefault(field.type));
+
+	const isRelation = $derived(field.type === 'relation');
+	const isNumber = $derived(field.type === 'number');
+	const isCheckboxType = $derived(field.type === 'checkbox');
+	const isSelectSingle = $derived(field.type === 'select');
+
+	// Computed fields are read-only — they're populated by the server / agent,
+	// not the user. We still render them, but disable the advanced controls.
+	const isComputed = $derived(!!field.computed);
+
+	// `field.default` is polymorphic (string | number | boolean). We use typed
+	// handlers to keep the serialized value in the right shape.
+	function onDefaultTextInput(e: Event) {
+		const v = (e.currentTarget as HTMLInputElement).value;
+		field.default = v === '' ? undefined : v;
+	}
+	function onDefaultNumberInput(e: Event) {
+		// Keep the raw string in field.default while editing. Coercing to
+		// Number on every keystroke destroys partial states like "-" or
+		// "1." (Number("1.") === 1, so the dot gets erased and users can't
+		// type decimals). `coerceDefault` converts the string to a number
+		// at save time, dropping garbage values.
+		const v = (e.currentTarget as HTMLInputElement).value;
+		field.default = v === '' ? undefined : v;
+	}
+	function onDefaultDateInput(e: Event) {
+		const v = (e.currentTarget as HTMLInputElement).value;
+		field.default = v === '' ? undefined : v;
+	}
+	function onDefaultCheckboxInput(e: Event) {
+		field.default = (e.currentTarget as HTMLInputElement).checked;
+	}
+	function onDefaultSelectInput(e: Event) {
+		const v = (e.currentTarget as HTMLSelectElement).value;
+		field.default = v === '' ? undefined : v;
+	}
+	function onSuffixInput(e: Event) {
+		const v = (e.currentTarget as HTMLInputElement).value;
+		field.suffix = v === '' ? undefined : v;
+	}
+	function onCollectionInput(e: Event) {
+		const v = (e.currentTarget as HTMLSelectElement).value;
+		field.collection = v === '' ? undefined : v;
+	}
+	function onRequiredInput(e: Event) {
+		// Keep undefined rather than `false` so save payloads stay compact and
+		// round-trip-compatible with existing schemas.
+		field.required = (e.currentTarget as HTMLInputElement).checked || undefined;
+	}
+
+	// Coerce `field.default` to a string for text/number/date/select inputs.
+	const defaultAsString = $derived.by(() => {
+		if (field.default === undefined || field.default === null) return '';
+		if (typeof field.default === 'string') return field.default;
+		if (typeof field.default === 'number') return String(field.default);
+		return '';
+	});
+	const defaultAsBool = $derived(field.default === true);
+	// <input type="date"> only accepts a YYYY-MM-DD value; an RFC3339
+	// datetime like "2026-01-01T10:00:00Z" would render blank and mislead
+	// the user into thinking there is no default. We truncate for display
+	// only — the underlying field.default stays untouched until the user
+	// actually picks a new date.
+	const dateDefaultDisplay = $derived.by(() => {
+		if (typeof field.default !== 'string') return '';
+		const m = /^(\d{4}-\d{2}-\d{2})/.exec(field.default);
+		return m ? m[1] : '';
+	});
 </script>
 
 <div class="field-card">
@@ -151,6 +270,13 @@
 			aria-label="Remove field"
 		>&#10005;</button>
 	</div>
+
+	{#if isComputed}
+		<div class="field-computed-badge" title="Computed fields are populated by the server and can't be configured here.">
+			<span class="computed-dot" aria-hidden="true"></span>
+			<span>computed</span>
+		</div>
+	{/if}
 
 	{#if isSelectType}
 		<div class="field-options">
@@ -240,6 +366,162 @@
 			<button class="option-add-btn" type="button" onclick={addOption}>+ Add option</button>
 		</div>
 	{/if}
+
+	<div class="field-advanced">
+		<button
+			type="button"
+			class="advanced-toggle"
+			onclick={() => (showAdvanced = !showAdvanced)}
+			aria-expanded={showAdvanced}
+		>
+			<span class="advanced-chevron" class:open={showAdvanced} aria-hidden="true">
+				<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+					<path d="M3 2L7 5L3 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</span>
+			<span>Advanced</span>
+			{#if hasAdvancedValues && !showAdvanced}
+				<span class="advanced-badge" aria-label="Field has advanced settings configured">●</span>
+			{/if}
+		</button>
+
+		{#if showAdvanced}
+			<div class="advanced-content">
+				<!-- Required -->
+				<label class="advanced-row advanced-row--inline">
+					<input
+						type="checkbox"
+						checked={!!field.required}
+						onchange={onRequiredInput}
+						disabled={isComputed}
+					/>
+					<span class="advanced-label">Required</span>
+					<span class="advanced-hint">Item can't be saved without a value.</span>
+				</label>
+
+				<!-- Default value (type-appropriate) -->
+				{#if supportsDefault}
+					<div class="advanced-row">
+						<span class="advanced-label" id="default-label-{field.key || index}">Default value</span>
+						{#if isCheckboxType}
+							<label class="advanced-inline-check">
+								<input
+									type="checkbox"
+									checked={defaultAsBool}
+									onchange={onDefaultCheckboxInput}
+									disabled={isComputed}
+								/>
+								<span>Checked by default</span>
+							</label>
+							<!--
+								Checkbox defaults are tri-state at the schema level:
+								no default / default false / default true. The
+								checkbox itself only toggles between true and false,
+								so we need an explicit "Clear" affordance to get
+								back to `undefined`. Shown only when a value is set.
+							-->
+							{#if field.default !== undefined}
+								<button
+									type="button"
+									class="advanced-clear"
+									onclick={() => (field.default = undefined)}
+									disabled={isComputed}
+									title="Remove the default — new items won't have this field pre-filled."
+								>Clear</button>
+							{/if}
+						{:else if isSelectSingle}
+							<select
+								class="advanced-input"
+								value={defaultAsString}
+								onchange={onDefaultSelectInput}
+								disabled={isComputed}
+								aria-labelledby="default-label-{field.key || index}"
+							>
+								<option value="">— none —</option>
+								{#each field.options.filter(Boolean) as opt, oi (oi)}
+									<option value={opt}>{opt}</option>
+								{/each}
+							</select>
+						{:else if isNumber}
+							<input
+								class="advanced-input"
+								type="number"
+								value={defaultAsString}
+								oninput={onDefaultNumberInput}
+								disabled={isComputed}
+								placeholder="e.g. 0"
+								aria-labelledby="default-label-{field.key || index}"
+							/>
+						{:else if field.type === 'date'}
+							<input
+								class="advanced-input"
+								type="date"
+								value={dateDefaultDisplay}
+								oninput={onDefaultDateInput}
+								disabled={isComputed}
+								aria-labelledby="default-label-{field.key || index}"
+							/>
+						{:else}
+							<input
+								class="advanced-input"
+								type={field.type === 'url' ? 'url' : 'text'}
+								value={defaultAsString}
+								oninput={onDefaultTextInput}
+								disabled={isComputed}
+								placeholder={field.type === 'url' ? 'https://...' : 'Empty = no default'}
+								aria-labelledby="default-label-{field.key || index}"
+							/>
+						{/if}
+					</div>
+				{/if}
+
+				<!-- Suffix (number only) -->
+				{#if isNumber}
+					<div class="advanced-row">
+						<span class="advanced-label" id="suffix-label-{field.key || index}">Suffix</span>
+						<input
+							class="advanced-input advanced-input--short"
+							type="text"
+							value={field.suffix ?? ''}
+							oninput={onSuffixInput}
+							disabled={isComputed}
+							placeholder="hrs, %, kg…"
+							maxlength="8"
+							aria-labelledby="suffix-label-{field.key || index}"
+						/>
+						<span class="advanced-hint">Shown next to the number when rendered.</span>
+					</div>
+				{/if}
+
+				<!-- Relation target (relation only) -->
+				{#if isRelation}
+					<div class="advanced-row">
+						<span class="advanced-label" id="relation-label-{field.key || index}">Relates to</span>
+						{#if collections.length === 0}
+							<span class="advanced-hint advanced-hint--alone">
+								No collections available to link. Create another collection first.
+							</span>
+						{:else}
+							<select
+								class="advanced-input"
+								value={field.collection ?? ''}
+								onchange={onCollectionInput}
+								disabled={isComputed}
+								aria-labelledby="relation-label-{field.key || index}"
+							>
+								<option value="">— pick a collection —</option>
+								{#each collections as c (c.slug)}
+									<option value={c.slug}>
+										{c.icon ? `${c.icon} ` : ''}{c.name}
+									</option>
+								{/each}
+							</select>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</div>
 </div>
 
 <style>
@@ -549,5 +831,175 @@
 	.option-add-btn:hover {
 		color: var(--accent-blue);
 		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+	}
+
+	/* ── Computed badge ───────────────────────────────────────────────────── */
+
+	.field-computed-badge {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-1) var(--space-3);
+		margin: 0 var(--space-3) var(--space-2);
+		background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+		border-radius: var(--radius-sm);
+		font-size: 0.7em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+		width: fit-content;
+	}
+
+	.computed-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: currentColor;
+		opacity: 0.7;
+	}
+
+	/* ── Advanced section ─────────────────────────────────────────────────── */
+
+	.field-advanced {
+		border-top: 1px solid var(--border);
+	}
+
+	.advanced-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.78em;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.advanced-toggle:hover {
+		color: var(--text-secondary);
+		background: color-mix(in srgb, var(--text-muted) 4%, transparent);
+	}
+
+	.advanced-chevron {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		transition: transform 0.15s ease;
+	}
+
+	.advanced-chevron.open {
+		transform: rotate(90deg);
+	}
+
+	.advanced-badge {
+		margin-left: auto;
+		color: var(--accent-blue);
+		font-size: 0.9em;
+		line-height: 1;
+	}
+
+	.advanced-content {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding: 0 var(--space-3) var(--space-3);
+	}
+
+	.advanced-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+
+	.advanced-row--inline {
+		cursor: pointer;
+	}
+
+	.advanced-label {
+		font-size: 0.78em;
+		font-weight: 500;
+		color: var(--text-secondary);
+		min-width: 90px;
+	}
+
+	.advanced-hint {
+		font-size: 0.72em;
+		color: var(--text-muted);
+	}
+
+	.advanced-hint--alone {
+		flex: 1;
+		font-style: italic;
+	}
+
+	.advanced-input {
+		flex: 1;
+		min-width: 140px;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		font-size: 0.85em;
+		color: var(--text-primary);
+	}
+
+	.advanced-input--short {
+		flex: 0 0 auto;
+		width: 90px;
+		min-width: 90px;
+	}
+
+	.advanced-input:hover:not(:disabled) {
+		border-color: var(--border);
+	}
+
+	.advanced-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	.advanced-input:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.advanced-inline-check {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+
+	.advanced-inline-check input[type='checkbox']:disabled + span {
+		opacity: 0.5;
+	}
+
+	.advanced-clear {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.78em;
+		text-decoration: underline;
+		cursor: pointer;
+		padding: 0 var(--space-1);
+	}
+
+	.advanced-clear:hover:not(:disabled) {
+		color: var(--accent-red, #ef4444);
+	}
+
+	.advanced-clear:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>
