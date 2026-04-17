@@ -12,6 +12,13 @@
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
+	import DisplaySettingsEditor from './DisplaySettingsEditor.svelte';
+	import QuickActionsEditor, { type EditableQuickAction } from './QuickActionsEditor.svelte';
+	import {
+		contextFromItem,
+		placeholderContext,
+		type PreviewContext
+	} from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -97,42 +104,32 @@
 	let listSortBy = $state('');
 
 	// ── Quick actions state ─────────────────────────────────────────────────
-
-	interface EditableQuickAction {
-		label: string;
-		prompt: string;
-		scope: 'item' | 'collection';
-		icon: string;
-	}
+	// Shape comes from QuickActionsEditor; the editor component owns the
+	// per-card add/remove/reorder logic.
 
 	let quickActions = $state<EditableQuickAction[]>([]);
 
-	function addQuickAction(scope: 'item' | 'collection') {
-		quickActions.push({ label: '', prompt: '', scope, icon: '' });
-	}
+	/**
+	 * Preview context for the Quick Actions live preview. Populated from the
+	 * first item in the collection on modal open; falls back to placeholder
+	 * values when the collection is empty.
+	 */
+	let previewContext = $state<PreviewContext>(placeholderContext(''));
 
-	function removeQuickAction(index: number) {
-		quickActions.splice(index, 1);
+	async function loadPreviewContext() {
+		try {
+			const items = await api.items.listByCollection(wsSlug, collection.slug, {
+				limit: 1
+			});
+			if (items && items.length > 0) {
+				previewContext = contextFromItem(items[0], collection);
+				return;
+			}
+		} catch {
+			// Fall through to placeholder.
+		}
+		previewContext = placeholderContext(collection.name);
 	}
-
-	function moveQuickAction(index: number, direction: -1 | 1) {
-		const target = index + direction;
-		if (target < 0 || target >= quickActions.length) return;
-		const temp = quickActions[index];
-		quickActions[index] = quickActions[target];
-		quickActions[target] = temp;
-	}
-
-	let itemActions = $derived(
-		quickActions
-			.map((a, i) => ({ action: a, index: i }))
-			.filter(({ action }) => action.scope === 'item')
-	);
-	let collectionActions = $derived(
-		quickActions
-			.map((a, i) => ({ action: a, index: i }))
-			.filter(({ action }) => action.scope === 'collection')
-	);
 
 	// Select fields available for grouping (derived from current fields)
 	let selectFieldKeys = $derived(
@@ -201,6 +198,7 @@
 			}));
 
 			void loadCollectionOptions();
+			void loadPreviewContext();
 		}
 	});
 
@@ -657,145 +655,20 @@
 				{:else if activeTab === 'display'}
 					<!-- ── Display Tab ─────────────────────────────────────── -->
 					<div class="tab-content">
-						<div class="settings-grid">
-							<div class="setting-item">
-								<label class="setting-label" for="edit-default-view">Default view</label>
-								<select id="edit-default-view" class="setting-select" bind:value={defaultView}>
-									<option value="list">List</option>
-									<option value="board">Board</option>
-									<option value="table">Table</option>
-								</select>
-							</div>
-
-							<div class="setting-item">
-								<label class="setting-label" for="edit-layout">Item layout</label>
-								<select id="edit-layout" class="setting-select" bind:value={layout}>
-									<option value="balanced">Balanced</option>
-									<option value="fields-primary">Fields primary</option>
-									<option value="content-primary">Content primary</option>
-								</select>
-							</div>
-
-							{#if selectFieldKeys.length > 0}
-								<div class="setting-item">
-									<label class="setting-label" for="edit-board-group">Board group by</label>
-									<select id="edit-board-group" class="setting-select" bind:value={boardGroupBy}>
-										{#each selectFieldKeys as f (f.key)}
-											<option value={f.key}>{f.label}</option>
-										{/each}
-									</select>
-								</div>
-
-								<div class="setting-item">
-									<label class="setting-label" for="edit-list-group">List group by</label>
-									<select id="edit-list-group" class="setting-select" bind:value={listGroupBy}>
-										<option value="">None</option>
-										{#each selectFieldKeys as f (f.key)}
-											<option value={f.key}>{f.label}</option>
-										{/each}
-									</select>
-								</div>
-							{/if}
-
-							<div class="setting-item">
-								<label class="setting-label" for="edit-list-sort">List sort by</label>
-								<select id="edit-list-sort" class="setting-select" bind:value={listSortBy}>
-									<option value="">Default</option>
-									{#each sortableFieldKeys as f (f.key)}
-										<option value={f.key}>{f.label}</option>
-									{/each}
-								</select>
-							</div>
-						</div>
+						<DisplaySettingsEditor
+							bind:defaultView
+							bind:layout
+							bind:boardGroupBy
+							bind:listGroupBy
+							bind:listSortBy
+							{selectFieldKeys}
+							{sortableFieldKeys}
+						/>
 					</div>
 				{:else if activeTab === 'actions'}
 					<!-- ── Quick Actions Tab ──────────────────────────────── -->
 					<div class="tab-content">
-						<p class="tab-description">
-							Quick actions copy agent prompts to your clipboard. Use template variables: <code>{'{ref}'}</code>, <code>{'{title}'}</code>, <code>{'{status}'}</code>, <code>{'{priority}'}</code>, <code>{'{collection}'}</code>, <code>{'{content}'}</code>, <code>{'{fields}'}</code>.
-						</p>
-
-						<div class="actions-section">
-							<div class="actions-section-header">
-								<span class="actions-section-title">Item actions</span>
-								<button class="add-action-btn" type="button" onclick={() => addQuickAction('item')}>+ Add</button>
-							</div>
-							{#if itemActions.length > 0}
-								{#each itemActions as { action, index } (index)}
-									<div class="action-card">
-										<div class="action-card-top">
-											<EmojiPickerButton bind:value={action.icon} placeholder="⚡" />
-											<input
-												class="action-label-input"
-												type="text"
-												placeholder="Action label"
-												bind:value={action.label}
-											/>
-											<div class="action-card-btns">
-												<button class="reorder-btn" type="button" disabled={index === 0} onclick={() => moveQuickAction(index, -1)} title="Move up">&#9650;</button>
-												<button class="reorder-btn" type="button" disabled={index === quickActions.length - 1} onclick={() => moveQuickAction(index, 1)} title="Move down">&#9660;</button>
-												<button class="remove-field-btn" type="button" onclick={() => removeQuickAction(index)} title="Remove">&#10005;</button>
-											</div>
-										</div>
-										<input
-											class="action-prompt-input"
-											type="text"
-											placeholder="/pad implement {'{ref}'} &quot;{'{title}'}&quot;"
-											bind:value={action.prompt}
-										/>
-									</div>
-								{/each}
-							{:else}
-								<div class="empty-actions">
-									<p>No per-item actions yet.</p>
-									<p class="empty-actions-hint">
-										Add one to surface a one-click agent prompt on every item in this
-										collection — e.g. "Summarize for standup" or "Draft release notes".
-									</p>
-								</div>
-							{/if}
-						</div>
-
-						<div class="actions-section">
-							<div class="actions-section-header">
-								<span class="actions-section-title">Collection actions</span>
-								<button class="add-action-btn" type="button" onclick={() => addQuickAction('collection')}>+ Add</button>
-							</div>
-							{#if collectionActions.length > 0}
-								{#each collectionActions as { action, index } (index)}
-									<div class="action-card">
-										<div class="action-card-top">
-											<EmojiPickerButton bind:value={action.icon} placeholder="⚡" />
-											<input
-												class="action-label-input"
-												type="text"
-												placeholder="Action label"
-												bind:value={action.label}
-											/>
-											<div class="action-card-btns">
-												<button class="reorder-btn" type="button" disabled={index === 0} onclick={() => moveQuickAction(index, -1)} title="Move up">&#9650;</button>
-												<button class="reorder-btn" type="button" disabled={index === quickActions.length - 1} onclick={() => moveQuickAction(index, 1)} title="Move down">&#9660;</button>
-												<button class="remove-field-btn" type="button" onclick={() => removeQuickAction(index)} title="Remove">&#10005;</button>
-											</div>
-										</div>
-										<input
-											class="action-prompt-input"
-											type="text"
-											placeholder="/pad triage all new items"
-											bind:value={action.prompt}
-										/>
-									</div>
-								{/each}
-							{:else}
-								<div class="empty-actions">
-									<p>No collection-level actions yet.</p>
-									<p class="empty-actions-hint">
-										Collection actions apply to the whole list — e.g. "Triage new items"
-										or "Archive completed".
-									</p>
-								</div>
-							{/if}
-						</div>
+						<QuickActionsEditor bind:actions={quickActions} {previewContext} />
 					</div>
 				{/if}
 			</div>
@@ -1034,29 +907,6 @@
 		gap: var(--space-3);
 	}
 
-	/* Shared reorder button — used by Quick Actions rows. The Fields tab
-	   gets its reorder-btn styles from FieldEditor.svelte. */
-	.reorder-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.6em;
-		cursor: pointer;
-		padding: 2px var(--space-1);
-		line-height: 1.2;
-		border-radius: var(--radius-sm);
-	}
-
-	.reorder-btn:hover:not(:disabled) {
-		color: var(--text-primary);
-		background: var(--bg-hover);
-	}
-
-	.reorder-btn:disabled {
-		opacity: 0.25;
-		cursor: default;
-	}
-
 	/* ── Empty state (Fields tab) ─────────────────────────────────────────── */
 
 	.empty-state {
@@ -1107,46 +957,6 @@
 	.add-field-btn:hover {
 		background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 		border-color: var(--accent-blue);
-	}
-
-	/* ── Display tab ───────────────────────────────────────────────────────── */
-
-	.settings-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--space-4);
-	}
-
-	.setting-item {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-	}
-
-	.setting-label {
-		font-size: 0.82em;
-		font-weight: 500;
-		color: var(--text-muted);
-	}
-
-	.setting-select {
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		font-size: 0.88em;
-		color: var(--text-primary);
-		cursor: pointer;
-	}
-
-	.setting-select:hover {
-		border-color: var(--border);
-	}
-
-	.setting-select:focus {
-		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* ── Footer ─────────────────────────────────────────────────────────────── */
@@ -1309,130 +1119,6 @@
 		cursor: not-allowed;
 	}
 
-	/* ── Quick Actions tab ─────────────────────────────────────────────────── */
-
-	.tab-description {
-		font-size: 0.82em;
-		color: var(--text-muted);
-		margin: 0;
-		line-height: 1.5;
-	}
-
-	.tab-description code {
-		font-family: var(--font-mono);
-		font-size: 0.9em;
-		background: var(--bg-tertiary);
-		padding: 1px 5px;
-		border-radius: var(--radius-sm);
-	}
-
-	.actions-section {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.actions-section-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.actions-section-title {
-		font-size: 0.75em;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
-	}
-
-	.add-action-btn {
-		padding: 2px var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		color: var(--text-secondary);
-		font-size: 0.8em;
-		cursor: pointer;
-	}
-
-	.add-action-btn:hover {
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-	}
-
-	.action-card {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-		padding: var(--space-3);
-		background: var(--bg-tertiary);
-		border-radius: var(--radius);
-		border: 1px solid var(--border);
-	}
-
-	.action-card-top {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-
-	.action-icon-input {
-		width: 36px;
-		text-align: center;
-		padding: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		font-size: 1em;
-		color: var(--text-primary);
-	}
-
-	.action-label-input {
-		flex: 1;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.action-card-btns {
-		display: flex;
-		gap: 2px;
-	}
-
-	.action-prompt-input {
-		width: 100%;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		font-size: 0.82em;
-		font-family: var(--font-mono);
-		color: var(--text-primary);
-	}
-
-	.empty-actions {
-		padding: var(--space-3) var(--space-4);
-		border: 1px dashed var(--border);
-		border-radius: var(--radius);
-		color: var(--text-secondary);
-		font-size: 0.85em;
-		line-height: 1.5;
-	}
-
-	.empty-actions p {
-		margin: 0;
-	}
-
-	.empty-actions .empty-actions-hint {
-		margin-top: var(--space-1);
-		color: var(--text-muted);
-		font-size: 0.92em;
-	}
-
 	/* ── Responsive ────────────────────────────────────────────────────────── */
 
 	@media (max-width: 640px) {
@@ -1465,10 +1151,6 @@
 
 		.tab {
 			flex-shrink: 0;
-		}
-
-		.settings-grid {
-			grid-template-columns: 1fr;
 		}
 
 		.modal-footer {
