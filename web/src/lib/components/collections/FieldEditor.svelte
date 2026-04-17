@@ -228,37 +228,13 @@
 				>&#9660;</button>
 			</div>
 		{/if}
-		<div class="field-header-left">
-			<input
-				class="field-label-input"
-				type="text"
-				bind:value={field.label}
-				oninput={onLabelInput}
-				placeholder={isNew ? 'Field name' : 'Field label'}
-			/>
-			{#if isNew}
-				<div class="field-key-row">
-					<span class="field-key-prefix" aria-hidden="true">key</span>
-					<input
-						class="field-key-input"
-						class:has-error={!!keyError}
-						type="text"
-						bind:value={field.key}
-						oninput={onKeyInput}
-						placeholder="auto-generated from name"
-						spellcheck="false"
-						autocomplete="off"
-						aria-label="Field key"
-						aria-invalid={!!keyError}
-					/>
-				</div>
-				{#if keyError}
-					<div class="field-key-error" role="alert">{keyError}</div>
-				{:else if field.keyTouched}
-					<div class="field-key-hint">Keys can't be changed after save.</div>
-				{/if}
-			{/if}
-		</div>
+		<input
+			class="field-label-input"
+			type="text"
+			bind:value={field.label}
+			oninput={onLabelInput}
+			placeholder={isNew ? 'Field name' : 'Field label'}
+		/>
 		<select class="field-type-select" bind:value={field.type} title="Field type">
 			{#each FIELD_TYPES as ft (ft)}
 				<option value={ft}>{ft.replace('_', ' ')}</option>
@@ -272,6 +248,34 @@
 			aria-label="Remove field"
 		>&#10005;</button>
 	</div>
+
+	{#if isNew}
+		<!--
+			Key row lives outside the header flex so the header stays
+			baseline-aligned at a fixed height regardless of whether a
+			key row is present. Full-width block below the header.
+		-->
+		<div class="field-key-block">
+			<span class="field-key-prefix" aria-hidden="true">key</span>
+			<input
+				class="field-key-input"
+				class:has-error={!!keyError}
+				type="text"
+				bind:value={field.key}
+				oninput={onKeyInput}
+				placeholder="auto-generated from name"
+				spellcheck="false"
+				autocomplete="off"
+				aria-label="Field key"
+				aria-invalid={!!keyError}
+			/>
+		</div>
+		{#if keyError}
+			<div class="field-key-error" role="alert">{keyError}</div>
+		{:else if field.keyTouched}
+			<div class="field-key-hint">Keys can't be changed after save.</div>
+		{/if}
+	{/if}
 
 	{#if isComputed}
 		<div class="field-computed-badge" title="Computed fields are populated by the server and can't be configured here.">
@@ -569,16 +573,9 @@
 		cursor: default;
 	}
 
-	.field-header-left {
+	.field-label-input {
 		flex: 1;
 		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.field-label-input {
-		width: 100%;
 		padding: var(--space-1) var(--space-2);
 		background: var(--bg-secondary);
 		border: 1px solid transparent;
@@ -597,12 +594,19 @@
 		outline: none;
 	}
 
-	/* ── Key input row (new fields only) ───────────────────────────────────── */
+	/* ── Key block (new fields only) ───────────────────────────────────────── */
 
-	.field-key-row {
+	/*
+	 * Full-width row below the header. Lives outside the header flex so
+	 * the label / type-select / remove-button baseline stays consistent
+	 * regardless of whether a key row is present.
+	 */
+	.field-key-block {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
+		padding: 0 var(--space-3) var(--space-2);
+		margin-top: calc(var(--space-3) * -1 + var(--space-1));
 	}
 
 	.field-key-prefix {
@@ -612,7 +616,9 @@
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
 		font-family: var(--font-mono);
-		padding: 0 var(--space-2);
+		width: 28px;
+		text-align: right;
+		flex-shrink: 0;
 	}
 
 	.field-key-input {
@@ -644,15 +650,18 @@
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 4%, transparent);
 	}
 
-	.field-key-error {
-		padding: 0 var(--space-2);
+	.field-key-error,
+	.field-key-hint {
+		padding: 0 var(--space-3) var(--space-2);
+		padding-left: calc(var(--space-3) + 28px + var(--space-2));
 		font-size: 0.72em;
+	}
+
+	.field-key-error {
 		color: var(--accent-red, #ef4444);
 	}
 
 	.field-key-hint {
-		padding: 0 var(--space-2);
-		font-size: 0.72em;
 		color: var(--text-muted);
 		font-style: italic;
 	}

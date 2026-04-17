@@ -2,7 +2,6 @@
 	import { api } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
-	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
@@ -55,7 +54,6 @@
 	let name = $state('');
 	let selectedIcon = $state('');
 	let description = $state('');
-	let showEmojiPicker = $state(false);
 	let saving = $state(false);
 	let error = $state('');
 
@@ -182,7 +180,6 @@
 				originalDefault: f.default
 			}));
 			newFields = [];
-			showEmojiPicker = false;
 			error = '';
 			activeTab = 'general';
 			confirmArchive = false;
@@ -541,17 +538,7 @@
 					<!-- ── General Tab ──────────────────────────────────────── -->
 					<div class="tab-content">
 						<div class="name-row">
-							<button
-								class="icon-btn"
-								type="button"
-								onclick={() => (showEmojiPicker = !showEmojiPicker)}
-							>
-								{#if selectedIcon}
-									<span class="icon-preview">{selectedIcon}</span>
-								{:else}
-									<span class="icon-placeholder">+</span>
-								{/if}
-							</button>
+							<EmojiPickerButton bind:value={selectedIcon} placeholder="+" size="md" />
 							<input
 								class="name-input"
 								type="text"
@@ -559,18 +546,6 @@
 								bind:value={name}
 							/>
 						</div>
-
-						{#if showEmojiPicker}
-							<div class="emoji-picker-container">
-								<EmojiPicker
-									selected={selectedIcon}
-									onselect={(emoji) => {
-										selectedIcon = emoji;
-										showEmojiPicker = false;
-									}}
-								/>
-							</div>
-						{/if}
 
 						<div class="form-group">
 							<label class="form-label" for="edit-desc">Description</label>
@@ -589,12 +564,65 @@
 								<div class="prefix-display">{collection.prefix}</div>
 							</div>
 						{/if}
+
+						{#if !collection.is_default}
+							<section class="danger-zone" aria-labelledby="danger-zone-heading">
+								<header class="danger-zone-header">
+									<h3 id="danger-zone-heading" class="danger-zone-title">Danger zone</h3>
+									<p class="danger-zone-hint">
+										Archiving removes this collection and all its items from the workspace.
+										This can't be undone from the UI.
+									</p>
+								</header>
+
+								{#if confirmArchive}
+									<div class="danger-zone-confirm" role="alertdialog" aria-labelledby="archive-confirm-msg">
+										<p id="archive-confirm-msg" class="danger-zone-confirm-msg">
+											Archive <strong>"{collection.name}"</strong> and all its items?
+										</p>
+										<div class="danger-zone-confirm-actions">
+											<button
+												class="btn-archive-confirm"
+												type="button"
+												onclick={handleArchive}
+												disabled={archiving}
+											>
+												{archiving ? 'Archiving…' : 'Yes, archive'}
+											</button>
+											<button
+												class="btn-archive-cancel"
+												type="button"
+												onclick={() => (confirmArchive = false)}
+												disabled={archiving}
+											>
+												Cancel
+											</button>
+										</div>
+									</div>
+								{:else}
+									<button class="btn-archive" type="button" onclick={handleArchive}>
+										Archive collection
+									</button>
+								{/if}
+							</section>
+						{/if}
 					</div>
 				{:else if activeTab === 'fields'}
 					<!-- ── Fields Tab ──────────────────────────────────────── -->
 					<div class="tab-content">
 						{#if existingFields.length === 0 && newFields.length === 0}
-							<div class="empty-state">No fields defined yet.</div>
+							<div class="empty-state">
+								<div class="empty-state-icon" aria-hidden="true">
+									<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+										<path d="M3 6h18M3 12h18M3 18h12" />
+									</svg>
+								</div>
+								<h4 class="empty-state-title">No fields yet</h4>
+								<p class="empty-state-desc">
+									Fields define the structured data each item in this collection carries —
+									like status, priority, or a due date.
+								</p>
+							</div>
 						{:else}
 							<div class="fields-list">
 								{#each existingFields as field, i (field.key)}
@@ -718,7 +746,13 @@
 									</div>
 								{/each}
 							{:else}
-								<div class="empty-actions">No item actions defined.</div>
+								<div class="empty-actions">
+									<p>No per-item actions yet.</p>
+									<p class="empty-actions-hint">
+										Add one to surface a one-click agent prompt on every item in this
+										collection — e.g. "Summarize for standup" or "Draft release notes".
+									</p>
+								</div>
 							{/if}
 						</div>
 
@@ -753,7 +787,13 @@
 									</div>
 								{/each}
 							{:else}
-								<div class="empty-actions">No collection actions defined.</div>
+								<div class="empty-actions">
+									<p>No collection-level actions yet.</p>
+									<p class="empty-actions-hint">
+										Collection actions apply to the whole list — e.g. "Triage new items"
+										or "Archive completed".
+									</p>
+								</div>
 							{/if}
 						</div>
 					</div>
@@ -761,20 +801,6 @@
 			</div>
 
 			<div class="modal-footer">
-				{#if !collection.is_default}
-					{#if confirmArchive}
-						<span class="archive-confirm">
-							<span class="archive-warn">Archive "{collection.name}" and all its items?</span>
-							<button class="btn-archive-yes" type="button" onclick={handleArchive} disabled={archiving}>
-								{archiving ? 'Archiving...' : 'Yes, archive'}
-							</button>
-							<button class="btn-cancel-sm" type="button" onclick={() => confirmArchive = false}>Cancel</button>
-						</span>
-					{:else}
-						<button class="btn-archive" type="button" onclick={handleArchive}>Archive</button>
-					{/if}
-				{/if}
-				<span class="footer-spacer"></span>
 				<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
 				<button
 					class="btn-save"
@@ -803,7 +829,8 @@
 		display: flex;
 		justify-content: center;
 		align-items: flex-start;
-		padding-top: 8vh;
+		padding: 8vh var(--space-4) var(--space-4);
+		animation: overlay-in 140ms ease-out;
 	}
 
 	.modal {
@@ -816,6 +843,21 @@
 		display: flex;
 		flex-direction: column;
 		max-height: 82vh;
+		animation: modal-in 160ms ease-out;
+	}
+
+	@keyframes overlay-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	@keyframes modal-in {
+		from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+		to { opacity: 1; transform: translateY(0) scale(1); }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.overlay, .modal { animation: none; }
 	}
 
 	/* ── Header ─────────────────────────────────────────────────────────────── */
@@ -917,35 +959,6 @@
 		gap: var(--space-3);
 	}
 
-	.icon-btn {
-		width: 48px;
-		height: 48px;
-		min-width: 48px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: var(--bg-tertiary);
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		cursor: pointer;
-		font-size: 1.5em;
-		line-height: 1;
-		padding: 0;
-	}
-
-	.icon-btn:hover {
-		border-color: var(--border);
-	}
-
-	.icon-preview {
-		font-size: 1em;
-	}
-
-	.icon-placeholder {
-		color: var(--text-muted);
-		font-size: 0.8em;
-	}
-
 	.name-input {
 		flex: 1;
 		padding: var(--space-2) var(--space-3);
@@ -965,10 +978,6 @@
 		outline: none;
 	}
 
-	.emoji-picker-container {
-		margin-bottom: var(--space-2);
-	}
-
 	.form-group {
 		display: flex;
 		flex-direction: column;
@@ -976,9 +985,11 @@
 	}
 
 	.form-label {
-		font-size: 0.82em;
-		font-weight: 500;
+		font-size: 0.75em;
+		font-weight: 600;
 		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 
 	.form-input {
@@ -1046,11 +1057,35 @@
 		cursor: default;
 	}
 
+	/* ── Empty state (Fields tab) ─────────────────────────────────────────── */
+
 	.empty-state {
-		padding: var(--space-6) var(--space-4);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
 		text-align: center;
+		padding: var(--space-8) var(--space-4);
+	}
+
+	.empty-state-icon {
 		color: var(--text-muted);
-		font-size: 0.88em;
+		opacity: 0.5;
+		margin-bottom: var(--space-3);
+	}
+
+	.empty-state-title {
+		margin: 0 0 var(--space-2);
+		font-size: 1em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	.empty-state-desc {
+		margin: 0;
+		max-width: 360px;
+		font-size: 0.85em;
+		line-height: 1.5;
+		color: var(--text-muted);
 	}
 
 	/* ── Add field button ──────────────────────────────────────────────────── */
@@ -1161,69 +1196,117 @@
 		cursor: not-allowed;
 	}
 
-	.footer-spacer {
-		flex: 1;
+	/* ── Danger zone ───────────────────────────────────────────────────────── */
+
+	/*
+	 * Lives at the bottom of the General tab. Visually separated by tint
+	 * and border so destructive actions are unambiguously distinct from
+	 * safe edits in the same tab.
+	 */
+	.danger-zone {
+		margin-top: var(--space-6);
+		padding: var(--space-4);
+		background: color-mix(in srgb, #ef4444 6%, var(--bg-secondary));
+		border: 1px solid color-mix(in srgb, #ef4444 30%, var(--border));
+		border-radius: var(--radius);
+	}
+
+	.danger-zone-header {
+		margin-bottom: var(--space-3);
+	}
+
+	.danger-zone-title {
+		margin: 0 0 var(--space-1);
+		font-size: 0.82em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: #ef4444;
+	}
+
+	.danger-zone-hint {
+		margin: 0;
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		line-height: 1.5;
 	}
 
 	.btn-archive {
 		padding: var(--space-2) var(--space-4);
-		background: none;
-		border: 1px solid var(--border);
+		background: transparent;
+		border: 1px solid #ef4444;
 		border-radius: var(--radius);
-		color: var(--text-muted);
-		font-size: 0.85em;
+		color: #ef4444;
+		font-size: 0.88em;
+		font-weight: 500;
 		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
 	}
 
 	.btn-archive:hover {
-		border-color: #ef4444;
-		color: #ef4444;
-		background: rgba(239, 68, 68, 0.06);
+		background: #ef4444;
+		color: #fff;
 	}
 
-	.archive-confirm {
+	.danger-zone-confirm {
 		display: flex;
-		align-items: center;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+
+	.danger-zone-confirm-msg {
+		margin: 0;
+		font-size: 0.9em;
+		color: var(--text-primary);
+	}
+
+	.danger-zone-confirm-msg strong {
+		color: #ef4444;
+	}
+
+	.danger-zone-confirm-actions {
+		display: flex;
 		gap: var(--space-2);
 	}
 
-	.archive-warn {
-		font-size: 0.82em;
-		color: #ef4444;
-		font-weight: 500;
-	}
-
-	.btn-archive-yes {
-		padding: var(--space-1) var(--space-3);
+	.btn-archive-confirm {
+		padding: var(--space-2) var(--space-4);
 		background: #ef4444;
-		border: none;
-		border-radius: var(--radius-sm);
+		border: 1px solid #ef4444;
+		border-radius: var(--radius);
 		color: #fff;
-		font-size: 0.82em;
+		font-size: 0.88em;
 		font-weight: 500;
 		cursor: pointer;
 	}
 
-	.btn-archive-yes:hover:not(:disabled) {
-		filter: brightness(1.1);
+	.btn-archive-confirm:hover:not(:disabled) {
+		filter: brightness(1.08);
 	}
 
-	.btn-archive-yes:disabled {
-		opacity: 0.5;
+	.btn-archive-confirm:disabled {
+		opacity: 0.6;
 		cursor: not-allowed;
 	}
 
-	.btn-cancel-sm {
-		padding: var(--space-1) var(--space-2);
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.82em;
+	.btn-archive-cancel {
+		padding: var(--space-2) var(--space-4);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-secondary);
+		font-size: 0.88em;
 		cursor: pointer;
 	}
 
-	.btn-cancel-sm:hover {
+	.btn-archive-cancel:hover:not(:disabled) {
+		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.btn-archive-cancel:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	/* ── Quick Actions tab ─────────────────────────────────────────────────── */
@@ -1256,7 +1339,7 @@
 	}
 
 	.actions-section-title {
-		font-size: 0.8em;
+		font-size: 0.75em;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
@@ -1332,8 +1415,69 @@
 	}
 
 	.empty-actions {
-		font-size: 0.82em;
+		padding: var(--space-3) var(--space-4);
+		border: 1px dashed var(--border);
+		border-radius: var(--radius);
+		color: var(--text-secondary);
+		font-size: 0.85em;
+		line-height: 1.5;
+	}
+
+	.empty-actions p {
+		margin: 0;
+	}
+
+	.empty-actions .empty-actions-hint {
+		margin-top: var(--space-1);
 		color: var(--text-muted);
-		padding: var(--space-2) 0;
+		font-size: 0.92em;
+	}
+
+	/* ── Responsive ────────────────────────────────────────────────────────── */
+
+	@media (max-width: 640px) {
+		.overlay {
+			padding: var(--space-3);
+			align-items: stretch;
+		}
+
+		.modal {
+			max-width: 100%;
+			max-height: calc(100vh - var(--space-6));
+		}
+
+		.modal-header,
+		.tab-content,
+		.modal-footer {
+			padding-left: var(--space-4);
+			padding-right: var(--space-4);
+		}
+
+		.tab-bar {
+			padding: 0 var(--space-4);
+			overflow-x: auto;
+			scrollbar-width: none;
+			/* Fade mask at the right edge hints more tabs scroll off */
+			mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent);
+		}
+
+		.tab-bar::-webkit-scrollbar { display: none; }
+
+		.tab {
+			flex-shrink: 0;
+		}
+
+		.settings-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.modal-footer {
+			flex-wrap: wrap;
+			gap: var(--space-2);
+		}
+
+		.btn-cancel, .btn-save {
+			flex: 1 1 auto;
+		}
 	}
 </style>
