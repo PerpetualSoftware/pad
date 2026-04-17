@@ -327,11 +327,24 @@
 				if (f.computed) def.computed = true;
 				if (f.type === 'relation' && f.collection) def.collection = f.collection;
 				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
-				// Coerce default to the active type (and normalize select
-				// defaults against the normalized option set).
-				if (f.default !== undefined && typeSupportsDefault(f.type)) {
-					const coerced = coerceDefault(f.default, f.type, def.options);
-					if (coerced !== undefined) def.default = coerced;
+				// Default-value handling for existing fields:
+				//
+				// - If the active type has UI-editable defaults, run through
+				//   coerceDefault so stale values from a prior type don't leak
+				//   and select defaults are trimmed to match normalized
+				//   options.
+				// - If the active type is one the UI can't edit (multi_select,
+				//   relation), pass the existing default through verbatim.
+				//   These defaults only arrive via API / imports, so silently
+				//   stripping them on save would mutate the schema in ways the
+				//   user didn't intend. Let them round-trip untouched.
+				if (f.default !== undefined) {
+					if (typeSupportsDefault(f.type)) {
+						const coerced = coerceDefault(f.default, f.type, def.options);
+						if (coerced !== undefined) def.default = coerced;
+					} else {
+						def.default = f.default;
+					}
 				}
 				return def;
 			});

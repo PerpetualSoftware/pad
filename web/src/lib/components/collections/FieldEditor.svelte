@@ -412,7 +412,7 @@
 								aria-labelledby="default-label-{field.key || index}"
 							>
 								<option value="">— none —</option>
-								{#each field.options.filter(Boolean) as opt (opt)}
+								{#each field.options.filter(Boolean) as opt, oi (oi)}
 									<option value={opt}>{opt}</option>
 								{/each}
 							</select>

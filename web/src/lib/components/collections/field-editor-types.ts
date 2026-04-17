@@ -188,8 +188,16 @@ export function coerceDefault(
 			}
 			return undefined;
 		}
-		case 'date':
-			return typeof raw === 'string' && raw.trim() !== '' ? raw : undefined;
+		case 'date': {
+			// Require ISO 8601 date or datetime format. HTML <input type="date">
+			// emits YYYY-MM-DD; we also accept a datetime suffix so imported
+			// schemas with RFC3339-style defaults round-trip. Server performs
+			// stricter validation; this gate just prevents obvious garbage like
+			// "soon" from surviving a type switch.
+			if (typeof raw !== 'string') return undefined;
+			const trimmed = raw.trim();
+			return /^\d{4}-\d{2}-\d{2}(T.+)?$/.test(trimmed) ? trimmed : undefined;
+		}
 		case 'checkbox':
 			return typeof raw === 'boolean' ? raw : undefined;
 		case 'select': {
