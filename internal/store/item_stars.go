@@ -125,16 +125,16 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 	}
 
 	if !includeTerminal {
-		// Build a schema map from workspace collections for per-collection terminal status checks
-		schemaMap, err := s.buildCollectionSchemaMap(workspaceID)
+		// Build a (schema + settings) context per collection so terminal
+		// checks honor each collection's configured done field.
+		ctxMap, err := s.buildCollectionDoneContextMap(workspaceID)
 		if err != nil {
-			return nil, fmt.Errorf("list starred items: build schema map: %w", err)
+			return nil, fmt.Errorf("list starred items: build done-context map: %w", err)
 		}
 
 		filtered := make([]models.Item, 0, len(items))
 		for _, item := range items {
-			status := extractStatusFromFields(item.Fields)
-			if !isTerminalWithSchema(status, item.CollectionID, schemaMap) {
+			if !isTerminalWithContext(item.Fields, item.CollectionID, ctxMap) {
 				filtered = append(filtered, item)
 			}
 		}
@@ -159,54 +159,71 @@ func (s *Store) CountStarredItems(userID, workspaceID string) (int, error) {
 	return count, nil
 }
 
-// buildCollectionSchemaMap loads only collection IDs and schemas for a workspace,
-// avoiding the heavier ListCollections which runs per-collection COUNT queries.
-func (s *Store) buildCollectionSchemaMap(workspaceID string) (map[string]models.CollectionSchema, error) {
+// collectionDoneContext pairs a collection's parsed schema with its
+// parsed settings so terminal-state checks can honor the configured
+// done field (board_group_by) — not just the hardcoded `status` column.
+type collectionDoneContext struct {
+	schema   models.CollectionSchema
+	settings models.CollectionSettings
+}
+
+// buildCollectionDoneContextMap loads schema + settings for every
+// collection in a workspace. Used to evaluate "is terminal?" for a
+// batch of items from potentially different collections.
+func (s *Store) buildCollectionDoneContextMap(workspaceID string) (map[string]collectionDoneContext, error) {
 	rows, err := s.db.Query(
-		s.q("SELECT id, schema FROM collections WHERE workspace_id = ?"),
+		s.q("SELECT id, schema, settings FROM collections WHERE workspace_id = ?"),
 		workspaceID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("load collection schemas: %w", err)
+		return nil, fmt.Errorf("load collection done-context: %w", err)
 	}
 	defer rows.Close()
 
-	m := make(map[string]models.CollectionSchema)
+	m := make(map[string]collectionDoneContext)
 	for rows.Next() {
 		var id, rawSchema string
-		if err := rows.Scan(&id, &rawSchema); err != nil {
+		var rawSettings sql.NullString
+		if err := rows.Scan(&id, &rawSchema, &rawSettings); err != nil {
 			return nil, err
 		}
-		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(rawSchema), &schema); err == nil {
-			m[id] = schema
+		var ctx collectionDoneContext
+		if err := json.Unmarshal([]byte(rawSchema), &ctx.schema); err != nil {
+			// Don't drop the entry entirely — we still want an empty
+			// context so the membership test falls back to defaults
+			// rather than silently treating the item as non-terminal.
+			ctx.schema = models.CollectionSchema{}
 		}
+		if rawSettings.Valid && rawSettings.String != "" {
+			_ = json.Unmarshal([]byte(rawSettings.String), &ctx.settings)
+		}
+		m[id] = ctx
 	}
 	return m, rows.Err()
 }
 
-// extractStatusFromFields extracts the "status" value from an item's fields JSON.
-func extractStatusFromFields(fields string) string {
+// isTerminalWithContext reports whether an item is in a terminal state
+// given its collection's done-context. When the collection isn't in the
+// map (e.g. deleted collection), falls back to default-terminal checks
+// against the item's `status` field.
+func isTerminalWithContext(
+	fields string,
+	collectionID string,
+	ctxMap map[string]collectionDoneContext,
+) bool {
 	if fields == "" || fields == "{}" {
-		return ""
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(fields), &m); err != nil {
-		return ""
-	}
-	status, _ := m["status"].(string)
-	return status
-}
-
-// isTerminalWithSchema checks if a status is terminal using the collection's schema.
-// Falls back to default terminal statuses if the collection is not in the schema map.
-func isTerminalWithSchema(status, collectionID string, schemaMap map[string]models.CollectionSchema) bool {
-	if status == "" {
 		return false
 	}
-	if schema, ok := schemaMap[collectionID]; ok {
-		return models.IsTerminalStatus(status, schema)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(fields), &m); err != nil {
+		return false
 	}
+	if ctx, ok := ctxMap[collectionID]; ok {
+		return models.IsTerminalItem(m, ctx.schema, ctx.settings)
+	}
+	// No collection context available → check the status field against
+	// the global default list. Matches the legacy fallback behavior.
+	status, _ := m["status"].(string)
 	return models.IsTerminalStatusDefault(status)
 }
 

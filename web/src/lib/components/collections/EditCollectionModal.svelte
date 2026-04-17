@@ -103,6 +103,20 @@
 	let listGroupBy = $state('');
 	let listSortBy = $state('');
 
+	// Which field drives backend done-detection for this collection.
+	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go —
+	// honors boardGroupBy when it points at an existing select/multi_select
+	// field, otherwise falls back to 'status'. Used by FieldEditor to
+	// render the Active/Saved pill on each terminal-options column.
+	const activeDoneField = $derived.by(() => {
+		const candidate = (boardGroupBy || '').trim();
+		if (!candidate) return 'status';
+		const matches = existingFields.some(
+			(f) => f.key === candidate && (f.type === 'select' || f.type === 'multi_select')
+		);
+		return matches ? candidate : 'status';
+	});
+
 	// ── Quick actions state ─────────────────────────────────────────────────
 	// Shape comes from QuickActionsEditor; the editor component owns the
 	// per-card add/remove/reorder logic.
@@ -629,6 +643,7 @@
 										index={i}
 										total={existingFields.length}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeExistingField(i)}
@@ -642,6 +657,7 @@
 										isNew
 										keyError={newKeyErrors[i]}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveNewField(i, -1)}
 										onmovedown={() => moveNewField(i, 1)}
 										onremove={() => removeNewField(i)}

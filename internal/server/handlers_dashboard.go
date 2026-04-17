@@ -108,24 +108,47 @@ func isActiveStatus(status string) bool {
 	}
 }
 
-// buildSchemaMap builds a map of collection ID → parsed CollectionSchema for quick lookups.
-func buildSchemaMap(collections []models.Collection) map[string]models.CollectionSchema {
-	m := make(map[string]models.CollectionSchema, len(collections))
+// doneContext pairs a collection's schema with its settings so
+// terminal-state checks can honor the configured done field
+// (board_group_by), not just the hardcoded `status` column.
+type doneContext struct {
+	schema   models.CollectionSchema
+	settings models.CollectionSettings
+}
+
+// buildDoneContextMap builds a map of collection ID → (schema, settings)
+// for quick lookups during dashboard / lineage traversals.
+func buildDoneContextMap(collections []models.Collection) map[string]doneContext {
+	m := make(map[string]doneContext, len(collections))
 	for _, c := range collections {
-		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(c.Schema), &schema); err == nil {
-			m[c.ID] = schema
+		var ctx doneContext
+		if err := json.Unmarshal([]byte(c.Schema), &ctx.schema); err == nil {
+			// schema ok
 		}
+		if c.Settings != "" {
+			_ = json.Unmarshal([]byte(c.Settings), &ctx.settings)
+		}
+		m[c.ID] = ctx
 	}
 	return m
 }
 
-// isItemTerminal checks if an item's status is terminal using its collection's schema.
-// Falls back to default terminal statuses if the collection is not in the schema map.
-func isItemTerminal(status, collectionID string, schemaMap map[string]models.CollectionSchema) bool {
-	if schema, ok := schemaMap[collectionID]; ok {
-		return models.IsTerminalStatus(status, schema)
+// isItemDone reports whether an item is in a terminal state for its
+// collection's configured done field. Falls back to the default-terminal
+// list against `status` when the collection isn't in the map (e.g.
+// cross-workspace references).
+func isItemDone(fieldsJSON, collectionID string, ctxMap map[string]doneContext) bool {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return false
 	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return false
+	}
+	if ctx, ok := ctxMap[collectionID]; ok {
+		return models.IsTerminalItem(fields, ctx.schema, ctx.settings)
+	}
+	status, _ := fields["status"].(string)
 	return models.IsTerminalStatusDefault(status)
 }
 
@@ -181,7 +204,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		collections = filtered
 	}
-	schemaMap := buildSchemaMap(collections)
+	ctxMap := buildDoneContextMap(collections)
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{
@@ -279,8 +302,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					total++
-					childStatus := extractFieldValue(child.Fields, "status")
-					if isItemTerminal(childStatus, child.CollectionID, schemaMap) {
+					if isItemDone(child.Fields, child.CollectionID, ctxMap) {
 						done++
 					}
 				}
@@ -334,11 +356,11 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// (b) Overdue: items with a due_date or end_date in the past and status not done/completed/resolved
+	// (b) Overdue: items with a due_date or end_date in the past whose
+	// done field isn't in a terminal state.
 	todayStr := now.Format("2006-01-02")
 	for _, item := range allItems {
-		status := extractFieldValue(item.Fields, "status")
-		if isItemTerminal(status, item.CollectionID, schemaMap) {
+		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
 		for _, dateField := range []string{"due_date", "end_date"} {
@@ -396,8 +418,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			for _, task := range allTasks {
-				status := extractFieldValue(task.Fields, "status")
-				if isItemTerminal(status, task.CollectionID, schemaMap) {
+				if isItemDone(task.Fields, task.CollectionID, ctxMap) {
 					continue
 				}
 				if _, hasParent := parentMap[task.ID]; !hasParent {
@@ -416,8 +437,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// (e) Blocked: non-done items that are blocked by other non-done items
 	for _, item := range allItems {
-		status := extractFieldValue(item.Fields, "status")
-		if isItemTerminal(status, item.CollectionID, schemaMap) {
+		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
 		links, err := s.store.GetItemLinks(item.ID)
@@ -444,10 +464,12 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if !s.isItemVisibleToGuest(r, workspaceID, blocker, dashFullCollIDs, dashGrantedItemIDs) {
 				continue
 			}
-			blockerStatus := extractFieldValue(blocker.Fields, "status")
-			if isItemTerminal(blockerStatus, blocker.CollectionID, schemaMap) {
+			if isItemDone(blocker.Fields, blocker.CollectionID, ctxMap) {
 				continue
 			}
+			// Used only in the human-readable "Reason" string below — the
+			// terminal check above owns the actual done-detection.
+			blockerStatus := extractFieldValue(blocker.Fields, "status")
 			resp.Attention = append(resp.Attention, DashboardAttention{
 				Type:       "blocked",
 				ItemSlug:   item.Slug,
@@ -591,8 +613,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				if item.AgentRoleID != nil {
 					roleID = *item.AgentRoleID
 				}
-				status := extractFieldValue(item.Fields, "status")
-				if isItemTerminal(status, item.CollectionID, schemaMap) {
+				if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 					continue
 				}
 				roleCounts[roleID]++

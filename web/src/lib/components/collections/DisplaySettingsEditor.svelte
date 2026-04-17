@@ -68,6 +68,10 @@
 					<option value={f.key}>{f.label}</option>
 				{/each}
 			</select>
+			<p class="setting-hint">
+				Also determines which field's terminal options drive "done" in
+				dashboards, progress bars, and changelog.
+			</p>
 		</div>
 
 		<div class="setting-item">
@@ -110,6 +114,13 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+		color: var(--text-muted);
+	}
+
+	.setting-hint {
+		margin: var(--space-1) 0 0;
+		font-size: 0.72em;
+		line-height: 1.4;
 		color: var(--text-muted);
 	}
 

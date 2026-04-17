@@ -58,6 +58,20 @@
 	let listSortBy = $state('');
 	let quickActions = $state<EditableQuickAction[]>([]);
 
+	// Mirrors DoneFieldKey() in internal/models/terminal.go — honors the
+	// selected board_group_by when it points at an in-editor select/multi
+	// _select field, else falls back to 'status'. Used by FieldEditor to
+	// render Active/Saved pills on terminal-option columns.
+	const activeDoneField = $derived.by(() => {
+		const candidate = (boardGroupBy || '').trim();
+		if (!candidate) return 'status';
+		const matches = fields.some(
+			(f) =>
+				f.key.trim() === candidate && (f.type === 'select' || f.type === 'multi_select')
+		);
+		return matches ? candidate : 'status';
+	});
+
 	// The collection doesn't exist yet, so the preview context falls back to
 	// representative placeholder values. Updates live as the collection name
 	// changes so the {collection} token reflects what will be saved.
@@ -471,6 +485,7 @@
 										isNew
 										keyError={keyErrors[i]}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeField(i)}

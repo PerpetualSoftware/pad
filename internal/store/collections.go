@@ -141,23 +141,29 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		return nil, err
 	}
 
-	// Compute active_item_count per collection using each collection's own
-	// terminal statuses from its schema (not the global default list).
-	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	// Compute active_item_count per collection using that collection's own
+	// done-field + terminal options from its schema + settings (not the
+	// global default list, and not hardcoded to `status`). See TASK-604:
+	// collections whose board is grouped by e.g. `resolution` have
+	// done-detection follow that field naturally.
 	for idx := range result {
 		c := &result[idx]
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(c.Schema), &schema); err != nil {
-			// If schema can't be parsed, fall back to default terminal statuses
 			schema = models.CollectionSchema{}
 		}
-		termPlaceholders, termArgs := models.TerminalStatusPlaceholders(schema)
+		var settings models.CollectionSettings
+		if c.Settings != "" {
+			_ = json.Unmarshal([]byte(c.Settings), &settings)
+		}
+		doneKey, termPlaceholders, termArgs := models.TerminalPlaceholdersForDoneField(schema, settings)
+		jsonExtractDone := s.dialect.JSONExtractText("i.fields", doneKey)
 		args := append([]any{c.ID}, termArgs...)
 		err := s.db.QueryRow(s.q(fmt.Sprintf(`
 			SELECT COUNT(*) FROM items i
 			WHERE i.collection_id = ? AND i.deleted_at IS NULL
 			AND LOWER(COALESCE(%s, '')) NOT IN (%s)
-		`, jsonExtractStatus, termPlaceholders)), args...).Scan(&c.ActiveItemCount)
+		`, jsonExtractDone, termPlaceholders)), args...).Scan(&c.ActiveItemCount)
 		if err != nil {
 			return nil, fmt.Errorf("count active items for collection %s: %w", c.Slug, err)
 		}
