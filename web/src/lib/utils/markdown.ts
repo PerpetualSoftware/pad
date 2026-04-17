@@ -102,6 +102,21 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 			return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
 		}
 
+		// Also try the collection-qualified legacy form on the full body,
+		// before the pipe split. Handles "[[tasks/A|B]]" where the actual
+		// title is literally "A|B" in the "tasks" collection.
+		if (fullBody.includes('/')) {
+			const [qualColl, ...qualRest] = fullBody.split('/');
+			const qualTitle = qualRest.join('/');
+			const qualItem = items.find(i =>
+				i.title.toLowerCase() === qualTitle.toLowerCase() &&
+				i.collection_slug === qualColl
+			);
+			if (qualItem && qualItem.collection_slug) {
+				return `[${escapeMarkdownLinkText(qualItem.title)}](${prefix}/${qualItem.collection_slug}/${itemUrlId(qualItem)})`;
+			}
+		}
+
 		// Split optional display override on the FIRST unescaped pipe.
 		const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
 		const key = unescapeWikiBody(rawKey);
