@@ -9,6 +9,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 
 	let { children } = $props();
 
@@ -36,6 +37,29 @@
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
 		sseService.disconnect();
+		titleStore.clearPageTitle();
+	});
+
+	// These two effects are split on purpose:
+	//
+	// 1. Workspace-name sync: runs whenever `workspaceStore.current` resolves
+	//    or changes. It only touches `workspace` — if it also cleared
+	//    section/item, an async workspace-name arrival AFTER a leaf page had
+	//    set its section/item would wipe that context.
+	//
+	// 2. Route-change clear: depends only on `page.url.pathname`, so it runs
+	//    exactly once per SPA navigation and clears section/item. Leaf pages
+	//    wired to the title store (workspace home, collection list, item
+	//    detail, activity) re-set their parts in child `$effect`s that run
+	//    after this one — Svelte 5 guarantees parent effects run before
+	//    child effects. Unwired routes (settings, roles, etc.) inherit the
+	//    cleared state and fall back to `{Workspace} · Pad`.
+	$effect(() => {
+		titleStore.setPageTitle({ workspace: workspaceStore.current?.name ?? null });
+	});
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: null, item: null });
 	});
 
 	// Initialize workspace, load collections, and reconnect SSE when workspace changes

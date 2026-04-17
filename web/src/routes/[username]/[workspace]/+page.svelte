@@ -8,6 +8,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -38,6 +39,11 @@
 
 	$effect(() => {
 		if (wsSlug) load(wsSlug);
+	});
+
+	// Workspace home shows only the workspace-level title — clear section/item.
+	$effect(() => {
+		titleStore.setPageTitle({ section: null, item: null });
 	});
 
 	let unsubscribeSync: (() => void) | null = null;
