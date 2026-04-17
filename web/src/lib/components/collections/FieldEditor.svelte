@@ -192,6 +192,16 @@
 		return '';
 	});
 	const defaultAsBool = $derived(field.default === true);
+	// <input type="date"> only accepts a YYYY-MM-DD value; an RFC3339
+	// datetime like "2026-01-01T10:00:00Z" would render blank and mislead
+	// the user into thinking there is no default. We truncate for display
+	// only — the underlying field.default stays untouched until the user
+	// actually picks a new date.
+	const dateDefaultDisplay = $derived.by(() => {
+		if (typeof field.default !== 'string') return '';
+		const m = /^(\d{4}-\d{2}-\d{2})/.exec(field.default);
+		return m ? m[1] : '';
+	});
 </script>
 
 <div class="field-card">
@@ -446,7 +456,7 @@
 							<input
 								class="advanced-input"
 								type="date"
-								value={defaultAsString}
+								value={dateDefaultDisplay}
 								oninput={onDefaultDateInput}
 								disabled={isComputed}
 								aria-labelledby="default-label-{field.key || index}"
