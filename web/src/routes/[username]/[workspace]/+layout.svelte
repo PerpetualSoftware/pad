@@ -9,6 +9,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 
 	let { children } = $props();
 
@@ -36,6 +37,12 @@
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
 		sseService.disconnect();
+		titleStore.clearPageTitle();
+	});
+
+	// Keep browser tab title in sync with the current workspace name.
+	$effect(() => {
+		titleStore.setPageTitle({ workspace: workspaceStore.current?.name ?? null });
 	});
 
 	// Initialize workspace, load collections, and reconnect SSE when workspace changes

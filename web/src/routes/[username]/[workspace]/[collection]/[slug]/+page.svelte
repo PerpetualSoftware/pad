@@ -23,6 +23,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -104,6 +105,15 @@
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
 		}
+	});
+
+	// Surface the item's ref (e.g. IDEA-592) in the browser tab title.
+	// Clear the section so the format reads "{REF} · {Workspace} · Pad".
+	$effect(() => {
+		titleStore.setPageTitle({
+			section: null,
+			item: item ? (formatItemRef(item) || null) : null,
+		});
 	});
 
 	// Sync coordinator — refresh item data on tab resume

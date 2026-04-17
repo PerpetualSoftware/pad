@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Activity, Collection } from '$lib/types';
 
@@ -42,6 +43,11 @@
 
 	onMount(() => {
 		workspaceStore.setCurrent(wsSlug);
+	});
+
+	// Reflect the activity feed in the browser tab title.
+	$effect(() => {
+		titleStore.setPageTitle({ section: 'Activity', item: null });
 	});
 
 	async function loadCollections(slug: string) {
@@ -202,10 +208,6 @@
 		}
 	}
 </script>
-
-<svelte:head>
-	<title>Activity - {workspaceStore.current?.name ?? wsSlug} | Pad</title>
-</svelte:head>
 
 <div class="activity-page">
 	<header class="page-header">

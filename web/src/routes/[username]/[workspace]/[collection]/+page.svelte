@@ -18,6 +18,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { titleStore } from '$lib/stores/title.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -101,6 +102,14 @@
 
 	$effect(() => {
 		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+	});
+
+	// Reflect the collection name in the browser tab; clear any stale item ref.
+	$effect(() => {
+		titleStore.setPageTitle({
+			section: collection?.name ?? null,
+			item: null,
+		});
 	});
 
 	// Subscribe to SSE events for live updates to this collection's items
