@@ -7,6 +7,7 @@
 	import {
 		blankField,
 		fieldFromDef,
+		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
@@ -193,11 +194,18 @@
 					}
 					// Advanced controls (T3 / TASK-596). Only emit when set so
 					// payloads stay compact and round-trip with existing schemas.
+					// Type-specific values are gated by `f.type` so stale state
+					// from a prior type doesn't leak into the saved schema —
+					// e.g. a user sets a number default/suffix, switches to
+					// `relation`, and the hidden number values would otherwise
+					// still be persisted.
 					if (f.required) def.required = true;
 					if (f.computed) def.computed = true;
-					if (f.suffix) def.suffix = f.suffix;
-					if (f.collection) def.collection = f.collection;
-					if (f.default !== undefined) def.default = f.default;
+					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					if (f.default !== undefined && typeSupportsDefault(f.type)) {
+						def.default = f.default;
+					}
 					return def;
 				});
 

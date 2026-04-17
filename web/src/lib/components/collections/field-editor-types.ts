@@ -122,6 +122,29 @@ export function validateFieldKey(key: string): string | null {
 	return null;
 }
 
+/**
+ * Does a field of this type support a default value?
+ *
+ * Shared by FieldEditor (to decide whether to render the default input)
+ * and by both modals' save paths (to gate `default` emission so stale
+ * values from a prior type don't leak into the saved schema when the
+ * user switches types).
+ *
+ * multi_select: deliberately excluded — array defaults are complex and
+ * deferred.
+ * relation: excluded — a default target item isn't meaningful here.
+ */
+export function typeSupportsDefault(type: FieldDef['type']): boolean {
+	return (
+		type === 'text' ||
+		type === 'url' ||
+		type === 'number' ||
+		type === 'date' ||
+		type === 'checkbox' ||
+		type === 'select'
+	);
+}
+
 /** Create an empty EditableField for a new (unsaved) field. */
 export function blankField(): EditableField {
 	return {

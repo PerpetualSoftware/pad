@@ -7,6 +7,7 @@
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
+		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
 	} from './field-editor-types';
@@ -317,11 +318,17 @@
 					// Only include terminal options that still exist in the options list
 					def.terminal_options = f.terminalOptions.filter(t => def.options?.includes(t));
 				}
+				// Gate type-specific advanced values by the current type so
+				// stale hidden values from a previous type (e.g. a number
+				// default/suffix after switching to relation) don't leak
+				// into the saved schema.
 				if (f.required) def.required = true;
 				if (f.computed) def.computed = true;
-				if (f.collection) def.collection = f.collection;
-				if (f.suffix) def.suffix = f.suffix;
-				if (f.default !== undefined) def.default = f.default;
+				if (f.type === 'relation' && f.collection) def.collection = f.collection;
+				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+				if (f.default !== undefined && typeSupportsDefault(f.type)) {
+					def.default = f.default;
+				}
 				return def;
 			});
 
@@ -351,11 +358,15 @@
 					}
 					// Advanced controls (T3 / TASK-596). Only emit when set so
 					// payloads stay compact and round-trip with existing schemas.
+					// Type-specific values are gated by `f.type` so stale state
+					// from a prior type doesn't leak into the saved schema.
 					if (f.required) def.required = true;
 					if (f.computed) def.computed = true;
-					if (f.suffix) def.suffix = f.suffix;
-					if (f.collection) def.collection = f.collection;
-					if (f.default !== undefined) def.default = f.default;
+					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					if (f.default !== undefined && typeSupportsDefault(f.type)) {
+						def.default = f.default;
+					}
 					return def;
 				});
 

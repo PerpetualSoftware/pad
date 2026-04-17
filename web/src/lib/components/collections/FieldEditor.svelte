@@ -8,7 +8,12 @@
 </script>
 
 <script lang="ts">
-	import { FIELD_TYPES, slugifyKey, type EditableField } from './field-editor-types';
+	import {
+		FIELD_TYPES,
+		slugifyKey,
+		typeSupportsDefault,
+		type EditableField
+	} from './field-editor-types';
 
 	interface Props {
 		/** The field being edited. Mutated in place via bindings. */
@@ -125,17 +130,10 @@
 		}
 	});
 
-	// Default-value support depends on type. multi_select and relation are
-	// deliberately excluded: array defaults are complex, relation defaults are
-	// nonsensical.
-	const supportsDefault = $derived(
-		field.type === 'text' ||
-			field.type === 'url' ||
-			field.type === 'number' ||
-			field.type === 'date' ||
-			field.type === 'checkbox' ||
-			field.type === 'select'
-	);
+	// Default-value support depends on type. See typeSupportsDefault() for
+	// the full rules. We read through the shared helper so the gating logic
+	// in both modals' save paths matches the UI.
+	const supportsDefault = $derived(typeSupportsDefault(field.type));
 
 	const isRelation = $derived(field.type === 'relation');
 	const isNumber = $derived(field.type === 'number');
