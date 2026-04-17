@@ -287,9 +287,10 @@
 					<span class="options-col-label">Options</span>
 					<span
 						class="options-col-terminal"
-						title={'Mark options as terminal — values that mean "done" or "closed" for items. ' +
-							'Used for dashboard filtering, progress bars, and changelog generation. ' +
-							'Most useful on status-like fields; optional on others.'}
+						title={'Mark options that mean "done" or "closed". ' +
+							'Today only the status field drives dashboard filtering, progress bars, and ' +
+							'changelog — markings on other fields are saved on the schema for API ' +
+							'consumers and future cross-field done-detection.'}
 					>Done?</span>
 					<span class="options-col-spacer"></span>
 				</div>
