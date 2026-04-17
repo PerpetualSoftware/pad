@@ -40,9 +40,22 @@
 		titleStore.clearPageTitle();
 	});
 
-	// Keep browser tab title in sync with the current workspace name.
+	// Keep browser tab title in sync with the current workspace, and clear any
+	// stale section/item on every route change. Leaf pages under this layout
+	// that are wired to the title store (workspace home, collection list, item
+	// detail, activity) re-set their own parts in child `$effect`s that run
+	// after this one — Svelte 5 guarantees parent effects run before child
+	// effects. Unwired routes (settings, roles, etc.) inherit the cleared
+	// state and fall back to `{Workspace} · Pad`.
 	$effect(() => {
-		titleStore.setPageTitle({ workspace: workspaceStore.current?.name ?? null });
+		// Read pathname so this effect re-runs on every SPA navigation,
+		// not only when the workspace name changes.
+		page.url.pathname;
+		titleStore.setPageTitle({
+			workspace: workspaceStore.current?.name ?? null,
+			section: null,
+			item: null,
+		});
 	});
 
 	// Initialize workspace, load collections, and reconnect SSE when workspace changes
