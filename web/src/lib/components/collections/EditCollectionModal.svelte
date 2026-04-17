@@ -322,6 +322,14 @@
 					if ((f.type === 'select' || f.type === 'multi_select') && opts.length > 0) {
 						def.options = opts;
 					}
+					// Mirror the existing-fields path: persist terminal-option
+					// markings for newly-added status fields. Without this,
+					// choices made via the terminal toggle are silently dropped
+					// on save.
+					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
+						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
+						if (terms.length > 0) def.terminal_options = terms;
+					}
 					return def;
 				});
 

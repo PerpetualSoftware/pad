@@ -162,6 +162,16 @@
 					if ((f.type === 'select' || f.type === 'multi_select') && opts.length > 0) {
 						def.options = opts;
 					}
+					// Persist terminal-option markings for status fields. Templates
+					// may ship with terminal_options, and FieldEditor lets users
+					// toggle them on a status field during create. Without this
+					// the choices are silently dropped on save. Gated on
+					// `key === 'status'` to mirror the current UI; T4 generalizes
+					// this to any select field.
+					if (key === 'status' && f.terminalOptions.length > 0 && def.options) {
+						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
+						if (terms.length > 0) def.terminal_options = terms;
+					}
 					return def;
 				});
 
