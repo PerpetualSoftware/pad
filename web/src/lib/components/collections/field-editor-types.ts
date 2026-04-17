@@ -244,8 +244,18 @@ export function coerceDefault(
 				const hour = Number(dt[4]);
 				const min = Number(dt[5]);
 				const sec = Number(dt[6]);
+				const tz = dt[7];
 				if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
 				if (hour > 23 || min > 59 || sec > 59) return undefined;
+				// Validate the timezone offset numerically. The regex only
+				// enforces the `±hh:mm` shape; offsets like `+99:99` would
+				// otherwise slip through. Go's time.RFC3339 (backend
+				// parser) accepts any offset within ±23:59 minutes.
+				if (tz !== 'Z') {
+					const offH = Number(tz.slice(1, 3));
+					const offM = Number(tz.slice(4, 6));
+					if (offH > 23 || offM > 59) return undefined;
+				}
 				// Round-trip verify the date components: if the day is out
 				// of range for the month (e.g. Feb 31), Date.UTC rolls it
 				// forward and the components won't match.
