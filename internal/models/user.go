@@ -22,6 +22,7 @@ type User struct {
 	StripeCustomerID string    `json:"-"`                       // Never serialized
 	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
 	OAuthProviders   string    `json:"-"`                       // JSON array of linked providers, e.g. ["github","google"]
+	PasswordSet      bool      `json:"password_set"`            // True if the user explicitly set a password (vs. OAuth placeholder hash)
 	DisabledAt       string    `json:"disabled_at,omitempty"`   // Non-empty = account disabled
 	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request
 	CreatedAt        time.Time `json:"created_at"`
@@ -53,6 +54,14 @@ func (u *User) HasOAuthProvider(provider string) bool {
 		}
 	}
 	return false
+}
+
+// HasPassword returns true if the user has explicitly set a password that
+// they can sign in with. OAuth-only users have a random placeholder hash
+// stored in PasswordHash which can't actually be used to log in, so this
+// bit is tracked separately from PasswordHash being non-empty.
+func (u *User) HasPassword() bool {
+	return u.PasswordSet
 }
 
 // UserCreate is the input for registering a new user.

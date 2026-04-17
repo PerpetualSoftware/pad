@@ -94,8 +94,10 @@
 		searchTimeout = setTimeout(async () => {
 			try {
 				const resp = await api.search(query, buildFilters(0));
-				results = resp.results;
-				total = resp.total;
+				// Defensive: some backends / error paths can send `null` for
+				// an absent array. Coalesce so downstream `.length` is safe.
+				results = resp.results ?? [];
+				total = resp.total ?? 0;
 				facets = resp.facets;
 				selectedIdx = 0;
 			} catch {
@@ -118,7 +120,7 @@
 			const resp = await api.search(query, buildFilters(results.length));
 			// Discard if query or filters changed while loading
 			if (query !== snapshotQuery || filterCollection !== snapshotCollection || filterStatus !== snapshotStatus) return;
-			results = [...results, ...resp.results];
+			results = [...results, ...(resp.results ?? [])];
 		} catch {
 			// ignore
 		} finally {

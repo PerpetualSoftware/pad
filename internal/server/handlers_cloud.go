@@ -385,14 +385,11 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure user won't be locked out: they must have another linked
-	// provider remaining. All users have a password hash (OAuth users get
-	// a random one), so we can't distinguish "has usable password" from
-	// "has unusable random hash". Requiring another provider is the safe
-	// default. Users who set a real password via the reset flow can unlink
-	// their last provider since they'll still have password-based login.
-	// TODO: track whether the user has explicitly set a password to allow
-	// unlinking the last provider in that case.
+	// Ensure user won't be locked out after unlinking. They must retain
+	// at least one usable sign-in method: either another linked OAuth
+	// provider, or an explicitly-set password. OAuth-only users have a
+	// random placeholder hash in password_hash that can't actually be
+	// used to log in, which is why we track password_set separately.
 	providers := user.GetOAuthProviders()
 	hasOtherProvider := false
 	for _, p := range providers {
@@ -401,7 +398,7 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if !hasOtherProvider {
+	if !hasOtherProvider && !user.HasPassword() {
 		writeError(w, http.StatusBadRequest, "bad_request",
 			"Cannot unlink your only sign-in method. Link another provider or set a password first.")
 		return
