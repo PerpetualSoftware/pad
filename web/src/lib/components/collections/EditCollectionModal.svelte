@@ -4,6 +4,8 @@
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
+	import FieldEditor from './FieldEditor.svelte';
+	import { blankField, type EditableField } from './field-editor-types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -38,17 +40,6 @@
 		}
 	}
 
-	const FIELD_TYPES: FieldDef['type'][] = [
-		'text',
-		'number',
-		'select',
-		'multi_select',
-		'date',
-		'checkbox',
-		'url',
-		'relation'
-	];
-
 	// ── Tab state ────────────────────────────────────────────────────────────
 	let activeTab = $state<'general' | 'fields' | 'display' | 'actions'>('general');
 
@@ -62,23 +53,11 @@
 	let error = $state('');
 
 	// ── Field editing state ──────────────────────────────────────────────────
-
-	interface EditableField {
-		key: string;
-		label: string;
-		type: FieldDef['type'];
-		options: string[];
-		originalOptions: string[];
-		terminalOptions: string[];
-		required?: boolean;
-		computed?: boolean;
-		collection?: string;
-		suffix?: string;
-		default?: any;
-	}
+	// EditableField shape lives in `./field-editor-types.ts` so FieldEditor
+	// and this modal share one type.
 
 	let existingFields = $state<EditableField[]>([]);
-	let newFields = $state<{ key: string; type: FieldDef['type']; options: string }[]>([]);
+	let newFields = $state<EditableField[]>([]);
 
 	// ── Display settings state ──────────────────────────────────────────────
 
@@ -200,37 +179,22 @@
 		existingFields.splice(index, 1);
 	}
 
-	// ── Option editing for select fields ─────────────────────────────────────
-
-	function removeOption(field: EditableField, optIndex: number) {
-		field.options.splice(optIndex, 1);
-	}
-
-	function addOption(field: EditableField) {
-		field.options.push('');
-	}
-
-	function toggleTerminal(field: EditableField, option: string) {
-		const idx = field.terminalOptions.indexOf(option);
-		if (idx >= 0) {
-			field.terminalOptions.splice(idx, 1);
-		} else {
-			field.terminalOptions.push(option);
-		}
-	}
-
-	function isTerminal(field: EditableField, option: string): boolean {
-		return field.terminalOptions.includes(option);
-	}
-
 	// ── New field actions ────────────────────────────────────────────────────
 
 	function addField() {
-		newFields.push({ key: '', type: 'text', options: '' });
+		newFields.push(blankField());
 	}
 
 	function removeNewField(index: number) {
 		newFields.splice(index, 1);
+	}
+
+	function moveNewField(index: number, direction: -1 | 1) {
+		const target = index + direction;
+		if (target < 0 || target >= newFields.length) return;
+		const temp = newFields[index];
+		newFields[index] = newFields[target];
+		newFields[target] = temp;
 	}
 
 	// ── Build migrations ─────────────────────────────────────────────────────
@@ -289,15 +253,18 @@
 			});
 
 			// Build new fields
+			// T1 note: We now share the EditableField shape with existing fields.
+			// The user-typed value lives in `label`; we use it for both key and
+			// label to preserve pre-T1 behavior. T2 (TASK-595) will introduce a
+			// proper key/label split with slugification.
 			const addedFields: FieldDef[] = newFields
-				.filter((f) => f.key.trim())
+				.filter((f) => f.label.trim())
 				.map((f) => {
-					const def: FieldDef = { key: f.key.trim(), label: f.key.trim(), type: f.type };
-					if ((f.type === 'select' || f.type === 'multi_select') && f.options.trim()) {
-						def.options = f.options
-							.split(',')
-							.map((o) => o.trim())
-							.filter(Boolean);
+					const name = f.label.trim();
+					const def: FieldDef = { key: name, label: name, type: f.type };
+					const opts = f.options.map((o) => o.trim()).filter(Boolean);
+					if ((f.type === 'select' || f.type === 'multi_select') && opts.length > 0) {
+						def.options = opts;
 					}
 					return def;
 				});
@@ -451,87 +418,35 @@
 				{:else if activeTab === 'fields'}
 					<!-- ── Fields Tab ──────────────────────────────────────── -->
 					<div class="tab-content">
-						{#if existingFields.length > 0}
+						{#if existingFields.length === 0 && newFields.length === 0}
+							<div class="empty-state">No fields defined yet.</div>
+						{:else}
 							<div class="fields-list">
 								{#each existingFields as field, i (field.key)}
-									<div class="field-card">
-										<div class="field-card-header">
-											<div class="field-drag-handle">
-												<button class="reorder-btn" type="button" disabled={i === 0} onclick={() => moveField(i, -1)} title="Move up">&#9650;</button>
-												<button class="reorder-btn" type="button" disabled={i === existingFields.length - 1} onclick={() => moveField(i, 1)} title="Move down">&#9660;</button>
-											</div>
-											<div class="field-header-left">
-												<input class="field-label-input" type="text" bind:value={field.label} placeholder="Field label" />
-											</div>
-											<select class="field-type-select" bind:value={field.type} title="Field type">
-												{#each FIELD_TYPES as ft (ft)}
-													<option value={ft}>{ft.replace('_', ' ')}</option>
-												{/each}
-											</select>
-											<button class="field-remove-btn" type="button" onclick={() => removeExistingField(i)} title="Remove field">&#10005;</button>
-										</div>
-
-										{#if field.type === 'select' || field.type === 'multi_select'}
-											<div class="field-options">
-												{#if field.key === 'status' && field.options.length > 0}
-													<div class="options-col-headers">
-														<span class="options-col-label">Options</span>
-														<span class="options-col-terminal" title="Terminal statuses are treated as done/closed">Done?</span>
-														<span class="options-col-spacer"></span>
-													</div>
-												{/if}
-												<div class="options-rows">
-													{#each field.options as _opt, oi (oi)}
-														<div class="option-row" class:option-terminal={field.key === 'status' && isTerminal(field, field.options[oi])}>
-															<input class="option-name-input" type="text" bind:value={field.options[oi]} placeholder="option name" />
-															{#if field.key === 'status'}
-																<button
-																	class="option-done-toggle"
-																	class:active={isTerminal(field, field.options[oi])}
-																	type="button"
-																	onclick={() => toggleTerminal(field, field.options[oi])}
-																	title={isTerminal(field, field.options[oi]) ? 'Marked as terminal (click to unmark)' : 'Mark as terminal — items with this status are considered done'}
-																>
-																	{#if isTerminal(field, field.options[oi])}
-																		<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="14" height="14" rx="3" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 8L7 10.5L11.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-																	{:else}
-																		<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>
-																	{/if}
-																</button>
-															{/if}
-															<button class="option-remove-btn" type="button" onclick={() => removeOption(field, oi)} title="Remove option">&#10005;</button>
-														</div>
-													{/each}
-												</div>
-												<button class="option-add-btn" type="button" onclick={() => addOption(field)}>+ Add option</button>
-											</div>
-										{/if}
-									</div>
+									<FieldEditor
+										bind:field={existingFields[i]}
+										index={i}
+										total={existingFields.length}
+										onmoveup={() => moveField(i, -1)}
+										onmovedown={() => moveField(i, 1)}
+										onremove={() => removeExistingField(i)}
+									/>
+								{/each}
+								{#each newFields as _field, i (i)}
+									<FieldEditor
+										bind:field={newFields[i]}
+										index={i}
+										total={newFields.length}
+										isNew
+										onmoveup={() => moveNewField(i, -1)}
+										onmovedown={() => moveNewField(i, 1)}
+										onremove={() => removeNewField(i)}
+									/>
 								{/each}
 							</div>
-						{:else}
-							<div class="empty-state">No fields defined yet.</div>
 						{/if}
 
-						<div class="add-field-section">
-							{#each newFields as field, i (i)}
-								<div class="new-field-card">
-									<div class="new-field-top">
-										<input class="new-field-name" type="text" placeholder="Field name" bind:value={field.key} />
-										<select class="field-type-select" bind:value={field.type}>
-											{#each FIELD_TYPES as ft (ft)}
-												<option value={ft}>{ft.replace('_', ' ')}</option>
-											{/each}
-										</select>
-										<button class="field-remove-btn" type="button" onclick={() => removeNewField(i)}>&#10005;</button>
-									</div>
-									{#if field.type === 'select' || field.type === 'multi_select'}
-										<input class="new-field-options" type="text" placeholder="option1, option2, ..." bind:value={field.options} />
-									{/if}
-								</div>
-							{/each}
-							<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
-						</div>
+						<button class="add-field-btn" type="button" onclick={addField}>+ Add field</button>
 					</div>
 				{:else if activeTab === 'display'}
 					<!-- ── Display Tab ─────────────────────────────────────── -->
@@ -925,27 +840,8 @@
 		gap: var(--space-3);
 	}
 
-	.field-card {
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-
-	.field-card-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		padding: var(--space-3) var(--space-3);
-	}
-
-	.field-drag-handle {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		flex-shrink: 0;
-	}
-
+	/* Shared reorder button — used by Quick Actions rows. The Fields tab
+	   gets its reorder-btn styles from FieldEditor.svelte. */
 	.reorder-btn {
 		background: none;
 		border: none;
@@ -967,219 +863,6 @@
 		cursor: default;
 	}
 
-	.field-header-left {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.field-label-input {
-		width: 100%;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.9em;
-		font-weight: 500;
-		color: var(--text-primary);
-	}
-
-	.field-label-input:hover {
-		border-color: var(--border);
-	}
-
-	.field-label-input:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.field-key {
-		font-size: 0.72em;
-		color: var(--text-muted);
-		padding-left: var(--space-2);
-		font-family: var(--font-mono);
-	}
-
-	.field-type-select {
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.82em;
-		color: var(--text-primary);
-		cursor: pointer;
-		flex-shrink: 0;
-	}
-
-	.field-type-select:hover {
-		border-color: var(--border);
-	}
-
-	.field-type-select:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.field-remove-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.82em;
-		cursor: pointer;
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		line-height: 1;
-		flex-shrink: 0;
-	}
-
-	.field-remove-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
-	}
-
-	/* ── Options area (select / multi_select) ──────────────────────────────── */
-
-	.field-options {
-		border-top: 1px solid var(--border);
-		padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 28px);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.options-col-headers {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		padding-bottom: var(--space-1);
-	}
-
-	.options-col-label {
-		flex: 1;
-		font-size: 0.72em;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
-	}
-
-	.options-col-terminal {
-		width: 40px;
-		text-align: center;
-		font-size: 0.72em;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
-	}
-
-	.options-col-spacer {
-		width: 22px;
-		flex-shrink: 0;
-	}
-
-	.options-rows {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-	}
-
-	.option-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-
-	.option-row.option-terminal .option-name-input {
-		border-color: color-mix(in srgb, var(--accent-green, #22c55e) 30%, var(--border));
-		background: color-mix(in srgb, var(--accent-green, #22c55e) 4%, var(--bg-secondary));
-	}
-
-	.option-name-input {
-		flex: 1;
-		min-width: 0;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.option-name-input:hover {
-		border-color: var(--border);
-	}
-
-	.option-name-input:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.option-done-toggle {
-		width: 40px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		cursor: pointer;
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		flex-shrink: 0;
-		transition: color 0.15s;
-	}
-
-	.option-done-toggle:hover {
-		color: var(--text-secondary);
-	}
-
-	.option-done-toggle.active {
-		color: var(--accent-green, #22c55e);
-	}
-
-	.option-remove-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.75em;
-		cursor: pointer;
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		line-height: 1;
-		flex-shrink: 0;
-		opacity: 0;
-		transition: opacity 0.1s;
-	}
-
-	.option-row:hover .option-remove-btn {
-		opacity: 1;
-	}
-
-	.option-remove-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
-	}
-
-	.option-add-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.82em;
-		cursor: pointer;
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-sm);
-		text-align: left;
-		width: fit-content;
-	}
-
-	.option-add-btn:hover {
-		color: var(--accent-blue);
-		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
-	}
-
 	.empty-state {
 		padding: var(--space-6) var(--space-4);
 		text-align: center;
@@ -1187,17 +870,10 @@
 		font-size: 0.88em;
 	}
 
-	/* ── Add field section ─────────────────────────────────────────────────── */
-
-	.add-field-section {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
-		border-top: 1px solid var(--border);
-		padding-top: var(--space-4);
-	}
+	/* ── Add field button ──────────────────────────────────────────────────── */
 
 	.add-field-btn {
+		margin-top: var(--space-3);
 		background: none;
 		border: 1px dashed var(--border);
 		color: var(--accent-blue);
@@ -1213,61 +889,6 @@
 	.add-field-btn:hover {
 		background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 		border-color: var(--accent-blue);
-	}
-
-	.new-field-card {
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-3);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.new-field-top {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-
-	.new-field-name {
-		flex: 1;
-		min-width: 120px;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.new-field-name:hover {
-		border-color: var(--border);
-	}
-
-	.new-field-name:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.new-field-options {
-		width: 100%;
-		padding: var(--space-1) var(--space-2);
-		background: var(--bg-secondary);
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
-		font-size: 0.85em;
-		color: var(--text-primary);
-	}
-
-	.new-field-options:hover {
-		border-color: var(--border);
-	}
-
-	.new-field-options:focus {
-		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* ── Display tab ───────────────────────────────────────────────────────── */
