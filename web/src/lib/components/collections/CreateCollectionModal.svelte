@@ -6,6 +6,7 @@
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
+		coerceDefault,
 		fieldFromDef,
 		typeSupportsDefault,
 		validateFieldKey,
@@ -203,8 +204,13 @@
 					if (f.computed) def.computed = true;
 					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
 					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// Coerce default to match the active type. This catches
+					// both type-switch drift (boolean default left on a text
+					// field) and select whitespace drift (default raw text not
+					// matching the normalized options set).
 					if (f.default !== undefined && typeSupportsDefault(f.type)) {
-						def.default = f.default;
+						const coerced = coerceDefault(f.default, f.type, def.options);
+						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;
 				});

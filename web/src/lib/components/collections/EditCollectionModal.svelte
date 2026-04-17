@@ -7,6 +7,7 @@
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
 		blankField,
+		coerceDefault,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -326,8 +327,11 @@
 				if (f.computed) def.computed = true;
 				if (f.type === 'relation' && f.collection) def.collection = f.collection;
 				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+				// Coerce default to the active type (and normalize select
+				// defaults against the normalized option set).
 				if (f.default !== undefined && typeSupportsDefault(f.type)) {
-					def.default = f.default;
+					const coerced = coerceDefault(f.default, f.type, def.options);
+					if (coerced !== undefined) def.default = coerced;
 				}
 				return def;
 			});
@@ -364,8 +368,11 @@
 					if (f.computed) def.computed = true;
 					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
 					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// Coerce default to the active type (and normalize select
+					// defaults against the normalized option set).
 					if (f.default !== undefined && typeSupportsDefault(f.type)) {
-						def.default = f.default;
+						const coerced = coerceDefault(f.default, f.type, def.options);
+						if (coerced !== undefined) def.default = coerced;
 					}
 					return def;
 				});

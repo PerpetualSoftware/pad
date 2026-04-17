@@ -145,6 +145,69 @@ export function typeSupportsDefault(type: FieldDef['type']): boolean {
 	);
 }
 
+/**
+ * Coerce a raw `field.default` value to match the active field type,
+ * returning undefined when the value isn't representable (so the caller
+ * can drop it).
+ *
+ * This guards against two failure modes that the save paths would
+ * otherwise propagate into the saved schema:
+ *
+ * 1. Type-switch drift: a user sets a default on a `checkbox` field
+ *    (boolean `true`), switches the type to `text`, and the stale
+ *    boolean would be serialized as the text default. ValidateFields
+ *    would then auto-apply it to new items without re-validating.
+ *
+ * 2. Select whitespace drift: option text is normalized via `o.trim()`
+ *    at serialize time (e.g. "open " -> "open"), but the raw default
+ *    value captured at pick time still carries the whitespace. The
+ *    saved schema would have `options:["open"]` + `default:"open "` —
+ *    a default that isn't in the allowed set.
+ *
+ * @param raw the current `field.default` value (polymorphic)
+ * @param type the active field type at save time
+ * @param options for `select` fields, the already-normalized option set.
+ *   When supplied, the coerced default must be one of these values or
+ *   it is dropped.
+ */
+export function coerceDefault(
+	raw: unknown,
+	type: FieldDef['type'],
+	options?: string[]
+): unknown {
+	if (raw === undefined || raw === null) return undefined;
+	switch (type) {
+		case 'text':
+		case 'url':
+			return typeof raw === 'string' && raw !== '' ? raw : undefined;
+		case 'number': {
+			if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+			if (typeof raw === 'string' && raw.trim() !== '') {
+				const n = Number(raw);
+				return Number.isFinite(n) ? n : undefined;
+			}
+			return undefined;
+		}
+		case 'date':
+			return typeof raw === 'string' && raw.trim() !== '' ? raw : undefined;
+		case 'checkbox':
+			return typeof raw === 'boolean' ? raw : undefined;
+		case 'select': {
+			if (typeof raw !== 'string') return undefined;
+			const trimmed = raw.trim();
+			if (trimmed === '') return undefined;
+			// When the caller supplies the normalized options set, the
+			// default must be one of them. This catches (a) whitespace
+			// drift between option text and default text, and (b) stale
+			// defaults from when the options list was different.
+			if (options && !options.includes(trimmed)) return undefined;
+			return trimmed;
+		}
+		default:
+			return undefined;
+	}
+}
+
 /** Create an empty EditableField for a new (unsaved) field. */
 export function blankField(): EditableField {
 	return {
