@@ -270,7 +270,7 @@ func interviewingStarterPlaybooks() []SeedPlaybook {
 2. Update prep_status to "completed".
 3. Add a comment on the Interview with: how you felt it went, questions they asked, questions you asked, red/green flags, follow-up items.
 4. Update the Application's stage if this interview advanced or ended the process.
-5. Create a follow-up Task for the thank-you note (due within 24h).
+5. Send a thank-you to each interviewer within 24h. Log it as a comment on the Interview item and update the matching Contact's last_contact field to today's date.
 6. If you took away useful lessons (a question pattern, a company-specific insight), note it on the Company item so future applications there benefit.
 
 💡 Ask your AI agent to customize this playbook for your job-search workflow.`,
