@@ -529,17 +529,6 @@ input:focus, textarea:focus {
 		box-shadow: none !important;
 	}
 
-	/* Skip field-rows whose value is blank so we don't print label-only
-	   rows (e.g. a "Category" row with nothing filled in). Covers both
-	   the direct-empty case and the indirect case where the value wraps
-	   a single `.computed-value` span that's empty. BUG-625. */
-	.field-row:has(> .field-value:empty) {
-		display: none !important;
-	}
-	.field-row:has(> .field-value > .computed-value:only-child:empty) {
-		display: none !important;
-	}
-
 	/* Custom select controls (FieldEditor) render a dropdown chevron as
 	   an inline SVG (`.select-chevron`) inside the button — `appearance:
 	   none` on the button doesn't affect SVG children, so the `∨` caret
