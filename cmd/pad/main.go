@@ -998,15 +998,9 @@ a workspace in one step.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Handle --list-templates
 			if listTemplates {
-				tmpls := collections.ListTemplates()
 				fmt.Println("Available templates:")
-				for _, t := range tmpls {
-					def := ""
-					if t.Name == "startup" {
-						def = " (default)"
-					}
-					fmt.Printf("  %-10s %s%s\n", t.Name, t.Description, def)
-				}
+				fmt.Println()
+				printGroupedTemplates(os.Stdout)
 				return nil
 			}
 
@@ -1015,15 +1009,9 @@ a workspace in one step.`,
 				tmpl := collections.GetTemplate(templateFlag)
 				if tmpl == nil {
 					fmt.Fprintf(os.Stderr, "Unknown template: %s\n\n", templateFlag)
-					tmpls := collections.ListTemplates()
 					fmt.Fprintln(os.Stderr, "Available templates:")
-					for _, t := range tmpls {
-						def := ""
-						if t.Name == "startup" {
-							def = " (default)"
-						}
-						fmt.Fprintf(os.Stderr, "  %-10s %s%s\n", t.Name, t.Description, def)
-					}
+					fmt.Fprintln(os.Stderr)
+					printGroupedTemplates(os.Stderr)
 					return fmt.Errorf("unknown template %q", templateFlag)
 				}
 			}
@@ -1080,7 +1068,7 @@ a workspace in one step.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&templateFlag, "template", "", "workspace template (startup, scrum, product)")
+	cmd.Flags().StringVar(&templateFlag, "template", "", "workspace template (use --list-templates to see available templates by category)")
 	cmd.Flags().BoolVar(&listTemplates, "list-templates", false, "list available workspace templates")
 
 	return cmd
