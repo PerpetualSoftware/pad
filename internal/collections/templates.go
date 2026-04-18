@@ -2,13 +2,30 @@ package collections
 
 import "github.com/xarmian/pad/internal/models"
 
+// Template categories. Templates are grouped in the picker by category so
+// users can find the right starting point regardless of whether they are
+// building software, running a hiring loop, doing research, etc.
+const (
+	CategorySoftware   = "software"
+	CategoryPeople     = "people"
+	CategoryResearch   = "research"
+	CategoryContent    = "content"
+	CategoryOperations = "operations"
+	CategoryPersonal   = "personal"
+)
+
 // WorkspaceTemplate is a named set of collection definitions used to
 // initialize a new workspace.
 type WorkspaceTemplate struct {
 	Name        string
+	Category    string // e.g. CategorySoftware, CategoryPeople — used to group templates in the picker
 	Description string
+	Icon        string // Display icon for pickers (CLI + web)
+	Hidden      bool   // If true, template is excluded from the picker but still buildable by explicit name
 	Collections []DefaultCollection
-	SeedItems   []SeedItem // Optional sample items to create after collections
+	Conventions []SeedConvention // Domain-specific conventions seeded with the workspace
+	Playbooks   []SeedPlaybook   // Domain-specific playbooks seeded with the workspace
+	SeedItems   []SeedItem       // Optional sample items to create after collections
 }
 
 // SeedItem defines a sample item to seed into a workspace.
@@ -17,6 +34,22 @@ type SeedItem struct {
 	Title          string
 	Content        string
 	Fields         string // JSON string of field values
+}
+
+// SeedConvention defines a convention seeded into a workspace when a template
+// is applied. It targets the workspace's "conventions" collection.
+type SeedConvention struct {
+	Title   string
+	Content string
+	Fields  string // JSON string of field values (trigger, scope, priority, status, role)
+}
+
+// SeedPlaybook defines a playbook seeded into a workspace when a template is
+// applied. It targets the workspace's "playbooks" collection.
+type SeedPlaybook struct {
+	Title   string
+	Content string
+	Fields  string // JSON string of field values (trigger, scope, status)
 }
 
 // docsCollection returns the standard Docs collection shared across templates.
@@ -155,12 +188,16 @@ func playbooksCollection(sortOrder int) DefaultCollection {
 var templates = []WorkspaceTemplate{
 	{
 		Name:        "startup",
+		Category:    CategorySoftware,
 		Description: "Tasks, Ideas, Plans, Docs, Conventions, Playbooks",
+		Icon:        "\U0001F680", // 🚀
 		Collections: Defaults(),
 	},
 	{
 		Name:        "scrum",
+		Category:    CategorySoftware,
 		Description: "Backlog, Sprints, Bugs, Docs, Conventions, Playbooks",
+		Icon:        "\U0001F3C3", // 🏃
 		Collections: []DefaultCollection{
 			{
 				Name:        "Backlog",
@@ -291,7 +328,9 @@ var templates = []WorkspaceTemplate{
 	},
 	{
 		Name:        "product",
+		Category:    CategorySoftware,
 		Description: "Features, Feedback, Roadmap Items, Docs, Conventions, Playbooks",
+		Icon:        "\U0001F4E6", // 📦
 		Collections: []DefaultCollection{
 			{
 				Name:        "Features",
@@ -417,7 +456,10 @@ var templates = []WorkspaceTemplate{
 	},
 	{
 		Name:        "demo",
+		Category:    CategorySoftware,
 		Description: "Fully populated workspace — see every feature in 30 seconds",
+		Icon:        "\U0001F3AC", // 🎬
+		Hidden:      true,         // Excluded from the picker; still buildable via explicit --template demo
 		Collections: Defaults(),
 		SeedItems:   demoSeedItems(),
 	},
@@ -577,8 +619,23 @@ func GetTemplate(name string) *WorkspaceTemplate {
 	return nil
 }
 
-// ListTemplates returns all available workspace templates.
+// ListTemplates returns all workspace templates that should be shown in
+// pickers. Templates flagged Hidden are excluded.
 func ListTemplates() []WorkspaceTemplate {
+	result := make([]WorkspaceTemplate, 0, len(templates))
+	for _, t := range templates {
+		if t.Hidden {
+			continue
+		}
+		result = append(result, t)
+	}
+	return result
+}
+
+// ListAllTemplates returns every registered template, including ones flagged
+// Hidden. Intended for internal tooling (e.g. tests, demo seeding) that needs
+// to see the full set.
+func ListAllTemplates() []WorkspaceTemplate {
 	result := make([]WorkspaceTemplate, len(templates))
 	copy(result, templates)
 	return result
