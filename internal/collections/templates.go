@@ -87,8 +87,29 @@ func docsCollection(sortOrder int) DefaultCollection {
 	}
 }
 
-// conventionsCollection returns the standard Conventions collection shared across templates.
-func conventionsCollection(sortOrder int) DefaultCollection {
+// Software-domain defaults for the Conventions and Playbooks collections.
+// Non-software templates pass their own trigger + scope lists so the select
+// field accepts the vocabulary that makes sense for the domain (e.g. a
+// hiring template would use on-candidate-advance instead of on-commit).
+var (
+	SoftwareConventionTriggers = []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-plan-start", "on-plan-complete", "on-plan"}
+	SoftwareConventionScopes   = []string{"all", "backend", "frontend", "mobile", "docs", "devops"}
+	SoftwarePlaybookTriggers   = []string{"on-implement", "on-triage", "on-release", "on-plan", "on-review", "on-deploy", "manual"}
+	SoftwarePlaybookScopes     = []string{"all", "backend", "frontend", "mobile", "devops"}
+)
+
+// copyStrings returns a defensive copy of a string slice so the helper's
+// returned schema cannot mutate the caller's option list.
+func copyStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+// conventionsCollection returns a Conventions collection scoped to the
+// caller's domain. The trigger and scope select options are supplied by the
+// caller — templates ship the vocabulary that matches their domain.
+func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Conventions",
 		Slug:        "conventions",
@@ -110,13 +131,13 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 					Key:     "trigger",
 					Label:   "When",
 					Type:    "select",
-					Options: []string{"always", "on-task-start", "on-task-complete", "on-implement", "on-commit", "on-pr-create", "on-plan-start", "on-plan-complete", "on-plan"},
+					Options: copyStrings(triggerOptions),
 				},
 				{
 					Key:     "scope",
 					Label:   "Scope",
 					Type:    "select",
-					Options: []string{"all", "backend", "frontend", "mobile", "docs", "devops"},
+					Options: copyStrings(scopeOptions),
 				},
 				{
 					Key:     "priority",
@@ -141,8 +162,10 @@ func conventionsCollection(sortOrder int) DefaultCollection {
 	}
 }
 
-// playbooksCollection returns the standard Playbooks collection shared across templates.
-func playbooksCollection(sortOrder int) DefaultCollection {
+// playbooksCollection returns a Playbooks collection scoped to the caller's
+// domain. Like conventionsCollection, the trigger and scope select options
+// are supplied by the caller.
+func playbooksCollection(sortOrder int, triggerOptions, scopeOptions []string) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Playbooks",
 		Slug:        "playbooks",
@@ -164,13 +187,13 @@ func playbooksCollection(sortOrder int) DefaultCollection {
 					Key:     "trigger",
 					Label:   "When",
 					Type:    "select",
-					Options: []string{"on-implement", "on-triage", "on-release", "on-plan", "on-review", "on-deploy", "manual"},
+					Options: copyStrings(triggerOptions),
 				},
 				{
 					Key:     "scope",
 					Label:   "Scope",
 					Type:    "select",
-					Options: []string{"all", "backend", "frontend", "mobile", "devops"},
+					Options: copyStrings(scopeOptions),
 				},
 			},
 		},
@@ -322,8 +345,8 @@ var templates = []WorkspaceTemplate{
 				},
 			},
 			docsCollection(3),
-			conventionsCollection(4),
-			playbooksCollection(5),
+			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
+			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
 	},
 	{
@@ -450,8 +473,8 @@ var templates = []WorkspaceTemplate{
 				},
 			},
 			docsCollection(3),
-			conventionsCollection(4),
-			playbooksCollection(5),
+			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
+			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
 	},
 	{
