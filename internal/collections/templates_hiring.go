@@ -42,6 +42,7 @@ func hiringRequisitionsCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Requisitions",
 		Slug:        "requisitions",
+		Prefix:      "REQ",
 		Icon:        "\U0001F4CB", // 📋
 		Description: "Open roles you're hiring for",
 		SortOrder:   sortOrder,
@@ -92,6 +93,7 @@ func hiringCandidatesCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Candidates",
 		Slug:        "candidates",
+		Prefix:      "CAND",
 		Icon:        "\U0001F464", // 👤
 		Description: "Applicants moving through the hiring pipeline",
 		SortOrder:   sortOrder,
@@ -132,6 +134,7 @@ func hiringLoopsCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Interview Loops",
 		Slug:        "interview-loops",
+		Prefix:      "LOOP",
 		Icon:        "\U0001F501", // 🔁
 		Description: "Interview rounds scheduled for candidates",
 		SortOrder:   sortOrder,
@@ -172,6 +175,7 @@ func hiringFeedbackCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
 		Name:        "Feedback",
 		Slug:        "feedback",
+		Prefix:      "FB",
 		Icon:        "\U0001F4AC", // 💬
 		Description: "Individual interviewer feedback for each loop",
 		SortOrder:   sortOrder,

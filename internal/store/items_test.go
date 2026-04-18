@@ -321,6 +321,25 @@ func TestSeedCollectionsFromTemplateHiring(t *testing.T) {
 	if len(cands) == 0 {
 		t.Error("expected hiring seed Candidate, got 0")
 	}
+
+	// Explicit prefixes land on the collections (issue IDs like REQ-1,
+	// CAND-1 look nicer than REQUI-1 / CANDI-1 derived from the collection
+	// name). Verifying here also catches any regression in the prefix
+	// pipeline from template → CollectionCreate.
+	for slug, want := range map[string]string{
+		"requisitions":    "REQ",
+		"candidates":      "CAND",
+		"interview-loops": "LOOP",
+		"feedback":        "FB",
+	} {
+		coll, err := s.GetCollectionBySlug(ws.ID, slug)
+		if err != nil || coll == nil {
+			continue
+		}
+		if coll.Prefix != want {
+			t.Errorf("collection %q prefix = %q, want %q", slug, coll.Prefix, want)
+		}
+	}
 }
 
 // TestSeedCollectionsFromTemplateRecoversPartialInit verifies that a retry
