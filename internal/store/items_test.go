@@ -277,6 +277,71 @@ func TestSeedCollectionsFromTemplateSeedsStarterPack(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateHiring verifies end-to-end that the hiring
+// template creates the right collections and seeds its starter pack.
+func TestSeedCollectionsFromTemplateHiring(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Hiring")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "hiring"); err != nil {
+		t.Fatalf("seed hiring template: %v", err)
+	}
+
+	for _, slug := range []string{"requisitions", "candidates", "interview-loops", "feedback", "docs", "conventions", "playbooks"} {
+		coll, err := s.GetCollectionBySlug(ws.ID, slug)
+		if err != nil || coll == nil {
+			t.Errorf("hiring workspace missing collection %q (err=%v)", slug, err)
+		}
+	}
+
+	// Starter conventions land in the conventions collection.
+	convs, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if err != nil {
+		t.Fatalf("list conventions: %v", err)
+	}
+	if len(convs) == 0 {
+		t.Error("expected hiring starter conventions to be seeded, got 0")
+	}
+
+	// Starter playbooks land in the playbooks collection.
+	plays, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "playbooks"})
+	if err != nil {
+		t.Fatalf("list playbooks: %v", err)
+	}
+	if len(plays) == 0 {
+		t.Error("expected hiring starter playbooks to be seeded, got 0")
+	}
+
+	// Seed items land in their named collections.
+	reqs, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "requisitions"})
+	if len(reqs) == 0 {
+		t.Error("expected hiring seed Requisition, got 0")
+	}
+	cands, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "candidates"})
+	if len(cands) == 0 {
+		t.Error("expected hiring seed Candidate, got 0")
+	}
+
+	// Explicit prefixes land on the collections (issue IDs like REQ-1,
+	// CAND-1 look nicer than REQUI-1 / CANDI-1 derived from the collection
+	// name). Verifying here also catches any regression in the prefix
+	// pipeline from template → CollectionCreate.
+	for slug, want := range map[string]string{
+		"requisitions":    "REQ",
+		"candidates":      "CAND",
+		"interview-loops": "LOOP",
+		"feedback":        "FB",
+	} {
+		coll, err := s.GetCollectionBySlug(ws.ID, slug)
+		if err != nil || coll == nil {
+			continue
+		}
+		if coll.Prefix != want {
+			t.Errorf("collection %q prefix = %q, want %q", slug, coll.Prefix, want)
+		}
+	}
+}
+
 // TestSeedCollectionsFromTemplateRecoversPartialInit verifies that a retry
 // after a partial seed (some items missing) fills in the missing items
 // rather than treating the workspace as already-seeded. This guards the

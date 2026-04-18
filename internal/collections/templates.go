@@ -569,6 +569,7 @@ var templates = []WorkspaceTemplate{
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),
 	},
+	hiringTemplate(),
 	{
 		Name:        "demo",
 		Category:    CategorySoftware,

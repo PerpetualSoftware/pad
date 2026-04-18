@@ -388,6 +388,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		_, err = s.CreateCollection(workspaceID, models.CollectionCreate{
 			Name:        def.Name,
 			Slug:        def.Slug,
+			Prefix:      def.Prefix,
 			Icon:        def.Icon,
 			Description: def.Description,
 			Schema:      string(schemaJSON),

@@ -7,6 +7,7 @@ import "github.com/xarmian/pad/internal/models"
 type DefaultCollection struct {
 	Name        string
 	Slug        string
+	Prefix      string // Optional explicit issue-ID prefix; empty means derive from Name
 	Icon        string
 	Description string
 	Schema      models.CollectionSchema
