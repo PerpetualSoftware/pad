@@ -1886,11 +1886,14 @@
 		}
 
 		/* Strip form widgets inside field values — render the selected
-		   value as plain text, no select/input/button styling. */
+		   value as plain text, no select/input/button styling.
+		   Exempt `.toggle` (checkbox field) so we can print a visible
+		   box + check mark below; stripping it would leave no on/off
+		   signal at all. */
 		.field-value select,
 		.field-value input,
 		.field-value textarea,
-		.field-value button,
+		.field-value button:not(.toggle),
 		.assignment-select {
 			appearance: none !important;
 			-webkit-appearance: none !important;
@@ -1903,6 +1906,41 @@
 			cursor: default !important;
 			pointer-events: none;
 			box-shadow: none !important;
+		}
+
+		/* Checkbox field (`.toggle`): render as a small outlined box;
+		   when on, overlay a check mark so the state is legible in print. */
+		.field-value .toggle {
+			appearance: none !important;
+			-webkit-appearance: none !important;
+			display: inline-block !important;
+			width: 11pt !important;
+			height: 11pt !important;
+			padding: 0 !important;
+			margin: 0 !important;
+			background: #fff !important;
+			border: 1px solid #000 !important;
+			border-radius: 2pt !important;
+			position: relative;
+			cursor: default !important;
+			pointer-events: none;
+			box-shadow: none !important;
+			vertical-align: -1pt;
+		}
+		.field-value .toggle-knob {
+			display: none !important;
+		}
+		.field-value .toggle.on::after {
+			content: "✓";
+			position: absolute;
+			inset: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: #000;
+			font-size: 10pt;
+			font-weight: 700;
+			line-height: 1;
 		}
 
 		/* Progress bar → compact text percentage. */
