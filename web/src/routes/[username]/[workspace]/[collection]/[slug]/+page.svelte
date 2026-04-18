@@ -1723,4 +1723,252 @@
 			grid-template-columns: 1fr;
 		}
 	}
+
+	/* =============================================================
+	   PRINT — item detail page (PLAN-620 / TASK-622).
+	   Layout-level chrome is hidden by app.css's base @media print
+	   block (TASK-621); this block formats the item page CONTENT:
+	   title, metadata, properties-as-definition-list, markdown body.
+	   Comments / activity / version history are stripped. Relationships
+	   and code context stay because they're document-level context.
+	   ============================================================= */
+	@media print {
+		.item-page {
+			max-width: none;
+			margin: 0;
+			padding: 0;
+		}
+
+		/* Hide interactive / screen-only chrome inside the item page. */
+		.sticky-header,
+		.meta-actions,
+		.editor-mode-toggle,
+		.add-relationship-section,
+		.save-status,
+		.copy-ref-btn,
+		.copied-tooltip,
+		.link-delete-btn {
+			display: none !important;
+		}
+		#item-timeline,
+		.timeline-section {
+			display: none !important;
+		}
+
+		/* Title row — large, plain text, no button affordance. */
+		.title-row {
+			display: block;
+			margin: 0 0 4pt 0;
+			padding: 0;
+			border: none;
+		}
+		.title-row .item-ref {
+			display: inline-block;
+			font-size: 10pt;
+			font-weight: 500;
+			color: #555;
+			margin: 0 8pt 0 0;
+			padding: 0;
+			background: transparent;
+			border: none;
+			letter-spacing: 0.03em;
+		}
+		.title-row .title,
+		.title-row .title-input {
+			display: inline;
+			font-size: 20pt;
+			font-weight: 700;
+			color: #000;
+			background: transparent;
+			border: none;
+			padding: 0;
+			margin: 0;
+			text-align: left;
+			cursor: default;
+			line-height: 1.25;
+			-webkit-appearance: none;
+			appearance: none;
+			resize: none;
+			outline: none;
+			box-shadow: none;
+			overflow: visible;
+			width: auto;
+			min-width: 0;
+			font-family: inherit;
+			white-space: pre-wrap;
+		}
+
+		/* Meta info (created / updated by). */
+		.meta-info {
+			font-size: 9pt;
+			color: #555;
+			margin: 0 0 12pt 0;
+			padding: 0;
+			border: none;
+			display: block;
+		}
+		.meta-info .meta-sep { color: #888; }
+
+		/* Code context section — compact. */
+		.code-context-section {
+			margin: 0 0 12pt 0;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+		.code-context-section .section-title {
+			font-size: 10pt;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			color: #333;
+			margin: 0 0 4pt 0;
+		}
+		.code-context-card {
+			border: 1px solid #ccc !important;
+			background: #fafafa !important;
+			padding: 6pt 8pt !important;
+			border-radius: 3pt;
+			font-size: 9.5pt;
+		}
+
+		/* Body: stack fields + content vertically instead of side-by-side. */
+		.item-body,
+		.item-body.layout-balanced,
+		.item-body.layout-focus {
+			display: block !important;
+			grid-template-columns: none !important;
+			gap: 0 !important;
+		}
+
+		/* Properties panel → definition-list style block under the title. */
+		.fields-panel {
+			border: 1px solid #ccc !important;
+			background: #fafafa !important;
+			padding: 8pt 10pt !important;
+			margin: 0 0 14pt 0 !important;
+			border-radius: 3pt;
+			page-break-inside: avoid;
+			break-inside: avoid;
+			grid-template-columns: none !important;
+			display: block !important;
+		}
+		.fields-header {
+			font-size: 9pt !important;
+			font-weight: 600 !important;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			color: #333 !important;
+			margin: 0 0 4pt 0 !important;
+			padding: 0;
+			border: none;
+		}
+		.fields-header + .fields-header,
+		.fields-panel > .fields-header ~ .fields-header {
+			margin-top: 8pt !important;
+		}
+		.field-row {
+			display: grid;
+			grid-template-columns: minmax(80pt, 120pt) 1fr;
+			gap: 6pt;
+			padding: 1.5pt 0;
+			border: none !important;
+			font-size: 10pt;
+			align-items: baseline;
+		}
+		.field-label {
+			color: #555 !important;
+			font-weight: 500;
+			font-size: 9.5pt;
+		}
+		.field-value {
+			color: #000 !important;
+			font-size: 10pt;
+		}
+
+		/* Form-widget strip rules for .field-value are in app.css
+		   (global) because most of those controls render inside the
+		   FieldEditor child component and Svelte scoped selectors
+		   from this file don't cross component boundaries. Keep the
+		   assignment-select rule here since those selects are inline
+		   in this template. */
+		.assignment-select {
+			appearance: none !important;
+			-webkit-appearance: none !important;
+			background: transparent !important;
+			border: none !important;
+			padding: 0 !important;
+			margin: 0 !important;
+			color: #000 !important;
+			font: inherit !important;
+			cursor: default !important;
+			pointer-events: none;
+			box-shadow: none !important;
+		}
+
+		/* Progress bar → compact text percentage. */
+		.progress-bar {
+			background: #eee !important;
+			border: 1px solid #ccc !important;
+			height: 10pt;
+			overflow: hidden;
+			position: relative;
+		}
+		.progress-fill {
+			background: #888 !important;
+		}
+		.progress-text {
+			color: #000 !important;
+			font-size: 8.5pt;
+		}
+
+		/* Content panel: full width, no padding from screen. */
+		.content-panel {
+			padding: 0 !important;
+			margin: 0;
+		}
+
+		/* Relationships: keep but compact. */
+		.relationships-section {
+			margin: 14pt 0 0 0 !important;
+			padding: 8pt 0 0 0 !important;
+			border-top: 1px solid #ccc !important;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+		.relationships-section .section-title {
+			font-size: 10pt;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			color: #333;
+			margin: 0 0 4pt 0;
+		}
+		.relationship-groups {
+			display: block !important;
+		}
+		.relationship-group {
+			margin: 0 0 6pt 0 !important;
+		}
+		.relationship-group-title {
+			font-size: 9.5pt;
+			font-weight: 600;
+			color: #333;
+			margin: 0 0 2pt 0;
+		}
+		.links-list {
+			margin: 0;
+			padding: 0;
+		}
+		.link-row {
+			display: block !important;
+			padding: 1pt 0 !important;
+			border: none !important;
+			background: transparent !important;
+			font-size: 9.5pt;
+		}
+		.link-target {
+			color: #000 !important;
+			text-decoration: none;
+		}
+	}
 </style>

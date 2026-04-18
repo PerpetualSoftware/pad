@@ -62,4 +62,31 @@
 		border-color: var(--accent-blue);
 		outline: none;
 	}
+
+	/* Print: let the raw markdown source flow naturally — no textarea
+	   box, no fixed height, monospace plain text so the source is at
+	   least legible on paper when a user prints while editing in
+	   Markdown mode (PLAN-620 / TASK-622). */
+	@media print {
+		.raw-textarea {
+			border: none !important;
+			background: transparent !important;
+			color: #000 !important;
+			padding: 0 !important;
+			margin: 0 !important;
+			min-height: 0 !important;
+			height: auto !important;
+			overflow: visible !important;
+			resize: none !important;
+			outline: none !important;
+			box-shadow: none !important;
+			width: 100% !important;
+			font-family: var(--font-mono) !important;
+			font-size: 10pt !important;
+			line-height: 1.55 !important;
+			white-space: pre-wrap !important;
+			word-wrap: break-word;
+			page-break-inside: auto;
+		}
+	}
 </style>

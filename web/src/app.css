@@ -371,5 +371,182 @@ input:focus, textarea:focus {
 	@page {
 		margin: 0.75in;
 	}
+
+	/* -----------------------------------------------------------------
+	   TASK-622 — rendered markdown (.prose) tuned for print.
+	   ----------------------------------------------------------------- */
+	.prose {
+		font-size: 11pt;
+		line-height: 1.55;
+		color: #000 !important;
+		max-width: none;
+	}
+	.prose h1, .prose h2, .prose h3,
+	.prose h4, .prose h5, .prose h6 {
+		color: #000 !important;
+		page-break-after: avoid;
+		break-after: avoid-page;
+		page-break-inside: avoid;
+		break-inside: avoid-page;
+	}
+	.prose h1 { font-size: 18pt; }
+	.prose h2 { font-size: 14pt; }
+	.prose h3 { font-size: 12pt; }
+
+	.prose p, .prose li {
+		orphans: 3;
+		widows: 3;
+	}
+
+	/* Links: keep the colored style AND append the URL inline so a printed
+	   page still carries the reference. Skip internal wiki-links (which
+	   resolve to the printed document's siblings) and fragment-only links.
+	   Note: rich-editor links are rendered via Tiptap's SafeLink extension
+	   using `data-href` instead of `href`, so we target both. */
+	.prose a[href]::after {
+		content: " (" attr(href) ")";
+		font-size: 0.85em;
+		color: #555;
+		word-break: break-all;
+	}
+	.prose a[data-href]::after {
+		content: " (" attr(data-href) ")";
+		font-size: 0.85em;
+		color: #555;
+		word-break: break-all;
+	}
+	.prose a[href^="#"]::after,
+	.prose a[data-href^="#"]::after,
+	.prose a.doc-link::after,
+	.prose a.editor-link[href^="/"]::after,
+	.prose a.editor-link[data-href^="/"]::after {
+		content: "";
+	}
+
+	/* Code blocks: visible, readable in light palette, don't orphan across
+	   pages when we can help it. */
+	.prose pre {
+		background: #f5f5f5 !important;
+		border: 1px solid #ddd !important;
+		color: #000 !important;
+		font-size: 9.5pt;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+	.prose code {
+		background: #f5f5f5 !important;
+		color: #000 !important;
+	}
+
+	/* Images: full page width max, don't split across pages. */
+	.prose img {
+		max-width: 100% !important;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+
+	/* Tables: visible borders, contained to page width. */
+	.prose table {
+		page-break-inside: avoid;
+		break-inside: avoid;
+		border: 1px solid #ccc !important;
+	}
+	.prose th, .prose td {
+		border: 1px solid #ccc !important;
+		color: #000 !important;
+	}
+	.prose th {
+		background: #f5f5f5 !important;
+	}
+
+	.prose blockquote {
+		border-left: 3px solid #666 !important;
+		color: #333 !important;
+	}
+
+	/* Editor overlays (bubble menu, link popover, slash menu, mobile
+	   toolbar, table toolbar, editor-toolbar) — never print these. */
+	.bubble-menu,
+	.link-popover,
+	.slash-menu,
+	.mobile-toolbar,
+	.table-toolbar,
+	.toolbar,
+	.editor-toolbar,
+	.editor-link-popover,
+	.editor-bubble-menu {
+		display: none !important;
+	}
+
+	/* Editor wrapper: in print the content is read-only — remove any
+	   interactive cursor, borders, or focus styling. */
+	.editor-wrapper,
+	.editor-content {
+		border: none !important;
+		background: transparent !important;
+		padding: 0 !important;
+		outline: none !important;
+	}
+
+	/* -----------------------------------------------------------------
+	   TASK-622 — Properties panel form widgets in print.
+	   These rules live here (not in the item detail page's scoped style
+	   block) because the widgets are rendered by the FieldEditor child
+	   component — Svelte's scoped selectors don't cross component
+	   boundaries. Strip interactive styling so the selected value reads
+	   as plain text; the `.toggle` checkbox button is exempted and
+	   rendered as a visible outlined box with a check mark when on.
+	   ----------------------------------------------------------------- */
+	.field-value select,
+	.field-value input,
+	.field-value textarea,
+	.field-value button:not(.toggle) {
+		appearance: none !important;
+		-webkit-appearance: none !important;
+		background: transparent !important;
+		border: none !important;
+		padding: 0 !important;
+		margin: 0 !important;
+		color: #000 !important;
+		font: inherit !important;
+		cursor: default !important;
+		pointer-events: none;
+		box-shadow: none !important;
+	}
+
+	/* Checkbox field (`.toggle`): visible outlined box; on-state gets a
+	   check mark overlay so the on/off signal survives in print. */
+	.field-value .toggle {
+		appearance: none !important;
+		-webkit-appearance: none !important;
+		display: inline-block !important;
+		width: 11pt !important;
+		height: 11pt !important;
+		padding: 0 !important;
+		margin: 0 !important;
+		background: #fff !important;
+		border: 1px solid #000 !important;
+		border-radius: 2pt !important;
+		position: relative;
+		cursor: default !important;
+		pointer-events: none;
+		box-shadow: none !important;
+		vertical-align: -1pt;
+	}
+	.field-value .toggle-knob {
+		display: none !important;
+	}
+	.field-value .toggle.on::after {
+		content: "✓";
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #000;
+		font-size: 10pt;
+		font-weight: 700;
+		line-height: 1;
+	}
 }
 
