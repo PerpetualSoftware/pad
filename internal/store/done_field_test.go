@@ -158,6 +158,67 @@ func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
 	}
 }
 
+// TestGetItemProgress_HonorsSoftDeletedChildCollections verifies a
+// regression Codex flagged: soft-deleted child collections must still
+// contribute done filters, otherwise their items can never satisfy the
+// per-collection `collection_id = ? AND ...` clause and would always be
+// counted as active.
+func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "SoftDeleteTest")
+
+	plans, _ := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Plans",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["active"],"default":"active"}]}`,
+	})
+	tasks, _ := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"],"default":"open"}]}`,
+	})
+
+	plan, _ := s.CreateItem(ws.ID, plans.ID, models.ItemCreate{Title: "P", Fields: `{"status":"active"}`})
+	done, _ := s.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: "done task", Fields: `{"status":"done"}`})
+	open, _ := s.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: "open task", Fields: `{"status":"open"}`})
+
+	for _, id := range []string{done.ID, open.ID} {
+		if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{
+			TargetID: plan.ID,
+			LinkType: "parent",
+		}, id); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+	}
+
+	// Baseline: 1 done out of 2.
+	_, doneBefore, err := s.GetItemProgress(plan.ID)
+	if err != nil {
+		t.Fatalf("GetItemProgress before soft-delete: %v", err)
+	}
+	if doneBefore != 1 {
+		t.Fatalf("expected done=1 before soft-delete, got %d", doneBefore)
+	}
+
+	// Soft-delete the tasks collection. Its items remain in the DB and
+	// are still linked to the plan.
+	if err := s.DeleteCollection(tasks.ID); err != nil {
+		t.Fatalf("soft delete tasks: %v", err)
+	}
+
+	// Expect the same done count — soft-deleted collections still
+	// contribute their done rules.
+	_, doneAfter, err := s.GetItemProgress(plan.ID)
+	if err != nil {
+		t.Fatalf("GetItemProgress after soft-delete: %v", err)
+	}
+	if doneAfter != 1 {
+		t.Errorf(
+			"expected done count to remain 1 after collection soft-delete, got %d — "+
+				"soft-deleted collections must still contribute done filters",
+			doneAfter,
+		)
+	}
+}
+
 // TestGetItemProgress_MixedChildCollections verifies that when children
 // come from multiple collections with different done-field configurations,
 // each child is evaluated against its own collection's rules.

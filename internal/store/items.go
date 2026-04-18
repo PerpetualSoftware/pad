@@ -1330,13 +1330,20 @@ type collectionDoneFilter struct {
 // collection's resolved done field (honoring board_group_by) and terminal
 // values so the caller can build a per-collection OR clause that evaluates
 // each child against its own done rules.
+//
+// Soft-deleted collections are intentionally INCLUDED: progress-counting
+// callers count items regardless of their collection's deleted_at, so
+// excluding the collection here would leave those items without a
+// matching per-collection clause and cause them to always evaluate as
+// non-terminal. The collection row still carries valid schema + settings
+// until a hard delete cascades, so the done rules remain applicable.
 func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDoneFilter {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT c.id, c.schema, c.settings
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
-		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
+		WHERE i.deleted_at IS NULL
 	`, childLinkTypeSQL())), parentItemID)
 	if err != nil {
 		return nil
@@ -1345,13 +1352,19 @@ func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDo
 	return scanCollectionDoneFilters(rows)
 }
 
-// doneFiltersForWorkspace returns a done-filter per non-deleted collection
-// in the workspace. Used by cross-collection queries (e.g. agent-role
+// doneFiltersForWorkspace returns a done-filter per collection in the
+// workspace. Used by cross-collection queries (e.g. agent-role
 // breakdowns) that need to evaluate "is done?" for every item regardless
 // of which collection it belongs to.
+//
+// Includes soft-deleted collections: callers (e.g. GetRoleBreakdown)
+// count items in the workspace without filtering by collection
+// deleted_at, so excluding soft-deleted collections here would leave
+// their items without a matching per-collection clause and cause them
+// to always register as non-terminal.
 func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilter {
 	rows, err := s.db.Query(
-		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ? AND deleted_at IS NULL`),
+		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),
 		workspaceID,
 	)
 	if err != nil {
@@ -1364,6 +1377,11 @@ func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilt
 // childrenDoneFiltersForCollection is the batch version: it gathers one
 // filter per distinct child-item collection across all parent→child links
 // for parents in a given (workspace, collectionSlug).
+//
+// Includes soft-deleted child collections for the same reason as
+// childrenDoneFiltersForParent — callers count items regardless of their
+// collection's deleted_at, and we want items from soft-deleted
+// collections to still be evaluated against their own done rules.
 func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug string) []collectionDoneFilter {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT c.id, c.schema, c.settings
@@ -1374,7 +1392,6 @@ func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug str
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
 		WHERE p.workspace_id = ?
 		  AND t.deleted_at IS NULL
-		  AND c.deleted_at IS NULL
 	`, childLinkTypeSQL())), collectionSlug, workspaceID)
 	if err != nil {
 		return nil
