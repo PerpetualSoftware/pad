@@ -1747,7 +1747,6 @@
 		.save-status,
 		.copy-ref-btn,
 		.copied-tooltip,
-		.link-row-actions,
 		.link-delete-btn {
 			display: none !important;
 		}
@@ -1774,7 +1773,8 @@
 			border: none;
 			letter-spacing: 0.03em;
 		}
-		.title-row .title {
+		.title-row .title,
+		.title-row .title-input {
 			display: inline;
 			font-size: 20pt;
 			font-weight: 700;
@@ -1786,9 +1786,16 @@
 			text-align: left;
 			cursor: default;
 			line-height: 1.25;
-		}
-		.title-row .title-input {
-			display: none;
+			-webkit-appearance: none;
+			appearance: none;
+			resize: none;
+			outline: none;
+			box-shadow: none;
+			overflow: visible;
+			width: auto;
+			min-width: 0;
+			font-family: inherit;
+			white-space: pre-wrap;
 		}
 
 		/* Meta info (created / updated by). */
