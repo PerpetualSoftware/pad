@@ -193,12 +193,17 @@ cd ~/projects/myapp
 pad workspace init "My App"
 ```
 
-This creates a `.pad.toml` file linking your project directory to a Pad workspace with default collections. Choose a template to start with pre-configured collections:
+This creates a `.pad.toml` file linking your project directory to a Pad workspace with default collections. Running `pad init` without `--template` in a terminal opens an interactive picker grouped by category (Software / People / …) so you can pick the one that fits.
 
 ```bash
-pad workspace init "My App" --template scrum     # Scrum-style with sprints
-pad workspace init "My App" --template product   # Product management focused
+pad workspace init --list-templates                   # See the full catalog grouped by category
+pad workspace init "My App" --template scrum          # Scrum-style with sprints
+pad workspace init "My App" --template product        # Product management focused
+pad workspace init "My Hiring" --template hiring      # Company-side: requisitions, candidates, interview loops, feedback
+pad workspace init "Job Search" --template interviewing  # Candidate-side: applications, interviews, companies, contacts
 ```
+
+Pad ships templates for software (startup / scrum / product), people workflows (hiring, interviewing), and has reserved categories for research, content, operations, and personal use so the same project-management primitives fit well beyond code projects.
 
 ### 3. Install the AI skill
 
