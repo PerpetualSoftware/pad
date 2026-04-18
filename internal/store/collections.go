@@ -335,14 +335,27 @@ func (s *Store) SeedDefaultCollections(workspaceID string) error {
 }
 
 // SeedCollectionsFromTemplate seeds the workspace with collections from the
-// named template. An empty or "startup" template name uses the default
-// collections. Returns an error if the template name is not recognized.
+// named template. An empty template name materializes the default collections
+// without any seed items or starter pack — this preserves backward
+// compatibility for callers that don't opt into a template. An explicit
+// template name (including "startup") additionally seeds the template's
+// SeedItems, Conventions, and Playbooks as items in the new workspace.
+//
+// Seeding is idempotent per-item by title: existing collections are skipped,
+// and existing items (matched by title within their target collection) are
+// skipped. That design lets the server's startup auto-upgrade re-run safely
+// AND lets a partial init (e.g. DB error after some items were seeded) be
+// recovered by simply retrying — the retry fills in missing items instead
+// of stopping at the first "collection already exists" signal.
 func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName string) error {
 	var defs []collections.DefaultCollection
 	var seedItems []collections.SeedItem
+	var seedConventions []collections.SeedConvention
+	var seedPlaybooks []collections.SeedPlaybook
 
-	if templateName == "" || templateName == "startup" {
+	if templateName == "" {
 		defs = collections.Defaults()
+		// Empty template = backward-compatible, no starter pack.
 	} else {
 		tmpl := collections.GetTemplate(templateName)
 		if tmpl == nil {
@@ -350,10 +363,11 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		}
 		defs = tmpl.Collections
 		seedItems = tmpl.SeedItems
+		seedConventions = tmpl.Conventions
+		seedPlaybooks = tmpl.Playbooks
 	}
 
 	for _, def := range defs {
-		// Check if already exists
 		existing, err := s.GetCollectionBySlug(workspaceID, def.Slug)
 		if err != nil {
 			return fmt.Errorf("check existing collection %s: %w", def.Slug, err)
@@ -386,21 +400,70 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		}
 	}
 
-	// Seed sample items if the template provides them
-	for _, item := range seedItems {
-		coll, err := s.GetCollectionBySlug(workspaceID, item.CollectionSlug)
-		if err != nil || coll == nil {
-			continue // skip if collection doesn't exist
+	// existingTitles caches the set of item titles already present in a
+	// collection so repeated seed calls against the same collection don't
+	// re-query. Lazily populated on first use per slug.
+	existingTitles := make(map[string]map[string]bool)
+
+	// seedItem inserts a seed item if no item with the same title already
+	// exists in the target collection. Missing target collections (a
+	// template-authoring mistake) are silently skipped; real DB errors are
+	// propagated so callers can detect partial init failures and retry.
+	seedItem := func(collSlug, title, content, fields string) error {
+		coll, err := s.GetCollectionBySlug(workspaceID, collSlug)
+		if err != nil {
+			return fmt.Errorf("lookup %s collection for seeding %q: %w", collSlug, title, err)
 		}
+		if coll == nil {
+			return nil
+		}
+
+		titles, ok := existingTitles[collSlug]
+		if !ok {
+			items, err := s.ListItems(workspaceID, models.ItemListParams{CollectionSlug: collSlug})
+			if err != nil {
+				return fmt.Errorf("list existing items in %s: %w", collSlug, err)
+			}
+			titles = make(map[string]bool, len(items))
+			for _, it := range items {
+				titles[it.Title] = true
+			}
+			existingTitles[collSlug] = titles
+		}
+		if titles[title] {
+			return nil // already seeded (idempotent + retry-safe)
+		}
+
 		_, err = s.CreateItem(workspaceID, coll.ID, models.ItemCreate{
-			Title:     item.Title,
-			Content:   item.Content,
-			Fields:    item.Fields,
+			Title:     title,
+			Content:   content,
+			Fields:    fields,
 			CreatedBy: "system",
 			Source:    "template",
 		})
 		if err != nil {
-			return fmt.Errorf("seed item %q in %s: %w", item.Title, item.CollectionSlug, err)
+			return fmt.Errorf("seed item %q in %s: %w", title, collSlug, err)
+		}
+		titles[title] = true
+		return nil
+	}
+
+	// Sample items
+	for _, item := range seedItems {
+		if err := seedItem(item.CollectionSlug, item.Title, item.Content, item.Fields); err != nil {
+			return err
+		}
+	}
+	// Starter conventions
+	for _, conv := range seedConventions {
+		if err := seedItem("conventions", conv.Title, conv.Content, conv.Fields); err != nil {
+			return err
+		}
+	}
+	// Starter playbooks
+	for _, pb := range seedPlaybooks {
+		if err := seedItem("playbooks", pb.Title, pb.Content, pb.Fields); err != nil {
+			return err
 		}
 	}
 
