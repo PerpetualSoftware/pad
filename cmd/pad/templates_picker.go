@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -131,8 +132,14 @@ func pickTemplateInteractive(in io.Reader, out io.Writer) (string, error) {
 		fmt.Fprintf(out, "Select a template [%d] (press enter for default): ", defaultIdx)
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			// EOF on a pipe etc. — fall back to default rather than fail.
-			return defaultTemplateName, nil
+			// EOF is a benign signal (pipe closed, stdin exhausted in a
+			// test) and should fall back to the default template. Other
+			// read errors (e.g. EIO from a detached PTY) must abort so
+			// we don't silently apply a template the user never chose.
+			if errors.Is(err, io.EOF) {
+				return defaultTemplateName, nil
+			}
+			return "", fmt.Errorf("read template selection: %w", err)
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
