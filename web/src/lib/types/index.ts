@@ -182,7 +182,9 @@ export interface WorkspaceUpdate {
 
 export interface WorkspaceTemplate {
 	name: string;
+	category?: string;
 	description: string;
+	icon?: string;
 	collections: string[];
 }
 

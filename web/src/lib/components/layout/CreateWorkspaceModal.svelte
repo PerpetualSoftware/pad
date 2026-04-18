@@ -5,6 +5,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { WorkspaceTemplate } from '$lib/types';
+	import { groupTemplatesByCategory } from '$lib/utils/templates';
 
 	let mode = $state<'create' | 'import'>('create');
 	let newName = $state('');
@@ -17,6 +18,8 @@
 	let nameInputEl = $state<HTMLInputElement>();
 	let dragging = $state(false);
 	let dragCounter = 0;
+
+	let grouped = $derived(groupTemplatesByCategory(templates));
 
 	$effect(() => {
 		if (uiStore.createWorkspaceOpen) {
@@ -146,23 +149,33 @@
 				{#if templates.length > 0}
 					<span class="field-label">Template</span>
 					<div class="template-list">
-						{#each templates as tpl (tpl.name)}
-							<button
-								class="template-card"
-								class:selected={selectedTemplate === tpl.name}
-								onclick={() => (selectedTemplate = tpl.name)}
-							>
-								<span class="tpl-name">{tpl.name}</span>
-								<span class="tpl-desc">{tpl.collections.join(', ')}</span>
-							</button>
+						{#each grouped as group (group.category)}
+							<span class="cat-label">{group.label}</span>
+							{#each group.templates as tpl (tpl.name)}
+								<button
+									class="template-card"
+									class:selected={selectedTemplate === tpl.name}
+									onclick={() => (selectedTemplate = tpl.name)}
+								>
+									{#if tpl.icon}
+										<span class="tpl-icon">{tpl.icon}</span>
+									{/if}
+									<span class="tpl-text">
+										<span class="tpl-name">{tpl.name}</span>
+										<span class="tpl-desc">{tpl.collections.join(', ')}</span>
+									</span>
+								</button>
+							{/each}
 						{/each}
 						<button
 							class="template-card"
 							class:selected={selectedTemplate === ''}
 							onclick={() => (selectedTemplate = '')}
 						>
-							<span class="tpl-name">blank</span>
-							<span class="tpl-desc">Empty workspace</span>
+							<span class="tpl-text">
+								<span class="tpl-name">blank</span>
+								<span class="tpl-desc">Empty workspace</span>
+							</span>
 						</button>
 					</div>
 				{/if}
@@ -309,8 +322,19 @@
 	.modal-body input:focus { outline: none; border-color: var(--accent-blue); }
 
 	.template-list { display: flex; flex-direction: column; gap: 4px; }
+	.cat-label {
+		font-size: 0.72em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+		opacity: 0.8;
+		margin-top: var(--space-2);
+	}
+	.cat-label:first-child { margin-top: 0; }
 	.template-card {
-		display: flex; flex-direction: column; gap: 1px;
+		display: flex; flex-direction: row; align-items: center;
+		gap: var(--space-2);
 		padding: var(--space-2) var(--space-3);
 		border-radius: var(--radius-sm);
 		background: var(--bg-tertiary);
@@ -323,6 +347,12 @@
 		border-color: var(--accent-blue);
 		background: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-tertiary));
 	}
+	.tpl-icon {
+		font-size: 1.1em;
+		margin-right: var(--space-2);
+		flex-shrink: 0;
+	}
+	.tpl-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 	.tpl-name { font-size: 0.88em; font-weight: 600; color: var(--text-primary); text-transform: capitalize; }
 	.tpl-desc { font-size: 0.78em; color: var(--text-muted); }
 
