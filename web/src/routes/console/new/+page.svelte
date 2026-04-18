@@ -4,12 +4,15 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { WorkspaceTemplate } from '$lib/types';
+	import { groupTemplatesByCategory } from '$lib/utils/templates';
 
 	let name = $state('');
 	let selectedTemplate = $state('startup');
 	let templates = $state<WorkspaceTemplate[]>([]);
 	let creating = $state(false);
 	let error = $state('');
+
+	let grouped = $derived(groupTemplatesByCategory(templates));
 
 	let slug = $derived(
 		name
@@ -28,9 +31,9 @@
 		} catch {
 			// Templates are optional; fall back to defaults
 			templates = [
-				{ name: 'startup', description: 'Default template for general projects', collections: [] },
-				{ name: 'scrum', description: 'Scrum-style sprints and backlogs', collections: [] },
-				{ name: 'product', description: 'Product development workflow', collections: [] }
+				{ name: 'startup', description: 'Default template for general projects', collections: [], category: 'software' },
+				{ name: 'scrum', description: 'Scrum-style sprints and backlogs', collections: [], category: 'software' },
+				{ name: 'product', description: 'Product development workflow', collections: [], category: 'software' }
 			];
 		}
 	});
@@ -92,17 +95,27 @@
 		<div class="field">
 			<span class="field-label">Template</span>
 			<div class="template-grid">
-				{#each templates as tmpl (tmpl.name)}
-					<button
-						class="template-option"
-						class:selected={selectedTemplate === tmpl.name}
-						onclick={() => (selectedTemplate = tmpl.name)}
-						disabled={creating}
-						type="button"
-					>
-						<span class="template-name">{tmpl.name}</span>
-						<span class="template-desc">{tmpl.description}</span>
-					</button>
+				{#each grouped as group (group.category)}
+					<div class="category-group">
+						<span class="category-label">{group.label}</span>
+						{#each group.templates as tmpl (tmpl.name)}
+							<button
+								class="template-option"
+								class:selected={selectedTemplate === tmpl.name}
+								onclick={() => (selectedTemplate = tmpl.name)}
+								disabled={creating}
+								type="button"
+							>
+								{#if tmpl.icon}
+									<span class="template-icon">{tmpl.icon}</span>
+								{/if}
+								<span class="template-text">
+									<span class="template-name">{tmpl.name}</span>
+									<span class="template-desc">{tmpl.description}</span>
+								</span>
+							</button>
+						{/each}
+					</div>
 				{/each}
 			</div>
 		</div>
@@ -198,10 +211,30 @@
 		gap: var(--space-2);
 	}
 
-	.template-option {
+	.category-group {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: var(--space-2);
+	}
+
+	.category-group + .category-group {
+		margin-top: var(--space-3);
+	}
+
+	.category-label {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-muted);
+		opacity: 0.85;
+	}
+
+	.template-option {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: var(--space-3);
 		padding: var(--space-3) var(--space-4);
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
@@ -209,6 +242,18 @@
 		text-align: left;
 		cursor: pointer;
 		transition: border-color 0.15s;
+	}
+
+	.template-icon {
+		font-size: 1.2em;
+		flex-shrink: 0;
+	}
+
+	.template-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
 	}
 
 	.template-option:hover {
