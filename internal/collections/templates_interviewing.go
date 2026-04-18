@@ -164,11 +164,12 @@ func interviewingCompaniesCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:     "status",
-					Label:   "Status",
-					Type:    "select",
-					Options: []string{"interested", "researching", "active", "closed"},
-					Default: "interested",
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"interested", "researching", "active", "closed"},
+					TerminalOptions: []string{"closed"},
+					Default:         "interested",
 				},
 				{
 					Key:   "industry",
