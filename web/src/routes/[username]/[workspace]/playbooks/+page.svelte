@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseFields, itemUrlId, type Item } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	const TRIGGERS = ['on-implement', 'on-triage', 'on-release', 'on-plan', 'on-review', 'on-deploy', 'manual'] as const;
@@ -11,6 +11,7 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let playbooks = $state<Item[]>([]);
+	let playbooksCollection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let expandedId = $state<string | null>(null);
 	let showNewForm = $state(false);
@@ -26,7 +27,12 @@
 	let newScope = $state<string>('all');
 	let newContent = $state('');
 
-	$effect(() => { if (wsSlug) loadPlaybooks(wsSlug); });
+	$effect(() => {
+		if (wsSlug) {
+			loadPlaybooks(wsSlug);
+			loadPlaybooksCollection(wsSlug);
+		}
+	});
 	async function loadPlaybooks(ws: string) {
 		loading = true;
 		try { playbooks = await api.items.listByCollection(ws, 'playbooks', {}); }
@@ -34,24 +40,65 @@
 		finally { loading = false; }
 	}
 
+	async function loadPlaybooksCollection(ws: string) {
+		try { playbooksCollection = await api.collections.get(ws, 'playbooks'); }
+		catch { playbooksCollection = null; }
+	}
+
+	let schemaTriggers = $derived.by<readonly string[]>(() => {
+		if (!playbooksCollection) return [];
+		const schema = parseSchema(playbooksCollection);
+		const field = schema.fields.find((f) => f.key === 'trigger');
+		return field?.options ?? [];
+	});
+
+	let schemaScopes = $derived.by<readonly string[]>(() => {
+		if (!playbooksCollection) return [];
+		const schema = parseSchema(playbooksCollection);
+		const field = schema.fields.find((f) => f.key === 'scope');
+		return field?.options ?? [];
+	});
+
+	let createTriggers = $derived<readonly string[]>(
+		schemaTriggers.length > 0 ? schemaTriggers : (TRIGGERS as readonly string[])
+	);
+	let createScopes = $derived<readonly string[]>(
+		schemaScopes.length > 0 ? schemaScopes : (SCOPES as readonly string[])
+	);
+
+	// Snap the create-form selections into the effective list when it changes,
+	// so the <select> never displays a phantom value that isn't in its <option>s.
+	$effect(() => {
+		if (createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
+			newTrigger = createTriggers[0];
+		}
+	});
+	$effect(() => {
+		if (createScopes.length > 0 && !createScopes.includes(newScope)) {
+			newScope = createScopes[0];
+		}
+	});
+
 	let hasActiveFilters = $derived(searchQuery !== '' || filterTrigger !== '' || filterScope !== '');
 
 	let allTriggers = $derived.by(() => {
-		const known = TRIGGERS as readonly string[];
+		const known = createTriggers;
+		const knownSet = new Set<string>(known);
 		const discovered = new Set<string>();
 		for (const p of playbooks) {
 			const t = parseFields(p).trigger;
-			if (typeof t === 'string' && t && !known.includes(t)) discovered.add(t);
+			if (typeof t === 'string' && t && !knownSet.has(t)) discovered.add(t);
 		}
 		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
 	});
 
 	let allScopes = $derived.by(() => {
-		const known = SCOPES as readonly string[];
+		const known = createScopes;
+		const knownSet = new Set<string>(known);
 		const discovered = new Set<string>();
 		for (const p of playbooks) {
 			const s = parseFields(p).scope;
-			if (typeof s === 'string' && s && !known.includes(s)) discovered.add(s);
+			if (typeof s === 'string' && s && !knownSet.has(s)) discovered.add(s);
 		}
 		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
 	});
@@ -184,13 +231,13 @@
 						<div class="form-row">
 							<label class="form-label" for="pb-trigger">Trigger</label>
 							<select id="pb-trigger" bind:value={newTrigger} class="form-select">
-								{#each TRIGGERS as t (t)}<option value={t}>{t}</option>{/each}
+								{#each createTriggers as t (t)}<option value={t}>{t}</option>{/each}
 							</select>
 						</div>
 						<div class="form-row">
 							<label class="form-label" for="pb-scope">Scope</label>
 							<select id="pb-scope" bind:value={newScope} class="form-select">
-								{#each SCOPES as s (s)}<option value={s}>{s}</option>{/each}
+								{#each createScopes as s (s)}<option value={s}>{s}</option>{/each}
 							</select>
 						</div>
 					</div>
