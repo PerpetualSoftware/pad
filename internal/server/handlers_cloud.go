@@ -673,8 +673,10 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 		return
 	}
 
-	// Seed default collections
-	if err := s.store.SeedCollectionsFromTemplate(ws.ID, ""); err != nil {
+	// Seed default collections with the startup starter pack. Cloud signups
+	// are implicit workspace creations, so they should get the same curated
+	// starter conventions/playbooks that `pad init` produces.
+	if err := s.store.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
 		slog.Warn("auto-create workspace: failed to seed collections", "workspace_id", ws.ID, "error", err)
 	}
 
