@@ -248,7 +248,7 @@ func hiringStarterPlaybooks() []SeedPlaybook {
 			Title: "Advance a Candidate",
 			Content: `1. Update the Candidate's stage field to the new stage (sourced → applied → screen → onsite → offer → hired).
 2. If the new stage introduces an interview round, create an Interview Loop as a child of the Candidate with the appropriate loop_type and a scheduled date.
-3. For each interviewer on the loop, create a Feedback item as a child of the Loop with recommendation=pending.
+3. For each interviewer on the loop, create a Feedback item as a child of the Loop with submitted=pending. Leave recommendation blank until the interviewer records it — its allowed values are only the concrete verdicts (strong-hire/hire/mixed/no-hire/strong-no).
 4. Update the Candidate's content with a short note about the advance and why (fit notes, recruiter observations).
 5. Notify the Recruiter field's named person (outside the workspace — email, slack, etc.) that the stage changed.
 
