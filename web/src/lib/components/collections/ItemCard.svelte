@@ -330,7 +330,7 @@
 		font-size: 0.95em;
 		line-height: 1;
 		color: var(--text-muted);
-		opacity: 0.4;
+		opacity: 0.65;
 		transition: opacity 0.15s, color 0.15s;
 		flex-shrink: 0;
 	}
