@@ -85,7 +85,9 @@
 	// When this field IS the active done field, its terminal markings are
 	// live. Otherwise they're saved on the schema but dormant — a hint to
 	// the user explains what needs to change to activate them.
-	const isActiveDoneField = $derived(isSelectType && field.key === activeDoneField);
+	// Restricted to `select` (not multi_select) to match the backend
+	// DoneFieldKey() resolution rule.
+	const isActiveDoneField = $derived(field.type === 'select' && field.key === activeDoneField);
 
 	// Auto-derive the key from the label for new fields, unless the user has
 	// manually edited the key. Once `keyTouched` flips to true the user owns

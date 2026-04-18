@@ -59,15 +59,21 @@ func TestDoneFieldKey_FallsBackForNonSelectField(t *testing.T) {
 	}
 }
 
-func TestDoneFieldKey_AcceptsMultiSelect(t *testing.T) {
+func TestDoneFieldKey_RejectsMultiSelect(t *testing.T) {
+	// multi_select stores values as JSON arrays, but both the Go-side
+	// membership check and the SQL IN(...) filter assume scalar string
+	// matching. Accepting multi_select as a done field would silently
+	// miss items whose terminal value is one of several in the array, so
+	// DoneFieldKey rejects it and falls back to 'status'.
 	schema := CollectionSchema{
 		Fields: []FieldDef{
+			{Key: "status", Type: "select", Options: []string{"open", "done"}},
 			{Key: "labels", Type: "multi_select", Options: []string{"p0", "done"}},
 		},
 	}
 	settings := CollectionSettings{BoardGroupBy: "labels"}
-	if got := DoneFieldKey(schema, settings); got != "labels" {
-		t.Fatalf("expected multi_select to qualify as done field, got %q", got)
+	if got := DoneFieldKey(schema, settings); got != "status" {
+		t.Fatalf("expected multi_select board_group_by to fall back to 'status', got %q", got)
 	}
 }
 

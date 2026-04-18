@@ -104,16 +104,14 @@
 	let listSortBy = $state('');
 
 	// Which field drives backend done-detection for this collection.
-	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go —
-	// honors boardGroupBy when it points at an existing select/multi_select
-	// field, otherwise falls back to 'status'. Used by FieldEditor to
-	// render the Active/Saved pill on each terminal-options column.
+	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go:
+	// only `select` fields qualify (not multi_select — the Go + SQL paths
+	// only handle scalar string matching). Falls back to 'status' when the
+	// board_group_by doesn't name a qualifying select field.
 	const activeDoneField = $derived.by(() => {
 		const candidate = (boardGroupBy || '').trim();
 		if (!candidate) return 'status';
-		const matches = existingFields.some(
-			(f) => f.key === candidate && (f.type === 'select' || f.type === 'multi_select')
-		);
+		const matches = existingFields.some((f) => f.key === candidate && f.type === 'select');
 		return matches ? candidate : 'status';
 	});
 

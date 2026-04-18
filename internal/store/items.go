@@ -1423,6 +1423,12 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 //   ((<alias>.collection_id = ? AND LOWER(COALESCE(<field_A>, '')) IN (?,?)) OR
 //    (<alias>.collection_id = ? AND LOWER(COALESCE(<field_B>, '')) IN (?,?)))
 //
+// The `<field_X>` JSON extract uses scalar text extraction; this works
+// because DoneFieldKey in the models package only resolves done fields to
+// `select` typed columns (see that function's doc). multi_select-backed
+// done fields would store their values as a JSON array and scalar IN
+// matching would silently miss them — hence the upstream restriction.
+//
 // If no filters were constructed (no child collections discovered, or all
 // of their schemas failed to parse), falls back to checking <alias>.status
 // against the global default terminal list — mirroring the legacy behavior

@@ -14,27 +14,33 @@ var DefaultTerminalStatuses = []string{
 // DoneFieldKey resolves which field on a collection's schema represents
 // "is this item done?". The resolution is:
 //
-//  1. If CollectionSettings.BoardGroupBy names a select / multi_select
-//     field on the schema, use that. This lets a collection whose board
-//     is organized by e.g. "resolution" naturally drive done-detection
-//     from the same field.
+//  1. If CollectionSettings.BoardGroupBy names a `select` field on the
+//     schema, use that. This lets a collection whose board is organized
+//     by e.g. "resolution" naturally drive done-detection from the same
+//     field.
 //
 //  2. Otherwise, fall back to the literal key "status". Every collection
 //     shipped today groups by status by default, so this preserves
 //     existing behavior for all pre-TASK-604 collections.
 //
+// Only `select` (single-value) is accepted as a done field. `multi_select`
+// stores its values as a JSON array, and both the Go-side membership check
+// and the SQL `IN (…)` filter assume a scalar string — naively accepting
+// multi_select would cause done-detection to silently miss items whose
+// terminal value is one of several in the array. If array semantics are
+// ever needed, they belong in a follow-up task so the Go and SQL paths
+// can be updated together with a clear "any terminal value → done" rule.
+//
 // The function does not assume the resolved key actually exists on the
-// schema — callers should treat the return value as "the field key whose
-// value we read from items.fields JSON". A missing field on an item just
-// means we read an empty string, which is the safe, expected behavior for
-// unstyled items.
+// item — callers read `items.fields[key]` and a missing field just means
+// the item is treated as not terminal, which is the safe default.
 func DoneFieldKey(schema CollectionSchema, settings CollectionSettings) string {
 	candidate := strings.TrimSpace(settings.BoardGroupBy)
 	if candidate == "" {
 		return "status"
 	}
 	for _, f := range schema.Fields {
-		if f.Key == candidate && (f.Type == "select" || f.Type == "multi_select") {
+		if f.Key == candidate && f.Type == "select" {
 			return candidate
 		}
 	}
@@ -52,7 +58,9 @@ func TerminalValuesForDoneField(
 ) (fieldKey string, values []string) {
 	fieldKey = DoneFieldKey(schema, settings)
 	for _, f := range schema.Fields {
-		if f.Key == fieldKey && (f.Type == "select" || f.Type == "multi_select") {
+		// Restricted to `select` — see DoneFieldKey for why multi_select
+		// is deliberately rejected.
+		if f.Key == fieldKey && f.Type == "select" {
 			if len(f.TerminalOptions) > 0 {
 				return fieldKey, f.TerminalOptions
 			}
@@ -84,6 +92,12 @@ func TerminalPlaceholdersForDoneField(
 // is in a terminal state for its collection. This is the canonical Go-side
 // "is done" check when the caller has both the item's parsed fields and
 // the collection's schema + settings in scope.
+//
+// The value at the resolved done-field key is expected to be a scalar
+// string — DoneFieldKey only resolves to `select` fields, which round-
+// trip through the fields JSON as a single string. Non-string values
+// (e.g. an array from a misconfigured multi_select) return false rather
+// than trying to infer semantics.
 func IsTerminalItem(
 	itemFields map[string]any,
 	schema CollectionSchema,
