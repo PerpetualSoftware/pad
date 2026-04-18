@@ -18,6 +18,75 @@ const (
 	CategoryPersonal   = "personal"
 )
 
+// CategoryOrder is the canonical display order of categories. Pickers and
+// grouped listings should iterate this slice so the order is stable and
+// consistent across the CLI and web UI.
+var CategoryOrder = []string{
+	CategorySoftware,
+	CategoryPeople,
+	CategoryResearch,
+	CategoryContent,
+	CategoryOperations,
+	CategoryPersonal,
+}
+
+// categoryLabels maps category slugs to their human-readable display labels.
+var categoryLabels = map[string]string{
+	CategorySoftware:   "Software",
+	CategoryPeople:     "People",
+	CategoryResearch:   "Research",
+	CategoryContent:    "Content",
+	CategoryOperations: "Operations",
+	CategoryPersonal:   "Personal",
+}
+
+// CategoryLabel returns the human-readable label for a category slug.
+// Unknown categories are returned unchanged so the picker can still render
+// a reasonable string if a template uses a custom category.
+func CategoryLabel(category string) string {
+	if label, ok := categoryLabels[category]; ok {
+		return label
+	}
+	return category
+}
+
+// CategoryGroup is an ordered pair of (category, templates-in-that-category).
+type CategoryGroup struct {
+	Category  string
+	Templates []WorkspaceTemplate
+}
+
+// GroupTemplatesByCategory returns the visible workspace templates grouped by
+// category in the canonical CategoryOrder. Categories with no visible
+// templates are omitted. Templates with a category not in CategoryOrder are
+// placed in a trailing "other" group sorted at the end.
+func GroupTemplatesByCategory() []CategoryGroup {
+	tmpls := ListTemplates()
+
+	byCat := make(map[string][]WorkspaceTemplate, len(CategoryOrder))
+	for _, t := range tmpls {
+		byCat[t.Category] = append(byCat[t.Category], t)
+	}
+
+	var groups []CategoryGroup
+	// Canonical order first
+	for _, cat := range CategoryOrder {
+		if items, ok := byCat[cat]; ok && len(items) > 0 {
+			groups = append(groups, CategoryGroup{Category: cat, Templates: items})
+			delete(byCat, cat)
+		}
+	}
+	// Any leftover categories (unknown/custom) appended in insertion order.
+	// Deterministic enough: templates are defined in a fixed order.
+	for _, t := range tmpls {
+		if items, ok := byCat[t.Category]; ok && len(items) > 0 {
+			groups = append(groups, CategoryGroup{Category: t.Category, Templates: items})
+			delete(byCat, t.Category)
+		}
+	}
+	return groups
+}
+
 // WorkspaceTemplate is a named set of collection definitions used to
 // initialize a new workspace.
 type WorkspaceTemplate struct {

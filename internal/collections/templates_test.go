@@ -183,6 +183,64 @@ func TestSoftwareTemplatesShipStarterPacks(t *testing.T) {
 	}
 }
 
+// TestGroupTemplatesByCategory verifies the grouping helper used by CLI
+// and web pickers: canonical category order, only visible templates, and
+// every visible template lands in exactly one group.
+func TestGroupTemplatesByCategory(t *testing.T) {
+	groups := GroupTemplatesByCategory()
+	if len(groups) == 0 {
+		t.Fatal("GroupTemplatesByCategory returned no groups")
+	}
+
+	seen := make(map[string]bool)
+	prevCatIdx := -1
+	for _, g := range groups {
+		if len(g.Templates) == 0 {
+			t.Errorf("empty group returned for category %q", g.Category)
+		}
+		// If the group's category is in CategoryOrder, check it appears in order.
+		idx := -1
+		for i, cat := range CategoryOrder {
+			if cat == g.Category {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			if idx < prevCatIdx {
+				t.Errorf("group %q appeared out of canonical order (idx=%d, prev=%d)", g.Category, idx, prevCatIdx)
+			}
+			prevCatIdx = idx
+		}
+		for _, tmpl := range g.Templates {
+			if tmpl.Hidden {
+				t.Errorf("hidden template %q leaked into group %q", tmpl.Name, g.Category)
+			}
+			if seen[tmpl.Name] {
+				t.Errorf("template %q appeared in multiple groups", tmpl.Name)
+			}
+			seen[tmpl.Name] = true
+		}
+	}
+
+	// Every visible template should have been seen.
+	for _, tmpl := range ListTemplates() {
+		if !seen[tmpl.Name] {
+			t.Errorf("visible template %q missing from grouped output", tmpl.Name)
+		}
+	}
+}
+
+// TestCategoryLabel exercises known and unknown category label lookup.
+func TestCategoryLabel(t *testing.T) {
+	if got := CategoryLabel(CategorySoftware); got != "Software" {
+		t.Errorf("CategoryLabel(software) = %q, want %q", got, "Software")
+	}
+	if got := CategoryLabel("unknown-category"); got != "unknown-category" {
+		t.Errorf("CategoryLabel(unknown) = %q, want passthrough", got)
+	}
+}
+
 // TestHiringTemplate verifies the hiring template ships the expected
 // collections, conventions, and playbooks with the hiring trigger vocabulary.
 // This guards against accidental drift back into software-domain triggers.

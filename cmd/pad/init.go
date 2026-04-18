@@ -48,15 +48,9 @@ Examples:
 				tmpl := collections.GetTemplate(templateFlag)
 				if tmpl == nil {
 					fmt.Fprintf(os.Stderr, "Unknown template: %s\n\n", templateFlag)
-					tmpls := collections.ListTemplates()
 					fmt.Fprintln(os.Stderr, "Available templates:")
-					for _, t := range tmpls {
-						def := ""
-						if t.Name == "startup" {
-							def = " (default)"
-						}
-						fmt.Fprintf(os.Stderr, "  %-10s %s%s\n", t.Name, t.Description, def)
-					}
+					fmt.Fprintln(os.Stderr)
+					printGroupedTemplates(os.Stderr)
 					return fmt.Errorf("unknown template %q", templateFlag)
 				}
 			}
@@ -208,7 +202,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&templateFlag, "template", "", "workspace template (startup, scrum, product)")
+	cmd.Flags().StringVar(&templateFlag, "template", "", "workspace template (omit for interactive picker; run 'pad workspace init --list-templates' to see all)")
 	return cmd
 }
 
@@ -255,13 +249,24 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, template
 		return ws, false, nil
 	}
 
-	// Create new workspace. Default to the "startup" template when the caller
-	// didn't pass --template so the new workspace gets the curated starter
-	// pack (conventions + playbooks). Tests and other API callers that want
-	// an empty workspace can still POST with Template="" directly.
+	// Create new workspace. When the caller didn't pass --template:
+	//   - If stdin/stdout are TTYs, prompt interactively with the grouped
+	//     template picker.
+	//   - Otherwise fall back to the "startup" default so scripts and
+	//     non-interactive runs get the curated starter pack.
+	// Tests and other API callers that want an empty workspace can still
+	// POST with Template="" directly.
 	effectiveTemplate := templateFlag
 	if effectiveTemplate == "" {
-		effectiveTemplate = "startup"
+		if canPromptForTemplate() {
+			picked, perr := pickTemplateInteractive(os.Stdin, os.Stdout)
+			if perr != nil {
+				return nil, false, perr
+			}
+			effectiveTemplate = picked
+		} else {
+			effectiveTemplate = defaultTemplateName
+		}
 	}
 	ws, err = client.CreateWorkspace(models.WorkspaceCreate{
 		Name:     name,
