@@ -24,6 +24,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -118,8 +119,30 @@
 
 	// Sync coordinator — refresh item data on tab resume
 	let unsubscribeSync: (() => void) | null = null;
+	let unsubscribeBeforePrint: (() => void) | null = null;
+
+	// Print header/footer state (PLAN-620 / TASK-623). Initialized on mount
+	// and refreshed on `beforeprint` so the printed page reflects the
+	// actual moment of print, not whenever the page last loaded.
+	let printDate = $state('');
+	let printUrl = $state('');
+
+	function refreshPrintMeta() {
+		if (typeof window === 'undefined') return;
+		printDate = new Date().toLocaleDateString(undefined, {
+			year: 'numeric',
+			month: 'long',
+			day: 'numeric'
+		});
+		printUrl = window.location.href;
+	}
 
 	onMount(() => {
+		refreshPrintMeta();
+		const handler = () => refreshPrintMeta();
+		window.addEventListener('beforeprint', handler);
+		unsubscribeBeforePrint = () => window.removeEventListener('beforeprint', handler);
+
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !itemSlug || !item) return;
 			// Don't refresh if the user is actively editing
@@ -163,6 +186,7 @@
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		unsubscribeBeforePrint?.();
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
 	});
@@ -621,6 +645,22 @@
 {:else if error}
 	<div class="center-message">{error}</div>
 {:else if item && collection}
+	<!-- Print-only header/footer (PLAN-620 / TASK-623). Hidden on screen,
+	     fixed-positioned in print so they repeat on every page. Page number
+	     injected via CSS `counter(page)` in ::after. -->
+	<div class="print-header" aria-hidden="true">
+		<span class="print-header-ws">{workspaceStore.current?.name ?? ''}</span>
+		<span class="print-sep">·</span>
+		<span class="print-header-coll">{collection.icon ?? ''} {collection.name}</span>
+		<span class="print-sep">·</span>
+		<span class="print-header-ref">{formatItemRef(item) || item.title}</span>
+	</div>
+	<div class="print-footer" aria-hidden="true">
+		<span class="print-footer-date">Printed {printDate}</span>
+		<span class="print-footer-url">{printUrl}</span>
+		<span class="print-footer-page">Page <span class="print-page-num"></span></span>
+	</div>
+
 	<div class="item-page">
 		<!-- Breadcrumb -->
 		<div class="sticky-header">
@@ -1724,6 +1764,14 @@
 		}
 	}
 
+	/* Print header + footer (PLAN-620 / TASK-623) — hidden on screen,
+	   fixed-positioned and visible only in print. Shown in @media print
+	   block below. */
+	.print-header,
+	.print-footer {
+		display: none;
+	}
+
 	/* =============================================================
 	   PRINT — item detail page (PLAN-620 / TASK-622).
 	   Layout-level chrome is hidden by app.css's base @media print
@@ -1969,6 +2017,86 @@
 		.link-target {
 			color: #000 !important;
 			text-decoration: none;
+		}
+
+		/* -------------------------------------------------------------
+		   TASK-623 — rendered header / footer on every printed page.
+		   @page margins carve out top + bottom space; fixed-positioned
+		   divs sit in those strips and repeat on every page (well
+		   supported in Chromium; Firefox and Safari may render them
+		   only on the first page). Page number is injected by CSS via
+		   `counter(page)` on a pseudo-element.
+		   ------------------------------------------------------------- */
+		@page {
+			margin: 1.1in 0.6in 0.9in 0.6in;
+		}
+
+		.print-header,
+		.print-footer {
+			display: flex;
+			position: fixed;
+			left: 0;
+			right: 0;
+			box-sizing: border-box;
+			padding: 10pt 0.6in;
+			background: #fff;
+			color: #555;
+			font-size: 9pt;
+			line-height: 1.35;
+			gap: 6pt;
+			align-items: center;
+			z-index: 1000;
+		}
+
+		.print-header {
+			top: 0;
+			border-bottom: 1px solid #ccc;
+			justify-content: flex-start;
+			flex-wrap: wrap;
+		}
+		.print-header-ws {
+			font-weight: 600;
+			color: #333;
+		}
+		.print-header-coll {
+			color: #555;
+		}
+		.print-header-ref {
+			margin-left: auto;
+			font-weight: 500;
+			color: #333;
+			font-variant-numeric: tabular-nums;
+			letter-spacing: 0.02em;
+		}
+		.print-sep {
+			color: #999;
+		}
+
+		.print-footer {
+			bottom: 0;
+			border-top: 1px solid #ccc;
+			justify-content: space-between;
+		}
+		.print-footer-date,
+		.print-footer-page {
+			white-space: nowrap;
+			color: #555;
+		}
+		.print-footer-url {
+			flex: 1;
+			text-align: center;
+			padding: 0 8pt;
+			color: #666;
+			font-size: 8pt;
+			word-break: break-all;
+			/* Clamp to a single line so long URLs don't push the footer
+			   height, which would otherwise overlap the body content. */
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.print-page-num::after {
+			content: counter(page);
 		}
 	}
 </style>
