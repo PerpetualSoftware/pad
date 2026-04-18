@@ -636,16 +636,11 @@
 		padding: 0 var(--space-1);
 		border-radius: var(--radius-sm);
 		line-height: 1;
-		opacity: 0;
+		opacity: 0.5;
 		transition: opacity 0.15s, color 0.15s;
 	}
 	.section-header:hover .section-add-btn {
 		opacity: 1;
-	}
-	@media (hover: none) {
-		.section-add-btn {
-			opacity: 1;
-		}
 	}
 	.section-add-btn:hover {
 		color: var(--text-primary);
@@ -667,15 +662,11 @@
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 		padding: 0;
-		visibility: hidden;
+		opacity: 0.5;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
 	}
 	.nav-item:hover .nav-quick-add {
-		visibility: visible;
-	}
-	@media (hover: none) {
-		.nav-quick-add {
-			visibility: visible;
-		}
+		opacity: 1;
 	}
 	.nav-quick-add:hover {
 		color: var(--text-primary);
