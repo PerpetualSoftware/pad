@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
-	import type { Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
-	import { parseFields } from '$lib/types';
+	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
+	import { parseFields, parseSchema } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 
@@ -32,6 +32,7 @@
 	let workspace = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let conventions = $state<Item[]>([]);
+	let conventionsCollection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let expandedSlug = $state<string | null>(null);
 	let collapsedGroups = new SvelteSet<string>();
@@ -50,14 +51,17 @@
 	// Inline create form state
 	let newTitle = $state('');
 	let newCategory = $state<typeof CATEGORIES[number]>('custom');
-	let newTrigger = $state<Trigger>('always');
-	let newSurface = $state<typeof SURFACES[number]>('all');
+	let newTrigger = $state<string>('always');
+	let newSurface = $state<string>('all');
 	let newEnforcement = $state<typeof ENFORCEMENT_LEVELS[number]>('should');
 	let newCommands = $state('');
 	let newContent = $state('');
 
 	$effect(() => {
-		if (workspace) loadConventions(workspace);
+		if (workspace) {
+			loadConventions(workspace);
+			loadConventionsCollection(workspace);
+		}
 	});
 
 	async function loadConventions(ws: string) {
@@ -71,20 +75,76 @@
 		}
 	}
 
+	async function loadConventionsCollection(ws: string) {
+		// Clear any previous workspace's schema before the fetch. Until the new
+		// response lands, createTriggers/createSurfaces fall back to the
+		// hardcoded software defaults — correct for a workspace whose schema
+		// we have not yet observed. This prevents the in-flight window from
+		// rendering the previous workspace's vocabulary on the new page.
+		conventionsCollection = null;
+		try {
+			const coll = await api.collections.get(ws, 'conventions');
+			// Stale-response guard: if the user has since moved to another
+			// workspace, drop the result rather than overwriting state with
+			// schema from a workspace we are no longer on.
+			if (ws !== workspace) return;
+			conventionsCollection = coll;
+		} catch {
+			if (ws !== workspace) return;
+			conventionsCollection = null;
+		}
+	}
+
+	let schemaTriggers = $derived.by<readonly string[]>(() => {
+		if (!conventionsCollection) return [];
+		const schema = parseSchema(conventionsCollection);
+		const field = schema.fields.find((f) => f.key === 'trigger');
+		return field?.options ?? [];
+	});
+
+	let schemaSurfaces = $derived.by<readonly string[]>(() => {
+		if (!conventionsCollection) return [];
+		const schema = parseSchema(conventionsCollection);
+		const field = schema.fields.find((f) => f.key === 'scope');
+		return field?.options ?? [];
+	});
+
+	let createTriggers = $derived<readonly string[]>(
+		schemaTriggers.length > 0 ? schemaTriggers : (TRIGGERS as readonly string[])
+	);
+	let createSurfaces = $derived<readonly string[]>(
+		schemaSurfaces.length > 0 ? schemaSurfaces : (SURFACES as readonly string[])
+	);
+
+	// When schema-driven options load (or change), snap the create-form selections
+	// into the effective list. This prevents the <select> from showing a phantom
+	// value that isn't actually in its <option>s.
+	$effect(() => {
+		if (createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
+			newTrigger = createTriggers[0];
+		}
+	});
+	$effect(() => {
+		if (createSurfaces.length > 0 && !createSurfaces.includes(newSurface)) {
+			newSurface = createSurfaces[0];
+		}
+	});
+
 	let hasActiveFilters = $derived(searchQuery !== '' || filterScope !== '' || filterPriority !== '');
 
-	// Expose the union of SURFACES plus any scopes discovered on loaded items,
-	// so filter dropdowns show scopes from non-software templates (e.g. hiring's
-	// sourcing/screening/interviewing/offers). Create form still uses narrow SURFACES.
+	// Expose the union of the effective create-form surfaces plus any scopes
+	// discovered on loaded items, so filter dropdowns show scopes from
+	// non-software templates (e.g. hiring's sourcing/screening/interviewing/offers).
 	let allSurfaces = $derived.by(() => {
-		const known = new Set<string>(SURFACES as readonly string[]);
+		const base = createSurfaces;
+		const known = new Set<string>(base);
 		const extra = new Set<string>();
 		for (const c of conventions) {
 			const s = getPrimarySurface(c);
 			if (s && !known.has(s)) extra.add(s);
 		}
 		return [
-			...(SURFACES as readonly string[]),
+			...base,
 			...Array.from(extra).sort(),
 		];
 	});
@@ -113,7 +173,7 @@
 			if (!byTrigger.has(t)) byTrigger.set(t, []);
 			byTrigger.get(t)!.push(item);
 		}
-		const knownOrder = TRIGGERS as readonly string[];
+		const knownOrder = createTriggers;
 		const extraTriggers = Array.from(byTrigger.keys())
 			.filter((t) => !knownOrder.includes(t))
 			.sort((a, b) => a.localeCompare(b));
@@ -349,15 +409,16 @@
 					<label class="form-field">
 						<span>Trigger</span>
 						<select bind:value={newTrigger}>
-							{#each TRIGGERS as t (t)}
-								<option value={t}>{TRIGGER_META[t].icon} {TRIGGER_META[t].label}</option>
+							{#each createTriggers as t (t)}
+								{@const meta = triggerMeta(t)}
+								<option value={t}>{meta.icon} {meta.label}</option>
 							{/each}
 						</select>
 					</label>
 					<label class="form-field">
 						<span>Surface</span>
 						<select bind:value={newSurface}>
-							{#each SURFACES as s (s)}
+							{#each createSurfaces as s (s)}
 								<option value={s}>{s}</option>
 							{/each}
 						</select>
