@@ -109,7 +109,9 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	type templateInfo struct {
 		Name        string   `json:"name"`
+		Category    string   `json:"category"`
 		Description string   `json:"description"`
+		Icon        string   `json:"icon"`
 		Collections []string `json:"collections"`
 	}
 	templates := collections.ListTemplates()
@@ -121,7 +123,9 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, templateInfo{
 			Name:        t.Name,
+			Category:    t.Category,
 			Description: t.Description,
+			Icon:        t.Icon,
 			Collections: colls,
 		})
 	}
