@@ -570,6 +570,7 @@ var templates = []WorkspaceTemplate{
 		Playbooks:   SoftwareStarterPlaybooks(),
 	},
 	hiringTemplate(),
+	interviewingTemplate(),
 	{
 		Name:        "demo",
 		Category:    CategorySoftware,

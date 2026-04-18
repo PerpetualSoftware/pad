@@ -342,6 +342,58 @@ func TestSeedCollectionsFromTemplateHiring(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateInterviewing verifies end-to-end that the
+// interviewing template creates its collections and seeds the starter pack.
+func TestSeedCollectionsFromTemplateInterviewing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Interviewing")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "interviewing"); err != nil {
+		t.Fatalf("seed interviewing template: %v", err)
+	}
+
+	for _, slug := range []string{"applications", "interviews", "companies", "contacts", "docs", "conventions", "playbooks"} {
+		coll, err := s.GetCollectionBySlug(ws.ID, slug)
+		if err != nil || coll == nil {
+			t.Errorf("interviewing workspace missing collection %q (err=%v)", slug, err)
+		}
+	}
+
+	convs, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if len(convs) == 0 {
+		t.Error("expected interviewing starter conventions to be seeded, got 0")
+	}
+	plays, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "playbooks"})
+	if len(plays) == 0 {
+		t.Error("expected interviewing starter playbooks to be seeded, got 0")
+	}
+
+	apps, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "applications"})
+	if len(apps) == 0 {
+		t.Error("expected interviewing seed Application, got 0")
+	}
+	cos, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "companies"})
+	if len(cos) == 0 {
+		t.Error("expected interviewing seed Company, got 0")
+	}
+
+	// Explicit prefixes
+	for slug, want := range map[string]string{
+		"applications": "APP",
+		"interviews":   "INT",
+		"companies":    "CO",
+		"contacts":     "CON",
+	} {
+		coll, err := s.GetCollectionBySlug(ws.ID, slug)
+		if err != nil || coll == nil {
+			continue
+		}
+		if coll.Prefix != want {
+			t.Errorf("collection %q prefix = %q, want %q", slug, coll.Prefix, want)
+		}
+	}
+}
+
 // TestSeedCollectionsFromTemplateRecoversPartialInit verifies that a retry
 // after a partial seed (some items missing) fills in the missing items
 // rather than treating the workspace as already-seeded. This guards the
