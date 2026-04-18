@@ -252,7 +252,7 @@
 <!-- Print-only flat checklist (PLAN-620 / TASK-624). Hidden on screen;
      visible in print via @media print rule below. The interactive
      `.child-items` view is hidden in print so this takes its place. -->
-{#if !loading && children.length > 0}
+{#if !loading && !error && children.length > 0}
 	<div class="print-children" aria-hidden="true">
 		<div class="print-children-header">
 			Children ({doneCount}/{totalCount} done)
