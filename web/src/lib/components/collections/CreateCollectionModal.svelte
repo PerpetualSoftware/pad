@@ -8,6 +8,7 @@
 		blankField,
 		coerceDefault,
 		fieldFromDef,
+		isSafeDoneFieldKey,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -58,13 +59,14 @@
 	let listSortBy = $state('');
 	let quickActions = $state<EditableQuickAction[]>([]);
 
-	// Mirrors DoneFieldKey() in internal/models/terminal.go — only accepts
-	// `select` fields as a done field (multi_select is rejected because the
-	// Go + SQL paths only handle scalar string matching). Falls back to
-	// 'status' otherwise.
+	// Mirrors DoneFieldKey() in internal/models/terminal.go:
+	// - only accepts `select` fields (multi_select is rejected — both
+	//   paths only handle scalar string matching)
+	// - requires the key to match the backend's safe-key pattern or the
+	//   server falls back to "status"
 	const activeDoneField = $derived.by(() => {
 		const candidate = (boardGroupBy || '').trim();
-		if (!candidate) return 'status';
+		if (!candidate || !isSafeDoneFieldKey(candidate)) return 'status';
 		const matches = fields.some((f) => f.key.trim() === candidate && f.type === 'select');
 		return matches ? candidate : 'status';
 	});
