@@ -378,7 +378,13 @@ input:focus, textarea:focus {
 	     per page in Chromium. Margin-box counters evaluate per page
 	     correctly. */
 	@page {
-		margin: 1.25in 0.6in 1in 0.6in;
+		/* Top margin is generous-but-plain (no reserved header strip):
+		   the page-1 document header lives in normal flow via
+		   `.title-row` + `.meta-info`, so subsequent pages start at
+		   this margin with no overlap risk. Bottom margin reserves
+		   space for the fixed footer + the `@bottom-right` page number.
+		   See BUG-626 for why the repeating header was dropped. */
+		margin: 0.6in 0.6in 1in 0.6in;
 		@bottom-right {
 			content: "Page " counter(page);
 			font-family: var(--font-ui);

@@ -24,7 +24,6 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -645,22 +644,14 @@
 {:else if error}
 	<div class="center-message">{error}</div>
 {:else if item && collection}
-	<!-- Print-only header/footer (PLAN-620 / TASK-623). Hidden on screen,
-	     fixed-positioned in print so they repeat on every page. Page number
-	     injected via CSS `counter(page)` in ::after. -->
-	<div class="print-header" aria-hidden="true">
-		<span class="print-header-ws">{workspaceStore.current?.name ?? ''}</span>
-		<span class="print-sep">·</span>
-		<span class="print-header-coll">{collection.icon ?? ''} {collection.name}</span>
-		<span class="print-sep">·</span>
-		<span class="print-header-ref">{formatItemRef(item) || item.title}</span>
-	</div>
+	<!-- Print-only footer (hidden on screen, fixed-positioned in print).
+	     The repeating print-header was removed as part of BUG-626: a
+	     clean page-1-only document header is rendered inside the normal
+	     flow by `.title-row` + `.meta-info`. Page number comes from
+	     `@page { @bottom-right ... }` in app.css. -->
 	<div class="print-footer" aria-hidden="true">
 		<span class="print-footer-date">Printed {printDate}</span>
 		<span class="print-footer-url">{printUrl}</span>
-		<!-- Page number is rendered by `@page { @bottom-right ... }` in
-		     app.css (counter(page) must live in a margin-box to
-		     increment per page in Chromium). See BUG-625. -->
 	</div>
 
 	<div class="item-page">
@@ -841,12 +832,16 @@
 							</div>
 						</div>
 					{:else}
-						<div class="field-row">
+						{@const rawFieldValue = fieldValue(field.key)}
+						{@const isFieldEmpty = rawFieldValue == null
+							|| rawFieldValue === ''
+							|| (Array.isArray(rawFieldValue) && rawFieldValue.length === 0)}
+						<div class="field-row" class:print-empty={isFieldEmpty}>
 							<span class="field-label">{field.label}</span>
 							<div class="field-value">
 								<FieldEditor
 									{field}
-									value={fieldValue(field.key)}
+									value={rawFieldValue}
 									onchange={(v) => updateField(field.key, v)}
 								/>
 							</div>
@@ -1766,10 +1761,9 @@
 		}
 	}
 
-	/* Print header + footer (PLAN-620 / TASK-623) — hidden on screen,
-	   fixed-positioned and visible only in print. Shown in @media print
-	   block below. */
-	.print-header,
+	/* Print footer (fixed-positioned, visible only in print). The
+	   page-1 document header lives in normal flow via `.title-row` +
+	   `.meta-info` — no repeating print header. See BUG-626. */
 	.print-footer {
 		display: none;
 	}
@@ -1805,27 +1799,36 @@
 			display: none !important;
 		}
 
-		/* Title row — large, plain text, no button affordance. */
+		/* Title row — page-1 document header block (BUG-626).
+		   Title on the left, issue ref on the right, both aligned to
+		   the baseline of the title's first line. `.title` can wrap
+		   naturally; `.item-ref` stays compact on the right. */
 		.title-row {
-			display: block;
+			display: flex;
+			justify-content: space-between;
+			align-items: baseline;
+			gap: 12pt;
 			margin: 0 0 4pt 0;
 			padding: 0;
 			border: none;
 		}
 		.title-row .item-ref {
-			display: inline-block;
+			flex: 0 0 auto;
 			font-size: 10pt;
 			font-weight: 500;
 			color: #555;
-			margin: 0 8pt 0 0;
+			margin: 0;
 			padding: 0;
 			background: transparent;
 			border: none;
 			letter-spacing: 0.03em;
+			font-variant-numeric: tabular-nums;
+			white-space: nowrap;
 		}
 		.title-row .title,
 		.title-row .title-input {
-			display: inline;
+			flex: 1 1 auto;
+			display: block;
 			font-size: 20pt;
 			font-weight: 700;
 			color: #000;
@@ -1848,13 +1851,16 @@
 			white-space: pre-wrap;
 		}
 
-		/* Meta info (created / updated by). */
+		/* Meta info subtitle (created / updated by). Border-bottom
+		   separates the page-1 document header block from the
+		   properties card below. BUG-626. */
 		.meta-info {
 			font-size: 9pt;
 			color: #555;
 			margin: 0 0 12pt 0;
-			padding: 0;
+			padding: 0 0 10pt 0;
 			border: none;
+			border-bottom: 1px solid #ccc;
 			display: block;
 		}
 		.meta-info .meta-sep { color: #888; }
@@ -1924,6 +1930,13 @@
 			border: none !important;
 			font-size: 10pt;
 			align-items: baseline;
+		}
+		/* Non-computed fields whose raw value is blank (null / "" / []) —
+		   skip the whole row in print so we don't print a label with no
+		   value (e.g. an unset "Category"). Flag applied at the template
+		   level because :empty can't see the FieldEditor child. BUG-626. */
+		.field-row.print-empty {
+			display: none !important;
 		}
 		.field-label {
 			color: #555 !important;
@@ -2022,20 +2035,20 @@
 		}
 
 		/* -------------------------------------------------------------
-		   TASK-623 — rendered header / footer on every printed page.
-		   @page margins + page number counter live in app.css (single
-		   source of truth; see BUG-625 for why). This block owns only
-		   the fixed-positioned header / footer elements that sit in the
-		   carved-out margin strips.
+		   TASK-623 / BUG-626 — rendered footer on every printed page.
+		   The repeating print-header was removed as part of BUG-626;
+		   only the fixed footer (date + URL) remains. Page number
+		   lives in `@page @bottom-right` (see app.css). @page margins
+		   are owned globally in app.css.
 		   ------------------------------------------------------------- */
-		.print-header,
 		.print-footer {
 			display: flex;
 			position: fixed;
 			left: 0;
 			right: 0;
+			bottom: 0;
 			box-sizing: border-box;
-			padding: 10pt 0.6in;
+			padding: 10pt 1.2in 10pt 0.6in;
 			background: #fff;
 			color: #555;
 			font-size: 9pt;
@@ -2043,41 +2056,6 @@
 			gap: 6pt;
 			align-items: center;
 			z-index: 1000;
-		}
-
-		/* Reserve space on the right of the footer for the `@page
-		   @bottom-right` page-number margin box so its content and the
-		   date/URL don't overlap. */
-		.print-footer {
-			padding-right: 1.2in;
-		}
-
-		.print-header {
-			top: 0;
-			border-bottom: 1px solid #ccc;
-			justify-content: flex-start;
-			flex-wrap: wrap;
-		}
-		.print-header-ws {
-			font-weight: 600;
-			color: #333;
-		}
-		.print-header-coll {
-			color: #555;
-		}
-		.print-header-ref {
-			margin-left: auto;
-			font-weight: 500;
-			color: #333;
-			font-variant-numeric: tabular-nums;
-			letter-spacing: 0.02em;
-		}
-		.print-sep {
-			color: #999;
-		}
-
-		.print-footer {
-			bottom: 0;
 			border-top: 1px solid #ccc;
 			justify-content: space-between;
 		}
