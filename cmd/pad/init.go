@@ -255,10 +255,17 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, template
 		return ws, false, nil
 	}
 
-	// Create new workspace
+	// Create new workspace. Default to the "startup" template when the caller
+	// didn't pass --template so the new workspace gets the curated starter
+	// pack (conventions + playbooks). Tests and other API callers that want
+	// an empty workspace can still POST with Template="" directly.
+	effectiveTemplate := templateFlag
+	if effectiveTemplate == "" {
+		effectiveTemplate = "startup"
+	}
 	ws, err = client.CreateWorkspace(models.WorkspaceCreate{
 		Name:     name,
-		Template: templateFlag,
+		Template: effectiveTemplate,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("create workspace: %w", err)
