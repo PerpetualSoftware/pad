@@ -279,6 +279,88 @@ func TestHiringTemplate(t *testing.T) {
 	}
 }
 
+// TestInterviewingTemplate verifies the interviewing (candidate-side)
+// template ships the expected collections, conventions, and playbooks with
+// the interviewing trigger vocabulary — distinct from hiring's.
+func TestInterviewingTemplate(t *testing.T) {
+	tmpl := GetTemplate("interviewing")
+	if tmpl == nil {
+		t.Fatal("interviewing template missing")
+	}
+	if tmpl.Category != CategoryPeople {
+		t.Errorf("interviewing category = %q, want %q", tmpl.Category, CategoryPeople)
+	}
+	if tmpl.Icon == "" {
+		t.Error("interviewing template has empty Icon")
+	}
+	if tmpl.Hidden {
+		t.Error("interviewing template should not be Hidden")
+	}
+
+	required := []string{"applications", "interviews", "companies", "contacts", "docs", "conventions", "playbooks"}
+	got := make(map[string]bool, len(tmpl.Collections))
+	for _, c := range tmpl.Collections {
+		got[c.Slug] = true
+	}
+	for _, slug := range required {
+		if !got[slug] {
+			t.Errorf("interviewing template missing collection %q", slug)
+		}
+	}
+
+	var conv, play *DefaultCollection
+	for i, c := range tmpl.Collections {
+		if c.Slug == "conventions" {
+			conv = &tmpl.Collections[i]
+		}
+		if c.Slug == "playbooks" {
+			play = &tmpl.Collections[i]
+		}
+	}
+	if conv == nil || play == nil {
+		t.Fatal("conventions and/or playbooks collection missing from interviewing template")
+	}
+
+	// Interviewing-specific triggers are present; software and hiring
+	// triggers are not present (they belong to different workspace types).
+	mustContain := func(name string, triggers []string, wanted string) {
+		for _, tr := range triggers {
+			if tr == wanted {
+				return
+			}
+		}
+		t.Errorf("interviewing %s triggers %v do not contain %q", name, triggers, wanted)
+	}
+	mustNotContain := func(name string, triggers []string, unwanted string) {
+		for _, tr := range triggers {
+			if tr == unwanted {
+				t.Errorf("interviewing %s triggers %v leaked foreign trigger %q", name, triggers, unwanted)
+				return
+			}
+		}
+	}
+	convTriggers := findFieldOptions(*conv, "trigger")
+	playTriggers := findFieldOptions(*play, "trigger")
+	mustContain("convention", convTriggers, "on-interview-scheduled")
+	mustContain("convention", convTriggers, "weekly-review")
+	mustNotContain("convention", convTriggers, "on-commit")
+	mustNotContain("convention", convTriggers, "on-candidate-advance") // hiring trigger
+	mustContain("playbook", playTriggers, "on-interview-completed")
+	mustContain("playbook", playTriggers, "weekly-review")
+	mustNotContain("playbook", playTriggers, "on-implement")
+
+	// Ships a non-empty starter pack
+	if len(tmpl.Conventions) == 0 {
+		t.Error("interviewing template ships no starter conventions")
+	}
+	if len(tmpl.Playbooks) == 0 {
+		t.Error("interviewing template ships no starter playbooks")
+	}
+	if len(tmpl.SeedItems) == 0 {
+		t.Error("interviewing template ships no seed items")
+	}
+}
+
 // TestSoftwareTemplatesUseSoftwareOptions verifies the startup/scrum/product
 // templates continue to ship the established software trigger vocabulary. If
 // these lists ever diverge, non-software templates are free to differ, but
