@@ -179,8 +179,14 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 - **Items** have structured `fields` JSON + optional rich `content` (markdown)
 - **Parent/child links:** Any item can be a parent of child items (`--parent REF`). Children get progress tracking, burndown charts, and nested rendering. Plans are the most common parent, but Ideas, Docs, or Tasks can also have children.
 - **Wiki-links** `[[Title]]` resolve across all items, rendered as clickable links
-- **Default collections:** Tasks, Ideas, Plans, Docs
-- **Templates:** startup (default), scrum, product — set via `pad workspace init --template`
+- **Default collections:** Tasks, Ideas, Plans, Docs (software / `startup` template)
+- **Templates** are grouped by category so Pad supports more than just software workflows:
+  - **Software:** `startup` (default), `scrum`, `product`
+  - **People:** `hiring` (company-side: Requisitions → Candidates → Loops → Feedback), `interviewing` (candidate-side: Applications, Interviews, Companies, Contacts)
+  - *Research / Content / Operations / Personal are reserved categories awaiting their first templates.*
+- Each template ships a curated starter pack (conventions + playbooks + sample items) appropriate to its domain — trigger vocabularies vary (`on-commit` vs `on-candidate-advance` vs `on-interview-scheduled`).
+- Set the template via `pad workspace init --template <name>`. Running `pad init` with no flag in a TTY opens an interactive picker grouped by category. Run `pad workspace init --list-templates` to see the current catalog.
+- See `PLAN-609` and `IDEA-583` in this workspace for the design history.
 
 ## Testing
 
