@@ -1800,12 +1800,14 @@
 		}
 
 		/* Title row — page-1 document header block (BUG-626).
-		   Title on the left, issue ref on the right, both aligned to
-		   the baseline of the title's first line. `.title` can wrap
-		   naturally; `.item-ref` stays compact on the right. */
+		   DOM order is [item-ref, title]; in print we want [title, ref]
+		   visually, so `order` flips the display sequence without
+		   touching the template. Title takes the remaining width and
+		   wraps naturally; `.item-ref` stays compact on the right,
+		   baseline-aligned to the title's first line. */
 		.title-row {
 			display: flex;
-			justify-content: space-between;
+			justify-content: flex-start;
 			align-items: baseline;
 			gap: 12pt;
 			margin: 0 0 4pt 0;
@@ -1813,11 +1815,12 @@
 			border: none;
 		}
 		.title-row .item-ref {
+			order: 2;
 			flex: 0 0 auto;
 			font-size: 10pt;
 			font-weight: 500;
 			color: #555;
-			margin: 0;
+			margin-left: auto;
 			padding: 0;
 			background: transparent;
 			border: none;
@@ -1827,6 +1830,7 @@
 		}
 		.title-row .title,
 		.title-row .title-input {
+			order: 1;
 			flex: 1 1 auto;
 			display: block;
 			font-size: 20pt;
