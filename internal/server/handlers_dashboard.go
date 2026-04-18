@@ -194,7 +194,22 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	// Filter collections by visibility
+	// Build the done-context map from ALL workspace collections before
+	// visibility filtering. The dashboard may surface item-level grants
+	// from collections that aren't in the user's full-visibility set
+	// (via dashItemIDs); those items still need their own collection's
+	// done rules for isItemDone, not the status-based default fallback.
+	// ListCollectionsMinimal skips the per-collection count queries —
+	// we only need schema + settings here.
+	allCollections, mcErr := s.store.ListCollectionsMinimal(workspaceID)
+	if mcErr != nil {
+		// Non-fatal: fall back to the visibility-filtered collections.
+		allCollections = collections
+	}
+	ctxMap := buildDoneContextMap(allCollections)
+
+	// Filter collections by visibility (drives the collection-summary
+	// section; done-detection above already sees every collection).
 	if visibleIDs != nil {
 		filtered := make([]models.Collection, 0, len(collections))
 		for _, c := range collections {
@@ -204,7 +219,6 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		collections = filtered
 	}
-	ctxMap := buildDoneContextMap(collections)
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{

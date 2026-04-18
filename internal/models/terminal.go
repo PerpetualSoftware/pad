@@ -1,6 +1,18 @@
 package models
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// safeDoneFieldKey bounds what we'll interpolate into the JSON path of a
+// SQL query (e.g. `json_extract(i.fields, '$.<key>')`). Collection schemas
+// are persisted without backend-side key validation, so a user could in
+// principle store a key containing quotes or path metacharacters; we
+// refuse to resolve done-detection to anything outside this shape and
+// fall back to "status". The pattern mirrors the convention already in
+// use for search filters in internal/server/handlers_search.go.
+var safeDoneFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
 // DefaultTerminalStatuses is the fallback list used when a collection's
 // done field has no `terminal_options` declared on its schema. This is the
@@ -37,6 +49,13 @@ var DefaultTerminalStatuses = []string{
 func DoneFieldKey(schema CollectionSchema, settings CollectionSettings) string {
 	candidate := strings.TrimSpace(settings.BoardGroupBy)
 	if candidate == "" {
+		return "status"
+	}
+	// Refuse to resolve to a key that would be unsafe to embed in a
+	// SQL JSON path. Callers pass the returned key to dialect-specific
+	// JSONExtractText builders that interpolate it as a string literal;
+	// schema keys are not validated on write, so we validate here.
+	if !safeDoneFieldKey.MatchString(candidate) {
 		return "status"
 	}
 	for _, f := range schema.Fields {

@@ -59,6 +59,33 @@ func TestDoneFieldKey_FallsBackForNonSelectField(t *testing.T) {
 	}
 }
 
+func TestDoneFieldKey_RejectsUnsafeKeys(t *testing.T) {
+	// Schema keys aren't validated on write; a malicious or buggy writer
+	// could in principle store a key like `status'); DROP TABLE --`. The
+	// resolver must refuse to resolve to such keys because callers
+	// interpolate the returned value into SQL JSON paths. Falls back to
+	// the literal 'status' — which is always safe.
+	cases := []string{
+		"status'); DROP",
+		"field with spaces",
+		"name.with.dots",
+		"key-with-dashes",
+		"1leading-digit",
+		"",
+	}
+	schema := CollectionSchema{
+		Fields: []FieldDef{
+			{Key: "status", Type: "select", Options: []string{"open"}},
+		},
+	}
+	for _, c := range cases {
+		settings := CollectionSettings{BoardGroupBy: c}
+		if got := DoneFieldKey(schema, settings); got != "status" {
+			t.Errorf("unsafe key %q: expected fallback to 'status', got %q", c, got)
+		}
+	}
+}
+
 func TestDoneFieldKey_RejectsMultiSelect(t *testing.T) {
 	// multi_select stores values as JSON arrays, but both the Go-side
 	// membership check and the SQL IN(...) filter assume scalar string
