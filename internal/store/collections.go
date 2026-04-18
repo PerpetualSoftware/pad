@@ -104,6 +104,32 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 	return s.GetCollection(id)
 }
 
+// ListCollectionsMinimal returns collection rows populated with just the
+// fields needed for done-detection context: ID, Schema, Settings.
+// Skips the per-collection COUNT queries that ListCollections runs, which
+// matters on hot paths that only need the schema + settings pair (e.g.
+// handlers that build a ctxMap for isItemDone). Includes soft-deleted
+// collections so items still attached to them can be evaluated.
+func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection, error) {
+	rows, err := s.db.Query(
+		s.q(`SELECT id, schema, COALESCE(settings, '') FROM collections WHERE workspace_id = ?`),
+		workspaceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list collections minimal: %w", err)
+	}
+	defer rows.Close()
+	var result []models.Collection
+	for rows.Next() {
+		var c models.Collection
+		if err := rows.Scan(&c.ID, &c.Schema, &c.Settings); err != nil {
+			return nil, fmt.Errorf("scan collection minimal: %w", err)
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
@@ -141,23 +167,29 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		return nil, err
 	}
 
-	// Compute active_item_count per collection using each collection's own
-	// terminal statuses from its schema (not the global default list).
-	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	// Compute active_item_count per collection using that collection's own
+	// done-field + terminal options from its schema + settings (not the
+	// global default list, and not hardcoded to `status`). See TASK-604:
+	// collections whose board is grouped by e.g. `resolution` have
+	// done-detection follow that field naturally.
 	for idx := range result {
 		c := &result[idx]
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(c.Schema), &schema); err != nil {
-			// If schema can't be parsed, fall back to default terminal statuses
 			schema = models.CollectionSchema{}
 		}
-		termPlaceholders, termArgs := models.TerminalStatusPlaceholders(schema)
+		var settings models.CollectionSettings
+		if c.Settings != "" {
+			_ = json.Unmarshal([]byte(c.Settings), &settings)
+		}
+		doneKey, termPlaceholders, termArgs := models.TerminalPlaceholdersForDoneField(schema, settings)
+		jsonExtractDone := s.dialect.JSONExtractText("i.fields", doneKey)
 		args := append([]any{c.ID}, termArgs...)
 		err := s.db.QueryRow(s.q(fmt.Sprintf(`
 			SELECT COUNT(*) FROM items i
 			WHERE i.collection_id = ? AND i.deleted_at IS NULL
 			AND LOWER(COALESCE(%s, '')) NOT IN (%s)
-		`, jsonExtractStatus, termPlaceholders)), args...).Scan(&c.ActiveItemCount)
+		`, jsonExtractDone, termPlaceholders)), args...).Scan(&c.ActiveItemCount)
 		if err != nil {
 			return nil, fmt.Errorf("count active items for collection %s: %w", c.Slug, err)
 		}

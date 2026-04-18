@@ -8,6 +8,7 @@
 		blankField,
 		coerceDefault,
 		defaultsEqual,
+		isSafeDoneFieldKey,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -102,6 +103,20 @@
 	let boardGroupBy = $state('status');
 	let listGroupBy = $state('');
 	let listSortBy = $state('');
+
+	// Which field drives backend done-detection for this collection.
+	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go:
+	// - only `select` fields qualify (not multi_select — both paths only
+	//   handle scalar string matching)
+	// - the key must match the backend's safe-key pattern or the server
+	//   falls back to "status"; we apply the same check here so the UI
+	//   can't show an "Active" pill on a field the server will reject.
+	const activeDoneField = $derived.by(() => {
+		const candidate = (boardGroupBy || '').trim();
+		if (!candidate || !isSafeDoneFieldKey(candidate)) return 'status';
+		const matches = existingFields.some((f) => f.key === candidate && f.type === 'select');
+		return matches ? candidate : 'status';
+	});
 
 	// ── Quick actions state ─────────────────────────────────────────────────
 	// Shape comes from QuickActionsEditor; the editor component owns the
@@ -629,6 +644,7 @@
 										index={i}
 										total={existingFields.length}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeExistingField(i)}
@@ -642,6 +658,7 @@
 										isNew
 										keyError={newKeyErrors[i]}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveNewField(i, -1)}
 										onmovedown={() => moveNewField(i, 1)}
 										onremove={() => removeNewField(i)}

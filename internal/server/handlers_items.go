@@ -827,6 +827,13 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Build a done-context map once so each child is evaluated against
+		// its own collection's configured done field, not a global default.
+		// ListCollectionsMinimal avoids the per-collection COUNT queries
+		// that ListCollections would run — we only need schema + settings.
+		wsCollections, _ := s.store.ListCollectionsMinimal(workspaceID)
+		ctxMap := buildDoneContextMap(wsCollections)
+
 		// Recompute each plan's progress using only visible children
 		for i, p := range allProgress {
 			children, cerr := s.store.GetChildItems(p.ItemID)
@@ -842,8 +849,7 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				total++
-				status := extractStatus(child.Fields)
-				if models.IsTerminalStatusDefault(status) {
+				if isItemDone(child.Fields, child.CollectionID, ctxMap) {
 					done++
 				}
 			}
@@ -979,8 +985,9 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, cerr)
 			return
 		}
-		// Cache collection schemas for terminal status lookup
-		schemaCache := make(map[string]models.CollectionSchema)
+		// Cache a schema+settings done-context per child collection so
+		// each child is evaluated against its own configured done field.
+		ctxCache := make(map[string]doneContext)
 		total, done := 0, 0
 		for _, child := range children {
 			if !isCollectionVisible(child.CollectionID, progVisIDs) {
@@ -990,15 +997,19 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			total++
-			status := extractStatus(child.Fields)
-			schema, cached := schemaCache[child.CollectionID]
+			ctx, cached := ctxCache[child.CollectionID]
 			if !cached {
 				if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
-					_ = json.Unmarshal([]byte(coll.Schema), &schema)
+					_ = json.Unmarshal([]byte(coll.Schema), &ctx.schema)
+					if coll.Settings != "" {
+						_ = json.Unmarshal([]byte(coll.Settings), &ctx.settings)
+					}
 				}
-				schemaCache[child.CollectionID] = schema
+				ctxCache[child.CollectionID] = ctx
 			}
-			if models.IsTerminalStatus(status, schema) {
+			// Build a one-entry ctx map for isItemDone so it hits the
+			// typed-context branch rather than the status-only fallback.
+			if isItemDone(child.Fields, child.CollectionID, map[string]doneContext{child.CollectionID: ctx}) {
 				done++
 			}
 		}

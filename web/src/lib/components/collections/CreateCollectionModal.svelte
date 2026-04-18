@@ -8,6 +8,7 @@
 		blankField,
 		coerceDefault,
 		fieldFromDef,
+		isSafeDoneFieldKey,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -57,6 +58,18 @@
 	let listGroupBy = $state('');
 	let listSortBy = $state('');
 	let quickActions = $state<EditableQuickAction[]>([]);
+
+	// Mirrors DoneFieldKey() in internal/models/terminal.go:
+	// - only accepts `select` fields (multi_select is rejected — both
+	//   paths only handle scalar string matching)
+	// - requires the key to match the backend's safe-key pattern or the
+	//   server falls back to "status"
+	const activeDoneField = $derived.by(() => {
+		const candidate = (boardGroupBy || '').trim();
+		if (!candidate || !isSafeDoneFieldKey(candidate)) return 'status';
+		const matches = fields.some((f) => f.key.trim() === candidate && f.type === 'select');
+		return matches ? candidate : 'status';
+	});
 
 	// The collection doesn't exist yet, so the preview context falls back to
 	// representative placeholder values. Updates live as the collection name
@@ -471,6 +484,7 @@
 										isNew
 										keyError={keyErrors[i]}
 										collections={collectionOptions}
+										{activeDoneField}
 										onmoveup={() => moveField(i, -1)}
 										onmovedown={() => moveField(i, 1)}
 										onremove={() => removeField(i)}

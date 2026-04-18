@@ -1296,81 +1296,95 @@ func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 // --- Child Item Progress ---
 
 // GetItemProgress counts total and done child items linked to a parent via item_links.
-// "Done" means any terminal status as defined by the child items' collection schemas.
-// Children from any collection count toward progress.
+// "Done" means the child item's done field (resolved from its collection's
+// board_group_by, defaulting to status) matches one of that field's terminal
+// options. Children from any collection count toward progress, and each
+// child is evaluated against its own collection's done rules.
 func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err error) {
-	termPlaceholders, termArgs := s.getChildTerminalPlaceholders(parentItemID)
-	args := append(termArgs, parentItemID)
-	statusExpr := s.dialect.JSONExtractText("i.fields", "status")
+	filters := s.childrenDoneFiltersForParent(parentItemID)
+	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "i")
+	args := append(doneArgs, parentItemID)
 	err = s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT COUNT(*),
-		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
+		       COUNT(CASE WHEN %s THEN 1 END)
 		FROM items i
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		WHERE i.deleted_at IS NULL
-	`, statusExpr, termPlaceholders, childLinkTypeSQL())), args...).Scan(&total, &done)
+	`, doneExpr, childLinkTypeSQL())), args...).Scan(&total, &done)
 	if err != nil {
 		return 0, 0, fmt.Errorf("get item progress: %w", err)
 	}
 	return total, done, nil
 }
 
-// getChildTerminalPlaceholders returns SQL placeholders and args for the terminal
-// statuses of the collections that a parent item's children belong to.
-// It queries the actual child items' collection schemas rather than hardcoding 'tasks'.
-func (s *Store) getChildTerminalPlaceholders(parentItemID string) (string, []any) {
-	// Find distinct collection IDs of child items
+// collectionDoneFilter describes how to evaluate "done" for a single child
+// collection: which JSON key to read, and which values count as terminal.
+type collectionDoneFilter struct {
+	collectionID string
+	doneKey      string
+	values       []string
+}
+
+// childrenDoneFiltersForParent returns a filter per distinct child-item
+// collection under the given parent. Each filter carries the child
+// collection's resolved done field (honoring board_group_by) and terminal
+// values so the caller can build a per-collection OR clause that evaluates
+// each child against its own done rules.
+//
+// Soft-deleted collections are intentionally INCLUDED: progress-counting
+// callers count items regardless of their collection's deleted_at, so
+// excluding the collection here would leave those items without a
+// matching per-collection clause and cause them to always evaluate as
+// non-terminal. The collection row still carries valid schema + settings
+// until a hard delete cascades, so the done rules remain applicable.
+func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDoneFilter {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
-		SELECT DISTINCT c.schema
+		SELECT DISTINCT c.id, c.schema, c.settings
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
-		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
+		WHERE i.deleted_at IS NULL
 	`, childLinkTypeSQL())), parentItemID)
 	if err != nil {
-		return models.DefaultTerminalStatusPlaceholders()
+		return nil
 	}
 	defer rows.Close()
-
-	// Collect terminal statuses from all child collections
-	terminalSet := make(map[string]bool)
-	found := false
-	for rows.Next() {
-		var schemaJSON string
-		if err := rows.Scan(&schemaJSON); err != nil {
-			continue
-		}
-		found = true
-		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
-			continue
-		}
-		for _, ts := range models.TerminalStatusesFromSchema(schema) {
-			terminalSet[strings.ToLower(ts)] = true
-		}
-	}
-
-	if !found || len(terminalSet) == 0 {
-		return models.DefaultTerminalStatusPlaceholders()
-	}
-
-	placeholders := make([]string, 0, len(terminalSet))
-	args := make([]any, 0, len(terminalSet))
-	for ts := range terminalSet {
-		placeholders = append(placeholders, "?")
-		args = append(args, ts)
-	}
-	return strings.Join(placeholders, ","), args
+	return scanCollectionDoneFilters(rows)
 }
 
-// getCollectionChildTerminalPlaceholders returns SQL placeholders and args for the
-// terminal statuses of all child collections linked to parents in the given collection.
-// This is the batch version of getChildTerminalPlaceholders — instead of querying for
-// a single parent, it gathers terminal statuses across all parent→child links in a
-// workspace/collection pair.
-func (s *Store) getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug string) (string, []any) {
+// doneFiltersForWorkspace returns a done-filter per collection in the
+// workspace. Used by cross-collection queries (e.g. agent-role
+// breakdowns) that need to evaluate "is done?" for every item regardless
+// of which collection it belongs to.
+//
+// Includes soft-deleted collections: callers (e.g. GetRoleBreakdown)
+// count items in the workspace without filtering by collection
+// deleted_at, so excluding soft-deleted collections here would leave
+// their items without a matching per-collection clause and cause them
+// to always register as non-terminal.
+func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilter {
+	rows, err := s.db.Query(
+		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),
+		workspaceID,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	return scanCollectionDoneFilters(rows)
+}
+
+// childrenDoneFiltersForCollection is the batch version: it gathers one
+// filter per distinct child-item collection across all parent→child links
+// for parents in a given (workspace, collectionSlug).
+//
+// Includes soft-deleted child collections for the same reason as
+// childrenDoneFiltersForParent — callers count items regardless of their
+// collection's deleted_at, and we want items from soft-deleted
+// collections to still be evaluated against their own done rules.
+func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug string) []collectionDoneFilter {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
-		SELECT DISTINCT c.schema
+		SELECT DISTINCT c.id, c.schema, c.settings
 		FROM items t
 		JOIN collections c ON c.id = t.collection_id
 		JOIN item_links il ON il.source_id = t.id AND il.link_type IN (%s)
@@ -1378,41 +1392,100 @@ func (s *Store) getCollectionChildTerminalPlaceholders(workspaceID, collectionSl
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
 		WHERE p.workspace_id = ?
 		  AND t.deleted_at IS NULL
-		  AND c.deleted_at IS NULL
 	`, childLinkTypeSQL())), collectionSlug, workspaceID)
 	if err != nil {
-		return models.DefaultTerminalStatusPlaceholders()
+		return nil
 	}
 	defer rows.Close()
+	return scanCollectionDoneFilters(rows)
+}
 
-	terminalSet := make(map[string]bool)
-	found := false
+// scanCollectionDoneFilters consumes rows yielding (id, schema, settings)
+// and resolves each into a collectionDoneFilter.
+//
+// When a collection's schema fails to parse we still emit a filter — one
+// that falls back to the `status` field and the global default terminal
+// list. Silently skipping the collection would leave its items without a
+// matching per-collection clause in buildChildrenDoneExpr, so they'd
+// always register as non-terminal in progress / role / starred queries
+// (a malformed schema on one collection would skew counts on every
+// parent-progress computation).
+func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
+	var filters []collectionDoneFilter
 	for rows.Next() {
-		var schemaJSON string
-		if err := rows.Scan(&schemaJSON); err != nil {
+		var id, schemaJSON string
+		var settingsJSON sql.NullString
+		if err := rows.Scan(&id, &schemaJSON, &settingsJSON); err != nil {
 			continue
 		}
-		found = true
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+			// Malformed schema → emit a default-fallback filter so the
+			// collection's items still get evaluated against the status
+			// column + global default terminals. This matches pre-TASK-604
+			// behavior for those items.
+			filters = append(filters, collectionDoneFilter{
+				collectionID: id,
+				doneKey:      "status",
+				values:       models.DefaultTerminalStatuses,
+			})
 			continue
 		}
-		for _, ts := range models.TerminalStatusesFromSchema(schema) {
-			terminalSet[strings.ToLower(ts)] = true
+		var settings models.CollectionSettings
+		if settingsJSON.Valid && settingsJSON.String != "" {
+			_ = json.Unmarshal([]byte(settingsJSON.String), &settings)
 		}
+		key, values := models.TerminalValuesForDoneField(schema, settings)
+		filters = append(filters, collectionDoneFilter{
+			collectionID: id,
+			doneKey:      key,
+			values:       values,
+		})
 	}
+	return filters
+}
 
-	if !found || len(terminalSet) == 0 {
-		return models.DefaultTerminalStatusPlaceholders()
+// buildChildrenDoneExpr compiles a set of per-collection done filters into
+// a single SQL boolean expression plus ordered args. `itemAlias` is the
+// item-table alias in the outer query (e.g. "i" for GetItemProgress, "t"
+// for GetAllItemProgress).
+//
+// Expression shape:
+//   ((<alias>.collection_id = ? AND LOWER(COALESCE(<field_A>, '')) IN (?,?)) OR
+//    (<alias>.collection_id = ? AND LOWER(COALESCE(<field_B>, '')) IN (?,?)))
+//
+// The `<field_X>` JSON extract uses scalar text extraction; this works
+// because DoneFieldKey in the models package only resolves done fields to
+// `select` typed columns (see that function's doc). multi_select-backed
+// done fields would store their values as a JSON array and scalar IN
+// matching would silently miss them — hence the upstream restriction.
+//
+// If no filters were constructed (no child collections discovered, or all
+// of their schemas failed to parse), falls back to checking <alias>.status
+// against the global default terminal list — mirroring the legacy behavior
+// so dashboards for untyped collections keep working.
+func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
+	if len(filters) == 0 {
+		statusExpr := s.dialect.JSONExtractText(itemAlias+".fields", "status")
+		placeholders, args := models.DefaultTerminalStatusPlaceholders()
+		return fmt.Sprintf("LOWER(COALESCE(%s, '')) IN (%s)", statusExpr, placeholders), args
 	}
-
-	placeholders := make([]string, 0, len(terminalSet))
-	args := make([]any, 0, len(terminalSet))
-	for ts := range terminalSet {
-		placeholders = append(placeholders, "?")
-		args = append(args, ts)
+	clauses := make([]string, 0, len(filters))
+	args := make([]any, 0, len(filters)*4)
+	for _, f := range filters {
+		fieldExpr := s.dialect.JSONExtractText(itemAlias+".fields", f.doneKey)
+		placeholders := make([]string, len(f.values))
+		args = append(args, f.collectionID)
+		for i, v := range f.values {
+			placeholders[i] = "?"
+			args = append(args, strings.ToLower(v))
+		}
+		clauses = append(clauses, fmt.Sprintf(
+			"(%s.collection_id = ? AND LOWER(COALESCE(%s, '')) IN (%s))",
+			itemAlias, fieldExpr, strings.Join(placeholders, ","),
+		))
 	}
-	return strings.Join(placeholders, ","), args
+	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
 
 // ItemProgress holds child item completion counts for a single parent item.
@@ -1425,13 +1498,13 @@ type ItemProgress struct {
 // GetAllItemProgress returns child item completion counts for every non-deleted
 // item in the given collection within a workspace.
 func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
-	termPlaceholders, termArgs := s.getCollectionChildTerminalPlaceholders(workspaceID, collectionSlug)
-	args := append(termArgs, workspaceID, collectionSlug)
-	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
+	filters := s.childrenDoneFiltersForCollection(workspaceID, collectionSlug)
+	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "t")
+	args := append(doneArgs, workspaceID, collectionSlug)
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT p.id,
 		       COUNT(t.id),
-		       COUNT(CASE WHEN LOWER(%s) IN (%s) THEN 1 END)
+		       COUNT(CASE WHEN t.id IS NOT NULL AND %s THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id
 		LEFT JOIN item_links il ON il.link_type IN (%s) AND il.target_id = p.id
@@ -1441,7 +1514,7 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 		  AND pc.slug = ?
 		  AND p.deleted_at IS NULL
 		GROUP BY p.id
-	`, tStatusExpr, termPlaceholders, childLinkTypeSQL())), args...)
+	`, doneExpr, childLinkTypeSQL())), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all item progress: %w", err)
 	}

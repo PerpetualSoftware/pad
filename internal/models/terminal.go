@@ -1,31 +1,170 @@
 package models
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
-// DefaultTerminalStatuses is the fallback list used when a collection schema
-// does not declare terminal_options on its status field. This is the union of
-// all historically hardcoded terminal status values across the codebase.
+// safeDoneFieldKey bounds what we'll interpolate into the JSON path of a
+// SQL query (e.g. `json_extract(i.fields, '$.<key>')`). Collection schemas
+// are persisted without backend-side key validation, so a user could in
+// principle store a key containing quotes or path metacharacters; we
+// refuse to resolve done-detection to anything outside this shape and
+// fall back to "status". The pattern mirrors the convention already in
+// use for search filters in internal/server/handlers_search.go.
+var safeDoneFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+// DefaultTerminalStatuses is the fallback list used when a collection's
+// done field has no `terminal_options` declared on its schema. This is the
+// union of all historically hardcoded terminal status values across the
+// codebase.
 var DefaultTerminalStatuses = []string{
 	"done", "completed", "resolved", "cancelled", "rejected",
 	"wontfix", "fixed", "implemented", "archived", "disabled", "deprecated",
 }
 
-// TerminalStatusesFromSchema extracts terminal status options from a
-// CollectionSchema. If the status field has TerminalOptions set, returns
-// those. Otherwise returns DefaultTerminalStatuses.
-func TerminalStatusesFromSchema(schema CollectionSchema) []string {
+// DoneFieldKey resolves which field on a collection's schema represents
+// "is this item done?". The resolution is:
+//
+//  1. If CollectionSettings.BoardGroupBy names a `select` field on the
+//     schema, use that. This lets a collection whose board is organized
+//     by e.g. "resolution" naturally drive done-detection from the same
+//     field.
+//
+//  2. Otherwise, fall back to the literal key "status". Every collection
+//     shipped today groups by status by default, so this preserves
+//     existing behavior for all pre-TASK-604 collections.
+//
+// Only `select` (single-value) is accepted as a done field. `multi_select`
+// stores its values as a JSON array, and both the Go-side membership check
+// and the SQL `IN (…)` filter assume a scalar string — naively accepting
+// multi_select would cause done-detection to silently miss items whose
+// terminal value is one of several in the array. If array semantics are
+// ever needed, they belong in a follow-up task so the Go and SQL paths
+// can be updated together with a clear "any terminal value → done" rule.
+//
+// The function does not assume the resolved key actually exists on the
+// item — callers read `items.fields[key]` and a missing field just means
+// the item is treated as not terminal, which is the safe default.
+func DoneFieldKey(schema CollectionSchema, settings CollectionSettings) string {
+	candidate := strings.TrimSpace(settings.BoardGroupBy)
+	if candidate == "" {
+		return "status"
+	}
+	// Refuse to resolve to a key that would be unsafe to embed in a
+	// SQL JSON path. Callers pass the returned key to dialect-specific
+	// JSONExtractText builders that interpolate it as a string literal;
+	// schema keys are not validated on write, so we validate here.
+	if !safeDoneFieldKey.MatchString(candidate) {
+		return "status"
+	}
 	for _, f := range schema.Fields {
-		if f.Key == "status" && (f.Type == "select" || f.Type == "multi_select") {
+		if f.Key == candidate && f.Type == "select" {
+			return candidate
+		}
+	}
+	return "status"
+}
+
+// TerminalValuesForDoneField returns the resolved done-field key and the
+// list of terminal values for that field. If the resolved field has no
+// terminal_options set on the schema, falls back to DefaultTerminalStatuses
+// so existing collections without schema-declared terminals continue to
+// work.
+func TerminalValuesForDoneField(
+	schema CollectionSchema,
+	settings CollectionSettings,
+) (fieldKey string, values []string) {
+	fieldKey = DoneFieldKey(schema, settings)
+	for _, f := range schema.Fields {
+		// Restricted to `select` — see DoneFieldKey for why multi_select
+		// is deliberately rejected.
+		if f.Key == fieldKey && f.Type == "select" {
 			if len(f.TerminalOptions) > 0 {
-				return f.TerminalOptions
+				return fieldKey, f.TerminalOptions
 			}
 			break
 		}
 	}
-	return DefaultTerminalStatuses
+	return fieldKey, DefaultTerminalStatuses
 }
 
-// IsTerminalStatus checks whether a status string is terminal given a schema.
+// TerminalPlaceholdersForDoneField is a SQL-layer convenience that returns
+// the done-field key plus the placeholder + args pair needed for an IN
+// clause. All values are lowercased to match the WHERE clause pattern used
+// across the codebase (LOWER(json_extract(...)) IN (?, ?, ?)).
+func TerminalPlaceholdersForDoneField(
+	schema CollectionSchema,
+	settings CollectionSettings,
+) (fieldKey string, placeholders string, args []any) {
+	key, values := TerminalValuesForDoneField(schema, settings)
+	ph := make([]string, len(values))
+	ar := make([]any, len(values))
+	for i, v := range values {
+		ph[i] = "?"
+		ar[i] = strings.ToLower(v)
+	}
+	return key, strings.Join(ph, ","), ar
+}
+
+// IsTerminalItem reports whether an item's fields map indicates the item
+// is in a terminal state for its collection. This is the canonical Go-side
+// "is done" check when the caller has both the item's parsed fields and
+// the collection's schema + settings in scope.
+//
+// The value at the resolved done-field key is expected to be a scalar
+// string — DoneFieldKey only resolves to `select` fields, which round-
+// trip through the fields JSON as a single string. Non-string values
+// (e.g. an array from a misconfigured multi_select) return false rather
+// than trying to infer semantics.
+func IsTerminalItem(
+	itemFields map[string]any,
+	schema CollectionSchema,
+	settings CollectionSettings,
+) bool {
+	key, values := TerminalValuesForDoneField(schema, settings)
+	raw, ok := itemFields[key]
+	if !ok {
+		return false
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return false
+	}
+	lower := strings.ToLower(s)
+	for _, v := range values {
+		if strings.ToLower(v) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+// ── Back-compat wrappers ────────────────────────────────────────────────
+// The original API (status-only) stays in place so callers that don't yet
+// have CollectionSettings in scope keep working unchanged. Internally each
+// of these delegates to the new done-field-aware implementation with
+// empty settings — which resolves the done field to "status", matching
+// pre-TASK-604 behavior byte-for-byte.
+
+// TerminalStatusesFromSchema extracts terminal status options from a
+// CollectionSchema. If the `status` field has TerminalOptions set, returns
+// those. Otherwise returns DefaultTerminalStatuses.
+//
+// Deprecated: prefer TerminalValuesForDoneField when settings are in
+// scope. This wrapper forces done-field resolution to the literal
+// "status" key; callers that want to honor the collection's configured
+// board_group_by should migrate to the settings-aware API.
+func TerminalStatusesFromSchema(schema CollectionSchema) []string {
+	_, values := TerminalValuesForDoneField(schema, CollectionSettings{})
+	return values
+}
+
+// IsTerminalStatus checks whether a status string is terminal given a
+// schema. Like the status extract above, this is hardcoded to the `status`
+// field — it takes a pre-extracted status string and checks membership
+// against that field's terminal options. Use when you already know you're
+// working with the status field specifically (e.g. link-payload joins).
 func IsTerminalStatus(status string, schema CollectionSchema) bool {
 	lower := strings.ToLower(status)
 	for _, ts := range TerminalStatusesFromSchema(schema) {
@@ -36,8 +175,8 @@ func IsTerminalStatus(status string, schema CollectionSchema) bool {
 	return false
 }
 
-// IsTerminalStatusDefault checks using the default fallback list (for cases
-// where no collection schema is available).
+// IsTerminalStatusDefault checks using the default fallback list (for
+// cases where no collection schema is available).
 func IsTerminalStatusDefault(status string) bool {
 	lower := strings.ToLower(status)
 	for _, ts := range DefaultTerminalStatuses {
@@ -49,17 +188,12 @@ func IsTerminalStatusDefault(status string) bool {
 }
 
 // TerminalStatusPlaceholders returns a comma-separated placeholder string
-// and the corresponding args slice for use in SQL IN clauses.
-// Example: TerminalStatusPlaceholders(schema) might return ("?,?,?", ["done","cancelled","rejected"])
+// and the corresponding args slice for use in SQL IN clauses. Like the
+// *FromSchema variant it is hardcoded to the `status` field; prefer
+// TerminalPlaceholdersForDoneField when settings are in scope.
 func TerminalStatusPlaceholders(schema CollectionSchema) (string, []any) {
-	statuses := TerminalStatusesFromSchema(schema)
-	placeholders := make([]string, len(statuses))
-	args := make([]any, len(statuses))
-	for i, s := range statuses {
-		placeholders[i] = "?"
-		args[i] = strings.ToLower(s)
-	}
-	return strings.Join(placeholders, ","), args
+	_, placeholders, args := TerminalPlaceholdersForDoneField(schema, CollectionSettings{})
+	return placeholders, args
 }
 
 // DefaultTerminalStatusPlaceholders returns placeholders and args for the

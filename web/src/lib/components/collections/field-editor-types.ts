@@ -314,6 +314,26 @@ export function defaultsEqual(a: unknown, b: unknown): boolean {
 	}
 }
 
+/**
+ * Matches the backend's `safeDoneFieldKey` regex in
+ * `internal/models/terminal.go`. A done-field candidate must be an
+ * identifier-shaped string the backend will accept, or it falls back to
+ * the literal "status" there — the UI needs to mirror that or it can
+ * falsely light up an "Active" pill on a field the server has actually
+ * rejected (e.g. legacy schemas with keys like `foo.bar` or
+ * `resolution-v2`).
+ */
+const SAFE_DONE_FIELD_KEY = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * Returns true if the given key would be accepted by the backend's
+ * DoneFieldKey resolver. Used by the collection modals' `activeDoneField`
+ * derivations to keep UI state in sync with persisted behavior.
+ */
+export function isSafeDoneFieldKey(key: string): boolean {
+	return SAFE_DONE_FIELD_KEY.test(key);
+}
+
 /** Create an empty EditableField for a new (unsaved) field. */
 export function blankField(): EditableField {
 	return {

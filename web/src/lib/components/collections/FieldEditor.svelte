@@ -42,6 +42,16 @@
 		 * picker renders an empty-state hint.
 		 */
 		collections?: CollectionOption[];
+		/**
+		 * Which field key is the "done" field for the collection (TASK-604).
+		 * This comes from settings.board_group_by via the parent modal. When
+		 * this field's key matches activeDoneField, its terminal markings
+		 * actually drive backend done-detection. For every other select
+		 * field the markings are still editable (so users can pre-configure
+		 * and then switch the board's group-by to activate them) but the
+		 * column header renders as "Saved" instead of "Active".
+		 */
+		activeDoneField?: string;
 		/** Optional: parent provides a move-up handler. If omitted, the button is hidden. */
 		onmoveup?: () => void;
 		/** Optional: parent provides a move-down handler. If omitted, the button is hidden. */
@@ -57,6 +67,7 @@
 		isNew = false,
 		keyError = null,
 		collections = [],
+		activeDoneField = 'status',
 		onmoveup,
 		onmovedown,
 		onremove
@@ -67,10 +78,16 @@
 
 	// Terminal-option toggle: available on any select/multi_select field
 	// that has at least one option. Marking an option as terminal persists
-	// it on the FieldDef's terminal_options; the semantics of how the
-	// backend uses it for done-detection are currently status-centric and
-	// are being generalized in TASK-604 (cross-field done-detection).
+	// it on the FieldDef's terminal_options.
 	const showsTerminalColumn = $derived(isSelectType && field.options.length > 0);
+
+	// Which field drives done-detection for this collection (TASK-604).
+	// When this field IS the active done field, its terminal markings are
+	// live. Otherwise they're saved on the schema but dormant — a hint to
+	// the user explains what needs to change to activate them.
+	// Restricted to `select` (not multi_select) to match the backend
+	// DoneFieldKey() resolution rule.
+	const isActiveDoneField = $derived(field.type === 'select' && field.key === activeDoneField);
 
 	// Auto-derive the key from the label for new fields, unless the user has
 	// manually edited the key. Once `keyTouched` flips to true the user owns
@@ -290,14 +307,30 @@
 				<div class="options-col-headers">
 					<span class="options-col-label">Options</span>
 					<span
-						class="options-col-terminal"
-						title={'Mark options that mean "done" or "closed". ' +
-							'Today only the status field drives dashboard filtering, progress bars, and ' +
-							'changelog — markings on other fields are saved on the schema for API ' +
-							'consumers and future cross-field done-detection.'}
-					>Done?</span>
+						class="options-col-terminal-group"
+						title={isActiveDoneField
+							? 'Mark options that mean "done" or "closed". These values drive ' +
+								'dashboard filtering, progress bars, and changelog because this field is ' +
+								'the collection\u2019s board group-by.'
+							: 'Saved terminal markings. They don\u2019t drive aggregation right now — ' +
+								'this field isn\u2019t the collection\u2019s board group-by. Set this ' +
+								'field in the Display tab\u2019s "Board group by" to activate them.'}
+					>
+						<span class="options-col-terminal">Done?</span>
+						{#if isActiveDoneField}
+							<span class="done-pill done-pill--active">Active</span>
+						{:else}
+							<span class="done-pill done-pill--saved">Saved</span>
+						{/if}
+					</span>
 					<span class="options-col-spacer"></span>
 				</div>
+				{#if !isActiveDoneField}
+					<p class="done-field-hint">
+						Markings are saved. Switch the board group-by to
+						<code>{field.key}</code> to make them drive done-detection.
+					</p>
+				{/if}
 			{/if}
 			<div class="options-rows">
 				{#each field.options as _opt, oi (oi)}
@@ -729,6 +762,12 @@
 		color: var(--text-muted);
 	}
 
+	.options-col-terminal-group {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+
 	.options-col-terminal {
 		width: 40px;
 		text-align: center;
@@ -737,6 +776,44 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
+	}
+
+	.done-pill {
+		font-size: 0.62em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 1px 6px;
+		border-radius: 999px;
+		border: 1px solid transparent;
+	}
+
+	.done-pill--active {
+		color: var(--accent-green, #22c55e);
+		background: color-mix(in srgb, var(--accent-green, #22c55e) 14%, transparent);
+		border-color: color-mix(in srgb, var(--accent-green, #22c55e) 30%, transparent);
+	}
+
+	.done-pill--saved {
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+	}
+
+	.done-field-hint {
+		margin: 0 0 var(--space-1);
+		font-size: 0.72em;
+		line-height: 1.4;
+		color: var(--text-muted);
+		font-style: italic;
+	}
+
+	.done-field-hint code {
+		font-family: var(--font-mono);
+		font-style: normal;
+		padding: 0 4px;
+		background: var(--bg-secondary);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
 	}
 
 	.options-col-spacer {

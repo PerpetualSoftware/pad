@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -179,20 +178,22 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		return nil, err
 	}
 
-	// Count non-terminal items per role (exclude done/completed/etc. to match board view)
-	termPlaceholders, termArgs := models.DefaultTerminalStatusPlaceholders()
-	roleCountArgs := append([]any{workspaceID}, termArgs...)
-	jsonExtractStatus := s.dialect.JSONExtractText("i.fields", "status")
+	// Count non-terminal items per role using each collection's own
+	// configured done field (board_group_by, defaulting to status). The
+	// expression becomes an OR of per-collection clauses; negating
+	// filters to items that are NOT in a terminal state.
+	filters := s.doneFiltersForWorkspace(workspaceID)
+	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "i")
+	roleCountArgs := append([]any{workspaceID}, doneArgs...)
 	groupConcatUsers := s.dialect.GroupConcat("u.name", true)
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT i.agent_role_id, COUNT(*) as cnt, %s as users
 		FROM items i
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		  AND LOWER(COALESCE(%s, '')) NOT IN
-		      (%s)
+		  AND NOT %s
 		GROUP BY i.agent_role_id
-	`, groupConcatUsers, jsonExtractStatus, termPlaceholders)), roleCountArgs...)
+	`, groupConcatUsers, doneExpr)), roleCountArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("role breakdown: %w", err)
 	}
@@ -298,19 +299,17 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 		return nil, err
 	}
 
-	// Filter out terminal-status items
+	// Filter out terminal-state items using each collection's configured
+	// done field. buildCollectionDoneContextMap loads (schema, settings)
+	// for every collection in the workspace once so we don't re-parse
+	// per item.
+	ctxMap, err := s.buildCollectionDoneContextMap(workspaceID)
+	if err != nil {
+		ctxMap = nil // falls through to status-based default list
+	}
 	var activeItems []models.Item
 	for _, item := range allItems {
-		status := ""
-		if item.Fields != "" && item.Fields != "{}" {
-			var fields map[string]interface{}
-			if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
-				if v, ok := fields["status"].(string); ok {
-					status = v
-				}
-			}
-		}
-		if !models.IsTerminalStatusDefault(status) {
+		if !isTerminalWithContext(item.Fields, item.CollectionID, ctxMap) {
 			activeItems = append(activeItems, item)
 		}
 	}
