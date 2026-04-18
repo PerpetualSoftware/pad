@@ -204,10 +204,15 @@ func hiringFeedbackCollection(sortOrder int) DefaultCollection {
 			},
 		},
 		Settings: models.CollectionSettings{
-			Layout:       "content-primary",
-			DefaultView:  "list",
-			ListSortBy:   "updated_at",
-			BoardGroupBy: "recommendation",
+			Layout:      "content-primary",
+			DefaultView: "list",
+			ListSortBy:  "updated_at",
+			// Group by "submitted" so the done-state pipeline
+			// (DoneFieldKey/TerminalValuesForDoneField) lines up with the
+			// completion signal for feedback items. Recommendation is a
+			// quality dimension, not a done signal — grouping on it would
+			// leave submitted feedback perpetually counted as active.
+			BoardGroupBy: "submitted",
 		},
 	}
 }
