@@ -41,8 +41,17 @@
 	}
 
 	async function loadPlaybooksCollection(ws: string) {
-		try { playbooksCollection = await api.collections.get(ws, 'playbooks'); }
-		catch { playbooksCollection = null; }
+		try {
+			const coll = await api.collections.get(ws, 'playbooks');
+			// Guard against stale responses: if the workspace changed while this
+			// request was in flight, drop the result rather than overwriting
+			// state with schema from the previous workspace.
+			if (ws !== wsSlug) return;
+			playbooksCollection = coll;
+		} catch {
+			if (ws !== wsSlug) return;
+			playbooksCollection = null;
+		}
 	}
 
 	let schemaTriggers = $derived.by<readonly string[]>(() => {

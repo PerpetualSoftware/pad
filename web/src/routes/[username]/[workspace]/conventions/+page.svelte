@@ -77,8 +77,14 @@
 
 	async function loadConventionsCollection(ws: string) {
 		try {
-			conventionsCollection = await api.collections.get(ws, 'conventions');
+			const coll = await api.collections.get(ws, 'conventions');
+			// Guard against stale responses: if the workspace changed while this
+			// request was in flight, drop the result rather than overwriting
+			// state with schema from the previous workspace.
+			if (ws !== workspace) return;
+			conventionsCollection = coll;
 		} catch {
+			if (ws !== workspace) return;
 			conventionsCollection = null;
 		}
 	}
