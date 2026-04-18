@@ -407,13 +407,20 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	}
 
 	// seedItem creates a seed item in the given collection, but only if that
-	// collection was freshly created in this call. Silently no-ops otherwise.
+	// collection was freshly created in this call. No-op when the target
+	// collection wasn't created here (avoids duplicating on re-seed) or
+	// when the template references a slug that isn't among its collections
+	// (a template authoring mistake, not a runtime problem). Real DB errors
+	// during the lookup are propagated so a partial init can be detected.
 	seedItem := func(collSlug, title, content, fields string) error {
 		if !freshlyCreated[collSlug] {
 			return nil
 		}
 		coll, err := s.GetCollectionBySlug(workspaceID, collSlug)
-		if err != nil || coll == nil {
+		if err != nil {
+			return fmt.Errorf("lookup %s collection for seeding %q: %w", collSlug, title, err)
+		}
+		if coll == nil {
 			return nil
 		}
 		_, err = s.CreateItem(workspaceID, coll.ID, models.ItemCreate{
