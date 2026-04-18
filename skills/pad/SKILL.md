@@ -164,19 +164,23 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 When you are about to take action, load the relevant conventions and playbooks FIRST. The shape is always the same: match the trigger to the action you're about to take.
 
-**Trigger vocabulary is workspace-defined.** Each template ships its own set — software workspaces have triggers like `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. Inspect the Conventions collection schema (via `pad collection list --format json`) to see the available triggers for the current workspace.
+**Trigger vocabulary is workspace-defined and differs between conventions and playbooks.** Each template ships its own set — software conventions include `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`, `always`; software playbooks include those plus `on-triage`, `on-release`, `on-review`, `on-deploy`, `manual`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. **Inspect BOTH the Conventions and Playbooks collection schemas** (via `pad collection list --format json`) to see the available triggers for the current workspace before loading by trigger.
 
-If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone):
+If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone). Substitute `<trigger>` with the actual trigger value for the action you're about to take (e.g. `on-implement`, `on-candidate-advance`):
 
 ```bash
-# Example: before taking action X, with role "implementer" active (software workspace):
-pad item list conventions --field trigger=on-X --field status=active --field role=implementer --format json  # Role-specific
-pad item list conventions --field trigger=on-X --field status=active --format json                          # All (includes global)
-pad item list playbooks  --field trigger=on-X --field status=active --format json
+# Template — replace <trigger> with a concrete value from the workspace's schema:
+pad item list conventions --field trigger=<trigger> --field status=active --field role=<role> --format json  # Role-specific
+pad item list conventions --field trigger=<trigger> --field status=active --format json                      # All (includes global)
+pad item list playbooks  --field trigger=<trigger> --field status=active --format json
 
-# Common software-workspace triggers:
-#   on-implement, on-task-complete, on-pr-create, on-commit, on-plan, on-review, on-deploy
-# Always-on conventions (scope=all, trigger=always) apply regardless of action.
+# Concrete examples in a software workspace (role="implementer"):
+pad item list conventions --field trigger=on-implement --field status=active --format json
+pad item list conventions --field trigger=on-commit    --field status=active --format json
+pad item list playbooks   --field trigger=on-review    --field status=active --format json
+
+# Always-on conventions apply regardless of action:
+pad item list conventions --field trigger=always --field status=active --format json
 ```
 
 When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
