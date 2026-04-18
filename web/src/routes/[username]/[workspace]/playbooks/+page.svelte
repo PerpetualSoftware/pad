@@ -41,11 +41,17 @@
 	}
 
 	async function loadPlaybooksCollection(ws: string) {
+		// Clear any previous workspace's schema before the fetch. Until the
+		// new response lands, createTriggers/createScopes fall back to the
+		// hardcoded software defaults — correct for a workspace whose schema
+		// we have not yet observed. Prevents the in-flight window from
+		// rendering the previous workspace's vocabulary on the new page.
+		playbooksCollection = null;
 		try {
 			const coll = await api.collections.get(ws, 'playbooks');
-			// Guard against stale responses: if the workspace changed while this
-			// request was in flight, drop the result rather than overwriting
-			// state with schema from the previous workspace.
+			// Stale-response guard: if the user has since moved to another
+			// workspace, drop the result rather than overwriting state with
+			// schema from a workspace we are no longer on.
 			if (ws !== wsSlug) return;
 			playbooksCollection = coll;
 		} catch {
