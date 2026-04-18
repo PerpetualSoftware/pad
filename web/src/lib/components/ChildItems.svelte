@@ -248,6 +248,33 @@
 
 	{/if}
 </div>
+
+<!-- Print-only flat checklist (PLAN-620 / TASK-624). Hidden on screen;
+     visible in print via @media print rule below. The interactive
+     `.child-items` view is hidden in print so this takes its place. -->
+{#if !loading && children.length > 0}
+	<div class="print-children" aria-hidden="true">
+		<div class="print-children-header">
+			Children ({doneCount}/{totalCount} done)
+		</div>
+		<ul class="print-child-list">
+			{#each children as child (child.id)}
+				{@const childFields = parseFields(child)}
+				{@const isDone = terminal.includes(childFields.status)}
+				<li class="print-child-row" class:done={isDone}>
+					<span class="print-check">{isDone ? '[x]' : '[ ]'}</span>
+					{#if formatItemRef(child)}
+						<span class="print-child-ref">{formatItemRef(child)}</span>
+					{/if}
+					<span class="print-child-title">{child.title}</span>
+					{#if childFields.status}
+						<span class="print-child-status">({formatLabel(childFields.status)})</span>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+	</div>
+{/if}
 {/if}
 
 <style>
@@ -451,6 +478,82 @@
 		color: var(--accent-red, #ef4444);
 		border-radius: var(--radius);
 		font-size: 0.85em;
+	}
+
+	/* -----------------------------------------------------------------
+	   Print-only flat checklist (PLAN-620 / TASK-624).
+	   Hidden on screen. In print:
+	     - hide the interactive `.child-items` view (chart, drag-drop
+	       groups, expand toggles, progress bar) since those rely on
+	       state and controls that have no meaning on paper;
+	     - show a plain `<ul>` of children in a simple checkbox layout:
+	         [x] TASK-621 · Title (done)
+	         [ ] TASK-622 · Title (in progress)
+	     - the block is `break-inside: avoid` where it fits so the list
+	       doesn't split across pages.
+	   ----------------------------------------------------------------- */
+	.print-children {
+		display: none;
+	}
+
+	@media print {
+		.child-items {
+			display: none !important;
+		}
+
+		.print-children {
+			display: block;
+			margin: 14pt 0 0 0;
+			padding-top: 8pt;
+			border-top: 1px solid #ccc;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+		.print-children-header {
+			font-size: 10pt;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			color: #333;
+			margin: 0 0 6pt 0;
+		}
+		.print-child-list {
+			list-style: none;
+			padding: 0;
+			margin: 0;
+		}
+		.print-child-row {
+			font-size: 10pt;
+			line-height: 1.45;
+			padding: 1pt 0;
+			color: #000;
+			break-inside: avoid;
+		}
+		.print-check {
+			display: inline-block;
+			width: 15pt;
+			font-family: var(--font-mono);
+			color: #000;
+			font-weight: 500;
+		}
+		.print-child-ref {
+			font-weight: 500;
+			margin-right: 4pt;
+			color: #333;
+			font-variant-numeric: tabular-nums;
+		}
+		.print-child-title {
+			color: #000;
+		}
+		.print-child-row.done .print-child-title {
+			color: #555;
+		}
+		.print-child-status {
+			color: #777;
+			margin-left: 4pt;
+			font-size: 9pt;
+			font-style: italic;
+		}
 	}
 
 </style>
