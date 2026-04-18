@@ -400,16 +400,26 @@ input:focus, textarea:focus {
 
 	/* Links: keep the colored style AND append the URL inline so a printed
 	   page still carries the reference. Skip internal wiki-links (which
-	   resolve to the printed document's siblings) and fragment-only links. */
+	   resolve to the printed document's siblings) and fragment-only links.
+	   Note: rich-editor links are rendered via Tiptap's SafeLink extension
+	   using `data-href` instead of `href`, so we target both. */
 	.prose a[href]::after {
 		content: " (" attr(href) ")";
 		font-size: 0.85em;
 		color: #555;
 		word-break: break-all;
 	}
+	.prose a[data-href]::after {
+		content: " (" attr(data-href) ")";
+		font-size: 0.85em;
+		color: #555;
+		word-break: break-all;
+	}
 	.prose a[href^="#"]::after,
+	.prose a[data-href^="#"]::after,
 	.prose a.doc-link::after,
-	.prose a.editor-link[href^="/"]::after {
+	.prose a.editor-link[href^="/"]::after,
+	.prose a.editor-link[data-href^="/"]::after {
 		content: "";
 	}
 
