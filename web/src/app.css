@@ -275,3 +275,101 @@ input:focus, textarea:focus {
 	}
 }
 
+/* ============================================================================
+   Print styles (PLAN-620 / TASK-621).
+   Tune Ctrl/Cmd+P output so users can save any Pad page as a clean PDF.
+   This file handles LAYOUT-LEVEL concerns:
+     - hide the workspace chrome (sidebar, top bar, modals, floating UI)
+     - force a light color palette regardless of the active theme
+     - unlock the fixed 100vh / overflow:hidden app shell so content flows
+       across pages in the print preview
+   Item-level formatting (title, properties block, markdown body, header /
+   footer rules, child-item checklist) is layered on top in tasks 622–624.
+   ============================================================================ */
+
+@media print {
+	/* Force a light color palette for print regardless of the active theme.
+	   We only need to pin the color variables; spacing / radii stay. */
+	:root,
+	:root[data-theme="dark"],
+	:root[data-theme="light"] {
+		--bg-primary: #ffffff;
+		--bg-secondary: #ffffff;
+		--bg-tertiary: #f5f5f5;
+		--bg-hover: transparent;
+		--bg-active: transparent;
+		--text-primary: #000000;
+		--text-secondary: #222222;
+		--text-muted: #555555;
+		--border: #cccccc;
+		--border-subtle: #dddddd;
+	}
+
+	html, body {
+		height: auto;
+		background: #ffffff !important;
+		color: #000000 !important;
+		font-size: 11pt;
+	}
+
+	/* Unlock the screen shell — it uses height: 100vh / overflow: hidden
+	   to keep the sidebar + main column pinned. In print we need the
+	   content to flow naturally across pages. */
+	.app-layout,
+	.app-shell {
+		display: block !important;
+		height: auto !important;
+		max-height: none !important;
+		overflow: visible !important;
+	}
+	.main-content {
+		flex: none !important;
+		width: 100% !important;
+		min-width: 0 !important;
+		overflow: visible !important;
+	}
+
+	/* Hide the workspace chrome. */
+	.sidebar,
+	.topbar,
+	.sidebar-expand-btn,
+	.topbar-expand-btn,
+	.mobile-header,
+	.hamburger,
+	.toast-container,
+	.overlay,
+	.palette,
+	.modal,
+	.modal-backdrop {
+		display: none !important;
+	}
+
+	/* Modals / dialogs / tooltips. Most KeyboardShortcuts-style overlays
+	   carry role="dialog" on the backdrop. */
+	[role="dialog"],
+	[role="tooltip"],
+	[role="menu"] {
+		display: none !important;
+	}
+
+	/* Opt-in: any element tagged with data-print-hide disappears in print.
+	   Components can use this to strip interactive affordances (edit buttons,
+	   status pickers, hover cards, etc.) without needing a new CSS rule. */
+	[data-print-hide] {
+		display: none !important;
+	}
+
+	/* Strip decorative shadows, gradients, and background images. */
+	* {
+		box-shadow: none !important;
+		text-shadow: none !important;
+		background-image: none !important;
+	}
+
+	/* Sensible default page margins. Task 623 refines this with @page
+	   at-rules + a rendered header / footer. */
+	@page {
+		margin: 0.75in;
+	}
+}
+
