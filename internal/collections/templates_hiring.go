@@ -11,7 +11,7 @@ var (
 	HiringConventionTriggers = []string{"always", "on-candidate-advance", "on-loop-scheduled", "on-feedback-submitted", "on-offer-extended", "on-close-requisition"}
 	HiringConventionScopes   = []string{"all", "sourcing", "screening", "interviewing", "offers"}
 	HiringPlaybookTriggers   = []string{"on-candidate-advance", "on-interview-scheduled", "on-feedback-submitted", "on-close-requisition", "manual"}
-	HiringPlaybookScopes     = []string{"all", "sourcing", "screening", "interviewing"}
+	HiringPlaybookScopes     = []string{"all", "sourcing", "screening", "interviewing", "offers"}
 )
 
 // hiringTemplate builds the "hiring" workspace template. Company-side

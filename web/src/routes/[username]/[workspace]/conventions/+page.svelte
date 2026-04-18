@@ -73,6 +73,22 @@
 
 	let hasActiveFilters = $derived(searchQuery !== '' || filterScope !== '' || filterPriority !== '');
 
+	// Expose the union of SURFACES plus any scopes discovered on loaded items,
+	// so filter dropdowns show scopes from non-software templates (e.g. hiring's
+	// sourcing/screening/interviewing/offers). Create form still uses narrow SURFACES.
+	let allSurfaces = $derived.by(() => {
+		const known = new Set<string>(SURFACES as readonly string[]);
+		const extra = new Set<string>();
+		for (const c of conventions) {
+			const s = getPrimarySurface(c);
+			if (s && !known.has(s)) extra.add(s);
+		}
+		return [
+			...(SURFACES as readonly string[]),
+			...Array.from(extra).sort(),
+		];
+	});
+
 	let filtered = $derived.by(() => {
 		let items = conventions;
 		if (searchQuery) {
@@ -376,7 +392,7 @@
 				/>
 				<select class="filter-select" bind:value={filterScope}>
 					<option value="">All scopes</option>
-					{#each SURFACES as s (s)}<option value={s}>{s}</option>{/each}
+					{#each allSurfaces as s (s)}<option value={s}>{s}</option>{/each}
 				</select>
 				<select class="filter-select" bind:value={filterPriority}>
 					<option value="">All priorities</option>
