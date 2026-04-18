@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
+
+// errReader returns a fixed error on every Read — used to simulate
+// non-EOF read failures (e.g. EIO on a detached PTY).
+type errReader struct{ err error }
+
+func (r *errReader) Read(_ []byte) (int, error) { return 0, r.err }
 
 // TestPickTemplateInteractiveDefault verifies that pressing enter without
 // a number selects the default template (startup).
@@ -61,6 +68,24 @@ func TestPickTemplateInteractiveRetriesOnInvalid(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Invalid choice") {
 		t.Errorf("expected 'Invalid choice' message in output, got:\n%s", out.String())
+	}
+}
+
+// TestPickTemplateInteractiveSurfacesNonEOFReadErrors verifies that a
+// non-EOF read failure aborts the picker rather than silently defaulting
+// to the startup template.
+func TestPickTemplateInteractiveSurfacesNonEOFReadErrors(t *testing.T) {
+	var out bytes.Buffer
+	sentinel := errors.New("simulated EIO")
+	picked, err := pickTemplateInteractive(&errReader{err: sentinel}, &out)
+	if err == nil {
+		t.Fatalf("expected read error to propagate, got picked=%q err=nil", picked)
+	}
+	if picked != "" {
+		t.Errorf("expected empty picked on error, got %q", picked)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel error, got %v", err)
 	}
 }
 
