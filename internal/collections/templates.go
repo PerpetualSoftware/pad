@@ -1,6 +1,10 @@
 package collections
 
-import "github.com/xarmian/pad/internal/models"
+import (
+	"encoding/json"
+
+	"github.com/xarmian/pad/internal/models"
+)
 
 // Template categories. Templates are grouped in the picker by category so
 // users can find the right starting point regardless of whether they are
@@ -85,6 +89,88 @@ func docsCollection(sortOrder int) DefaultCollection {
 			ListGroupBy: "category",
 		},
 	}
+}
+
+// softwareStarterConventionTitles names the library conventions that ship in
+// the software templates' starter pack. This is a deliberately small, safe
+// subset — the full library remains available for interactive activation
+// during onboarding.
+var softwareStarterConventionTitles = []string{
+	"Conventional commit format",
+	"Never push directly to main",
+	"Run tests before completing tasks",
+	"Review your own changes before PR",
+}
+
+// softwareStarterPlaybookTitles names the library playbooks that ship in the
+// software templates' starter pack.
+var softwareStarterPlaybookTitles = []string{
+	"Implementation Workflow",
+	"Code Review Process",
+}
+
+// seedConventionFromLibrary converts a LibraryConvention into a SeedConvention
+// by marshaling its domain-specific fields (status, trigger, scope, priority)
+// into the JSON shape expected by the conventions collection.
+func seedConventionFromLibrary(c LibraryConvention) SeedConvention {
+	scope := "all"
+	if len(c.Surfaces) > 0 {
+		scope = c.Surfaces[0]
+	}
+	fields, _ := json.Marshal(map[string]string{
+		"status":   "active",
+		"trigger":  c.Trigger,
+		"scope":    scope,
+		"priority": c.Enforcement,
+	})
+	return SeedConvention{
+		Title:   c.Title,
+		Content: c.Content,
+		Fields:  string(fields),
+	}
+}
+
+// seedPlaybookFromLibrary converts a LibraryPlaybook into a SeedPlaybook.
+func seedPlaybookFromLibrary(p LibraryPlaybook) SeedPlaybook {
+	scope := p.Scope
+	if scope == "" {
+		scope = "all"
+	}
+	fields, _ := json.Marshal(map[string]string{
+		"status":  "active",
+		"trigger": p.Trigger,
+		"scope":   scope,
+	})
+	return SeedPlaybook{
+		Title:   p.Title,
+		Content: p.Content,
+		Fields:  string(fields),
+	}
+}
+
+// SoftwareStarterConventions returns the curated convention seed pack for
+// software workspaces. Titles are pulled from ConventionLibrary so the text
+// stays in sync with the library automatically.
+func SoftwareStarterConventions() []SeedConvention {
+	out := make([]SeedConvention, 0, len(softwareStarterConventionTitles))
+	for _, title := range softwareStarterConventionTitles {
+		if c := GetLibraryConvention(title); c != nil {
+			out = append(out, seedConventionFromLibrary(*c))
+		}
+	}
+	return out
+}
+
+// SoftwareStarterPlaybooks returns the curated playbook seed pack for software
+// workspaces.
+func SoftwareStarterPlaybooks() []SeedPlaybook {
+	out := make([]SeedPlaybook, 0, len(softwareStarterPlaybookTitles))
+	for _, title := range softwareStarterPlaybookTitles {
+		if p := GetLibraryPlaybook(title); p != nil {
+			out = append(out, seedPlaybookFromLibrary(*p))
+		}
+	}
+	return out
 }
 
 // Software-domain defaults for the Conventions and Playbooks collections.
@@ -215,6 +301,8 @@ var templates = []WorkspaceTemplate{
 		Description: "Tasks, Ideas, Plans, Docs, Conventions, Playbooks",
 		Icon:        "\U0001F680", // 🚀
 		Collections: Defaults(),
+		Conventions: SoftwareStarterConventions(),
+		Playbooks:   SoftwareStarterPlaybooks(),
 	},
 	{
 		Name:        "scrum",
@@ -348,6 +436,8 @@ var templates = []WorkspaceTemplate{
 			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
+		Conventions: SoftwareStarterConventions(),
+		Playbooks:   SoftwareStarterPlaybooks(),
 	},
 	{
 		Name:        "product",
@@ -476,6 +566,8 @@ var templates = []WorkspaceTemplate{
 			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
+		Conventions: SoftwareStarterConventions(),
+		Playbooks:   SoftwareStarterPlaybooks(),
 	},
 	{
 		Name:        "demo",

@@ -240,6 +240,78 @@ func TestSeedCollectionsFromTemplateAddsConventionsRoleField(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateSeedsStarterPack verifies that the software
+// templates' starter conventions + playbooks are materialized as items in
+// the newly-created conventions/playbooks collections. This is what makes
+// templates "batteries included" rather than empty shells.
+func TestSeedCollectionsFromTemplateSeedsStarterPack(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Starter Pack")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed error: %v", err)
+	}
+
+	convColl, err := s.GetCollectionBySlug(ws.ID, "conventions")
+	if err != nil || convColl == nil {
+		t.Fatalf("conventions collection missing: %v", err)
+	}
+	convItems, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if err != nil {
+		t.Fatalf("list conventions items: %v", err)
+	}
+	if len(convItems) == 0 {
+		t.Errorf("expected starter conventions to be seeded, got 0 items")
+	}
+
+	playColl, err := s.GetCollectionBySlug(ws.ID, "playbooks")
+	if err != nil || playColl == nil {
+		t.Fatalf("playbooks collection missing: %v", err)
+	}
+	playItems, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "playbooks"})
+	if err != nil {
+		t.Fatalf("list playbooks items: %v", err)
+	}
+	if len(playItems) == 0 {
+		t.Errorf("expected starter playbooks to be seeded, got 0 items")
+	}
+}
+
+// TestSeedCollectionsFromTemplateIdempotentWithSeedItems verifies that re-running
+// the seed function across a pre-existing workspace does NOT duplicate seed items.
+// This invariant is what lets the server's startup auto-upgrade safely iterate
+// every workspace without creating duplicate convention/playbook items each boot.
+func TestSeedCollectionsFromTemplateIdempotentWithSeedItems(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Idempotent")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("first seed error: %v", err)
+	}
+
+	before, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if err != nil {
+		t.Fatalf("list conventions: %v", err)
+	}
+	initialCount := len(before)
+	if initialCount == 0 {
+		t.Fatalf("expected starter conventions after first seed")
+	}
+
+	// Re-seed — simulates the server's startup auto-upgrade running again.
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("second seed error: %v", err)
+	}
+
+	after, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if err != nil {
+		t.Fatalf("list conventions after re-seed: %v", err)
+	}
+	if len(after) != initialCount {
+		t.Errorf("re-seed duplicated conventions: before=%d, after=%d", initialCount, len(after))
+	}
+}
+
 // --- Item Tests ---
 
 func TestItemCRUD(t *testing.T) {

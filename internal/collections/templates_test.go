@@ -133,6 +133,56 @@ func TestConventionsCollectionDefensivelyCopiesOptions(t *testing.T) {
 	}
 }
 
+// TestSoftwareStarterPacksPopulated verifies that the software templates ship
+// a non-empty starter convention + playbook pack. If SoftwareStarterConventions
+// returns nothing, the library titles have drifted from softwareStarterConventionTitles
+// and a silent regression would leave new workspaces unseeded.
+func TestSoftwareStarterPacksPopulated(t *testing.T) {
+	convs := SoftwareStarterConventions()
+	if len(convs) == 0 {
+		t.Error("SoftwareStarterConventions returned empty slice — library titles may have drifted")
+	}
+	if len(convs) != len(softwareStarterConventionTitles) {
+		t.Errorf("SoftwareStarterConventions returned %d items, want %d — at least one title is unknown in the library", len(convs), len(softwareStarterConventionTitles))
+	}
+	plays := SoftwareStarterPlaybooks()
+	if len(plays) == 0 {
+		t.Error("SoftwareStarterPlaybooks returned empty slice — library titles may have drifted")
+	}
+	if len(plays) != len(softwareStarterPlaybookTitles) {
+		t.Errorf("SoftwareStarterPlaybooks returned %d items, want %d", len(plays), len(softwareStarterPlaybookTitles))
+	}
+
+	// Verify every seed has a valid, JSON-parseable Fields payload.
+	for _, c := range convs {
+		if c.Fields == "" {
+			t.Errorf("convention %q has empty Fields", c.Title)
+		}
+	}
+	for _, p := range plays {
+		if p.Fields == "" {
+			t.Errorf("playbook %q has empty Fields", p.Title)
+		}
+	}
+}
+
+// TestSoftwareTemplatesShipStarterPacks verifies the software templates
+// actually reference the starter packs on their struct.
+func TestSoftwareTemplatesShipStarterPacks(t *testing.T) {
+	for _, name := range []string{"startup", "scrum", "product"} {
+		tmpl := GetTemplate(name)
+		if tmpl == nil {
+			t.Fatalf("software template %q missing", name)
+		}
+		if len(tmpl.Conventions) == 0 {
+			t.Errorf("template %q ships no starter conventions", name)
+		}
+		if len(tmpl.Playbooks) == 0 {
+			t.Errorf("template %q ships no starter playbooks", name)
+		}
+	}
+}
+
 // TestSoftwareTemplatesUseSoftwareOptions verifies the startup/scrum/product
 // templates continue to ship the established software trigger vocabulary. If
 // these lists ever diverge, non-software templates are free to differ, but

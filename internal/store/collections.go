@@ -335,14 +335,27 @@ func (s *Store) SeedDefaultCollections(workspaceID string) error {
 }
 
 // SeedCollectionsFromTemplate seeds the workspace with collections from the
-// named template. An empty or "startup" template name uses the default
-// collections. Returns an error if the template name is not recognized.
+// named template. An empty template name materializes the default collections
+// without any seed items or starter pack — this preserves backward
+// compatibility for callers that don't opt into a template (including the
+// server-side auto-upgrade path that re-runs on every boot). An explicit
+// template name (including "startup") additionally seeds the template's
+// SeedItems, Conventions, and Playbooks as items in the new workspace.
+//
+// Seeding is idempotent with respect to collections (existing collections are
+// skipped) and with respect to seed items / conventions / playbooks (those
+// are only created in collections that were freshly created during this
+// call). That invariant is what lets the server safely re-run this function
+// across every workspace on startup without duplicating items.
 func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName string) error {
 	var defs []collections.DefaultCollection
 	var seedItems []collections.SeedItem
+	var seedConventions []collections.SeedConvention
+	var seedPlaybooks []collections.SeedPlaybook
 
-	if templateName == "" || templateName == "startup" {
+	if templateName == "" {
 		defs = collections.Defaults()
+		// Empty template = backward-compatible, no starter pack.
 	} else {
 		tmpl := collections.GetTemplate(templateName)
 		if tmpl == nil {
@@ -350,10 +363,16 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		}
 		defs = tmpl.Collections
 		seedItems = tmpl.SeedItems
+		seedConventions = tmpl.Conventions
+		seedPlaybooks = tmpl.Playbooks
 	}
 
+	// freshlyCreated tracks which collection slugs were created by THIS call.
+	// Seed items only land in those so we don't duplicate items when the
+	// function is re-run across pre-existing workspaces.
+	freshlyCreated := make(map[string]bool)
+
 	for _, def := range defs {
-		// Check if already exists
 		existing, err := s.GetCollectionBySlug(workspaceID, def.Slug)
 		if err != nil {
 			return fmt.Errorf("check existing collection %s: %w", def.Slug, err)
@@ -384,23 +403,48 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		if err != nil {
 			return fmt.Errorf("create default collection %s: %w", def.Slug, err)
 		}
+		freshlyCreated[def.Slug] = true
 	}
 
-	// Seed sample items if the template provides them
-	for _, item := range seedItems {
-		coll, err := s.GetCollectionBySlug(workspaceID, item.CollectionSlug)
+	// seedItem creates a seed item in the given collection, but only if that
+	// collection was freshly created in this call. Silently no-ops otherwise.
+	seedItem := func(collSlug, title, content, fields string) error {
+		if !freshlyCreated[collSlug] {
+			return nil
+		}
+		coll, err := s.GetCollectionBySlug(workspaceID, collSlug)
 		if err != nil || coll == nil {
-			continue // skip if collection doesn't exist
+			return nil
 		}
 		_, err = s.CreateItem(workspaceID, coll.ID, models.ItemCreate{
-			Title:     item.Title,
-			Content:   item.Content,
-			Fields:    item.Fields,
+			Title:     title,
+			Content:   content,
+			Fields:    fields,
 			CreatedBy: "system",
 			Source:    "template",
 		})
 		if err != nil {
-			return fmt.Errorf("seed item %q in %s: %w", item.Title, item.CollectionSlug, err)
+			return fmt.Errorf("seed item %q in %s: %w", title, collSlug, err)
+		}
+		return nil
+	}
+
+	// Sample items
+	for _, item := range seedItems {
+		if err := seedItem(item.CollectionSlug, item.Title, item.Content, item.Fields); err != nil {
+			return err
+		}
+	}
+	// Starter conventions
+	for _, conv := range seedConventions {
+		if err := seedItem("conventions", conv.Title, conv.Content, conv.Fields); err != nil {
+			return err
+		}
+	}
+	// Starter playbooks
+	for _, pb := range seedPlaybooks {
+		if err := seedItem("playbooks", pb.Title, pb.Content, pb.Fields); err != nil {
+			return err
 		}
 	}
 
