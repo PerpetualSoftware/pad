@@ -21,6 +21,10 @@
 		'on-plan':           { icon: '\u{1F4CB}', label: 'On Plan' },
 	};
 
+	function triggerMeta(t: string): { icon: string; label: string } {
+		return TRIGGER_META[t as Trigger] ?? { icon: '\u{1F514}', label: t };
+	}
+
 	const CATEGORIES = ['git', 'quality', 'pm', 'docs', 'build', 'custom'] as const;
 	const SURFACES = ['all','backend','frontend','mobile','docs','devops'] as const;
 	const ENFORCEMENT_LEVELS = ['must','should','nice-to-have'] as const;
@@ -85,15 +89,20 @@
 	});
 
 	let grouped = $derived.by(() => {
-		const groups: { trigger: Trigger; items: Item[]; activeCount: number }[] = [];
-		const byTrigger = new SvelteMap<Trigger, Item[]>();
+		const groups: { trigger: string; items: Item[]; activeCount: number }[] = [];
+		const byTrigger = new SvelteMap<string, Item[]>();
 		for (const item of filtered) {
 			const fields = parseFields(item);
-			const t = (getConvention(item).trigger as Trigger) || (fields.trigger as Trigger) || 'always';
+			const t = getConvention(item).trigger || (typeof fields.trigger === 'string' ? fields.trigger : '') || 'always';
 			if (!byTrigger.has(t)) byTrigger.set(t, []);
 			byTrigger.get(t)!.push(item);
 		}
-		for (const trigger of TRIGGERS) {
+		const knownOrder = TRIGGERS as readonly string[];
+		const extraTriggers = Array.from(byTrigger.keys())
+			.filter((t) => !knownOrder.includes(t))
+			.sort((a, b) => a.localeCompare(b));
+		const orderedTriggers = [...knownOrder, ...extraTriggers];
+		for (const trigger of orderedTriggers) {
 			const items = byTrigger.get(trigger);
 			if (!items || items.length === 0) continue;
 			const activeCount = items.filter(i => parseFields(i).status === 'active').length;
@@ -206,7 +215,7 @@
 		editContent = '';
 	}
 
-	async function bulkToggleGroup(group: { trigger: Trigger; items: Item[] }, enable: boolean) {
+	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
 		if (!workspace) return;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
@@ -393,7 +402,7 @@
 		{:else}
 			<div class="groups">
 				{#each grouped as group (group.trigger)}
-					{@const meta = TRIGGER_META[group.trigger]}
+					{@const meta = triggerMeta(group.trigger)}
 					{@const collapsed = collapsedGroups.has(group.trigger)}
 					<section class="trigger-group">
 						<div class="group-header-row">

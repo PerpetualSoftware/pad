@@ -36,6 +36,26 @@
 
 	let hasActiveFilters = $derived(searchQuery !== '' || filterTrigger !== '' || filterScope !== '');
 
+	let allTriggers = $derived.by(() => {
+		const known = TRIGGERS as readonly string[];
+		const discovered = new Set<string>();
+		for (const p of playbooks) {
+			const t = parseFields(p).trigger;
+			if (typeof t === 'string' && t && !known.includes(t)) discovered.add(t);
+		}
+		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
+	});
+
+	let allScopes = $derived.by(() => {
+		const known = SCOPES as readonly string[];
+		const discovered = new Set<string>();
+		for (const p of playbooks) {
+			const s = parseFields(p).scope;
+			if (typeof s === 'string' && s && !known.includes(s)) discovered.add(s);
+		}
+		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
+	});
+
 	let sorted = $derived.by(() => {
 		let items = [...playbooks];
 		if (searchQuery) {
@@ -195,11 +215,11 @@
 				<input type="text" class="search-input" placeholder="Search playbooks..." bind:value={searchQuery} />
 				<select class="filter-select" bind:value={filterTrigger}>
 					<option value="">All triggers</option>
-					{#each TRIGGERS as t (t)}<option value={t}>{t}</option>{/each}
+					{#each allTriggers as t (t)}<option value={t}>{t}</option>{/each}
 				</select>
 				<select class="filter-select" bind:value={filterScope}>
 					<option value="">All scopes</option>
-					{#each SCOPES as s (s)}<option value={s}>{s}</option>{/each}
+					{#each allScopes as s (s)}<option value={s}>{s}</option>{/each}
 				</select>
 				{#if hasActiveFilters}
 					<button class="action-btn" onclick={clearFilters}>Clear</button>
