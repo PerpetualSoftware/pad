@@ -487,5 +487,66 @@ input:focus, textarea:focus {
 		padding: 0 !important;
 		outline: none !important;
 	}
+
+	/* -----------------------------------------------------------------
+	   TASK-622 — Properties panel form widgets in print.
+	   These rules live here (not in the item detail page's scoped style
+	   block) because the widgets are rendered by the FieldEditor child
+	   component — Svelte's scoped selectors don't cross component
+	   boundaries. Strip interactive styling so the selected value reads
+	   as plain text; the `.toggle` checkbox button is exempted and
+	   rendered as a visible outlined box with a check mark when on.
+	   ----------------------------------------------------------------- */
+	.field-value select,
+	.field-value input,
+	.field-value textarea,
+	.field-value button:not(.toggle) {
+		appearance: none !important;
+		-webkit-appearance: none !important;
+		background: transparent !important;
+		border: none !important;
+		padding: 0 !important;
+		margin: 0 !important;
+		color: #000 !important;
+		font: inherit !important;
+		cursor: default !important;
+		pointer-events: none;
+		box-shadow: none !important;
+	}
+
+	/* Checkbox field (`.toggle`): visible outlined box; on-state gets a
+	   check mark overlay so the on/off signal survives in print. */
+	.field-value .toggle {
+		appearance: none !important;
+		-webkit-appearance: none !important;
+		display: inline-block !important;
+		width: 11pt !important;
+		height: 11pt !important;
+		padding: 0 !important;
+		margin: 0 !important;
+		background: #fff !important;
+		border: 1px solid #000 !important;
+		border-radius: 2pt !important;
+		position: relative;
+		cursor: default !important;
+		pointer-events: none;
+		box-shadow: none !important;
+		vertical-align: -1pt;
+	}
+	.field-value .toggle-knob {
+		display: none !important;
+	}
+	.field-value .toggle.on::after {
+		content: "✓";
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #000;
+		font-size: 10pt;
+		font-weight: 700;
+		line-height: 1;
+	}
 }
 
