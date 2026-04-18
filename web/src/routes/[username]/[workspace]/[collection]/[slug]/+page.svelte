@@ -658,7 +658,9 @@
 	<div class="print-footer" aria-hidden="true">
 		<span class="print-footer-date">Printed {printDate}</span>
 		<span class="print-footer-url">{printUrl}</span>
-		<span class="print-footer-page">Page <span class="print-page-num"></span></span>
+		<!-- Page number is rendered by `@page { @bottom-right ... }` in
+		     app.css (counter(page) must live in a margin-box to
+		     increment per page in Chromium). See BUG-625. -->
 	</div>
 
 	<div class="item-page">
@@ -2021,16 +2023,11 @@
 
 		/* -------------------------------------------------------------
 		   TASK-623 — rendered header / footer on every printed page.
-		   @page margins carve out top + bottom space; fixed-positioned
-		   divs sit in those strips and repeat on every page (well
-		   supported in Chromium; Firefox and Safari may render them
-		   only on the first page). Page number is injected by CSS via
-		   `counter(page)` on a pseudo-element.
+		   @page margins + page number counter live in app.css (single
+		   source of truth; see BUG-625 for why). This block owns only
+		   the fixed-positioned header / footer elements that sit in the
+		   carved-out margin strips.
 		   ------------------------------------------------------------- */
-		@page {
-			margin: 1.1in 0.6in 0.9in 0.6in;
-		}
-
 		.print-header,
 		.print-footer {
 			display: flex;
@@ -2046,6 +2043,13 @@
 			gap: 6pt;
 			align-items: center;
 			z-index: 1000;
+		}
+
+		/* Reserve space on the right of the footer for the `@page
+		   @bottom-right` page-number margin box so its content and the
+		   date/URL don't overlap. */
+		.print-footer {
+			padding-right: 1.2in;
 		}
 
 		.print-header {
@@ -2077,8 +2081,7 @@
 			border-top: 1px solid #ccc;
 			justify-content: space-between;
 		}
-		.print-footer-date,
-		.print-footer-page {
+		.print-footer-date {
 			white-space: nowrap;
 			color: #555;
 		}
@@ -2094,9 +2097,6 @@
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
-		}
-		.print-page-num::after {
-			content: counter(page);
 		}
 	}
 </style>
