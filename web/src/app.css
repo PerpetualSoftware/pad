@@ -371,5 +371,111 @@ input:focus, textarea:focus {
 	@page {
 		margin: 0.75in;
 	}
+
+	/* -----------------------------------------------------------------
+	   TASK-622 — rendered markdown (.prose) tuned for print.
+	   ----------------------------------------------------------------- */
+	.prose {
+		font-size: 11pt;
+		line-height: 1.55;
+		color: #000 !important;
+		max-width: none;
+	}
+	.prose h1, .prose h2, .prose h3,
+	.prose h4, .prose h5, .prose h6 {
+		color: #000 !important;
+		page-break-after: avoid;
+		break-after: avoid-page;
+		page-break-inside: avoid;
+		break-inside: avoid-page;
+	}
+	.prose h1 { font-size: 18pt; }
+	.prose h2 { font-size: 14pt; }
+	.prose h3 { font-size: 12pt; }
+
+	.prose p, .prose li {
+		orphans: 3;
+		widows: 3;
+	}
+
+	/* Links: keep the colored style AND append the URL inline so a printed
+	   page still carries the reference. Skip internal wiki-links (which
+	   resolve to the printed document's siblings) and fragment-only links. */
+	.prose a[href]::after {
+		content: " (" attr(href) ")";
+		font-size: 0.85em;
+		color: #555;
+		word-break: break-all;
+	}
+	.prose a[href^="#"]::after,
+	.prose a.doc-link::after,
+	.prose a.editor-link[href^="/"]::after {
+		content: "";
+	}
+
+	/* Code blocks: visible, readable in light palette, don't orphan across
+	   pages when we can help it. */
+	.prose pre {
+		background: #f5f5f5 !important;
+		border: 1px solid #ddd !important;
+		color: #000 !important;
+		font-size: 9.5pt;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+	.prose code {
+		background: #f5f5f5 !important;
+		color: #000 !important;
+	}
+
+	/* Images: full page width max, don't split across pages. */
+	.prose img {
+		max-width: 100% !important;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+
+	/* Tables: visible borders, contained to page width. */
+	.prose table {
+		page-break-inside: avoid;
+		break-inside: avoid;
+		border: 1px solid #ccc !important;
+	}
+	.prose th, .prose td {
+		border: 1px solid #ccc !important;
+		color: #000 !important;
+	}
+	.prose th {
+		background: #f5f5f5 !important;
+	}
+
+	.prose blockquote {
+		border-left: 3px solid #666 !important;
+		color: #333 !important;
+	}
+
+	/* Editor overlays (bubble menu, link popover, slash menu, mobile
+	   toolbar, table toolbar, editor-toolbar) — never print these. */
+	.bubble-menu,
+	.link-popover,
+	.slash-menu,
+	.mobile-toolbar,
+	.table-toolbar,
+	.toolbar,
+	.editor-toolbar,
+	.editor-link-popover,
+	.editor-bubble-menu {
+		display: none !important;
+	}
+
+	/* Editor wrapper: in print the content is read-only — remove any
+	   interactive cursor, borders, or focus styling. */
+	.editor-wrapper,
+	.editor-content {
+		border: none !important;
+		background: transparent !important;
+		padding: 0 !important;
+		outline: none !important;
+	}
 }
 
