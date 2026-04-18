@@ -32,7 +32,7 @@ pad role list --format json            # Agent roles configured in workspace
 
 This tells you: what collections exist, what items are in them, what's active, what needs attention, what project conventions to always follow, and what agent roles are available.
 
-If the conventions list includes items, treat them as project rules you must follow. They are short instructions like "run make install after code changes" or "use conventional commit format."
+If the conventions list includes items, treat them as project rules you must follow. The vocabulary depends on the workspace domain — a software workspace ships rules like "use conventional commit format," a hiring workspace ships rules like "anonymize candidate names in exports," a research workspace ships rules like "always cite sources." Follow whatever the workspace has configured.
 
 ## Role Awareness
 
@@ -112,9 +112,11 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Creating items:**
 - "I have an idea for X" → Create an Idea item
-- "new task: fix the OAuth bug" → Create a Task item
-- "let's start a new plan for the API redesign" → Create a Plan item
-- "document the auth architecture" → Create a Doc item
+- "new task: fix the OAuth bug" / "new candidate: Alice Johnson" → Create an item in whatever collection fits the workspace
+- "let's start a new plan for the API redesign" / "new application: Senior Engineer at Acme" → Create a Plan/Application item
+- "document the auth architecture" / "capture research on X" → Create a Doc item
+
+(Match the user's intent to the workspace's collections. A software workspace has Tasks/Ideas/Plans/Docs; a hiring workspace has Candidates/Requisitions; a research workspace has Notes/Sources. Use whatever the workspace has.)
 
 **Querying:**
 - "what's on my plate?" / "what should I work on?" → Role-filtered queue if role is active, otherwise `pad project next --format json`
@@ -155,33 +157,26 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "plan 2 is done, let's retro" → Review completed work, save retrospective
 
 **Onboarding:**
-- "scan this codebase" / "set up my workspace" → Codebase analysis + onboarding workflow (see below)
-- "what conventions should this project follow?" → Analyze tooling, suggest conventions from the library
+- "set up my workspace" / "onboard me" / "scan this codebase" → Onboarding workflow (see below). The software templates' onboarding step still scans the codebase; non-software workspaces run their own template-specific onboarding.
+- "what conventions should this workspace follow?" → Run the workspace's onboarding playbook if one exists, otherwise suggest conventions from the library.
 
 ## Before Performing Work
 
-When you are about to take action (implement code, complete a task, create a PR, etc.), load the relevant conventions and playbooks FIRST.
+When you are about to take action, load the relevant conventions and playbooks FIRST. The shape is always the same: match the trigger to the action you're about to take.
+
+**Trigger vocabulary is workspace-defined.** Each template ships its own set — software workspaces have triggers like `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. Inspect the Conventions collection schema (via `pad collection list --format json`) to see the available triggers for the current workspace.
 
 If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone):
 
 ```bash
-# Example: before implementing code, with role "implementer" active:
-pad item list conventions --field trigger=on-implement --field status=active --field role=implementer --format json  # Role-specific
-pad item list conventions --field trigger=on-implement --field status=active --format json  # All (includes global)
-pad item list playbooks --field trigger=on-implement --field status=active --format json
+# Example: before taking action X, with role "implementer" active (software workspace):
+pad item list conventions --field trigger=on-X --field status=active --field role=implementer --format json  # Role-specific
+pad item list conventions --field trigger=on-X --field status=active --format json                          # All (includes global)
+pad item list playbooks  --field trigger=on-X --field status=active --format json
 
-# Before completing a task:
-pad item list conventions --field trigger=on-task-complete --field status=active --field role=<active-role> --format json
-pad item list conventions --field trigger=on-task-complete --field status=active --format json
-
-# Before creating a PR:
-pad item list conventions --field trigger=on-pr-create --field status=active --format json
-
-# Before committing:
-pad item list conventions --field trigger=on-commit --field status=active --format json
-
-# Before planning:
-pad item list conventions --field trigger=on-plan --field status=active --format json
+# Common software-workspace triggers:
+#   on-implement, on-task-complete, on-pr-create, on-commit, on-plan, on-review, on-deploy
+# Always-on conventions (scope=all, trigger=always) apply regardless of action.
 ```
 
 When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
@@ -306,7 +301,7 @@ All commands support `--format json` (for parsing) or `--format table` (default,
    pad item create task "Task description" --parent PLAN-3 --priority medium
    ```
 6. **If roles exist, suggest role assignments** for each task: "This looks like Implementer work — assign to Implementer?"
-7. **Each task should be PR-sized** — small enough for one branch, large enough to be meaningful.
+7. **Size each task for a single meaningful unit of work.** Software workspaces typically size tasks to one branch / one PR; other domains size them to one deliverable, one interview loop, one draft section, etc. Check the workspace's conventions for domain-specific sizing rules.
 8. **Ask before creating each item.** Don't bulk-create without approval.
 
 ### Decomposition: "Break plan X into tasks"
@@ -336,24 +331,32 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 3. Run `pad project dashboard --format json` for blockers/attention items
 4. Present as: Yesterday / Today / Blockers format
 
-### Onboarding: "Scan this codebase" / "Set up my workspace"
+### Onboarding: "Set up my workspace" / "Scan this codebase"
 
 1. **Check workspace state:** `pad project dashboard --format json` — if the workspace already has items, ask if they want to add more or start fresh sections.
-2. **Analyze the codebase:** Read key project files to understand the project:
-   - `README.md` or `README` — project overview, setup instructions
+
+2. **Check for a workspace-specific onboarding playbook.** Some templates ship their own onboarding flow:
+   ```bash
+   pad item list playbooks --field status=active --format json
+   ```
+   Look for a playbook whose title starts with "Onboarding" (or is explicitly about onboarding for this workspace type). If one exists, **follow its steps in order** — it's the template's opinion about how to get this kind of workspace set up. The software templates ship "Onboarding to a Project" from the library; non-software templates ship their own (hiring: prompt for first requisition; interviewing: prompt for first application; etc.).
+
+3. **If the playbook is software-flavored or absent, do a codebase scan.** Skip this step for non-code workspaces:
+   - `README.md` / `README` — project overview, setup instructions
    - `CLAUDE.md` — existing AI/agent instructions
    - Build config: `Makefile`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `pom.xml`
    - CI config: `.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`
-   - Directory structure: `ls` the top-level directories to understand the layout
-3. **Detect project type and tooling:**
-   - Language: Go, Node/TypeScript, Rust, Python, Java, etc.
-   - Build system: make, npm, cargo, pip, maven, etc.
-   - Test runner: what command runs the tests?
-   - Linter/formatter: what tools enforce code style?
-4. **Suggest conventions:** Based on the detected tooling, suggest conventions from the library. Customize the content with the actual commands found in the project (e.g., "Run `make test`" not just "Run the test suite"). Present as a checklist and ask which to activate.
-5. **Draft an architecture doc:** Summarize the project structure, tech stack, key directories, and how the pieces fit together. Offer to save as a Doc item.
-6. **Propose an initial plan:** Based on recent git activity (`git log --oneline -20`) and any open TODOs, suggest a plan name and a few starter tasks. Ask before creating.
-7. **Suggest agent roles:** If no roles exist yet, suggest creating roles based on the project type. For a typical dev project: Planner, Implementer, Reviewer. Don't auto-create — ask first.
+   - Directory structure
+   - Detect language, build system, test runner, linter — use the actual commands the project uses when suggesting conventions.
+
+4. **Suggest conventions.** Present relevant conventions from the library as a checklist and ask which to activate. For code workspaces, customize with the actual commands found (e.g., "Run `make test`" instead of "Run the test suite"). For non-code workspaces, lean on the template's starter pack and any conventions that fit the domain.
+
+5. **Draft a seed doc.** Summarize whatever's appropriate for the workspace type — an architecture doc for a codebase, a process doc for hiring, a research-agenda doc for a research workspace. Offer to save as a Doc item.
+
+6. **Propose an initial plan.** For codebases, base it on recent `git log` and open TODOs. For other workspace types, base it on the first thing the user wants to track (the first requisition, the first research question, the first content series). Ask before creating.
+
+7. **Suggest agent roles.** If no roles exist yet, suggest roles appropriate for the workspace type. Dev: Planner, Implementer, Reviewer. Hiring: Recruiter, Hiring Manager, Interviewer. Research: Researcher, Reviewer. Don't auto-create — ask first.
+
 8. **Always confirm before creating each item.** Show what will be created, get approval, then create.
 
 ### Retrospective: "Plan X is done, let's retro"
@@ -372,7 +375,7 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 4. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
 5. **Be conversational.** You're not a command executor. You're a project partner.
 6. **Reference existing items.** Use `[[Item Title]]` links in content to connect items.
-7. **Keep it practical.** Tasks should be PR-sized. Ideas should be actionable. Docs should be concise.
+7. **Keep it practical.** Size each item so it's a single meaningful unit of work — what "meaningful" means depends on the workspace (one branch/PR for code, one interview round for hiring, one research question for research). Ideas should be actionable. Docs should be concise. Check the workspace's conventions for domain-specific sizing rules.
 8. **Attribution matters.** Items you create will have `created_by: agent` and `source: cli` automatically.
 9. **Follow project conventions.** Always load and follow active conventions before performing work. They are project-specific rules that override your defaults. When a role is active, load both role-specific and global conventions.
 10. **Learn and teach.** When the user corrects your behavior or teaches you a project-specific rule, offer to save it as a convention: "Should I save this as a project convention so future agents follow it too?" Use `pad item create convention "Title" --field trigger=<inferred> --field scope=<inferred> --field priority=should --stdin` with an appropriate trigger inferred from the context. If the correction is role-specific, add `--field role=<slug>`.
