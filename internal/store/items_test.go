@@ -277,6 +277,39 @@ func TestSeedCollectionsFromTemplateSeedsStarterPack(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateRecoversPartialInit verifies that a retry
+// after a partial seed (some items missing) fills in the missing items
+// rather than treating the workspace as already-seeded. This guards the
+// idempotency-by-title design — the freshlyCreated-only design trapped
+// partially-initialized workspaces because the second pass saw existing
+// collections and skipped all items.
+func TestSeedCollectionsFromTemplateRecoversPartialInit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Recover")
+
+	// Simulate a partial init: seed the collections manually without any items.
+	if err := s.SeedCollectionsFromTemplate(ws.ID, ""); err != nil {
+		t.Fatalf("initial (no-template) seed error: %v", err)
+	}
+	// Collections exist but conventions collection has 0 items.
+	convColl, _ := s.GetCollectionBySlug(ws.ID, "conventions")
+	before, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	_ = convColl
+	if len(before) != 0 {
+		t.Fatalf("expected 0 conventions after empty-template seed, got %d", len(before))
+	}
+
+	// Retry with an explicit template — should fill in the starter pack
+	// even though the collections already exist.
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("retry seed error: %v", err)
+	}
+	after, _ := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "conventions"})
+	if len(after) == 0 {
+		t.Errorf("expected starter conventions to be seeded on retry, got 0")
+	}
+}
+
 // TestSeedCollectionsFromTemplateIdempotentWithSeedItems verifies that re-running
 // the seed function across a pre-existing workspace does NOT duplicate seed items.
 // This invariant is what lets the server's startup auto-upgrade safely iterate

@@ -337,16 +337,16 @@ func (s *Store) SeedDefaultCollections(workspaceID string) error {
 // SeedCollectionsFromTemplate seeds the workspace with collections from the
 // named template. An empty template name materializes the default collections
 // without any seed items or starter pack — this preserves backward
-// compatibility for callers that don't opt into a template (including the
-// server-side auto-upgrade path that re-runs on every boot). An explicit
+// compatibility for callers that don't opt into a template. An explicit
 // template name (including "startup") additionally seeds the template's
 // SeedItems, Conventions, and Playbooks as items in the new workspace.
 //
-// Seeding is idempotent with respect to collections (existing collections are
-// skipped) and with respect to seed items / conventions / playbooks (those
-// are only created in collections that were freshly created during this
-// call). That invariant is what lets the server safely re-run this function
-// across every workspace on startup without duplicating items.
+// Seeding is idempotent per-item by title: existing collections are skipped,
+// and existing items (matched by title within their target collection) are
+// skipped. That design lets the server's startup auto-upgrade re-run safely
+// AND lets a partial init (e.g. DB error after some items were seeded) be
+// recovered by simply retrying — the retry fills in missing items instead
+// of stopping at the first "collection already exists" signal.
 func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName string) error {
 	var defs []collections.DefaultCollection
 	var seedItems []collections.SeedItem
@@ -366,11 +366,6 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		seedConventions = tmpl.Conventions
 		seedPlaybooks = tmpl.Playbooks
 	}
-
-	// freshlyCreated tracks which collection slugs were created by THIS call.
-	// Seed items only land in those so we don't duplicate items when the
-	// function is re-run across pre-existing workspaces.
-	freshlyCreated := make(map[string]bool)
 
 	for _, def := range defs {
 		existing, err := s.GetCollectionBySlug(workspaceID, def.Slug)
@@ -403,19 +398,18 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		if err != nil {
 			return fmt.Errorf("create default collection %s: %w", def.Slug, err)
 		}
-		freshlyCreated[def.Slug] = true
 	}
 
-	// seedItem creates a seed item in the given collection, but only if that
-	// collection was freshly created in this call. No-op when the target
-	// collection wasn't created here (avoids duplicating on re-seed) or
-	// when the template references a slug that isn't among its collections
-	// (a template authoring mistake, not a runtime problem). Real DB errors
-	// during the lookup are propagated so a partial init can be detected.
+	// existingTitles caches the set of item titles already present in a
+	// collection so repeated seed calls against the same collection don't
+	// re-query. Lazily populated on first use per slug.
+	existingTitles := make(map[string]map[string]bool)
+
+	// seedItem inserts a seed item if no item with the same title already
+	// exists in the target collection. Missing target collections (a
+	// template-authoring mistake) are silently skipped; real DB errors are
+	// propagated so callers can detect partial init failures and retry.
 	seedItem := func(collSlug, title, content, fields string) error {
-		if !freshlyCreated[collSlug] {
-			return nil
-		}
 		coll, err := s.GetCollectionBySlug(workspaceID, collSlug)
 		if err != nil {
 			return fmt.Errorf("lookup %s collection for seeding %q: %w", collSlug, title, err)
@@ -423,6 +417,23 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		if coll == nil {
 			return nil
 		}
+
+		titles, ok := existingTitles[collSlug]
+		if !ok {
+			items, err := s.ListItems(workspaceID, models.ItemListParams{CollectionSlug: collSlug})
+			if err != nil {
+				return fmt.Errorf("list existing items in %s: %w", collSlug, err)
+			}
+			titles = make(map[string]bool, len(items))
+			for _, it := range items {
+				titles[it.Title] = true
+			}
+			existingTitles[collSlug] = titles
+		}
+		if titles[title] {
+			return nil // already seeded (idempotent + retry-safe)
+		}
+
 		_, err = s.CreateItem(workspaceID, coll.ID, models.ItemCreate{
 			Title:     title,
 			Content:   content,
@@ -433,6 +444,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		if err != nil {
 			return fmt.Errorf("seed item %q in %s: %w", title, collSlug, err)
 		}
+		titles[title] = true
 		return nil
 	}
 
