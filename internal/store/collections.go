@@ -104,6 +104,32 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 	return s.GetCollection(id)
 }
 
+// ListCollectionsMinimal returns collection rows populated with just the
+// fields needed for done-detection context: ID, Schema, Settings.
+// Skips the per-collection COUNT queries that ListCollections runs, which
+// matters on hot paths that only need the schema + settings pair (e.g.
+// handlers that build a ctxMap for isItemDone). Includes soft-deleted
+// collections so items still attached to them can be evaluated.
+func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection, error) {
+	rows, err := s.db.Query(
+		s.q(`SELECT id, schema, COALESCE(settings, '') FROM collections WHERE workspace_id = ?`),
+		workspaceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list collections minimal: %w", err)
+	}
+	defer rows.Close()
+	var result []models.Collection
+	for rows.Next() {
+		var c models.Collection
+		if err := rows.Scan(&c.ID, &c.Schema, &c.Settings); err != nil {
+			return nil, fmt.Errorf("scan collection minimal: %w", err)
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,

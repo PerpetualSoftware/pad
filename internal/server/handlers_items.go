@@ -829,7 +829,9 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 
 		// Build a done-context map once so each child is evaluated against
 		// its own collection's configured done field, not a global default.
-		wsCollections, _ := s.store.ListCollections(workspaceID)
+		// ListCollectionsMinimal avoids the per-collection COUNT queries
+		// that ListCollections would run — we only need schema + settings.
+		wsCollections, _ := s.store.ListCollectionsMinimal(workspaceID)
 		ctxMap := buildDoneContextMap(wsCollections)
 
 		// Recompute each plan's progress using only visible children

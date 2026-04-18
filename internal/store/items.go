@@ -1402,6 +1402,14 @@ func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug str
 
 // scanCollectionDoneFilters consumes rows yielding (id, schema, settings)
 // and resolves each into a collectionDoneFilter.
+//
+// When a collection's schema fails to parse we still emit a filter — one
+// that falls back to the `status` field and the global default terminal
+// list. Silently skipping the collection would leave its items without a
+// matching per-collection clause in buildChildrenDoneExpr, so they'd
+// always register as non-terminal in progress / role / starred queries
+// (a malformed schema on one collection would skew counts on every
+// parent-progress computation).
 func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 	var filters []collectionDoneFilter
 	for rows.Next() {
@@ -1412,9 +1420,15 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 		}
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
-			// Broken schema → skip this collection; buildChildrenDoneExpr
-			// will still include the default-fallback clause if no filters
-			// end up constructed overall.
+			// Malformed schema → emit a default-fallback filter so the
+			// collection's items still get evaluated against the status
+			// column + global default terminals. This matches pre-TASK-604
+			// behavior for those items.
+			filters = append(filters, collectionDoneFilter{
+				collectionID: id,
+				doneKey:      "status",
+				values:       models.DefaultTerminalStatuses,
+			})
 			continue
 		}
 		var settings models.CollectionSettings
