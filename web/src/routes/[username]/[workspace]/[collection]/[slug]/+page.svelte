@@ -1082,10 +1082,19 @@
 				// changed. The current `/[collection]/[slug]` URL still
 				// points at the old slug and subsequent loadData() calls
 				// (which fetch by collSlug) would 404. Navigate to the
-				// new slug while preserving the item slug.
+				// new slug while preserving the item slug. The new route
+				// will trigger its own loadData() via the $effect on
+				// wsSlug/collSlug/itemSlug, so no explicit refresh here.
 				if (updated.slug !== collSlug && itemSlug) {
 					void goto(`/${username}/${wsSlug}/${updated.slug}/${itemSlug}`);
+					return;
 				}
+				// Non-navigating update: schema or field mappings may have
+				// changed (rename / migration), so reload the item so fields
+				// reflect the new shape. Without this, a subsequent
+				// updateField() would write stale fields JSON back and
+				// clobber migrated values.
+				void loadData();
 			}}
 			onclose={() => {
 				editCollectionOpen = false;
