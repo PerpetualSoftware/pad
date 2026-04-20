@@ -80,7 +80,12 @@
 		<span class="plus">+</span>
 	</button>
 
-	{#if isMobile}
+	{#if isMobile && open}
+		<!--
+			Gate the mobile sheet on `open` so the component (and its global
+			`<svelte:window onkeydown>` listener inside BottomSheet) isn't
+			mounted for every closed picker on comment-heavy timelines.
+		-->
 		<BottomSheet {open} onclose={() => (open = false)} title="React">
 			<div class="sheet-body">
 				{@render emojiGrid()}
