@@ -19,6 +19,7 @@
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -91,6 +92,22 @@
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
 	let copied = $state(false);
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// Drives BottomSheet vs popover branching for mobile-only surfaces on
+	// this page (currently the "Move to…" menu). Matches the reference
+	// pattern from QuickActionsMenu / EmojiPickerButton / ReactionPicker.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
 
 	async function handleCopyRef() {
 		const ref = formatItemRef(item!);
@@ -756,14 +773,32 @@
 				<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
 					{moving ? 'Moving...' : 'Move to...'}
 				</button>
-				{#if showMoveMenu}
+				{#snippet moveOptions()}
+					{#each moveTargets as target (target.slug)}
+						<button class="move-option" onclick={() => handleMove(target.slug)}>
+							{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+							{target.name}
+						</button>
+					{/each}
+				{/snippet}
+				{#if isMobile && showMoveMenu}
+					<!--
+						Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
+						its global keydown listener) isn't mounted when the menu is
+						closed. Same pattern fix as ReactionPicker.
+					-->
+					<BottomSheet
+						open={showMoveMenu}
+						onclose={() => (showMoveMenu = false)}
+						title="Move to…"
+					>
+						<div class="move-sheet-body">
+							{@render moveOptions()}
+						</div>
+					</BottomSheet>
+				{:else if showMoveMenu}
 					<div class="move-dropdown">
-						{#each moveTargets as target (target.slug)}
-							<button class="move-option" onclick={() => handleMove(target.slug)}>
-								{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
-								{target.name}
-							</button>
-						{/each}
+						{@render moveOptions()}
 					</div>
 				{/if}
 			</div>
@@ -1776,6 +1811,15 @@
 	}
 	.move-icon {
 		font-size: 1.1em;
+	}
+	/* Inside the mobile BottomSheet the options sit in the normal document
+	   flow — give them a little breathing room vs the dropdown padding. */
+	.move-sheet-body {
+		padding: 0 var(--space-2) var(--space-3);
+	}
+	.move-sheet-body .move-option {
+		padding: var(--space-3);
+		font-size: 1em;
 	}
 	.delete-btn:hover {
 		color: var(--accent-orange);
