@@ -1078,6 +1078,14 @@
 				}
 				collection = updated;
 				collectionStore.loadCollections(wsSlug);
+				// If the owner renamed the collection, its slug may have
+				// changed. The current `/[collection]/[slug]` URL still
+				// points at the old slug and subsequent loadData() calls
+				// (which fetch by collSlug) would 404. Navigate to the
+				// new slug while preserving the item slug.
+				if (updated.slug !== collSlug && itemSlug) {
+					void goto(`/${username}/${wsSlug}/${updated.slug}/${itemSlug}`);
+				}
 			}}
 			onclose={() => {
 				editCollectionOpen = false;
