@@ -26,11 +26,12 @@
 		open: boolean;
 		collection: Collection;
 		wsSlug: string;
+		initialSection?: 'general' | 'fields' | 'display' | 'actions';
 		onupdated: (updated?: Collection) => void;
 		onclose: () => void;
 	}
 
-	let { open, collection, wsSlug, onupdated, onclose }: Props = $props();
+	let { open, collection, wsSlug, initialSection, onupdated, onclose }: Props = $props();
 
 	let confirmArchive = $state(false);
 	let archiving = $state(false);
@@ -193,7 +194,7 @@
 			}));
 			newFields = [];
 			error = '';
-			activeTab = 'general';
+			activeTab = initialSection ?? 'general';
 			confirmArchive = false;
 
 			// Sync display settings

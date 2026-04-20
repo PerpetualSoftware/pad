@@ -43,6 +43,7 @@
 
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
+	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
 	let searchInputEl = $state<HTMLInputElement>();
 	let searchResultIds = $state<Set<string> | null>(null);
@@ -855,8 +856,21 @@
 						<span class="save-view-label">Save View</span>
 					</button>
 
-					{#if quickActions.length > 0 && collection}
-						<QuickActionsMenu actions={quickActions} {collection} scope="collection" />
+					{#if collection && (quickActions.length > 0 || isOwner)}
+						<QuickActionsMenu
+							actions={quickActions}
+							{collection}
+							scope="collection"
+							{wsSlug}
+							canEdit={isOwner}
+							onmanage={() => {
+								editCollectionSection = 'actions';
+								editCollectionOpen = true;
+							}}
+							oncollectionupdated={() => {
+								loadCollection(wsSlug, collSlug, showArchived);
+							}}
+						/>
 					{/if}
 
 					{#if isOwner}
@@ -1039,6 +1053,7 @@
 		bind:open={editCollectionOpen}
 		{collection}
 		{wsSlug}
+		initialSection={editCollectionSection}
 		onupdated={(updated) => {
 			collectionStore.loadCollections(wsSlug);
 			if (updated && updated.slug !== collSlug) {
@@ -1047,7 +1062,10 @@
 				loadCollection(wsSlug, collSlug, showArchived);
 			}
 		}}
-		onclose={() => { editCollectionOpen = false; }}
+		onclose={() => {
+			editCollectionOpen = false;
+			editCollectionSection = undefined;
+		}}
 	/>
 {/if}
 
