@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 
 	interface Props {
 		collection: Collection;
@@ -33,9 +34,9 @@
 
 	let hasParentFilter = $derived(Object.keys(relationLabels).length > 0);
 	let activeParent = $derived(activeFilters.parent ?? '');
+	let activeParentLabel = $derived(activeParent ? (relationLabels[activeParent] ?? activeParent) : 'All plans');
 
-	function setParentFilter(e: Event) {
-		const value = (e.target as HTMLSelectElement).value;
+	function setParentFilterValue(value: string) {
 		const next = { ...activeFilters };
 		if (value === '') {
 			delete next.parent;
@@ -45,6 +46,11 @@
 		onFilterChange(next);
 	}
 
+	function setParentFilter(e: Event) {
+		const value = (e.target as HTMLSelectElement).value;
+		setParentFilterValue(value);
+	}
+
 	function handleSearchInput(e: Event) {
 		const target = e.target as HTMLInputElement;
 		onSearchChange(target.value);
@@ -52,6 +58,33 @@
 
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+	}
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// On mobile the parent filter is rendered as a chip that opens a
+	// BottomSheet of options; on desktop the native <select> is kept
+	// because it's compact inside the toolbar and familiar.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
+
+	let parentSheetOpen = $state(false);
+
+	function openParentSheet() {
+		parentSheetOpen = true;
+	}
+
+	function handleParentSheetSelect(value: string) {
+		setParentFilterValue(value);
+		parentSheetOpen = false;
 	}
 </script>
 
@@ -74,12 +107,53 @@
 	{/if}
 
 	{#if hasParentFilter}
-		<select class="parent-filter" value={activeParent} onchange={setParentFilter}>
-			<option value="">All plans</option>
-			{#each Object.entries(relationLabels) as [id, label] (id)}
-				<option value={id}>{label}</option>
-			{/each}
-		</select>
+		{#if isMobile}
+			<!--
+				Mobile: render the parent filter as a chip + BottomSheet to keep
+				option labels readable full-width and avoid the native <select>'s
+				inconsistent mobile styling.
+			-->
+			<button class="parent-chip" type="button" onclick={openParentSheet}>
+				<span class="parent-chip-label">{activeParentLabel}</span>
+				<span class="parent-chip-caret" aria-hidden="true">▾</span>
+			</button>
+			{#if parentSheetOpen}
+				<!--
+					Gate the sheet on `parentSheetOpen` so BottomSheet's global
+					keydown listener isn't mounted when the filter is idle.
+					Same gate-on-open pattern as ReactionPicker/Move menu.
+				-->
+				<BottomSheet
+					open={parentSheetOpen}
+					onclose={() => (parentSheetOpen = false)}
+					title="Filter by plan"
+				>
+					<div class="parent-sheet-body">
+						<button
+							class="parent-sheet-option"
+							class:active={activeParent === ''}
+							type="button"
+							onclick={() => handleParentSheetSelect('')}
+						>All plans</button>
+						{#each Object.entries(relationLabels) as [id, label] (id)}
+							<button
+								class="parent-sheet-option"
+								class:active={activeParent === id}
+								type="button"
+								onclick={() => handleParentSheetSelect(id)}
+							>{label}</button>
+						{/each}
+					</div>
+				</BottomSheet>
+			{/if}
+		{:else}
+			<select class="parent-filter" value={activeParent} onchange={setParentFilter}>
+				<option value="">All plans</option>
+				{#each Object.entries(relationLabels) as [id, label] (id)}
+					<option value={id}>{label}</option>
+				{/each}
+			</select>
+		{/if}
 	{/if}
 
 	<div class="search-wrapper">
@@ -148,6 +222,66 @@
 	.parent-filter:focus {
 		border-color: var(--accent-blue);
 		outline: none;
+	}
+
+	/* Mobile: chip trigger for the parent filter. Styled to match the
+	   segmented filter buttons so it reads as part of the same toolbar. */
+	.parent-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.82em;
+		color: var(--text-primary);
+		cursor: pointer;
+		max-width: 220px;
+	}
+
+	.parent-chip-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.parent-chip-caret {
+		color: var(--text-muted);
+		font-size: 0.9em;
+		line-height: 1;
+	}
+
+	.parent-chip:hover {
+		border-color: var(--accent-blue);
+	}
+
+	.parent-sheet-body {
+		display: flex;
+		flex-direction: column;
+		padding: 0 var(--space-2) var(--space-3);
+	}
+
+	.parent-sheet-option {
+		display: block;
+		width: 100%;
+		text-align: left;
+		background: none;
+		border: none;
+		padding: var(--space-3);
+		color: var(--text-primary);
+		font-size: 1em;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+
+	.parent-sheet-option:hover {
+		background: var(--bg-hover);
+	}
+
+	.parent-sheet-option.active {
+		background: var(--bg-tertiary);
+		font-weight: 600;
 	}
 
 	.search-wrapper {
