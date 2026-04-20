@@ -8,6 +8,7 @@
 	import type { Workspace } from '$lib/types';
 	import { onMount } from 'svelte';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
+	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -15,19 +16,17 @@
 	let currentTheme = $state<'dark' | 'light'>('dark');
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
-	let currentUsername = $derived(workspaceStore.current?.owner_username ?? '');
 
-	// DnD state — local copy of workspaces for reordering
+	// DnD state — local copy of workspaces for reordering (desktop only;
+	// mobile uses WorkspaceSwitcher which doesn't expose reorder — users
+	// who want to reorder can do it on desktop).
 	let dndWorkspaces: Workspace[] = $state([]);
 	let isDragging = $state(false);
 	const flipDurationMs = 150;
 
-	// Mobile edit mode
-	let mobileEditMode = $state(false);
-
 	// Sync from store when not actively reordering
 	$effect(() => {
-		if (!isDragging && !mobileEditMode) {
+		if (!isDragging) {
 			dndWorkspaces = [...workspaceStore.workspaces];
 		}
 	});
@@ -44,16 +43,6 @@
 		await saveOrder();
 	}
 
-	// Mobile edit mode: svelte-dnd-action handlers (touch drag works fine
-	// when items are buttons, not links)
-	function handleMobileConsider(e: CustomEvent<DndEvent<Workspace>>) {
-		dndWorkspaces = e.detail.items;
-	}
-
-	async function handleMobileFinalize(e: CustomEvent<DndEvent<Workspace>>) {
-		dndWorkspaces = e.detail.items;
-	}
-
 	async function saveOrder() {
 		const updates = dndWorkspaces.map((ws, i) => ({
 			slug: ws.slug,
@@ -65,16 +54,6 @@
 		} catch {
 			dndWorkspaces = [...workspaceStore.workspaces];
 		}
-	}
-
-	function enterEditMode() {
-		mobileEditMode = true;
-		dndWorkspaces = [...workspaceStore.workspaces];
-	}
-
-	async function exitEditMode() {
-		mobileEditMode = false;
-		await saveOrder();
 	}
 
 	// Color palette for workspace circles
@@ -229,47 +208,25 @@
 	</header>
 {:else}
 	<!-- ── Mobile ─────────────────────────────────────────────────────────── -->
+	<!--
+		Mobile TopBar is cramped, and horizontal-scrolling the full workspace
+		list hides workspaces off-screen. Swap the list + add + reorder
+		buttons for a single WorkspaceSwitcher trigger that opens a full-
+		width BottomSheet (see TASK-637). Reorder is available on desktop.
+	-->
 	<header class="topbar topbar-mobile">
 		<div class="topbar-left">
 			<PadLogo />
 		</div>
-		<div class="workspace-list">
-			{#each workspaceStore.workspaces as ws (ws.id)}
-				<a
-					href="/{ws.owner_username}/{ws.slug}"
-					class="workspace-item"
-					class:active={ws.slug === currentSlug}
-					onclick={() => uiStore.onNavigate()}
-				>
-					<span
-						class="workspace-icon"
-						style="background: {ws.slug === currentSlug ? wsColor(ws.name) : 'transparent'}; color: {ws.slug === currentSlug ? '#fff' : 'var(--text-secondary)'}; border-color: {wsColor(ws.name)}"
-					>
-						{wsInitial(ws.name)}
-					</span>
-					<span class="workspace-name">{ws.name}</span>
-				</a>
-			{/each}
+		<div class="mobile-switcher-slot">
+			<!--
+				Force the mobile branch. TopBar's mobile/desktop decision uses
+				`uiStore.isMobile` (≤768px) but WorkspaceSwitcher's own query
+				is ≤639.98px — without this prop, 640–768px viewports would
+				render the desktop dropdown inside a mobile layout.
+			-->
+			<WorkspaceSwitcher mobile={true} />
 		</div>
-		<button
-			class="workspace-add"
-			onclick={() => { uiStore.onNavigate(); uiStore.openCreateWorkspace(); }}
-			title="New workspace"
-		>
-			<span class="add-icon">+</span>
-		</button>
-		{#if workspaceStore.workspaces.length > 1}
-			<button
-				class="edit-btn"
-				onclick={enterEditMode}
-				title="Reorder workspaces"
-			>
-				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-					<line x1="4" y1="9" x2="20" y2="9" /><line x1="4" y1="15" x2="20" y2="15" />
-					<polyline points="8 5 4 9 8 13" /><polyline points="16 11 20 15 16 19" />
-				</svg>
-			</button>
-		{/if}
 		{#if authStore.user}
 			<div class="user-menu-container">
 				<button
@@ -316,36 +273,6 @@
 			</div>
 		{/if}
 	</header>
-
-	<!-- Full-screen reorder overlay -->
-	{#if mobileEditMode}
-		<div class="reorder-overlay">
-			<div class="reorder-header">
-				<h3 class="reorder-title">Reorder Workspaces</h3>
-				<button class="done-btn" onclick={exitEditMode}>Done</button>
-			</div>
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
-				class="reorder-list"
-				use:dndzone={{items: dndWorkspaces, flipDurationMs, type: 'mobile-reorder'}}
-				onconsider={handleMobileConsider}
-				onfinalize={handleMobileFinalize}
-			>
-				{#each dndWorkspaces as ws (ws.id)}
-					<div class="reorder-item" class:active={ws.slug === currentSlug}>
-						<span class="drag-grip">⠿</span>
-						<span
-							class="reorder-icon"
-							style="background: {wsColor(ws.name)}; border-color: {wsColor(ws.name)}"
-						>
-							{wsInitial(ws.name)}
-						</span>
-						<span class="reorder-name">{ws.name}</span>
-					</div>
-				{/each}
-			</div>
-		</div>
-	{/if}
 {/if}
 
 <style>
@@ -459,35 +386,14 @@
 		line-height: 1;
 	}
 
-	/* Edit / Done buttons for mobile reorder */
-	.edit-btn {
+	/* Mobile TopBar — slot that hosts the <WorkspaceSwitcher /> chip.
+	   Flex-grows so the switcher trigger stretches to fill the gap between
+	   the absolute-positioned logo and the user avatar. */
+	.mobile-switcher-slot {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		flex-shrink: 0;
-		border-radius: var(--radius);
-		color: var(--text-muted);
-		transition: background 0.15s, color 0.15s;
-	}
-	.edit-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-secondary);
-	}
-
-	.done-btn {
-		flex-shrink: 0;
-		padding: var(--space-1) var(--space-3);
-		border-radius: var(--radius);
-		font-size: 0.78em;
-		font-weight: 600;
-		color: var(--accent-blue);
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		transition: background 0.15s;
-	}
-	.done-btn:hover {
-		background: color-mix(in srgb, var(--accent-blue) 25%, transparent);
 	}
 
 	/* Left side — logo */
@@ -619,94 +525,4 @@
 		background: color-mix(in srgb, var(--accent-orange) 10%, var(--bg-hover));
 	}
 
-	/* ── Mobile reorder overlay ──────────────────────────────────────────── */
-	.reorder-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 40;
-		background: var(--bg-primary);
-		display: flex;
-		flex-direction: column;
-		animation: overlay-in 0.15s ease-out;
-	}
-	@keyframes overlay-in {
-		from { opacity: 0; }
-		to { opacity: 1; }
-	}
-
-	.reorder-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: var(--space-4) var(--space-4);
-		border-bottom: 1px solid var(--border);
-		background: var(--bg-secondary);
-		flex-shrink: 0;
-	}
-	.reorder-title {
-		font-size: 1em;
-		font-weight: 600;
-		color: var(--text-primary);
-		margin: 0;
-	}
-
-	.reorder-list {
-		flex: 1;
-		overflow-y: auto;
-		padding: var(--space-3);
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.reorder-item {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-3) var(--space-3);
-		background: var(--bg-secondary);
-		border-radius: var(--radius);
-		border: 1px solid var(--border);
-		cursor: grab;
-		touch-action: none;
-		user-select: none;
-		transition: box-shadow 0.15s, border-color 0.15s;
-	}
-	.reorder-item:active {
-		cursor: grabbing;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-		border-color: var(--accent-blue);
-	}
-	.reorder-item.active {
-		border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--border));
-	}
-
-	.drag-grip {
-		color: var(--text-muted);
-		font-size: 1em;
-		line-height: 1;
-		flex-shrink: 0;
-		user-select: none;
-	}
-
-	.reorder-icon {
-		width: 28px;
-		height: 28px;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 0.8em;
-		font-weight: 700;
-		color: #fff;
-		flex-shrink: 0;
-		border: 2px solid;
-	}
-
-	.reorder-name {
-		font-size: 0.92em;
-		font-weight: 500;
-		color: var(--text-primary);
-		flex: 1;
-	}
 </style>
