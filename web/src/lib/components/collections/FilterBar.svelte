@@ -71,6 +71,12 @@
 		isMobile = mq.matches;
 		const onChange = (e: MediaQueryListEvent) => {
 			isMobile = e.matches;
+			// If the viewport crosses above the mobile breakpoint while the
+			// sheet is open (e.g. device rotation), close it so it doesn't
+			// spring back open as soon as the viewport returns to mobile.
+			if (!e.matches) {
+				parentSheetOpen = false;
+			}
 		};
 		mq.addEventListener('change', onChange);
 		return () => mq.removeEventListener('change', onChange);
