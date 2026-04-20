@@ -4,19 +4,35 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 
+	interface Props {
+		/**
+		 * Force the mobile (BottomSheet) branch regardless of the internal
+		 * viewport detection. Use this when an ancestor component already
+		 * owns the mobile/desktop decision (e.g. TopBar branches on
+		 * `uiStore.isMobile` at ≤768px but this component's own breakpoint
+		 * is ≤639.98px — without the override, 640–768px would show the
+		 * desktop dropdown inside a mobile layout).
+		 */
+		mobile?: boolean;
+	}
+
+	let { mobile }: Props = $props();
+
 	let open = $state(false);
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// Track mobile viewport so we can swap the absolute-positioned dropdown
 	// for a full-width BottomSheet that reads better when workspace names
-	// are long or the list is deep.
-	let isMobile = $state(false);
+	// are long or the list is deep. Skipped when the caller passes an
+	// explicit `mobile` prop.
+	let detectedMobile = $state(false);
 	$effect(() => {
+		if (mobile !== undefined) return;
 		if (typeof window === 'undefined') return;
 		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
+		detectedMobile = mq.matches;
 		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
+			detectedMobile = e.matches;
 			// Close the sheet if the viewport crosses above mobile while it's
 			// open (e.g. rotation) so returning to mobile doesn't reopen it.
 			if (!e.matches) {
@@ -26,6 +42,17 @@
 		mq.addEventListener('change', onChange);
 		return () => mq.removeEventListener('change', onChange);
 	});
+
+	// Also close the sheet if an ancestor-driven `mobile` prop flips off
+	// while the sheet is open — same rotation-reopen guard as the internal
+	// detection path.
+	$effect(() => {
+		if (mobile === false) {
+			open = false;
+		}
+	});
+
+	let isMobile = $derived(mobile ?? detectedMobile);
 
 	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;

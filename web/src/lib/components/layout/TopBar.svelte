@@ -219,7 +219,13 @@
 			<PadLogo />
 		</div>
 		<div class="mobile-switcher-slot">
-			<WorkspaceSwitcher />
+			<!--
+				Force the mobile branch. TopBar's mobile/desktop decision uses
+				`uiStore.isMobile` (≤768px) but WorkspaceSwitcher's own query
+				is ≤639.98px — without this prop, 640–768px viewports would
+				render the desktop dropdown inside a mobile layout.
+			-->
+			<WorkspaceSwitcher mobile={true} />
 		</div>
 		{#if authStore.user}
 			<div class="user-menu-container">
