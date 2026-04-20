@@ -29,11 +29,16 @@
 
 	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;
+		// Close the mobile sidebar if open — the TopBar's previous inline
+		// workspace links did this on click, so preserve the behavior now
+		// that the switcher is the mobile nav entry point.
+		uiStore.onNavigate();
 		goto(`/${ws.owner_username}/${ws.slug}`);
 	}
 
 	function openCreateModal() {
 		open = false;
+		uiStore.onNavigate();
 		uiStore.openCreateWorkspace();
 	}
 </script>
