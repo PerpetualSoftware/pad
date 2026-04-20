@@ -48,7 +48,11 @@
 	// Module-level stack of open sheets (most-recent-last). Used so only the
 	// topmost sheet handles Escape / Tab — prevents one keypress from closing
 	// multiple stacked sheets.
-	let openStack: symbol[] = [];
+	//
+	// Reactive so component instances can $derive their stack index and
+	// compute a z-index that matches open-order (logical topmost == visual
+	// topmost) even when DOM order differs from open order.
+	let openStack = $state<symbol[]>([]);
 
 	export function pushOpenSheet(): symbol {
 		const token = Symbol();
@@ -63,6 +67,10 @@
 
 	export function isTopmostSheet(token: symbol): boolean {
 		return openStack[openStack.length - 1] === token;
+	}
+
+	export function getStackIndex(token: symbol): number {
+		return openStack.indexOf(token);
 	}
 </script>
 
@@ -124,6 +132,16 @@
 			popOpenSheet(token);
 		};
 	});
+
+	// ── Reactive z-index tied to open-stack position ──────────────────────
+	// Visual stacking must follow open-order, not DOM-order, so the sheet
+	// that is logically topmost (and therefore receives Escape / Tab) is
+	// always the one rendered on top. Each stack level reserves 2 z-index
+	// slots: backdrop (+0) and sheet (+1).
+	const BASE_Z = 61;
+	const stackIndex = $derived(myToken ? getStackIndex(myToken) : -1);
+	const backdropZ = $derived(stackIndex < 0 ? BASE_Z : BASE_Z + stackIndex * 2);
+	const sheetZ = $derived(stackIndex < 0 ? BASE_Z + 1 : BASE_Z + stackIndex * 2 + 1);
 
 	// ── Reduced-motion ─────────────────────────────────────────────────────
 	// Honor prefers-reduced-motion by collapsing transition durations to 0.
@@ -285,6 +303,7 @@
 		onclick={onBackdropClick}
 		onkeydown={() => {}}
 		role="presentation"
+		style:z-index={backdropZ}
 	></div>
 
 	<div
@@ -298,6 +317,7 @@
 		aria-label={title ? undefined : 'Dialog'}
 		tabindex="-1"
 		style={sheetStyle}
+		style:z-index={sheetZ}
 		transition:fly={{ y: reducedMotion ? 0 : 100, duration: sheetDuration, opacity: 1 }}
 	>
 		<!--
@@ -339,7 +359,9 @@
 		position: fixed;
 		inset: 0;
 		background: rgba(0, 0, 0, 0.5);
-		z-index: 60;
+		/* z-index is applied inline by the component so visual stacking
+		   tracks the open-order stack (see script). Fallback kept below
+		   via the sheet rule for any SSR/no-JS edge case. */
 	}
 
 	.bs-sheet {
@@ -347,7 +369,7 @@
 		left: 0;
 		right: 0;
 		bottom: 0;
-		z-index: 61;
+		/* z-index applied inline — see .bs-backdrop note above. */
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-secondary);
