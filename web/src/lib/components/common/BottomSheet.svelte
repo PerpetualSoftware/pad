@@ -188,21 +188,21 @@
 			}
 		});
 		return () => {
-			// Skip restoration if another sheet is still in control — otherwise
-			// closing a non-topmost stacked sheet could pull focus out of the
-			// still-active dialog and break modal isolation.
+			if (!previouslyFocused || typeof previouslyFocused.focus !== 'function') return;
+			if (!previouslyFocused.isConnected) return;
+
 			const othersStillOpen = openStack.some((t) => t !== myToken);
-			const activeDialog =
-				typeof document !== 'undefined' &&
-				document.activeElement instanceof HTMLElement
-					? document.activeElement.closest('[role="dialog"]')
-					: null;
-			const focusInOtherDialog = activeDialog !== null && activeDialog !== sheetEl;
-			if (othersStillOpen || focusInOtherDialog) return;
-			// Restore focus if the element is still connected.
-			if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
-				if (previouslyFocused.isConnected) previouslyFocused.focus();
+			if (othersStillOpen) {
+				// Only restore if previouslyFocused lives inside some OTHER
+				// still-open dialog — restoring it then keeps focus inside the
+				// remaining modal. If it points outside all dialogs (or into the
+				// closing sheet itself, which is about to unmount), skip — we
+				// would yank focus onto background UI while another sheet is
+				// still active.
+				const prevDialog = previouslyFocused.closest('[role="dialog"]');
+				if (!prevDialog || prevDialog === sheetEl) return;
 			}
+			previouslyFocused.focus();
 		};
 	});
 
