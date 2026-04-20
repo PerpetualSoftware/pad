@@ -2,8 +2,30 @@
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 
 	let open = $state(false);
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// Track mobile viewport so we can swap the absolute-positioned dropdown
+	// for a full-width BottomSheet that reads better when workspace names
+	// are long or the list is deep.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+			// Close the sheet if the viewport crosses above mobile while it's
+			// open (e.g. rotation) so returning to mobile doesn't reopen it.
+			if (!e.matches) {
+				open = false;
+			}
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
 
 	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;
@@ -16,29 +38,49 @@
 	}
 </script>
 
+{#snippet workspaceList()}
+	{#each workspaceStore.workspaces as ws (ws.slug)}
+		<button
+			class="item"
+			class:active={ws.slug === workspaceStore.current?.slug}
+			onclick={() => select(ws)}
+		>
+			{ws.name}
+		</button>
+	{/each}
+	<button class="item create-trigger" onclick={openCreateModal}>
+		+ New Workspace
+	</button>
+{/snippet}
+
 <div class="switcher">
 	<button class="current" onclick={() => open = !open}>
 		<span class="name">{workspaceStore.current?.name ?? 'Select workspace'}</span>
 		<span class="chevron">{open ? '▲' : '▼'}</span>
 	</button>
 
-	{#if open}
+	{#if isMobile && open}
+		<!--
+			Mobile: render the workspace list inside a BottomSheet so long
+			workspace names don't clip and the hit targets are full-width.
+			Gate on `open` (gate-on-open pattern) so the sheet (and its
+			global keydown listener) isn't mounted when the switcher is idle.
+		-->
+		<BottomSheet
+			{open}
+			onclose={() => (open = false)}
+			title="Switch workspace"
+		>
+			<div class="sheet-body">
+				{@render workspaceList()}
+			</div>
+		</BottomSheet>
+	{:else if open}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="backdrop" onclick={() => open = false}></div>
 		<div class="dropdown">
-			{#each workspaceStore.workspaces as ws}
-				<button
-					class="item"
-					class:active={ws.slug === workspaceStore.current?.slug}
-					onclick={() => select(ws)}
-				>
-					{ws.name}
-				</button>
-			{/each}
-			<button class="item create-trigger" onclick={openCreateModal}>
-				+ New Workspace
-			</button>
+			{@render workspaceList()}
 		</div>
 	{/if}
 </div>
@@ -84,8 +126,26 @@
 		width: 100%;
 		text-align: left;
 		padding: var(--space-2) var(--space-4);
+		background: none;
+		border: none;
+		color: var(--text-primary);
+		cursor: pointer;
+		font-size: 0.95em;
 	}
 	.item:hover { background: var(--bg-hover); }
 	.item.active { background: var(--bg-active); color: var(--accent-blue); }
 	.create-trigger { color: var(--text-muted); border-top: 1px solid var(--border); }
+
+	/* Inside the mobile sheet, give the rows a bit more vertical padding
+	   to be thumb-reachable. */
+	.sheet-body {
+		display: flex;
+		flex-direction: column;
+		padding: 0 var(--space-2) var(--space-3);
+	}
+	.sheet-body .item {
+		padding: var(--space-3);
+		font-size: 1em;
+		border-radius: var(--radius-sm);
+	}
 </style>
