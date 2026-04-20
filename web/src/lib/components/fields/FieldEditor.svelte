@@ -10,6 +10,7 @@ Usage:
 -->
 <script lang="ts">
 	import type { FieldDef } from '$lib/types';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 
 	interface Props {
 		field: FieldDef;
@@ -18,6 +19,27 @@ Usage:
 	}
 
 	let { field, value, onchange }: Props = $props();
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// On mobile the absolute-positioned select dropdown can clip at the
+	// edge of the properties panel; swap it for a BottomSheet of options.
+	// Desktop keeps the inline dropdown with keyboard nav unchanged.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+			// If the viewport crosses above mobile while the sheet is open
+			// (e.g. rotation), close it so it doesn't spring back on return.
+			if (!e.matches) {
+				dropdownOpen = false;
+			}
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
 
 	// ── Date input state ──────────────────────────────────────────────────
 
@@ -104,6 +126,9 @@ Usage:
 	}
 
 	function handleWindowClick(e: MouseEvent) {
+		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
+		// close button) — skip this handler so it doesn't race the sheet.
+		if (isMobile) return;
 		if (
 			dropdownOpen &&
 			triggerEl &&
@@ -153,6 +178,28 @@ Usage:
 <svelte:window onclick={handleWindowClick} />
 
 {#if field.type === 'select'}
+	{#snippet selectOptions()}
+		{#if field.options}
+			{#each field.options as option, i (option)}
+				<button
+					class="select-option"
+					class:selected={option === value}
+					class:focused={i === focusedIndex}
+					type="button"
+					role="option"
+					aria-selected={option === value}
+					onclick={() => selectOption(option)}
+					onmouseenter={() => (focusedIndex = i)}
+				>
+					{#if getStatusColor(option)}
+						<span class="color-dot" style:background={getStatusColor(option)}></span>
+					{/if}
+					<span>{formatLabel(option)}</span>
+				</button>
+			{/each}
+		{/if}
+	{/snippet}
+
 	<!-- Custom select dropdown -->
 	<div class="select-wrapper">
 		<button
@@ -175,30 +222,30 @@ Usage:
 			</svg>
 		</button>
 
-		{#if dropdownOpen && field.options}
+		{#if isMobile && dropdownOpen}
+			<!--
+				Mobile: full-width BottomSheet of options, titled with the
+				field label (e.g. "Set status"). Gated on `dropdownOpen`
+				(gate-on-open pattern) so the sheet + its global keydown
+				listener isn't mounted per idle FieldEditor instance.
+			-->
+			<BottomSheet
+				open={dropdownOpen}
+				onclose={() => (dropdownOpen = false)}
+				title="Set {field.label.toLowerCase()}"
+			>
+				<div class="select-sheet-body" role="listbox" aria-label="{field.label} options">
+					{@render selectOptions()}
+				</div>
+			</BottomSheet>
+		{:else if dropdownOpen && field.options}
 			<div
 				bind:this={dropdownEl}
 				class="select-dropdown"
 				role="listbox"
 				aria-label="{field.label} options"
 			>
-				{#each field.options as option, i (option)}
-					<button
-						class="select-option"
-						class:selected={option === value}
-						class:focused={i === focusedIndex}
-						type="button"
-						role="option"
-						aria-selected={option === value}
-						onclick={() => selectOption(option)}
-						onmouseenter={() => (focusedIndex = i)}
-					>
-						{#if getStatusColor(option)}
-							<span class="color-dot" style:background={getStatusColor(option)}></span>
-						{/if}
-						<span>{formatLabel(option)}</span>
-					</button>
-				{/each}
+				{@render selectOptions()}
 			</div>
 		{/if}
 	</div>
@@ -561,6 +608,20 @@ Usage:
 
 	.select-option.selected {
 		background: var(--bg-active);
+	}
+
+	/* ── Mobile sheet body — roomier rows for touch ──────────────────── */
+
+	.select-sheet-body {
+		display: flex;
+		flex-direction: column;
+		padding: 0 var(--space-2) var(--space-3);
+	}
+
+	.select-sheet-body .select-option {
+		padding: var(--space-3);
+		font-size: 1em;
+		border-radius: var(--radius-sm);
 	}
 
 	/* ── Checkbox toggle switch ───────────────────────────────────────── */
