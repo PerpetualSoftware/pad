@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+
 	interface Props {
 		onSelect: (emoji: string) => void;
 	}
@@ -9,6 +11,22 @@
 
 	let open = $state(false);
 	let pickerEl: HTMLDivElement | undefined = $state();
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// Track mobile viewport so we can swap the absolute-positioned popover
+	// for a BottomSheet that never clips off-screen at the edge of narrow
+	// comment cards. Mirrors the QuickActionsMenu reference pattern.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
 
 	function toggle() {
 		open = !open;
@@ -26,7 +44,9 @@
 	}
 
 	$effect(() => {
-		if (open) {
+		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
+		// close button) — skip the outside-click listener so it doesn't race.
+		if (open && !isMobile) {
 			document.addEventListener('click', handleClickOutside, true);
 			return () => {
 				document.removeEventListener('click', handleClickOutside, true);
@@ -34,6 +54,20 @@
 		}
 	});
 </script>
+
+{#snippet emojiGrid()}
+	<div class="emoji-grid">
+		{#each EMOJIS as emoji (emoji)}
+			<button
+				class="emoji-btn"
+				type="button"
+				onclick={() => select(emoji)}
+			>
+				{emoji}
+			</button>
+		{/each}
+	</div>
+{/snippet}
 
 <div class="reaction-picker" bind:this={pickerEl}>
 	<button class="trigger" type="button" onclick={toggle} title="Add reaction">
@@ -46,19 +80,20 @@
 		<span class="plus">+</span>
 	</button>
 
-	{#if open}
-		<div class="popover">
-			<div class="emoji-grid">
-				{#each EMOJIS as emoji (emoji)}
-					<button
-						class="emoji-btn"
-						type="button"
-						onclick={() => select(emoji)}
-					>
-						{emoji}
-					</button>
-				{/each}
+	{#if isMobile && open}
+		<!--
+			Gate the mobile sheet on `open` so the component (and its global
+			`<svelte:window onkeydown>` listener inside BottomSheet) isn't
+			mounted for every closed picker on comment-heavy timelines.
+		-->
+		<BottomSheet {open} onclose={() => (open = false)} title="React">
+			<div class="sheet-body">
+				{@render emojiGrid()}
 			</div>
+		</BottomSheet>
+	{:else if open}
+		<div class="popover">
+			{@render emojiGrid()}
 		</div>
 	{/if}
 </div>
@@ -128,5 +163,22 @@
 
 	.emoji-btn:hover {
 		background: var(--bg-tertiary);
+	}
+
+	/* In the mobile sheet, let the grid breathe full-width and enlarge
+	   tap targets a bit since we have the real estate. */
+	.sheet-body {
+		padding: var(--space-2) var(--space-4) var(--space-4);
+	}
+
+	.sheet-body .emoji-grid {
+		grid-template-columns: repeat(6, 1fr);
+		gap: var(--space-2);
+	}
+
+	.sheet-body .emoji-btn {
+		width: 100%;
+		height: 48px;
+		font-size: 1.5em;
 	}
 </style>
