@@ -43,6 +43,27 @@
 			}
 		};
 	}
+
+	// ── Stacked-sheet key handling ────────────────────────────────────────
+	// Module-level stack of open sheets (most-recent-last). Used so only the
+	// topmost sheet handles Escape / Tab — prevents one keypress from closing
+	// multiple stacked sheets.
+	let openStack: symbol[] = [];
+
+	export function pushOpenSheet(): symbol {
+		const token = Symbol();
+		openStack.push(token);
+		return token;
+	}
+
+	export function popOpenSheet(token: symbol): void {
+		const i = openStack.lastIndexOf(token);
+		if (i !== -1) openStack.splice(i, 1);
+	}
+
+	export function isTopmostSheet(token: symbol): boolean {
+		return openStack[openStack.length - 1] === token;
+	}
 </script>
 
 <script lang="ts">
@@ -69,6 +90,14 @@
 		children
 	}: Props = $props();
 
+	// `$props.id()` is deterministic across SSR + client, so `aria-labelledby`
+	// won't cause hydration mismatches (unlike `Math.random()`). Must be declared
+	// at the top level of the component as a variable declaration initializer.
+	const uid = $props.id();
+	const headingId = `bottom-sheet-heading-${uid}`;
+
+	const DISMISS_THRESHOLD = 80; // px
+
 	// ── Element refs ───────────────────────────────────────────────────────
 	let sheetEl = $state<HTMLDivElement | null>(null);
 	let headingEl = $state<HTMLHeadingElement | null>(null);
@@ -81,8 +110,20 @@
 	let dragStartY = 0;
 	let dragPointerId: number | null = null;
 
-	const DISMISS_THRESHOLD = 80; // px
-	const headingId = `bottom-sheet-heading-${Math.random().toString(36).slice(2, 9)}`;
+
+	// ── Open-sheet stack membership ────────────────────────────────────────
+	// Track this instance's position in the module-level open-sheet stack so
+	// that only the topmost sheet responds to Escape + traps Tab.
+	let myToken = $state<symbol | null>(null);
+	$effect(() => {
+		if (!open) return;
+		const token = pushOpenSheet();
+		myToken = token;
+		return () => {
+			myToken = null;
+			popOpenSheet(token);
+		};
+	});
 
 	// ── Reduced-motion ─────────────────────────────────────────────────────
 	// Honor prefers-reduced-motion by collapsing transition durations to 0.
@@ -147,6 +188,9 @@
 	// ── Keyboard handling (Escape + Tab trap) ──────────────────────────────
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
+		// Only the topmost sheet in the stack responds to Escape / Tab so that
+		// stacked sheets don't all close from a single keypress.
+		if (myToken === null || !isTopmostSheet(myToken)) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onclose();
