@@ -18,6 +18,33 @@
 	- Desktop (>= 640px): constrained width, either bottom-anchored
 	  (`desktopMode="sheet"`, default) or centered (`desktopMode="centered"`).
 -->
+<script module lang="ts">
+	// ── Shared scroll lock ────────────────────────────────────────────────
+	// Multiple BottomSheet instances can be open at once. Track the lock with
+	// a module-level counter so the body overflow is only restored when the
+	// last sheet closes.
+	let scrollLockCount = 0;
+	let scrollLockPrev = '';
+
+	export function acquireScrollLock(): () => void {
+		if (typeof document === 'undefined') return () => {};
+		if (scrollLockCount === 0) {
+			scrollLockPrev = document.body.style.overflow;
+			document.body.style.overflow = 'hidden';
+		}
+		scrollLockCount++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			scrollLockCount--;
+			if (scrollLockCount === 0) {
+				document.body.style.overflow = scrollLockPrev;
+			}
+		};
+	}
+</script>
+
 <script lang="ts">
 	import { fly, fade } from 'svelte/transition';
 	import type { Snippet } from 'svelte';
@@ -79,12 +106,8 @@
 	// or unmount. Stored on the effect closure so it survives re-runs safely.
 	$effect(() => {
 		if (!open) return;
-		if (typeof document === 'undefined') return;
-		const prev = document.body.style.overflow;
-		document.body.style.overflow = 'hidden';
-		return () => {
-			document.body.style.overflow = prev;
-		};
+		const release = acquireScrollLock();
+		return release;
 	});
 
 	// ── Focus management ───────────────────────────────────────────────────
@@ -145,7 +168,7 @@
 					last.focus();
 				}
 			} else {
-				if (active === last) {
+				if (active === last || !sheetEl.contains(active)) {
 					e.preventDefault();
 					first.focus();
 				}
