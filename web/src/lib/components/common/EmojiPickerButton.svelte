@@ -1,5 +1,6 @@
 <script lang="ts">
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 
 	interface Props {
 		value: string;
@@ -13,6 +14,22 @@
 	let triggerEl = $state<HTMLButtonElement>();
 	let dropdownX = $state(0);
 	let dropdownY = $state(0);
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// Track mobile viewport so we can swap the absolute-positioned portal
+	// dropdown for a BottomSheet that never clips off-screen. Mirrors the
+	// reference pattern from QuickActionsMenu.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
 
 	/**
 	 * Portal into the nearest <dialog> (stays in top-layer, escapes overflow
@@ -40,6 +57,9 @@
 	}
 
 	function handleWindowClick(e: MouseEvent) {
+		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
+		// close button) — skip the outside-click handler so it doesn't race.
+		if (isMobile) return;
 		if (open) {
 			const target = e.target as HTMLElement;
 			if (!target?.closest('.emoji-picker-button') && !target?.closest('.epb-dropdown')) {
@@ -49,7 +69,9 @@
 	}
 
 	function toggleOpen() {
-		if (!open && triggerEl) {
+		// Mobile branch skips the positioning math — BottomSheet docks to
+		// the viewport edge and doesn't need trigger-relative coordinates.
+		if (!open && !isMobile && triggerEl) {
 			const triggerRect = triggerEl.getBoundingClientRect();
 			const dialog = triggerEl.closest('dialog');
 			if (dialog) {
@@ -86,7 +108,13 @@
 		{value || placeholder}
 	</button>
 
-	{#if open}
+	{#if isMobile}
+		<BottomSheet {open} onclose={() => (open = false)} title="Pick an emoji">
+			<div class="epb-sheet-body">
+				<EmojiPicker selected={value} onselect={handleSelect} />
+			</div>
+		</BottomSheet>
+	{:else if open}
 		<div class="epb-dropdown" use:portal style="position:absolute; z-index:99999; left:{dropdownX}px; top:{dropdownY}px;">
 			<EmojiPicker selected={value} onselect={handleSelect} />
 		</div>
@@ -129,5 +157,13 @@
 
 	.trigger.empty {
 		color: var(--text-muted);
+	}
+
+	/* Center the picker grid inside the mobile sheet so the default
+	   300-ish-px grid reads cleanly on full-width viewports. */
+	.epb-sheet-body {
+		display: flex;
+		justify-content: center;
+		padding: 0 var(--space-3);
 	}
 </style>
