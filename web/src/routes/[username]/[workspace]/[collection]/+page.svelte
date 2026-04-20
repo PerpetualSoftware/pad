@@ -9,6 +9,7 @@
 	import TableView from '$lib/components/collections/TableView.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
+	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -391,6 +392,40 @@
 
 	let filtersOpen = $state(false);
 	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0);
+
+	// ── Viewport detection ───────────────────────────────────────────────
+	// On mobile the 3-icon view toggle (list/board/table) is swapped for a
+	// chip trigger that opens a BottomSheet with labeled options — the raw
+	// icon glyphs are ambiguous on touch and a labeled sheet is clearer.
+	// Desktop keeps the segmented toggle unchanged.
+	let isMobile = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 639.98px)');
+		isMobile = mq.matches;
+		const onChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+			// If the viewport crosses above the mobile breakpoint while the
+			// sheet is open (e.g. rotation), close it so a return to mobile
+			// doesn't immediately re-mount the open sheet.
+			if (!e.matches) {
+				viewSheetOpen = false;
+			}
+		};
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
+
+	let viewSheetOpen = $state(false);
+	let viewModeLabel = $derived(
+		viewMode === 'list' ? 'List' : viewMode === 'board' ? 'Board' : 'Table'
+	);
+
+	function selectViewMode(mode: ViewMode) {
+		saveViewMode(mode);
+		updateUrlFilters();
+		viewSheetOpen = false;
+	}
 
 	function singularName(): string {
 		if (!collection) return 'item';
@@ -803,29 +838,88 @@
 				</h1>
 
 				<div class="header-actions">
-					<div class="view-toggle">
+					{#if isMobile}
+						<!--
+							Mobile: labeled chip + BottomSheet picker. Icon-only
+							segmented buttons are hard to decode on touch, and the
+							sheet gives each option a clear label.
+						-->
 						<button
-							class="toggle-btn"
-							class:active={viewMode === 'list'}
-							onclick={() => { saveViewMode('list'); updateUrlFilters(); }}
-							aria-label="List view"
-							title="List view"
-						>&#9776;</button>
-						<button
-							class="toggle-btn"
-							class:active={viewMode === 'board'}
-							onclick={() => { saveViewMode('board'); updateUrlFilters(); }}
-							aria-label="Board view"
-							title="Board view"
-						>&#9638;</button>
-						<button
-							class="toggle-btn"
-							class:active={viewMode === 'table'}
-							onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
-							aria-label="Table view"
-							title="Table view"
-						>&#9783;</button>
-					</div>
+							class="view-chip"
+							type="button"
+							onclick={() => (viewSheetOpen = true)}
+							aria-label="Change view"
+						>
+							<span class="view-chip-label">View: {viewModeLabel}</span>
+							<span class="view-chip-caret" aria-hidden="true">▾</span>
+						</button>
+						{#if viewSheetOpen}
+							<!--
+								Gate the sheet on `viewSheetOpen` (gate-on-open
+								pattern from TASK-633) so BottomSheet's global
+								keydown listener isn't mounted when idle.
+							-->
+							<BottomSheet
+								open={viewSheetOpen}
+								onclose={() => (viewSheetOpen = false)}
+								title="Choose view"
+							>
+								<div class="view-sheet-body">
+									<button
+										class="view-sheet-option"
+										class:active={viewMode === 'list'}
+										type="button"
+										onclick={() => selectViewMode('list')}
+									>
+										<span class="view-sheet-icon">&#9776;</span>
+										<span>List</span>
+									</button>
+									<button
+										class="view-sheet-option"
+										class:active={viewMode === 'board'}
+										type="button"
+										onclick={() => selectViewMode('board')}
+									>
+										<span class="view-sheet-icon">&#9638;</span>
+										<span>Board</span>
+									</button>
+									<button
+										class="view-sheet-option"
+										class:active={viewMode === 'table'}
+										type="button"
+										onclick={() => selectViewMode('table')}
+									>
+										<span class="view-sheet-icon">&#9783;</span>
+										<span>Table</span>
+									</button>
+								</div>
+							</BottomSheet>
+						{/if}
+					{:else}
+						<div class="view-toggle">
+							<button
+								class="toggle-btn"
+								class:active={viewMode === 'list'}
+								onclick={() => { saveViewMode('list'); updateUrlFilters(); }}
+								aria-label="List view"
+								title="List view"
+							>&#9776;</button>
+							<button
+								class="toggle-btn"
+								class:active={viewMode === 'board'}
+								onclick={() => { saveViewMode('board'); updateUrlFilters(); }}
+								aria-label="Board view"
+								title="Board view"
+							>&#9638;</button>
+							<button
+								class="toggle-btn"
+								class:active={viewMode === 'table'}
+								onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
+								aria-label="Table view"
+								title="Table view"
+							>&#9783;</button>
+						</div>
+					{/if}
 
 					<button
 						class="filter-toggle-btn"
@@ -1226,6 +1320,70 @@
 
 	.toggle-btn:hover:not(.active) {
 		background: var(--bg-hover);
+	}
+
+	/* Mobile view chip — replaces the segmented .view-toggle under 640px.
+	   The chip shows a labeled summary ("View: Board ▾") that opens a
+	   BottomSheet of labeled choices. */
+	.view-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-primary);
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.view-chip:hover {
+		border-color: var(--accent-blue);
+	}
+
+	.view-chip-caret {
+		color: var(--text-muted);
+		font-size: 0.9em;
+		line-height: 1;
+	}
+
+	.view-sheet-body {
+		display: flex;
+		flex-direction: column;
+		padding: 0 var(--space-2) var(--space-3);
+	}
+
+	.view-sheet-option {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		width: 100%;
+		text-align: left;
+		background: none;
+		border: none;
+		padding: var(--space-3);
+		color: var(--text-primary);
+		font-size: 1em;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+
+	.view-sheet-option:hover {
+		background: var(--bg-hover);
+	}
+
+	.view-sheet-option.active {
+		background: var(--bg-tertiary);
+		font-weight: 600;
+	}
+
+	.view-sheet-icon {
+		font-size: 1.1em;
+		width: 1.5em;
+		text-align: center;
+		color: var(--text-secondary);
 	}
 
 	/* Filter toggle */
