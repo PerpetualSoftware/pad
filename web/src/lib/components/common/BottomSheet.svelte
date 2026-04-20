@@ -27,16 +27,40 @@
 	}
 
 	let { open, onclose, title, children }: Props = $props();
+
+	// Stable per-instance heading id so aria-labelledby can point at the
+	// visible title when one is provided. $props.id() must be the direct
+	// initializer of a top-level const, so we bind it to `uid` and compose
+	// the full id separately.
+	const uid = $props.id();
+	const headingId = `bottom-sheet-heading-${uid}`;
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (!open) return;
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			onclose();
+		}
+	}
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 {#if open}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="bs-overlay" onclick={onclose}>
-		<div class="bs-sheet" onclick={(e) => e.stopPropagation()}>
+		<div
+			class="bs-sheet"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby={title ? headingId : undefined}
+			aria-label={title ? undefined : 'Dialog'}
+			onclick={(e) => e.stopPropagation()}
+		>
 			{#if title}
 				<header class="bs-header">
-					<h2 class="bs-title">{title}</h2>
+					<h2 id={headingId} class="bs-title">{title}</h2>
 					<button class="bs-close" type="button" onclick={onclose} aria-label="Close">
 						&#10005;
 					</button>
