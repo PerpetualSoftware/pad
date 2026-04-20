@@ -867,7 +867,13 @@
 								editCollectionSection = 'actions';
 								editCollectionOpen = true;
 							}}
-							oncollectionupdated={() => {
+							oncollectionupdated={(updated) => {
+								// Apply the returned collection immediately so a fast
+								// follow-up save reads fresh settings.quick_actions
+								// instead of stale ones — without this, a second
+								// save can overwrite the first before loadCollection
+								// resolves.
+								collection = updated;
 								loadCollection(wsSlug, collSlug, showArchived);
 							}}
 						/>
