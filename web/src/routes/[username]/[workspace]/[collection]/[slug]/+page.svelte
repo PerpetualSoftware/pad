@@ -19,6 +19,7 @@
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
+	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -84,6 +85,8 @@
 	let itemLinks = $state<ItemLink[]>([]);
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
 	let shareDialogOpen = $state(false);
+	let editCollectionOpen = $state(false);
+	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let agentRoles = $state<AgentRole[]>([]);
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
@@ -726,8 +729,22 @@
 			>
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
 			</button>
-			{#if quickActions.length > 0 && collection}
-				<QuickActionsMenu actions={quickActions} {item} {collection} scope="item" />
+			{#if collection && (quickActions.length > 0 || isOwner)}
+				<QuickActionsMenu
+					actions={quickActions}
+					{item}
+					{collection}
+					scope="item"
+					{wsSlug}
+					canEdit={isOwner}
+					onmanage={() => {
+						editCollectionSection = 'actions';
+						editCollectionOpen = true;
+					}}
+					oncollectionupdated={(updated) => {
+						collection = updated;
+					}}
+				/>
 			{/if}
 			<button
 				class="action-btn"
@@ -1041,6 +1058,48 @@
 			targetSlug={item.slug}
 			targetName={formatItemRef(item) || item.title}
 			bind:open={shareDialogOpen}
+		/>
+	{/if}
+
+	{#if isOwner && collection}
+		<EditCollectionModal
+			bind:open={editCollectionOpen}
+			{collection}
+			{wsSlug}
+			initialSection={editCollectionSection}
+			onupdated={(updated) => {
+				if (!updated) {
+					// Archive case — the collection is gone. Navigate away from
+					// this now-invalid item route rather than leaving the user
+					// with stale state that would hit deleted resources.
+					collectionStore.loadCollections(wsSlug);
+					void goto(`/${username}/${wsSlug}`);
+					return;
+				}
+				collection = updated;
+				collectionStore.loadCollections(wsSlug);
+				// If the owner renamed the collection, its slug may have
+				// changed. The current `/[collection]/[slug]` URL still
+				// points at the old slug and subsequent loadData() calls
+				// (which fetch by collSlug) would 404. Navigate to the
+				// new slug while preserving the item slug. The new route
+				// will trigger its own loadData() via the $effect on
+				// wsSlug/collSlug/itemSlug, so no explicit refresh here.
+				if (updated.slug !== collSlug && itemSlug) {
+					void goto(`/${username}/${wsSlug}/${updated.slug}/${itemSlug}`);
+					return;
+				}
+				// Non-navigating update: schema or field mappings may have
+				// changed (rename / migration), so reload the item so fields
+				// reflect the new shape. Without this, a subsequent
+				// updateField() would write stale fields JSON back and
+				// clobber migrated values.
+				void loadData();
+			}}
+			onclose={() => {
+				editCollectionOpen = false;
+				editCollectionSection = undefined;
+			}}
 		/>
 	{/if}
 {/if}
