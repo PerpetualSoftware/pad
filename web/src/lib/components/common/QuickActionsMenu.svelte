@@ -192,6 +192,13 @@
 		// swipe-down) — skip the outside-click handler so it doesn't race.
 		if (isMobile) return;
 		const target = e.target as HTMLElement;
+		if (!target) return;
+		// The EmojiPickerButton portals its dropdown to document.body (or the
+		// nearest <dialog>); clicks inside the portal (.epb-dropdown) or on
+		// the emoji trigger itself (.emoji-picker-button) should NOT close
+		// the menu, or the in-progress emoji selection is lost before the
+		// bound value can update.
+		if (target.closest('.epb-dropdown') || target.closest('.emoji-picker-button')) return;
 		if (!target.closest('.quick-actions-menu')) {
 			open = false;
 			resetCreateForm();

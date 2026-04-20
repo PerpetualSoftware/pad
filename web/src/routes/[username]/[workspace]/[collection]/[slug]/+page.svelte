@@ -1068,7 +1068,15 @@
 			{wsSlug}
 			initialSection={editCollectionSection}
 			onupdated={(updated) => {
-				if (updated) collection = updated;
+				if (!updated) {
+					// Archive case — the collection is gone. Navigate away from
+					// this now-invalid item route rather than leaving the user
+					// with stale state that would hit deleted resources.
+					collectionStore.loadCollections(wsSlug);
+					void goto(`/${username}/${wsSlug}`);
+					return;
+				}
+				collection = updated;
 				collectionStore.loadCollections(wsSlug);
 			}}
 			onclose={() => {
