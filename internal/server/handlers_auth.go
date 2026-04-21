@@ -133,9 +133,16 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	return payload
 }
 
+// requestIsLoopback reports whether the request arrived from a loopback
+// interface. Uses the untampered TCP peer address captured by
+// CapturePeerAddr (never r.RemoteAddr directly) so a proxied request that
+// forged X-Forwarded-For: 127.0.0.1 cannot impersonate a local caller and
+// trigger the bootstrap bypass — a direct path to full-instance takeover
+// before TASK-660/TASK-662 closed it.
 func requestIsLoopback(r *http.Request) bool {
-	host := r.RemoteAddr
-	if parsedHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+	peer := rawPeerAddr(r)
+	host := peer
+	if parsedHost, _, err := net.SplitHostPort(peer); err == nil {
 		host = parsedHost
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))

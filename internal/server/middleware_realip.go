@@ -1,11 +1,40 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 )
+
+// peerAddrCtxKey carries the untampered TCP peer address (the original
+// r.RemoteAddr) through the request context. Middleware downstream of
+// TrustedProxyRealIP can't read the raw address off r.RemoteAddr anymore
+// because the rewrite is already baked in.
+type peerAddrCtxKey struct{}
+
+// CapturePeerAddr must be installed BEFORE TrustedProxyRealIP in the chain.
+// It snapshots the real TCP peer RemoteAddr into the request context so
+// authenticity checks (e.g. bootstrap loopback) can verify the actual wire
+// peer even when a trusted proxy has rewritten r.RemoteAddr.
+func CapturePeerAddr(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), peerAddrCtxKey{}, r.RemoteAddr)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// rawPeerAddr returns the untampered TCP peer address captured by
+// CapturePeerAddr, falling back to the current r.RemoteAddr if the
+// middleware wasn't installed (e.g. in tests). Never use r.RemoteAddr
+// directly for authenticity decisions — use this.
+func rawPeerAddr(r *http.Request) string {
+	if v, ok := r.Context().Value(peerAddrCtxKey{}).(string); ok && v != "" {
+		return v
+	}
+	return r.RemoteAddr
+}
 
 // TrustedProxyRealIP returns middleware that rewrites r.RemoteAddr from
 // X-Real-IP / X-Forwarded-For ONLY when the direct TCP peer is within one

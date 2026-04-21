@@ -149,6 +149,42 @@ func TestTrustedProxyRealIP_TrustedPeer_XFFFirstEntryUsed(t *testing.T) {
 	}
 }
 
+func TestCapturePeerAddr_PreservesOriginalRemoteAddr(t *testing.T) {
+	// CapturePeerAddr installs the raw peer into context BEFORE TrustedProxyRealIP
+	// has a chance to rewrite it — so downstream handlers can always fetch the
+	// real TCP peer, even on deployments with trusted proxies.
+	const realPeer = "10.0.0.5:12345"
+	var seenCtx, seenRemoteAddr string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenCtx = rawPeerAddr(r)
+		seenRemoteAddr = r.RemoteAddr
+	})
+	cidrs := ParseTrustedProxyCIDRs("10.0.0.0/8")
+	chain := CapturePeerAddr(TrustedProxyRealIP(cidrs)(next))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = realPeer
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+	chain.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seenRemoteAddr != "198.51.100.7" {
+		t.Fatalf("expected RemoteAddr rewritten to XFF value, got %q", seenRemoteAddr)
+	}
+	if seenCtx != realPeer {
+		t.Fatalf("expected context to preserve raw peer %q, got %q", realPeer, seenCtx)
+	}
+}
+
+func TestRawPeerAddr_FallsBackToRemoteAddrWithoutMiddleware(t *testing.T) {
+	// In tests (or any call path that skips CapturePeerAddr), rawPeerAddr
+	// falls back to r.RemoteAddr rather than returning empty.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.1:9999"
+	if got := rawPeerAddr(req); got != "192.0.2.1:9999" {
+		t.Fatalf("rawPeerAddr fallback = %q, want %q", got, "192.0.2.1:9999")
+	}
+}
+
 func TestTrustedProxyRealIP_TrustedPeer_InvalidHeaderIgnored(t *testing.T) {
 	var seen string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
