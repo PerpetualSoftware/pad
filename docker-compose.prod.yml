@@ -41,7 +41,10 @@ services:
 
   postgres:
     environment:
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me-in-production}"
+      # Base compose already requires POSTGRES_PASSWORD. We keep the same
+      # required-reference here (no placeholder default) so a production
+      # deploy can never silently boot with a known-weak credential.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example}"
     deploy:
       resources:
         limits:
