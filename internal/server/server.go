@@ -565,9 +565,11 @@ func (s *Server) spaHandler() http.Handler {
 		// Inject nonce into inline <script> tags (SvelteKit bootstrap)
 		html := bytes.Replace(indexHTML, []byte("<script>"), []byte(fmt.Sprintf(`<script nonce="%s">`, nonce)), -1)
 
-		// Set nonce-based CSP (overrides the strict default from SecurityHeaders)
+		// Set nonce-based CSP (overrides the strict default from SecurityHeaders).
+		// script-src-attr 'none' blocks inline event handlers regardless of the
+		// script-src nonce — per CSP spec, event attributes bypass script-src.
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+			"default-src 'self'; script-src 'self' 'nonce-%s'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 			nonce))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
