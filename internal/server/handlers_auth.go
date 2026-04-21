@@ -133,13 +133,37 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	return payload
 }
 
-// requestIsLoopback reports whether the request arrived from a loopback
-// interface. Uses the untampered TCP peer address captured by
-// CapturePeerAddr (never r.RemoteAddr directly) so a proxied request that
-// forged X-Forwarded-For: 127.0.0.1 cannot impersonate a local caller and
-// trigger the bootstrap bypass — a direct path to full-instance takeover
-// before TASK-660/TASK-662 closed it.
+// requestIsLoopback reports whether the request came from a local CLI
+// running on the same machine as the Pad server. The check is intentionally
+// strict: it must be satisfiable ONLY by a direct loopback-TCP connection,
+// never by a request relayed through a proxy (local or remote).
+//
+// Two conditions must hold:
+//
+//  1. The untampered TCP peer (captured by CapturePeerAddr before any
+//     RealIP rewrite) is a loopback address. This defeats X-Forwarded-For
+//     spoofing from a non-loopback attacker — TrustedProxyRealIP already
+//     ignores XFF from untrusted peers, but we re-check the raw peer so
+//     a proxy misconfigured to trust 127.0.0.0/8 still can't be fooled
+//     into rewriting the peer itself.
+//
+//  2. Neither X-Forwarded-For nor X-Real-IP is set. A legitimate local CLI
+//     talking directly to the Pad port never sets these headers. A reverse
+//     proxy forwarding public traffic always does — so this rejects the
+//     regression Codex flagged on PR #175: a local Caddy/nginx proxying
+//     public traffic to Pad on 127.0.0.1 would otherwise make every
+//     request look loopback and reopen the bootstrap gate.
+//
+// The rule denies some unusual legitimate setups (e.g. a local proxy that
+// deliberately strips forwarding headers) in exchange for a simple,
+// sound invariant. Operators in that narrow case can call
+// `pad auth setup` from the host CLI instead of through their proxy.
 func requestIsLoopback(r *http.Request) bool {
+	// (2) Reject any proxied request.
+	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-IP") != "" {
+		return false
+	}
+	// (1) The TCP peer must be a loopback address.
 	peer := rawPeerAddr(r)
 	host := peer
 	if parsedHost, _, err := net.SplitHostPort(peer); err == nil {

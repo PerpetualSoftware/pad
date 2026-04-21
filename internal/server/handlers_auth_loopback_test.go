@@ -15,32 +15,56 @@ func TestRequestIsLoopback_IgnoresRealIPRewrite(t *testing.T) {
 		name         string
 		peer         string
 		spoofedXFF   string
+		spoofedXRI   string // X-Real-IP
 		trustedCIDRs string
 		wantLoopback bool
 	}{
 		{
-			name:         "direct loopback peer returns true",
+			name:         "direct loopback peer, no proxy headers: allowed",
 			peer:         "127.0.0.1:54321",
 			wantLoopback: true,
 		},
 		{
-			name:         "direct LAN peer returns false",
+			name:         "direct LAN peer: rejected",
 			peer:         "192.168.1.5:54321",
 			wantLoopback: false,
 		},
 		{
-			name:         "trusted proxy forwarding spoofed 127.0.0.1 is NOT loopback",
-			peer:         "10.0.0.5:54321", // real peer in trusted CIDR
-			spoofedXFF:   "127.0.0.1",      // attacker-controlled header
+			name:         "loopback peer WITH X-Forwarded-For: rejected (proxy relay)",
+			peer:         "127.0.0.1:54321",
+			spoofedXFF:   "203.0.113.8",
+			wantLoopback: false,
+		},
+		{
+			name:         "loopback peer WITH X-Real-IP: rejected (proxy relay)",
+			peer:         "127.0.0.1:54321",
+			spoofedXRI:   "203.0.113.8",
+			wantLoopback: false,
+		},
+		{
+			name:         "loopback peer with spoofed XFF=127.0.0.1: rejected (any XFF rejects)",
+			peer:         "127.0.0.1:54321",
+			spoofedXFF:   "127.0.0.1",
+			wantLoopback: false,
+		},
+		{
+			name:         "trusted proxy forwarding spoofed XFF=127.0.0.1: rejected",
+			peer:         "10.0.0.5:54321",
+			spoofedXFF:   "127.0.0.1",
 			trustedCIDRs: "10.0.0.0/8",
 			wantLoopback: false,
 		},
 		{
-			name:         "untrusted peer sending XFF=127.0.0.1 is NOT loopback",
+			name:         "untrusted peer with spoofed XFF=127.0.0.1: rejected",
 			peer:         "203.0.113.7:54321",
 			spoofedXFF:   "127.0.0.1",
 			trustedCIDRs: "10.0.0.0/8",
 			wantLoopback: false,
+		},
+		{
+			name:         "IPv6 loopback peer, no proxy headers: allowed",
+			peer:         "[::1]:54321",
+			wantLoopback: true,
 		},
 	}
 
@@ -58,6 +82,9 @@ func TestRequestIsLoopback_IgnoresRealIPRewrite(t *testing.T) {
 			req.RemoteAddr = tt.peer
 			if tt.spoofedXFF != "" {
 				req.Header.Set("X-Forwarded-For", tt.spoofedXFF)
+			}
+			if tt.spoofedXRI != "" {
+				req.Header.Set("X-Real-IP", tt.spoofedXRI)
 			}
 			chain.ServeHTTP(httptest.NewRecorder(), req)
 
