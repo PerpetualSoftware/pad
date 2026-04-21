@@ -30,7 +30,9 @@ const MARKDOWN_ALLOWED_TAGS = [
 // strips javascript: and data: hrefs via its default URL policy.
 const MARKDOWN_ALLOWED_ATTR = [
 	'href', 'title', 'target', 'rel', 'class', 'aria-hidden',
-	'alt', 'src', 'id', 'name', 'align', 'type', 'checked', 'disabled'
+	'alt', 'src', 'id', 'name', 'align', 'type', 'checked', 'disabled',
+	// <ol start="N"> — marked emits this for lists that don't begin at 1.
+	'start'
 ] as const;
 
 /**
