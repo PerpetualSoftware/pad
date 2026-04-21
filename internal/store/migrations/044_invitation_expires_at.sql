@@ -8,10 +8,16 @@
 -- backfilled relative to their created_at so they also age out.
 ALTER TABLE workspace_invitations ADD COLUMN expires_at TEXT;
 
--- Backfill: 14 days after the creation time. SQLite supports datetime arithmetic
--- via the modifiers passed to datetime().
+-- Backfill: 14 days after the creation time, emitted in RFC3339 with a 'Z'
+-- suffix. We must match the format used by Go's time.RFC3339 exactly —
+-- internal/store/store.go's parseTime silently returns the zero Time on
+-- parse failure, which would make IsExpired() treat every legacy invitation
+-- as already-expired right after the migration runs. The default
+-- datetime(..., '+14 days') output of 'YYYY-MM-DD HH:MM:SS' is space-separated
+-- and un-parseable by RFC3339, so we strftime the result into the expected
+-- shape.
 UPDATE workspace_invitations
-SET expires_at = datetime(created_at, '+14 days')
+SET expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at, '+14 days')
 WHERE expires_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_invitations_expires_at ON workspace_invitations(expires_at);

@@ -8,10 +8,16 @@
 -- backfilled relative to their created_at so they also age out.
 ALTER TABLE workspace_invitations ADD COLUMN IF NOT EXISTS expires_at TEXT;
 
--- Backfill: 14 days after the creation time. created_at is stored as TEXT so
--- we cast it to TIMESTAMP for arithmetic, then back to TEXT for consistency.
+-- Backfill: 14 days after the creation time, emitted in RFC3339 with a 'Z'
+-- suffix so Go's time.Parse(time.RFC3339, …) can read the result. The default
+-- ::TEXT cast of a timestamp produces space-separated output that parseTime
+-- (internal/store/store.go) silently fails on, which would make IsExpired()
+-- treat every legacy invitation as already-expired right after migration.
 UPDATE workspace_invitations
-SET expires_at = ((created_at::timestamp + INTERVAL '14 days') AT TIME ZONE 'UTC')::TEXT
+SET expires_at = to_char(
+    (created_at::timestamp + INTERVAL '14 days') AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+)
 WHERE expires_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_invitations_expires_at ON workspace_invitations(expires_at);
