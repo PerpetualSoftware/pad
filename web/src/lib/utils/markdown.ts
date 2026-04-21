@@ -1,4 +1,5 @@
 import { marked, type Tokens } from 'marked';
+import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
 
@@ -16,8 +17,66 @@ renderer.link = ({ href, title, tokens }: Tokens.Link) => {
 
 marked.use({ renderer });
 
+// Tags produced by marked + our wiki-link renderer. Anything outside this
+// allowlist (script, iframe, object, svg, form, etc.) gets stripped.
+const MARKDOWN_ALLOWED_TAGS = [
+	'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'del', 'div', 'em',
+	'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'ins', 'kbd',
+	'li', 'ol', 'p', 'pre', 's', 'span', 'strong', 'sub', 'sup',
+	'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul', 'input'
+] as const;
+
+// Attributes we emit from markdown + wiki-links. DOMPurify already
+// strips javascript: and data: hrefs via its default URL policy.
+const MARKDOWN_ALLOWED_ATTR = [
+	'href', 'title', 'target', 'rel', 'class', 'aria-hidden',
+	'alt', 'src', 'id', 'name', 'align', 'type', 'checked', 'disabled',
+	// <ol start="N"> — marked emits this for lists that don't begin at 1.
+	'start'
+] as const;
+
 /**
- * Render markdown with wiki-link resolution.
+ * Sanitize HTML produced from markdown. Removes any tags/attributes outside
+ * our markdown allowlist — most importantly <script>, inline event handlers
+ * (onerror, onclick, ...), and javascript:/data: URLs. All rendered-markdown
+ * output that ends up in `{@html}` MUST pass through this first.
+ *
+ * Runs client-side only. In SSR/prerender contexts there is no DOM, so we
+ * return an empty string rather than emitting unsanitized HTML — these
+ * contexts don't render user-generated markdown anyway (items and comments
+ * load via the API at runtime), so the empty fallback is a safe no-op.
+ */
+export function sanitizeMarkdownHtml(html: string): string {
+	if (typeof window === 'undefined') return '';
+	return DOMPurify.sanitize(html, {
+		ALLOWED_TAGS: [...MARKDOWN_ALLOWED_TAGS],
+		ALLOWED_ATTR: [...MARKDOWN_ALLOWED_ATTR],
+		ALLOW_DATA_ATTR: false,
+		// Keep target="_blank" on external links (marked renderer sets it).
+		ADD_ATTR: ['target'],
+		// Disallow unknown protocols outright.
+		ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+	});
+}
+
+/**
+ * Escape HTML-significant characters so a user-controlled string can be
+ * safely interpolated into attribute values / text nodes.
+ */
+function escapeHtml(s: string): string {
+	return s
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+/**
+ * Render markdown with wiki-link resolution. Output is HTML-sanitized via
+ * {@link sanitizeMarkdownHtml} before being returned; consumers can safely
+ * pipe the result to `{@html}` without additional escaping.
+ *
  * @param visibleCollectionSlugs - Set of collection slugs the user can see.
  *   undefined = all visible (no filtering). Empty set = nothing visible (anonymous).
  */
@@ -29,18 +88,23 @@ export function renderMarkdown(
 	visibleCollectionSlugs?: Set<string>
 ): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
+		// Escape user-controlled title so it can't break out of attribute
+		// quotes. sanitizeMarkdownHtml would strip the worst offenders after
+		// the fact, but escaping up-front keeps the intermediate HTML valid
+		// and avoids relying on the sanitizer to paper over bad markup.
+		const safeTitle = escapeHtml(title);
 		const item = items.find(i => i.title === title);
 		if (item && item.collection_slug) {
 			// Check visibility: if a visibility set is provided, check it
 			if (visibleCollectionSlugs !== undefined && !visibleCollectionSlugs.has(item.collection_slug)) {
-				return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${title}</span>`;
+				return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${safeTitle}</span>`;
 			}
 			const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
-			return `<a href="${prefix}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${title}</a>`;
+			return `<a href="${prefix}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${safeTitle}</a>`;
 		}
-		return `<span class="doc-link broken">${title}</span>`;
+		return `<span class="doc-link broken">${safeTitle}</span>`;
 	});
-	return marked(withLinks) as string;
+	return sanitizeMarkdownHtml(marked(withLinks) as string);
 }
 
 export function wordCount(content: string): number {
