@@ -28,8 +28,14 @@ func SecurityHeaders(next http.Handler) http.Handler {
 
 		// CSP: strict policy for API responses. HTML pages served by spaHandler
 		// override this with a nonce-based script-src for SvelteKit inline scripts.
+		//
+		// script-src-attr 'none' blocks inline event handlers (onerror=, onclick=,
+		// onload=, …). Those bypass script-src per the CSP spec, so without this
+		// directive an attacker who slips markup past the sanitizer can still
+		// execute JS via event attributes. Defense-in-depth for the comment-XSS
+		// fix (TASK-647) and for any future sanitizer regression.
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 
 		next.ServeHTTP(w, r)
 	})
