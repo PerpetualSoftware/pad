@@ -537,7 +537,13 @@ func (s *Server) SetWebUI(fsys fs.FS) {
 
 func (s *Server) spaHandler() http.Handler {
 	fileServer := http.FileServer(http.FS(s.webFS))
-	indexHTML, _ := fs.ReadFile(s.webFS, "index.html")
+	indexHTML, err := fs.ReadFile(s.webFS, "index.html")
+	if err != nil {
+		// Embedded web UI is missing — fail fast instead of silently
+		// serving blank HTML to every request. This indicates a broken
+		// build, so the server should refuse to start.
+		panic(fmt.Sprintf("spaHandler: failed to read embedded index.html: %v", err))
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -566,10 +572,17 @@ func (s *Server) spaHandler() http.Handler {
 		html := bytes.Replace(indexHTML, []byte("<script>"), []byte(fmt.Sprintf(`<script nonce="%s">`, nonce)), -1)
 
 		// Set nonce-based CSP (overrides the strict default from SecurityHeaders).
-		// script-src-attr 'none' blocks inline event handlers regardless of the
-		// script-src nonce — per CSP spec, event attributes bypass script-src.
+		// - 'nonce-<N>' authorizes the SvelteKit bootstrap <script> we inject below.
+		// - 'strict-dynamic' lets that trusted script dynamically import() the
+		//   SvelteKit runtime chunks without listing every build-hashed path. In
+		//   browsers that honor CSP L3, 'strict-dynamic' supersedes the 'self'
+		//   host-list, so an XSS gap that injects <script src="//evil.com"> is
+		//   rejected even though 'self' is present. 'self' stays as a fallback
+		//   for older browsers that don't implement strict-dynamic.
+		// - script-src-attr 'none' blocks inline event handlers regardless of the
+		//   script-src nonce — per CSP spec, event attributes bypass script-src.
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'self'; script-src 'self' 'nonce-%s'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+			"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 			nonce))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
