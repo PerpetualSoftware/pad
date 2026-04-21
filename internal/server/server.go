@@ -222,6 +222,11 @@ func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 
 	// Infrastructure middleware (applies to all routes including /metrics)
+	// CapturePeerAddr MUST run before TrustedProxyRealIP so downstream code
+	// that needs to verify the real TCP peer (e.g. the bootstrap loopback
+	// check) can read the untampered value from request context even on
+	// deployments with a trusted reverse proxy in front.
+	r.Use(CapturePeerAddr)
 	// RealIP is gated on PAD_TRUSTED_PROXIES. When unset (the default), proxy
 	// headers are ignored and the real TCP peer address is used everywhere.
 	// This prevents X-Forwarded-For spoofing from bypassing rate limits, the
