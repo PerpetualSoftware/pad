@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type Server struct {
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
 	metrics            *metrics.Metrics      // Prometheus metrics (optional)
+	trustedProxyCIDRs  []*net.IPNet          // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
 	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
 	cloudMode           bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
@@ -179,6 +181,16 @@ func (s *Server) SetSSELimits(global, perWorkspace int) {
 	s.sseMaxPerWorkspace = perWorkspace
 }
 
+// SetTrustedProxies configures which direct TCP peers are allowed to set
+// X-Real-IP / X-Forwarded-For on incoming requests. Accepts a comma-
+// separated list of CIDRs or bare IPs (e.g. "10.0.0.0/8, 172.16.0.0/12").
+// When empty (the default), proxy headers are ignored entirely — the
+// actual TCP peer address is used for rate limiting, the bootstrap
+// loopback check, and audit logging.
+func (s *Server) SetTrustedProxies(spec string) {
+	s.trustedProxyCIDRs = ParseTrustedProxyCIDRs(spec)
+}
+
 // reconfigureEmail reads email settings from the platform_settings table
 // and updates (or creates) the email sender. Called after admin settings change.
 func (s *Server) reconfigureEmail() {
@@ -210,7 +222,11 @@ func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 
 	// Infrastructure middleware (applies to all routes including /metrics)
-	r.Use(chimiddleware.RealIP)
+	// RealIP is gated on PAD_TRUSTED_PROXIES. When unset (the default), proxy
+	// headers are ignored and the real TCP peer address is used everywhere.
+	// This prevents X-Forwarded-For spoofing from bypassing rate limits, the
+	// bootstrap loopback check, or audit logs on direct-exposed deployments.
+	r.Use(TrustedProxyRealIP(s.trustedProxyCIDRs))
 	r.Use(chimiddleware.RequestID)
 	r.Use(StructuredLogger)
 	if s.metrics != nil {
