@@ -5381,13 +5381,27 @@ func relativeTimeStr(t time.Time) string {
 
 // --- database tools ---
 
-// pgDbnameFromURL extracts just the database name from a PostgreSQL URL for display purposes.
+// pgDbnameFromURL extracts just the database name from a PostgreSQL DSN for
+// display purposes. Handles both the URI form (postgres://.../dbname) and the
+// libpq keyword=value form ("host=... dbname=foo ..."). Returns "unknown" when
+// the dbname can't be determined — this is display-only, not used to build
+// the actual connection.
 func pgDbnameFromURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "unknown"
+	// URI form: postgres://user:pass@host/dbname?opts
+	if strings.HasPrefix(raw, "postgres://") || strings.HasPrefix(raw, "postgresql://") {
+		if u, err := url.Parse(raw); err == nil {
+			if name := strings.TrimPrefix(u.Path, "/"); name != "" {
+				return name
+			}
+		}
 	}
-	return strings.TrimPrefix(u.Path, "/")
+	// libpq keyword=value form: "host=... dbname=foo ..."
+	for _, tok := range strings.Fields(raw) {
+		if strings.HasPrefix(tok, "dbname=") {
+			return strings.TrimPrefix(tok, "dbname=")
+		}
+	}
+	return "unknown"
 }
 
 func dbBackupCmd() *cobra.Command {

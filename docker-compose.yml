@@ -1,8 +1,11 @@
 # Pad — local production setup with PostgreSQL + Redis
-# Usage: docker compose up -d
+# Usage:
+#   1. cp .env.example .env            # generates a POSTGRES_PASSWORD if missing
+#   2. docker compose up -d
 #
 # Starts Pad with PostgreSQL for storage and Redis for real-time events.
-# Access the web UI at http://localhost:7777
+# The web UI binds to 127.0.0.1:7777 on the host by default — LAN/internet
+# access requires explicit opt-in (see PAD_BIND_ADDR below or the prod override).
 # First-time setup: visit the UI or run `pad auth setup` from a local CLI.
 
 services:
@@ -11,12 +14,21 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "7777:7777"
+      # Bind to loopback only by default. A fresh install exposes the bootstrap
+      # endpoint until the first admin is created, so defaulting to 0.0.0.0
+      # would hand control of the instance to anyone who can route to the host.
+      # Override by setting PAD_BIND_ADDR=0.0.0.0 (or a specific LAN IP) in .env.
+      - "${PAD_BIND_ADDR:-127.0.0.1}:7777:7777"
     environment:
       PAD_HOST: "0.0.0.0"
       PAD_PORT: "7777"
       PAD_DB_DRIVER: "postgres"
-      PAD_DATABASE_URL: "postgres://pad:pad@postgres:5432/pad?sslmode=disable"
+      # POSTGRES_PASSWORD is REQUIRED — docker compose refuses to start when unset.
+      # Use libpq's keyword=value DSN (not the URI form) so passwords with
+      # reserved URI characters like '/', '+', ':', '@' — common in
+      # `openssl rand -base64` output — don't need percent-encoding and
+      # can't break the connection string by accident.
+      PAD_DATABASE_URL: "host=postgres port=5432 user=pad password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example} dbname=pad sslmode=disable"
       PAD_REDIS_URL: "redis://redis:6379"
       PAD_DATA_DIR: "/data"
       PAD_LOG_LEVEL: "info"
@@ -39,7 +51,8 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: pad
-      POSTGRES_PASSWORD: pad
+      # Required. Fail-fast with the helpful error below when unset.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example}"
       POSTGRES_DB: pad
     volumes:
       - pg-data:/var/lib/postgresql/data

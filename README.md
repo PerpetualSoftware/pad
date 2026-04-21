@@ -172,6 +172,18 @@ docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
 
 Use broader publishing only when you intend to make Pad reachable from other machines or interfaces.
 
+### Docker Compose
+
+The repo ships a `docker-compose.yml` that wires Pad + PostgreSQL + Redis. Before the first `docker compose up`, copy the env template and fill in a Postgres password:
+
+```bash
+cp .env.example .env
+# Edit .env and set POSTGRES_PASSWORD (e.g. `openssl rand -base64 32`).
+docker compose up -d
+```
+
+Compose refuses to start when `POSTGRES_PASSWORD` is missing — this is deliberate so a fresh deploy cannot silently inherit a known-weak default credential. The web UI binds to `127.0.0.1:7777` on the host by default. Set `PAD_BIND_ADDR=0.0.0.0` in `.env` to expose it to the LAN, or point a reverse proxy at the container on the `pad-net` network (see `docker-compose.prod.yml`).
+
 ### Binary Download
 
 Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/xarmian/pad/releases).
