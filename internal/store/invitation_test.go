@@ -98,7 +98,7 @@ func TestMigration044_BackfillProducesRFC3339(t *testing.T) {
 		_, err = s.db.Exec(`
 			UPDATE workspace_invitations
 			SET expires_at = to_char(
-				(created_at::timestamp + INTERVAL '14 days') AT TIME ZONE 'UTC',
+				created_at::timestamp + INTERVAL '14 days',
 				'YYYY-MM-DD"T"HH24:MI:SS"Z"'
 			)
 			WHERE expires_at IS NULL
