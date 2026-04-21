@@ -246,6 +246,7 @@ func serveCmd() *cobra.Command {
 			srv.SetBaseURL(cfg.BaseURL())
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
+			srv.SetTrustedProxies(cfg.TrustedProxies)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
 
 			// Cloud mode: enable cloud-specific endpoints and behavior
