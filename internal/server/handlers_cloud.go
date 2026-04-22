@@ -74,22 +74,22 @@ func isCloudAdminPath(path string) bool {
 }
 
 // hasCloudSecretMarker returns true if the request carries a sidecar-
-// style auth marker: X-Cloud-Secret header, legacy ?cloud_secret
-// query-param, OR a cloud_secret field in the JSON body of a POST/PUT
-// to a cloud admin path. It does NOT check the path — callers MUST
-// gate on isCloudAdminPath first. Returning true for a request that
-// carries a wrong secret value is safe; the handler's
-// validateCloudSecret rejects mismatches.
+// style auth marker: X-Cloud-Secret header or a cloud_secret field in
+// the JSON body of a POST/PUT to a cloud admin path. It does NOT check
+// the path — callers MUST gate on isCloudAdminPath first. Returning
+// true for a request that carries a wrong secret value is safe; the
+// handler's validateCloudSecret rejects mismatches.
 //
 // The body peek is scoped to cloud admin POSTs only so the cost and
 // body-replay side-effect are bounded to the few endpoints that need
-// it. TASK-656 deprecates both the query-param and body forms in favor
-// of X-Cloud-Secret header exclusively.
+// it.
+//
+// The legacy ?cloud_secret= query-param is NOT honored here — query
+// values land in access logs, so a log-file compromise became a
+// compromise of the cloud trust boundary. Sidecars must send the
+// secret in the X-Cloud-Secret header (TASK-656).
 func hasCloudSecretMarker(r *http.Request) bool {
 	if r.Header.Get("X-Cloud-Secret") != "" {
-		return true
-	}
-	if r.URL.Query().Get("cloud_secret") != "" {
 		return true
 	}
 	if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.Body != nil {
@@ -590,16 +590,18 @@ func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Reques
 // Called by the pad-cloud sidecar during Stripe subscription webhook processing
 // to resolve a Stripe customer back to a Pad user.
 func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Request) {
-	// 1. Validate cloud secret (via header preferred, query param fallback) or admin auth.
-	// NOTE: query param is supported for GET convenience but may appear in access logs.
-	// Prefer X-Cloud-Secret header in production.
+	// 1. Validate cloud secret via X-Cloud-Secret header (or admin auth).
+	//
+	// NOTE: ?cloud_secret= was previously accepted for GET convenience but
+	// dropped in TASK-656 — query-param values land in access logs (our
+	// StructuredLogger records the full path + query, and any fronting
+	// reverse proxy typically logs the same), so a log file compromise
+	// became a compromise of the cloud trust boundary. Sidecars must now
+	// send the secret in the X-Cloud-Secret header.
 	user := currentUser(r)
 	isAdmin := user != nil && user.Role == "admin"
 	if !isAdmin {
 		secret := r.Header.Get("X-Cloud-Secret")
-		if secret == "" {
-			secret = r.URL.Query().Get("cloud_secret")
-		}
 		if !s.validateCloudSecret(secret, w) {
 			return
 		}

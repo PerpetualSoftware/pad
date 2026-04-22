@@ -169,9 +169,11 @@ func TestCloudAdminGate_BodySecret_BackwardCompat(t *testing.T) {
 	}
 }
 
-// TestCloudAdminGate_QueryParamSecret_BackwardCompat keeps the legacy
-// ?cloud_secret= query param working for GETs while TASK-656 pares it back.
-func TestCloudAdminGate_QueryParamSecret_BackwardCompat(t *testing.T) {
+// TestCloudAdminGate_QueryParamSecret_Rejected verifies TASK-656 dropped
+// the legacy ?cloud_secret= query-param — query values land in access
+// logs, so accepting them there leaked the cloud trust boundary. Must
+// be rejected by the auth gate.
+func TestCloudAdminGate_QueryParamSecret_Rejected(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode("legacy-secret")
@@ -182,8 +184,27 @@ func TestCloudAdminGate_QueryParamSecret_BackwardCompat(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 
-	// Should reach the handler and return 404 (no user mapped to that customer).
-	if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
-		t.Fatalf("auth/CSRF blocked legacy query-param secret: %d %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("?cloud_secret= should no longer authenticate, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCloudAdminGate_HeaderSecret_StillAuthenticates confirms the header
+// form (the only supported sidecar auth after TASK-656) still works on
+// the GET endpoint that previously used query-param.
+func TestCloudAdminGate_HeaderSecret_StillAuthenticates(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("header-only")
+
+	req := cloudAdminReq(t, "GET",
+		"/api/v1/admin/user-by-customer?customer_id=cus_unknown",
+		nil, map[string]string{"X-Cloud-Secret": "header-only"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	// 404 from the handler (no user maps to the customer ID) — not 401/403.
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected handler-level 404, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
