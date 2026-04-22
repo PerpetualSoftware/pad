@@ -813,7 +813,21 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
 			return
 		}
-		if err := validatePasswordStrength(input.NewPassword, user.Email, user.Name); err != nil {
+		// Validate against the POST-UPDATE identity — if the same PATCH
+		// also changes name/username, a password derived from the new
+		// values must be penalized too. Otherwise a caller could set
+		// name = "Zaphod" + password = "Zaphod2026" in one request and
+		// slip past the context-aware check because we'd be comparing to
+		// the PREVIOUS name.
+		nameCtx := user.Name
+		if input.Name != nil {
+			nameCtx = *input.Name
+		}
+		usernameCtx := user.Username
+		if input.Username != nil {
+			usernameCtx = *input.Username
+		}
+		if err := validatePasswordStrength(input.NewPassword, user.Email, nameCtx, usernameCtx); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
