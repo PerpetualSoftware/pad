@@ -39,6 +39,9 @@ Thumbs.db
 .codex
 .codex/
 
+# Agent tool local configs (not for public repo)
+AGENTS.md
+
 # Go
 *.test
 *.out
