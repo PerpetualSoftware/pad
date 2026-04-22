@@ -423,7 +423,7 @@ Pad ships with defaults tuned for **local, single-user** development. If you pla
 The project ships two security gates you should mirror in your deployment pipeline:
 
 - **`npm audit --audit-level=high --production`** — run from `web/` to block frontend PRs that pull in vulnerable deps.
-- **`govulncheck ./...`** — run at the repo root to block Go PRs that pull in vulnerable deps. Install with `go install golang.org/x/vuln/cmd/govulncheck@latest`.
+- **`govulncheck ./...`** — run at the repo root to block Go PRs that pull in vulnerable deps. Install a **pinned** version so your CI is reproducible (mirror the tag in `.github/workflows/ci.yml`). For example: `go install golang.org/x/vuln/cmd/govulncheck@v1.2.0`. Bump the pin intentionally when upstream ships a new release rather than tracking `@latest`.
 
 Both are fast enough to run in PR CI.
 
