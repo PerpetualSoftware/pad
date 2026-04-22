@@ -353,6 +353,29 @@ func TestSessionAuth_ShortCircuitsOnAPITokenAuth(t *testing.T) {
 	}
 }
 
+// TestCanonicalIP verifies equivalent IPv6 representations collapse to a
+// single canonical form so the session-IP-change comparison doesn't
+// spuriously fire on "0000:0000:0000:0000:0000:0000:0000:0001" vs "::1".
+func TestCanonicalIP(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"127.0.0.1", "127.0.0.1"},
+		{"192.0.2.1", "192.0.2.1"},
+		{"::1", "::1"},
+		{"0000:0000:0000:0000:0000:0000:0000:0001", "::1"},
+		{"2001:DB8::1", "2001:db8::1"},
+		{"2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"},
+		{"not-an-ip", "not-an-ip"}, // non-parseable stays as-is
+	}
+	for _, tc := range cases {
+		if got := canonicalIP(tc.in); got != tc.want {
+			t.Errorf("canonicalIP(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestSetIPChangeEnforce_CaseInsensitive verifies the setter accepts
 // common variants without surprises.
 func TestSetIPChangeEnforce_CaseInsensitive(t *testing.T) {

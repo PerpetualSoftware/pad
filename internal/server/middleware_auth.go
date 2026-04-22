@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -493,6 +494,23 @@ func sha256hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// canonicalIP returns the semantic (canonical text) form of an IP
+// address string. For IPv6 this collapses different valid spellings
+// (compressed vs expanded, uppercase vs lowercase, leading zeroes) to
+// a single representation so comparing two strings by == reflects
+// actual IP equality. For IPv4 it accepts both 4-byte and IPv4-in-IPv6
+// forms. For inputs that don't parse as an IP the original string is
+// returned so behavior stays predictable on malformed/debug values.
+func canonicalIP(s string) string {
+	if s == "" {
+		return s
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
+	}
+	return s
+}
+
 // sessionIPChangeOutcome captures what the caller (TokenAuth / SessionAuth)
 // should do after handleSessionIPChange inspected the session.
 type sessionIPChangeOutcome int
@@ -539,8 +557,13 @@ const (
 // Log-only mode breaks fewer legitimate clients (mobile roaming, VPN
 // toggles, carrier NAT) while still giving operators a visible signal.
 func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) sessionIPChangeOutcome {
-	newIP := clientIP(r)
-	if session.IPAddress == "" || newIP == "" || session.IPAddress == newIP {
+	// Canonicalize both sides so equivalent IPv6 representations
+	// (compressed vs expanded, case, leading zeros) don't register as a
+	// spurious change. Raw trusted-proxy X-Forwarded-For values can
+	// arrive in any valid form.
+	storedIP := canonicalIP(session.IPAddress)
+	newIP := canonicalIP(clientIP(r))
+	if storedIP == "" || newIP == "" || storedIP == newIP {
 		return sessionIPChangeContinue
 	}
 
@@ -561,7 +584,7 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 			// to let the request through. A retry will converge once the
 			// DB recovers.
 			slog.Error("failed to destroy session on IP-change in strict mode; failing closed",
-				"session_ip", session.IPAddress,
+				"session_ip", storedIP,
 				"client_ip", newIP,
 				"user_id", userID,
 				"error", err)
@@ -571,11 +594,11 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 		}
 		if deleted {
 			s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
-				"old_ip": session.IPAddress,
+				"old_ip": storedIP,
 				"new_ip": newIP,
 			}))
 			slog.Warn("session destroyed: IP changed (strict enforcement)",
-				"session_ip", session.IPAddress,
+				"session_ip", storedIP,
 				"client_ip", newIP,
 				"user_id", userID)
 		}
@@ -604,9 +627,12 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 	}
 
 	// Log-only mode: CAS-rotate the stored IP so only the winner logs.
-	// Err on the side of "winner" when the CAS errors — we'd rather log
-	// an extra row than miss the signal entirely. A failed rotate here
-	// is non-fatal: worst case the next request also gets an audit row.
+	// The CAS compares against session.IPAddress (the raw value we read
+	// from the DB) and writes the canonical newIP so future comparisons
+	// are consistent. Err on the side of "winner" when the CAS errors
+	// — we'd rather log an extra row than miss the signal entirely.
+	// A failed rotate here is non-fatal: worst case the next request
+	// also gets an audit row.
 	won, err := s.store.UpdateSessionIPIfEquals(plainToken, session.IPAddress, newIP)
 	if err != nil {
 		slog.Warn("failed to rotate session ip after change", "error", err)
@@ -614,11 +640,11 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 	}
 	if won {
 		s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
-			"old_ip": session.IPAddress,
+			"old_ip": storedIP,
 			"new_ip": newIP,
 		}))
 		slog.Info("session client IP changed (logged, request allowed)",
-			"session_ip", session.IPAddress,
+			"session_ip", storedIP,
 			"client_ip", newIP,
 			"user_id", userID)
 	}
