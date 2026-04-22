@@ -94,6 +94,35 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	}, nil
 }
 
+// UpdateSessionIPIfEquals atomically rotates the stored IP on a session
+// from expectedOldIP to newIP. Returns true if a row was updated (i.e. the
+// caller is the race winner and should write the audit row); false when
+// some other concurrent request already rotated the IP ahead of us.
+//
+// This compare-and-set behavior is what lets the auth middleware emit
+// exactly one ActionSessionIPChanged audit row per transition even when
+// multiple requests race after the client's IP flips.
+func (s *Store) UpdateSessionIPIfEquals(token, expectedOldIP, newIP string) (bool, error) {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	res, err := s.db.Exec(s.q(`
+		UPDATE sessions
+		SET ip_address = ?
+		WHERE token_hash = ? AND ip_address = ?
+	`), newIP, tokenHash, expectedOldIP)
+	if err != nil {
+		return false, fmt.Errorf("update session ip: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Some drivers don't report RowsAffected reliably. Err on the safe
+		// side: treat as "not the winner" so we don't log when unsure.
+		return false, nil
+	}
+	return n > 0, nil
+}
+
 // DeleteSession destroys a session by its plaintext token.
 func (s *Store) DeleteSession(token string) error {
 	hash := sha256.Sum256([]byte(token))
@@ -104,6 +133,30 @@ func (s *Store) DeleteSession(token string) error {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	return nil
+}
+
+// DeleteSessionIfExists destroys a session by plaintext token and reports
+// whether a row was actually deleted. Used by the IP-change strict-mode
+// path as a compare-and-set primitive: only the caller that actually
+// deletes the row emits the ActionSessionIPChanged audit entry so
+// concurrent requests don't write duplicate audit rows, and only the
+// caller whose DELETE succeeded on the DB gets a clean "session is now
+// gone" guarantee.
+func (s *Store) DeleteSessionIfExists(token string) (bool, error) {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	res, err := s.db.Exec(s.q("DELETE FROM sessions WHERE token_hash = ?"), tokenHash)
+	if err != nil {
+		return false, fmt.Errorf("delete session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Drivers that don't report affected rows → treat as "existed" so
+		// callers don't skip their post-delete work.
+		return true, nil
+	}
+	return n > 0, nil
 }
 
 // DeleteUserSessions destroys all sessions for a user (logout everywhere).

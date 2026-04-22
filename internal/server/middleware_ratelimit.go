@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -279,16 +280,23 @@ func rateLimitKey(r *http.Request, ip string) string {
 }
 
 // clientIP extracts the client IP from RemoteAddr. This is safe because
-// chimiddleware.RealIP runs earlier in the chain and overwrites RemoteAddr
-// with the trusted value from X-Real-IP / X-Forwarded-For. We deliberately
-// do NOT read proxy headers here to prevent clients from spoofing their IP
-// to bypass rate limits.
+// TrustedProxyRealIP runs earlier in the chain and — when a trusted
+// proxy is configured — overwrites RemoteAddr with the trusted value
+// from X-Real-IP / X-Forwarded-For. We deliberately do NOT read proxy
+// headers here to prevent clients from spoofing their IP to bypass
+// rate limits.
+//
+// Uses net.SplitHostPort so IPv6 addresses are handled correctly.
+// A naive LastIndex(":") strips the final hextet of a bare IPv6 address
+// like "2001:db8::1" — TrustedProxyRealIP writes the X-Forwarded-For
+// value verbatim (no port, no brackets), so a LastIndex-based parse
+// would mangle it. For bare IPs without a port SplitHostPort returns
+// an error and we return the address as-is.
 func clientIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		return host[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return host
+	return r.RemoteAddr
 }
 
 // writeRateLimitResponse sends a 429 response with Retry-After and X-RateLimit-* headers.
