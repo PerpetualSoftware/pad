@@ -2,7 +2,9 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,15 +23,14 @@ func (s *Server) handleCreateCLIAuthSession(w http.ResponseWriter, r *http.Reque
 	// Build the auth URL that the user will open in their browser.
 	// Use the request's Host header to construct the URL so it works
 	// regardless of whether the server is at localhost, a VPS, or cloud.
-	scheme := "https"
-	if r.TLS == nil {
-		// Check X-Forwarded-Proto for reverse proxy setups
-		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-			scheme = proto
-		} else {
-			scheme = "http"
-		}
-	}
+	//
+	// Security: derive the scheme from r.TLS first. Any HTTP client can
+	// inject X-Forwarded-Proto, so trust it ONLY when the request arrived
+	// from a peer in PAD_TRUSTED_PROXIES. A forged https:// in the CLI
+	// auth URL is low-impact phishing (user clicks a link in their own
+	// terminal), but the safe default is to ignore unauthenticated proxy
+	// headers on direct-exposed deployments.
+	scheme := cliAuthScheme(r, s.trustedProxyCIDRs)
 	authURL := fmt.Sprintf("%s://%s/auth/cli/%s", scheme, r.Host, sess.Code)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -139,4 +140,35 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		"approved": true,
 		"user":     sessionUserPayload(user),
 	})
+}
+
+// cliAuthScheme picks the URL scheme for the CLI auth link.
+//
+// Precedence:
+//  1. If the request hit this server over TLS (r.TLS != nil) → "https".
+//  2. If a trusted proxy is configured AND the direct TCP peer is in one
+//     of the trusted CIDRs, honor X-Forwarded-Proto. Only the first comma-
+//     separated value is used and it must be "http" or "https".
+//  3. Otherwise → "http". An untrusted client can still send X-Forwarded-
+//     Proto but we ignore it.
+//
+// This prevents an attacker from forging https://… in the terminal URL
+// printed by `pad auth login` on a plain-HTTP self-host deployment.
+func cliAuthScheme(r *http.Request, trustedCIDRs []*net.IPNet) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if len(trustedCIDRs) > 0 {
+		if peerIP := peerAddr(rawPeerAddr(r)); peerIP != nil && ipInCIDRs(peerIP, trustedCIDRs) {
+			if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+				// Some proxies emit "https, http" when multiple hops are
+				// involved; take the first value and normalize.
+				first := strings.ToLower(strings.TrimSpace(strings.SplitN(proto, ",", 2)[0]))
+				if first == "https" || first == "http" {
+					return first
+				}
+			}
+		}
+	}
+	return "http"
 }
