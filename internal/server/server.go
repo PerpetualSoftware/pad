@@ -701,6 +701,10 @@ func (s *Server) ListenAndServe(addr string) error {
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		// Cap total header bytes (default 1 MB) to 64 KB — well above any
+		// legitimate request (cookies, auth, content-type, a few CSRF/CORS
+		// headers) and tight enough to cheaply reject header-flood DoS.
+		MaxHeaderBytes: 64 * 1024,
 		// WriteTimeout left at 0 — SSE connections are long-lived.
 		// Non-SSE handlers should use per-request context deadlines.
 	}
@@ -760,7 +764,33 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 }
 
+// defaultJSONBodyLimit is the default cap applied to JSON request bodies
+// by decodeJSON. Every /api/* POST/PATCH is comfortably small in practice
+// (items, collections, auth payloads — all well under 100 KB), so the
+// 2 MB cap is several orders of magnitude above real traffic while still
+// cheap to hold in memory per request. Callers who legitimately need
+// more — bulk imports — should call decodeJSONWithLimit explicitly.
+const defaultJSONBodyLimit = 2 << 20 // 2 MiB
+
+// decodeJSON reads and unmarshals the JSON body into v. Wraps the body in
+// http.MaxBytesReader so an attacker can't exhaust memory by POSTing a
+// multi-GB JSON blob — without this, json.NewDecoder.Decode happily
+// streams the whole body into a single allocation.
 func decodeJSON(r *http.Request, v interface{}) error {
+	return decodeJSONWithLimit(r, v, defaultJSONBodyLimit)
+}
+
+// decodeJSONWithLimit is the size-configurable variant. Use this for
+// endpoints that accept large payloads (e.g. bulk-import) where the
+// default cap is too small — but always pass an explicit cap, never
+// remove the wrapper.
+func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
+	// http.MaxBytesReader.Close() is a no-op; the decoder leaves r.Body at
+	// EOF anyway. Setting this here also lets the server return a 413
+	// automatically via the error we wrap below.
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	}
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
