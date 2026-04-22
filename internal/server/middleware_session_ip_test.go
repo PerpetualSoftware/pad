@@ -110,6 +110,37 @@ func TestSessionIPChange_StrictRejects(t *testing.T) {
 	}
 }
 
+// TestSessionIPChange_StrictDestroysSessionAtomically verifies that in
+// strict mode the session is destroyed as part of the IP-mismatch check
+// and does NOT survive with a rebound IP. A regression would mean that
+// if DeleteSession were ever separated from the rotation, a follow-up
+// request from the new IP could pass authentication.
+func TestSessionIPChange_StrictDestroysSessionAtomically(t *testing.T) {
+	srv := testServer(t)
+	srv.SetIPChangeEnforce("strict")
+	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// First IP-mismatch request → 401.
+	rr := doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "198.51.100.7:5555")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on IP mismatch, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Second request from the NEW IP must also fail — the session must
+	// be gone, not rebound to 198.51.100.7. A regression that rotated
+	// the stored IP before destroying would leak through here.
+	rr = doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "198.51.100.7:5555")
+	if rr.Code == http.StatusOK {
+		t.Fatal("session must be destroyed in strict mode, not rebound to new IP")
+	}
+
+	// Single audit row for the whole transition (the second request hits
+	// the ValidateSession-returns-nil branch and never re-logs).
+	if got := countIPChangeEvents(t, srv); got != 1 {
+		t.Fatalf("expected exactly 1 audit row for the strict-mode transition, got %d", got)
+	}
+}
+
 // TestSessionIPChange_StrictClearsCookies verifies that in strict mode
 // the session cookie is explicitly cleared on the response (MaxAge=-1) so
 // the browser doesn't keep re-sending a now-revoked token on the next

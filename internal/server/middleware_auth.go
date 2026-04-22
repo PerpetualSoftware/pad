@@ -493,33 +493,28 @@ const (
 // Behavior:
 //   - Session has no recorded IP (legacy pre-migration row): continue.
 //   - IP matches: continue.
-//   - IP differs: atomically rotate the stored IP via compare-and-set.
-//     The race winner emits exactly one ActionSessionIPChanged audit row
-//     per transition — concurrent requests that lose the CAS skip logging
-//     to avoid duplicate rows.
-//   - In strict mode (PAD_IP_CHANGE_ENFORCE=strict): additionally destroy
-//     the session and clear the client session+CSRF cookies. API requests
-//     receive a 401; browser page navigations are allowed through
-//     unauthenticated so the SPA can redirect to login. Log-only (default)
-//     breaks fewer legitimate clients (mobile roaming, VPN toggles,
-//     carrier NAT) while still giving operators a visible signal.
+//   - Log-only mode (default): atomically rotate the stored IP via
+//     compare-and-set. The race winner emits exactly one
+//     ActionSessionIPChanged audit row per transition — concurrent
+//     requests that lose the CAS skip logging to avoid duplicate rows.
+//   - Strict mode (PAD_IP_CHANGE_ENFORCE=strict): do NOT rotate the
+//     stored IP. Instead use DeleteSessionIfExists as the CAS primitive
+//     — the request that actually deletes the row (a) logs the audit
+//     entry once, (b) returns 401 for API / revoked for browser paths.
+//     Rotating the IP first would be unsafe: if the subsequent
+//     DeleteSession failed (transient DB error) the session would remain
+//     valid rebound to the new IP, defeating strict enforcement. By
+//     deleting atomically, any failure leaves the session bound to the
+//     original IP so a follow-up request from the new IP still mismatches
+//     and is still rejected. If the delete errors outright, the request
+//     is rejected with 500 so the client can't proceed.
+//
+// Log-only mode breaks fewer legitimate clients (mobile roaming, VPN
+// toggles, carrier NAT) while still giving operators a visible signal.
 func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) sessionIPChangeOutcome {
 	newIP := clientIP(r)
 	if session.IPAddress == "" || newIP == "" || session.IPAddress == newIP {
 		return sessionIPChangeContinue
-	}
-
-	// Compare-and-set: only the request that actually rotates the stored
-	// IP gets to log the audit row. Concurrent requests from the new IP
-	// will observe the already-rotated value on their conditional UPDATE
-	// and skip logging, avoiding duplicate audit entries for one transition.
-	//
-	// Err on the side of "winner" when the CAS errors — we'd rather log an
-	// extra row than miss the signal entirely.
-	won, err := s.store.UpdateSessionIPIfEquals(plainToken, session.IPAddress, newIP)
-	if err != nil {
-		slog.Warn("failed to rotate session ip after change", "error", err)
-		won = true
 	}
 
 	userID := ""
@@ -527,23 +522,39 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 		userID = session.User.ID
 	}
 
-	if won {
-		s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
-			"old_ip": session.IPAddress,
-			"new_ip": newIP,
-		}))
-	}
-
 	if s.ipChangeEnforceStrict {
-		slog.Warn("session binding mismatch: IP changed (strict enforcement)",
-			"session_ip", session.IPAddress,
-			"client_ip", newIP,
-			"user_id", userID,
-			"cas_winner", won)
-		// Destroy the session so a stolen token can't be replayed.
-		_ = s.store.DeleteSession(plainToken)
-		// Clear client-side cookies so the browser doesn't keep re-sending
-		// a now-invalid session on every navigation.
+		// Destroy the session atomically. Only the caller whose DELETE
+		// affected a row logs and issues the "session_ip_changed" response
+		// body. A failed delete means the session is still valid AND still
+		// bound to the old IP (we skipped the rotation), so a follow-up
+		// request from the new IP will hit this path again — safe.
+		deleted, err := s.store.DeleteSessionIfExists(plainToken)
+		if err != nil {
+			// Fail closed: we can't prove the session is gone, so refuse
+			// to let the request through. A retry will converge once the
+			// DB recovers.
+			slog.Error("failed to destroy session on IP-change in strict mode; failing closed",
+				"session_ip", session.IPAddress,
+				"client_ip", newIP,
+				"user_id", userID,
+				"error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error",
+				"Unable to validate session. Please try again.")
+			return sessionIPChangeTerminated
+		}
+		if deleted {
+			s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
+				"old_ip": session.IPAddress,
+				"new_ip": newIP,
+			}))
+			slog.Warn("session destroyed: IP changed (strict enforcement)",
+				"session_ip", session.IPAddress,
+				"client_ip", newIP,
+				"user_id", userID)
+		}
+		// Clear client-side cookies regardless — even if another request
+		// already deleted the row, this client is still holding the now-
+		// invalid token.
 		clearSessionCookie(w, s.secureCookies)
 		clearCSRFCookie(w)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -557,7 +568,20 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 		return sessionIPChangeRevoked
 	}
 
+	// Log-only mode: CAS-rotate the stored IP so only the winner logs.
+	// Err on the side of "winner" when the CAS errors — we'd rather log
+	// an extra row than miss the signal entirely. A failed rotate here
+	// is non-fatal: worst case the next request also gets an audit row.
+	won, err := s.store.UpdateSessionIPIfEquals(plainToken, session.IPAddress, newIP)
+	if err != nil {
+		slog.Warn("failed to rotate session ip after change", "error", err)
+		won = true
+	}
 	if won {
+		s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
+			"old_ip": session.IPAddress,
+			"new_ip": newIP,
+		}))
 		slog.Info("session client IP changed (logged, request allowed)",
 			"session_ip", session.IPAddress,
 			"client_ip", newIP,

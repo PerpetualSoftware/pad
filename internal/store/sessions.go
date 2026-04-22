@@ -135,6 +135,30 @@ func (s *Store) DeleteSession(token string) error {
 	return nil
 }
 
+// DeleteSessionIfExists destroys a session by plaintext token and reports
+// whether a row was actually deleted. Used by the IP-change strict-mode
+// path as a compare-and-set primitive: only the caller that actually
+// deletes the row emits the ActionSessionIPChanged audit entry so
+// concurrent requests don't write duplicate audit rows, and only the
+// caller whose DELETE succeeded on the DB gets a clean "session is now
+// gone" guarantee.
+func (s *Store) DeleteSessionIfExists(token string) (bool, error) {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	res, err := s.db.Exec(s.q("DELETE FROM sessions WHERE token_hash = ?"), tokenHash)
+	if err != nil {
+		return false, fmt.Errorf("delete session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Drivers that don't report affected rows → treat as "existed" so
+		// callers don't skip their post-delete work.
+		return true, nil
+	}
+	return n > 0, nil
+}
+
 // DeleteUserSessions destroys all sessions for a user (logout everywhere).
 func (s *Store) DeleteUserSessions(userID string) error {
 	_, err := s.db.Exec(s.q("DELETE FROM sessions WHERE user_id = ?"), userID)
