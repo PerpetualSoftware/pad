@@ -216,16 +216,19 @@ func serveCmd() *cobra.Command {
 			// old "silent plaintext fallback" behavior that was TASK-668's
 			// original concern.
 			//
-			// Auto-generation is scoped to SQLite deployments. Clustered
-			// setups (PAD_DB_DRIVER=postgres with potentially multiple
-			// replicas) cannot safely auto-generate — each replica would
-			// persist a different key to its own local filesystem, and
-			// cross-instance decryption of the shared database would fail
-			// with GCM auth errors. The operator must set
-			// PAD_ENCRYPTION_KEY explicitly in that case.
-			allowGenerate := dbDriver != "postgres"
-			if err := cfg.EnsureEncryptionKey(allowGenerate); err != nil {
+			// Auto-generation is ALLOWED for every deployment so first
+			// boot always works out of the box. On a multi-replica
+			// Postgres cluster, though, each replica would persist its
+			// own local key and cross-instance decryption would fail —
+			// we warn explicitly in that case so operators running
+			// replicas know they need to set PAD_ENCRYPTION_KEY and
+			// mount a shared key.
+			if err := cfg.EnsureEncryptionKey(true); err != nil {
 				return fmt.Errorf("encryption key: %w", err)
+			}
+			if cfg.EncryptionKeySource == "generated" && dbDriver == "postgres" {
+				slog.Warn("Auto-generated encryption key on a PostgreSQL deployment — if you run multiple Pad replicas, set PAD_ENCRYPTION_KEY explicitly so every replica uses the same key",
+					"path", cfg.EncryptionKeyFile())
 			}
 			keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
 			if err != nil || len(keyBytes) != 32 {
