@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -114,6 +116,25 @@ func TestEnsureEncryptionKey_ClusteredWithPreSeededFileStillLoads(t *testing.T) 
 	}
 	if c.EncryptionKey != known {
 		t.Errorf("loaded key = %q, want %q", c.EncryptionKey, known)
+	}
+}
+
+func TestEnsureEncryptionKey_RejectsWorldReadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced on Windows")
+	}
+	c := newTestConfig(t)
+	const known = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := os.WriteFile(c.EncryptionKeyFile(), []byte(known), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := c.EnsureEncryptionKey(true)
+	if err == nil {
+		t.Fatal("expected error for world-readable key file, got nil")
+	}
+	if !strings.Contains(err.Error(), "chmod 600") {
+		t.Errorf("expected chmod hint in error, got: %v", err)
 	}
 }
 

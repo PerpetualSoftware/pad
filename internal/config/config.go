@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -289,12 +290,25 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 	}
 
 	keyPath := c.EncryptionKeyFile()
-	if data, err := os.ReadFile(keyPath); err == nil {
+	if info, err := os.Stat(keyPath); err == nil {
+		// Reject overly-permissive key files before reading. An
+		// encryption.key world-readable (0644) on a shared host hands the
+		// AES key to any local user — it would defeat the whole point of
+		// encrypting at-rest fields. Generated files are written with
+		// 0600; operators who pre-seed must match.
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+			return fmt.Errorf("encryption key %s has mode %o (group/other bits set); run `chmod 600 %s` to restrict",
+				keyPath, info.Mode().Perm(), keyPath)
+		}
+		data, rerr := os.ReadFile(keyPath)
+		if rerr != nil {
+			return fmt.Errorf("read encryption key: %w", rerr)
+		}
 		c.EncryptionKey = strings.TrimSpace(string(data))
 		c.EncryptionKeySource = "file"
 		return nil
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read encryption key: %w", err)
+		return fmt.Errorf("stat encryption key: %w", err)
 	}
 
 	if !allowGenerate {
