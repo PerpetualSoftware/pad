@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xarmian/pad/internal/events"
+	"github.com/xarmian/pad/internal/models"
 )
 
 // handleSSE streams Server-Sent Events for a workspace.
@@ -281,11 +282,42 @@ type sseVisibility struct {
 // Safe to call repeatedly on a live SSE connection — each call fetches
 // the latest state from the store so revoked grants or narrowed roles
 // stop leaking on the next event dispatch.
+//
+// Unlike the request-scoped helpers (visibleCollectionIDs,
+// guestVisibleItemIDs) this function re-fetches the authenticated user
+// from the store so mid-stream role changes (admin demotion,
+// user.disabled flips) take effect on the next tick. The cached
+// currentUser(r) snapshot is only used to look up which user to
+// refresh.
 func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVisibility {
 	var v sseVisibility
 
-	// Collection-level visibility first.
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	// Resolve the current user fresh from the store. Fall back to the
+	// cached snapshot if the lookup fails so transient DB errors don't
+	// widen visibility unexpectedly.
+	var user *models.User
+	if cached := currentUser(r); cached != nil {
+		if fresh, err := s.store.GetUser(cached.ID); err == nil && fresh != nil {
+			user = fresh
+		} else {
+			if err != nil {
+				slog.Warn("SSE: GetUser failed during visibility recompute; using cached snapshot",
+					"user_id", cached.ID, "error", err)
+			}
+			user = cached
+		}
+	}
+
+	// Collection-level visibility first. Mirrors visibleCollectionIDs
+	// but with a freshly-fetched user so a mid-stream admin-to-member
+	// demotion immediately applies the collection filter.
+	var visibleIDs []string
+	var err error
+	if user != nil && user.Role != "admin" {
+		visibleIDs, err = s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	}
+	// (user == nil || user.Role == "admin") falls through with nil
+	// visibleIDs — nil means "no filtering" in the snapshot below.
 	if err != nil {
 		// Fail closed: if we can't determine visibility, deny all
 		// collection-scoped events rather than leaking hidden data.
@@ -305,7 +337,6 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 	// (guest or restricted member). Legacy workspace-scoped tokens and
 	// fresh-install bypass skip this branch and inherit full access via
 	// visibleSlugSet == nil.
-	user := currentUser(r)
 	if user == nil {
 		return v
 	}

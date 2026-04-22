@@ -226,6 +226,72 @@ func TestSSESubscriberStillHasAccess_AdminDemotion(t *testing.T) {
 	}
 }
 
+// TestComputeSSEVisibility_DemotedAdminGetsFilter verifies that when a
+// global admin is demoted to "member" mid-stream BUT remains a member
+// of the workspace, their visibility snapshot immediately picks up the
+// collection-level filter instead of continuing to use the admin
+// short-circuit (nil visibleSlugSet = "all access"). Without the fresh
+// GetUser inside computeSSEVisibility, visibleCollectionIDs would read
+// the cached Role="admin" from request context and keep returning nil.
+func TestComputeSSEVisibility_DemotedAdminGetsFilter(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if _, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin2@example.com", Name: "Admin2", Password: "correct-horse-battery-staple", Role: "admin",
+	}); err != nil {
+		t.Fatalf("create second admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "DemoteVis"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	// Add the admin as a member with "specific" collection access but
+	// zero granted collections — after demotion they should see nothing.
+	// Keep membership so sseSubscriberStillHasAccess still returns true;
+	// we specifically want to exercise the visibility recompute, not
+	// the revoke-and-close path.
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", nil); err != nil {
+		t.Fatalf("set specific collection access: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+ws.Slug, nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, admin))
+
+	// Before demotion: admin bypass → visibleSlugSet == nil (all access).
+	// visibleCollectionIDs / computeSSEVisibility treats the user as
+	// admin regardless of their member.CollectionAccess setting.
+	v1 := srv.computeSSEVisibility(req, ws.ID)
+	if v1.visibleSlugSet != nil {
+		t.Fatalf("admin should have unrestricted visibility; got %v", v1.visibleSlugSet)
+	}
+
+	// Demote to member. The cached snapshot in the request still says
+	// Role="admin". Without the fresh fetch inside computeSSEVisibility,
+	// the admin short-circuit would keep returning nil here, ignoring
+	// the "specific" + empty-granted-set member config entirely.
+	if err := srv.store.SetUserRole(admin.ID, "member"); err != nil {
+		t.Fatalf("demote admin: %v", err)
+	}
+
+	v2 := srv.computeSSEVisibility(req, ws.ID)
+	if v2.visibleSlugSet == nil {
+		t.Fatal("demoted admin should NOT have unrestricted visibility; cached Role=admin was trusted")
+	}
+	// With empty granted-collection set + system collections added
+	// automatically, the visibleSlugSet should be a finite set of only
+	// the system collection(s) they inherit — NOT nil. That's enough
+	// to prove the fresh-fetch path fired.
+}
+
 // TestSSEMembershipRevalInterval_DefaultsToSensibleCadence pins the
 // default tick interval. Not functional on its own; it's a guard so a
 // future cleanup doesn't accidentally set the production default to a
