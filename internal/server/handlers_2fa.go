@@ -276,15 +276,34 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// Normalize so users can type/paste codes however they were
-		// displayed: generated codes are uppercase base32 [A-Z2-7] with
-		// no separators, but mobile keyboards default to lowercase, and
-		// some people paste codes wrapped with dashes or spaces. Strip
-		// those and uppercase before hashing.
+		// displayed: generated codes (post-TASK-658) are uppercase
+		// base32 [A-Z2-7] with no separators, but mobile keyboards
+		// default to lowercase, and some people paste codes wrapped
+		// with dashes or spaces. Strip those and uppercase before
+		// hashing.
 		normalized := normalizeRecoveryCode(input.RecoveryCode)
 		consumed, err := s.store.ConsumeRecoveryCode(user.ID, normalized)
 		if err != nil {
 			writeInternalError(w, err)
 			return
+		}
+		if !consumed {
+			// Legacy-code fallback: pre-TASK-658 codes were generated
+			// with hex.EncodeToString (lowercase). Uppercasing them as
+			// part of normalization changes the SHA-256 and locks out
+			// users whose stored hash is of the lowercase form. Retry
+			// with the whitespace-trimmed raw input (no case change)
+			// so the original lowercase hex still validates. Doesn't
+			// cost an extra rate-limit slot — the Allow() above has
+			// already charged this attempt.
+			trimmed := strings.TrimSpace(input.RecoveryCode)
+			if trimmed != "" && trimmed != normalized {
+				consumed, err = s.store.ConsumeRecoveryCode(user.ID, trimmed)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+			}
 		}
 		verified = consumed
 	}
