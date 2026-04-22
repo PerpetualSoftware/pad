@@ -253,6 +253,106 @@ func TestSessionIPChange_CASDedupesRace(t *testing.T) {
 	}
 }
 
+// TestClientIP_IPv6NotMangled verifies the clientIP helper uses
+// net.SplitHostPort correctly so IPv6 addresses aren't truncated at an
+// internal colon. After TrustedProxyRealIP writes X-Forwarded-For
+// verbatim into RemoteAddr, a bare IPv6 like "2001:db8::1" has no port
+// and the old LastIndex(":") approach would return "2001:db8:" —
+// mangled and unusable for session-IP audits.
+func TestClientIP_IPv6NotMangled(t *testing.T) {
+	cases := []struct {
+		remoteAddr string
+		want       string
+	}{
+		{"192.0.2.1:1234", "192.0.2.1"},
+		{"192.0.2.1", "192.0.2.1"},
+		{"[2001:db8::1]:8080", "2001:db8::1"},
+		{"2001:db8::1", "2001:db8::1"}, // bare IPv6 (no port, no brackets)
+		{"127.0.0.1:1234", "127.0.0.1"},
+		{"::1", "::1"},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = tc.remoteAddr
+		if got := clientIP(req); got != tc.want {
+			t.Errorf("clientIP(%q) = %q, want %q", tc.remoteAddr, got, tc.want)
+		}
+	}
+}
+
+// TestSessionAuth_ShortCircuitsOnAPITokenAuth verifies that when a
+// request carries BOTH a valid API token (Authorization: Bearer pad_...)
+// AND a stale session cookie with a different client IP, SessionAuth
+// short-circuits and lets the token-authenticated request through
+// instead of 401-ing the whole thing in strict mode. Without this,
+// valid token calls could be rejected purely because an unrelated
+// browser tab dropped a stale cookie into the request.
+func TestSessionAuth_ShortCircuitsOnAPITokenAuth(t *testing.T) {
+	srv := testServer(t)
+	// Bootstrap + create the token BEFORE enabling strict mode, so the
+	// setup calls (which come from 127.0.0.1 vs doRequestWithCookie's
+	// 192.0.2.1) don't trip the IP-change check.
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// api_tokens.workspace_id is NOT NULL on the legacy schema, so create
+	// a workspace first and scope the token to it.
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "IP-Test"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+	}
+	parseJSON(t, rr, &ws)
+
+	// Create a user-scoped API token for the workspace. TokenAuth will
+	// set currentUser from the user_id on the token.
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/tokens", map[string]interface{}{
+		"name":         "integration-test-token",
+		"workspace_id": ws.ID,
+	}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create token: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var tokResp map[string]interface{}
+	parseJSON(t, rr, &tokResp)
+	apiToken, _ := tokResp["token"].(string)
+	if apiToken == "" {
+		t.Fatal("expected token in response")
+	}
+	// Snapshot audit count AFTER setup so we can isolate the effect of
+	// the final request (setup calls from the 192.0.2.1 test remote will
+	// have emitted their own audit rows in log-only mode before strict
+	// is enabled).
+	srv.SetIPChangeEnforce("strict")
+	before := countIPChangeEvents(t, srv)
+
+	// Request with BOTH the API token AND a stale session cookie, from a
+	// new client IP. Strict mode would 401 the cookie path — but the
+	// token-auth short-circuit must kick in first.
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.RemoteAddr = "203.0.113.9:5555" // different IP from both bootstrap (127.0.0.1) and setup (192.0.2.1)
+	req.Header.Set("Authorization", "Bearer "+apiToken)
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+	const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: testCSRF})
+	req.Header.Set("X-CSRF-Token", testCSRF)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token + stale cookie in strict mode: expected 200 (token auth wins), got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The session-IP-change path MUST NOT have fired — no new audit rows
+	// should appear for this request.
+	after := countIPChangeEvents(t, srv)
+	if after != before {
+		t.Fatalf("expected 0 new ActionSessionIPChanged audit rows when token auth short-circuits; before=%d after=%d", before, after)
+	}
+}
+
 // TestSetIPChangeEnforce_CaseInsensitive verifies the setter accepts
 // common variants without surprises.
 func TestSetIPChangeEnforce_CaseInsensitive(t *testing.T) {

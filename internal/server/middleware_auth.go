@@ -146,8 +146,13 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 // If a user was already resolved by TokenAuth, this is a no-op.
 func (s *Server) SessionAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Already authenticated by TokenAuth
-		if currentUser(r) != nil {
+		// Already authenticated by TokenAuth — user-bound API tokens set
+		// currentUser, legacy workspace-scoped tokens set tokenWorkspaceID
+		// with no user. In either case we must short-circuit: otherwise a
+		// stale session cookie on the same request could trigger the
+		// IP-change strict-mode path and 401 the request even though the
+		// API token itself is valid.
+		if currentUser(r) != nil || tokenWorkspaceID(r) != "" {
 			next.ServeHTTP(w, r)
 			return
 		}
