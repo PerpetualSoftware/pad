@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -169,17 +170,27 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
-	// Membership revalidation ticker. The initial subscribe only checked
+	// Membership revalidation timer. The initial subscribe only checked
 	// access ONCE; without this, an owner who revokes a user's workspace
 	// membership (member removed, collection access tightened, guest
 	// grants revoked) would leak events to the now-unauthorized session
 	// for as long as the browser keeps the EventSource open — typically
 	// forever. Re-check at a modest cadence so we catch revocation
-	// within a minute without hammering the DB. Randomly jitter the
-	// first fire a little so every connected client doesn't stampede
-	// the DB at the same :00 / :60 tick.
+	// within a minute without hammering the DB.
+	//
+	// We use a Timer (rather than a Ticker) so the FIRST fire can be
+	// jittered into a random [0, revalInterval) window. Without jitter,
+	// a wave of connections made in the same second — a post-deploy
+	// reconnect storm, a login wave, a cron-driven dashboard — would
+	// all land their revalidation DB reads on the same :00 / :60 tick
+	// and spike load once a minute forever after. After the first fire
+	// we reset to the regular interval for a steady cadence.
 	revalInterval := sseMembershipRevalInterval
-	membershipCheck := time.NewTicker(revalInterval)
+	firstDelay := revalInterval
+	if revalInterval > 0 {
+		firstDelay = time.Duration(rand.Int63n(int64(revalInterval)))
+	}
+	membershipCheck := time.NewTimer(firstDelay)
 	defer membershipCheck.Stop()
 
 	ctx := r.Context()
@@ -226,6 +237,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// the filter set so the next event dispatched respects the
 			// current grants rather than the ones captured at connect time.
 			vis = s.computeSSEVisibility(r, ws.ID)
+			// Re-arm the timer at the regular cadence. The first fire was
+			// jittered; subsequent fires can be evenly spaced without
+			// introducing a stampede because connect-time variance has
+			// already spread the clients.
+			membershipCheck.Reset(revalInterval)
 		}
 	}
 }
