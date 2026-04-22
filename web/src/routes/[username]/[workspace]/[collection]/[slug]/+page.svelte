@@ -681,8 +681,9 @@
 				<a href="/{username}/{wsSlug}">Home</a>
 				<span class="sep">/</span>
 				{#if item.parent_collection_slug && item.parent_slug}
-					{@const parentColl = allCollections.find(c => c.slug === item.parent_collection_slug)}
-					<a href="/{username}/{wsSlug}/{item.parent_collection_slug}">{parentColl?.icon ?? ''} {parentColl?.name ?? item.parent_collection_slug}</a>
+					{@const parentCollSlug = item.parent_collection_slug}
+					{@const parentColl = allCollections.find(c => c.slug === parentCollSlug)}
+					<a href="/{username}/{wsSlug}/{parentCollSlug}">{parentColl?.icon ?? ''} {parentColl?.name ?? parentCollSlug}</a>
 					<span class="sep">/</span>
 					<a href="/{username}/{wsSlug}/{item.parent_collection_slug}/{item.parent_slug}">{item.parent_ref || item.parent_title}</a>
 					<span class="sep">/</span>
@@ -741,7 +742,7 @@
 			<button
 				class="action-btn star-btn"
 				class:starred={starredStore.isStarred(item.id)}
-				onclick={() => starredStore.toggle(wsSlug, item.slug, item.id)}
+				onclick={() => item && starredStore.toggle(wsSlug, item.slug, item.id)}
 				title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
 			>
 				{starredStore.isStarred(item.id) ? '★' : '☆'}

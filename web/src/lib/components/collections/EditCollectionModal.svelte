@@ -31,7 +31,14 @@
 		onclose: () => void;
 	}
 
-	let { open, collection, wsSlug, initialSection, onupdated, onclose }: Props = $props();
+	let {
+		open = $bindable(),
+		collection,
+		wsSlug,
+		initialSection,
+		onupdated,
+		onclose
+	}: Props = $props();
 
 	let confirmArchive = $state(false);
 	let archiving = $state(false);

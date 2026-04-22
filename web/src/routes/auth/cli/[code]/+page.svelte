@@ -10,6 +10,11 @@
 
 	onMount(async () => {
 		const code = $page.params.code;
+		if (!code) {
+			status = 'error';
+			error = 'Missing CLI session code.';
+			return;
+		}
 
 		try {
 			const session = await api.auth.cli.getSession(code);
@@ -40,6 +45,10 @@
 
 	async function handleApprove() {
 		const code = $page.params.code;
+		if (!code) {
+			error = 'Missing CLI session code.';
+			return;
+		}
 		approving = true;
 		error = '';
 
