@@ -669,47 +669,74 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 // and path. Scopes are stored as a JSON array of strings.
 //
 // Supported scopes:
-//   - "*"       — full access (default)
+//   - "*"       — full access
 //   - "read"    — GET/HEAD/OPTIONS only
 //   - "write"   — all methods
 //
-// An empty or unparseable scope string defaults to full access for
-// backward compatibility with tokens created before scope enforcement.
+// Policy (deny-by-default whitelist):
+//   - Empty scope string → allow (legacy DB rows where the column was never
+//     populated). These tokens pre-date scope enforcement.
+//   - Empty JSON array `[]` → allow (explicit "unrestricted" legacy form,
+//     equivalent to no scopes recorded).
+//   - Parseable array with at least one scope: allow iff a RECOGNIZED scope
+//     grants this method. Unrecognized scopes never contribute to allow
+//     and are logged once per request so operators can spot typos like
+//     "read-only" that would previously have fallen open.
+//   - Unparseable JSON → deny (data corruption or tampering). Previously
+//     fell open; that was the security concern behind TASK-667.
+//
+// Switching to deny-by-default closes the hole where a future scope name
+// like "read-only" would silently grant full access.
 func tokenScopeAllows(scopesJSON, method, path string) bool {
 	_ = path // reserved for future per-resource scopes
 
-	if scopesJSON == "" || scopesJSON == `["*"]` {
+	// Empty string (legacy DB rows where the column was never populated)
+	// → full access. Same fast path for the explicit wildcard.
+	if scopesJSON == "" || strings.TrimSpace(scopesJSON) == `["*"]` {
 		return true
 	}
 
 	var scopes []string
 	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil {
-		// Unparseable → allow (backward compat)
+		slog.Warn("token has unparseable scopes; denying request",
+			"method", method, "path", path, "error", err)
+		return false
+	}
+
+	// Distinguish JSON null (scopes == nil after unmarshal) from an
+	// explicit empty array (non-nil, len 0). null falls into the deny
+	// path because it signals a client-side serializer bug, not a
+	// documented legacy form. An explicit [] (including whitespace-
+	// padded "[ ]" or "[\n]") is the documented legacy-unrestricted
+	// form and keeps working.
+	if scopes == nil {
+		slog.Warn("token has null scopes; denying request",
+			"method", method, "path", path, "scopes_json", scopesJSON)
+		return false
+	}
+	if len(scopes) == 0 {
+		// Explicit empty array → unrestricted (legacy pre-enforcement).
 		return true
 	}
 
-	hasKnownScope := false
+	allowed := false
+	var unknown []string
 	for _, scope := range scopes {
 		switch scope {
 		case "*", "write":
-			return true
+			allowed = true
 		case "read":
-			hasKnownScope = true
 			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
-				return true
+				allowed = true
 			}
 		default:
-			// Unrecognized scope — ignore but don't block.
-			// Tokens created before scope enforcement may contain
-			// custom values that were previously stored but not checked.
+			unknown = append(unknown, scope)
 		}
 	}
 
-	// If no recognized scope was found, allow for backward compatibility
-	// (e.g. tokens with only custom/legacy scope strings).
-	if !hasKnownScope {
-		return true
+	if len(unknown) > 0 {
+		slog.Warn("token has unrecognized scopes; treated as no-grant",
+			"method", method, "path", path, "unknown_scopes", unknown)
 	}
-
-	return false
+	return allowed
 }

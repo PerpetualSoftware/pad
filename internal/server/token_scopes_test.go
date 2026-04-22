@@ -35,21 +35,40 @@ func TestTokenScopeAllows(t *testing.T) {
 		{"write allows POST", `["write"]`, http.MethodPost, "/api/v1/test", true},
 		{"write allows DELETE", `["write"]`, http.MethodDelete, "/api/v1/test", true},
 
-		// Invalid/unparseable JSON (backward compat)
-		{"invalid json allows all", "not-json", http.MethodPost, "/api/v1/test", true},
+		// Invalid/unparseable JSON — now DENY (TASK-667 deny-by-default).
+		// Data corruption / tampering should not fall open.
+		{"invalid json denies all", "not-json", http.MethodPost, "/api/v1/test", false},
+		{"invalid json denies GET", "not-json", http.MethodGet, "/api/v1/test", false},
+
+		// JSON null MUST NOT fall through the legacy-unrestricted path.
+		// json.Unmarshal("null", &[]string) succeeds and leaves nil slice —
+		// without an explicit raw-string check we'd grant full access.
+		{"json null denies POST", "null", http.MethodPost, "/api/v1/test", false},
+		{"json null denies GET", "null", http.MethodGet, "/api/v1/test", false},
 
 		// Multiple scopes
 		{"read+write allows POST", `["read","write"]`, http.MethodPost, "/api/v1/test", true},
 		{"read only blocks PUT", `["read"]`, http.MethodPut, "/api/v1/test", false},
 
-		// Empty array (no known scopes → allow for backward compat)
+		// Empty array still allows all — legacy "unrestricted" form. New
+		// tokens should use ["*"]. Whitespace-padded variants that clients
+		// might serialize also count as empty arrays.
 		{"empty array allows all", `[]`, http.MethodGet, "/api/v1/test", true},
+		{"empty array allows POST", `[]`, http.MethodPost, "/api/v1/test", true},
+		{"empty array with spaces", `[ ]`, http.MethodPost, "/api/v1/test", true},
+		{"empty array with newline", "[\n]", http.MethodPost, "/api/v1/test", true},
+		{"empty array with tab", "[\t]", http.MethodGet, "/api/v1/test", true},
+		{"wildcard with spaces", `[ "*" ]`, http.MethodPost, "/api/v1/test", true},
 
-		// Unrecognized/legacy scopes (backward compat — allow)
-		{"unknown scope allows GET", `["docs"]`, http.MethodGet, "/api/v1/test", true},
-		{"unknown scope allows POST", `["repo"]`, http.MethodPost, "/api/v1/test", true},
-		{"unknown+read blocks POST", `["docs","read"]`, http.MethodPost, "/api/v1/test", false},
+		// Unrecognized scopes — TASK-667 deny-by-default. A typo like
+		// "read-only" must NOT silently grant full access.
+		{"unknown scope only denies GET", `["docs"]`, http.MethodGet, "/api/v1/test", false},
+		{"unknown scope only denies POST", `["repo"]`, http.MethodPost, "/api/v1/test", false},
+		{"read-only typo denies GET", `["read-only"]`, http.MethodGet, "/api/v1/test", false},
 		{"unknown+read allows GET", `["docs","read"]`, http.MethodGet, "/api/v1/test", true},
+		{"unknown+read blocks POST", `["docs","read"]`, http.MethodPost, "/api/v1/test", false},
+		{"unknown+wildcard still allows POST", `["docs","*"]`, http.MethodPost, "/api/v1/test", true},
+		{"unknown+write still allows DELETE", `["docs","write"]`, http.MethodDelete, "/api/v1/test", true},
 	}
 
 	for _, tt := range tests {
