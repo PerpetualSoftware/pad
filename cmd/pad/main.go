@@ -209,23 +209,50 @@ func serveCmd() *cobra.Command {
 			}
 			defer s.Close()
 
-			// Configure encryption key for sensitive fields (TOTP secrets)
-			if cfg.EncryptionKey != "" {
-				keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
-				if err != nil || len(keyBytes) != 32 {
-					return fmt.Errorf("PAD_ENCRYPTION_KEY must be a 64-character hex string (32 bytes / 256 bits)")
-				}
-				s.SetEncryptionKey(keyBytes)
-				slog.Info("Encryption key configured for sensitive fields")
+			// Configure encryption key for sensitive fields (TOTP secrets).
+			// EnsureEncryptionKey resolves the key from (in order) env,
+			// config file, the persisted ~/.pad/encryption.key file, or a
+			// freshly-generated one written with 0600.
+			//
+			// Auto-generation is scoped to non-Postgres deployments.
+			// SQLite is single-instance by construction, so a generated
+			// local key is always correct. Postgres deployments may run
+			// multiple replicas behind a load balancer with separate
+			// filesystems — each replica would generate its own key and
+			// cross-replica decryption would fail. Operators MUST
+			// configure PAD_ENCRYPTION_KEY explicitly for Postgres; the
+			// repo's docker-compose.yml and deploy/k8s/secret.yaml both
+			// require it.
+			allowGenerate := dbDriver != "postgres"
+			if err := cfg.EnsureEncryptionKey(allowGenerate); err != nil {
+				return fmt.Errorf("encryption key: %w", err)
+			}
+			keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
+			if err != nil || len(keyBytes) != 32 {
+				return fmt.Errorf("encryption key must be a 64-character hex string (32 bytes / 256 bits); got source=%q len=%d", cfg.EncryptionKeySource, len(cfg.EncryptionKey))
+			}
+			s.SetEncryptionKey(keyBytes)
+			switch cfg.EncryptionKeySource {
+			case "generated":
+				// Loud warning: operator should back this up and/or promote
+				// to a managed secret store in production. Logging at WARN
+				// level so it shows up in typical deployments that only
+				// surface warnings-and-above.
+				slog.Warn("Encryption key generated and persisted — back up the file, or set PAD_ENCRYPTION_KEY explicitly",
+					"path", cfg.EncryptionKeyFile())
+			case "file":
+				slog.Info("Encryption key loaded from file", "path", cfg.EncryptionKeyFile())
+			case "env":
+				slog.Info("Encryption key loaded from PAD_ENCRYPTION_KEY env var")
+			default:
+				slog.Info("Encryption key configured", "source", cfg.EncryptionKeySource)
+			}
 
-				// Backfill: encrypt any plaintext TOTP secrets
-				if n, err := s.BackfillEncryptTOTPSecrets(); err != nil {
-					return fmt.Errorf("backfill TOTP encryption: %w", err)
-				} else if n > 0 {
-					slog.Info("Encrypted plaintext TOTP secrets", "count", n)
-				}
-			} else {
-				slog.Warn("No PAD_ENCRYPTION_KEY configured — TOTP secrets stored in plaintext. Set PAD_ENCRYPTION_KEY for production use.")
+			// Backfill: encrypt any plaintext TOTP secrets.
+			if n, err := s.BackfillEncryptTOTPSecrets(); err != nil {
+				return fmt.Errorf("backfill TOTP encryption: %w", err)
+			} else if n > 0 {
+				slog.Info("Encrypted plaintext TOTP secrets", "count", n)
 			}
 
 			// Auto-upgrade: ensure all default collections exist in every workspace.

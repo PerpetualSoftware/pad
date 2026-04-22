@@ -1,9 +1,12 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -41,7 +44,8 @@ type Config struct {
 	CloudSecret string `toml:"cloud_secret"` // Shared secret for pad-cloud sidecar communication
 
 	// Encryption
-	EncryptionKey string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
 
 	// Security
 	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
@@ -146,6 +150,10 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
 		cfg.EncryptionKey = v
+		cfg.EncryptionKeySource = "env"
+	} else if cfg.EncryptionKey != "" {
+		// Set from config.toml by toml.DecodeFile above.
+		cfg.EncryptionKeySource = "config"
 	}
 	if v := os.Getenv("PAD_CORS_ORIGINS"); v != "" {
 		cfg.CORSOrigins = v
@@ -240,6 +248,130 @@ func (c *Config) BaseURL() string {
 
 func (c *Config) PIDFile() string {
 	return filepath.Join(c.DataDir, "pad.pid")
+}
+
+// EncryptionKeyFile returns the on-disk path where an auto-generated
+// encryption key is persisted. Operator-provided keys (PAD_ENCRYPTION_KEY
+// env, encryption_key config) take precedence and never cause the file
+// to be read or written.
+func (c *Config) EncryptionKeyFile() string {
+	return filepath.Join(c.DataDir, "encryption.key")
+}
+
+// EnsureEncryptionKey makes sure the server has a usable encryption key
+// without requiring the operator to set one explicitly. Resolution order:
+//
+//  1. If c.EncryptionKey is already set (env or config file), use it
+//     verbatim. EncryptionKeySource = "env" or "config" — set by Load().
+//  2. Otherwise look for <DataDir>/encryption.key. If present and
+//     parseable, load it. EncryptionKeySource = "file".
+//  3. Otherwise — only when the caller indicates a single-instance
+//     deployment via allowGenerate=true — generate a new 32-byte
+//     AES-256 key, persist it to that file with 0600 permissions, and
+//     use it. EncryptionKeySource = "generated" so callers can log
+//     loudly.
+//
+// Clustered deployments (allowGenerate=false — typically indicated by
+// PAD_DB_DRIVER=postgres + multiple replicas) MUST configure
+// PAD_ENCRYPTION_KEY explicitly. Otherwise each replica would persist
+// its own key to local disk and cross-instance decryption of shared
+// database rows would fail with GCM auth errors. We return an error in
+// that case rather than silently diverging.
+//
+// Returns an error if key-file creation fails — we never silently fall
+// back to plaintext storage of sensitive fields like TOTP seeds.
+func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
+	if c.EncryptionKey != "" {
+		// EncryptionKeySource was set by Load(); keep whatever was stored.
+		if c.EncryptionKeySource == "" {
+			c.EncryptionKeySource = "config"
+		}
+		return nil
+	}
+
+	keyPath := c.EncryptionKeyFile()
+	if info, err := os.Stat(keyPath); err == nil {
+		// Reject overly-permissive key files before reading. An
+		// encryption.key world-readable (0644) on a shared host hands the
+		// AES key to any local user — it would defeat the whole point of
+		// encrypting at-rest fields. Generated files are written with
+		// 0600; operators who pre-seed must match.
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+			return fmt.Errorf("encryption key %s has mode %o (group/other bits set); run `chmod 600 %s` to restrict",
+				keyPath, info.Mode().Perm(), keyPath)
+		}
+		data, rerr := os.ReadFile(keyPath)
+		if rerr != nil {
+			return fmt.Errorf("read encryption key: %w", rerr)
+		}
+		c.EncryptionKey = strings.TrimSpace(string(data))
+		c.EncryptionKeySource = "file"
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat encryption key: %w", err)
+	}
+
+	if !allowGenerate {
+		return fmt.Errorf("PAD_ENCRYPTION_KEY is required for this deployment (shared database — auto-generation would diverge across replicas). Generate one with: openssl rand -hex 32")
+	}
+
+	// Generate a fresh 32-byte key.
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Errorf("generate encryption key: %w", err)
+	}
+	encoded := hex.EncodeToString(buf)
+
+	// Make sure the data dir exists with tight permissions before dropping
+	// the key file into it.
+	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
+		return fmt.Errorf("create data dir for encryption key: %w", err)
+	}
+
+	// Atomic create via temp-file + hardlink. This handles the concurrent-
+	// startup race cleanly at every step:
+	//
+	//   1. Write the full key to a uniquely-named temp file — each racing
+	//      process has its own temp path, so no collision there, and the
+	//      file is fully written + closed before we touch the final path.
+	//   2. os.Link(temp, keyPath) atomically creates the final file as a
+	//      hardlink to the temp. If keyPath already exists, Link fails
+	//      with EEXIST and leaves the existing file untouched. This is
+	//      the critical property: a loser cannot partially overwrite the
+	//      winner's key, and cannot read the winner's file before it is
+	//      complete (hardlink points to an already-written inode).
+	//   3. On loss, ReadFile(keyPath) is safe — it points to the winner's
+	//      fully-written inode.
+	//   4. The temp is removed in all paths so repeated startups don't
+	//      accumulate junk under DataDir.
+	tmpSuffix := make([]byte, 8)
+	if _, err := rand.Read(tmpSuffix); err != nil {
+		return fmt.Errorf("generate temp suffix: %w", err)
+	}
+	tmpPath := keyPath + ".tmp." + hex.EncodeToString(tmpSuffix)
+	if err := os.WriteFile(tmpPath, []byte(encoded), 0600); err != nil {
+		return fmt.Errorf("write encryption key temp: %w", err)
+	}
+	defer os.Remove(tmpPath) // Best-effort cleanup. Harmless on the winning path (already removed via rename equivalence).
+
+	if err := os.Link(tmpPath, keyPath); err != nil {
+		if os.IsExist(err) {
+			// Someone else won. Their file is fully written because it
+			// too went through temp-write → link, so ReadFile is safe.
+			data, rerr := os.ReadFile(keyPath)
+			if rerr != nil {
+				return fmt.Errorf("reload encryption key after race: %w", rerr)
+			}
+			c.EncryptionKey = strings.TrimSpace(string(data))
+			c.EncryptionKeySource = "file"
+			return nil
+		}
+		return fmt.Errorf("link encryption key to %s: %w", keyPath, err)
+	}
+
+	c.EncryptionKey = encoded
+	c.EncryptionKeySource = "generated"
+	return nil
 }
 
 func (c *Config) LogFile() string {
