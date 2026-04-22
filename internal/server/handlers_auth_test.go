@@ -344,7 +344,9 @@ func doRequestWithCookie(srv *Server, method, path string, body interface{}, tok
 		Value: token,
 	})
 	// Include CSRF token for the double-submit cookie pattern
-	const testCSRF = "test-csrf-token"
+	// Must be csrfTokenLen*2 hex chars to pass the length check added
+	// in TASK-659. Any fixed 64-char hex string works for the test.
+	const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	req.AddCookie(&http.Cookie{
 		Name:  "pad_csrf",
 		Value: testCSRF,

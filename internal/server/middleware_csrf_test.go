@@ -106,10 +106,10 @@ func TestCSRF_MismatchBlocked(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces",
 		strings.NewReader(`{"name":"test"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-CSRF-Token", "wrong-token")
+	req.Header.Set("X-CSRF-Token", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0")
 	req.RemoteAddr = "192.0.2.1:1234"
 	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
-	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: "correct-token"})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
@@ -124,8 +124,9 @@ func TestCSRF_MatchingTokenAllowed(t *testing.T) {
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
 
-	// POST with matching CSRF cookie + header
-	csrfVal := "matching-csrf-token"
+	// POST with matching CSRF cookie + header. Value must be the
+	// expected csrfTokenLen*2 hex chars so the middleware accepts it.
+	csrfVal := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces",
 		strings.NewReader(`{"name":"csrftest"}`))
 	req.Header.Set("Content-Type", "application/json")
