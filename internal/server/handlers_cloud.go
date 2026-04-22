@@ -56,23 +56,26 @@ func (s *Server) requireCloudMode(next http.Handler) http.Handler {
 // setting X-Cloud-Secret on any path (e.g. GET /api/v1/workspaces)
 // bypassed auth globally.
 var cloudAdminPaths = map[string]struct{}{
-	"/api/v1/admin/plan":                {},
-	"/api/v1/admin/stripe-customer-id":  {},
-	"/api/v1/admin/user-by-customer":    {},
+	"/api/v1/admin/plan":               {},
+	"/api/v1/admin/stripe-customer-id": {},
+	"/api/v1/admin/user-by-customer":   {},
 }
 
-// isCloudSecretAuthAttempt reports whether the request looks like a sidecar
-// call authenticating via the cloud secret (X-Cloud-Secret header or
-// legacy ?cloud_secret query-param) AND is targeting one of the cloud
-// admin routes. Requests to any other path are never eligible for the
-// bypass regardless of what headers they carry.
-//
-// Returning true for a request that turns out to carry a wrong secret is
-// safe — the handler still calls validateCloudSecret which rejects it.
-func isCloudSecretAuthAttempt(r *http.Request) bool {
-	if _, ok := cloudAdminPaths[r.URL.Path]; !ok {
-		return false
-	}
+// isCloudAdminPath returns true if the request targets one of the three
+// cloud-sidecar-only admin endpoints. Kept separate from the credential
+// check so the auth and CSRF middleware call sites can clearly combine
+// "right path" AND "right credential marker" in a single if-statement.
+func isCloudAdminPath(path string) bool {
+	_, ok := cloudAdminPaths[path]
+	return ok
+}
+
+// hasCloudSecretMarker returns true if the request carries a sidecar-
+// style auth marker (X-Cloud-Secret header or legacy ?cloud_secret
+// query-param). It does NOT check the path — callers MUST gate on
+// isCloudAdminPath first. Returning true for a request that carries a
+// wrong secret is safe; the handler's validateCloudSecret rejects it.
+func hasCloudSecretMarker(r *http.Request) bool {
 	if r.Header.Get("X-Cloud-Secret") != "" {
 		return true
 	}

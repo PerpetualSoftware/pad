@@ -186,15 +186,17 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Cloud sidecar endpoints authenticate via cloud_secret (header or
-		// body); they need a Route-level requireCloudMode gate, not a blanket
-		// path-based auth bypass. We still need to let requests with a
-		// cloud-secret intent reach the handler — but ONLY when the caller
-		// signals cloud-secret auth (X-Cloud-Secret header, or body.cloud_secret
-		// for legacy POSTs). Without this signal the request falls through to
-		// the normal auth gate and unauthenticated callers get rejected before
-		// the endpoint even discloses "cloud mode not configured".
-		if isCloudSecretAuthAttempt(r) {
+		// Cloud sidecar endpoints authenticate via cloud_secret (X-Cloud-Secret
+		// header, or legacy ?cloud_secret query-param). Only bypass the auth
+		// gate when BOTH conditions hold:
+		//   1. The request path is one of the three cloud admin endpoints.
+		//   2. The request carries a cloud-secret marker.
+		// The path gate is critical — without it, setting X-Cloud-Secret on
+		// any route (e.g. GET /api/v1/workspaces) would globally bypass auth.
+		// After the bypass, requireCloudMode (route-level) + validateCloudSecret
+		// (handler-level) still confirm cloud mode is actually on and that the
+		// secret matches.
+		if isCloudAdminPath(path) && hasCloudSecretMarker(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
