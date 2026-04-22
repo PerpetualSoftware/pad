@@ -5711,7 +5711,7 @@ links, versions).
 
 Steps:
   1. Set up a fresh PostgreSQL database
-  2. Run 'pad serve' with PAD_DB_DRIVER=postgres once to create the schema
+  2. Run 'pad server start' with PAD_DB_DRIVER=postgres once to create the schema
   3. Stop the server
   4. Run this command to migrate workspace data`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -5792,7 +5792,7 @@ Steps:
 
 			fmt.Fprintln(os.Stderr, "\nNext steps:")
 			fmt.Fprintln(os.Stderr, "  1. Set PAD_DB_DRIVER=postgres and PAD_DATABASE_URL in your environment")
-			fmt.Fprintln(os.Stderr, "  2. Start the server: pad serve")
+			fmt.Fprintln(os.Stderr, "  2. Start the server: pad server start")
 			fmt.Fprintln(os.Stderr, "  3. Run 'pad auth setup' to create an admin account on the new database")
 			fmt.Fprintln(os.Stderr, "  4. Verify your data in the web UI")
 

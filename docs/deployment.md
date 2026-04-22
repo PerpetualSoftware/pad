@@ -113,7 +113,7 @@ The simplest deployment — one binary, one file for the database.
 make build
 
 # Run directly
-PAD_HOST=0.0.0.0 ./pad serve
+PAD_HOST=0.0.0.0 ./pad server start
 
 # Or install as a systemd service (see below)
 ```
@@ -161,7 +161,7 @@ After=network.target postgresql.service redis.service
 Type=simple
 User=pad
 Group=pad
-ExecStart=/usr/local/bin/pad serve
+ExecStart=/usr/local/bin/pad server start
 Environment=PAD_HOST=0.0.0.0
 Environment=PAD_DATA_DIR=/var/lib/pad
 Environment=PAD_DB_DRIVER=postgres
