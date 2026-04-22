@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestNormalizeRecoveryCode(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"ABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP"},   // already normalized
+		{"abcdefghijklmnop", "ABCDEFGHIJKLMNOP"},   // lowercase → upper
+		{"ABCD-EFGH-IJKL-MNOP", "ABCDEFGHIJKLMNOP"}, // dashes stripped
+		{" abcd efgh ijkl mnop ", "ABCDEFGHIJKLMNOP"}, // whitespace stripped
+		{"ABcd-EFgh\nIJkl", "ABCDEFGHIJKL"},          // mixed + newline
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := normalizeRecoveryCode(tt.in); got != tt.want {
+			t.Errorf("normalizeRecoveryCode(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 // TestGenerateRecoveryCodes_EntropyShape asserts that recovery codes are
 // the 16-char base32 form expected by TASK-658 (10 bytes / 80 bits of
 // entropy, unpadded). The previous 8-char hex form carried only 32 bits

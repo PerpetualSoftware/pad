@@ -275,7 +275,13 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		consumed, err := s.store.ConsumeRecoveryCode(user.ID, input.RecoveryCode)
+		// Normalize so users can type/paste codes however they were
+		// displayed: generated codes are uppercase base32 [A-Z2-7] with
+		// no separators, but mobile keyboards default to lowercase, and
+		// some people paste codes wrapped with dashes or spaces. Strip
+		// those and uppercase before hashing.
+		normalized := normalizeRecoveryCode(input.RecoveryCode)
+		consumed, err := s.store.ConsumeRecoveryCode(user.ID, normalized)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -301,6 +307,29 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		"user":  sessionUserPayload(user),
 		"token": token,
 	})
+}
+
+// normalizeRecoveryCode prepares a user-entered recovery code for
+// hashed comparison against stored codes: strip ASCII whitespace and
+// dashes, then uppercase the result. Generated codes are already
+// uppercase base32, so normalization is a no-op for a correctly-typed
+// code but rescues common formatting mistakes (mobile lowercase,
+// pasted dashes, surrounding whitespace) that would otherwise burn a
+// rate-limit slot.
+func normalizeRecoveryCode(code string) string {
+	var b strings.Builder
+	b.Grow(len(code))
+	for _, r := range code {
+		switch {
+		case r == '-' || r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			continue
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // generateRecoveryCodes produces n random recovery codes. Each code is 10
