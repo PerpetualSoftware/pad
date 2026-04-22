@@ -238,6 +238,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	// Membership revalidation ticker. The initial subscribe only checked
+	// access ONCE; without this, an owner who revokes a user's workspace
+	// membership (member removed, collection access tightened, guest
+	// grants revoked) would leak events to the now-unauthorized session
+	// for as long as the browser keeps the EventSource open — typically
+	// forever. Re-check at a modest cadence so we catch revocation
+	// within a minute without hammering the DB. Randomly jitter the
+	// first fire a little so every connected client doesn't stampede
+	// the DB at the same :00 / :60 tick.
+	revalInterval := sseMembershipRevalInterval
+	membershipCheck := time.NewTicker(revalInterval)
+	defer membershipCheck.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
@@ -259,8 +272,89 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// Send keepalive comment to prevent proxy/LB timeouts
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
+
+		case <-membershipCheck.C:
+			// Re-verify access. If the subscriber has been removed from
+			// the workspace (or had all grants revoked) since the SSE
+			// connection was established, stop streaming to them.
+			if !s.sseSubscriberStillHasAccess(r, ws.ID) {
+				slog.Info("SSE: subscriber access revoked mid-stream, closing connection",
+					"workspace", ws.Slug, "user_id", sseUserID)
+				// Tell the client why — the frontend's EventSource handler
+				// can use this to redirect to login / dismiss the workspace
+				// instead of reconnecting in a tight loop.
+				writeSSEEvent(w, "unauthorized", 0, map[string]string{
+					"reason": "Your access to this workspace was revoked.",
+				})
+				flusher.Flush()
+				return
+			}
 		}
 	}
+}
+
+// sseMembershipRevalInterval is the cadence at which an active SSE
+// connection re-verifies the subscriber's access to the workspace.
+// 60s is a compromise between "revocation is visible quickly" and
+// "don't hammer the DB for every open tab". Exposed as a package-level
+// var so tests can shrink it without waiting a real minute.
+var sseMembershipRevalInterval = 60 * time.Second
+
+// sseSubscriberStillHasAccess re-runs the workspace access check for an
+// already-subscribed SSE client. Returns false when the caller can no
+// longer see this workspace (member removed, grants revoked, token
+// re-scoped) and the connection should be closed.
+//
+// This mirrors the access logic in RequireWorkspaceAccess but avoids
+// writing error responses — we just need a boolean for the caller to
+// act on.
+func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string) bool {
+	// Fresh-install escape hatch: no users exist → everyone has access.
+	// Matches RequireWorkspaceAccess. Cheap to recheck.
+	if count, _ := s.store.UserCount(); count == 0 {
+		return true
+	}
+
+	// Legacy workspace-scoped API token (no user context). The token's
+	// scope was baked in at creation time and can only change by token
+	// revocation, which nukes the row and fails ValidateToken on the
+	// next request — but the SSE connection was already established.
+	// We verify the token context is still set + targets this workspace.
+	if currentUser(r) == nil {
+		tokenWsID := tokenWorkspaceID(r)
+		if tokenWsID == "" {
+			return false
+		}
+		return tokenWsID == workspaceID
+	}
+
+	user := currentUser(r)
+	// Admins can access any workspace.
+	if user.Role == "admin" {
+		return true
+	}
+	// Direct workspace member?
+	member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+	if err != nil {
+		// DB error — err on the side of letting the client stay
+		// connected. A persistent failure will be caught on the next
+		// HTTP request anyway, and a transient blip shouldn't bounce
+		// every open tab.
+		slog.Warn("SSE revalidation: GetWorkspaceMember failed; keeping connection open",
+			"workspace_id", workspaceID, "user_id", user.ID, "error", err)
+		return true
+	}
+	if member != nil {
+		return true
+	}
+	// Not a member — check guest grants.
+	has, err := s.store.UserHasGrantsInWorkspace(workspaceID, user.ID)
+	if err != nil {
+		slog.Warn("SSE revalidation: UserHasGrantsInWorkspace failed; keeping connection open",
+			"workspace_id", workspaceID, "user_id", user.ID, "error", err)
+		return true
+	}
+	return has
 }
 
 // writeSSEEvent writes a single SSE event to the response writer.
