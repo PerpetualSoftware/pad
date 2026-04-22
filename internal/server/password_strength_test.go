@@ -116,6 +116,63 @@ func TestPasswordChange_RejectsPasswordDerivedFromPendingName(t *testing.T) {
 	}
 }
 
+// TestPasswordReset_UsesIdentityContext verifies the reset endpoint
+// refuses a password derived from the target user's identity. A
+// regression would mean /auth/reset-password enforces a weaker policy
+// than bootstrap/register/rotation — a real bypass since the reset URL
+// is the most common post-compromise recovery path.
+func TestPasswordReset_UsesIdentityContext(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "zaphodbeeblebrox@example.com", "Zaphod Beeblebrox")
+
+	// Issue a reset token via the admin flow (same CreatePasswordReset
+	// path as the request-reset-email endpoint). We need access to the
+	// token string directly to submit the reset.
+	user, err := srv.store.GetUserByEmail("zaphodbeeblebrox@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("fixture: failed to look up user: %v", err)
+	}
+	token, err := srv.store.CreatePasswordReset(user.ID)
+	if err != nil {
+		t.Fatalf("CreatePasswordReset: %v", err)
+	}
+
+	// Reset with a weak password that's clearly derived from the user's
+	// identity — must be rejected BEFORE the token is consumed so the
+	// user can retry on the same link.
+	rr := doRequest(srv, "POST", "/api/v1/auth/reset-password", map[string]string{
+		"token":    token,
+		"password": "zaphodzaphod",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on identity-derived reset password; got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Token must still be usable: retry with a strong password.
+	rr = doRequest(srv, "POST", "/api/v1/auth/reset-password", map[string]string{
+		"token":    token,
+		"password": "another-strong-test-passphrase-19",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("token should remain consumable after a weak-password rejection; got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRegister_IncludesUsernameInStrengthContext pins that registration
+// penalizes a password derived from the caller-supplied username.
+// Registration can't call through the full flow easily (requires
+// invitation code for non-first user), so we exercise the unit-level
+// invariant: validatePasswordStrength with a username-derived password
+// plus "zaphod123" as the username is rejected.
+func TestRegister_IncludesUsernameInStrengthContext(t *testing.T) {
+	// The registration handler calls:
+	//   validatePasswordStrength(input.Password, input.Email, input.Name, input.Username)
+	// so a password literally containing the username must be rejected.
+	if err := validatePasswordStrength("zaphodzaphod", "user@example.com", "Someone", "zaphod"); err == nil {
+		t.Fatal("registration strength check must penalize passwords derived from username")
+	}
+}
+
 func makeStr(n int, c byte) string {
 	b := make([]byte, n)
 	for i := range b {

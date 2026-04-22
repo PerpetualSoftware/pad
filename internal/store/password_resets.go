@@ -44,6 +44,32 @@ func (s *Store) CreatePasswordReset(userID string) (string, error) {
 	return plaintext, nil
 }
 
+// LookupPasswordReset performs a read-only validation of a reset token
+// and returns the associated user WITHOUT consuming the token. Used by
+// the reset handler so we can run identity-aware password strength
+// checks (which need email/name) before burning the token — rejecting
+// a weak password pre-consume lets the user retry on the same reset
+// link instead of having to request a fresh email.
+//
+// Returns nil user if the token is invalid, already used, or expired.
+func (s *Store) LookupPasswordReset(token string) (*models.User, error) {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	var userID string
+	err := s.db.QueryRow(s.q(`
+		SELECT user_id FROM password_reset_tokens
+		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+	`), tokenHash, now()).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup reset token: %w", err)
+	}
+	return s.GetUser(userID)
+}
+
 // ConsumePasswordReset atomically validates and marks a reset token as used.
 // Returns the user if the token is valid, unused, and not expired.
 // Returns nil user if the token is invalid, already used, or expired.

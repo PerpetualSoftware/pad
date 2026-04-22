@@ -412,7 +412,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if err := validatePasswordStrength(input.Password, input.Email, input.Name); err != nil {
+	if err := validatePasswordStrength(input.Password, input.Email, input.Name, input.Username); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
@@ -957,12 +957,22 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is required")
 		return
 	}
-	// Strength check runs against the password alone — we don't know
-	// the user's email/name yet (ConsumePasswordReset gives it back).
-	// The generic check still catches the top-of-breach-list offenders
-	// which is the main concern here; context-aware penalties apply on
-	// all the other entrypoints.
-	if err := validatePasswordStrength(input.Password); err != nil {
+	// Two-phase token handling: look up the user non-destructively so we
+	// can run the full identity-aware strength check (email + name +
+	// username) against the CURRENT password, then consume the token
+	// atomically only if validation passes. Failing pre-consume means a
+	// user who typed a weak password can just try again with the same
+	// reset link instead of having to request a fresh email.
+	preUser, err := s.store.LookupPasswordReset(input.Token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
+		return
+	}
+	if preUser == nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is invalid or expired")
+		return
+	}
+	if err := validatePasswordStrength(input.Password, preUser.Email, preUser.Name, preUser.Username); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
