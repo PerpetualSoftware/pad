@@ -74,6 +74,11 @@ func (rl *ipRateLimiter) cleanup() {
 type RateLimiters struct {
 	// Auth endpoints: strict limits per IP
 	Auth *ipRateLimiter
+	// Login attempts per email: catches credential-spraying that bypasses
+	// the per-IP limit by rotating through a botnet. Consumed inside
+	// handleLogin on every login attempt (success or failure) — a
+	// legitimate user who only mistypes a couple of times never notices.
+	AuthEmail *ipRateLimiter
 	// Password reset: per-IP
 	PasswordReset *ipRateLimiter
 	// Registration: per-IP
@@ -95,6 +100,14 @@ func NewRateLimiters() *RateLimiters {
 		Auth: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(5.0 / 60.0),
 			Burst: 5,
+		}),
+		// Per-email: 10 attempts per hour. Low enough to defeat credential
+		// spraying from a botnet (which evades the per-IP limit by rotating
+		// source addresses), high enough that a forgetful user mistyping
+		// their own password never hits it under normal use.
+		AuthEmail: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(10.0 / 3600.0),
+			Burst: 10,
 		}),
 		// Password reset: 3 per hour per IP (= 3/3600 per second, burst 3)
 		PasswordReset: newIPRateLimiter(rateLimitConfig{

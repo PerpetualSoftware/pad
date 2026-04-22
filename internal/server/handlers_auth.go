@@ -511,6 +511,30 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-email rate limit: catches credential spraying from a botnet that
+	// evades the per-IP limit by rotating source addresses. 10 attempts/hour
+	// per lowercased email address. The limiter is consumed on every attempt
+	// (success or failure) so an attacker can't use successful guesses as a
+	// "reset" — but a legitimate user who remembers their password on try 1
+	// or 2 will never notice the limit.
+	if s.rateLimiters != nil && s.rateLimiters.AuthEmail != nil {
+		emailKey := strings.ToLower(strings.TrimSpace(input.Email))
+		if emailKey != "" {
+			limiter := s.rateLimiters.AuthEmail.getLimiter(emailKey)
+			if !limiter.Allow() {
+				slog.Warn("rate limited", "email", emailKey, "limiter", "auth_email")
+				// Audit even the blocked attempt so an admin can see the
+				// sprayed account in the log.
+				s.logAuditEvent(models.ActionLoginFailed, r, auditMeta(map[string]string{
+					"email":  input.Email,
+					"reason": "email_rate_limited",
+				}))
+				writeRateLimitResponse(w, s.rateLimiters.AuthEmail.config)
+				return
+			}
+		}
+	}
+
 	user, err := s.store.ValidatePassword(input.Email, input.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Authentication failed")
