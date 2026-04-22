@@ -35,12 +35,30 @@ checksum:
 
 changelog:
   sort: asc
+  use: github
   filters:
     exclude:
       - "^docs:"
       - "^test:"
       - "^ci:"
       - "^chore:"
+      - "^Merge pull request"
+      - "^Merge branch"
+  groups:
+    - title: "Features"
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: "Bug fixes"
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: "Performance"
+      regexp: '^perf(\(.+\))?!?:'
+      order: 2
+    - title: "Refactors"
+      regexp: '^refactor(\(.+\))?!?:'
+      order: 3
+    - title: "Other changes"
+      order: 999
 
 brews:
   - repository:
