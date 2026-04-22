@@ -212,23 +212,20 @@ func serveCmd() *cobra.Command {
 			// Configure encryption key for sensitive fields (TOTP secrets).
 			// EnsureEncryptionKey resolves the key from (in order) env,
 			// config file, the persisted ~/.pad/encryption.key file, or a
-			// freshly-generated one written with 0600. This removes the
-			// old "silent plaintext fallback" behavior that was TASK-668's
-			// original concern.
+			// freshly-generated one written with 0600.
 			//
-			// Auto-generation is ALLOWED for every deployment so first
-			// boot always works out of the box. On a multi-replica
-			// Postgres cluster, though, each replica would persist its
-			// own local key and cross-instance decryption would fail —
-			// we warn explicitly in that case so operators running
-			// replicas know they need to set PAD_ENCRYPTION_KEY and
-			// mount a shared key.
-			if err := cfg.EnsureEncryptionKey(true); err != nil {
+			// Auto-generation is scoped to non-Postgres deployments.
+			// SQLite is single-instance by construction, so a generated
+			// local key is always correct. Postgres deployments may run
+			// multiple replicas behind a load balancer with separate
+			// filesystems — each replica would generate its own key and
+			// cross-replica decryption would fail. Operators MUST
+			// configure PAD_ENCRYPTION_KEY explicitly for Postgres; the
+			// repo's docker-compose.yml and deploy/k8s/secret.yaml both
+			// require it.
+			allowGenerate := dbDriver != "postgres"
+			if err := cfg.EnsureEncryptionKey(allowGenerate); err != nil {
 				return fmt.Errorf("encryption key: %w", err)
-			}
-			if cfg.EncryptionKeySource == "generated" && dbDriver == "postgres" {
-				slog.Warn("Auto-generated encryption key on a PostgreSQL deployment — if you run multiple Pad replicas, set PAD_ENCRYPTION_KEY explicitly so every replica uses the same key",
-					"path", cfg.EncryptionKeyFile())
 			}
 			keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
 			if err != nil || len(keyBytes) != 32 {

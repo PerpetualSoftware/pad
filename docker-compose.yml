@@ -29,6 +29,11 @@ services:
       # `openssl rand -base64` output — don't need percent-encoding and
       # can't break the connection string by accident.
       PAD_DATABASE_URL: "host=postgres port=5432 user=pad password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example} dbname=pad sslmode=disable"
+      # PAD_ENCRYPTION_KEY is REQUIRED on Postgres — Pad won't auto-generate
+      # one because a multi-replica deploy would generate a different key
+      # per replica and fail cross-instance decryption. Generate with
+      # `openssl rand -hex 32` and keep it stable across restarts.
+      PAD_ENCRYPTION_KEY: "${PAD_ENCRYPTION_KEY:?PAD_ENCRYPTION_KEY is required — see .env.example}"
       PAD_REDIS_URL: "redis://redis:6379"
       PAD_DATA_DIR: "/data"
       PAD_LOG_LEVEL: "info"
