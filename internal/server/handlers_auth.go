@@ -158,6 +158,23 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 // deliberately strips forwarding headers) in exchange for a simple,
 // sound invariant. Operators in that narrow case can call
 // `pad auth setup` from the host CLI instead of through their proxy.
+// isPlausibleEmail is a cheap pre-filter used to decide whether an email
+// is worth creating a per-email rate-limiter bucket for. NOT a full RFC
+// 5322 validator — it only rejects the two easy ways an attacker could
+// flood the limiter's bucket map: (1) excessively long strings, (2)
+// strings with no '@' at all. Anything shape-like-an-email passes and
+// the real validation happens in the store's password check.
+func isPlausibleEmail(s string) bool {
+	// RFC 5321 §4.5.3.1.3 caps the full address at 254 octets.
+	if s == "" || len(s) > 254 {
+		return false
+	}
+	at := strings.IndexByte(s, '@')
+	// Require an '@' that isn't at position 0 or the last char, so
+	// neither side of the address is empty.
+	return at > 0 && at < len(s)-1
+}
+
 func requestIsLoopback(r *http.Request) bool {
 	// (2) Reject any proxied request.
 	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-IP") != "" {
@@ -517,9 +534,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// (success or failure) so an attacker can't use successful guesses as a
 	// "reset" — but a legitimate user who remembers their password on try 1
 	// or 2 will never notice the limit.
+	//
+	// Only create a bucket for syntactically plausible emails. Inserting
+	// every attacker-supplied string would let a distributed attacker grow
+	// the bucket map without bound (retention = 2h), which is a memory-DoS
+	// vector — so we pre-filter by RFC 5321 max length (254) and require
+	// at least an '@'. Invalid input still gets the ordinary 401 from the
+	// password check below, just without producing a new limiter entry.
 	if s.rateLimiters != nil && s.rateLimiters.AuthEmail != nil {
 		emailKey := strings.ToLower(strings.TrimSpace(input.Email))
-		if emailKey != "" {
+		if isPlausibleEmail(emailKey) {
 			limiter := s.rateLimiters.AuthEmail.getLimiter(emailKey)
 			if !limiter.Allow() {
 				slog.Warn("rate limited", "email", emailKey, "limiter", "auth_email")

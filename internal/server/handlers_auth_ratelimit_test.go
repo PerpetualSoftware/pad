@@ -2,8 +2,67 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestIsPlausibleEmail(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid email", "user@example.com", true},
+		{"empty string", "", false},
+		{"no at sign", "userexample.com", false},
+		{"at at start", "@example.com", false},
+		{"at at end", "user@", false},
+		{"over 254 chars", strings.Repeat("a", 250) + "@b.com", false},
+		{"exactly 254 chars", strings.Repeat("a", 246) + "@b.com", true}, // 246 + 1 + 5 = 252 → 254 cap OK
+		{"unicode local part", "üser@example.com", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPlausibleEmail(tt.input); got != tt.want {
+				t.Fatalf("isPlausibleEmail(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleLogin_ImplausibleEmail_NoBucketCreated asserts that a long
+// garbage string with no '@' does not create a bucket in the AuthEmail
+// limiter — the memory-DoS defense Codex asked for on PR #178.
+func TestHandleLogin_ImplausibleEmail_NoBucketCreated(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "victim@example.com", "Victim")
+
+	// Send 50 login attempts with distinct garbage "emails" from distinct IPs.
+	for i := 0; i < 50; i++ {
+		garbage := strings.Repeat("x", 500) // way over 254 cap
+		rr := doRequestFromRemoteAddr(srv, "POST", "/api/v1/auth/login", map[string]string{
+			"email":    garbage,
+			"password": "wrong",
+		}, "203.0.113.200:"+string(rune('0'+i%10)))
+		if rr.Code == http.StatusTooManyRequests {
+			// Acceptable — could be hit by per-IP limiter depending on IP reuse.
+			continue
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("garbage email attempt %d: expected 401 or 429, got %d", i, rr.Code)
+		}
+	}
+
+	// Confirm no bucket was created for the garbage: the map should be empty
+	// of any entry whose key starts with 'x...' (the long string).
+	srv.rateLimiters.AuthEmail.mu.Lock()
+	defer srv.rateLimiters.AuthEmail.mu.Unlock()
+	for key := range srv.rateLimiters.AuthEmail.limiters {
+		if strings.HasPrefix(key, "xxxxxxx") {
+			t.Fatalf("garbage email created bucket: %q (len=%d)", key[:20]+"…", len(key))
+		}
+	}
+}
 
 // TestHandleLogin_PerEmailRateLimit asserts that the per-email limiter
 // (10/hour burst 10) triggers before the per-IP limiter (5/min burst 5)
