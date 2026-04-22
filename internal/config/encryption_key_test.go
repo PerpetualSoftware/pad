@@ -15,7 +15,7 @@ func newTestConfig(t *testing.T) *Config {
 
 func TestEnsureEncryptionKey_GeneratesWhenMissing(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.EnsureEncryptionKey(); err != nil {
+	if err := c.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("EnsureEncryptionKey: %v", err)
 	}
 
@@ -51,7 +51,7 @@ func TestEnsureEncryptionKey_LoadsFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := c.EnsureEncryptionKey(); err != nil {
+	if err := c.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("EnsureEncryptionKey: %v", err)
 	}
 	if c.EncryptionKey != known {
@@ -68,7 +68,7 @@ func TestEnsureEncryptionKey_RespectsConfigured(t *testing.T) {
 	c.EncryptionKey = configured
 	c.EncryptionKeySource = "env"
 
-	if err := c.EnsureEncryptionKey(); err != nil {
+	if err := c.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("EnsureEncryptionKey: %v", err)
 	}
 
@@ -85,17 +85,50 @@ func TestEnsureEncryptionKey_RespectsConfigured(t *testing.T) {
 	}
 }
 
+func TestEnsureEncryptionKey_RefusesToGenerateWhenClustered(t *testing.T) {
+	// Codex P1 on PR #189: in a clustered Postgres deployment, each replica
+	// would generate its own local key and cross-instance decryption of
+	// shared DB rows would fail. The caller MUST set allowGenerate=false in
+	// that case, and EnsureEncryptionKey must refuse to fabricate a key.
+	c := newTestConfig(t)
+	if err := c.EnsureEncryptionKey(false); err == nil {
+		t.Fatal("clustered mode without configured key should error, got nil")
+	}
+	// Sanity: nothing was written.
+	if _, err := os.Stat(c.EncryptionKeyFile()); !os.IsNotExist(err) {
+		t.Errorf("encryption.key was written despite allowGenerate=false")
+	}
+}
+
+func TestEnsureEncryptionKey_ClusteredWithPreSeededFileStillLoads(t *testing.T) {
+	// If the operator pre-seeds the file (e.g. shared volume mounted into
+	// every replica), EnsureEncryptionKey should load it even when
+	// allowGenerate is false. Only the GENERATE step is forbidden.
+	c := newTestConfig(t)
+	const known = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	if err := os.WriteFile(c.EncryptionKeyFile(), []byte(known), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.EnsureEncryptionKey(false); err != nil {
+		t.Fatalf("pre-seeded file in clustered mode should load: %v", err)
+	}
+	if c.EncryptionKey != known {
+		t.Errorf("loaded key = %q, want %q", c.EncryptionKey, known)
+	}
+}
+
 func TestEnsureEncryptionKey_IsIdempotentAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	c1 := &Config{DataDir: dir}
-	if err := c1.EnsureEncryptionKey(); err != nil {
+	if err := c1.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("first EnsureEncryptionKey: %v", err)
 	}
 	first := c1.EncryptionKey
 
-	// Second "run" — new Config, same DataDir. Must load the same key.
+	// Second "run" — new Config, same DataDir, clustered mode. The file
+	// exists now so the load path succeeds even with allowGenerate=false.
 	c2 := &Config{DataDir: dir}
-	if err := c2.EnsureEncryptionKey(); err != nil {
+	if err := c2.EnsureEncryptionKey(false); err != nil {
 		t.Fatalf("second EnsureEncryptionKey: %v", err)
 	}
 	if c2.EncryptionKey != first {

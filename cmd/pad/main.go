@@ -215,7 +215,16 @@ func serveCmd() *cobra.Command {
 			// freshly-generated one written with 0600. This removes the
 			// old "silent plaintext fallback" behavior that was TASK-668's
 			// original concern.
-			if err := cfg.EnsureEncryptionKey(); err != nil {
+			//
+			// Auto-generation is scoped to SQLite deployments. Clustered
+			// setups (PAD_DB_DRIVER=postgres with potentially multiple
+			// replicas) cannot safely auto-generate — each replica would
+			// persist a different key to its own local filesystem, and
+			// cross-instance decryption of the shared database would fail
+			// with GCM auth errors. The operator must set
+			// PAD_ENCRYPTION_KEY explicitly in that case.
+			allowGenerate := dbDriver != "postgres"
+			if err := cfg.EnsureEncryptionKey(allowGenerate); err != nil {
 				return fmt.Errorf("encryption key: %w", err)
 			}
 			keyBytes, err := hex.DecodeString(cfg.EncryptionKey)

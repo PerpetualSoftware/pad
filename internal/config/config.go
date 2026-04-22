@@ -261,16 +261,25 @@ func (c *Config) EncryptionKeyFile() string {
 // without requiring the operator to set one explicitly. Resolution order:
 //
 //  1. If c.EncryptionKey is already set (env or config file), use it
-//     verbatim. EncryptionKeySource = "env" or "file" — set by Load().
+//     verbatim. EncryptionKeySource = "env" or "config" — set by Load().
 //  2. Otherwise look for <DataDir>/encryption.key. If present and
 //     parseable, load it. EncryptionKeySource = "file".
-//  3. Otherwise generate a new 32-byte AES-256 key, persist it to that
-//     file with 0600 permissions, and use it. EncryptionKeySource =
-//     "generated" so callers can log loudly.
+//  3. Otherwise — only when the caller indicates a single-instance
+//     deployment via allowGenerate=true — generate a new 32-byte
+//     AES-256 key, persist it to that file with 0600 permissions, and
+//     use it. EncryptionKeySource = "generated" so callers can log
+//     loudly.
+//
+// Clustered deployments (allowGenerate=false — typically indicated by
+// PAD_DB_DRIVER=postgres + multiple replicas) MUST configure
+// PAD_ENCRYPTION_KEY explicitly. Otherwise each replica would persist
+// its own key to local disk and cross-instance decryption of shared
+// database rows would fail with GCM auth errors. We return an error in
+// that case rather than silently diverging.
 //
 // Returns an error if key-file creation fails — we never silently fall
 // back to plaintext storage of sensitive fields like TOTP seeds.
-func (c *Config) EnsureEncryptionKey() error {
+func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 	if c.EncryptionKey != "" {
 		// EncryptionKeySource was set by Load(); keep whatever was stored.
 		if c.EncryptionKeySource == "" {
@@ -286,6 +295,10 @@ func (c *Config) EnsureEncryptionKey() error {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read encryption key: %w", err)
+	}
+
+	if !allowGenerate {
+		return fmt.Errorf("PAD_ENCRYPTION_KEY is required for this deployment (shared database — auto-generation would diverge across replicas). Generate one with: openssl rand -hex 32")
 	}
 
 	// Generate a fresh 32-byte key.
