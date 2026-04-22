@@ -49,6 +49,24 @@ func (s *Server) requireCloudMode(next http.Handler) http.Handler {
 	})
 }
 
+// isCloudSecretAuthAttempt reports whether the request looks like a sidecar
+// call authenticating via the cloud secret (header or legacy query-param).
+// Used by RequireAuth and CSRFProtect to let those requests bypass the
+// normal user-auth path; the requireCloudMode + handler-level secret check
+// then actually authorize the call. Returning true for a request that turns
+// out to carry a wrong secret is safe — the handler still rejects it.
+func isCloudSecretAuthAttempt(r *http.Request) bool {
+	if r.Header.Get("X-Cloud-Secret") != "" {
+		return true
+	}
+	// Legacy query-param support for GET sidecar calls. TASK-656 removes
+	// this fallback; until then we must still honor it.
+	if r.URL.Query().Get("cloud_secret") != "" {
+		return true
+	}
+	return false
+}
+
 // --- OAuth Login (TASK-430) ---
 
 // handleOAuthLogin handles POST /api/v1/auth/oauth-login.

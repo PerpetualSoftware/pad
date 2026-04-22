@@ -385,9 +385,16 @@ func (s *Server) setupRouter() {
 			r.Get("/settings", s.handleGetPlatformSettings)
 			r.Patch("/settings", s.handleUpdatePlatformSettings)
 			r.Post("/test-email", s.handleTestEmail)
-			r.Post("/plan", s.handleSetPlan)                       // Cloud: sidecar sets user plans; also accessible to admins
-			r.Post("/stripe-customer-id", s.handleSetStripeCustomerID) // Cloud: sidecar stores Stripe customer ID after checkout
-			r.Get("/user-by-customer", s.handleGetUserByCustomerID)    // Cloud: sidecar looks up user by Stripe customer ID
+
+			// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode
+			// returns 404 outside cloud mode so a self-hosted deployment doesn't
+			// expose "Cloud mode not configured" to unauthenticated probes.
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireCloudMode)
+				r.Post("/plan", s.handleSetPlan)                       // Cloud: sidecar sets user plans; also accessible to admins
+				r.Post("/stripe-customer-id", s.handleSetStripeCustomerID) // Cloud: sidecar stores Stripe customer ID after checkout
+				r.Get("/user-by-customer", s.handleGetUserByCustomerID)    // Cloud: sidecar looks up user by Stripe customer ID
+			})
 
 			// User management
 			r.Get("/users", s.handleAdminListUsers)

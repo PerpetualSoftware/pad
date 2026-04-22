@@ -178,12 +178,23 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Auth endpoints, share link resolution, and cloud sidecar endpoints are always exempt.
-		// Cloud sidecar endpoints authenticate via cloud_secret (in body or header),
-		// so they must bypass RequireAuth which runs before handlers can read the body.
+		// Auth endpoints, share link resolution, health, and the public
+		// plan-limits endpoint are always exempt from auth.
 		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
-			path == "/api/v1/plan-limits" || // Public endpoint for billing page
-			path == "/api/v1/admin/plan" || path == "/api/v1/admin/stripe-customer-id" || path == "/api/v1/admin/user-by-customer" {
+			path == "/api/v1/plan-limits" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Cloud sidecar endpoints authenticate via cloud_secret (header or
+		// body); they need a Route-level requireCloudMode gate, not a blanket
+		// path-based auth bypass. We still need to let requests with a
+		// cloud-secret intent reach the handler — but ONLY when the caller
+		// signals cloud-secret auth (X-Cloud-Secret header, or body.cloud_secret
+		// for legacy POSTs). Without this signal the request falls through to
+		// the normal auth gate and unauthenticated callers get rejected before
+		// the endpoint even discloses "cloud mode not configured".
+		if isCloudSecretAuthAttempt(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

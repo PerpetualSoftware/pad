@@ -39,10 +39,18 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 
 		// Auth endpoints that need to work before a CSRF token exists
 		// (login, register, bootstrap, password reset).
-		// The cloud plan endpoint is also exempt — the sidecar authenticates
-		// via cloud_secret in the body, not via cookies.
-		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") ||
-			r.URL.Path == "/api/v1/admin/plan" || r.URL.Path == "/api/v1/admin/stripe-customer-id" {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Cloud sidecar calls bypass CSRF because they don't use cookie-
+		// based sessions; they authenticate via X-Cloud-Secret (or legacy
+		// ?cloud_secret). Admin calls over cookie sessions to the same
+		// endpoints DO hit this branch and still require a CSRF token —
+		// which is the whole point of narrowing the carve-out from
+		// path-based to credential-based.
+		if isCloudSecretAuthAttempt(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
