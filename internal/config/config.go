@@ -47,6 +47,7 @@ type Config struct {
 	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
 	SecureCookies  bool   `toml:"secure_cookies"`  // Set Secure flag on cookies (requires TLS)
 	TrustedProxies string `toml:"trusted_proxies"` // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
+	MetricsToken   string `toml:"metrics_token"`   // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
 
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
@@ -154,6 +155,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_TRUSTED_PROXIES"); v != "" {
 		cfg.TrustedProxies = v
+	}
+	if v := os.Getenv("PAD_METRICS_TOKEN"); v != "" {
+		cfg.MetricsToken = v
 	}
 	if v := os.Getenv("PAD_SSE_MAX_CONNECTIONS"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {
