@@ -49,13 +49,30 @@ func (s *Server) requireCloudMode(next http.Handler) http.Handler {
 	})
 }
 
+// cloudAdminPaths are the exact paths where a cloud-secret auth attempt is
+// allowed to bypass the normal user-auth / CSRF gates. Defined as an
+// explicit whitelist so no future /api/v1/... route accidentally inherits
+// the bypass — Codex caught a P0 in the first cut of this change where
+// setting X-Cloud-Secret on any path (e.g. GET /api/v1/workspaces)
+// bypassed auth globally.
+var cloudAdminPaths = map[string]struct{}{
+	"/api/v1/admin/plan":                {},
+	"/api/v1/admin/stripe-customer-id":  {},
+	"/api/v1/admin/user-by-customer":    {},
+}
+
 // isCloudSecretAuthAttempt reports whether the request looks like a sidecar
-// call authenticating via the cloud secret (header or legacy query-param).
-// Used by RequireAuth and CSRFProtect to let those requests bypass the
-// normal user-auth path; the requireCloudMode + handler-level secret check
-// then actually authorize the call. Returning true for a request that turns
-// out to carry a wrong secret is safe — the handler still rejects it.
+// call authenticating via the cloud secret (X-Cloud-Secret header or
+// legacy ?cloud_secret query-param) AND is targeting one of the cloud
+// admin routes. Requests to any other path are never eligible for the
+// bypass regardless of what headers they carry.
+//
+// Returning true for a request that turns out to carry a wrong secret is
+// safe — the handler still calls validateCloudSecret which rejects it.
 func isCloudSecretAuthAttempt(r *http.Request) bool {
+	if _, ok := cloudAdminPaths[r.URL.Path]; !ok {
+		return false
+	}
 	if r.Header.Get("X-Cloud-Secret") != "" {
 		return true
 	}

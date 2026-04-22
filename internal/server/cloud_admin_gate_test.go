@@ -106,6 +106,45 @@ func TestCloudAdminGate_ValidCloudSecret_PassesAuthAndCSRF(t *testing.T) {
 	}
 }
 
+// TestCloudAdminGate_BypassScopedToCloudPaths verifies the regression
+// Codex P0'd on PR #182: setting X-Cloud-Secret on a NON-cloud-admin
+// path must NOT bypass auth. Applies to every non-whitelisted route.
+func TestCloudAdminGate_BypassScopedToCloudPaths(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// Setting X-Cloud-Secret on GET /api/v1/workspaces must still require
+	// normal user auth — a pre-fix attacker could list workspaces anonymously.
+	req := cloudAdminReq(t, "GET", "/api/v1/workspaces", nil,
+		map[string]string{"X-Cloud-Secret": "does-not-matter"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("X-Cloud-Secret on non-cloud path bypassed auth: got %d, want 401", rr.Code)
+	}
+
+	// Same test with the legacy query-param.
+	req = cloudAdminReq(t, "GET", "/api/v1/workspaces?cloud_secret=x", nil, nil)
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("?cloud_secret on non-cloud path bypassed auth: got %d, want 401", rr.Code)
+	}
+
+	// POST /api/v1/workspaces — creates a workspace. If X-Cloud-Secret
+	// bypassed auth here, an anon attacker could create workspaces.
+	// CSRF middleware may reject first (403) before auth (401); either
+	// status is a valid rejection, but must NOT be a 2xx.
+	req = cloudAdminReq(t, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "hijacked"},
+		map[string]string{"X-Cloud-Secret": "x"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code < 400 {
+		t.Fatalf("X-Cloud-Secret on POST /workspaces bypassed auth: got %d (expected 401 or 403)", rr.Code)
+	}
+}
+
 // TestCloudAdminGate_QueryParamSecret_BackwardCompat keeps the legacy
 // ?cloud_secret= query param working for GETs while TASK-656 pares it back.
 func TestCloudAdminGate_QueryParamSecret_BackwardCompat(t *testing.T) {
