@@ -313,8 +313,38 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir for encryption key: %w", err)
 	}
-	if err := os.WriteFile(keyPath, []byte(encoded), 0600); err != nil {
-		return fmt.Errorf("write encryption key to %s: %w", keyPath, err)
+	// Atomic create: O_EXCL means "fail if the file already exists." This
+	// protects against two pad processes racing on first boot — without
+	// O_EXCL both would pass the check-then-write stat above, generate
+	// different random keys, and race the write. The loser would end up
+	// with in-memory key A while the file on disk holds key B, and a
+	// future restart of the loser (loading from file) would decrypt with
+	// key B everything that process wrote under key A. O_EXCL + reload-on-
+	// EEXIST funnels every racing process to the same persisted value.
+	f, err := os.OpenFile(keyPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Someone else won the race. Load their key.
+			data, rerr := os.ReadFile(keyPath)
+			if rerr != nil {
+				return fmt.Errorf("reload encryption key after race: %w", rerr)
+			}
+			c.EncryptionKey = strings.TrimSpace(string(data))
+			c.EncryptionKeySource = "file"
+			return nil
+		}
+		return fmt.Errorf("create encryption key %s: %w", keyPath, err)
+	}
+	if _, werr := f.WriteString(encoded); werr != nil {
+		f.Close()
+		// Best-effort cleanup: remove the truncated file so the next
+		// startup tries fresh. Ignore removal errors; the operator can
+		// always delete it manually.
+		_ = os.Remove(keyPath)
+		return fmt.Errorf("write encryption key to %s: %w", keyPath, werr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		return fmt.Errorf("close encryption key %s: %w", keyPath, cerr)
 	}
 	c.EncryptionKey = encoded
 	c.EncryptionKeySource = "generated"

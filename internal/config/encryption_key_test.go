@@ -117,6 +117,40 @@ func TestEnsureEncryptionKey_ClusteredWithPreSeededFileStillLoads(t *testing.T) 
 	}
 }
 
+func TestEnsureEncryptionKey_ConcurrentStartIsRaceSafe(t *testing.T) {
+	// Codex P2 on PR #189: two processes racing on first boot must NOT
+	// generate divergent keys. O_EXCL creation + reload-on-EEXIST makes
+	// every racing goroutine converge on the same persisted value.
+	dir := t.TempDir()
+
+	const N = 16
+	results := make(chan *Config, N)
+	for i := 0; i < N; i++ {
+		go func() {
+			c := &Config{DataDir: dir}
+			if err := c.EnsureEncryptionKey(true); err != nil {
+				t.Errorf("goroutine EnsureEncryptionKey: %v", err)
+			}
+			results <- c
+		}()
+	}
+
+	var keys []string
+	for i := 0; i < N; i++ {
+		c := <-results
+		keys = append(keys, c.EncryptionKey)
+	}
+	first := keys[0]
+	if first == "" {
+		t.Fatal("no key generated")
+	}
+	for _, k := range keys {
+		if k != first {
+			t.Fatalf("racing startups produced divergent keys:\n  %q\n  %q", first, k)
+		}
+	}
+}
+
 func TestEnsureEncryptionKey_IsIdempotentAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	c1 := &Config{DataDir: dir}
