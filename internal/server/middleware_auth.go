@@ -690,14 +690,9 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 func tokenScopeAllows(scopesJSON, method, path string) bool {
 	_ = path // reserved for future per-resource scopes
 
-	// Legacy tokens with no scopes column → full access. Same fast path
-	// for the explicit wildcard and for the explicit empty array (legacy
-	// "unrestricted" form). We compare the raw string so that other JSON
-	// values that ALSO decode to an empty slice (notably the literal
-	// `null`, which json.Unmarshal happily accepts) do NOT fall through
-	// the unrestricted path.
-	switch strings.TrimSpace(scopesJSON) {
-	case "", `["*"]`, `[ "*" ]`, `[]`:
+	// Empty string (legacy DB rows where the column was never populated)
+	// → full access. Same fast path for the explicit wildcard.
+	if scopesJSON == "" || strings.TrimSpace(scopesJSON) == `["*"]` {
 		return true
 	}
 
@@ -708,13 +703,20 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 		return false
 	}
 
-	// Anything else that decoded to an empty slice (e.g. "null", or a
-	// non-array value accepted by some drivers) is NOT treated as
-	// legacy-unrestricted. Deny + warn so operators see the ambiguity.
-	if len(scopes) == 0 {
-		slog.Warn("token has non-array or null scopes; denying request",
+	// Distinguish JSON null (scopes == nil after unmarshal) from an
+	// explicit empty array (non-nil, len 0). null falls into the deny
+	// path because it signals a client-side serializer bug, not a
+	// documented legacy form. An explicit [] (including whitespace-
+	// padded "[ ]" or "[\n]") is the documented legacy-unrestricted
+	// form and keeps working.
+	if scopes == nil {
+		slog.Warn("token has null scopes; denying request",
 			"method", method, "path", path, "scopes_json", scopesJSON)
 		return false
+	}
+	if len(scopes) == 0 {
+		// Explicit empty array → unrestricted (legacy pre-enforcement).
+		return true
 	}
 
 	allowed := false

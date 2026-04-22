@@ -51,9 +51,14 @@ func TestTokenScopeAllows(t *testing.T) {
 		{"read only blocks PUT", `["read"]`, http.MethodPut, "/api/v1/test", false},
 
 		// Empty array still allows all — legacy "unrestricted" form. New
-		// tokens should use ["*"].
+		// tokens should use ["*"]. Whitespace-padded variants that clients
+		// might serialize also count as empty arrays.
 		{"empty array allows all", `[]`, http.MethodGet, "/api/v1/test", true},
 		{"empty array allows POST", `[]`, http.MethodPost, "/api/v1/test", true},
+		{"empty array with spaces", `[ ]`, http.MethodPost, "/api/v1/test", true},
+		{"empty array with newline", "[\n]", http.MethodPost, "/api/v1/test", true},
+		{"empty array with tab", "[\t]", http.MethodGet, "/api/v1/test", true},
+		{"wildcard with spaces", `[ "*" ]`, http.MethodPost, "/api/v1/test", true},
 
 		// Unrecognized scopes — TASK-667 deny-by-default. A typo like
 		// "read-only" must NOT silently grant full access.
