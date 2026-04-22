@@ -691,8 +691,13 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 	_ = path // reserved for future per-resource scopes
 
 	// Legacy tokens with no scopes column → full access. Same fast path
-	// for the explicit wildcard.
-	if scopesJSON == "" || scopesJSON == `["*"]` {
+	// for the explicit wildcard and for the explicit empty array (legacy
+	// "unrestricted" form). We compare the raw string so that other JSON
+	// values that ALSO decode to an empty slice (notably the literal
+	// `null`, which json.Unmarshal happily accepts) do NOT fall through
+	// the unrestricted path.
+	switch strings.TrimSpace(scopesJSON) {
+	case "", `["*"]`, `[ "*" ]`, `[]`:
 		return true
 	}
 
@@ -703,11 +708,13 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 		return false
 	}
 
-	// Empty array behaves like the legacy "no scope" case — unrestricted.
-	// Tokens explicitly created with [] by older code should not break on
-	// upgrade. New tokens should use ["*"] or a specific scope list.
+	// Anything else that decoded to an empty slice (e.g. "null", or a
+	// non-array value accepted by some drivers) is NOT treated as
+	// legacy-unrestricted. Deny + warn so operators see the ambiguity.
 	if len(scopes) == 0 {
-		return true
+		slog.Warn("token has non-array or null scopes; denying request",
+			"method", method, "path", path, "scopes_json", scopesJSON)
+		return false
 	}
 
 	allowed := false

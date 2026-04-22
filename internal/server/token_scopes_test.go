@@ -40,6 +40,12 @@ func TestTokenScopeAllows(t *testing.T) {
 		{"invalid json denies all", "not-json", http.MethodPost, "/api/v1/test", false},
 		{"invalid json denies GET", "not-json", http.MethodGet, "/api/v1/test", false},
 
+		// JSON null MUST NOT fall through the legacy-unrestricted path.
+		// json.Unmarshal("null", &[]string) succeeds and leaves nil slice —
+		// without an explicit raw-string check we'd grant full access.
+		{"json null denies POST", "null", http.MethodPost, "/api/v1/test", false},
+		{"json null denies GET", "null", http.MethodGet, "/api/v1/test", false},
+
 		// Multiple scopes
 		{"read+write allows POST", `["read","write"]`, http.MethodPost, "/api/v1/test", true},
 		{"read only blocks PUT", `["read"]`, http.MethodPut, "/api/v1/test", false},
