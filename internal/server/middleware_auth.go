@@ -178,12 +178,25 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Auth endpoints, share link resolution, and cloud sidecar endpoints are always exempt.
-		// Cloud sidecar endpoints authenticate via cloud_secret (in body or header),
-		// so they must bypass RequireAuth which runs before handlers can read the body.
+		// Auth endpoints, share link resolution, health, and the public
+		// plan-limits endpoint are always exempt from auth.
 		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
-			path == "/api/v1/plan-limits" || // Public endpoint for billing page
-			path == "/api/v1/admin/plan" || path == "/api/v1/admin/stripe-customer-id" || path == "/api/v1/admin/user-by-customer" {
+			path == "/api/v1/plan-limits" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Cloud sidecar endpoints authenticate via cloud_secret (X-Cloud-Secret
+		// header, or legacy ?cloud_secret query-param). Only bypass the auth
+		// gate when BOTH conditions hold:
+		//   1. The request path is one of the three cloud admin endpoints.
+		//   2. The request carries a cloud-secret marker.
+		// The path gate is critical — without it, setting X-Cloud-Secret on
+		// any route (e.g. GET /api/v1/workspaces) would globally bypass auth.
+		// After the bypass, requireCloudMode (route-level) + validateCloudSecret
+		// (handler-level) still confirm cloud mode is actually on and that the
+		// secret matches.
+		if isCloudAdminPath(path) && hasCloudSecretMarker(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
