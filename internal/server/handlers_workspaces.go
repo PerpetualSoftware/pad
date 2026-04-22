@@ -333,7 +333,12 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	var data models.WorkspaceExport
-	if err := decodeJSON(r, &data); err != nil {
+	// WorkspaceExport contains all collections, items, comments, and item
+	// versions for the workspace — even a modest project export blows past
+	// the default 2 MiB decodeJSON cap. 64 MiB is well above any realistic
+	// single-workspace backup while still far from the heap-exhaustion
+	// range the default cap protects against.
+	if err := decodeJSONWithLimit(r, &data, 64<<20); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid export data: "+err.Error())
 		return
 	}
