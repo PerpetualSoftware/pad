@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,7 +43,8 @@ type Config struct {
 	CloudSecret string `toml:"cloud_secret"` // Shared secret for pad-cloud sidecar communication
 
 	// Encryption
-	EncryptionKey string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
 
 	// Security
 	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
@@ -146,6 +149,10 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
 		cfg.EncryptionKey = v
+		cfg.EncryptionKeySource = "env"
+	} else if cfg.EncryptionKey != "" {
+		// Set from config.toml by toml.DecodeFile above.
+		cfg.EncryptionKeySource = "config"
 	}
 	if v := os.Getenv("PAD_CORS_ORIGINS"); v != "" {
 		cfg.CORSOrigins = v
@@ -240,6 +247,65 @@ func (c *Config) BaseURL() string {
 
 func (c *Config) PIDFile() string {
 	return filepath.Join(c.DataDir, "pad.pid")
+}
+
+// EncryptionKeyFile returns the on-disk path where an auto-generated
+// encryption key is persisted. Operator-provided keys (PAD_ENCRYPTION_KEY
+// env, encryption_key config) take precedence and never cause the file
+// to be read or written.
+func (c *Config) EncryptionKeyFile() string {
+	return filepath.Join(c.DataDir, "encryption.key")
+}
+
+// EnsureEncryptionKey makes sure the server has a usable encryption key
+// without requiring the operator to set one explicitly. Resolution order:
+//
+//  1. If c.EncryptionKey is already set (env or config file), use it
+//     verbatim. EncryptionKeySource = "env" or "file" — set by Load().
+//  2. Otherwise look for <DataDir>/encryption.key. If present and
+//     parseable, load it. EncryptionKeySource = "file".
+//  3. Otherwise generate a new 32-byte AES-256 key, persist it to that
+//     file with 0600 permissions, and use it. EncryptionKeySource =
+//     "generated" so callers can log loudly.
+//
+// Returns an error if key-file creation fails — we never silently fall
+// back to plaintext storage of sensitive fields like TOTP seeds.
+func (c *Config) EnsureEncryptionKey() error {
+	if c.EncryptionKey != "" {
+		// EncryptionKeySource was set by Load(); keep whatever was stored.
+		if c.EncryptionKeySource == "" {
+			c.EncryptionKeySource = "config"
+		}
+		return nil
+	}
+
+	keyPath := c.EncryptionKeyFile()
+	if data, err := os.ReadFile(keyPath); err == nil {
+		c.EncryptionKey = strings.TrimSpace(string(data))
+		c.EncryptionKeySource = "file"
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read encryption key: %w", err)
+	}
+
+	// Generate a fresh 32-byte key.
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Errorf("generate encryption key: %w", err)
+	}
+	encoded := hex.EncodeToString(buf)
+
+	// Make sure the data dir exists with tight permissions before dropping
+	// the key file into it.
+	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
+		return fmt.Errorf("create data dir for encryption key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(encoded), 0600); err != nil {
+		return fmt.Errorf("write encryption key to %s: %w", keyPath, err)
+	}
+	c.EncryptionKey = encoded
+	c.EncryptionKeySource = "generated"
+	return nil
 }
 
 func (c *Config) LogFile() string {
