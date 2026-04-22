@@ -1,0 +1,101 @@
+# Dependabot configuration for Pad.
+#
+# Pairs with TASK-677 (SHA-pinned Actions): Dependabot understands
+# commit-pinned uses: refs and opens PRs that update the SHA + trailing
+# version comment together, so the human-reviewable version label stays
+# in sync with the pinned SHA.
+#
+# Grouping strategy: patch + minor updates collapse into one PR per
+# ecosystem per week; major bumps get their own PRs so the breaking
+# change is easy to review in isolation.
+version: 2
+updates:
+  # Go modules at repo root (cmd/pad + internal/*).
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      go-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # Web UI npm deps (SvelteKit frontend).
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions — pairs with TASK-677 (SHA pinning).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"
+      include: scope
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # Docker base images. The `/` directory covers both Dockerfile and
+  # Dockerfile.goreleaser — Dependabot's docker ecosystem scans every
+  # `Dockerfile*` file in the directory.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(docker)"
+      include: scope
+    groups:
+      docker-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
