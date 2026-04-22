@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -83,7 +84,15 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		if cookie.Value != headerToken {
+		// Lengths must match AND the bytes must match, evaluated in
+		// constant time. subtle.ConstantTimeCompare returns 0 on length
+		// mismatch too — we check separately so the length-mismatch
+		// branch doesn't short-circuit before the compare (Go's == would
+		// return early on length, leaking timing signal about how many
+		// leading bytes are correct).
+		cookieBytes, headerBytes := []byte(cookie.Value), []byte(headerToken)
+		if len(cookieBytes) != len(headerBytes) ||
+			subtle.ConstantTimeCompare(cookieBytes, headerBytes) != 1 {
 			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
 			return
 		}
