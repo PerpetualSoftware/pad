@@ -30,6 +30,15 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Run govulncheck
+        # Fails the build on any known vulnerability in a package we
+        # actually reach via the call graph. Net-positive: catches CVEs
+        # in indirect deps early, without the noise of hitting every
+        # stale entry in our dependency tree.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
       - name: Run tests
         run: go test ./...
 
