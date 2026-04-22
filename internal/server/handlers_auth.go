@@ -322,12 +322,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
-		return
-	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	if err := validatePasswordStrength(input.Password, input.Email, input.Name); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
@@ -416,12 +412,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
-		return
-	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	if err := validatePasswordStrength(input.Password, input.Email, input.Name, input.Username); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
@@ -821,8 +813,22 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
 			return
 		}
-		if len(input.NewPassword) < 8 {
-			writeError(w, http.StatusBadRequest, "validation_error", "New password must be at least 8 characters")
+		// Validate against the POST-UPDATE identity — if the same PATCH
+		// also changes name/username, a password derived from the new
+		// values must be penalized too. Otherwise a caller could set
+		// name = "Zaphod" + password = "Zaphod2026" in one request and
+		// slip past the context-aware check because we'd be comparing to
+		// the PREVIOUS name.
+		nameCtx := user.Name
+		if input.Name != nil {
+			nameCtx = *input.Name
+		}
+		usernameCtx := user.Username
+		if input.Username != nil {
+			usernameCtx = *input.Username
+		}
+		if err := validatePasswordStrength(input.NewPassword, user.Email, nameCtx, usernameCtx); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 
@@ -951,12 +957,23 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
+	// Two-phase token handling: look up the user non-destructively so we
+	// can run the full identity-aware strength check (email + name +
+	// username) against the CURRENT password, then consume the token
+	// atomically only if validation passes. Failing pre-consume means a
+	// user who typed a weak password can just try again with the same
+	// reset link instead of having to request a fresh email.
+	preUser, err := s.store.LookupPasswordReset(input.Token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
 	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	if preUser == nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is invalid or expired")
+		return
+	}
+	if err := validatePasswordStrength(input.Password, preUser.Email, preUser.Name, preUser.Username); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 

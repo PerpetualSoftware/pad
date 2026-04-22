@@ -21,7 +21,7 @@ func TestPasswordChange_InvalidatesOtherSessions(t *testing.T) {
 	login := func() string {
 		rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 			"email":    "admin@example.com",
-			"password": "password123",
+			"password": "correct-horse-battery-staple",
 		})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("login: expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -51,8 +51,8 @@ func TestPasswordChange_InvalidatesOtherSessions(t *testing.T) {
 
 	// Change password via the "current" session.
 	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/auth/me", map[string]string{
-		"current_password": "password123",
-		"new_password":     "newpassword456",
+		"current_password": "correct-horse-battery-staple",
+		"new_password":     "second-strong-test-passphrase-42",
 	}, currentSessionToken)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("password change: expected 200, got %d: %s", rr.Code, rr.Body.String())
