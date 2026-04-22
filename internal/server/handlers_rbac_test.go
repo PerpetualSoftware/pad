@@ -42,7 +42,7 @@ func setupRBACEnv(t *testing.T) *rbacTestEnv {
 	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "editor@test.com",
 		"name":     "Editor",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	}, ownerToken)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register editor: expected 201, got %d: %s", rr.Code, rr.Body.String())
@@ -52,7 +52,7 @@ func setupRBACEnv(t *testing.T) *rbacTestEnv {
 	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "viewer@test.com",
 		"name":     "Viewer",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	}, ownerToken)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register viewer: expected 201, got %d: %s", rr.Code, rr.Body.String())
@@ -76,9 +76,9 @@ func setupRBACEnv(t *testing.T) *rbacTestEnv {
 	}
 
 	// Log in as editor
-	editorToken := loginUser(t, srv, "editor@test.com", "password123")
+	editorToken := loginUser(t, srv, "editor@test.com", "correct-horse-battery-staple")
 	// Log in as viewer
-	viewerToken := loginUser(t, srv, "viewer@test.com", "password123")
+	viewerToken := loginUser(t, srv, "viewer@test.com", "correct-horse-battery-staple")
 
 	return &rbacTestEnv{
 		srv:         srv,

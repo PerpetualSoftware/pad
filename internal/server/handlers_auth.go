@@ -322,12 +322,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
-		return
-	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	if err := validatePasswordStrength(input.Password, input.Email, input.Name); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
@@ -416,12 +412,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
-		return
-	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	if err := validatePasswordStrength(input.Password, input.Email, input.Name); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
@@ -821,8 +813,8 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
 			return
 		}
-		if len(input.NewPassword) < 8 {
-			writeError(w, http.StatusBadRequest, "validation_error", "New password must be at least 8 characters")
+		if err := validatePasswordStrength(input.NewPassword, user.Email, user.Name); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 
@@ -951,12 +943,13 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is required")
 		return
 	}
-	if len(input.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at least 8 characters")
-		return
-	}
-	if len(input.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password must be at most 128 characters")
+	// Strength check runs against the password alone — we don't know
+	// the user's email/name yet (ConsumePasswordReset gives it back).
+	// The generic check still catches the top-of-breach-list offenders
+	// which is the main concern here; context-aware penalties apply on
+	// all the other entrypoints.
+	if err := validatePasswordStrength(input.Password); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 

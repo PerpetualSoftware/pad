@@ -80,7 +80,7 @@ func TestCSRF_MissingTokenBlocked(t *testing.T) {
 
 	// Bootstrap and login to get session token
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
 	// POST with session cookie but no CSRF token at all
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces",
@@ -100,7 +100,7 @@ func TestCSRF_MismatchBlocked(t *testing.T) {
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
 	// POST with session cookie + CSRF cookie but WRONG header value
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces",
@@ -122,7 +122,7 @@ func TestCSRF_MatchingTokenAllowed(t *testing.T) {
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
 	// POST with matching CSRF cookie + header. Value must be the
 	// expected csrfTokenLen*2 hex chars so the middleware accepts it.
@@ -176,7 +176,7 @@ func TestCSRF_LoginSetsCSRFCookie(t *testing.T) {
 
 	// Login
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
-		strings.NewReader(`{"email":"admin@test.com","password":"password123"}`))
+		strings.NewReader(`{"email":"admin@test.com","password":"correct-horse-battery-staple"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
 	w := httptest.NewRecorder()
@@ -208,7 +208,7 @@ func TestCSRF_LogoutClearsCSRFCookie(t *testing.T) {
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
 	// Logout (auth endpoints are CSRF-exempt)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
@@ -231,7 +231,7 @@ func TestCSRF_AllMutationMethodsBlocked(t *testing.T) {
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "password123")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
 	// All state-changing methods should be blocked without CSRF
 	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete} {

@@ -17,7 +17,7 @@ func bootstrapFirstUser(t *testing.T, srv *Server, email, name string) string {
 	rr := doLoopbackRequest(srv, "POST", "/api/v1/auth/bootstrap", map[string]string{
 		"email":    email,
 		"name":     name,
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("bootstrap: expected 201, got %d: %s", rr.Code, rr.Body.String())
@@ -81,7 +81,7 @@ func TestAuthBootstrapRequiresLoopback(t *testing.T) {
 	rr := doRequest(srv, "POST", "/api/v1/auth/bootstrap", map[string]string{
 		"email":    "admin@test.com",
 		"name":     "Admin",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("remote bootstrap: expected 403, got %d: %s", rr.Code, rr.Body.String())
@@ -94,7 +94,7 @@ func TestAuthLoginFlow(t *testing.T) {
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "user@test.com",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("login: expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -129,7 +129,7 @@ func TestAuthLoginRequiresSetupWhenNoUsers(t *testing.T) {
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
 		"email":    "nobody@test.com",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("login without users: expected 409, got %d: %s", rr.Code, rr.Body.String())
@@ -142,7 +142,7 @@ func TestFreshInstanceRegistrationIsForbidden(t *testing.T) {
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "admin@test.com",
 		"name":     "Admin",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("fresh registration: expected 403, got %d: %s", rr.Code, rr.Body.String())
@@ -172,7 +172,7 @@ func TestInvitationRegistrationFlow(t *testing.T) {
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":           "invitee@test.com",
 		"name":            "Invitee",
-		"password":        "password123",
+		"password":        "correct-horse-battery-staple",
 		"invitation_code": inv.Code,
 	})
 	if rr.Code != http.StatusCreated {
@@ -209,7 +209,7 @@ func TestAuthRegistrationValidation(t *testing.T) {
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"name":     "Test",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("missing email: expected 400, got %d", rr.Code)
@@ -218,7 +218,7 @@ func TestAuthRegistrationValidation(t *testing.T) {
 	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "not-an-email",
 		"name":     "Test",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("invalid email: expected 400, got %d", rr.Code)
@@ -235,7 +235,7 @@ func TestAuthRegistrationValidation(t *testing.T) {
 
 	rr = doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "test@test.com",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("missing name: expected 400, got %d", rr.Code)
@@ -311,7 +311,7 @@ func TestDuplicateRegistration(t *testing.T) {
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "dup@test.com",
 		"name":     "First",
-		"password": "password123",
+		"password": "correct-horse-battery-staple",
 	}, adminToken)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("admin register: expected 201, got %d: %s", rr.Code, rr.Body.String())
