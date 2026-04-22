@@ -100,7 +100,18 @@ type WorkspaceInvitation struct {
 	InvitedBy   string     `json:"invited_by"`
 	Code        string     `json:"code"`
 	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// IsExpired reports whether an invitation is past its expiration window.
+// Invitations created before the expires_at migration (nil ExpiresAt) are
+// treated as non-expiring so existing codes don't break on upgrade.
+func (inv *WorkspaceInvitation) IsExpired() bool {
+	if inv == nil || inv.ExpiresAt == nil {
+		return false
+	}
+	return time.Now().UTC().After(*inv.ExpiresAt)
 }
 
 // WorkspaceMember represents a user's membership in a workspace.

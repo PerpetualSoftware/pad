@@ -7,9 +7,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/xarmian/pad/internal/models"
 )
+
+// InvitationTTL is how long a newly-created workspace invitation stays
+// accepted-by-code. 14 days mirrors the convention of every password-reset
+// or magic-link flow: long enough for a distracted invitee to notice the
+// email, short enough that a leaked code doesn't stay exploitable forever.
+const InvitationTTL = 14 * 24 * time.Hour
 
 // AddWorkspaceMember adds a user to a workspace with the given role.
 func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
@@ -502,11 +509,12 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 
 	id := newID()
 	ts := now()
+	expiresAt := time.Now().UTC().Add(InvitationTTL).Format(time.RFC3339)
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts)
+		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}
@@ -523,15 +531,15 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 // GetInvitation retrieves an invitation by ID.
 func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
 	var inv models.WorkspaceInvitation
-	var acceptedAt *string
+	var acceptedAt, expiresAt *string
 	var createdAt string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
 		FROM workspace_invitations WHERE id = ?
 	`), id).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
-		&inv.Code, &acceptedAt, &createdAt,
+		&inv.Code, &acceptedAt, &expiresAt, &createdAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -542,6 +550,7 @@ func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
 
 	inv.CreatedAt = parseTime(createdAt)
 	inv.AcceptedAt = parseTimePtr(acceptedAt)
+	inv.ExpiresAt = parseTimePtr(expiresAt)
 	return &inv, nil
 }
 
@@ -554,20 +563,21 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 	codeHash := hex.EncodeToString(hash[:])
 
 	var inv models.WorkspaceInvitation
-	var acceptedAt *string
+	var acceptedAt, expiresAt *string
 	var createdAt string
 
 	// Try hashed lookup first (new invitations)
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
 		FROM workspace_invitations WHERE code_hash = ? AND accepted_at IS NULL
 	`), codeHash).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
-		&inv.Code, &acceptedAt, &createdAt,
+		&inv.Code, &acceptedAt, &expiresAt, &createdAt,
 	)
 	if err == nil {
 		inv.CreatedAt = parseTime(createdAt)
 		inv.AcceptedAt = parseTimePtr(acceptedAt)
+		inv.ExpiresAt = parseTimePtr(expiresAt)
 		return &inv, nil
 	}
 	if err != sql.ErrNoRows {
@@ -576,11 +586,11 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 
 	// Fall back to plaintext lookup (legacy invitations)
 	err = s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
 		FROM workspace_invitations WHERE code = ? AND accepted_at IS NULL
 	`), code).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
-		&inv.Code, &acceptedAt, &createdAt,
+		&inv.Code, &acceptedAt, &expiresAt, &createdAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -591,6 +601,7 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 
 	inv.CreatedAt = parseTime(createdAt)
 	inv.AcceptedAt = parseTimePtr(acceptedAt)
+	inv.ExpiresAt = parseTimePtr(expiresAt)
 	return &inv, nil
 }
 
@@ -625,7 +636,7 @@ func (s *Store) DeleteInvitation(workspaceID, invitationID string) error {
 // ListWorkspaceInvitations returns all invitations for a workspace.
 func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.WorkspaceInvitation, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, created_at
+		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
 		FROM workspace_invitations
 		WHERE workspace_id = ? AND accepted_at IS NULL
 		ORDER BY created_at ASC
@@ -638,16 +649,17 @@ func (s *Store) ListWorkspaceInvitations(workspaceID string) ([]models.Workspace
 	var result []models.WorkspaceInvitation
 	for rows.Next() {
 		var inv models.WorkspaceInvitation
-		var acceptedAt *string
+		var acceptedAt, expiresAt *string
 		var createdAt string
 		if err := rows.Scan(
 			&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
-			&inv.Code, &acceptedAt, &createdAt,
+			&inv.Code, &acceptedAt, &expiresAt, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan invitation: %w", err)
 		}
 		inv.CreatedAt = parseTime(createdAt)
 		inv.AcceptedAt = parseTimePtr(acceptedAt)
+		inv.ExpiresAt = parseTimePtr(expiresAt)
 		result = append(result, inv)
 	}
 	return result, rows.Err()

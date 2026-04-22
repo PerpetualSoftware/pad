@@ -312,6 +312,10 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
 		return
 	}
+	if inv.IsExpired() {
+		writeError(w, http.StatusGone, "expired", "This invitation has expired. Ask the inviter to send a new one.")
+		return
+	}
 
 	user := currentUser(r)
 	if user == nil {

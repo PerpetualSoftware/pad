@@ -380,6 +380,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_invitation", "Invalid or expired invitation code")
 			return
 		}
+		if inv.IsExpired() {
+			// Distinct status from the "not found" case so the UI can show
+			// a useful message ("ask the inviter to send a new one") rather
+			// than a generic retry-the-code prompt.
+			writeError(w, http.StatusGone, "expired", "This invitation has expired. Ask the inviter to send a new one.")
+			return
+		}
 		invitation = inv
 	}
 
