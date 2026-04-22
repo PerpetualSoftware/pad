@@ -184,6 +184,14 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 	s.logAuditEvent(models.ActionTOTPDisabled, r, "")
 
+	// Disabling 2FA weakens the account's auth surface — rotate every
+	// other session the same way we do for password changes. Otherwise
+	// a cookie captured while 2FA was on keeps its privileges after 2FA
+	// comes off.
+	if _, ok := s.rotateSessionsAfterCredentialChange(w, r, user); !ok {
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled": false,
 	})
