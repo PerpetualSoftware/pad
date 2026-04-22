@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -83,7 +84,25 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		if cookie.Value != headerToken {
+		// CSRF tokens are fixed-size hex strings (csrfTokenLen bytes →
+		// csrfTokenLen*2 hex chars). Reject any token that doesn't
+		// match the expected length BEFORE allocating. Without this
+		// an attacker could flood with equally-sized cookie + header
+		// pairs (within the 64 KiB MaxHeaderBytes cap) and each
+		// failing request would allocate the []byte copies below
+		// proportional to the header size — cheap per request, but
+		// a noticeable GC cost under sustained load. Post-check,
+		// both values are bounded to csrfTokenLen*2 bytes so the
+		// allocation is a fixed, tiny cost.
+		const expectedLen = csrfTokenLen * 2 // hex encoding
+		if len(cookie.Value) != expectedLen || len(headerToken) != expectedLen {
+			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
+			return
+		}
+		// subtle.ConstantTimeCompare evaluates the byte compare in time
+		// independent of where the first differing byte lives, removing
+		// the timing side-channel that the previous `!=` had.
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
 			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
 			return
 		}
