@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/xarmian/pad/internal/models"
+	"github.com/xarmian/pad/internal/store"
 )
 
 type contextKey string
@@ -71,6 +72,11 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 					"session_ip", session.IPAddress,
 					"client_ip", clientIP(r))
 				writeError(w, http.StatusUnauthorized, "unauthorized", "Session expired")
+				return
+			}
+			// Session binding: detect IP changes. Log to audit log in all modes;
+			// reject only when PAD_IP_CHANGE_ENFORCE=strict.
+			if rejected := s.handleSessionIPChange(w, r, session, token); rejected {
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
@@ -154,6 +160,12 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 				"session_ip", session.IPAddress,
 				"client_ip", clientIP(r))
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Session binding: detect IP changes. Log to audit log in all modes;
+		// reject only when PAD_IP_CHANGE_ENFORCE=strict.
+		if rejected := s.handleSessionIPChange(w, r, session, cookie.Value); rejected {
 			return
 		}
 
@@ -439,6 +451,63 @@ func permissionLevel(perm string) int {
 func sha256hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+// handleSessionIPChange compares the client IP on this request to the IP
+// recorded when the session was created. Returns true if the request was
+// terminated (written + returned) and the caller must not continue.
+//
+// Behavior:
+//   - Session has no recorded IP (legacy pre-migration row): no-op.
+//   - IP matches: no-op.
+//   - IP differs: always write one ActionSessionIPChanged audit row and
+//     update the stored IP so we don't spam the log on every request.
+//   - In strict mode (PAD_IP_CHANGE_ENFORCE=strict): additionally destroy
+//     the session and return 401. The default (log-only) mode breaks
+//     fewer legitimate clients (mobile roaming, VPN toggles, carrier NAT)
+//     while still giving operators a visible signal.
+func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) bool {
+	newIP := clientIP(r)
+	if session.IPAddress == "" || newIP == "" || session.IPAddress == newIP {
+		return false
+	}
+
+	// Log the IP change. Use the session's user as the actor. Best-effort —
+	// if the DB write fails, we still allow or block the request based on
+	// mode, we just skip the audit entry.
+	userID := ""
+	if session.User != nil {
+		userID = session.User.ID
+	}
+	s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
+		"old_ip": session.IPAddress,
+		"new_ip": newIP,
+	}))
+
+	if s.ipChangeEnforceStrict {
+		slog.Warn("session binding mismatch: IP changed (strict enforcement, session rejected)",
+			"session_ip", session.IPAddress,
+			"client_ip", newIP,
+			"user_id", userID)
+		// Destroy the session so a stolen token can't be used again from the
+		// new IP. The legitimate user just needs to log in fresh.
+		_ = s.store.DeleteSession(plainToken)
+		writeError(w, http.StatusUnauthorized, "session_ip_changed",
+			"Session client IP changed — please log in again.")
+		return true
+	}
+
+	slog.Info("session client IP changed (logged, request allowed)",
+		"session_ip", session.IPAddress,
+		"client_ip", newIP,
+		"user_id", userID)
+	// Update the stored IP so the next request with the same new IP is a
+	// no-op and we don't flood the audit log. Best-effort: on failure we
+	// still let the request through.
+	if err := s.store.UpdateSessionIP(plainToken, newIP); err != nil {
+		slog.Warn("failed to update session ip after change", "error", err)
+	}
+	return false
 }
 
 // tokenScopeAllows checks if the token's scopes permit the given HTTP method

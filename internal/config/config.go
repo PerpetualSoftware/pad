@@ -48,10 +48,11 @@ type Config struct {
 	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
 
 	// Security
-	CORSOrigins    string `toml:"cors_origins"`    // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
-	SecureCookies  bool   `toml:"secure_cookies"`  // Set Secure flag on cookies (requires TLS)
-	TrustedProxies string `toml:"trusted_proxies"` // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
-	MetricsToken   string `toml:"metrics_token"`   // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
+	CORSOrigins     string `toml:"cors_origins"`      // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
+	SecureCookies   bool   `toml:"secure_cookies"`    // Set Secure flag on cookies (requires TLS)
+	TrustedProxies  string `toml:"trusted_proxies"`   // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
+	MetricsToken    string `toml:"metrics_token"`     // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
+	IPChangeEnforce string `toml:"ip_change_enforce"` // "" (log only) or "strict" (reject session when client IP differs from the one recorded at session creation).
 
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
@@ -166,6 +167,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_METRICS_TOKEN"); v != "" {
 		cfg.MetricsToken = v
+	}
+	if v := os.Getenv("PAD_IP_CHANGE_ENFORCE"); v != "" {
+		cfg.IPChangeEnforce = v
 	}
 	if v := os.Getenv("PAD_SSE_MAX_CONNECTIONS"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {

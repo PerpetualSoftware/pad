@@ -94,6 +94,23 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	}, nil
 }
 
+// UpdateSessionIP records a new client IP on a session, identified by its
+// plaintext token. Used by the IP-change audit path to track the current
+// observed IP without closing the session. Safe to call when the new IP
+// matches the stored one — still a no-op UPDATE, no rows touched.
+func (s *Store) UpdateSessionIP(token, newIP string) error {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	_, err := s.db.Exec(s.q(`
+		UPDATE sessions SET ip_address = ? WHERE token_hash = ?
+	`), newIP, tokenHash)
+	if err != nil {
+		return fmt.Errorf("update session ip: %w", err)
+	}
+	return nil
+}
+
 // DeleteSession destroys a session by its plaintext token.
 func (s *Store) DeleteSession(token string) error {
 	hash := sha256.Sum256([]byte(token))

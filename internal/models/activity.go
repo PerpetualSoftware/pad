@@ -32,6 +32,13 @@ const (
 	ActionUserDisabled         = "user_disabled"
 	ActionUserEnabled          = "user_enabled"
 	ActionAccountDeleted       = "account_deleted"
+	// ActionSessionIPChanged is logged when a session presents a different
+	// client IP than the one recorded at creation. We don't strict-check IP
+	// by default (that breaks legitimate geo shifts — VPN toggle, mobile
+	// roaming) but surface the change to the audit log for detection. In
+	// deployments configured with PAD_IP_CHANGE_ENFORCE=strict the middleware
+	// additionally rejects the request.
+	ActionSessionIPChanged = "session_ip_changed"
 )
 
 type Activity struct {

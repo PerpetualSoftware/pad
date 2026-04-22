@@ -42,11 +42,12 @@ type Server struct {
 	baseURL       string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
-	metrics            *metrics.Metrics      // Prometheus metrics (optional)
-	metricsToken       string                // shared bearer token for /metrics scrapes ("" = loopback-only)
-	trustedProxyCIDRs  []*net.IPNet          // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
-	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
-	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
+	metrics             *metrics.Metrics      // Prometheus metrics (optional)
+	metricsToken        string                // shared bearer token for /metrics scrapes ("" = loopback-only)
+	trustedProxyCIDRs   []*net.IPNet          // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
+	ipChangeEnforceStrict bool                // when true, reject sessions whose client IP differs from the one recorded at session creation
+	sseMaxConnections   int                   // global SSE connection limit (0 = unlimited)
+	sseMaxPerWorkspace  int                   // per-workspace SSE connection limit (0 = unlimited)
 	cloudMode           bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets        []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
 	version            string               // release version (e.g. "dev", "1.2.3")
@@ -235,6 +236,17 @@ func (s *Server) SetSSELimits(global, perWorkspace int) {
 // loopback check, and audit logging.
 func (s *Server) SetTrustedProxies(spec string) {
 	s.trustedProxyCIDRs = ParseTrustedProxyCIDRs(spec)
+}
+
+// SetIPChangeEnforce controls how the auth middleware reacts when a
+// session's client IP changes mid-lifetime:
+//   - mode == "strict": reject the request (session treated as possibly stolen)
+//   - anything else (default): log to the audit log, update the stored IP,
+//     and let the request through. Strict mode breaks legitimate mobility
+//     (mobile roaming, VPN toggles) so it is opt-in for high-sensitivity
+//     deployments via the PAD_IP_CHANGE_ENFORCE env var.
+func (s *Server) SetIPChangeEnforce(mode string) {
+	s.ipChangeEnforceStrict = strings.EqualFold(strings.TrimSpace(mode), "strict")
 }
 
 // reconfigureEmail reads email settings from the platform_settings table
