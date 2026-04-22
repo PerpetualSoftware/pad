@@ -416,9 +416,19 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("oauth-unlink: provider unlinked", "provider", input.Provider, "user_id", user.ID)
 
+	// Removing a sign-in method changes the account's auth surface — rotate
+	// all sessions so any cookie issued while the provider was linked
+	// (possibly via a compromised OAuth account) becomes invalid. The
+	// caller keeps their session via a re-issued cookie.
+	token, ok := s.rotateSessionsAfterCredentialChange(w, r, user)
+	if !ok {
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":       true,
 		"provider": input.Provider,
+		"token":    token, // for Bearer-only callers
 	})
 }
 

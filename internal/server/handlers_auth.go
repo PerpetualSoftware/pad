@@ -213,6 +213,53 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 	return session.User
 }
 
+// rotateSessionsAfterCredentialChange invalidates every existing session
+// for the user (forcing sign-out on all other devices) and then re-issues
+// a fresh session for the current request so the caller stays logged in.
+// Call this after any action that changes the credentials or auth surface
+// tied to the account: password change, TOTP disable, OAuth provider
+// unlink, etc. Without it a stolen cookie stays valid forever — defeating
+// the point of letting a user "kick everyone else out" by rotating their
+// password.
+//
+// Sets a fresh session cookie on the response (for browser callers) AND
+// returns the new token string (for CLI / API callers using
+// Authorization: Bearer padsess_… who never read cookies). Handlers
+// should embed the returned token in their response body so both
+// transport styles stay authenticated.
+//
+// On DeleteUserSessions error we log and continue; on CreateSession
+// error we write a 500 response and return ok=false — the caller should
+// return immediately.
+func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *http.Request, user *models.User) (string, bool) {
+	if err := s.store.DeleteUserSessions(user.ID); err != nil {
+		// Best-effort: even if deletion fails we must still mint a new
+		// session for the caller, but log loudly so the operator knows
+		// stale cookies may persist until expiry.
+		slog.Error("failed to invalidate sessions after credential change",
+			"user_id", user.ID, "error", err)
+	}
+
+	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Credentials updated but failed to refresh session. Please sign in again.")
+		return "", false
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName(s.secureCookies),
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(webSessionTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   s.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
+	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
+	return token, true
+}
+
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
 	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
@@ -807,11 +854,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if input.NewPassword != "" {
-		s.logAuditEvent(models.ActionPasswordChanged, r, "")
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"id":         updated.ID,
 		"email":      updated.Email,
 		"username":   updated.Username,
@@ -820,7 +863,23 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		"avatar_url": updated.AvatarURL,
 		"created_at": updated.CreatedAt,
 		"updated_at": updated.UpdatedAt,
-	})
+	}
+	if input.NewPassword != "" {
+		s.logAuditEvent(models.ActionPasswordChanged, r, "")
+		// Sign out every OTHER session — an attacker who sniffed a cookie
+		// before the password change shouldn't stay logged in afterwards.
+		// Re-issue a fresh session for the caller so they don't get
+		// kicked out of the tab they just changed the password in.
+		token, ok := s.rotateSessionsAfterCredentialChange(w, r, updated)
+		if !ok {
+			return
+		}
+		// Expose the fresh token for Bearer-only callers (CLI / API) who
+		// won't see the Set-Cookie header.
+		resp["token"] = token
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleForgotPassword generates a password reset token and sends it via email.
