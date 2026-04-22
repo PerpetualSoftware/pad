@@ -387,6 +387,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusGone, "expired", "This invitation has expired. Ask the inviter to send a new one.")
 			return
 		}
+		// An invitation is bound to the email it was sent to. If the signup
+		// form supplies a different address, the attacker probably intercepted
+		// the link — reject before creating the account. Case-insensitive per
+		// RFC 5321 §2.4 (local-parts are technically case-sensitive but mail
+		// providers universally normalize them; EqualFold matches the store's
+		// own ToLower() normalization).
+		if !strings.EqualFold(strings.TrimSpace(input.Email), inv.Email) {
+			writeError(w, http.StatusForbidden, "invitation_email_mismatch",
+				"This invitation was sent to a different email address. Sign in or register with the invited address.")
+			return
+		}
 		invitation = inv
 	}
 

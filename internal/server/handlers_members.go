@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -320,6 +321,15 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to accept an invitation")
+		return
+	}
+	// Bind the invitation to the invitee's email: the signed-in account must
+	// match the address on the invite. Otherwise anyone who learns the code
+	// (forwarded email, leaked screenshot, guessed URL) could claim the seat
+	// from a different account.
+	if !strings.EqualFold(strings.TrimSpace(user.Email), inv.Email) {
+		writeError(w, http.StatusForbidden, "invitation_email_mismatch",
+			"This invitation was sent to a different email address. Sign in with that account to accept.")
 		return
 	}
 
