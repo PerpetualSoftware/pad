@@ -78,7 +78,7 @@ When graduating from a local SQLite setup to production PostgreSQL:
 createdb pad
 
 # 2. Run Pad once against PostgreSQL to create the schema
-PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pad" pad serve &
+PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pad" pad server start &
 # Wait a few seconds for migrations to run, then stop it
 kill %1
 
@@ -91,7 +91,7 @@ pad db migrate-to-pg \
 PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pad" pad auth setup
 
 # 5. Start the server with PostgreSQL
-PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pad" pad serve
+PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pad" pad server start
 ```
 
 **What gets migrated:**
