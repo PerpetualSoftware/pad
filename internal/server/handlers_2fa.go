@@ -3,8 +3,10 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -256,12 +258,52 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Try recovery code (hashed comparison)
+	// Try recovery code (hashed comparison) — rate-limited per challenge
+	// token so a single captured challenge can't be used to grind through
+	// the (small) recovery-code space before it expires. 6 tries is enough
+	// for a legitimate user who mistypes a dash or two; anything more than
+	// that is almost certainly automation.
 	if !verified && input.RecoveryCode != "" {
-		consumed, err := s.store.ConsumeRecoveryCode(user.ID, input.RecoveryCode)
+		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
+			// Key on a SHA-256 of the challenge token so the limiter map
+			// never stores the raw HMAC token in-memory.
+			h := sha256.Sum256([]byte(input.ChallengeToken))
+			key := "rc:" + hex.EncodeToString(h[:])
+			if !s.rateLimiters.RecoveryCode.getLimiter(key).Allow() {
+				slog.Warn("rate limited", "user_id", user.ID, "limiter", "recovery_code")
+				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
+				return
+			}
+		}
+		// Normalize so users can type/paste codes however they were
+		// displayed: generated codes (post-TASK-658) are uppercase
+		// base32 [A-Z2-7] with no separators, but mobile keyboards
+		// default to lowercase, and some people paste codes wrapped
+		// with dashes or spaces. Strip those and uppercase before
+		// hashing.
+		normalized := normalizeRecoveryCode(input.RecoveryCode)
+		consumed, err := s.store.ConsumeRecoveryCode(user.ID, normalized)
 		if err != nil {
 			writeInternalError(w, err)
 			return
+		}
+		if !consumed {
+			// Legacy-code fallback: pre-TASK-658 codes were generated
+			// with hex.EncodeToString (lowercase). Uppercasing them as
+			// part of normalization changes the SHA-256 and locks out
+			// users whose stored hash is of the lowercase form. Retry
+			// with the whitespace-trimmed raw input (no case change)
+			// so the original lowercase hex still validates. Doesn't
+			// cost an extra rate-limit slot — the Allow() above has
+			// already charged this attempt.
+			trimmed := strings.TrimSpace(input.RecoveryCode)
+			if trimmed != "" && trimmed != normalized {
+				consumed, err = s.store.ConsumeRecoveryCode(user.ID, trimmed)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+			}
 		}
 		verified = consumed
 	}
@@ -286,15 +328,46 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// generateRecoveryCodes produces n random recovery codes (8-char hex each).
+// normalizeRecoveryCode prepares a user-entered recovery code for
+// hashed comparison against stored codes: strip ASCII whitespace and
+// dashes, then uppercase the result. Generated codes are already
+// uppercase base32, so normalization is a no-op for a correctly-typed
+// code but rescues common formatting mistakes (mobile lowercase,
+// pasted dashes, surrounding whitespace) that would otherwise burn a
+// rate-limit slot.
+func normalizeRecoveryCode(code string) string {
+	var b strings.Builder
+	b.Grow(len(code))
+	for _, r := range code {
+		switch {
+		case r == '-' || r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			continue
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// generateRecoveryCodes produces n random recovery codes. Each code is 10
+// bytes (80 bits) of cryptographic randomness encoded as unpadded base32
+// — 16 visible characters of [A-Z2-7]. That's well above NIST SP 800-63B's
+// 6-character minimum for backup authenticators and well above the ~32
+// bits of the old 8-char hex codes, which a modern attacker could grind
+// through online at a few thousand attempts per second.
 func generateRecoveryCodes(n int) ([]string, error) {
 	codes := make([]string, n)
 	for i := 0; i < n; i++ {
-		b := make([]byte, 4)
+		b := make([]byte, 10)
 		if _, err := rand.Read(b); err != nil {
 			return nil, err
 		}
-		codes[i] = hex.EncodeToString(b)
+		// StdEncoding without padding gives a compact, user-readable code.
+		// Base32 avoids ambiguity between 0/O and 1/I/l that would bite
+		// if a user has to type the code from a printed backup.
+		codes[i] = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
 	}
 	return codes, nil
 }

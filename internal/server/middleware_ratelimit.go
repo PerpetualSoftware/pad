@@ -108,6 +108,11 @@ type RateLimiters struct {
 	API *ipRateLimiter
 	// Search: per-user or per-IP
 	Search *ipRateLimiter
+	// RecoveryCode caps how many recovery codes can be tried against a
+	// single 2FA challenge token. Without it an attacker who captures a
+	// valid challenge_token can grind through the small recovery-code
+	// space before the 5-minute challenge expires.
+	RecoveryCode *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -163,6 +168,16 @@ func NewRateLimiters() *RateLimiters {
 		Search: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(30.0 / 60.0),
 			Burst: 10,
+		}),
+		// RecoveryCode: up to 6 attempts per challenge token before lockout.
+		// Challenge tokens live for 5 minutes, so we only need the limiter to
+		// remember that long — but retention defaults to 30 minutes so we
+		// pick up a couple of wall-clock minutes of slop. Rate is effectively
+		// "no refill over the window" since burst = 6 and the limiter won't
+		// meaningfully refill in 5 min at 6/hour.
+		RecoveryCode: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(6.0 / 3600.0),
+			Burst: 6,
 		}),
 	}
 }
