@@ -314,10 +314,16 @@ func (s *Server) setupRouter() {
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
 		r.Use(cors.Handler(cors.Options{
-			AllowedOrigins:   parseCORSOrigins(s.corsOrigins),
-			AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password"},
-			AllowCredentials: true,
+			AllowedOrigins: parseCORSOrigins(s.corsOrigins),
+			AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password"},
+			// Credentials flag is gated on an operator explicitly listing
+			// PAD_CORS_ORIGINS. The CLI uses Bearer tokens so the default
+			// "no CORS_ORIGINS set" path doesn't need credential sharing;
+			// leaving it off by default prevents cross-origin fetches from
+			// a browser on a different site from piggy-backing cookies
+			// on the victim's session.
+			AllowCredentials: corsAllowCredentials(s.corsOrigins),
 			MaxAge:           300,
 		}))
 		r.Use(s.TokenAuth)

@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -60,6 +61,13 @@ func generateCSPNonce() string {
 
 // parseCORSOrigins parses a comma-separated list of origins into a slice.
 // Returns default localhost origins if the input is empty.
+//
+// The '*' wildcard is explicitly dropped (with a log warning): the CORS
+// middleware is configured with AllowCredentials=true, and per the Fetch
+// spec browsers refuse to honor `Access-Control-Allow-Origin: *` when
+// credentials are being sent. Rejecting wildcards here prevents an
+// operator misconfiguration (e.g. `PAD_CORS_ORIGINS=*`) from looking
+// like it works in curl but failing silently in every real browser.
 func parseCORSOrigins(origins string) []string {
 	if origins == "" {
 		return []string{"http://localhost:*", "http://127.0.0.1:*"}
@@ -68,12 +76,29 @@ func parseCORSOrigins(origins string) []string {
 	var result []string
 	for _, origin := range strings.Split(origins, ",") {
 		origin = strings.TrimSpace(origin)
-		if origin != "" {
-			result = append(result, origin)
+		if origin == "" {
+			continue
 		}
+		if origin == "*" {
+			slog.Warn("PAD_CORS_ORIGINS: dropping '*' — incompatible with AllowCredentials=true",
+				"hint", "list specific origins instead, e.g. https://pad.example.com")
+			continue
+		}
+		result = append(result, origin)
 	}
 	if len(result) == 0 {
 		return []string{"http://localhost:*", "http://127.0.0.1:*"}
 	}
 	return result
+}
+
+// corsAllowCredentials reports whether the CORS middleware should set
+// Access-Control-Allow-Credentials: true. The current CLI tooling uses
+// Bearer tokens rather than cookies for cross-origin calls, so when no
+// operator-configured origins are present we default to false — keeping
+// a browser on a different origin from piggy-backing user cookies on
+// its fetches. When operators provide explicit origins they opt into
+// credential sharing.
+func corsAllowCredentials(corsOrigins string) bool {
+	return strings.TrimSpace(corsOrigins) != ""
 }
