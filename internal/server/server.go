@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"bytes"
@@ -42,6 +43,7 @@ type Server struct {
 	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
 	metrics            *metrics.Metrics      // Prometheus metrics (optional)
+	metricsToken       string                // shared bearer token for /metrics scrapes ("" = loopback-only)
 	trustedProxyCIDRs  []*net.IPNet          // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
 	sseMaxConnections  int                   // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace int                   // per-workspace SSE connection limit (0 = unlimited)
@@ -174,6 +176,50 @@ func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
 }
 
+// SetMetricsToken configures the static bearer token required to scrape
+// /metrics. When empty (the default), /metrics is exposed only to loopback
+// callers so a self-hosted Prometheus on the same host keeps working
+// without config — but LAN/internet scrapes are refused. A non-empty
+// token requires "Authorization: Bearer <token>" regardless of source.
+func (s *Server) SetMetricsToken(token string) {
+	s.metricsToken = strings.TrimSpace(token)
+}
+
+// metricsAuth gates the /metrics endpoint. See SetMetricsToken for the
+// policy. Uses constant-time comparison to avoid leaking the configured
+// token via response timing.
+func (s *Server) metricsAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.metricsToken == "" {
+			// No token configured → loopback-only access.
+			if !requestIsLoopback(r) {
+				writeError(w, http.StatusForbidden, "forbidden",
+					"/metrics is restricted to loopback when PAD_METRICS_TOKEN is unset")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		const prefix = "Bearer "
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, prefix) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized",
+				"Missing Bearer token for /metrics")
+			return
+		}
+		given := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
+		if subtle.ConstantTimeCompare([]byte(given), []byte(s.metricsToken)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized",
+				"Invalid Bearer token for /metrics")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // SetSSELimits configures global and per-workspace SSE connection limits.
 // A value of 0 means unlimited.
 func (s *Server) SetSSELimits(global, perWorkspace int) {
@@ -245,9 +291,22 @@ func (s *Server) setupRouter() {
 		r.Use(StrictTransportSecurity)
 	}
 
-	// Prometheus scrape endpoint — no auth/CSRF
+	// Prometheus scrape endpoint — exempt from the standard auth/CSRF stack
+	// (Prometheus can't present a session cookie or pass a CSRF header), but
+	// gated by a dedicated static bearer token. Without the gate, any
+	// unauthenticated caller on the network can read workspace counts, API
+	// usage patterns, and — via label enumeration — user/workspace IDs.
+	//
+	// The gate runs in three layers:
+	//   1. No PAD_METRICS_TOKEN → endpoint is open ONLY to loopback. Safe
+	//      default for self-hosters running Prometheus on the same box.
+	//   2. PAD_METRICS_TOKEN set → "Authorization: Bearer <token>" required.
+	//      Compared in constant time; empty/missing header → 401.
+	//   3. In either case the SecurityHeaders / rate-limit / logging chain
+	//      already wraps this group from the outer r.Use() calls above.
 	if s.metrics != nil {
 		r.Group(func(r chi.Router) {
+			r.Use(s.metricsAuth)
 			r.Handle("/metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
 		})
 	}
