@@ -313,18 +313,37 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir for encryption key: %w", err)
 	}
-	// Atomic create: O_EXCL means "fail if the file already exists." This
-	// protects against two pad processes racing on first boot — without
-	// O_EXCL both would pass the check-then-write stat above, generate
-	// different random keys, and race the write. The loser would end up
-	// with in-memory key A while the file on disk holds key B, and a
-	// future restart of the loser (loading from file) would decrypt with
-	// key B everything that process wrote under key A. O_EXCL + reload-on-
-	// EEXIST funnels every racing process to the same persisted value.
-	f, err := os.OpenFile(keyPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
+
+	// Atomic create via temp-file + hardlink. This handles the concurrent-
+	// startup race cleanly at every step:
+	//
+	//   1. Write the full key to a uniquely-named temp file — each racing
+	//      process has its own temp path, so no collision there, and the
+	//      file is fully written + closed before we touch the final path.
+	//   2. os.Link(temp, keyPath) atomically creates the final file as a
+	//      hardlink to the temp. If keyPath already exists, Link fails
+	//      with EEXIST and leaves the existing file untouched. This is
+	//      the critical property: a loser cannot partially overwrite the
+	//      winner's key, and cannot read the winner's file before it is
+	//      complete (hardlink points to an already-written inode).
+	//   3. On loss, ReadFile(keyPath) is safe — it points to the winner's
+	//      fully-written inode.
+	//   4. The temp is removed in all paths so repeated startups don't
+	//      accumulate junk under DataDir.
+	tmpSuffix := make([]byte, 8)
+	if _, err := rand.Read(tmpSuffix); err != nil {
+		return fmt.Errorf("generate temp suffix: %w", err)
+	}
+	tmpPath := keyPath + ".tmp." + hex.EncodeToString(tmpSuffix)
+	if err := os.WriteFile(tmpPath, []byte(encoded), 0600); err != nil {
+		return fmt.Errorf("write encryption key temp: %w", err)
+	}
+	defer os.Remove(tmpPath) // Best-effort cleanup. Harmless on the winning path (already removed via rename equivalence).
+
+	if err := os.Link(tmpPath, keyPath); err != nil {
 		if os.IsExist(err) {
-			// Someone else won the race. Load their key.
+			// Someone else won. Their file is fully written because it
+			// too went through temp-write → link, so ReadFile is safe.
 			data, rerr := os.ReadFile(keyPath)
 			if rerr != nil {
 				return fmt.Errorf("reload encryption key after race: %w", rerr)
@@ -333,19 +352,9 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 			c.EncryptionKeySource = "file"
 			return nil
 		}
-		return fmt.Errorf("create encryption key %s: %w", keyPath, err)
+		return fmt.Errorf("link encryption key to %s: %w", keyPath, err)
 	}
-	if _, werr := f.WriteString(encoded); werr != nil {
-		f.Close()
-		// Best-effort cleanup: remove the truncated file so the next
-		// startup tries fresh. Ignore removal errors; the operator can
-		// always delete it manually.
-		_ = os.Remove(keyPath)
-		return fmt.Errorf("write encryption key to %s: %w", keyPath, werr)
-	}
-	if cerr := f.Close(); cerr != nil {
-		return fmt.Errorf("close encryption key %s: %w", keyPath, cerr)
-	}
+
 	c.EncryptionKey = encoded
 	c.EncryptionKeySource = "generated"
 	return nil
