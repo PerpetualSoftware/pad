@@ -16,13 +16,25 @@ import (
 type rateLimitConfig struct {
 	Rate  rate.Limit // events per second
 	Burst int        // max burst
+	// Retention is how long an inactive key stays in memory before the
+	// background cleanup evicts it. Must be at least as long as the rate
+	// window (≈ burst / rate) or premature eviction lets an attacker reset
+	// their bucket by waiting — defeating "N per hour" limits that pause
+	// naturally between bursts. Zero means "use the default".
+	Retention time.Duration
 }
+
+// defaultRetention is the minimum retention for a limiter whose config
+// doesn't specify one. Suitable for sub-minute windows like per-IP login
+// limiting; longer windows must set Retention explicitly.
+const defaultRetention = 30 * time.Minute
 
 // ipRateLimiter tracks per-key rate limiters with automatic cleanup.
 type ipRateLimiter struct {
-	mu       sync.Mutex
-	limiters map[string]*rateLimiterEntry
-	config   rateLimitConfig
+	mu        sync.Mutex
+	limiters  map[string]*rateLimiterEntry
+	config    rateLimitConfig
+	retention time.Duration
 }
 
 type rateLimiterEntry struct {
@@ -31,9 +43,14 @@ type rateLimiterEntry struct {
 }
 
 func newIPRateLimiter(cfg rateLimitConfig) *ipRateLimiter {
+	retention := cfg.Retention
+	if retention <= 0 {
+		retention = defaultRetention
+	}
 	rl := &ipRateLimiter{
-		limiters: make(map[string]*rateLimiterEntry),
-		config:   cfg,
+		limiters:  make(map[string]*rateLimiterEntry),
+		config:    cfg,
+		retention: retention,
 	}
 	// Background cleanup of stale entries every 5 minutes
 	go rl.cleanup()
@@ -62,7 +79,7 @@ func (rl *ipRateLimiter) cleanup() {
 		time.Sleep(5 * time.Minute)
 		rl.mu.Lock()
 		for key, entry := range rl.limiters {
-			if time.Since(entry.lastSeen) > 30*time.Minute {
+			if time.Since(entry.lastSeen) > rl.retention {
 				delete(rl.limiters, key)
 			}
 		}
@@ -105,9 +122,15 @@ func NewRateLimiters() *RateLimiters {
 		// spraying from a botnet (which evades the per-IP limit by rotating
 		// source addresses), high enough that a forgetful user mistyping
 		// their own password never hits it under normal use.
+		//
+		// Retention must be ≥ the refill window (10 attempts / (10/hour) =
+		// 60 min); otherwise the cleanup could evict the bucket between
+		// bursts, letting an attacker pace their guesses to avoid the cap.
+		// 2 hours gives plenty of margin.
 		AuthEmail: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(10.0 / 3600.0),
-			Burst: 10,
+			Rate:      rate.Limit(10.0 / 3600.0),
+			Burst:     10,
+			Retention: 2 * time.Hour,
 		}),
 		// Password reset: 3 per hour per IP (= 3/3600 per second, burst 3)
 		PasswordReset: newIPRateLimiter(rateLimitConfig{
