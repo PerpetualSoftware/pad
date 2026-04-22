@@ -110,6 +110,69 @@ func TestSessionIPChange_StrictRejects(t *testing.T) {
 	}
 }
 
+// TestSessionIPChange_StrictClearsCookies verifies that in strict mode
+// the session cookie is explicitly cleared on the response (MaxAge=-1) so
+// the browser doesn't keep re-sending a now-revoked token on the next
+// navigation. Only the API 401 path reaches SessionAuth in the current
+// routing (the SPA catch-all is mounted on the root router outside the
+// auth group), but cookie hygiene still applies for API clients that
+// present cookies (e.g. the web UI's fetch calls).
+func TestSessionIPChange_StrictClearsCookies(t *testing.T) {
+	srv := testServer(t)
+	srv.SetIPChangeEnforce("strict")
+	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "198.51.100.7:5555")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Session cookie must have been cleared by Set-Cookie: MaxAge=-1.
+	foundClear := false
+	for _, c := range rr.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "pad_session") && c.MaxAge < 0 {
+			foundClear = true
+			break
+		}
+	}
+	if !foundClear {
+		t.Fatalf("expected session cookie to be cleared in strict mode; cookies=%v", rr.Result().Cookies())
+	}
+}
+
+// TestSessionIPChange_CASDedupesRace verifies that the compare-and-set
+// update scheme produces at most one audit row per IP-change transition,
+// even when many concurrent requests arrive from the new IP before any
+// of them has observed the rotated value.
+func TestSessionIPChange_CASDedupesRace(t *testing.T) {
+	srv := testServer(t)
+	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// Warm the stored IP with an initial request from the bootstrap source.
+	rr := doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "127.0.0.1:2222")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("warmup: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Fire N concurrent requests from the new IP. Only the request whose
+	// CAS actually rotated the stored IP should have logged an audit row.
+	const n = 20
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "198.51.100.7:5555")
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		<-done
+	}
+
+	if got := countIPChangeEvents(t, srv); got != 1 {
+		t.Fatalf("expected exactly 1 audit row from %d concurrent requests, got %d", n, got)
+	}
+}
+
 // TestSetIPChangeEnforce_CaseInsensitive verifies the setter accepts
 // common variants without surprises.
 func TestSetIPChangeEnforce_CaseInsensitive(t *testing.T) {

@@ -94,21 +94,33 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	}, nil
 }
 
-// UpdateSessionIP records a new client IP on a session, identified by its
-// plaintext token. Used by the IP-change audit path to track the current
-// observed IP without closing the session. Safe to call when the new IP
-// matches the stored one — still a no-op UPDATE, no rows touched.
-func (s *Store) UpdateSessionIP(token, newIP string) error {
+// UpdateSessionIPIfEquals atomically rotates the stored IP on a session
+// from expectedOldIP to newIP. Returns true if a row was updated (i.e. the
+// caller is the race winner and should write the audit row); false when
+// some other concurrent request already rotated the IP ahead of us.
+//
+// This compare-and-set behavior is what lets the auth middleware emit
+// exactly one ActionSessionIPChanged audit row per transition even when
+// multiple requests race after the client's IP flips.
+func (s *Store) UpdateSessionIPIfEquals(token, expectedOldIP, newIP string) (bool, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	_, err := s.db.Exec(s.q(`
-		UPDATE sessions SET ip_address = ? WHERE token_hash = ?
-	`), newIP, tokenHash)
+	res, err := s.db.Exec(s.q(`
+		UPDATE sessions
+		SET ip_address = ?
+		WHERE token_hash = ? AND ip_address = ?
+	`), newIP, tokenHash, expectedOldIP)
 	if err != nil {
-		return fmt.Errorf("update session ip: %w", err)
+		return false, fmt.Errorf("update session ip: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Some drivers don't report RowsAffected reliably. Err on the safe
+		// side: treat as "not the winner" so we don't log when unsure.
+		return false, nil
+	}
+	return n > 0, nil
 }
 
 // DeleteSession destroys a session by its plaintext token.

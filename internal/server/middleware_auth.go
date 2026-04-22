@@ -76,7 +76,14 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			}
 			// Session binding: detect IP changes. Log to audit log in all modes;
 			// reject only when PAD_IP_CHANGE_ENFORCE=strict.
-			if rejected := s.handleSessionIPChange(w, r, session, token); rejected {
+			switch s.handleSessionIPChange(w, r, session, token) {
+			case sessionIPChangeTerminated:
+				return
+			case sessionIPChangeRevoked:
+				// API Bearer sessions don't have a fallback unauth path —
+				// treat revocation as a hard 401.
+				writeError(w, http.StatusUnauthorized, "session_ip_changed",
+					"Session client IP changed — please log in again.")
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
@@ -165,7 +172,13 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 
 		// Session binding: detect IP changes. Log to audit log in all modes;
 		// reject only when PAD_IP_CHANGE_ENFORCE=strict.
-		if rejected := s.handleSessionIPChange(w, r, session, cookie.Value); rejected {
+		switch s.handleSessionIPChange(w, r, session, cookie.Value) {
+		case sessionIPChangeTerminated:
+			return
+		case sessionIPChangeRevoked:
+			// Browser path: let the request through unauthenticated so
+			// the SPA renders its login flow instead of a JSON error.
+			next.ServeHTTP(w, r)
 			return
 		}
 
@@ -453,61 +466,118 @@ func sha256hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// sessionIPChangeOutcome captures what the caller (TokenAuth / SessionAuth)
+// should do after handleSessionIPChange inspected the session.
+type sessionIPChangeOutcome int
+
+const (
+	// sessionIPChangeContinue — happy path. IP matches (or no recorded IP).
+	// Caller proceeds to install the session user in context and call next.
+	sessionIPChangeContinue sessionIPChangeOutcome = iota
+	// sessionIPChangeAllowedLogged — IP differs, log-only mode. Session
+	// remains valid, caller proceeds as usual.
+	sessionIPChangeAllowedLogged
+	// sessionIPChangeRevoked — strict mode. The session was destroyed and
+	// the caller must NOT install the user in context. For browser (non-API)
+	// paths the request should continue unauthenticated so the SPA can
+	// render its login screen instead of a raw JSON error.
+	sessionIPChangeRevoked
+	// sessionIPChangeTerminated — strict mode + API path. A 401 has already
+	// been written; caller must return immediately.
+	sessionIPChangeTerminated
+)
+
 // handleSessionIPChange compares the client IP on this request to the IP
-// recorded when the session was created. Returns true if the request was
-// terminated (written + returned) and the caller must not continue.
+// recorded when the session was created.
 //
 // Behavior:
-//   - Session has no recorded IP (legacy pre-migration row): no-op.
-//   - IP matches: no-op.
-//   - IP differs: always write one ActionSessionIPChanged audit row and
-//     update the stored IP so we don't spam the log on every request.
+//   - Session has no recorded IP (legacy pre-migration row): continue.
+//   - IP matches: continue.
+//   - IP differs: atomically rotate the stored IP via compare-and-set.
+//     The race winner emits exactly one ActionSessionIPChanged audit row
+//     per transition — concurrent requests that lose the CAS skip logging
+//     to avoid duplicate rows.
 //   - In strict mode (PAD_IP_CHANGE_ENFORCE=strict): additionally destroy
-//     the session and return 401. The default (log-only) mode breaks
-//     fewer legitimate clients (mobile roaming, VPN toggles, carrier NAT)
-//     while still giving operators a visible signal.
-func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) bool {
+//     the session and clear the client session+CSRF cookies. API requests
+//     receive a 401; browser page navigations are allowed through
+//     unauthenticated so the SPA can redirect to login. Log-only (default)
+//     breaks fewer legitimate clients (mobile roaming, VPN toggles,
+//     carrier NAT) while still giving operators a visible signal.
+func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) sessionIPChangeOutcome {
 	newIP := clientIP(r)
 	if session.IPAddress == "" || newIP == "" || session.IPAddress == newIP {
-		return false
+		return sessionIPChangeContinue
 	}
 
-	// Log the IP change. Use the session's user as the actor. Best-effort —
-	// if the DB write fails, we still allow or block the request based on
-	// mode, we just skip the audit entry.
+	// Compare-and-set: only the request that actually rotates the stored
+	// IP gets to log the audit row. Concurrent requests from the new IP
+	// will observe the already-rotated value on their conditional UPDATE
+	// and skip logging, avoiding duplicate audit entries for one transition.
+	//
+	// Err on the side of "winner" when the CAS errors — we'd rather log an
+	// extra row than miss the signal entirely.
+	won, err := s.store.UpdateSessionIPIfEquals(plainToken, session.IPAddress, newIP)
+	if err != nil {
+		slog.Warn("failed to rotate session ip after change", "error", err)
+		won = true
+	}
+
 	userID := ""
 	if session.User != nil {
 		userID = session.User.ID
 	}
-	s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
-		"old_ip": session.IPAddress,
-		"new_ip": newIP,
-	}))
+
+	if won {
+		s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
+			"old_ip": session.IPAddress,
+			"new_ip": newIP,
+		}))
+	}
 
 	if s.ipChangeEnforceStrict {
-		slog.Warn("session binding mismatch: IP changed (strict enforcement, session rejected)",
+		slog.Warn("session binding mismatch: IP changed (strict enforcement)",
+			"session_ip", session.IPAddress,
+			"client_ip", newIP,
+			"user_id", userID,
+			"cas_winner", won)
+		// Destroy the session so a stolen token can't be replayed.
+		_ = s.store.DeleteSession(plainToken)
+		// Clear client-side cookies so the browser doesn't keep re-sending
+		// a now-invalid session on every navigation.
+		clearSessionCookie(w, s.secureCookies)
+		clearCSRFCookie(w)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeError(w, http.StatusUnauthorized, "session_ip_changed",
+				"Session client IP changed — please log in again.")
+			return sessionIPChangeTerminated
+		}
+		// Browser path: caller must NOT install the destroyed session's
+		// user into the request context. The SPA will render its unauth
+		// state and the user will redirect to login.
+		return sessionIPChangeRevoked
+	}
+
+	if won {
+		slog.Info("session client IP changed (logged, request allowed)",
 			"session_ip", session.IPAddress,
 			"client_ip", newIP,
 			"user_id", userID)
-		// Destroy the session so a stolen token can't be used again from the
-		// new IP. The legitimate user just needs to log in fresh.
-		_ = s.store.DeleteSession(plainToken)
-		writeError(w, http.StatusUnauthorized, "session_ip_changed",
-			"Session client IP changed — please log in again.")
-		return true
 	}
+	return sessionIPChangeAllowedLogged
+}
 
-	slog.Info("session client IP changed (logged, request allowed)",
-		"session_ip", session.IPAddress,
-		"client_ip", newIP,
-		"user_id", userID)
-	// Update the stored IP so the next request with the same new IP is a
-	// no-op and we don't flood the audit log. Best-effort: on failure we
-	// still let the request through.
-	if err := s.store.UpdateSessionIP(plainToken, newIP); err != nil {
-		slog.Warn("failed to update session ip after change", "error", err)
-	}
-	return false
+// clearSessionCookie expires the session cookie on the client so a
+// subsequent request doesn't keep presenting a now-revoked token.
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName(secure),
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // tokenScopeAllows checks if the token's scopes permit the given HTTP method
