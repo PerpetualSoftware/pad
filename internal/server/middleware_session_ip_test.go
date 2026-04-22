@@ -171,6 +171,55 @@ func TestSessionIPChange_StrictClearsCookies(t *testing.T) {
 	}
 }
 
+// TestSessionIPChange_StrictAllowsPublicAPIPaths verifies that a stale
+// session cookie on a PUBLIC API path (login, password reset, health,
+// share links, plan-limits) does NOT produce a 401 in strict mode. The
+// session still gets destroyed and the cookie cleared so the stale token
+// can't be reused, but the request falls through so the user can log in
+// again or the health probe succeeds.
+func TestSessionIPChange_StrictAllowsPublicAPIPaths(t *testing.T) {
+	srv := testServer(t)
+	srv.SetIPChangeEnforce("strict")
+	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// POST /api/v1/auth/login with the stale session cookie AND a
+	// different client IP. The handler expects email+password in the body
+	// and returns 400 "bad_request" on invalid JSON, so we send an empty
+	// body to keep the assertion simple. The important thing is: we
+	// don't get 401 session_ip_changed — the stale cookie didn't block
+	// the user from re-authenticating.
+	rr := doRequestWithCookieFrom(srv, "POST", "/api/v1/auth/login", map[string]string{
+		"email":    "admin@example.com",
+		"password": "wrong-password-on-purpose",
+	}, token, "198.51.100.7:5555")
+	if rr.Code == http.StatusUnauthorized {
+		// Specifically, must NOT be the IP-change error code.
+		if strings.Contains(rr.Body.String(), "session_ip_changed") {
+			t.Fatalf("stale cookie on login endpoint blocked user with session_ip_changed: %s", rr.Body.String())
+		}
+	}
+	// Session must still be destroyed + audit row written.
+	if got := countIPChangeEvents(t, srv); got != 1 {
+		t.Fatalf("expected 1 ActionSessionIPChanged audit row, got %d", got)
+	}
+
+	// A subsequent authenticated API call with the same stale token must
+	// now fail — session is gone.
+	rr = doRequestWithCookieFrom(srv, "GET", "/api/v1/auth/me", nil, token, "198.51.100.7:5555")
+	if rr.Code == http.StatusOK {
+		t.Fatal("revoked session must not authenticate after strict IP-change destroy")
+	}
+
+	// Plan-limits is another public path — same treatment.
+	srv2 := testServer(t)
+	srv2.SetIPChangeEnforce("strict")
+	token2 := bootstrapFirstUser(t, srv2, "admin2@example.com", "Admin2")
+	rr = doRequestWithCookieFrom(srv2, "GET", "/api/v1/plan-limits", nil, token2, "198.51.100.7:5555")
+	if rr.Code == http.StatusUnauthorized && strings.Contains(rr.Body.String(), "session_ip_changed") {
+		t.Fatalf("stale cookie on plan-limits blocked with session_ip_changed: %s", rr.Body.String())
+	}
+}
+
 // TestSessionIPChange_CASDedupesRace verifies that the compare-and-set
 // update scheme produces at most one audit row per IP-change transition,
 // even when many concurrent requests arrive from the new IP before any

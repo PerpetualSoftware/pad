@@ -80,8 +80,15 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			case sessionIPChangeTerminated:
 				return
 			case sessionIPChangeRevoked:
-				// API Bearer sessions don't have a fallback unauth path —
-				// treat revocation as a hard 401.
+				// Session was destroyed. For public API paths (login,
+				// password reset, health, share links) pass through
+				// unauthenticated so the caller can recover. For
+				// authenticated-only paths, the Bearer flow has no SPA
+				// fallback — treat revocation as a hard 401.
+				if isPublicAPIPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
 				writeError(w, http.StatusUnauthorized, "session_ip_changed",
 					"Session client IP changed — please log in again.")
 				return
@@ -196,6 +203,22 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 	})
 }
 
+// isPublicAPIPath reports whether the given request path is an API
+// endpoint that bypasses authentication entirely. These handlers must
+// work even when the caller has no valid session (login, registration,
+// password reset, health probes, public plan limits, share-link tokens).
+// Shared between RequireAuth and the session-IP-change path so both stay
+// in sync — in particular, strict IP-change enforcement must NOT 401
+// these endpoints, otherwise a user with a stale cookie can't even
+// recover by logging in again.
+func isPublicAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/auth/") ||
+		path == "/api/v1/health" ||
+		strings.HasPrefix(path, "/api/v1/health/") ||
+		strings.HasPrefix(path, "/api/v1/s/") ||
+		path == "/api/v1/plan-limits"
+}
+
 // RequireAuth middleware blocks unauthenticated requests when users exist
 // in the system. When no users exist (fresh install), all requests pass
 // through to allow the setup flow.
@@ -205,8 +228,7 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 
 		// Auth endpoints, share link resolution, health, and the public
 		// plan-limits endpoint are always exempt from auth.
-		if strings.HasPrefix(path, "/api/v1/auth/") || path == "/api/v1/health" || strings.HasPrefix(path, "/api/v1/health/") || strings.HasPrefix(path, "/api/v1/s/") ||
-			path == "/api/v1/plan-limits" {
+		if isPublicAPIPath(path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -557,14 +579,22 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 		// invalid token.
 		clearSessionCookie(w, s.secureCookies)
 		clearCSRFCookie(w)
+		// Public API paths (login/register/password-reset, health, share
+		// links, plan-limits) must STILL work after the session was
+		// destroyed — a user with a stale cookie needs a way back in, and
+		// Prometheus health probes shouldn't 401 because some other tab
+		// left a stale session. Pass the request through unauthenticated.
+		if isPublicAPIPath(r.URL.Path) {
+			return sessionIPChangeRevoked
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeError(w, http.StatusUnauthorized, "session_ip_changed",
 				"Session client IP changed — please log in again.")
 			return sessionIPChangeTerminated
 		}
-		// Browser path: caller must NOT install the destroyed session's
-		// user into the request context. The SPA will render its unauth
-		// state and the user will redirect to login.
+		// Non-API (browser) path: caller must NOT install the destroyed
+		// session's user into the request context. The SPA will render its
+		// unauth state and the user will redirect to login.
 		return sessionIPChangeRevoked
 	}
 
