@@ -84,15 +84,19 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		// Lengths must match AND the bytes must match, evaluated in
-		// constant time. subtle.ConstantTimeCompare returns 0 on length
-		// mismatch too — we check separately so the length-mismatch
-		// branch doesn't short-circuit before the compare (Go's == would
-		// return early on length, leaking timing signal about how many
-		// leading bytes are correct).
-		cookieBytes, headerBytes := []byte(cookie.Value), []byte(headerToken)
-		if len(cookieBytes) != len(headerBytes) ||
-			subtle.ConstantTimeCompare(cookieBytes, headerBytes) != 1 {
+		// Length-check first using the string lengths directly — this
+		// avoids the []byte conversion (and its allocation) on the hot
+		// rejection path where an attacker can flood with arbitrarily-
+		// sized X-CSRF-Token headers. Only allocate when lengths match,
+		// at which point subtle.ConstantTimeCompare evaluates the byte
+		// compare in time independent of where the first differing byte
+		// lives, removing the timing side-channel from double-submit
+		// validation.
+		if len(cookie.Value) != len(headerToken) {
+			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
 			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
 			return
 		}
