@@ -1,6 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 
-export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting';
+export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
 export interface ItemEvent {
 	type: string;
@@ -81,6 +81,22 @@ function createSSEService() {
 			import('./sync.svelte').then(({ syncService }) => {
 				syncService.triggerSync();
 			});
+		});
+
+		// Handle unauthorized: the server's periodic membership revalidation
+		// detected that this session has lost access to the workspace. We
+		// must close the EventSource ourselves — otherwise the browser
+		// auto-reconnect would tight-loop on a 401 or a stream that
+		// immediately closes again, hammering /api/v1/events. Surface the
+		// status so the surrounding UI can redirect to the workspace list
+		// or show a "revoked" message.
+		eventSource.addEventListener('unauthorized', () => {
+			status = 'unauthorized';
+			if (eventSource) {
+				eventSource.close();
+				eventSource = null;
+			}
+			currentWorkspace = '';
 		});
 
 		for (const eventType of ITEM_EVENTS) {
