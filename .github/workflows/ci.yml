@@ -99,6 +99,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit npm dependencies (production, high+)
+        # Fail the build on any HIGH or CRITICAL advisory in production deps.
+        # Dev-only advisories are treated as informational — they don't ship
+        # and fixing them can require waiting on upstream maintainers.
+        run: npm audit --audit-level=high --omit=dev
+
       - name: Build
         run: npm run build
 

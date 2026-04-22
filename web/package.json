@@ -15,7 +15,7 @@
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
 		"@sveltejs/adapter-static": "^3.0.10",
-		"@sveltejs/kit": "^2.50.2",
+		"@sveltejs/kit": "^2.57.1",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@types/marked": "^5.0.2",
 		"marked": "^17.0.5",
@@ -23,6 +23,9 @@
 		"svelte-check": "^4.4.2",
 		"typescript": "^5.9.3",
 		"vite": "^7.3.1"
+	},
+	"overrides": {
+		"cookie": "^0.7.2"
 	},
 	"dependencies": {
 		"@tiptap/core": "^3.20.4",
