@@ -117,6 +117,65 @@ func TestSSESubscriberStillHasAccess(t *testing.T) {
 	}
 }
 
+// TestComputeSSEVisibility_ReflectsCurrentGrants verifies the
+// visibility-recompute path returns the current permission snapshot on
+// every call. A regression would mean a mid-stream permission change
+// (e.g. role downgrade from editor to guest, grants revoked) is
+// ignored until the next reconnect — the exact leak Codex P1 flagged.
+func TestComputeSSEVisibility_ReflectsCurrentGrants(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "user@example.com", Name: "User", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "VisTest"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, user.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	mkReq := func() *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+ws.Slug, nil)
+		return req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, user))
+	}
+
+	// Initial: full editor access → visibleSlugSet == nil (all access).
+	v1 := srv.computeSSEVisibility(mkReq(), ws.ID)
+	if v1.visibleSlugSet != nil {
+		t.Fatalf("editor should have unrestricted access (nil visibleSlugSet); got %v", v1.visibleSlugSet)
+	}
+	if v1.isGuest {
+		t.Fatal("editor member must not be marked as guest")
+	}
+
+	// Revoke membership → recompute must flip the snapshot. Without the
+	// periodic recompute, the stream would keep using v1 forever.
+	if err := srv.store.RemoveWorkspaceMember(ws.ID, user.ID); err != nil {
+		t.Fatalf("remove member: %v", err)
+	}
+	v2 := srv.computeSSEVisibility(mkReq(), ws.ID)
+	// After membership loss, a user with no grants should land on the
+	// isGuest=true branch and whatever visibleSlugSet the store returns
+	// for a fully-unauthorized resolver — the important invariant is
+	// that the *second* call reflects the post-revocation state, not a
+	// stale copy of the first.
+	if !v2.isGuest {
+		t.Fatal("after removal the recomputed visibility should mark user as guest")
+	}
+	_ = admin // silence unused on branches that don't exercise admin path
+}
+
 // TestSSEMembershipRevalInterval_DefaultsToSensibleCadence pins the
 // default tick interval. Not functional on its own; it's a guard so a
 // future cleanup doesn't accidentally set the production default to a

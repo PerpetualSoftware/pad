@@ -88,88 +88,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute the user's visible collection set for event filtering.
-	// Build a slug-based set since events carry collection slugs, not IDs.
-	var visibleSlugSet map[string]bool // nil = all access (no filtering)
-	visibleIDs, err := s.visibleCollectionIDs(r, ws.ID)
-	if err != nil {
-		// Fail closed: if we can't determine visibility, deny all
-		// collection-scoped events rather than leaking hidden data.
-		slog.Warn("SSE: failed to resolve visible collections, denying all", "error", err)
-		visibleSlugSet = make(map[string]bool) // empty set = deny all
-	} else if visibleIDs != nil {
-		visibleSlugSet = make(map[string]bool, len(visibleIDs))
-		for _, id := range visibleIDs {
-			coll, _ := s.store.GetCollection(id)
-			if coll != nil {
-				visibleSlugSet[coll.Slug] = true
-			}
-		}
-	}
-
-	// For users with item-level grants (guests or restricted members), build
-	// a set of granted item IDs for event filtering at item granularity.
-	var sseGrantedItemSet map[string]bool // nil = no item-level filtering
-	var sseFullCollSet map[string]bool    // collection slugs with full grants
-	isGuestSSE := false
-	if user := currentUser(r); user != nil {
-		member, _ := s.store.GetWorkspaceMember(ws.ID, user.ID)
-		if member == nil {
-			isGuestSSE = true
-		}
-
-		// Determine if this user needs item-level filtering:
-		// - guests always do
-		// - restricted members only if they have item grants
-		needsItemFilter := member == nil // guest
-		if member != nil && member.CollectionAccess == "specific" {
-			_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
-			needsItemFilter = len(itemGrants) > 0
-		}
-
-		if needsItemFilter {
-			fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
-			if grantErr != nil {
-				// Fail closed: if we can't resolve grants, install an empty
-				// item filter so no collection-scoped events leak through.
-				slog.Warn("SSE: failed to resolve item grants, denying item-scoped events", "error", grantErr)
-				sseGrantedItemSet = make(map[string]bool) // empty = deny all
-				sseFullCollSet = make(map[string]bool)    // empty = no full-access collections
-			} else if len(grantedItemIDs) > 0 {
-				sseGrantedItemSet = make(map[string]bool, len(grantedItemIDs))
-				for _, id := range grantedItemIDs {
-					sseGrantedItemSet[id] = true
-				}
-				// Build the full-access collection slug set. For restricted members,
-				// include their member_collection_access + system collections too.
-				fullCollIDSet := make(map[string]bool)
-				for _, id := range fullCollIDs {
-					fullCollIDSet[id] = true
-				}
-				if member != nil {
-					memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
-					sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
-					for _, id := range memberColls {
-						fullCollIDSet[id] = true
-					}
-					for _, id := range sysColls {
-						fullCollIDSet[id] = true
-					}
-				}
-				sseFullCollSet = make(map[string]bool, len(fullCollIDSet))
-				for id := range fullCollIDSet {
-					coll, _ := s.store.GetCollection(id)
-					if coll != nil {
-						sseFullCollSet[coll.Slug] = true
-					}
-				}
-			}
-		}
-	}
+	// Compute initial visibility. The filter maps are recomputed on every
+	// membership revalidation tick so that permission-tightening changes
+	// (role downgrade, collection-access narrowed to "specific", item
+	// grants revoked) take effect mid-stream — otherwise a connection
+	// established when the user was an editor would keep emitting events
+	// from collections they no longer see even after access was tightened.
+	vis := s.computeSSEVisibility(r, ws.ID)
 
 	sseUserID := currentUserID(r)
 
 	// sseEventVisible checks if an event should be sent to this client.
+	// Reads from the current `vis` snapshot so recomputes on each
+	// revalidation tick take effect immediately for the next event.
 	sseEventVisible := func(event events.Event) bool {
 		// User-scoped events (e.g. star/unstar) are only sent to the user who triggered them
 		if event.UserID != "" && event.UserID != sseUserID {
@@ -177,24 +108,24 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		collection := event.Collection
 		itemID := event.ItemID
-		if visibleSlugSet == nil {
+		if vis.visibleSlugSet == nil {
 			return true // all access
 		}
 		if collection == "" {
 			// Events without a collection (workspace-level, legacy docs) are
 			// only sent to actual members, not guests — they may contain
 			// operational metadata like member invites, role changes, etc.
-			if isGuestSSE {
+			if vis.isGuest {
 				return false
 			}
 			return true
 		}
-		if !visibleSlugSet[collection] {
+		if !vis.visibleSlugSet[collection] {
 			return false
 		}
 		// For guests with item-level grants, additionally check the item ID
-		if sseGrantedItemSet != nil && !sseFullCollSet[collection] && itemID != "" {
-			return sseGrantedItemSet[itemID]
+		if vis.grantedItemSet != nil && !vis.fullCollSet[collection] && itemID != "" {
+			return vis.grantedItemSet[itemID]
 		}
 		return true
 	}
@@ -289,16 +220,139 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
+			// Still a member — but the scope of that membership may have
+			// narrowed since the stream opened (role downgraded, collection
+			// access tightened to "specific", item grants revoked). Rebuild
+			// the filter set so the next event dispatched respects the
+			// current grants rather than the ones captured at connect time.
+			vis = s.computeSSEVisibility(r, ws.ID)
 		}
 	}
 }
 
 // sseMembershipRevalInterval is the cadence at which an active SSE
-// connection re-verifies the subscriber's access to the workspace.
-// 60s is a compromise between "revocation is visible quickly" and
+// connection re-verifies the subscriber's access to the workspace and
+// recomputes the per-event visibility filter set. 60s is a compromise
+// between "revocation and role-downgrade are visible quickly" and
 // "don't hammer the DB for every open tab". Exposed as a package-level
 // var so tests can shrink it without waiting a real minute.
 var sseMembershipRevalInterval = 60 * time.Second
+
+// sseVisibility is the per-connection event-filter state. All four
+// fields are rebuilt atomically on each revalidation tick so that
+// permission-tightening changes take effect for the very next event
+// without tearing down and rebuilding the stream.
+type sseVisibility struct {
+	// visibleSlugSet == nil → user has unrestricted access (admin / owner /
+	// editor with no collection scope). A non-nil empty map means deny all
+	// collection-scoped events (fail-closed on grant-resolution errors).
+	visibleSlugSet map[string]bool
+	// grantedItemSet is populated for users whose effective access is
+	// item-level (guests, restricted members). nil = no item filtering
+	// needed beyond visibleSlugSet.
+	grantedItemSet map[string]bool
+	// fullCollSet carries the collection slugs where a guest/restricted
+	// member has FULL access; grantedItemSet still gates narrower
+	// collection accesses.
+	fullCollSet map[string]bool
+	// isGuest is true when the user is not a direct workspace member —
+	// they only reach the SSE stream via per-collection / per-item grants.
+	// Used to hide workspace-level events that have no collection attached.
+	isGuest bool
+}
+
+// computeSSEVisibility resolves the caller's current visibility snapshot.
+// Safe to call repeatedly on a live SSE connection — each call fetches
+// the latest state from the store so revoked grants or narrowed roles
+// stop leaking on the next event dispatch.
+func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVisibility {
+	var v sseVisibility
+
+	// Collection-level visibility first.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		// Fail closed: if we can't determine visibility, deny all
+		// collection-scoped events rather than leaking hidden data.
+		slog.Warn("SSE: failed to resolve visible collections, denying all", "error", err)
+		v.visibleSlugSet = make(map[string]bool) // empty = deny
+	} else if visibleIDs != nil {
+		v.visibleSlugSet = make(map[string]bool, len(visibleIDs))
+		for _, id := range visibleIDs {
+			coll, _ := s.store.GetCollection(id)
+			if coll != nil {
+				v.visibleSlugSet[coll.Slug] = true
+			}
+		}
+	}
+
+	// Item-level visibility only applies to users with a resolved identity
+	// (guest or restricted member). Legacy workspace-scoped tokens and
+	// fresh-install bypass skip this branch and inherit full access via
+	// visibleSlugSet == nil.
+	user := currentUser(r)
+	if user == nil {
+		return v
+	}
+
+	member, _ := s.store.GetWorkspaceMember(workspaceID, user.ID)
+	if member == nil {
+		v.isGuest = true
+	}
+
+	// Determine whether this caller actually needs item-level filtering:
+	// - guests always do
+	// - restricted members ("specific" collection access) do iff they have
+	//   item-level grants, otherwise they're filtered by visibleSlugSet alone
+	needsItemFilter := member == nil
+	if member != nil && member.CollectionAccess == "specific" {
+		_, itemGrants, _ := s.store.GuestVisibleResources(workspaceID, user.ID)
+		needsItemFilter = len(itemGrants) > 0
+	}
+	if !needsItemFilter {
+		return v
+	}
+
+	fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(workspaceID, user.ID)
+	if grantErr != nil {
+		// Fail closed: if we can't resolve grants, install an empty item
+		// filter so no collection-scoped events leak through.
+		slog.Warn("SSE: failed to resolve item grants, denying item-scoped events", "error", grantErr)
+		v.grantedItemSet = make(map[string]bool)
+		v.fullCollSet = make(map[string]bool)
+		return v
+	}
+	if len(grantedItemIDs) == 0 {
+		return v
+	}
+
+	v.grantedItemSet = make(map[string]bool, len(grantedItemIDs))
+	for _, id := range grantedItemIDs {
+		v.grantedItemSet[id] = true
+	}
+
+	fullCollIDSet := make(map[string]bool)
+	for _, id := range fullCollIDs {
+		fullCollIDSet[id] = true
+	}
+	if member != nil {
+		memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		sysColls, _ := s.store.ListSystemCollectionIDs(workspaceID)
+		for _, id := range memberColls {
+			fullCollIDSet[id] = true
+		}
+		for _, id := range sysColls {
+			fullCollIDSet[id] = true
+		}
+	}
+	v.fullCollSet = make(map[string]bool, len(fullCollIDSet))
+	for id := range fullCollIDSet {
+		coll, _ := s.store.GetCollection(id)
+		if coll != nil {
+			v.fullCollSet[coll.Slug] = true
+		}
+	}
+	return v
+}
 
 // sseSubscriberStillHasAccess re-runs the workspace access check for an
 // already-subscribed SSE client. Returns false when the caller can no
