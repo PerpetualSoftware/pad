@@ -45,17 +45,20 @@ changelog:
       - "^Merge pull request"
       - "^Merge branch"
   groups:
+    # NOTE: with `use: github`, entries are prefixed with the commit hash
+    # (e.g. `abc1234: feat(...): ...`), so the regexes allow any prefix
+    # before the conventional-commit type.
     - title: "Features"
-      regexp: '^feat(\(.+\))?!?:'
+      regexp: '^.*?feat(\(.+\))?!?:'
       order: 0
     - title: "Bug fixes"
-      regexp: '^fix(\(.+\))?!?:'
+      regexp: '^.*?fix(\(.+\))?!?:'
       order: 1
     - title: "Performance"
-      regexp: '^perf(\(.+\))?!?:'
+      regexp: '^.*?perf(\(.+\))?!?:'
       order: 2
     - title: "Refactors"
-      regexp: '^refactor(\(.+\))?!?:'
+      regexp: '^.*?refactor(\(.+\))?!?:'
       order: 3
     - title: "Other changes"
       order: 999
