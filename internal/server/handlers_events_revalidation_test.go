@@ -176,6 +176,56 @@ func TestComputeSSEVisibility_ReflectsCurrentGrants(t *testing.T) {
 	_ = admin // silence unused on branches that don't exercise admin path
 }
 
+// TestSSESubscriberStillHasAccess_AdminDemotion verifies that an admin
+// who is demoted to "member" AFTER the SSE connection was established
+// loses access on the next revalidation tick. A regression would mean
+// the cached user snapshot from request context is trusted
+// indefinitely (admin-forever bug).
+func TestSSESubscriberStillHasAccess_AdminDemotion(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// Need another admin so demoting the first doesn't fail the
+	// last-admin guard in SetUserRole.
+	if _, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin2@example.com", Name: "Admin2", Password: "correct-horse-battery-staple", Role: "admin",
+	}); err != nil {
+		t.Fatalf("create second admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "AdminDemotionTest"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+
+	// Request context still has the ORIGINAL admin snapshot (Role="admin").
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+ws.Slug, nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, admin))
+
+	// Before demotion: admin should have access.
+	if !srv.sseSubscriberStillHasAccess(req, ws.ID) {
+		t.Fatal("admin should have access before demotion")
+	}
+
+	// Demote the admin to member. They're NOT a member of the workspace,
+	// so they shouldn't have access via membership either.
+	if err := srv.store.SetUserRole(admin.ID, "member"); err != nil {
+		t.Fatalf("demote admin: %v", err)
+	}
+
+	// SAME request context (same cached snapshot showing Role="admin"),
+	// but the database has the demoted role. Without the fresh GetUser
+	// the function would return true from the admin-role branch. With
+	// it, the post-demotion role is checked and access is denied.
+	if srv.sseSubscriberStillHasAccess(req, ws.ID) {
+		t.Fatal("demoted admin without workspace membership should NOT have access; cached snapshot was trusted")
+	}
+}
+
 // TestSSEMembershipRevalInterval_DefaultsToSensibleCadence pins the
 // default tick interval. Not functional on its own; it's a guard so a
 // future cleanup doesn't accidentally set the production default to a

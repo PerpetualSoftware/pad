@@ -373,11 +373,14 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 // sseSubscriberStillHasAccess re-runs the workspace access check for an
 // already-subscribed SSE client. Returns false when the caller can no
 // longer see this workspace (member removed, grants revoked, token
-// re-scoped) and the connection should be closed.
+// re-scoped, admin role demoted) and the connection should be closed.
 //
 // This mirrors the access logic in RequireWorkspaceAccess but avoids
-// writing error responses — we just need a boolean for the caller to
-// act on.
+// writing error responses. Unlike that middleware, we DO NOT trust the
+// user struct captured in the request context at connect time — it's a
+// snapshot that would not reflect a mid-stream role change (e.g. admin
+// demotion). We always GetUser fresh from the store so privilege
+// revocation closes streams within one tick.
 func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string) bool {
 	// Fresh-install escape hatch: no users exist → everyone has access.
 	// Matches RequireWorkspaceAccess. Cheap to recheck.
@@ -390,7 +393,8 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 	// revocation, which nukes the row and fails ValidateToken on the
 	// next request — but the SSE connection was already established.
 	// We verify the token context is still set + targets this workspace.
-	if currentUser(r) == nil {
+	cachedUser := currentUser(r)
+	if cachedUser == nil {
 		tokenWsID := tokenWorkspaceID(r)
 		if tokenWsID == "" {
 			return false
@@ -398,7 +402,23 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 		return tokenWsID == workspaceID
 	}
 
-	user := currentUser(r)
+	// Re-fetch the user FRESH — the cached snapshot in request context
+	// is only as current as session validation. An admin demoted mid-
+	// stream should lose workspace-wide access on the next tick.
+	user, err := s.store.GetUser(cachedUser.ID)
+	if err != nil {
+		slog.Warn("SSE revalidation: GetUser failed; keeping connection open",
+			"user_id", cachedUser.ID, "error", err)
+		return true
+	}
+	if user == nil {
+		// User deleted → revoke.
+		return false
+	}
+	// Disabled user → revoke.
+	if user.IsDisabled() {
+		return false
+	}
 	// Admins can access any workspace.
 	if user.Role == "admin" {
 		return true
