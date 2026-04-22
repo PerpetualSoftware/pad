@@ -49,6 +49,12 @@ func TestParseCORSOrigins(t *testing.T) {
 		{"https://app.pad.dev", []string{"https://app.pad.dev"}},
 		{"https://app.pad.dev, https://admin.pad.dev", []string{"https://app.pad.dev", "https://admin.pad.dev"}},
 		{"  , ", []string{"http://localhost:*", "http://127.0.0.1:*"}}, // empty after trim
+		// TASK-664: '*' is incompatible with AllowCredentials=true and must
+		// be dropped. When it was the ONLY configured origin, parseCORSOrigins
+		// falls back to localhost defaults rather than producing an empty list.
+		{"*", []string{"http://localhost:*", "http://127.0.0.1:*"}},
+		{"https://app.pad.dev, *", []string{"https://app.pad.dev"}},
+		{"*, https://admin.pad.dev", []string{"https://admin.pad.dev"}},
 	}
 
 	for _, tt := range tests {
@@ -61,6 +67,28 @@ func TestParseCORSOrigins(t *testing.T) {
 			if got[i] != tt.want[i] {
 				t.Errorf("parseCORSOrigins(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
 			}
+		}
+	}
+}
+
+func TestCorsAllowCredentials(t *testing.T) {
+	// When PAD_CORS_ORIGINS is empty (or whitespace-only), AllowCredentials
+	// defaults to false. When an operator sets any non-empty value they
+	// opt into credential sharing across the listed origins. We don't
+	// second-guess a typo'd comma-only value — a stricter check should
+	// happen at parseCORSOrigins time.
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"   ", false},
+		{"\t", false},
+		{"https://app.pad.dev", true},
+	}
+	for _, tt := range tests {
+		if got := corsAllowCredentials(tt.in); got != tt.want {
+			t.Errorf("corsAllowCredentials(%q) = %v, want %v", tt.in, got, tt.want)
 		}
 	}
 }
