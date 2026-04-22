@@ -145,6 +145,30 @@ func TestCloudAdminGate_BypassScopedToCloudPaths(t *testing.T) {
 	}
 }
 
+// TestCloudAdminGate_BodySecret_BackwardCompat verifies a POST with
+// cloud_secret ONLY in the JSON body still works — the existing pad-cloud
+// sidecar sent the secret there, not in a header, so removing body support
+// outright would break deployed sidecars. Scoped to cloud admin paths
+// only (the body peek never fires elsewhere).
+func TestCloudAdminGate_BodySecret_BackwardCompat(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("body-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-customer-id", map[string]string{
+		"user_id":      "unknown-user-id",
+		"customer_id":  "cus_body",
+		"cloud_secret": "body-secret",
+	}, nil) // NO X-Cloud-Secret header — body only
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	// Must reach the handler — not be rejected at auth/CSRF.
+	if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
+		t.Fatalf("body-only cloud_secret rejected by middleware: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestCloudAdminGate_QueryParamSecret_BackwardCompat keeps the legacy
 // ?cloud_secret= query param working for GETs while TASK-656 pares it back.
 func TestCloudAdminGate_QueryParamSecret_BackwardCompat(t *testing.T) {

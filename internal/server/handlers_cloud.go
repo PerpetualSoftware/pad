@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -71,20 +74,57 @@ func isCloudAdminPath(path string) bool {
 }
 
 // hasCloudSecretMarker returns true if the request carries a sidecar-
-// style auth marker (X-Cloud-Secret header or legacy ?cloud_secret
-// query-param). It does NOT check the path — callers MUST gate on
-// isCloudAdminPath first. Returning true for a request that carries a
-// wrong secret is safe; the handler's validateCloudSecret rejects it.
+// style auth marker: X-Cloud-Secret header, legacy ?cloud_secret
+// query-param, OR a cloud_secret field in the JSON body of a POST/PUT
+// to a cloud admin path. It does NOT check the path — callers MUST
+// gate on isCloudAdminPath first. Returning true for a request that
+// carries a wrong secret value is safe; the handler's
+// validateCloudSecret rejects mismatches.
+//
+// The body peek is scoped to cloud admin POSTs only so the cost and
+// body-replay side-effect are bounded to the few endpoints that need
+// it. TASK-656 deprecates both the query-param and body forms in favor
+// of X-Cloud-Secret header exclusively.
 func hasCloudSecretMarker(r *http.Request) bool {
 	if r.Header.Get("X-Cloud-Secret") != "" {
 		return true
 	}
-	// Legacy query-param support for GET sidecar calls. TASK-656 removes
-	// this fallback; until then we must still honor it.
 	if r.URL.Query().Get("cloud_secret") != "" {
 		return true
 	}
+	if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.Body != nil {
+		ct := r.Header.Get("Content-Type")
+		if strings.HasPrefix(ct, "application/json") && bodyHasCloudSecret(r) {
+			return true
+		}
+	}
 	return false
+}
+
+// bodyHasCloudSecret peeks at the request body (capped at 64 KB) to see
+// whether it's a JSON object with a "cloud_secret" field. Restores the
+// body afterwards so downstream handlers can decode it again. A parse
+// error or missing field is treated as "no marker" — the auth gate will
+// reject the request via the normal auth path.
+func bodyHasCloudSecret(r *http.Request) bool {
+	const maxPeek = 64 * 1024
+	buf, err := io.ReadAll(io.LimitReader(r.Body, maxPeek))
+	if err != nil {
+		return false
+	}
+	// Replace r.Body with a buffered reader so handlers can still decode.
+	// If the body was larger than maxPeek the tail is lost — acceptable
+	// because cloud admin requests are all tiny JSON payloads and the
+	// handler-level validateCloudSecret will still reject any caller
+	// whose request doesn't match the expected schema.
+	r.Body = io.NopCloser(bytes.NewReader(buf))
+	var body struct {
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := json.Unmarshal(buf, &body); err != nil {
+		return false
+	}
+	return body.CloudSecret != ""
 }
 
 // --- OAuth Login (TASK-430) ---
