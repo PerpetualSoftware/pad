@@ -31,6 +31,35 @@ const defaultTimeout = 15 * time.Second
 // HTML error page from a proxy, and we don't want to allocate MB of it.
 const maxResponseBody = 64 * 1024
 
+// ResolveOutboundSecret picks the secret to send on pad → pad-cloud calls
+// given the inbound rotation list and an optional explicit override. Pulled
+// out of main.go so the rotation-sensitive logic can be exercised directly
+// by unit tests.
+//
+//   - explicit takes precedence when non-empty: operators pin this to the
+//     exact value pad-cloud is currently validating against.
+//   - Otherwise, scan the comma-separated inboundList from RIGHT to LEFT
+//     and return the first non-empty entry. The older value is on the
+//     right in the conventional "new,old" layout — so during a rotation
+//     where pad-cloud is still running "old", pad's outbound call still
+//     matches.
+//   - Returns "" when neither source supplies a usable value. Callers
+//     should treat that as a hard startup error — a misconfigured sidecar
+//     URL is worse than no sidecar (every delete would 500 instead of
+//     silently skipping cancel).
+func ResolveOutboundSecret(explicit, inboundList string) string {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s
+	}
+	parts := strings.Split(inboundList, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(parts[i]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // CloudClient calls the pad-cloud sidecar over HTTP. Stateless — safe to
 // share across goroutines; the underlying http.Client has its own pool.
 type CloudClient struct {

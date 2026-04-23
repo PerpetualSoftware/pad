@@ -114,8 +114,10 @@ func (s *Server) Init2FASecret() error {
 
 // SetCloudMode enables cloud mode with the shared sidecar secret(s).
 // Accepts a comma-separated list of secrets for rotation support:
-// "new-key,old-key" — both are accepted during rollover.
-// The sidecar should always send the first (newest) key.
+// "new-key,old-key" — both are accepted for INBOUND calls from pad-cloud.
+// The OUTBOUND direction (pad → pad-cloud, see SetCloudSidecar) is
+// configured separately via PAD_CLOUD_OUTBOUND_SECRET or derived from the
+// last entry of this list — see cmd/pad/main.go for the resolution order.
 func (s *Server) SetCloudMode(secret string) {
 	s.cloudMode = true
 	for _, k := range strings.Split(secret, ",") {
@@ -134,9 +136,15 @@ type CloudSidecar interface {
 	// CancelCustomer asks pad-cloud to cancel every active Stripe subscription
 	// for customerID and then delete the Stripe customer object. Used by
 	// handleDeleteAccount to cascade account deletion through to Stripe billing
-	// (TASK-690). See internal/billing for the failure-mode contract callers
-	// rely on (transport / 5xx → error; 4xx → StripeSidecar404Error so the
-	// caller can log-and-continue when the upstream state is already gone).
+	// (TASK-690).
+	//
+	// Failure contract: any non-nil error means the caller MUST abort the
+	// local delete. pad-cloud normalizes Stripe's "already gone" cases to a
+	// 200 on its side (see pad-cloud stripe.go isStripeAlreadyGone), so
+	// every error we see here is a real failure — transport, 4xx (ops
+	// misconfig), or 5xx (upstream breakage). Continuing after an error
+	// would wipe the user's StripeCustomerID while leaving the subscription
+	// billing, which is exactly the regression TASK-690 exists to prevent.
 	CancelCustomer(customerID string) error
 }
 

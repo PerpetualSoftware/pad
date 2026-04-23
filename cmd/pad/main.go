@@ -314,22 +314,17 @@ func serveCmd() *cobra.Command {
 				//      rollover completes and CloudSecret collapses to a
 				//      single value, first == last so it's still correct.
 				if cfg.CloudSidecarURL != "" {
-					outboundSecret := strings.TrimSpace(cfg.CloudOutboundSecret)
-					if outboundSecret == "" {
-						parts := strings.Split(cfg.CloudSecret, ",")
-						for i := len(parts) - 1; i >= 0; i-- {
-							if s := strings.TrimSpace(parts[i]); s != "" {
-								outboundSecret = s
-								break
-							}
-						}
-					}
+					outboundSecret := billing.ResolveOutboundSecret(cfg.CloudOutboundSecret, cfg.CloudSecret)
 					if outboundSecret == "" {
 						return fmt.Errorf("PAD_CLOUD_SIDECAR_URL is set but neither PAD_CLOUD_OUTBOUND_SECRET nor PAD_CLOUD_SECRET supplies a usable outbound secret")
 					}
 					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, outboundSecret))
+					outboundSource := "PAD_CLOUD_SECRET[last]"
+					if strings.TrimSpace(cfg.CloudOutboundSecret) != "" {
+						outboundSource = "PAD_CLOUD_OUTBOUND_SECRET"
+					}
 					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL,
-						"outbound_source", map[bool]string{true: "PAD_CLOUD_OUTBOUND_SECRET", false: "PAD_CLOUD_SECRET[last]"}[strings.TrimSpace(cfg.CloudOutboundSecret) != ""])
+						"outbound_source", outboundSource)
 				} else {
 					slog.Warn("PAD_CLOUD_SIDECAR_URL not set — account delete will NOT cancel Stripe subscriptions. Set this env var to cascade deletes.")
 				}

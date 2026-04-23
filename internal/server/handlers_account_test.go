@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -305,6 +306,65 @@ func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
 				t.Errorf("expected exactly 1 sidecar call, got %d", fake.callCount())
 			}
 		})
+	}
+}
+
+// TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel
+// exercises the most dangerous state: the sidecar successfully cancelled
+// Stripe, but the local DELETE then failed. Before the round-1 fix the
+// response claimed "No data was removed" even though billing was already
+// gone; now it returns a truthful partial_delete error and logs the
+// customer ID for operator follow-up.
+//
+// The "local delete fails" condition is simulated by leaving a second
+// audit row referencing the user (activities.user_id) that we DON'T scrub
+// — that row blocks the final DELETE FROM users with a FK violation. The
+// test deliberately re-introduces the same FK that bootstrapAccountDeleteUser
+// normally scrubs.
+func TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
+
+	// Re-attach an activity row to the user so the FK blocks the delete.
+	// This is the same FK gap the fixture normally scrubs around; we
+	// intentionally re-create it to force DeleteAccountAtomic to fail
+	// AFTER the successful Stripe cancel.
+	if _, err := srv.store.DB().Exec(
+		"UPDATE activities SET user_id = ? WHERE user_id IS NULL",
+		userID); err != nil {
+		t.Fatalf("reintroduce FK: %v", err)
+	}
+
+	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Response must be the truthful partial-delete code, NOT a generic
+	// internal_error that claims nothing was removed.
+	body := rr.Body.String()
+	if !strings.Contains(body, "partial_delete") {
+		t.Errorf("expected partial_delete error code in body, got %s", body)
+	}
+	if !strings.Contains(body, "billing was cancelled") {
+		t.Errorf("expected truthful 'billing was cancelled' message, got %s", body)
+	}
+
+	// Sidecar WAS called — that's the whole premise of this test.
+	if fake.callCount() != 1 {
+		t.Errorf("expected 1 cancel call, got %d", fake.callCount())
+	}
+
+	// And the user row is still present — ops needs it to investigate.
+	u, err := srv.store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if u == nil {
+		t.Fatal("user row must still exist after partial_delete")
 	}
 }
 

@@ -157,6 +157,86 @@ func TestCancelCustomer_UnconfiguredClient_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestResolveOutboundSecret(t *testing.T) {
+	cases := []struct {
+		name         string
+		explicit     string
+		inboundList  string
+		want         string
+		wantEmpty    bool
+	}{
+		{
+			name:        "explicit wins over inbound",
+			explicit:    "explicit-key",
+			inboundList: "new,old",
+			want:        "explicit-key",
+		},
+		{
+			name:        "explicit with whitespace is trimmed",
+			explicit:    "  pinned-key  ",
+			inboundList: "new,old",
+			want:        "pinned-key",
+		},
+		{
+			name:        "falls back to last inbound during rotation (new,old)",
+			explicit:    "",
+			inboundList: "new-key,old-key",
+			want:        "old-key",
+		},
+		{
+			name:        "single inbound value is used",
+			explicit:    "",
+			inboundList: "only-key",
+			want:        "only-key",
+		},
+		{
+			name:        "skips trailing empty entries",
+			explicit:    "",
+			inboundList: "new-key,old-key,,",
+			want:        "old-key",
+		},
+		{
+			name:        "skips whitespace-only entries",
+			explicit:    "",
+			inboundList: "new-key,   ,old-key",
+			want:        "old-key",
+		},
+		{
+			name:        "explicit set but inbound empty → explicit",
+			explicit:    "only-explicit",
+			inboundList: "",
+			want:        "only-explicit",
+		},
+		{
+			name:        "both empty → empty result (caller should fail startup)",
+			explicit:    "",
+			inboundList: "",
+			wantEmpty:   true,
+		},
+		{
+			name:        "both whitespace → empty result",
+			explicit:    "   ",
+			inboundList: ", , ,",
+			wantEmpty:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveOutboundSecret(tc.explicit, tc.inboundList)
+			if tc.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Errorf("ResolveOutboundSecret(%q, %q) = %q, want %q",
+					tc.explicit, tc.inboundList, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCancelCustomer_LargeResponseBody_DoesNotReadPastCap(t *testing.T) {
 	// A broken sidecar or misrouted proxy can stream us an enormous payload.
 	// We cap the read at maxResponseBody so we never allocate MBs of error

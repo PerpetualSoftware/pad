@@ -37,6 +37,14 @@ services:
       PAD_REDIS_URL: "redis://redis:6379"
       PAD_DATA_DIR: "/data"
       PAD_LOG_LEVEL: "info"
+      # Cloud-mode wiring (set when co-deploying with pad-cloud). In cloud
+      # mode, pad needs to call pad-cloud back to cancel Stripe
+      # subscriptions when a user deletes their account (TASK-690).
+      # Uncomment + point at your sidecar, OR set these vars in .env.
+      # PAD_CLOUD: "true"
+      # PAD_CLOUD_SECRET: "${PAD_CLOUD_SECRET:-}"
+      # PAD_CLOUD_SIDECAR_URL: "${PAD_CLOUD_SIDECAR_URL:-}"
+      # PAD_CLOUD_OUTBOUND_SECRET: "${PAD_CLOUD_OUTBOUND_SECRET:-}"
     volumes:
       - pad-data:/data
     depends_on:
