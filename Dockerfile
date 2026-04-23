@@ -21,11 +21,14 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=go-builder /app/pad /usr/local/bin/pad
 
-# Data directory
-RUN mkdir -p /data
+# Create a non-root user (uid 1000) and data directory owned by it
+RUN adduser -D -u 1000 -h /home/pad pad \
+    && mkdir -p /data \
+    && chown -R pad:pad /data
 ENV PAD_DATA_DIR=/data
 ENV PAD_HOST=0.0.0.0
 
+USER pad
 EXPOSE 7777
 VOLUME /data
 
