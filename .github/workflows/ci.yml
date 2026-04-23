@@ -12,6 +12,10 @@ concurrency:
 
 permissions:
   contents: read
+  # pull-requests: read is required by golangci-lint-action when
+  # only-new-issues: true — the action fetches PR diff metadata from
+  # the GitHub API to determine which findings are new.
+  pull-requests: read
 
 # All third-party Actions are pinned to a 40-char commit SHA with a trailing
 # '# vX.Y.Z' comment so a compromised maintainer or moved tag cannot silently
@@ -33,6 +37,18 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Run golangci-lint
+        # only-new-issues: true means findings are reported only on lines
+        # changed by this PR. Existing legacy issues on main are tracked as
+        # a follow-up; gating CI on them today would block unrelated PRs.
+        # v2 of golangci-lint is required for Go 1.25 support — the v1
+        # line is capped at Go 1.24.
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        with:
+          version: v2.11.4
+          args: --timeout=5m
+          only-new-issues: true
 
       - name: Run govulncheck
         # Fails the build on any known vulnerability in a package we

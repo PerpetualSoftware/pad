@@ -1,0 +1,43 @@
+# pre-commit hooks for Pad.
+# https://pre-commit.com
+#
+# Install once per clone:
+#   pip install pre-commit   # or: brew install pre-commit
+#   pre-commit install
+#
+# Run manually against the whole tree:
+#   pre-commit run --all-files
+
+repos:
+  # General file hygiene — consistent with .editorconfig.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^.*\.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Go formatting + imports — matches what CI's golangci-lint enforces.
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+      - id: go-imports
+
+  # Prettier — formats JSON/YAML/Markdown consistently with .editorconfig.
+  # Web/Svelte files are intentionally excluded; the project does not ship a
+  # Svelte-aware prettier config yet and we don't want to churn existing style.
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        types_or: [yaml, json, markdown]
+        exclude: ^(web/|\.svelte-kit/)
