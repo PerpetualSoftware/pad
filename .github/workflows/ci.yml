@@ -12,6 +12,10 @@ concurrency:
 
 permissions:
   contents: read
+  # pull-requests: read is required by golangci-lint-action when
+  # only-new-issues: true — the action fetches PR diff metadata from
+  # the GitHub API to determine which findings are new.
+  pull-requests: read
 
 # All third-party Actions are pinned to a 40-char commit SHA with a trailing
 # '# vX.Y.Z' comment so a compromised maintainer or moved tag cannot silently

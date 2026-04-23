@@ -28,11 +28,14 @@ linters:
         - fmt.Fprintf
         - fmt.Fprint
   exclusions:
+    # Paths use regex matching; anchor to directory roots to avoid
+    # accidentally skipping unrelated Go files whose path contains these
+    # substrings (e.g. "internal/websocket" would match a bare "web").
     paths:
-      - web
-      - docs
-      - deploy
-      - skills
+      - ^web/
+      - ^docs/
+      - ^deploy/
+      - ^skills/
 
 formatters:
   enable:
