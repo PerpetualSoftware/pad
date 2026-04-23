@@ -34,6 +34,16 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Run golangci-lint
+        # only-new-issues: true means findings are reported only on lines
+        # changed by this PR. Existing legacy issues on main are tracked as
+        # a follow-up; gating CI on them today would block unrelated PRs.
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6.5.2
+        with:
+          version: v1.64.8
+          args: --timeout=5m
+          only-new-issues: true
+
       - name: Run govulncheck
         # Fails the build on any known vulnerability in a package we
         # actually reach via the call graph. Net-positive: catches CVEs

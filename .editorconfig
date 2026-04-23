@@ -1,0 +1,42 @@
+# EditorConfig — normalize whitespace, line endings, encoding across editors.
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+indent_size = 4
+
+# YAML, JSON, and the GitHub Actions ecosystem conventionally use 2-space indent.
+[*.{yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+# Markdown — 2-space indent; keep trailing whitespace in case of intentional hard breaks.
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Makefiles require tab indentation (syntactic).
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# Go uses tabs (gofmt enforces).
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# TypeScript / Svelte — project uses tabs (see existing files under web/src).
+[*.{ts,js,svelte,html,css}]
+indent_style = tab
+indent_size = 4
+
+# Shell scripts — 2 spaces is common; keep tabs optional per-file by not enforcing here.
+[*.sh]
+indent_style = space
+indent_size = 2

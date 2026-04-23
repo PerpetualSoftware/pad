@@ -1,0 +1,42 @@
+# golangci-lint configuration.
+# https://golangci-lint.run/usage/configuration/
+#
+# Run locally with: golangci-lint run ./...
+# CI runs this via .github/workflows/ci.yml (golangci-lint-action).
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck       # unchecked errors
+    - govet          # go vet
+    - ineffassign    # unused assignments
+    - staticcheck    # comprehensive static analysis (replaces gosimple, stylecheck)
+    - unused         # unused variables, constants, types, etc.
+    - gofmt          # gofmt diff must be empty
+
+linters-settings:
+  errcheck:
+    # Allow common stdlib patterns where the error is intentionally ignored.
+    exclude-functions:
+      - (io.Closer).Close
+      - (*net/http.Response).Body.Close
+      - fmt.Fprintln
+      - fmt.Fprintf
+      - fmt.Fprint
+  gofmt:
+    # Simplify code where possible (e.g. `for _, x := range xs` where x is unused).
+    simplify: true
+
+issues:
+  # Don't cap the number of issues reported per linter; we want the full list.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-dirs:
+    - web
+    - docs
+    - deploy
+    - skills
