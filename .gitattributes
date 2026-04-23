@@ -1,0 +1,49 @@
+# Normalize line endings across platforms.
+# Without this, Windows contributors can commit CRLF into otherwise-LF files
+# and break diffs / hooks / linters. See `man gitattributes`.
+
+# Default: auto-detect text and normalize to LF on commit.
+* text=auto eol=lf
+
+# Explicit text — safer than relying on auto-detect.
+*.go         text eol=lf diff=golang
+*.ts         text eol=lf
+*.tsx        text eol=lf
+*.js         text eol=lf
+*.jsx        text eol=lf
+*.svelte     text eol=lf
+*.html       text eol=lf
+*.css        text eol=lf
+*.scss       text eol=lf
+*.md         text eol=lf
+*.json       text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.toml       text eol=lf
+*.sh         text eol=lf
+*.py         text eol=lf
+Makefile     text eol=lf
+Dockerfile*  text eol=lf
+
+# Vendored / minified — don't rewrite, don't diff as text.
+*.min.js     binary
+*.min.css    binary
+package-lock.json   -diff
+
+# Binary assets — never touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
+*.tar.gz binary
+
+# Keep generated output out of PR diffs / GitHub linguist stats.
+web/build/**         linguist-generated=true
+web/.svelte-kit/**   linguist-generated=true
