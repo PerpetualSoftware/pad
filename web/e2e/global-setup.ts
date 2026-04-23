@@ -1,0 +1,154 @@
+import { request, type FullConfig } from '@playwright/test';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * One-shot setup that runs before any spec in the suite.
+ *
+ * By the time this runs, Playwright's webServer has already started
+ * the Pad binary against a *fresh* data dir (the wipe happens in the
+ * webServer command, so it beats migrations, not the other way
+ * around). This function owns authentication + content seeding:
+ *
+ *   1. Bootstrap the first admin account via POST /api/v1/auth/bootstrap
+ *      (only reachable from loopback — matches our test topology).
+ *   2. Log in to collect the session cookie + CSRF double-submit pair.
+ *   3. Mint a user-scoped API token via POST /api/v1/auth/tokens.
+ *   4. Create a starter workspace ("e2e") seeded with the startup
+ *      template so the dashboard has something to render.
+ *   5. Persist the token (not the session cookie) to fixture.json so
+ *      specs can inject it as a Bearer header.
+ *
+ * Why the token and not the session cookie:
+ *   Sessions are User-Agent-bound (see internal/server/middleware_auth.go:
+ *   "Session binding: validate User-Agent hasn't changed"). A session
+ *   minted by node.js would be silently rejected by the browser because
+ *   the UA hash wouldn't match. API tokens bypass SessionAuth entirely
+ *   via the TokenAuth middleware, which doesn't do UA binding.
+ */
+
+export const ADMIN_EMAIL = 'e2e-admin@example.com';
+export const ADMIN_NAME = 'E2E Admin';
+// Must satisfy validatePasswordStrength (see internal/server/handlers_auth.go).
+export const ADMIN_PASSWORD = 'Playwright-Pad-2026!';
+
+export const WORKSPACE_SLUG = 'e2e';
+export const WORKSPACE_NAME = 'E2E Workspace';
+
+export default async function globalSetup(config: FullConfig) {
+	const baseURL = config.projects[0]?.use?.baseURL;
+	if (!baseURL) throw new Error('globalSetup: baseURL missing from Playwright config');
+
+	const api = await request.newContext({ baseURL });
+	await waitForHealth(api, baseURL);
+
+	// Bootstrap the admin. 409 means the instance is already initialized,
+	// which is fine for re-runs (reuseExistingServer in local dev).
+	const bootstrap = await api.post('/api/v1/auth/bootstrap', {
+		data: { email: ADMIN_EMAIL, name: ADMIN_NAME, password: ADMIN_PASSWORD }
+	});
+	if (!bootstrap.ok() && bootstrap.status() !== 409) {
+		throw new Error(`bootstrap failed (${bootstrap.status()}): ${await bootstrap.text()}`);
+	}
+
+	const login = await api.post('/api/v1/auth/login', {
+		data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD }
+	});
+	if (!login.ok()) {
+		throw new Error(`login failed (${login.status()}): ${await login.text()}`);
+	}
+
+	// State-changing endpoints require the CSRF double-submit header
+	// matching the pad_csrf cookie issued at login.
+	const state = await api.storageState();
+	const csrfCookie = state.cookies.find((c) => c.name === 'pad_csrf' || c.name === '__Host-pad_csrf');
+	if (!csrfCookie) {
+		throw new Error('login succeeded but no pad_csrf cookie was issued');
+	}
+	const csrfHeader = { 'X-CSRF-Token': csrfCookie.value };
+
+	// Seed the workspace FIRST. The api_tokens table requires a
+	// non-null workspace_id, so the token must be scoped to something.
+	// `startup` is the default template and seeds tasks/ideas/plans/docs
+	// collections so the dashboard has content.
+	const workspaces = await api.post('/api/v1/workspaces', {
+		headers: csrfHeader,
+		data: { name: WORKSPACE_NAME, slug: WORKSPACE_SLUG, template: 'startup' }
+	});
+	if (!workspaces.ok() && workspaces.status() !== 409) {
+		throw new Error(`workspace create failed (${workspaces.status()}): ${await workspaces.text()}`);
+	}
+	// Read back the actual slug. The server uniquifies slugs on collision
+	// (e2e → e2e-2 → ...), so in the `reuseExistingServer: true` local path
+	// a rerun can land on a newly-created `e2e-2` workspace while we still
+	// have a constant `WORKSPACE_SLUG` in memory. Trusting the API response
+	// keeps fixture.json pointed at whatever was just created.
+	const workspace = (await workspaces.json()) as { id?: string; slug?: string };
+	if (!workspace.id || !workspace.slug) {
+		throw new Error('workspace create response missing id/slug');
+	}
+	const resolvedSlug = workspace.slug;
+
+	// Mint an API token scoped to the admin + workspace. Sessions are
+	// UA-bound; tokens aren't — the browser can auth with this token
+	// regardless of its UA.
+	const tokenResp = await api.post('/api/v1/auth/tokens', {
+		headers: csrfHeader,
+		data: { name: 'e2e-suite', workspace_id: workspace.id, expires_in: 1 }
+	});
+	if (!tokenResp.ok()) {
+		throw new Error(`token create failed (${tokenResp.status()}): ${await tokenResp.text()}`);
+	}
+	const tokenPayload = (await tokenResp.json()) as { token?: string };
+	if (!tokenPayload.token) {
+		throw new Error('token create succeeded but response missing token');
+	}
+
+	// Fetch the admin's actual username — auto-generated by the server
+	// (see store.GenerateUsername). Web routes are /{username}/{workspace};
+	// hardcoding would drift if the algorithm ever changes.
+	const meResp = await api.get('/api/v1/auth/me');
+	if (!meResp.ok()) {
+		throw new Error(`GET /auth/me failed (${meResp.status()}): ${await meResp.text()}`);
+	}
+	const me = (await meResp.json()) as { username?: string };
+	if (!me.username) {
+		throw new Error('admin user has no username after bootstrap');
+	}
+
+	await mkdir(resolve(HERE, '.auth'), { recursive: true });
+	await writeFile(
+		resolve(HERE, '.auth', 'fixture.json'),
+		JSON.stringify(
+			{
+				baseURL,
+				workspaceSlug: resolvedSlug,
+				adminEmail: ADMIN_EMAIL,
+				adminUsername: me.username,
+				apiToken: tokenPayload.token
+			},
+			null,
+			2
+		)
+	);
+}
+
+async function waitForHealth(api: Awaited<ReturnType<typeof request.newContext>>, baseURL: string) {
+	const deadline = Date.now() + 20_000;
+	let lastError: unknown;
+	while (Date.now() < deadline) {
+		try {
+			const r = await api.get('/api/v1/health');
+			if (r.ok()) return;
+		} catch (err) {
+			lastError = err;
+		}
+		await new Promise((res) => setTimeout(res, 250));
+	}
+	throw new Error(
+		`server at ${baseURL}/api/v1/health never became ready (${String(lastError ?? 'no error')})`
+	);
+}
