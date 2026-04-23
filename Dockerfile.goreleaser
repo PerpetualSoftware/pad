@@ -1,9 +1,12 @@
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 COPY pad /usr/local/bin/pad
-RUN mkdir -p /data
+RUN adduser -D -u 1000 -h /home/pad pad \
+    && mkdir -p /data \
+    && chown -R pad:pad /data
 ENV PAD_DATA_DIR=/data
 ENV PAD_HOST=0.0.0.0
+USER pad
 EXPOSE 7777
 VOLUME /data
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
