@@ -55,9 +55,12 @@ func NewCloudClient(baseURL, cloudSecret string) *CloudClient {
 }
 
 // SidecarError carries the structured details pad-cloud returns on a non-2xx
-// response. Callers use errors.As with a *SidecarError target to decide
-// between "retry transport/server failure" (Status >= 500) and "upstream
-// state is already inconsistent, log and continue" (Status in [400,500)).
+// response. Exposed so callers that want to log the status separately from
+// the error message can extract it via errors.As. We deliberately do NOT
+// expose a "this is a retryable/ignorable error" helper — pad-cloud
+// normalizes Stripe's "already gone" cases to 200 internally, so every
+// non-2xx we see is a real failure (ops misconfig, upstream breakage) and
+// callers should treat the whole class uniformly as "abort".
 type SidecarError struct {
 	// Status is the HTTP status pad-cloud returned (e.g. 400, 403, 500).
 	Status int
@@ -69,18 +72,6 @@ type SidecarError struct {
 
 func (e *SidecarError) Error() string {
 	return fmt.Sprintf("pad-cloud sidecar returned %d: %s", e.Status, e.Body)
-}
-
-// IsClientError reports whether the error is a 4xx from pad-cloud (as
-// opposed to a transport failure or a 5xx). handleDeleteAccount uses this
-// to distinguish "sidecar says the customer is already gone / malformed,
-// safe to proceed with local delete" from "sidecar is sick, abort".
-func IsClientError(err error) bool {
-	var se *SidecarError
-	if errors.As(err, &se) {
-		return se.Status >= 400 && se.Status < 500
-	}
-	return false
 }
 
 // CancelCustomer asks pad-cloud to cancel every active Stripe subscription

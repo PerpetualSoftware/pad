@@ -58,72 +58,49 @@ func TestCancelCustomer_HappyPath_SendsCorrectRequest(t *testing.T) {
 	}
 }
 
-func TestCancelCustomer_ClientError_4xxReturnsSidecarError(t *testing.T) {
-	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"customer_id must start with 'cus_'"}`))
-	})
+// Each real pad-cloud failure status maps to a SidecarError carrying that
+// status. Together these cover every non-2xx shape pad-cloud returns:
+//   - 400 on malformed request or non-cus_ customer_id
+//   - 403 on cloud_secret mismatch
+//   - 500 on internal / Stripe failure
+//   - 503 when Stripe is not configured
+// All of them must produce a SidecarError — the handler treats every one
+// as "abort the delete", regardless of bucket.
+func TestCancelCustomer_NonOK_ReturnsSidecarError(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		bodyHas string
+	}{
+		{"400_bad_request", http.StatusBadRequest, `{"error":"customer_id must start with 'cus_'"}`, "customer_id must start with"},
+		{"403_wrong_secret", http.StatusForbidden, `{"error":"Forbidden"}`, "Forbidden"},
+		{"500_stripe_failure", http.StatusInternalServerError, `{"error":"Failed to cancel subscription"}`, "Failed to cancel"},
+		{"503_not_configured", http.StatusServiceUnavailable, `{"error":"Stripe billing not configured"}`, "not configured"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
 
-	err := client.CancelCustomer("cus_abc")
-	if err == nil {
-		t.Fatal("expected error on 400, got nil")
-	}
+			err := client.CancelCustomer("cus_abc")
+			if err == nil {
+				t.Fatalf("expected error on %d, got nil", tc.status)
+			}
 
-	var se *SidecarError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *SidecarError, got %T: %v", err, err)
-	}
-	if se.Status != http.StatusBadRequest {
-		t.Errorf("expected status 400, got %d", se.Status)
-	}
-	if !strings.Contains(se.Body, "customer_id must start with") {
-		t.Errorf("expected body to include upstream message, got %q", se.Body)
-	}
-	if !IsClientError(err) {
-		t.Error("IsClientError must be true for 4xx")
-	}
-}
-
-func TestCancelCustomer_Forbidden_403IsClientError(t *testing.T) {
-	// pad-cloud returns 403 when the cloud_secret mismatch — which is NOT
-	// a "customer gone" condition. The caller should still abort, but only
-	// because 403 is classified as ops-misconfig (wrong secret), not because
-	// of the log-and-continue path. The IsClientError bool is a routing
-	// switch; callers that need finer granularity can inspect Status.
-	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"Forbidden"}`))
-	})
-
-	err := client.CancelCustomer("cus_abc")
-	if err == nil {
-		t.Fatal("expected error on 403, got nil")
-	}
-	if !IsClientError(err) {
-		t.Error("403 should be classified as client error")
-	}
-}
-
-func TestCancelCustomer_ServerError_5xxIsNotClientError(t *testing.T) {
-	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"Failed to cancel subscription"}`))
-	})
-
-	err := client.CancelCustomer("cus_abc")
-	if err == nil {
-		t.Fatal("expected error on 500, got nil")
-	}
-
-	var se *SidecarError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *SidecarError, got %T", err)
-	}
-	if se.Status != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", se.Status)
-	}
-	if IsClientError(err) {
-		t.Error("IsClientError must be false for 5xx")
+			var se *SidecarError
+			if !errors.As(err, &se) {
+				t.Fatalf("expected *SidecarError, got %T: %v", err, err)
+			}
+			if se.Status != tc.status {
+				t.Errorf("expected status %d, got %d", tc.status, se.Status)
+			}
+			if !strings.Contains(se.Body, tc.bodyHas) {
+				t.Errorf("expected body to include %q, got %q", tc.bodyHas, se.Body)
+			}
+		})
 	}
 }
 
@@ -143,9 +120,6 @@ func TestCancelCustomer_TransportFailure_NotSidecarError(t *testing.T) {
 	var se *SidecarError
 	if errors.As(err, &se) {
 		t.Errorf("transport failure must not be SidecarError, got %v", err)
-	}
-	if IsClientError(err) {
-		t.Error("IsClientError must be false for transport errors")
 	}
 }
 
@@ -180,15 +154,6 @@ func TestCancelCustomer_UnconfiguredClient_ReturnsError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "dial") {
 		t.Errorf("expected config error, got transport error: %v", err)
-	}
-}
-
-func TestIsClientError_NonSidecarError(t *testing.T) {
-	if IsClientError(errors.New("plain error")) {
-		t.Error("IsClientError must be false for non-SidecarError")
-	}
-	if IsClientError(nil) {
-		t.Error("IsClientError(nil) must be false")
 	}
 }
 

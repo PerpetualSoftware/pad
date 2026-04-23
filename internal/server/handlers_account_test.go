@@ -12,16 +12,27 @@ import (
 
 // fakeSidecar is a controllable CloudSidecar used to assert the cancel-before-
 // delete cascade (TASK-690) without standing up a real HTTP server.
+//
+// When hook is set, it runs inside CancelCustomer before the call returns —
+// giving tests a chokepoint to verify invariants that are true only at
+// that exact moment (e.g. "the user row still exists at the moment cancel
+// is called"). Without the hook, a regression that swapped cancel and
+// delete could still pass a simple "cancel was called" + "user is gone"
+// assertion because both would be true at the end.
 type fakeSidecar struct {
 	calls          int32 // atomic counter of CancelCustomer invocations
 	lastCustomerID atomic.Pointer[string]
 	err            error
+	hook           func(customerID string) // runs under CancelCustomer; optional
 }
 
 func (f *fakeSidecar) CancelCustomer(customerID string) error {
 	atomic.AddInt32(&f.calls, 1)
 	id := customerID // copy so the atomic pointer doesn't alias the caller's stack
 	f.lastCustomerID.Store(&id)
+	if f.hook != nil {
+		f.hook(customerID)
+	}
 	return f.err
 }
 
@@ -80,14 +91,39 @@ func deleteAccountReq(srv *Server, body interface{}, token string) *httptest.Res
 }
 
 // TestHandleDeleteAccount_CancelsStripeBeforeDelete is the happy-path
-// cascade assertion: a paying user's CancelCustomer runs FIRST, then the
-// local delete goes through, and the user row is gone afterwards.
+// cascade assertion: a paying user's CancelCustomer runs FIRST (while the
+// user row is still present), then the local delete goes through, and the
+// user row is gone afterwards.
+//
+// The inline hook closes the cancel-before-delete loophole: we check the
+// user row directly during the CancelCustomer call, so a regression that
+// reverses the order (delete first, then cancel) can't pass — by the time
+// cancel would be called, the row would already be absent and the
+// assertion would fire inside the hook.
 func TestHandleDeleteAccount_CancelsStripeBeforeDelete(t *testing.T) {
 	srv := testServer(t)
-	fake := &fakeSidecar{}
-	srv.SetCloudSidecar(fake)
 
 	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
+
+	fake := &fakeSidecar{}
+	fake.hook = func(customerID string) {
+		if customerID != "cus_paying_user" {
+			t.Errorf("CancelCustomer called with %q during hook, want cus_paying_user", customerID)
+		}
+		// Invariant under test: the user row MUST still exist at the
+		// moment cancel fires. A regression that flipped cancel/delete
+		// order would blow up this check because the user would already
+		// be gone by the time the sidecar was called.
+		u, err := srv.store.GetUser(userID)
+		if err != nil {
+			t.Errorf("get user during cancel hook: %v", err)
+			return
+		}
+		if u == nil {
+			t.Error("user row must still be present when CancelCustomer is called (cancel must precede delete)")
+		}
+	}
+	srv.SetCloudSidecar(fake)
 
 	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
 	if rr.Code != http.StatusOK {
@@ -101,7 +137,7 @@ func TestHandleDeleteAccount_CancelsStripeBeforeDelete(t *testing.T) {
 		t.Errorf("CancelCustomer called with %q, want cus_paying_user", got)
 	}
 
-	// User row should be gone.
+	// After the whole flow, user row must be gone.
 	u, err := srv.store.GetUser(userID)
 	if err != nil {
 		t.Fatalf("get user after delete: %v", err)
@@ -221,35 +257,54 @@ func TestHandleDeleteAccount_AbortsOnSidecar5xx(t *testing.T) {
 	}
 }
 
-// TestHandleDeleteAccount_ContinuesOnSidecar4xx — pad-cloud returned a 4xx
-// (customer not found, malformed customer ID, etc). That's "upstream state
-// is already gone or inconsistent"; retrying would never succeed. We log
-// and continue with the local delete so the user isn't trapped in a
-// can't-delete state.
-func TestHandleDeleteAccount_ContinuesOnSidecar4xx(t *testing.T) {
-	srv := testServer(t)
-	fake := &fakeSidecar{err: &billing.SidecarError{
-		Status: http.StatusNotFound,
-		Body:   `{"error":"customer not found"}`,
-	}}
-	srv.SetCloudSidecar(fake)
-
-	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
-
-	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("delete-account: expected 200 on sidecar 4xx, got %d: %s", rr.Code, rr.Body.String())
+// TestHandleDeleteAccount_AbortsOnSidecar4xx ensures every 4xx from
+// pad-cloud — 400 (malformed request), 403 (wrong cloud_secret) — aborts
+// the delete. pad-cloud normalizes Stripe's "already gone" cases to a 200
+// internally (see pad-cloud stripe.go isStripeAlreadyGone), so a real 4xx
+// means an ops bug on our side, never "nothing to cancel, proceed".
+// Continuing on 4xx would silently wipe the StripeCustomerID while the
+// subscription kept billing — the exact regression TASK-690 exists to
+// prevent.
+func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"400 bad_request", http.StatusBadRequest, `{"error":"customer_id must start with 'cus_'"}`},
+		{"403 wrong_secret", http.StatusForbidden, `{"error":"Forbidden"}`},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			fake := &fakeSidecar{err: &billing.SidecarError{Status: tc.status, Body: tc.body}}
+			srv.SetCloudSidecar(fake)
 
-	u, err := srv.store.GetUser(userID)
-	if err != nil {
-		t.Fatalf("get user after 4xx: %v", err)
-	}
-	if u != nil {
-		t.Error("expected user to be deleted after 4xx-classified sidecar error")
-	}
-	if fake.callCount() != 1 {
-		t.Errorf("expected exactly 1 sidecar call, got %d", fake.callCount())
+			userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
+
+			rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 on sidecar %d, got %d: %s", tc.status, rr.Code, rr.Body.String())
+			}
+
+			// Critical: user MUST still exist and still own the customer ID
+			// so ops can investigate / retry. If we had wiped the local row
+			// here, the Stripe customer would keep billing with no way for
+			// us to find who it belonged to.
+			u, err := srv.store.GetUser(userID)
+			if err != nil {
+				t.Fatalf("get user after %d: %v", tc.status, err)
+			}
+			if u == nil {
+				t.Fatalf("user row must still exist after sidecar %d", tc.status)
+			}
+			if u.StripeCustomerID != "cus_paying_user" {
+				t.Errorf("StripeCustomerID must be preserved after sidecar %d, got %q", tc.status, u.StripeCustomerID)
+			}
+			if fake.callCount() != 1 {
+				t.Errorf("expected exactly 1 sidecar call, got %d", fake.callCount())
+			}
+		})
 	}
 }
 

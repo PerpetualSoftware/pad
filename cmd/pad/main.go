@@ -293,17 +293,43 @@ func serveCmd() *cobra.Command {
 				// When PAD_CLOUD_SIDECAR_URL is unset we leave the sidecar
 				// hook nil — a cloud deploy without Stripe billing is
 				// unusual but valid (e.g. a staging instance), and in that
-				// case there's no upstream state to cancel. The sidecar is
-				// wired with the NEWEST of the rotation-capable CloudSecret
-				// list so a cut-over during rollover matches whatever pad-
-				// cloud is currently validating inbound calls against.
+				// case there's no upstream state to cancel.
+				//
+				// Outbound secret selection:
+				// pad-cloud validates inbound calls against a SINGLE secret
+				// (no rotation parsing on its side). During a rotation,
+				// operators roll pad first (so pad accepts both "new" and
+				// "old" inbound), then roll pad-cloud to the new key. Until
+				// pad-cloud has been rolled, it is still validating against
+				// the OLD secret — so the reverse call must send that old
+				// secret, not the new one.
+				//
+				// Resolution order:
+				//   1. PAD_CLOUD_OUTBOUND_SECRET explicitly set → use as-is.
+				//      Correct for any rotation state when ops pin it.
+				//   2. Fall back to the LAST entry of PAD_CLOUD_SECRET (the
+				//      older rotation value). This assumes the "new,old"
+				//      convention during rollover and gracefully tracks the
+				//      pad-cloud side without a separate env var. After
+				//      rollover completes and CloudSecret collapses to a
+				//      single value, first == last so it's still correct.
 				if cfg.CloudSidecarURL != "" {
-					primarySecret := strings.TrimSpace(strings.SplitN(cfg.CloudSecret, ",", 2)[0])
-					if primarySecret == "" {
-						return fmt.Errorf("PAD_CLOUD_SECRET has no non-empty key for PAD_CLOUD_SIDECAR_URL")
+					outboundSecret := strings.TrimSpace(cfg.CloudOutboundSecret)
+					if outboundSecret == "" {
+						parts := strings.Split(cfg.CloudSecret, ",")
+						for i := len(parts) - 1; i >= 0; i-- {
+							if s := strings.TrimSpace(parts[i]); s != "" {
+								outboundSecret = s
+								break
+							}
+						}
 					}
-					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, primarySecret))
-					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL)
+					if outboundSecret == "" {
+						return fmt.Errorf("PAD_CLOUD_SIDECAR_URL is set but neither PAD_CLOUD_OUTBOUND_SECRET nor PAD_CLOUD_SECRET supplies a usable outbound secret")
+					}
+					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, outboundSecret))
+					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL,
+						"outbound_source", map[bool]string{true: "PAD_CLOUD_OUTBOUND_SECRET", false: "PAD_CLOUD_SECRET[last]"}[strings.TrimSpace(cfg.CloudOutboundSecret) != ""])
 				} else {
 					slog.Warn("PAD_CLOUD_SIDECAR_URL not set — account delete will NOT cancel Stripe subscriptions. Set this env var to cascade deletes.")
 				}
