@@ -449,19 +449,19 @@
 		<div class="dialog-body">
 			<div class="role-edit-form">
 				<div class="role-field-group">
-					<label class="role-field-label">Icon & Name</label>
+					<label class="role-field-label" for="role-name">Icon & Name</label>
 					<div class="role-edit-row">
 						<EmojiPickerButton bind:value={editIcon} placeholder="🔨" size="md" />
-						<input class="role-input" type="text" bind:value={editName} placeholder="Role name" />
+						<input id="role-name" class="role-input" type="text" bind:value={editName} placeholder="Role name" />
 					</div>
 				</div>
 				<div class="role-field-group">
-					<label class="role-field-label">Description</label>
-					<input class="role-input" type="text" bind:value={editDescription} placeholder="What does this role do?" />
+					<label class="role-field-label" for="role-description">Description</label>
+					<input id="role-description" class="role-input" type="text" bind:value={editDescription} placeholder="What does this role do?" />
 				</div>
 				<div class="role-field-group">
-					<label class="role-field-label">Tools</label>
-					<input class="role-input" type="text" bind:value={editTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
+					<label class="role-field-label" for="role-tools">Tools</label>
+					<input id="role-tools" class="role-input" type="text" bind:value={editTools} placeholder="e.g. Claude Code + Sonnet 4.6" />
 				</div>
 			</div>
 		</div>
