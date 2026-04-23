@@ -4,7 +4,10 @@
   <p align="center">
     <a href="https://github.com/xarmian/pad/actions/workflows/ci.yml"><img src="https://github.com/xarmian/pad/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://github.com/xarmian/pad/releases"><img src="https://img.shields.io/github/v/release/xarmian/pad" alt="Release"></a>
+    <a href="https://goreportcard.com/report/github.com/xarmian/pad"><img src="https://goreportcard.com/badge/github.com/xarmian/pad" alt="Go Report Card"></a>
+    <a href="https://github.com/xarmian/pad/pkgs/container/pad"><img src="https://img.shields.io/badge/ghcr.io-xarmian%2Fpad-blue?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
+    <a href="https://github.com/sponsors/xarmian"><img src="https://img.shields.io/github/sponsors/xarmian?label=sponsors&logo=github" alt="GitHub Sponsors"></a>
   </p>
 </p>
 
