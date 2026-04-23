@@ -72,7 +72,56 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Cascade Stripe cancel BEFORE the local delete. If this ordering is
+	// reversed, a mid-flight failure would wipe the user's StripeCustomerID
+	// from our DB while leaving the Stripe subscription active — the user
+	// would keep getting charged with no way for us to find and cancel
+	// it. TASK-690 / PLAN-645.
+	//
+	// Skipped when:
+	//   - the user has no Stripe customer (free plan, OAuth-only, never paid)
+	//   - the sidecar isn't configured (self-hosted deploys with no billing)
+	//
+	// Failure strategy: any non-nil error aborts the delete with a 500.
+	// pad-cloud normalizes Stripe 404/resource_missing to a 200 success on
+	// its side (see pad-cloud stripe.go isStripeAlreadyGone), so every
+	// non-2xx we see here is actually a real failure — 400/403 indicate
+	// ops misconfig (bad secret, malformed call), 500 indicates upstream
+	// breakage. In none of those cases is it correct to "log and
+	// continue": doing so would wipe the user's StripeCustomerID while
+	// leaving the Stripe subscription billing, which is the exact
+	// regression this task exists to prevent.
+	stripeWasCancelled := false
+	if fullUser.StripeCustomerID != "" && s.cloudSidecar != nil {
+		if err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID); err != nil {
+			slog.Error("delete account: sidecar cancel-customer failed, aborting delete",
+				"user_id", user.ID,
+				"customer_id", fullUser.StripeCustomerID,
+				"error", err)
+			writeError(w, http.StatusInternalServerError, "billing_cancel_failed",
+				"We couldn't cancel your subscription. Your account was NOT deleted and you have NOT been charged anything new. Please try again in a few minutes or contact support.")
+			return
+		}
+		stripeWasCancelled = true
+	}
+
 	if err := s.store.DeleteAccountAtomic(user.ID, ownedSlugs); err != nil {
+		// Cross-system danger zone: if Stripe was already cancelled, the
+		// user's billing is gone but their account data is still present.
+		// Stripe cancel is NOT reversible programmatically. Operator must
+		// manually restore the Stripe subscription + customer for this
+		// user, or hard-delete the local row. Log loudly so monitoring
+		// catches it; the response message tells the user the truth.
+		if stripeWasCancelled {
+			slog.Error("delete account: STRIPE CANCELLED BUT LOCAL DELETE FAILED — manual operator intervention required",
+				"user_id", user.ID,
+				"email", user.Email,
+				"stripe_customer_id", fullUser.StripeCustomerID,
+				"error", err)
+			writeError(w, http.StatusInternalServerError, "partial_delete",
+				"Your billing was cancelled but we couldn't delete your account data. Please contact support — our team has been notified.")
+			return
+		}
 		slog.Error("delete account: atomic deletion failed", "user_id", user.ID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Account deletion failed. No data was removed. Please try again or contact support.")

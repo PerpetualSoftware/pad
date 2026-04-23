@@ -37,6 +37,15 @@ services:
       PAD_REDIS_URL: "redis://redis:6379"
       PAD_DATA_DIR: "/data"
       PAD_LOG_LEVEL: "info"
+      # Cloud-mode wiring — safe to keep enabled on self-host deploys
+      # because every var defaults to empty and pad treats empty as
+      # "not in cloud mode". Populate from .env when co-deploying with
+      # pad-cloud so the reverse sidecar can cascade Stripe cancels on
+      # account delete (TASK-690).
+      PAD_CLOUD: "${PAD_CLOUD:-}"
+      PAD_CLOUD_SECRET: "${PAD_CLOUD_SECRET:-}"
+      PAD_CLOUD_SIDECAR_URL: "${PAD_CLOUD_SIDECAR_URL:-}"
+      PAD_CLOUD_OUTBOUND_SECRET: "${PAD_CLOUD_OUTBOUND_SECRET:-}"
     volumes:
       - pad-data:/data
     depends_on:

@@ -30,6 +30,7 @@ import (
 	"github.com/xarmian/pad/internal/config"
 	"regexp"
 
+	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
@@ -285,6 +286,48 @@ func serveCmd() *cobra.Command {
 				}
 				srv.SetCloudMode(cfg.CloudSecret)
 				slog.Info("Cloud mode enabled")
+
+				// Reverse pad → pad-cloud client (TASK-690). Used by
+				// handleDeleteAccount to cancel Stripe subscriptions + delete
+				// the Stripe customer before the local user row is purged.
+				// When PAD_CLOUD_SIDECAR_URL is unset we leave the sidecar
+				// hook nil — a cloud deploy without Stripe billing is
+				// unusual but valid (e.g. a staging instance), and in that
+				// case there's no upstream state to cancel.
+				//
+				// Outbound secret selection:
+				// pad-cloud validates inbound calls against a SINGLE secret
+				// (no rotation parsing on its side). During a rotation,
+				// operators roll pad first (so pad accepts both "new" and
+				// "old" inbound), then roll pad-cloud to the new key. Until
+				// pad-cloud has been rolled, it is still validating against
+				// the OLD secret — so the reverse call must send that old
+				// secret, not the new one.
+				//
+				// Resolution order:
+				//   1. PAD_CLOUD_OUTBOUND_SECRET explicitly set → use as-is.
+				//      Correct for any rotation state when ops pin it.
+				//   2. Fall back to the LAST entry of PAD_CLOUD_SECRET (the
+				//      older rotation value). This assumes the "new,old"
+				//      convention during rollover and gracefully tracks the
+				//      pad-cloud side without a separate env var. After
+				//      rollover completes and CloudSecret collapses to a
+				//      single value, first == last so it's still correct.
+				if cfg.CloudSidecarURL != "" {
+					outboundSecret := billing.ResolveOutboundSecret(cfg.CloudOutboundSecret, cfg.CloudSecret)
+					if outboundSecret == "" {
+						return fmt.Errorf("PAD_CLOUD_SIDECAR_URL is set but neither PAD_CLOUD_OUTBOUND_SECRET nor PAD_CLOUD_SECRET supplies a usable outbound secret")
+					}
+					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, outboundSecret))
+					outboundSource := "PAD_CLOUD_SECRET[last]"
+					if strings.TrimSpace(cfg.CloudOutboundSecret) != "" {
+						outboundSource = "PAD_CLOUD_OUTBOUND_SECRET"
+					}
+					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL,
+						"outbound_source", outboundSource)
+				} else {
+					slog.Warn("PAD_CLOUD_SIDECAR_URL not set — account delete will NOT cancel Stripe subscriptions. Set this env var to cascade deletes.")
+				}
 
 				// Seed default plan limits (idempotent — won't overwrite admin changes)
 				if err := s.SeedPlanLimits(); err != nil {
