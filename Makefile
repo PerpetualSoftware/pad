@@ -17,7 +17,11 @@ build-go:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
 install: build
-	@# Stop running server, install binary, clear stale pid
+	@# Stop running server, install binary, clear stale pid.
+	@# CAUTION: `killall -9 pad` is SYSTEM-WIDE. If another user (or another
+	@# project on the same machine) is also running a `pad` process, it will
+	@# get killed too. Designed for single-developer local setups; don't run
+	@# `make install` on a shared host.
 	-killall -9 $(BINARY) 2>/dev/null
 	@sleep 1
 	@mkdir -p $(INSTALL_DIR)
