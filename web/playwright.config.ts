@@ -85,14 +85,16 @@ export default defineConfig({
 		// Wipe the data dir BEFORE the server starts, so migrations run
 		// against an empty SQLite file every run. Doing this in globalSetup
 		// would race with the already-running server — it has the DB file
-		// open by then.
-		command: `rm -rf "${DATA_DIR}" && mkdir -p "${DATA_DIR}" && ${PAD_BINARY} server start`,
+		// open by then. The wrapper script is Node-based so it works on
+		// Windows (cmd/PowerShell), not just POSIX shells.
+		command: `node ${resolve(HERE, 'e2e', 'run-pad.mjs')}`,
 		url: `${BASE_URL}/api/v1/health`,
 		timeout: 30_000,
 		reuseExistingServer: !process.env.CI,
 		stdout: 'pipe',
 		stderr: 'pipe',
 		env: {
+			PAD_BINARY,
 			PAD_HOST: E2E_HOST,
 			PAD_PORT: String(E2E_PORT),
 			PAD_DATA_DIR: DATA_DIR,
