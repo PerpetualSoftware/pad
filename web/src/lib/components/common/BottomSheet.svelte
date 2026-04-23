@@ -56,6 +56,7 @@
 			aria-modal="true"
 			aria-labelledby={title ? headingId : undefined}
 			aria-label={title ? undefined : 'Dialog'}
+			tabindex="-1"
 			onclick={(e) => e.stopPropagation()}
 		>
 			{#if title}
