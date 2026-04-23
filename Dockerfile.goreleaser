@@ -1,4 +1,4 @@
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 COPY pad /usr/local/bin/pad
 RUN adduser -D -u 1000 -h /home/pad pad \
