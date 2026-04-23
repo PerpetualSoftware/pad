@@ -49,3 +49,9 @@ coverage.txt
 
 # Distribution
 dist/
+
+# Playwright e2e artifacts (scoped to the test fixture, never the
+# developer's real ~/.pad)
+.pad-e2e/
+web/playwright-report/
+web/test-results/

@@ -144,3 +144,59 @@ jobs:
 
       - name: Type check (svelte-check)
         run: npm run check
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    # Build the binary + UI once and reuse across Playwright projects.
+    # The suite is small (<10s at the time of writing — see TASK-733 for
+    # follow-up coverage); the `timeout-minutes` cap is a sanity check.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build web UI
+        working-directory: web
+        run: npm run build
+
+      - name: Build pad binary
+        # Web build output is embedded via //go:embed; it must exist before
+        # the Go build. The CI `go` job above builds against a placeholder,
+        # which is fine for tests — for e2e we need the real embedded UI.
+        run: go build -o pad ./cmd/pad
+
+      - name: Install Playwright browsers
+        working-directory: web
+        # --with-deps pulls in the Ubuntu libraries Playwright needs
+        # (libatk, libnss, libcups, …). Scoped to chromium to cut download
+        # time — the suite's mobile project uses Pixel 7, which defaults to
+        # Chromium, so we don't need WebKit.
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright
+        working-directory: web
+        env:
+          CI: "1"
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
