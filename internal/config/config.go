@@ -41,7 +41,8 @@ type Config struct {
 	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
 
 	// Cloud mode
-	CloudSecret string `toml:"cloud_secret"` // Shared secret for pad-cloud sidecar communication
+	CloudSecret     string `toml:"cloud_secret"`      // Shared secret for pad-cloud sidecar communication
+	CloudSidecarURL string `toml:"cloud_sidecar_url"` // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
 
 	// Encryption
 	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
@@ -148,6 +149,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_CLOUD_SECRET"); v != "" {
 		cfg.CloudSecret = v
+	}
+	if v := os.Getenv("PAD_CLOUD_SIDECAR_URL"); v != "" {
+		cfg.CloudSidecarURL = v
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
 		cfg.EncryptionKey = v

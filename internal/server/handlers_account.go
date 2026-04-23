@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -69,6 +70,39 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	for _, ws := range workspaces {
 		if ws.OwnerID == user.ID {
 			ownedSlugs = append(ownedSlugs, ws.Slug)
+		}
+	}
+
+	// Cascade Stripe cancel BEFORE the local delete. If this ordering is
+	// reversed, a mid-flight failure would wipe the user's StripeCustomerID
+	// from our DB while leaving the Stripe subscription active — the user
+	// would keep getting charged with no way for us to find and cancel
+	// it. TASK-690 / PLAN-645.
+	//
+	// Skipped when:
+	//   - the user has no Stripe customer (free plan, OAuth-only, never paid)
+	//   - the sidecar isn't configured (self-hosted deploys with no billing)
+	// Failure strategy:
+	//   - transport / 5xx → return 500, don't delete; user can retry
+	//   - 4xx from sidecar → log + continue: the upstream state is already
+	//     gone or malformed, proceeding with the local delete is correct
+	//     (retrying would never succeed)
+	if fullUser.StripeCustomerID != "" && s.cloudSidecar != nil {
+		if err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID); err != nil {
+			if billing.IsClientError(err) {
+				slog.Warn("delete account: sidecar rejected cancel-customer with 4xx, continuing with local delete",
+					"user_id", user.ID,
+					"customer_id", fullUser.StripeCustomerID,
+					"error", err)
+			} else {
+				slog.Error("delete account: sidecar cancel-customer failed, aborting delete",
+					"user_id", user.ID,
+					"customer_id", fullUser.StripeCustomerID,
+					"error", err)
+				writeError(w, http.StatusInternalServerError, "billing_cancel_failed",
+					"Failed to cancel your subscription. No data was removed. Please try again in a moment.")
+				return
+			}
 		}
 	}
 

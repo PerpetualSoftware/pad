@@ -50,6 +50,7 @@ type Server struct {
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
 	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets          []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
+	cloudSidecar          CloudSidecar         // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
 	version               string               // release version (e.g. "dev", "1.2.3")
 	commit                string               // git commit hash
 	buildTime             string               // build timestamp
@@ -123,6 +124,28 @@ func (s *Server) SetCloudMode(secret string) {
 			s.cloudSecrets = append(s.cloudSecrets, k)
 		}
 	}
+}
+
+// CloudSidecar is the reverse pad → pad-cloud client interface. Concrete
+// implementation lives in internal/billing so server has no direct Stripe
+// dependency. Kept as an interface so tests can inject fakes without
+// spinning up a real HTTP server or touching Stripe.
+type CloudSidecar interface {
+	// CancelCustomer asks pad-cloud to cancel every active Stripe subscription
+	// for customerID and then delete the Stripe customer object. Used by
+	// handleDeleteAccount to cascade account deletion through to Stripe billing
+	// (TASK-690). See internal/billing for the failure-mode contract callers
+	// rely on (transport / 5xx → error; 4xx → StripeSidecar404Error so the
+	// caller can log-and-continue when the upstream state is already gone).
+	CancelCustomer(customerID string) error
+}
+
+// SetCloudSidecar installs the reverse pad → pad-cloud client. Called from
+// cmd/pad/main.go when PAD_CLOUD_SIDECAR_URL + PAD_CLOUD_SECRET are set.
+// When unset, handleDeleteAccount skips the Stripe cancel step (self-hosted
+// deploys that don't run a Stripe-backed sidecar have nothing to cascade).
+func (s *Server) SetCloudSidecar(c CloudSidecar) {
+	s.cloudSidecar = c
 }
 
 // IsCloud reports whether the server is running in cloud mode.

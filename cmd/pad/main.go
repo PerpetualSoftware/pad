@@ -30,6 +30,7 @@ import (
 	"github.com/xarmian/pad/internal/config"
 	"regexp"
 
+	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
@@ -285,6 +286,27 @@ func serveCmd() *cobra.Command {
 				}
 				srv.SetCloudMode(cfg.CloudSecret)
 				slog.Info("Cloud mode enabled")
+
+				// Reverse pad → pad-cloud client (TASK-690). Used by
+				// handleDeleteAccount to cancel Stripe subscriptions + delete
+				// the Stripe customer before the local user row is purged.
+				// When PAD_CLOUD_SIDECAR_URL is unset we leave the sidecar
+				// hook nil — a cloud deploy without Stripe billing is
+				// unusual but valid (e.g. a staging instance), and in that
+				// case there's no upstream state to cancel. The sidecar is
+				// wired with the NEWEST of the rotation-capable CloudSecret
+				// list so a cut-over during rollover matches whatever pad-
+				// cloud is currently validating inbound calls against.
+				if cfg.CloudSidecarURL != "" {
+					primarySecret := strings.TrimSpace(strings.SplitN(cfg.CloudSecret, ",", 2)[0])
+					if primarySecret == "" {
+						return fmt.Errorf("PAD_CLOUD_SECRET has no non-empty key for PAD_CLOUD_SIDECAR_URL")
+					}
+					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, primarySecret))
+					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL)
+				} else {
+					slog.Warn("PAD_CLOUD_SIDECAR_URL not set — account delete will NOT cancel Stripe subscriptions. Set this env var to cascade deletes.")
+				}
 
 				// Seed default plan limits (idempotent — won't overwrite admin changes)
 				if err := s.SeedPlanLimits(); err != nil {
