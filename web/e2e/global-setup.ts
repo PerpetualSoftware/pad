@@ -81,10 +81,16 @@ export default async function globalSetup(config: FullConfig) {
 	if (!workspaces.ok() && workspaces.status() !== 409) {
 		throw new Error(`workspace create failed (${workspaces.status()}): ${await workspaces.text()}`);
 	}
-	const workspace = (await workspaces.json()) as { id?: string };
-	if (!workspace.id) {
-		throw new Error('workspace create response missing id');
+	// Read back the actual slug. The server uniquifies slugs on collision
+	// (e2e → e2e-2 → ...), so in the `reuseExistingServer: true` local path
+	// a rerun can land on a newly-created `e2e-2` workspace while we still
+	// have a constant `WORKSPACE_SLUG` in memory. Trusting the API response
+	// keeps fixture.json pointed at whatever was just created.
+	const workspace = (await workspaces.json()) as { id?: string; slug?: string };
+	if (!workspace.id || !workspace.slug) {
+		throw new Error('workspace create response missing id/slug');
 	}
+	const resolvedSlug = workspace.slug;
 
 	// Mint an API token scoped to the admin + workspace. Sessions are
 	// UA-bound; tokens aren't — the browser can auth with this token
@@ -119,7 +125,7 @@ export default async function globalSetup(config: FullConfig) {
 		JSON.stringify(
 			{
 				baseURL,
-				workspaceSlug: WORKSPACE_SLUG,
+				workspaceSlug: resolvedSlug,
 				adminEmail: ADMIN_EMAIL,
 				adminUsername: me.username,
 				apiToken: tokenPayload.token
