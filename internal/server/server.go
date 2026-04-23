@@ -1,11 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -29,31 +29,31 @@ import (
 )
 
 type Server struct {
-	store         *store.Store
-	router        *chi.Mux
-	routerOnce    sync.Once            // ensures setupRouter runs once, after all config
-	httpServer    *http.Server         // underlying HTTP server (set during ListenAndServe)
-	webFS         fs.FS                // embedded web UI static files (optional)
-	events        events.EventBus       // real-time event bus (optional)
-	webhooks      *webhooks.Dispatcher // webhook dispatcher (optional)
-	email         *email.Sender        // transactional email sender (optional)
-	emailAPIKey   string               // Maileroo API key (used for unsubscribe HMAC)
-	rateLimiters  *RateLimiters        // per-endpoint rate limiters
-	baseURL       string               // public base URL for generating links (e.g. invite URLs)
-	corsOrigins   string               // comma-separated CORS origins (empty = localhost defaults)
-	secureCookies bool                 // set Secure flag on cookies (for TLS deployments)
-	metrics             *metrics.Metrics      // Prometheus metrics (optional)
-	metricsToken        string                // shared bearer token for /metrics scrapes ("" = loopback-only)
-	trustedProxyCIDRs   []*net.IPNet          // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
-	ipChangeEnforceStrict bool                // when true, reject sessions whose client IP differs from the one recorded at session creation
-	sseMaxConnections   int                   // global SSE connection limit (0 = unlimited)
-	sseMaxPerWorkspace  int                   // per-workspace SSE connection limit (0 = unlimited)
-	cloudMode           bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
-	cloudSecrets        []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
-	version            string               // release version (e.g. "dev", "1.2.3")
-	commit              string               // git commit hash
-	buildTime           string               // build timestamp
-	twoFAChallengeSecret []byte              // HMAC key for 2FA challenge tokens
+	store                 *store.Store
+	router                *chi.Mux
+	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
+	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
+	webFS                 fs.FS                // embedded web UI static files (optional)
+	events                events.EventBus      // real-time event bus (optional)
+	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
+	email                 *email.Sender        // transactional email sender (optional)
+	emailAPIKey           string               // Maileroo API key (used for unsubscribe HMAC)
+	rateLimiters          *RateLimiters        // per-endpoint rate limiters
+	baseURL               string               // public base URL for generating links (e.g. invite URLs)
+	corsOrigins           string               // comma-separated CORS origins (empty = localhost defaults)
+	secureCookies         bool                 // set Secure flag on cookies (for TLS deployments)
+	metrics               *metrics.Metrics     // Prometheus metrics (optional)
+	metricsToken          string               // shared bearer token for /metrics scrapes ("" = loopback-only)
+	trustedProxyCIDRs     []*net.IPNet         // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
+	ipChangeEnforceStrict bool                 // when true, reject sessions whose client IP differs from the one recorded at session creation
+	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
+	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
+	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
+	cloudSecrets          []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
+	version               string               // release version (e.g. "dev", "1.2.3")
+	commit                string               // git commit hash
+	buildTime             string               // build timestamp
+	twoFAChallengeSecret  []byte               // HMAC key for 2FA challenge tokens
 }
 
 func New(s *store.Store) *Server {
@@ -350,284 +350,285 @@ func (s *Server) setupRouter() {
 
 		// API routes
 		r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/health", s.handleHealth)
-		r.Get("/health/live", s.handleHealthLive)
-		r.Get("/health/ready", s.handleHealthReady)
-		r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
-		r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
+			r.Get("/health", s.handleHealth)
+			r.Get("/health/live", s.handleHealthLive)
+			r.Get("/health/ready", s.handleHealthReady)
+			r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
+			r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
 
-		// Auth endpoints (exempt from auth middleware)
-		r.Route("/auth", func(r chi.Router) {
-			r.Get("/session", s.handleSessionCheck)
-			r.Post("/bootstrap", s.handleBootstrap)
-			r.Post("/register", s.handleRegister)
-			r.Get("/check-username", s.handleCheckUsername)
-			r.Post("/login", s.handleLogin)
-			r.Post("/logout", s.handleLogout)
-			r.Get("/me", s.handleGetCurrentUser)
-			r.Patch("/me", s.handleUpdateCurrentUser)
+			// Auth endpoints (exempt from auth middleware)
+			r.Route("/auth", func(r chi.Router) {
+				r.Get("/session", s.handleSessionCheck)
+				r.Post("/bootstrap", s.handleBootstrap)
+				r.Post("/register", s.handleRegister)
+				r.Get("/check-username", s.handleCheckUsername)
+				r.Post("/login", s.handleLogin)
+				r.Post("/logout", s.handleLogout)
+				r.Get("/me", s.handleGetCurrentUser)
+				r.Patch("/me", s.handleUpdateCurrentUser)
 
-			// Password reset
-			r.Post("/forgot-password", s.handleForgotPassword)
-			r.Post("/reset-password", s.handleResetPassword)
+				// Password reset
+				r.Post("/forgot-password", s.handleForgotPassword)
+				r.Post("/reset-password", s.handleResetPassword)
 
-			// Two-factor authentication
-			r.Post("/2fa/setup", s.handleTOTPSetup)
-			r.Post("/2fa/verify", s.handleTOTPVerify)
-			r.Post("/2fa/disable", s.handleTOTPDisable)
-			r.Post("/2fa/login-verify", s.handleTOTPLoginVerify)
+				// Two-factor authentication
+				r.Post("/2fa/setup", s.handleTOTPSetup)
+				r.Post("/2fa/verify", s.handleTOTPVerify)
+				r.Post("/2fa/disable", s.handleTOTPDisable)
+				r.Post("/2fa/login-verify", s.handleTOTPLoginVerify)
 
-			// Account management (GDPR)
-			r.Post("/delete-account", s.handleDeleteAccount)
-			r.Get("/export", s.handleExportAccount)
+				// Account management (GDPR)
+				r.Post("/delete-account", s.handleDeleteAccount)
+				r.Get("/export", s.handleExportAccount)
 
-			// User-scoped API tokens
-			r.Get("/tokens", s.handleListUserTokens)
-			r.Post("/tokens", s.handleCreateUserToken)
-			r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
-			r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
+				// User-scoped API tokens
+				r.Get("/tokens", s.handleListUserTokens)
+				r.Post("/tokens", s.handleCreateUserToken)
+				r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
+				r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
 
-			// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected by cloud secret)
-			r.Post("/oauth-login", s.handleOAuthLogin)
-			r.Post("/oauth-link", s.handleOAuthLink)
-			r.Post("/oauth-unlink", s.handleOAuthUnlink)
+				// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected by cloud secret)
+				r.Post("/oauth-login", s.handleOAuthLogin)
+				r.Post("/oauth-link", s.handleOAuthLink)
+				r.Post("/oauth-unlink", s.handleOAuthUnlink)
 
-			// CLI browser-based auth flow
-			r.Post("/cli/sessions", s.handleCreateCLIAuthSession)
-			r.Get("/cli/sessions/{code}", s.handlePollCLIAuthSession)
-			r.Post("/cli/sessions/{code}/approve", s.handleApproveCLIAuthSession)
-		})
-
-		// Admin endpoints (admin-only, handlers check role internally)
-		r.Route("/admin", func(r chi.Router) {
-			r.Get("/settings", s.handleGetPlatformSettings)
-			r.Patch("/settings", s.handleUpdatePlatformSettings)
-			r.Post("/test-email", s.handleTestEmail)
-
-			// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode
-			// returns 404 outside cloud mode so a self-hosted deployment doesn't
-			// expose "Cloud mode not configured" to unauthenticated probes.
-			r.Group(func(r chi.Router) {
-				r.Use(s.requireCloudMode)
-				r.Post("/plan", s.handleSetPlan)                       // Cloud: sidecar sets user plans; also accessible to admins
-				r.Post("/stripe-customer-id", s.handleSetStripeCustomerID) // Cloud: sidecar stores Stripe customer ID after checkout
-				r.Get("/user-by-customer", s.handleGetUserByCustomerID)    // Cloud: sidecar looks up user by Stripe customer ID
+				// CLI browser-based auth flow
+				r.Post("/cli/sessions", s.handleCreateCLIAuthSession)
+				r.Get("/cli/sessions/{code}", s.handlePollCLIAuthSession)
+				r.Post("/cli/sessions/{code}/approve", s.handleApproveCLIAuthSession)
 			})
 
-			// User management
-			r.Get("/users", s.handleAdminListUsers)
-			r.Get("/users/{userID}", s.handleAdminGetUser)
-			r.Patch("/users/{userID}", s.handleAdminUpdateUser)
-			r.Post("/users/{userID}/reset-password", s.handleAdminResetPassword)
-			r.Get("/users/{userID}/workspaces", s.handleAdminGetUserWorkspaces)
-			r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
-			r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
+			// Admin endpoints (admin-only, handlers check role internally)
+			r.Route("/admin", func(r chi.Router) {
+				r.Get("/settings", s.handleGetPlatformSettings)
+				r.Patch("/settings", s.handleUpdatePlatformSettings)
+				r.Post("/test-email", s.handleTestEmail)
 
-			// Invitations
-			r.Get("/invitations", s.handleAdminListInvitations)
-			r.Post("/invitations/{invID}/resend", s.handleAdminResendInvitation)
-			r.Delete("/invitations/{invID}", s.handleAdminDeleteInvitation)
-
-			// Plan limits
-			r.Get("/limits", s.handleAdminGetLimits)
-			r.Patch("/limits", s.handleAdminUpdateLimits)
-
-			// Platform stats
-			r.Get("/stats", s.handleAdminStats)
-		})
-
-		// Audit log (admin-only)
-		r.Get("/audit-log", s.handleAuditLog)
-
-		// Templates
-		r.Get("/templates", s.handleListTemplates)
-
-		// Convention Library
-		r.Get("/convention-library", s.handleConventionLibrary)
-
-		// Playbook Library
-		r.Get("/playbook-library", s.handlePlaybookLibrary)
-
-		// Invitations (outside workspace scope)
-		r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
-
-		// Share link resolution (outside workspace scope, no auth required)
-		r.Get("/s/{token}", s.handleResolveShareLink)
-
-		// Workspaces
-		r.Route("/workspaces", func(r chi.Router) {
-			r.Get("/", s.handleListWorkspaces)
-			r.Post("/", s.handleCreateWorkspace)
-			r.Post("/import", s.handleImportWorkspace)
-			r.Put("/reorder", s.handleReorderWorkspaces)
-
-			r.Route("/{slug}", func(r chi.Router) {
-				r.Use(s.RequireWorkspaceAccess)
-
-				r.Get("/", s.handleGetWorkspace)
-				r.Patch("/", s.handleUpdateWorkspace)
-				r.Delete("/", s.handleDeleteWorkspace)
-				r.Get("/export", s.handleExportWorkspace)
-
-				// Activity (workspace level)
-				r.Get("/activity", s.handleListWorkspaceActivity)
-
-				// Documents (v1 — will be replaced by items in Phase 2)
-				r.Route("/documents", func(r chi.Router) {
-					r.Get("/", s.handleListDocuments)
-					r.Post("/", s.handleCreateDocument)
-
-					r.Route("/{docID}", func(r chi.Router) {
-						r.Get("/", s.handleGetDocument)
-						r.Patch("/", s.handleUpdateDocument)
-						r.Delete("/", s.handleDeleteDocument)
-						r.Post("/restore", s.handleRestoreDocument)
-
-						// Versions
-						r.Get("/versions", s.handleListVersions)
-						r.Get("/versions/{versionID}", s.handleGetVersion)
-
-						// Activity (document level)
-						r.Get("/activity", s.handleListDocumentActivity)
-					})
+				// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode
+				// returns 404 outside cloud mode so a self-hosted deployment doesn't
+				// expose "Cloud mode not configured" to unauthenticated probes.
+				r.Group(func(r chi.Router) {
+					r.Use(s.requireCloudMode)
+					r.Post("/plan", s.handleSetPlan)                                // Cloud: sidecar sets user plans; also accessible to admins
+					r.Post("/stripe-customer-id", s.handleSetStripeCustomerID)      // Cloud: sidecar stores Stripe customer ID after checkout
+					r.Get("/user-by-customer", s.handleGetUserByCustomerID)         // Cloud: sidecar looks up user by Stripe customer ID
+					r.Post("/stripe-event-processed", s.handleStripeEventProcessed) // Cloud: sidecar webhook idempotency (TASK-696)
 				})
 
-				// Collections (v2)
-				r.Route("/collections", func(r chi.Router) {
-					r.Get("/", s.handleListCollections)
-					r.Post("/", s.handleCreateCollection)
-					r.Route("/{collSlug}", func(r chi.Router) {
-						r.Get("/", s.handleGetCollection)
-						r.Patch("/", s.handleUpdateCollection)
-						r.Delete("/", s.handleDeleteCollection)
-						// Items within collection
-						r.Get("/items", s.handleListCollectionItems)
-						r.Post("/items", s.handleCreateItem)
-						// Collection grants
-						r.Get("/grants", s.handleListCollectionGrants)
-						r.Post("/grants", s.handleCreateCollectionGrant)
-						r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
-						r.Get("/share-links", s.handleListCollectionShareLinks)
-						r.Post("/share-links", s.handleCreateCollectionShareLink)
-						// Saved views within collection
-						r.Get("/views", s.handleListViews)
-						r.Post("/views", s.handleCreateView)
-						r.Route("/views/{viewID}", func(r chi.Router) {
-							r.Patch("/", s.handleUpdateView)
-							r.Delete("/", s.handleDeleteView)
+				// User management
+				r.Get("/users", s.handleAdminListUsers)
+				r.Get("/users/{userID}", s.handleAdminGetUser)
+				r.Patch("/users/{userID}", s.handleAdminUpdateUser)
+				r.Post("/users/{userID}/reset-password", s.handleAdminResetPassword)
+				r.Get("/users/{userID}/workspaces", s.handleAdminGetUserWorkspaces)
+				r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
+				r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
+
+				// Invitations
+				r.Get("/invitations", s.handleAdminListInvitations)
+				r.Post("/invitations/{invID}/resend", s.handleAdminResendInvitation)
+				r.Delete("/invitations/{invID}", s.handleAdminDeleteInvitation)
+
+				// Plan limits
+				r.Get("/limits", s.handleAdminGetLimits)
+				r.Patch("/limits", s.handleAdminUpdateLimits)
+
+				// Platform stats
+				r.Get("/stats", s.handleAdminStats)
+			})
+
+			// Audit log (admin-only)
+			r.Get("/audit-log", s.handleAuditLog)
+
+			// Templates
+			r.Get("/templates", s.handleListTemplates)
+
+			// Convention Library
+			r.Get("/convention-library", s.handleConventionLibrary)
+
+			// Playbook Library
+			r.Get("/playbook-library", s.handlePlaybookLibrary)
+
+			// Invitations (outside workspace scope)
+			r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
+
+			// Share link resolution (outside workspace scope, no auth required)
+			r.Get("/s/{token}", s.handleResolveShareLink)
+
+			// Workspaces
+			r.Route("/workspaces", func(r chi.Router) {
+				r.Get("/", s.handleListWorkspaces)
+				r.Post("/", s.handleCreateWorkspace)
+				r.Post("/import", s.handleImportWorkspace)
+				r.Put("/reorder", s.handleReorderWorkspaces)
+
+				r.Route("/{slug}", func(r chi.Router) {
+					r.Use(s.RequireWorkspaceAccess)
+
+					r.Get("/", s.handleGetWorkspace)
+					r.Patch("/", s.handleUpdateWorkspace)
+					r.Delete("/", s.handleDeleteWorkspace)
+					r.Get("/export", s.handleExportWorkspace)
+
+					// Activity (workspace level)
+					r.Get("/activity", s.handleListWorkspaceActivity)
+
+					// Documents (v1 — will be replaced by items in Phase 2)
+					r.Route("/documents", func(r chi.Router) {
+						r.Get("/", s.handleListDocuments)
+						r.Post("/", s.handleCreateDocument)
+
+						r.Route("/{docID}", func(r chi.Router) {
+							r.Get("/", s.handleGetDocument)
+							r.Patch("/", s.handleUpdateDocument)
+							r.Delete("/", s.handleDeleteDocument)
+							r.Post("/restore", s.handleRestoreDocument)
+
+							// Versions
+							r.Get("/versions", s.handleListVersions)
+							r.Get("/versions/{versionID}", s.handleGetVersion)
+
+							// Activity (document level)
+							r.Get("/activity", s.handleListDocumentActivity)
 						})
 					})
-				})
 
-				// Plans progress
-				r.Get("/plans-progress", s.handlePlansProgress)
-
-				// User grants (all grants for a specific user in this workspace)
-				r.Get("/users/{userID}/grants", s.handleListUserGrants)
-
-				// Starred items
-				r.Get("/starred", s.handleListStarredItems)
-
-				// Items (cross-collection, v2)
-				r.Get("/items", s.handleListItems)
-				r.Route("/items/{itemSlug}", func(r chi.Router) {
-					r.Get("/", s.handleGetItem)
-					r.Patch("/", s.handleUpdateItem)
-					r.Delete("/", s.handleDeleteItem)
-					r.Post("/restore", s.handleRestoreItem)
-					r.Post("/move", s.handleMoveItem)
-					r.Get("/versions", s.handleListItemVersions)
-					r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)
-					r.Get("/activity", s.handleListItemActivity)
-					r.Get("/links", s.handleGetItemLinks)
-					r.Post("/links", s.handleCreateItemLink)
-					r.Get("/comments", s.handleListComments)
-					r.Post("/comments", s.handleCreateComment)
-					r.Get("/timeline", s.handleListItemTimeline)
-					r.Get("/children", s.handleGetItemChildren)
-					r.Get("/progress", s.handleGetItemProgress)
-					r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
-					r.Get("/grants", s.handleListItemGrants)
-					r.Post("/grants", s.handleCreateItemGrant)
-					r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
-					r.Get("/share-links", s.handleListItemShareLinks)
-					r.Post("/share-links", s.handleCreateItemShareLink)
-					// Stars
-					r.Get("/star", s.handleGetItemStarStatus)
-					r.Post("/star", s.handleStarItem)
-					r.Delete("/star", s.handleUnstarItem)
-				})
-
-				// Links (v2)
-				r.Delete("/links/{linkID}", s.handleDeleteItemLink)
-
-				// Share links (workspace-scoped management)
-				r.Delete("/share-links/{linkID}", s.handleDeleteShareLink)
-				r.Get("/share-links/{linkID}/views", s.handleShareLinkViews)
-
-				// Comments (v2)
-				r.Route("/comments/{commentID}", func(r chi.Router) {
-					r.Delete("/", s.handleDeleteComment)
-					r.Post("/replies", s.handleCreateReply)
-					r.Post("/reactions", s.handleAddReaction)
-					r.Delete("/reactions/{emoji}", s.handleRemoveReaction)
-				})
-
-				// Role Board (cross-collection role-based view)
-				r.Get("/roles/board", s.handleRoleBoard)
-				r.Put("/roles/board/reorder", s.handleRoleBoardReorder)
-				r.Put("/roles/board/lane-order", s.handleRoleBoardLaneReorder)
-
-				// Agent Roles
-				r.Route("/agent-roles", func(r chi.Router) {
-					r.Get("/", s.handleListAgentRoles)
-					r.Post("/", s.handleCreateAgentRole)
-					r.Route("/{roleID}", func(r chi.Router) {
-						r.Get("/", s.handleGetAgentRole)
-						r.Patch("/", s.handleUpdateAgentRole)
-						r.Delete("/", s.handleDeleteAgentRole)
+					// Collections (v2)
+					r.Route("/collections", func(r chi.Router) {
+						r.Get("/", s.handleListCollections)
+						r.Post("/", s.handleCreateCollection)
+						r.Route("/{collSlug}", func(r chi.Router) {
+							r.Get("/", s.handleGetCollection)
+							r.Patch("/", s.handleUpdateCollection)
+							r.Delete("/", s.handleDeleteCollection)
+							// Items within collection
+							r.Get("/items", s.handleListCollectionItems)
+							r.Post("/items", s.handleCreateItem)
+							// Collection grants
+							r.Get("/grants", s.handleListCollectionGrants)
+							r.Post("/grants", s.handleCreateCollectionGrant)
+							r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
+							r.Get("/share-links", s.handleListCollectionShareLinks)
+							r.Post("/share-links", s.handleCreateCollectionShareLink)
+							// Saved views within collection
+							r.Get("/views", s.handleListViews)
+							r.Post("/views", s.handleCreateView)
+							r.Route("/views/{viewID}", func(r chi.Router) {
+								r.Patch("/", s.handleUpdateView)
+								r.Delete("/", s.handleDeleteView)
+							})
+						})
 					})
-				})
 
-				// Webhooks
-				r.Route("/webhooks", func(r chi.Router) {
-					r.Get("/", s.handleListWebhooks)
-					r.Post("/", s.handleCreateWebhook)
-					r.Route("/{webhookID}", func(r chi.Router) {
-						r.Delete("/", s.handleDeleteWebhook)
-						r.Post("/test", s.handleTestWebhook)
+					// Plans progress
+					r.Get("/plans-progress", s.handlePlansProgress)
+
+					// User grants (all grants for a specific user in this workspace)
+					r.Get("/users/{userID}/grants", s.handleListUserGrants)
+
+					// Starred items
+					r.Get("/starred", s.handleListStarredItems)
+
+					// Items (cross-collection, v2)
+					r.Get("/items", s.handleListItems)
+					r.Route("/items/{itemSlug}", func(r chi.Router) {
+						r.Get("/", s.handleGetItem)
+						r.Patch("/", s.handleUpdateItem)
+						r.Delete("/", s.handleDeleteItem)
+						r.Post("/restore", s.handleRestoreItem)
+						r.Post("/move", s.handleMoveItem)
+						r.Get("/versions", s.handleListItemVersions)
+						r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)
+						r.Get("/activity", s.handleListItemActivity)
+						r.Get("/links", s.handleGetItemLinks)
+						r.Post("/links", s.handleCreateItemLink)
+						r.Get("/comments", s.handleListComments)
+						r.Post("/comments", s.handleCreateComment)
+						r.Get("/timeline", s.handleListItemTimeline)
+						r.Get("/children", s.handleGetItemChildren)
+						r.Get("/progress", s.handleGetItemProgress)
+						r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
+						r.Get("/grants", s.handleListItemGrants)
+						r.Post("/grants", s.handleCreateItemGrant)
+						r.Delete("/grants/{grantID}", s.handleDeleteItemGrant)
+						r.Get("/share-links", s.handleListItemShareLinks)
+						r.Post("/share-links", s.handleCreateItemShareLink)
+						// Stars
+						r.Get("/star", s.handleGetItemStarStatus)
+						r.Post("/star", s.handleStarItem)
+						r.Delete("/star", s.handleUnstarItem)
 					})
+
+					// Links (v2)
+					r.Delete("/links/{linkID}", s.handleDeleteItemLink)
+
+					// Share links (workspace-scoped management)
+					r.Delete("/share-links/{linkID}", s.handleDeleteShareLink)
+					r.Get("/share-links/{linkID}/views", s.handleShareLinkViews)
+
+					// Comments (v2)
+					r.Route("/comments/{commentID}", func(r chi.Router) {
+						r.Delete("/", s.handleDeleteComment)
+						r.Post("/replies", s.handleCreateReply)
+						r.Post("/reactions", s.handleAddReaction)
+						r.Delete("/reactions/{emoji}", s.handleRemoveReaction)
+					})
+
+					// Role Board (cross-collection role-based view)
+					r.Get("/roles/board", s.handleRoleBoard)
+					r.Put("/roles/board/reorder", s.handleRoleBoardReorder)
+					r.Put("/roles/board/lane-order", s.handleRoleBoardLaneReorder)
+
+					// Agent Roles
+					r.Route("/agent-roles", func(r chi.Router) {
+						r.Get("/", s.handleListAgentRoles)
+						r.Post("/", s.handleCreateAgentRole)
+						r.Route("/{roleID}", func(r chi.Router) {
+							r.Get("/", s.handleGetAgentRole)
+							r.Patch("/", s.handleUpdateAgentRole)
+							r.Delete("/", s.handleDeleteAgentRole)
+						})
+					})
+
+					// Webhooks
+					r.Route("/webhooks", func(r chi.Router) {
+						r.Get("/", s.handleListWebhooks)
+						r.Post("/", s.handleCreateWebhook)
+						r.Route("/{webhookID}", func(r chi.Router) {
+							r.Delete("/", s.handleDeleteWebhook)
+							r.Post("/test", s.handleTestWebhook)
+						})
+					})
+
+					// API Tokens
+					r.Route("/tokens", func(r chi.Router) {
+						r.Get("/", s.handleListTokens)
+						r.Post("/", s.handleCreateToken)
+						r.Delete("/{tokenID}", s.handleDeleteToken)
+					})
+
+					// Members
+					r.Route("/members", func(r chi.Router) {
+						r.Get("/", s.handleListMembers)
+						r.Post("/invite", s.handleInviteMember)
+						r.Delete("/invitations/{invID}", s.handleCancelInvitation)
+						r.Delete("/{userID}", s.handleRemoveMember)
+						r.Patch("/{userID}", s.handleUpdateMemberRole)
+						r.Get("/{userID}/collection-access", s.handleGetMemberCollectionAccess)
+						r.Put("/{userID}/collection-access", s.handleSetMemberCollectionAccess)
+					})
+
+					// Dashboard (v2)
+					r.Get("/dashboard", s.handleGetDashboard)
+
+					// Incremental sync — returns items changed since a timestamp
+					r.Get("/changes", s.handleGetChanges)
 				})
-
-				// API Tokens
-				r.Route("/tokens", func(r chi.Router) {
-					r.Get("/", s.handleListTokens)
-					r.Post("/", s.handleCreateToken)
-					r.Delete("/{tokenID}", s.handleDeleteToken)
-				})
-
-				// Members
-				r.Route("/members", func(r chi.Router) {
-					r.Get("/", s.handleListMembers)
-					r.Post("/invite", s.handleInviteMember)
-					r.Delete("/invitations/{invID}", s.handleCancelInvitation)
-					r.Delete("/{userID}", s.handleRemoveMember)
-					r.Patch("/{userID}", s.handleUpdateMemberRole)
-					r.Get("/{userID}/collection-access", s.handleGetMemberCollectionAccess)
-					r.Put("/{userID}/collection-access", s.handleSetMemberCollectionAccess)
-				})
-
-				// Dashboard (v2)
-				r.Get("/dashboard", s.handleGetDashboard)
-
-				// Incremental sync — returns items changed since a timestamp
-				r.Get("/changes", s.handleGetChanges)
 			})
-		})
 
-		// Search
-		r.Get("/search", s.handleSearch)
-	})
+			// Search
+			r.Get("/search", s.handleSearch)
+		})
 	}) // end r.Group (full middleware stack)
 
 	s.router = r

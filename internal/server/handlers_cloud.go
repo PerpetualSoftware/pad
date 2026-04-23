@@ -59,9 +59,10 @@ func (s *Server) requireCloudMode(next http.Handler) http.Handler {
 // setting X-Cloud-Secret on any path (e.g. GET /api/v1/workspaces)
 // bypassed auth globally.
 var cloudAdminPaths = map[string]struct{}{
-	"/api/v1/admin/plan":               {},
-	"/api/v1/admin/stripe-customer-id": {},
-	"/api/v1/admin/user-by-customer":   {},
+	"/api/v1/admin/plan":                   {},
+	"/api/v1/admin/stripe-customer-id":     {},
+	"/api/v1/admin/user-by-customer":       {},
+	"/api/v1/admin/stripe-event-processed": {},
 }
 
 // isCloudAdminPath returns true if the request targets one of the three
@@ -634,6 +635,88 @@ func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Reques
 		"user_id": targetUser.ID,
 		"email":   targetUser.Email,
 		"plan":    targetUser.Plan,
+	})
+}
+
+// --- Stripe Webhook Idempotency (TASK-696) ---
+
+// handleStripeEventProcessed handles POST /api/v1/admin/stripe-event-processed.
+// Called by the pad-cloud sidecar BEFORE processing a Stripe webhook event.
+// Pad is the source of truth for which event IDs have been handled, so the
+// check survives sidecar restarts (previously held in-memory, lost on crash).
+//
+// Request body:
+//
+//	{"event_id": "evt_xxx", "cloud_secret": "..."}
+//
+// Response:
+//
+//	{"already_processed": true|false, "event_id": "evt_xxx"}
+//
+// Semantics: the call is transactional — it atomically records the event and
+// tells the caller whether it was new or a duplicate. The caller should skip
+// handler logic if already_processed=true.
+//
+// Retention: records older than 7 days are opportunistically pruned inside
+// this handler (~1% of successful inserts trigger a DELETE). Stripe retries
+// events for up to 72h, so 7 days gives a safe margin.
+func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		EventID     string `json:"event_id"`
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (body field for POST; handler matches the
+	//    existing /admin/stripe-customer-id pattern).
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate input
+	if input.EventID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.EventID, "evt_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id must start with 'evt_'")
+		return
+	}
+
+	// 3. Atomically record-or-detect-duplicate
+	alreadyProcessed, err := s.store.MarkStripeEventProcessed(input.EventID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// 4. Opportunistic pruning (1% of calls; keeps the table bounded without
+	//    a dedicated goroutine). Failures here are non-fatal — log and continue.
+	if store.ShouldPruneStripeEvents() {
+		go func(eventID string) {
+			// Run in background so we don't block the response. 7-day retention
+			// covers Stripe's 72h retry window with a generous safety margin.
+			removed, perr := s.store.PruneStripeProcessedEvents(7 * 24 * time.Hour)
+			if perr != nil {
+				slog.Warn("prune stripe_processed_events failed", "error", perr, "trigger_event_id", eventID)
+				return
+			}
+			if removed > 0 {
+				slog.Info("pruned stripe_processed_events", "removed", removed)
+			}
+		}(input.EventID)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"event_id":          input.EventID,
+		"already_processed": alreadyProcessed,
 	})
 }
 

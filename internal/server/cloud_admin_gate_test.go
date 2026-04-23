@@ -45,6 +45,7 @@ func TestCloudAdminGate_SelfHost_Returns404(t *testing.T) {
 		{"POST /admin/plan with cloud secret header", "POST", "/api/v1/admin/plan", map[string]string{"cloud_secret": "x"}},
 		{"POST /admin/stripe-customer-id with header", "POST", "/api/v1/admin/stripe-customer-id", map[string]string{"cloud_secret": "x"}},
 		{"GET /admin/user-by-customer with header", "GET", "/api/v1/admin/user-by-customer?customer_id=cus_x", nil},
+		{"POST /admin/stripe-event-processed with header", "POST", "/api/v1/admin/stripe-event-processed", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
 	}
 
 	for _, tt := range tests {
@@ -186,6 +187,93 @@ func TestCloudAdminGate_QueryParamSecret_Rejected(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("?cloud_secret= should no longer authenticate, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestStripeEventProcessed_RecordsAndDetectsDuplicates verifies TASK-696:
+// first call for a given event_id returns already_processed=false; a
+// second call for the same event_id returns already_processed=true. This
+// is what gives the sidecar durable idempotency across restarts.
+func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	// First call — should be new.
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     "evt_test_12345",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first call expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var first struct {
+		EventID          string `json:"event_id"`
+		AlreadyProcessed bool   `json:"already_processed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+	if first.AlreadyProcessed {
+		t.Fatalf("first call should return already_processed=false")
+	}
+	if first.EventID != "evt_test_12345" {
+		t.Fatalf("first call returned wrong event_id: %q", first.EventID)
+	}
+
+	// Second call with same event_id — must be flagged as duplicate.
+	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     "evt_test_12345",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second call expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var second struct {
+		EventID          string `json:"event_id"`
+		AlreadyProcessed bool   `json:"already_processed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if !second.AlreadyProcessed {
+		t.Fatalf("second call should return already_processed=true")
+	}
+}
+
+// TestStripeEventProcessed_ValidatesEventIDPrefix verifies the handler
+// rejects event IDs that don't start with 'evt_', matching the existing
+// 'cus_' prefix validation on stripe-customer-id.
+func TestStripeEventProcessed_ValidatesEventIDPrefix(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	tests := []struct {
+		name    string
+		eventID string
+	}{
+		{"empty event_id", ""},
+		{"missing evt_ prefix", "sub_12345"},
+		{"wrong prefix cus_", "cus_12345"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+				"event_id":     tt.eventID,
+				"cloud_secret": "shh-its-a-secret",
+			}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s: expected 400, got %d: %s", tt.name, rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 
