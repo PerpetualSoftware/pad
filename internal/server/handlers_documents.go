@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -568,18 +569,64 @@ func diffFields(oldFields, newFields string) string {
 	var changes []string
 	for key, newVal := range newMap {
 		oldVal, exists := oldMap[key]
-		newStr := fmt.Sprintf("%v", newVal)
+		newStr := formatChangeValue(key, newVal)
 		if !exists {
 			changes = append(changes, fmt.Sprintf("%s: → %s", key, newStr))
-		} else {
-			oldStr := fmt.Sprintf("%v", oldVal)
-			if oldStr != newStr {
-				changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
-			}
+			continue
 		}
+		// Compare on the raw decoded values rather than the display strings.
+		// formatChangeValue() collapses structured values to fixed labels
+		// (e.g. `(1 note)`, `(object)`), so two semantically distinct edits
+		// of the same cardinality would otherwise produce equal display
+		// strings and the change would be silently dropped from the activity
+		// metadata. reflect.DeepEqual is correct for the types `json.Unmarshal`
+		// produces here (nil, bool, float64, string, []any, map[string]any).
+		if reflect.DeepEqual(oldVal, newVal) {
+			continue
+		}
+		oldStr := formatChangeValue(key, oldVal)
+		changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
 	}
 
 	// Sort for deterministic output
 	sort.Strings(changes)
 	return strings.Join(changes, ", ")
+}
+
+// formatChangeValue renders a JSON-decoded field value as a human-readable
+// string for the activity-feed `changes` summary. Primitives use Go's default
+// formatting; structured values (slices, maps) are summarised as a count or
+// short label so the activity card never surfaces Go's `[map[k:v ...]]`
+// repr to end users (BUG-748).
+//
+// Known structured fields (`implementation_notes`, `decision_log`) get
+// domain-specific phrasing; unknown structured fields fall back to a generic
+// `(N items)` / `(object)` label.
+func formatChangeValue(field string, val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case []any:
+		switch field {
+		case models.ItemFieldImplementationNotes:
+			if len(v) == 1 {
+				return "(1 note)"
+			}
+			return fmt.Sprintf("(%d notes)", len(v))
+		case models.ItemFieldDecisionLog:
+			if len(v) == 1 {
+				return "(1 entry)"
+			}
+			return fmt.Sprintf("(%d entries)", len(v))
+		}
+		if len(v) == 1 {
+			return "(1 item)"
+		}
+		return fmt.Sprintf("(%d items)", len(v))
+	case map[string]any:
+		return "(object)"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
