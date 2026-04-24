@@ -148,7 +148,7 @@
 		<div class="activity-label">commented on update</div>
 	{/if}
 
-	<div class="comment-body markdown-body">
+	<div class="comment-body prose">
 		{@html renderMarkdown(comment.body, items, wsSlug, username)}
 	</div>
 
@@ -219,7 +219,7 @@
 						</button>
 					</div>
 
-					<div class="reply-body markdown-body">
+					<div class="reply-body prose">
 						{@html renderMarkdown(reply.body, items, wsSlug, username)}
 					</div>
 
@@ -359,6 +359,19 @@
 		line-height: 1.6;
 		color: var(--text-primary);
 		overflow-wrap: break-word;
+		/* `.prose` sets max-width: var(--content-max-width) for long-form item
+		   bodies; comments live inside an already-constrained timeline column
+		   and should fill it instead of shrinking to 960px. */
+		max-width: none;
+		/* `.prose` also pins font-family to var(--font-content). Comments should
+		   keep using the surrounding UI font (currently identical, but make the
+		   relationship explicit so a future divergence doesn't silently change
+		   comment typography). */
+		font-family: inherit;
+		/* `.prose table { width: 100% }` plus padded cells can produce wider-
+		   than-column tables inside the indented replies; allow the rendered
+		   markdown subtree to scroll horizontally rather than spill out. */
+		overflow-x: auto;
 	}
 
 	.comment-body :global(p:last-child),
