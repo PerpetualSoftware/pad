@@ -24,6 +24,11 @@
 	let upgradeStatus = $state<'idle' | 'checking' | 'confirmed' | 'timeout'>('idle');
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let pollStartedAt = 0;
+	// Guards every post-await state write: an authStore.load() or plan-limits
+	// fetch in flight when the user navigates away would otherwise continue
+	// on, mutate state, or even install a fresh interval after this component
+	// has been destroyed. Checked after every await.
+	let destroyed = false;
 	const POLL_INTERVAL_MS = 2000;
 	const POLL_TIMEOUT_MS = 30000;
 
@@ -58,6 +63,10 @@
 		} catch {
 			// Session fetch failed this tick; another poll will retry. No state change.
 		}
+		if (destroyed) {
+			stopPolling();
+			return;
+		}
 		if (authStore.user?.plan === 'pro') {
 			upgradeStatus = 'confirmed';
 			stopPolling();
@@ -70,39 +79,58 @@
 		}
 	}
 
-	onMount(async () => {
+	// Bridge the async window between Stripe redirect and pad-cloud webhook.
+	// Kicked off from onMount in parallel with plan-limits fetch so a slow
+	// /plan-limits request does not delay the user's confirmation banner.
+	async function startUpgradeConfirmation() {
+		try {
+			await authStore.load();
+		} catch {
+			/* polling branch below retries */
+		}
+		if (destroyed) return;
+		if (authStore.user?.plan === 'pro') {
+			upgradeStatus = 'confirmed';
+			clearCheckoutQuery();
+			return;
+		}
+		upgradeStatus = 'checking';
+		pollStartedAt = Date.now();
+		pollTimer = setInterval(pollForUpgrade, POLL_INTERVAL_MS);
+	}
+
+	async function loadPlanLimits() {
+		try {
+			const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin' });
+			if (destroyed) return;
+			if (resp.ok) {
+				const body = await resp.json();
+				if (destroyed) return;
+				limits = body;
+			}
+		} catch {
+			/* use fallback rendering */
+		}
+	}
+
+	onMount(() => {
 		if (!authStore.cloudMode) {
 			goto('/console', { replaceState: true });
 			return;
 		}
 
-		try {
-			const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin' });
-			if (resp.ok) limits = await resp.json();
-		} catch {
-			/* use fallback rendering */
-		}
-
+		// Kick off the two independent async tasks in parallel. Neither is
+		// awaited here — onMount returns immediately so Svelte can run the
+		// onDestroy cleanup path synchronously if the user navigates away
+		// before either task resolves (the `destroyed` guard handles that).
 		if (page.url.searchParams.get('checkout') === 'success') {
-			// Refresh once up front — if the webhook has already landed by the
-			// time the browser redirects back, we can skip polling entirely.
-			try {
-				await authStore.load();
-			} catch {
-				/* ignore — the polling branch below will retry */
-			}
-			if (authStore.user?.plan === 'pro') {
-				upgradeStatus = 'confirmed';
-				clearCheckoutQuery();
-			} else {
-				upgradeStatus = 'checking';
-				pollStartedAt = Date.now();
-				pollTimer = setInterval(pollForUpgrade, POLL_INTERVAL_MS);
-			}
+			startUpgradeConfirmation();
 		}
+		loadPlanLimits();
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		stopPolling();
 	});
 </script>
@@ -119,7 +147,7 @@
 			<span class="spinner" aria-hidden="true"></span>
 			<span>Confirming your upgrade…</span>
 		</div>
-	{:else if upgradeStatus === 'confirmed'}
+	{:else if upgradeStatus === 'confirmed' && isPro}
 		<div class="upgrade-banner success" role="status" aria-live="polite">
 			<span class="check-icon" aria-hidden="true">✓</span>
 			<span>Upgrade confirmed — welcome to Pro!</span>
