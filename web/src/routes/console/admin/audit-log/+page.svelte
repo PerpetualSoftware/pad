@@ -23,7 +23,8 @@
 		'token_rotated', 'totp_enabled', 'totp_disabled', 'member_invited',
 		'member_removed', 'role_changed', 'settings_changed', 'oauth_login',
 		'oauth_login_failed', 'plan_changed', 'password_reset_by_admin',
-		'user_disabled', 'user_enabled', 'account_deleted'
+		'user_disabled', 'user_enabled', 'account_deleted',
+		'payment_failed_email_sent'
 	];
 
 	const ACTION_LABELS: Record<string, string> = {
@@ -49,7 +50,8 @@
 		password_reset_by_admin: 'Password Reset (Admin)',
 		user_disabled: 'User Disabled',
 		user_enabled: 'User Enabled',
-		account_deleted: 'Account Deleted'
+		account_deleted: 'Account Deleted',
+		payment_failed_email_sent: 'Payment Failed Email'
 	};
 
 	const LIMIT = 50;
