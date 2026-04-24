@@ -7,6 +7,11 @@ let loading = $state(false);
 // duplicate /auth/session requests — or, worse, having a late failure from a
 // duplicate fetch overwrite a successful fetch's session=null.
 let inflight: Promise<AuthSession | null> | null = null;
+// Bumps on clear(). Any fetch started in a previous generation is stale: its
+// success must not resurrect a logged-out session, and its finally must not
+// clobber a new inflight that started after clear(). Readers only write
+// state when the generation they captured at fetch-start still matches.
+let generation = 0;
 
 export const authStore = {
 	get session() { return session; },
@@ -19,18 +24,22 @@ export const authStore = {
 	async load() {
 		if (inflight) return inflight;
 		loading = true;
+		const myGeneration = generation;
+		const isCurrent = () => generation === myGeneration;
 		inflight = api.auth.session()
 			.then((s) => {
-				session = s;
+				if (isCurrent()) session = s;
 				return session;
 			})
 			.catch((err) => {
-				session = null;
+				if (isCurrent()) session = null;
 				throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
 			})
 			.finally(() => {
-				loading = false;
-				inflight = null;
+				if (isCurrent()) {
+					loading = false;
+					inflight = null;
+				}
 			});
 		return inflight;
 	},
@@ -49,5 +58,12 @@ export const authStore = {
 
 	clear() {
 		session = null;
+		generation++;
+		// Drop the in-flight promise reference so the next ensureLoaded()/load()
+		// call fires a fresh fetch rather than attaching to a pre-logout request.
+		// The old promise may still resolve/reject in the background; the
+		// generation guard above prevents it from writing to any state.
+		inflight = null;
+		loading = false;
 	}
 };
