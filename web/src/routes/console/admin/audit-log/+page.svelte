@@ -129,10 +129,20 @@
 				case 'register':
 					if (data.email) return data.email;
 					break;
-				case 'payment_failed_email_sent':
-					if (data.sent === 'true') return `sent (${data.stripe_customer_id ?? ''})`.trim();
-					if (data.reason) return `skipped: ${data.reason}${data.stripe_customer_id ? ` (${data.stripe_customer_id})` : ''}`;
+				case 'payment_failed_email_sent': {
+					// Differentiate operationally distinct outcomes: a genuine delivery
+					// failure (Maileroo 5xx) should not read the same as a pre-send
+					// skip (unknown customer, no email on file, provider not wired up).
+					// Surface admin_actor_id when present so manual operator calls
+					// show which admin triggered the send; sidecar calls omit that
+					// field and the User column's target user tells the story.
+					const cus = data.stripe_customer_id ? ` (${data.stripe_customer_id})` : '';
+					const by = data.admin_actor_id ? ` by admin:${data.admin_actor_id}` : '';
+					if (data.sent === 'true') return `sent${cus}${by}`;
+					if (data.reason === 'send_failed') return `send failed${cus}${by}`;
+					if (data.reason) return `skipped (${data.reason})${cus}${by}`;
 					break;
+				}
 				default:
 					break;
 			}
