@@ -363,6 +363,15 @@
 		   bodies; comments live inside an already-constrained timeline column
 		   and should fill it instead of shrinking to 960px. */
 		max-width: none;
+		/* `.prose` also pins font-family to var(--font-content). Comments should
+		   keep using the surrounding UI font (currently identical, but make the
+		   relationship explicit so a future divergence doesn't silently change
+		   comment typography). */
+		font-family: inherit;
+		/* `.prose table { width: 100% }` plus padded cells can produce wider-
+		   than-column tables inside the indented replies; allow the rendered
+		   markdown subtree to scroll horizontally rather than spill out. */
+		overflow-x: auto;
 	}
 
 	.comment-body :global(p:last-child),
