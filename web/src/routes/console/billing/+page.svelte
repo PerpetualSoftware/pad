@@ -56,28 +56,43 @@
 		return value.toLocaleString();
 	}
 
-	// formatBytes renders a byte count in its most natural unit. Chosen
-	// granularities match how the DefaultFreeLimits / DefaultProLimits
-	// are set on the server (MB for Free's 500MB, GB for Pro's 10GB).
+	// formatBytes renders a byte count in its most natural unit. Picks the
+	// unit so the displayed value is < 1024 — bump thresholds are nudged
+	// down half the previous unit so a value like 1,048,575 bytes (0.999
+	// MB, 1023.999 KB) reads as "1.0 MB" rather than the misleading
+	// "1024 KB" you'd get from a straight Math.round at the KB tier.
 	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-		if (bytes < 1024 * 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
-		const gb = bytes / (1024 * 1024 * 1024);
-		return gb >= 10 ? `${Math.round(gb)} GB` : `${gb.toFixed(1)} GB`;
+		if (bytes < 0) return `${bytes} B`;
+		const KB = 1024;
+		const MB = KB * 1024;
+		const GB = MB * 1024;
+		const bumpGB = GB - MB / 2;
+		const bumpMB = MB - KB / 2;
+		if (bytes >= bumpGB) return formatUnit(bytes / GB, 'GB');
+		if (bytes >= bumpMB) return formatUnit(bytes / MB, 'MB');
+		if (bytes >= KB) return formatUnit(bytes / KB, 'KB');
+		return `${bytes} B`;
+	}
+
+	function formatUnit(value: number, unit: string): string {
+		if (value >= 10) return `${Math.round(value)} ${unit}`;
+		return `${value.toFixed(1)} ${unit}`;
 	}
 
 	// formatCompareCell picks the right display for the comparison table:
 	//  * undefined → "…" while limits are loading
-	//  * -1 → "Unlimited"
-	//  * 0 → "—" so "feature not included on this tier" reads at a glance
-	//    rather than as a literal zero
+	//  * any negative (the server treats anything < 0 as unlimited in
+	//    internal/store/limits.go — match that here so a stored -2 does
+	//    not render as "-2 B")
 	//  * storage → byte-formatted
 	//  * anything else → locale-formatted integer
+	//
+	// Zero is NOT specially rendered — admin-configured zero quotas
+	// (storage_bytes = 0, workspaces = 0) are legitimate values and
+	// should display literally as "0" rather than a "—" placeholder.
 	function formatCompareCell(value: number | undefined, kind: 'count' | 'storage'): string {
 		if (value === undefined) return '…';
-		if (value === -1) return 'Unlimited';
-		if (value === 0) return '—';
+		if (value < 0) return 'Unlimited';
 		if (kind === 'storage') return formatBytes(value);
 		return value.toLocaleString();
 	}
@@ -461,8 +476,8 @@
 	.current-tag {
 		padding: 1px var(--space-2);
 		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
-		color: var(--accent-blue);
+		background: var(--accent-blue);
+		color: #fff;
 		font-size: 0.7rem;
 		font-weight: 600;
 		text-transform: none;
