@@ -64,6 +64,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/user-by-customer":       {},
 	"/api/v1/admin/stripe-event-processed": {},
 	"/api/v1/admin/stripe-event-unmark":    {},
+	"/api/v1/admin/payment-failed":         {},
 }
 
 // isCloudAdminPath returns true if the request targets one of the three
@@ -832,6 +833,151 @@ func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"event_id": input.EventID,
 		"unmarked": unmarked,
+	})
+}
+
+// handlePaymentFailed handles POST /api/v1/admin/payment-failed.
+// Called by the pad-cloud sidecar when it receives an invoice.payment_failed
+// webhook from Stripe. Pad owns the user→email mapping and the Maileroo
+// integration, so the sidecar forwards the invoice metadata here and pad
+// does the actual notification.
+//
+// Request body:
+//
+//	{
+//	  "stripe_customer_id": "cus_...",
+//	  "amount_display":     "$10.00",            // optional, pre-formatted
+//	  "next_retry_display": "April 30, 2026",    // optional, pre-formatted
+//	  "cloud_secret":       "..."
+//	}
+//
+// Response:
+//
+//	{"stripe_customer_id": "cus_...", "email_sent": true|false, "reason": "..."}
+//
+// The handler returns 200 even when no email is sent (e.g. unknown
+// customer, email provider not configured, user has no stored email) —
+// the sidecar should treat those as non-fatal so Stripe does not retry
+// the webhook. Reasons:
+//   - "sent"              — email dispatched
+//   - "no_customer"       — no user matches stripe_customer_id
+//   - "no_email_address"  — user exists but has no email on file
+//   - "email_not_configured" — no Maileroo key / base URL
+//   - "send_failed"       — Maileroo returned an error (details in logs)
+//
+// The email is transactional (dunning) and has no unsubscribe link by
+// design; users who want to stop receiving dunning mail can update
+// their card or cancel the subscription.
+func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		StripeCustomerID string `json:"stripe_customer_id"`
+		AmountDisplay    string `json:"amount_display"`
+		NextRetryDisplay string `json:"next_retry_display"`
+		CloudSecret      string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (or admin auth)
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate input
+	if input.StripeCustomerID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "stripe_customer_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.StripeCustomerID, "cus_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "stripe_customer_id must start with 'cus_'")
+		return
+	}
+
+	// 3. Look up user. Missing customer is a non-error — Stripe could be
+	//    firing a webhook for an account that was deleted on our side;
+	//    returning 200 tells the sidecar not to rollback/retry.
+	targetUser, err := s.store.GetUserByStripeCustomerID(input.StripeCustomerID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if targetUser == nil {
+		slog.Info("payment-failed: no user for customer",
+			"customer_id", input.StripeCustomerID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         false,
+			"reason":             "no_customer",
+		})
+		return
+	}
+	if targetUser.Email == "" {
+		slog.Info("payment-failed: user has no email on file",
+			"user_id", targetUser.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         false,
+			"reason":             "no_email_address",
+		})
+		return
+	}
+
+	// 4. Verify email provider is wired up. Same pattern as password reset
+	//    (handlers_auth.go) — no panic if the operator hasn't configured
+	//    Maileroo, just log and skip.
+	if s.email == nil || s.baseURL == "" {
+		slog.Warn("payment-failed: email provider not configured; skipping send",
+			"user_id", targetUser.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         false,
+			"reason":             "email_not_configured",
+		})
+		return
+	}
+
+	billingPortalURL := strings.TrimRight(s.baseURL, "/") + "/billing/portal"
+	sendErr := s.email.SendPaymentFailed(r.Context(),
+		targetUser.Email, targetUser.Name,
+		input.AmountDisplay, input.NextRetryDisplay, billingPortalURL)
+
+	// 5. Audit log every attempt — success AND failure — so operators can
+	//    reconstruct whether a customer was notified before a downgrade.
+	actorID := ""
+	if user != nil {
+		actorID = user.ID
+	}
+	s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, actorID, auditMeta(map[string]string{
+		"target_user_id":     targetUser.ID,
+		"stripe_customer_id": input.StripeCustomerID,
+		"amount_display":     input.AmountDisplay,
+		"next_retry_display": input.NextRetryDisplay,
+		"sent":               boolToString(sendErr == nil),
+	}))
+
+	if sendErr != nil {
+		slog.Error("payment-failed: email send failed",
+			"user_id", targetUser.ID, "error", sendErr)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         false,
+			"reason":             "send_failed",
+		})
+		return
+	}
+
+	slog.Info("payment-failed email sent",
+		"user_id", targetUser.ID, "customer_id", input.StripeCustomerID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stripe_customer_id": input.StripeCustomerID,
+		"email_sent":         true,
+		"reason":             "sent",
 	})
 }
 

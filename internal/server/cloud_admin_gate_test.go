@@ -51,6 +51,7 @@ func TestCloudAdminGate_SelfHost_Returns404(t *testing.T) {
 		{"GET /admin/user-by-customer with header", "GET", "/api/v1/admin/user-by-customer?customer_id=cus_x", nil},
 		{"POST /admin/stripe-event-processed with header", "POST", "/api/v1/admin/stripe-event-processed", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
 		{"POST /admin/stripe-event-unmark with header", "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{"cloud_secret": "x", "event_id": "evt_x", "processed_at": "2025-01-01T00:00:00Z"}},
+		{"POST /admin/payment-failed with header", "POST", "/api/v1/admin/payment-failed", map[string]string{"cloud_secret": "x", "stripe_customer_id": "cus_x"}},
 	}
 
 	for _, tt := range tests {
@@ -606,6 +607,116 @@ func TestStripeEventProcessed_ValidatesEventIDPrefix(t *testing.T) {
 				t.Fatalf("%s: expected 400, got %d: %s", tt.name, rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+// TestPaymentFailed_ValidatesCustomerIDPrefix rejects stripe_customer_id
+// values that don't start with 'cus_'. Same shape as the evt_ prefix
+// check on stripe-event-processed.
+func TestPaymentFailed_ValidatesCustomerIDPrefix(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	tests := []struct {
+		name       string
+		customerID string
+	}{
+		{"empty customer_id", ""},
+		{"missing cus_ prefix", "sub_12345"},
+		{"wrong prefix evt_", "evt_12345"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+				"stripe_customer_id": tt.customerID,
+				"cloud_secret":       "shh-its-a-secret",
+			}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s: expected 400, got %d: %s", tt.name, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestPaymentFailed_UnknownCustomer_Returns200_NoEmail verifies that when
+// the sidecar forwards an invoice.payment_failed for a customer pad does
+// not recognise, pad returns 200 with email_sent=false and reason=
+// "no_customer" — the sidecar must NOT treat this as a 5xx that would
+// trigger a webhook retry.
+func TestPaymentFailed_UnknownCustomer_Returns200_NoEmail(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+		"stripe_customer_id": "cus_nonexistent_abc",
+		"cloud_secret":       "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unknown customer, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sent, _ := resp["email_sent"].(bool); sent {
+		t.Errorf("email_sent=true for unknown customer; want false")
+	}
+	if got, _ := resp["reason"].(string); got != "no_customer" {
+		t.Errorf("reason=%q for unknown customer; want no_customer", got)
+	}
+}
+
+// TestPaymentFailed_EmailNotConfigured_Returns200_NoEmail verifies the
+// handler degrades gracefully when Maileroo is not wired up — audit log
+// captures the skip, response is 200 so the sidecar doesn't retry.
+func TestPaymentFailed_EmailNotConfigured_Returns200_NoEmail(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+	// Look up the bootstrapped admin and assign a Stripe customer ID so
+	// the handler's lookup step resolves, then falls through to the
+	// "email not configured" branch.
+	adminUser, err := srv.store.GetUserByEmail("admin@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+	if err := srv.store.SetUserStripeCustomerID(adminUser.ID, "cus_test_nomail"); err != nil {
+		t.Fatalf("SetUserStripeCustomerID: %v", err)
+	}
+	// Note: testServer does NOT call email.Configure, so s.email has no
+	// credentials and s.baseURL is empty — both fail the configured check.
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+		"stripe_customer_id": "cus_test_nomail",
+		"amount_display":     "$10.00",
+		"next_retry_display": "April 30, 2026",
+		"cloud_secret":       "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 when email not configured, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sent, _ := resp["email_sent"].(bool); sent {
+		t.Errorf("email_sent=true with no Maileroo config; want false")
+	}
+	if got, _ := resp["reason"].(string); got != "email_not_configured" {
+		t.Errorf("reason=%q with no Maileroo config; want email_not_configured", got)
 	}
 }
 

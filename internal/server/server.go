@@ -445,6 +445,7 @@ func (s *Server) setupRouter() {
 					r.Get("/user-by-customer", s.handleGetUserByCustomerID)         // Cloud: sidecar looks up user by Stripe customer ID
 					r.Post("/stripe-event-processed", s.handleStripeEventProcessed) // Cloud: sidecar webhook idempotency (TASK-696)
 					r.Post("/stripe-event-unmark", s.handleStripeEventUnmark)       // Cloud: sidecar handler-failure rollback (TASK-736)
+					r.Post("/payment-failed", s.handlePaymentFailed)                // Cloud: sidecar forwards invoice.payment_failed to trigger email (TASK-712)
 				})
 
 				// User management
