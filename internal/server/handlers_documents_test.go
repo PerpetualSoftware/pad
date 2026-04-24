@@ -118,3 +118,47 @@ func TestFormatChangeValueNilSafe(t *testing.T) {
 		t.Errorf("formatChangeValue(nil): expected empty, got %q", got)
 	}
 }
+
+// Regression for the Codex-round-1 finding on PR #236: collapsing slice
+// values to a count-only label meant a same-cardinality replacement (one
+// note swapped for a different one note) produced equal old/new display
+// strings, so `diffFields()` silently dropped the change. The fix compares
+// the decoded values via reflect.DeepEqual instead of the display strings,
+// so a content change still produces a metadata.changes entry. The display
+// string is still the friendly summary (`(1 note) → (1 note)`) — informative
+// but coarse — which is acceptable: the activity card also shows the actor
+// + timestamp, so the user knows something changed and can drill in.
+func TestDiffFieldsSameCardinalityArrayChangeStillReported(t *testing.T) {
+	old := `{"implementation_notes":[{"id":"n1","summary":"original"}]}`
+	updated := `{"implementation_notes":[{"id":"n1","summary":"revised"}]}`
+
+	got := diffFields(old, updated)
+	want := "implementation_notes: (1 note) → (1 note)"
+	if got != want {
+		t.Errorf("diffFields same-cardinality replacement:\n  got:  %q\n  want: %q", got, want)
+	}
+
+	// Also verify same JSON on both sides produces no entry (true no-op).
+	if got := diffFields(old, old); got != "" {
+		t.Errorf("diffFields no-op: expected empty, got %q", got)
+	}
+}
+
+// Regression for the Codex-round-1 finding on PR #236: object-valued fields
+// (e.g. `convention`) now both stringify to `(object)`, so an in-place edit
+// would have been silently dropped. Confirm DeepEqual catches it.
+func TestDiffFieldsObjectMutationStillReported(t *testing.T) {
+	old := `{"convention":{"trigger":"on-implement","scope":"all"}}`
+	updated := `{"convention":{"trigger":"on-commit","scope":"all"}}`
+
+	got := diffFields(old, updated)
+	want := "convention: (object) → (object)"
+	if got != want {
+		t.Errorf("diffFields object mutation:\n  got:  %q\n  want: %q", got, want)
+	}
+
+	// Identical object — no-op, no entry.
+	if got := diffFields(old, old); got != "" {
+		t.Errorf("diffFields object no-op: expected empty, got %q", got)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -571,12 +572,20 @@ func diffFields(oldFields, newFields string) string {
 		newStr := formatChangeValue(key, newVal)
 		if !exists {
 			changes = append(changes, fmt.Sprintf("%s: → %s", key, newStr))
-		} else {
-			oldStr := formatChangeValue(key, oldVal)
-			if oldStr != newStr {
-				changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
-			}
+			continue
 		}
+		// Compare on the raw decoded values rather than the display strings.
+		// formatChangeValue() collapses structured values to fixed labels
+		// (e.g. `(1 note)`, `(object)`), so two semantically distinct edits
+		// of the same cardinality would otherwise produce equal display
+		// strings and the change would be silently dropped from the activity
+		// metadata. reflect.DeepEqual is correct for the types `json.Unmarshal`
+		// produces here (nil, bool, float64, string, []any, map[string]any).
+		if reflect.DeepEqual(oldVal, newVal) {
+			continue
+		}
+		oldStr := formatChangeValue(key, oldVal)
+		changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
 	}
 
 	// Sort for deterministic output
