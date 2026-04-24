@@ -63,6 +63,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/stripe-customer-id":     {},
 	"/api/v1/admin/user-by-customer":       {},
 	"/api/v1/admin/stripe-event-processed": {},
+	"/api/v1/admin/stripe-event-unmark":    {},
 }
 
 // isCloudAdminPath returns true if the request targets one of the three
@@ -717,6 +718,81 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"event_id":          input.EventID,
 		"already_processed": alreadyProcessed,
+	})
+}
+
+// handleStripeEventUnmark handles POST /api/v1/admin/stripe-event-unmark.
+// Called by the pad-cloud sidecar as a best-effort rollback when a webhook
+// handler fails AFTER /stripe-event-processed marked the event as seen
+// (TASK-736). Without this, Stripe's retries of the same event are
+// short-circuited as duplicates and the un-applied side effect has no
+// automated recovery — operators have to manually DELETE the row and
+// replay from the Stripe dashboard.
+//
+// Request body:
+//
+//	{"event_id": "evt_xxx", "cloud_secret": "..."}
+//
+// Response:
+//
+//	{"event_id": "evt_xxx", "unmarked": true|false}
+//
+// Semantics: idempotent. unmarked=true means we actually deleted a row;
+// unmarked=false means the event ID was not present (safe — a retry of
+// the unmark call after a successful re-process is a no-op). Either
+// outcome is 200.
+//
+// Auth: same cloud_secret gate as /stripe-event-processed. Admins hitting
+// the endpoint with a browser session can also unmark (useful for manual
+// reconciliation from the admin UI), mirroring the pattern of the
+// other cloud admin endpoints.
+func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		EventID     string `json:"event_id"`
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (body field for POST; admins also allowed).
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate input — must match the shape /stripe-event-processed accepts
+	//    so that an operator copying an event ID from the Stripe dashboard
+	//    gets the same format validation across both endpoints.
+	if input.EventID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.EventID, "evt_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id must start with 'evt_'")
+		return
+	}
+
+	// 3. Delete the row (idempotent — missing row is fine).
+	unmarked, err := s.store.UnmarkStripeEventProcessed(input.EventID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	if unmarked {
+		slog.Info("unmarked stripe event for replay", "event_id", input.EventID, "actor_is_admin", isAdmin)
+	} else {
+		slog.Info("unmark stripe event: no row existed (idempotent)", "event_id", input.EventID, "actor_is_admin", isAdmin)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"event_id": input.EventID,
+		"unmarked": unmarked,
 	})
 }
 

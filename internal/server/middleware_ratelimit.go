@@ -236,7 +236,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// Cloud admin endpoints (sidecar → pad): plan changes, Stripe mapping, user lookup
 		if strings.HasPrefix(path, "/api/v1/admin/") {
 			switch path {
-			case "/api/v1/admin/plan", "/api/v1/admin/stripe-customer-id", "/api/v1/admin/user-by-customer", "/api/v1/admin/stripe-event-processed":
+			case "/api/v1/admin/plan", "/api/v1/admin/stripe-customer-id", "/api/v1/admin/user-by-customer", "/api/v1/admin/stripe-event-processed", "/api/v1/admin/stripe-event-unmark":
 				l := s.rateLimiters.CloudAdmin.getLimiter(ip)
 				if !l.Allow() {
 					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "cloud_admin")

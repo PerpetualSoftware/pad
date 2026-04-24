@@ -46,6 +46,7 @@ func TestCloudAdminGate_SelfHost_Returns404(t *testing.T) {
 		{"POST /admin/stripe-customer-id with header", "POST", "/api/v1/admin/stripe-customer-id", map[string]string{"cloud_secret": "x"}},
 		{"GET /admin/user-by-customer with header", "GET", "/api/v1/admin/user-by-customer?customer_id=cus_x", nil},
 		{"POST /admin/stripe-event-processed with header", "POST", "/api/v1/admin/stripe-event-processed", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
+		{"POST /admin/stripe-event-unmark with header", "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
 	}
 
 	for _, tt := range tests {
@@ -242,6 +243,157 @@ func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	}
 	if !second.AlreadyProcessed {
 		t.Fatalf("second call should return already_processed=true")
+	}
+}
+
+// TestStripeEventUnmark_RoundTripWithMarkProcessed is the happy-path
+// regression for TASK-736: a row previously written by MarkStripeEventProcessed
+// can be deleted by the unmark endpoint, and a subsequent
+// MarkStripeEventProcessed call returns already_processed=false (proving
+// the row really went away and Stripe retries can re-run the handler).
+func TestStripeEventUnmark_RoundTripWithMarkProcessed(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	// 1. Mark an event as processed.
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     "evt_unmark_roundtrip",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mark: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// 2. Unmark it — should report unmarked=true.
+	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_unmark_roundtrip",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unmark: %d %s", rr.Code, rr.Body.String())
+	}
+	var unmarkResp struct {
+		EventID  string `json:"event_id"`
+		Unmarked bool   `json:"unmarked"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &unmarkResp); err != nil {
+		t.Fatalf("decode unmark: %v", err)
+	}
+	if !unmarkResp.Unmarked {
+		t.Errorf("unmark should return unmarked=true when row existed")
+	}
+	if unmarkResp.EventID != "evt_unmark_roundtrip" {
+		t.Errorf("unmark returned wrong event_id: %q", unmarkResp.EventID)
+	}
+
+	// 3. Re-mark — now that the row is gone, must report already_processed=false.
+	//    This is the behavior Stripe retries rely on after an unmark.
+	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     "evt_unmark_roundtrip",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("re-mark: %d %s", rr.Code, rr.Body.String())
+	}
+	var remark struct {
+		AlreadyProcessed bool `json:"already_processed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &remark); err != nil {
+		t.Fatalf("decode re-mark: %v", err)
+	}
+	if remark.AlreadyProcessed {
+		t.Errorf("after unmark, re-mark must return already_processed=false (retry path broken)")
+	}
+}
+
+// TestStripeEventUnmark_IdempotentWhenRowMissing verifies the unmark call
+// succeeds with unmarked=false when the event ID was never marked. This is
+// the "unmark retry" case: the sidecar calls Unmark best-effort after a
+// handler failure, but the handler might have failed on a retried event
+// that was already rolled back. Either outcome is a 200.
+func TestStripeEventUnmark_IdempotentWhenRowMissing(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_never_marked",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 on missing-row unmark, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Unmarked bool `json:"unmarked"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Unmarked {
+		t.Errorf("unmark of missing row must return unmarked=false")
+	}
+}
+
+// TestStripeEventUnmark_RejectsWrongSecret verifies the cloud-secret gate
+// is applied symmetrically with /stripe-event-processed. A sidecar that
+// presents the wrong secret must get a 403, not a 200, so a compromised
+// or misconfigured caller cannot silently reopen Stripe retry windows for
+// arbitrary event IDs.
+func TestStripeEventUnmark_RejectsWrongSecret(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("the-real-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_x",
+		"cloud_secret": "wrong-secret",
+	}, map[string]string{"X-Cloud-Secret": "wrong-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on wrong secret, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestStripeEventUnmark_ValidatesEventIDPrefix verifies the handler
+// rejects event IDs that don't start with 'evt_', matching the
+// /stripe-event-processed contract.
+func TestStripeEventUnmark_ValidatesEventIDPrefix(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	tests := []struct {
+		name    string
+		eventID string
+	}{
+		{"empty event_id", ""},
+		{"missing evt_ prefix", "sub_12345"},
+		{"wrong prefix cus_", "cus_12345"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+				"event_id":     tt.eventID,
+				"cloud_secret": "shh-its-a-secret",
+			}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s: expected 400, got %d: %s", tt.name, rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 

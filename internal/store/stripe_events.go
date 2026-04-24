@@ -44,6 +44,41 @@ func (s *Store) MarkStripeEventProcessed(eventID string) (alreadyProcessed bool,
 	return n == 0, nil
 }
 
+// UnmarkStripeEventProcessed deletes a row from stripe_processed_events,
+// allowing Stripe retries of the same event ID to be handled again (TASK-736).
+// Used by the sidecar as a best-effort rollback when the webhook handler
+// fails AFTER MarkStripeEventProcessed succeeded: without this, the event
+// stays marked "processed" and Stripe's retries are short-circuited before
+// they can rerun the handler, leaving the side effect un-applied with no
+// automated recovery path.
+//
+// Returns true when a row was actually deleted, false when the row was not
+// present (idempotent — a retry of the unmark call after a successful
+// re-process is not an error). Only real DB failures propagate.
+func (s *Store) UnmarkStripeEventProcessed(eventID string) (unmarked bool, err error) {
+	if eventID == "" {
+		return false, fmt.Errorf("unmark stripe event: event_id is required")
+	}
+
+	res, err := s.db.Exec(
+		s.q(`DELETE FROM stripe_processed_events WHERE event_id = ?`),
+		eventID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("unmark stripe event %s: %w", eventID, err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Drivers that don't report RowsAffected reliably — treat as
+		// success without asserting whether we actually deleted anything.
+		// Callers tolerate either outcome; the whole point is to make a
+		// retry possible, and if the row never existed a retry is a no-op.
+		return false, nil
+	}
+	return n > 0, nil
+}
+
 // PruneStripeProcessedEvents deletes stripe_processed_events rows older than
 // maxAge. Returns the number of rows removed. Intended to be called on a
 // schedule (or opportunistically — see MarkStripeEventProcessed callers);
