@@ -128,7 +128,8 @@
 		{/if}
 		{#if item.parent_title}
 			<span class="meta-sep">&middot;</span>
-			<span class="meta-parent">{item.parent_ref ? `${item.parent_ref}: ${item.parent_title}` : item.parent_title}</span>
+			{@const parentLabel = item.parent_ref ? `${item.parent_ref}: ${item.parent_title}` : item.parent_title}
+			<span class="meta-parent" title={parentLabel}>{parentLabel}</span>
 		{/if}
 		{#if item.agent_role_name}
 			<span class="meta-sep">&middot;</span>
@@ -219,6 +220,10 @@
 		align-items: center;
 		gap: 5px;
 		flex-wrap: wrap;
+		/* Allow flex children with intrinsic content wider than the card
+		   (e.g. a long parent title from an `implements` link to an idea)
+		   to shrink instead of pushing the card past its column. */
+		min-width: 0;
 	}
 
 	.meta-status {
@@ -279,7 +284,16 @@
 		font-size: 0.7em;
 		font-weight: 500;
 		color: var(--accent-purple, var(--text-secondary));
+		/* Long parent titles (e.g. a task that implements an idea whose
+		   title is a paragraph) used to push the card outside its
+		   container on Board view (BUG-630). Cap the chip to the card
+		   width and truncate with an ellipsis; the full label is still
+		   accessible via the tooltip on hover. */
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 100%;
+		min-width: 0;
 	}
 
 	.meta-role {
