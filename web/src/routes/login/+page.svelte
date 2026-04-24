@@ -20,6 +20,16 @@
 	let challengeToken = $state('');
 	let totpCode = $state('');
 
+	// Banner for ?error= redirects coming back from pad-cloud's OAuth
+	// handlers. Distinct from `error` above (which is driven by form
+	// submissions) so a stray form-error assignment doesn't clobber the
+	// OAuth banner and vice versa.
+	let oauthBanner = $state<
+		| { kind: 'not_linked'; provider: string | null }
+		| { kind: 'generic'; message: string; tone: 'error' | 'info' }
+		| null
+	>(null);
+
 	function getRedirectTarget(): string {
 		const redirect = $page.url.searchParams.get('redirect');
 		// Only allow relative redirects (prevent open redirect)
@@ -29,7 +39,75 @@
 		return '/console';
 	}
 
+	// Map pad-cloud's /login?error=... redirect codes to a friendly banner
+	// plus optional CTAs. Kept near onMount so the full list of codes the
+	// frontend handles is easy to audit against pad-cloud/oauth.go.
+	function readOAuthErrorFromQuery() {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		const code = url.searchParams.get('error');
+		const provider = url.searchParams.get('provider'); // optional hint from pad-cloud
+		if (!code) return;
+
+		switch (code) {
+			case 'oauth_provider_not_linked':
+				oauthBanner = {
+					kind: 'not_linked',
+					provider: provider === 'github' || provider === 'google' ? provider : null
+				};
+				break;
+			case 'oauth_failed':
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message: "We couldn't finish the sign-in. Please try again."
+				};
+				break;
+			case 'no_email':
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message:
+						"Your OAuth provider didn't return a verified email. Verify your email with the provider, then try again."
+				};
+				break;
+			case 'too_many_attempts':
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message: 'Too many sign-in attempts. Wait a few minutes, then try again.'
+				};
+				break;
+			case 'account_disabled':
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message: 'Your account is disabled. Contact an administrator to restore access.'
+				};
+				break;
+			default:
+				// Unknown code — never break the page, just surface a safe fallback.
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message: 'Sign-in failed. Please try again.'
+				};
+				break;
+		}
+
+		// Strip ?error= (and ?provider=) from the URL so a refresh or back-
+		// button doesn't re-show the banner.
+		url.searchParams.delete('error');
+		url.searchParams.delete('provider');
+		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
+	}
+
+	function dismissOAuthBanner() {
+		oauthBanner = null;
+	}
+
 	onMount(async () => {
+		readOAuthErrorFromQuery();
 		try {
 			const session = await api.auth.session();
 			cloudMode = session.cloud_mode ?? false;
@@ -133,6 +211,52 @@
 <div class="login-page">
 	<div class="login-card">
 		<h1 class="logo">Pad</h1>
+
+		{#if oauthBanner}
+			<div
+				class="oauth-banner"
+				class:error-tone={oauthBanner.kind === 'not_linked' || (oauthBanner.kind === 'generic' && oauthBanner.tone === 'error')}
+				role="alert"
+				aria-live="polite"
+			>
+				<button type="button" class="oauth-banner-close" onclick={dismissOAuthBanner} aria-label="Dismiss">&times;</button>
+				{#if oauthBanner.kind === 'not_linked'}
+					<p class="oauth-banner-msg">
+						{#if oauthBanner.provider === 'github'}
+							That GitHub account isn't linked to a Pad account.
+						{:else if oauthBanner.provider === 'google'}
+							That Google account isn't linked to a Pad account.
+						{:else}
+							That OAuth account isn't linked to a Pad account.
+						{/if}
+						Sign in with your password below, or retry with a different account.
+					</p>
+					<div class="oauth-banner-actions">
+						{#if oauthBanner.provider === 'github' || oauthBanner.provider === null}
+							<a
+								href="/auth/github?force=1"
+								data-sveltekit-reload
+								class="oauth-banner-btn"
+							>
+								Use a different GitHub account
+							</a>
+						{/if}
+						{#if oauthBanner.provider === 'google' || oauthBanner.provider === null}
+							<a
+								href="/auth/google?force=1"
+								data-sveltekit-reload
+								class="oauth-banner-btn"
+							>
+								Use a different Google account
+							</a>
+						{/if}
+					</div>
+				{:else}
+					<p class="oauth-banner-msg">{oauthBanner.message}</p>
+				{/if}
+			</div>
+		{/if}
+
 		{#if setupRequired}
 			<SetupRequiredNotice
 				{setupMethod}
@@ -429,5 +553,74 @@
 	.oauth-google:hover {
 		background: var(--bg-hover);
 		border-color: var(--text-muted);
+	}
+
+	.oauth-banner {
+		position: relative;
+		margin-bottom: var(--space-5);
+		padding: var(--space-3) var(--space-8) var(--space-3) var(--space-4);
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
+		color: var(--text-primary);
+		text-align: left;
+	}
+
+	.oauth-banner.error-tone {
+		background: color-mix(in srgb, var(--accent-yellow, #eab308) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent-yellow, #eab308) 35%, transparent);
+	}
+
+	.oauth-banner-msg {
+		margin: 0;
+		font-size: 0.88rem;
+		line-height: 1.45;
+	}
+
+	.oauth-banner-close {
+		position: absolute;
+		top: var(--space-2);
+		right: var(--space-2);
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		background: transparent;
+		border: none;
+		color: var(--text-muted);
+		font-size: 1.1rem;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+
+	.oauth-banner-close:hover {
+		color: var(--text-primary);
+		background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+	}
+
+	.oauth-banner-actions {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		margin-top: var(--space-3);
+	}
+
+	.oauth-banner-btn {
+		display: inline-block;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		font-size: 0.82rem;
+		text-decoration: none;
+		text-align: center;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.oauth-banner-btn:hover {
+		background: var(--bg-hover);
+		border-color: var(--text-muted);
+		text-decoration: none;
 	}
 </style>
