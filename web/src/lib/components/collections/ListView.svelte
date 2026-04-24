@@ -206,7 +206,15 @@
 			flipDurationMs,
 			type: 'list-group',
 			dropTargetClasses: ['group-drop-target'],
-			morphDisabled: true
+			morphDisabled: true,
+			/* On mobile, touching a group header to scroll the page used to
+			   immediately seize the touch as the start of a group-reorder drag,
+			   so the page wouldn't scroll and the group would fly around with
+			   the finger. Mirror the inner item dndzone's `delayTouchStart`
+			   (BUG-641): a 500ms long-press is required before drag activates,
+			   which matches the existing intra-group item behaviour and lets
+			   ordinary taps/scrolls pass through unmolested. */
+			delayTouchStart: touchDragDelayMs
 		}}
 		onconsider={handleGroupConsider}
 		onfinalize={handleGroupFinalize}
