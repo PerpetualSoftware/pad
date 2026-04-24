@@ -2,6 +2,11 @@ import { api, type AuthSession } from '$lib/api/client';
 
 let session = $state<AuthSession | null>(null);
 let loading = $state(false);
+// Coalesces concurrent load() calls so the root layout and auth-page onMount
+// (register, forgot-password) can both request the session without firing
+// duplicate /auth/session requests — or, worse, having a late failure from a
+// duplicate fetch overwrite a successful fetch's session=null.
+let inflight: Promise<AuthSession | null> | null = null;
 
 export const authStore = {
 	get session() { return session; },
@@ -12,17 +17,22 @@ export const authStore = {
 	get loading() { return loading; },
 
 	async load() {
+		if (inflight) return inflight;
 		loading = true;
-		try {
-			session = await api.auth.session();
-		} catch (err) {
-			session = null;
-			loading = false;
-			throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
-		} finally {
-			loading = false;
-		}
-		return session;
+		inflight = api.auth.session()
+			.then((s) => {
+				session = s;
+				return session;
+			})
+			.catch((err) => {
+				session = null;
+				throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
+			})
+			.finally(() => {
+				loading = false;
+				inflight = null;
+			});
+		return inflight;
 	},
 
 	// ensureLoaded returns the cached session when one exists, otherwise fetches it.
@@ -30,7 +40,8 @@ export const authStore = {
 	// SPA routing after the user has logged out — logout clears the store, and the
 	// root layout's one-shot onMount doesn't re-run on subsequent navigation, so a
 	// page that relies on session fields (e.g. cloud_mode) would otherwise see
-	// stale nulls and render the self-hosted branch on Pad Cloud.
+	// stale nulls and render the self-hosted branch on Pad Cloud. Concurrent calls
+	// coalesce through load()'s in-flight promise.
 	async ensureLoaded() {
 		if (session) return session;
 		return this.load();
