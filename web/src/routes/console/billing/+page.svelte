@@ -10,7 +10,25 @@
 		members_per_workspace: number;
 		api_tokens: number;
 		storage_bytes: number;
+		webhooks: number;
+		automated_backups: number;
 	}
+
+	// Static metadata for the comparison table. Each row maps a label to
+	// the PlanLimits field + a display kind so the renderer picks the
+	// right formatter (count vs storage-bytes). Kept outside the
+	// template to keep the table JSX legible and to avoid rebuilding
+	// the array on every re-render.
+	type LimitKey = keyof PlanLimits;
+	const COMPARE_ROWS: { label: string; key: LimitKey; kind: 'count' | 'storage' }[] = [
+		{ label: 'Workspaces', key: 'workspaces', kind: 'count' },
+		{ label: 'Items per workspace', key: 'items_per_workspace', kind: 'count' },
+		{ label: 'Members per workspace', key: 'members_per_workspace', kind: 'count' },
+		{ label: 'API tokens', key: 'api_tokens', kind: 'count' },
+		{ label: 'Storage', key: 'storage_bytes', kind: 'storage' },
+		{ label: 'Webhooks', key: 'webhooks', kind: 'count' },
+		{ label: 'Automated backups', key: 'automated_backups', kind: 'count' }
+	];
 
 	let plan = $derived(authStore.user?.plan ?? 'free');
 	let isPro = $derived(plan === 'pro');
@@ -35,6 +53,47 @@
 	function formatLimit(value: number | undefined): string {
 		if (value === undefined) return '...';
 		if (value === -1) return 'Unlimited';
+		return value.toLocaleString();
+	}
+
+	// formatBytes renders a byte count in its most natural unit. Picks the
+	// unit so the displayed value is < 1024 — bump thresholds are nudged
+	// down half the previous unit so a value like 1,048,575 bytes (0.999
+	// MB, 1023.999 KB) reads as "1.0 MB" rather than the misleading
+	// "1024 KB" you'd get from a straight Math.round at the KB tier.
+	function formatBytes(bytes: number): string {
+		if (bytes < 0) return `${bytes} B`;
+		const KB = 1024;
+		const MB = KB * 1024;
+		const GB = MB * 1024;
+		const bumpGB = GB - MB / 2;
+		const bumpMB = MB - KB / 2;
+		if (bytes >= bumpGB) return formatUnit(bytes / GB, 'GB');
+		if (bytes >= bumpMB) return formatUnit(bytes / MB, 'MB');
+		if (bytes >= KB) return formatUnit(bytes / KB, 'KB');
+		return `${bytes} B`;
+	}
+
+	function formatUnit(value: number, unit: string): string {
+		if (value >= 10) return `${Math.round(value)} ${unit}`;
+		return `${value.toFixed(1)} ${unit}`;
+	}
+
+	// formatCompareCell picks the right display for the comparison table:
+	//  * undefined → "…" while limits are loading
+	//  * any negative (the server treats anything < 0 as unlimited in
+	//    internal/store/limits.go — match that here so a stored -2 does
+	//    not render as "-2 B")
+	//  * storage → byte-formatted
+	//  * anything else → locale-formatted integer
+	//
+	// Zero is NOT specially rendered — admin-configured zero quotas
+	// (storage_bytes = 0, workspaces = 0) are legitimate values and
+	// should display literally as "0" rather than a "—" placeholder.
+	function formatCompareCell(value: number | undefined, kind: 'count' | 'storage'): string {
+		if (value === undefined) return '…';
+		if (value < 0) return 'Unlimited';
+		if (kind === 'storage') return formatBytes(value);
 		return value.toLocaleString();
 	}
 
@@ -188,24 +247,41 @@
 	</section>
 
 	<section class="card">
-		<h2 class="card-title">Usage</h2>
-		<div class="card-body">
-			<div class="usage-row">
-				<span class="usage-label">Plan</span>
-				<span class="usage-value">{isPro ? 'Pro' : 'Free'}</span>
-			</div>
-			<div class="usage-row">
-				<span class="usage-label">Workspaces</span>
-				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.workspaces) : formatLimit(limits?.free?.workspaces)}</span>
-			</div>
-			<div class="usage-row">
-				<span class="usage-label">Items per workspace</span>
-				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.items_per_workspace) : formatLimit(limits?.free?.items_per_workspace)}</span>
-			</div>
-			<div class="usage-row">
-				<span class="usage-label">Members per workspace</span>
-				<span class="usage-value">{isPro ? formatLimit(limits?.pro?.members_per_workspace) : formatLimit(limits?.free?.members_per_workspace)}</span>
-			</div>
+		<h2 class="card-title">Compare plans</h2>
+		<div class="card-body compare">
+			<table class="compare-table">
+				<thead>
+					<tr>
+						<th scope="col" class="feature-col">Feature</th>
+						<th scope="col" class="plan-col" class:current={!isPro}>
+							<div class="plan-col-inner">
+								<span class="plan-col-name">Free</span>
+								{#if !isPro}<span class="current-tag">Current</span>{/if}
+							</div>
+						</th>
+						<th scope="col" class="plan-col" class:current={isPro}>
+							<div class="plan-col-inner">
+								<span class="plan-col-name">Pro</span>
+								{#if isPro}<span class="current-tag">Current</span>{/if}
+							</div>
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each COMPARE_ROWS as row (row.key)}
+						<tr>
+							<th scope="row" class="feature-col">{row.label}</th>
+							<td class="plan-col" class:current={!isPro}>{formatCompareCell(limits?.free?.[row.key], row.kind)}</td>
+							<td class="plan-col" class:current={isPro}>{formatCompareCell(limits?.pro?.[row.key], row.kind)}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+			{#if !isPro}
+				<div class="compare-cta">
+					<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
+				</div>
+			{/if}
 		</div>
 	</section>
 </div>
@@ -325,27 +401,108 @@
 		text-decoration: none;
 	}
 
-	.usage-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: var(--space-2) 0;
-		border-bottom: 1px solid var(--border-subtle);
+	.card-body.compare {
+		padding: 0;
+		gap: 0;
 	}
 
-	.usage-row:last-child {
+	.compare-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.85rem;
+	}
+
+	.compare-table thead th {
+		padding: var(--space-3) var(--space-5);
+		border-bottom: 1px solid var(--border);
+		text-align: left;
+		color: var(--text-secondary);
+		font-weight: 500;
+		font-size: 0.8rem;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+	}
+
+	.compare-table tbody th,
+	.compare-table tbody td {
+		padding: var(--space-3) var(--space-5);
+		border-bottom: 1px solid var(--border-subtle);
+		vertical-align: middle;
+	}
+
+	.compare-table tbody tr:last-child th,
+	.compare-table tbody tr:last-child td {
 		border-bottom: none;
 	}
 
-	.usage-label {
+	.compare-table .feature-col {
 		color: var(--text-secondary);
+		font-weight: 400;
+		text-align: left;
+		width: 40%;
+	}
+
+	.compare-table tbody .feature-col {
+		color: var(--text-primary);
+	}
+
+	.compare-table .plan-col {
+		color: var(--text-primary);
+		font-weight: 500;
+		text-align: right;
+		width: 30%;
+	}
+
+	.compare-table .plan-col.current {
+		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+	}
+
+	.plan-col-inner {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		justify-content: flex-end;
+		width: 100%;
+	}
+
+	.plan-col-name {
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: 600;
+		color: var(--text-primary);
 		font-size: 0.85rem;
 	}
 
-	.usage-value {
-		color: var(--text-primary);
-		font-size: 0.85rem;
-		font-weight: 500;
+	.current-tag {
+		padding: 1px var(--space-2);
+		border-radius: var(--radius-sm);
+		background: var(--accent-blue);
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
+	.compare-cta {
+		padding: var(--space-4) var(--space-5);
+		border-top: 1px solid var(--border);
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	@media (max-width: 480px) {
+		.compare-table thead th,
+		.compare-table tbody th,
+		.compare-table tbody td {
+			padding: var(--space-3);
+		}
+		.compare-table .feature-col {
+			width: 50%;
+		}
+		.compare-table .plan-col {
+			width: 25%;
+		}
 	}
 
 	.upgrade-banner {
