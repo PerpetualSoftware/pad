@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 
 	let name = $state('');
 	let username = $state('');
@@ -13,6 +14,7 @@
 	let setupRequired = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
+	let cloudMode = $state(false);
 
 	let usernameManuallyEdited = $state(false);
 	let usernameChecking = $state(false);
@@ -23,6 +25,7 @@
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
+			cloudMode = session.cloud_mode ?? false;
 			if (session.setup_required) {
 				setupRequired = true;
 				setupMethod = session.setup_method;
@@ -204,6 +207,15 @@
 						Create account
 					{/if}
 				</button>
+
+				{#if cloudMode}
+					<p class="consent">
+						By creating an account, you agree to our
+						<a href="https://getpad.dev/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+						and
+						<a href="https://getpad.dev/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
+					</p>
+				{/if}
 			</div>
 
 			<p class="login-link">
@@ -211,11 +223,14 @@
 			</p>
 		{/if}
 	</div>
+
+	<LegalFooter {cloudMode} />
 </div>
 
 <style>
 	.register-page {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		min-height: 100vh;
@@ -320,6 +335,23 @@
 
 	.login-link a:hover {
 		text-decoration: underline;
+	}
+
+	.consent {
+		margin-top: var(--space-2);
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		line-height: 1.4;
+		text-align: center;
+	}
+
+	.consent a {
+		color: var(--text-secondary);
+		text-decoration: underline;
+	}
+
+	.consent a:hover {
+		color: var(--text-primary);
 	}
 
 	.username-field {

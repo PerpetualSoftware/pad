@@ -5,6 +5,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 
 	let email = $state('');
 	let password = $state('');
@@ -234,11 +235,14 @@
 			{/if}
 		{/if}
 	</div>
+
+	<LegalFooter {cloudMode} />
 </div>
 
 <style>
 	.login-page {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		min-height: 100vh;

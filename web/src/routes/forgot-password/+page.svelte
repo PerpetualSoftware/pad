@@ -1,10 +1,20 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 
 	let email = $state('');
 	let error = $state('');
 	let loading = $state(false);
 	let sent = $state(false);
+	let cloudMode = $state(false);
+
+	onMount(async () => {
+		try {
+			const session = await api.auth.session();
+			cloudMode = session.cloud_mode ?? false;
+		} catch {}
+	});
 
 	async function handleSubmit() {
 		error = '';
@@ -81,11 +91,14 @@
 			</p>
 		{/if}
 	</div>
+
+	<LegalFooter {cloudMode} />
 </div>
 
 <style>
 	.page {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		min-height: 100vh;
