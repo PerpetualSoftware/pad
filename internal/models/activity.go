@@ -39,6 +39,12 @@ const (
 	// deployments configured with PAD_IP_CHANGE_ENFORCE=strict the middleware
 	// additionally rejects the request.
 	ActionSessionIPChanged = "session_ip_changed"
+	// ActionStripeEventUnmarked is logged when /admin/stripe-event-unmark
+	// rolls back a row from stripe_processed_events (TASK-736). The
+	// endpoint intentionally reopens Stripe retry windows, so a persisted
+	// audit trail is required — a compromised cloud_secret could otherwise
+	// spam unmarks invisible to the admin /audit-log UI.
+	ActionStripeEventUnmarked = "stripe_event_unmarked"
 )
 
 type Activity struct {

@@ -6,7 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/xarmian/pad/internal/models"
 )
 
 // cloudAdminReq is a small helper that builds a request with optional JSON body
@@ -46,7 +50,7 @@ func TestCloudAdminGate_SelfHost_Returns404(t *testing.T) {
 		{"POST /admin/stripe-customer-id with header", "POST", "/api/v1/admin/stripe-customer-id", map[string]string{"cloud_secret": "x"}},
 		{"GET /admin/user-by-customer with header", "GET", "/api/v1/admin/user-by-customer?customer_id=cus_x", nil},
 		{"POST /admin/stripe-event-processed with header", "POST", "/api/v1/admin/stripe-event-processed", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
-		{"POST /admin/stripe-event-unmark with header", "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
+		{"POST /admin/stripe-event-unmark with header", "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{"cloud_secret": "x", "event_id": "evt_x", "processed_at": "2025-01-01T00:00:00Z"}},
 	}
 
 	for _, tt := range tests {
@@ -195,6 +199,10 @@ func TestCloudAdminGate_QueryParamSecret_Rejected(t *testing.T) {
 // first call for a given event_id returns already_processed=false; a
 // second call for the same event_id returns already_processed=true. This
 // is what gives the sidecar durable idempotency across restarts.
+//
+// Also covers TASK-736: the response MUST include processed_at, and the
+// duplicate call MUST return the existing row's processed_at (not a fresh
+// one) so the sidecar can store a token that matches the row in the DB.
 func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -213,6 +221,7 @@ func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	var first struct {
 		EventID          string `json:"event_id"`
 		AlreadyProcessed bool   `json:"already_processed"`
+		ProcessedAt      string `json:"processed_at"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
 		t.Fatalf("decode first response: %v", err)
@@ -223,8 +232,12 @@ func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	if first.EventID != "evt_test_12345" {
 		t.Fatalf("first call returned wrong event_id: %q", first.EventID)
 	}
+	if first.ProcessedAt == "" {
+		t.Fatalf("first call must return a non-empty processed_at for the unmark round-trip")
+	}
 
-	// Second call with same event_id — must be flagged as duplicate.
+	// Second call with same event_id — must be flagged as duplicate AND
+	// return the existing row's processed_at (not a fresh timestamp).
 	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
 		"event_id":     "evt_test_12345",
 		"cloud_secret": "shh-its-a-secret",
@@ -237,6 +250,7 @@ func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	var second struct {
 		EventID          string `json:"event_id"`
 		AlreadyProcessed bool   `json:"already_processed"`
+		ProcessedAt      string `json:"processed_at"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil {
 		t.Fatalf("decode second response: %v", err)
@@ -244,35 +258,58 @@ func TestStripeEventProcessed_RecordsAndDetectsDuplicates(t *testing.T) {
 	if !second.AlreadyProcessed {
 		t.Fatalf("second call should return already_processed=true")
 	}
+	if second.ProcessedAt != first.ProcessedAt {
+		t.Errorf("duplicate call must return the EXISTING row's processed_at (%q), got %q",
+			first.ProcessedAt, second.ProcessedAt)
+	}
+}
+
+// markEventForUnmarkTest is a helper that POSTs stripe-event-processed and
+// returns the processed_at token the response hands back. Keeps the setup
+// of the unmark tests focused on the unmark semantics.
+func markEventForUnmarkTest(t *testing.T, srv *Server, eventID, secret string) string {
+	t.Helper()
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     eventID,
+		"cloud_secret": secret,
+	}, map[string]string{"X-Cloud-Secret": secret})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mark %s: %d %s", eventID, rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ProcessedAt string `json:"processed_at"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode mark response: %v", err)
+	}
+	if resp.ProcessedAt == "" {
+		t.Fatalf("mark response missing processed_at")
+	}
+	return resp.ProcessedAt
 }
 
 // TestStripeEventUnmark_RoundTripWithMarkProcessed is the happy-path
-// regression for TASK-736: a row previously written by MarkStripeEventProcessed
-// can be deleted by the unmark endpoint, and a subsequent
-// MarkStripeEventProcessed call returns already_processed=false (proving
-// the row really went away and Stripe retries can re-run the handler).
+// regression for TASK-736: a row previously written by /stripe-event-processed
+// can be deleted by the unmark endpoint (given the matching processed_at
+// token), and a subsequent mark call returns already_processed=false
+// (proving the row really went away and Stripe retries can re-run).
 func TestStripeEventUnmark_RoundTripWithMarkProcessed(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode("shh-its-a-secret")
 
-	// 1. Mark an event as processed.
-	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+	// 1. Mark an event as processed and grab the token.
+	token := markEventForUnmarkTest(t, srv, "evt_unmark_roundtrip", "shh-its-a-secret")
+
+	// 2. Unmark it — should report unmarked=true.
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
 		"event_id":     "evt_unmark_roundtrip",
+		"processed_at": token,
 		"cloud_secret": "shh-its-a-secret",
 	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
 	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("mark: %d %s", rr.Code, rr.Body.String())
-	}
-
-	// 2. Unmark it — should report unmarked=true.
-	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
-		"event_id":     "evt_unmark_roundtrip",
-		"cloud_secret": "shh-its-a-secret",
-	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
-	rr = httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unmark: %d %s", rr.Code, rr.Body.String())
@@ -292,7 +329,6 @@ func TestStripeEventUnmark_RoundTripWithMarkProcessed(t *testing.T) {
 	}
 
 	// 3. Re-mark — now that the row is gone, must report already_processed=false.
-	//    This is the behavior Stripe retries rely on after an unmark.
 	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
 		"event_id":     "evt_unmark_roundtrip",
 		"cloud_secret": "shh-its-a-secret",
@@ -313,11 +349,87 @@ func TestStripeEventUnmark_RoundTripWithMarkProcessed(t *testing.T) {
 	}
 }
 
+// TestStripeEventUnmark_StaleTokenIsNoOp addresses the TASK-736 race-
+// protection HIGH: a delayed unmark from an EARLIER failed attempt must
+// NOT delete the fresh marker left by a SUCCESSFUL retry. The composite
+// (event_id, processed_at) delete key enforces this — a stale token
+// simply doesn't match the fresh row.
+func TestStripeEventUnmark_StaleTokenIsNoOp(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	// Capture the stale token from the first (doomed) attempt.
+	staleTok := markEventForUnmarkTest(t, srv, "evt_race", "shh-its-a-secret")
+
+	// Sidecar rolls back (successful unmark with the stale token).
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_race",
+		"processed_at": staleTok,
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rollback: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// now() has second resolution; wait so the next mark writes a
+	// distinct timestamp. Without this the retry could re-use the same
+	// token and the test assumption collapses.
+	time.Sleep(1100 * time.Millisecond)
+
+	// A successful retry re-marks with a fresh token.
+	freshTok := markEventForUnmarkTest(t, srv, "evt_race", "shh-its-a-secret")
+	if freshTok == staleTok {
+		t.Fatalf("fresh mark reused the stale token (%q) — test setup assumption broken", freshTok)
+	}
+
+	// A delayed stale unmark fires. MUST be a no-op so the fresh row
+	// stays put.
+	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_race",
+		"processed_at": staleTok,
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("stale unmark: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Unmarked bool `json:"unmarked"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode stale unmark: %v", err)
+	}
+	if resp.Unmarked {
+		t.Error("stale unmark must NOT delete the fresh marker (race would reopen retry window)")
+	}
+
+	// Sanity check: marking again still sees the fresh row.
+	req = cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-processed", map[string]string{
+		"event_id":     "evt_race",
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	var sanity struct {
+		AlreadyProcessed bool   `json:"already_processed"`
+		ProcessedAt      string `json:"processed_at"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &sanity)
+	if !sanity.AlreadyProcessed {
+		t.Error("fresh marker must still be present after stale unmark")
+	}
+	if sanity.ProcessedAt != freshTok {
+		t.Errorf("token changed unexpectedly; got %q, want %q", sanity.ProcessedAt, freshTok)
+	}
+}
+
 // TestStripeEventUnmark_IdempotentWhenRowMissing verifies the unmark call
-// succeeds with unmarked=false when the event ID was never marked. This is
-// the "unmark retry" case: the sidecar calls Unmark best-effort after a
-// handler failure, but the handler might have failed on a retried event
-// that was already rolled back. Either outcome is a 200.
+// succeeds with unmarked=false when the event ID was never marked. Either
+// outcome is a 200.
 func TestStripeEventUnmark_IdempotentWhenRowMissing(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -325,6 +437,7 @@ func TestStripeEventUnmark_IdempotentWhenRowMissing(t *testing.T) {
 
 	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
 		"event_id":     "evt_never_marked",
+		"processed_at": "2025-01-01T00:00:00Z",
 		"cloud_secret": "shh-its-a-secret",
 	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
 	rr := httptest.NewRecorder()
@@ -345,10 +458,7 @@ func TestStripeEventUnmark_IdempotentWhenRowMissing(t *testing.T) {
 }
 
 // TestStripeEventUnmark_RejectsWrongSecret verifies the cloud-secret gate
-// is applied symmetrically with /stripe-event-processed. A sidecar that
-// presents the wrong secret must get a 403, not a 200, so a compromised
-// or misconfigured caller cannot silently reopen Stripe retry windows for
-// arbitrary event IDs.
+// is applied symmetrically with /stripe-event-processed.
 func TestStripeEventUnmark_RejectsWrongSecret(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -356,6 +466,7 @@ func TestStripeEventUnmark_RejectsWrongSecret(t *testing.T) {
 
 	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
 		"event_id":     "evt_x",
+		"processed_at": "2025-01-01T00:00:00Z",
 		"cloud_secret": "wrong-secret",
 	}, map[string]string{"X-Cloud-Secret": "wrong-secret"})
 	rr := httptest.NewRecorder()
@@ -366,9 +477,30 @@ func TestStripeEventUnmark_RejectsWrongSecret(t *testing.T) {
 	}
 }
 
+// TestStripeEventUnmark_RequiresProcessedAt verifies that a missing
+// processed_at field produces a 400 rather than falling back to any
+// fallback-by-event-id behaviour. The processed_at is the race-protection
+// contract; dropping it would be unsafe.
+func TestStripeEventUnmark_RequiresProcessedAt(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id": "evt_x",
+		// processed_at intentionally omitted
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without processed_at, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestStripeEventUnmark_ValidatesEventIDPrefix verifies the handler
-// rejects event IDs that don't start with 'evt_', matching the
-// /stripe-event-processed contract.
+// rejects event IDs that don't start with 'evt_'.
 func TestStripeEventUnmark_ValidatesEventIDPrefix(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -386,6 +518,7 @@ func TestStripeEventUnmark_ValidatesEventIDPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
 				"event_id":     tt.eventID,
+				"processed_at": "2025-01-01T00:00:00Z",
 				"cloud_secret": "shh-its-a-secret",
 			}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
 			rr := httptest.NewRecorder()
@@ -394,6 +527,53 @@ func TestStripeEventUnmark_ValidatesEventIDPrefix(t *testing.T) {
 				t.Fatalf("%s: expected 400, got %d: %s", tt.name, rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+// TestStripeEventUnmark_WritesAuditLog is the TASK-736 durable-audit
+// finding fix: a successful unmark MUST emit an ActionStripeEventUnmarked
+// audit entry so admins can see who reopened retry windows and when. slog
+// alone is not enough (no actor, not queryable via /audit-log).
+func TestStripeEventUnmark_WritesAuditLog(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	token := markEventForUnmarkTest(t, srv, "evt_audit", "shh-its-a-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{
+		"event_id":     "evt_audit",
+		"processed_at": token,
+		"cloud_secret": "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unmark: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify an audit row exists via the audit-log query interface.
+	activities, err := srv.store.ListAuditLog(models.AuditLogParams{Action: models.ActionStripeEventUnmarked, Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit log: %v", err)
+	}
+	if len(activities) == 0 {
+		t.Fatal("no ActionStripeEventUnmarked activity was logged")
+	}
+	// Find the one we just created.
+	var found bool
+	for _, a := range activities {
+		if strings.Contains(a.Metadata, "evt_audit") {
+			found = true
+			// Metadata should record unmarked=true.
+			if !strings.Contains(a.Metadata, `"unmarked":"true"`) {
+				t.Errorf("expected unmarked=true in metadata, got %q", a.Metadata)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no audit entry contained event_id=evt_audit; got %d entries", len(activities))
 	}
 }
 
