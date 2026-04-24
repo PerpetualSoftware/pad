@@ -196,6 +196,25 @@
 							<button class="dropdown-item" onclick={toggleTheme}>
 								{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
 							</button>
+							{#if authStore.cloudMode}
+								<div class="dropdown-divider"></div>
+								<a
+									href="mailto:support@getpad.dev"
+									class="dropdown-item"
+									onclick={closeUserMenu}
+								>
+									Support
+								</a>
+								<a
+									href="https://status.getpad.dev"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="dropdown-item"
+									onclick={closeUserMenu}
+								>
+									Status
+								</a>
+							{/if}
 							<div class="dropdown-divider"></div>
 							<button class="dropdown-item logout" onclick={handleLogout}>
 								Sign out
@@ -264,6 +283,25 @@
 						<button class="dropdown-item" onclick={toggleTheme}>
 							{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
 						</button>
+						{#if authStore.cloudMode}
+							<div class="dropdown-divider"></div>
+							<a
+								href="mailto:support@getpad.dev"
+								class="dropdown-item"
+								onclick={closeUserMenu}
+							>
+								Support
+							</a>
+							<a
+								href="https://status.getpad.dev"
+								target="_blank"
+								rel="noopener noreferrer"
+								class="dropdown-item"
+								onclick={closeUserMenu}
+							>
+								Status
+							</a>
+						{/if}
 						<div class="dropdown-divider"></div>
 						<button class="dropdown-item logout" onclick={handleLogout}>
 							Sign out

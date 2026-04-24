@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
+	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
 
 	let email = $state('');
 	let error = $state('');
@@ -95,6 +96,7 @@
 	</div>
 
 	<LegalFooter cloudMode={authStore.cloudMode} />
+	<SupportFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>
