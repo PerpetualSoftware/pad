@@ -917,18 +917,23 @@ func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
 	// when we have one so /audit-log?user=<id> finds the event; when the
 	// customer is unknown, the row still exists, just unfiltered by user.
 	auditAndRespond := func(targetUserID, reason string, sent bool) {
-		actorIsAdmin := "false"
-		if user != nil && user.Role == "admin" {
-			actorIsAdmin = "true"
-		}
-		s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, targetUserID, auditMeta(map[string]string{
+		meta := map[string]string{
 			"stripe_customer_id": input.StripeCustomerID,
 			"amount_display":     input.AmountDisplay,
 			"next_retry_display": input.NextRetryDisplay,
 			"reason":             reason,
 			"sent":               boolToString(sent),
-			"actor_is_admin":     actorIsAdmin,
-		}))
+		}
+		// When an authenticated admin hits this endpoint manually (instead
+		// of the sidecar with cloud_secret), record which admin did it.
+		// logAuditEventForUser only carries one UserID field, which we use
+		// for the TARGET user so /audit-log?user=<id> surfaces the event —
+		// the admin's own ID has to live in metadata. Sidecar calls have
+		// no authenticated user, so admin_actor_id is absent for those.
+		if isAdmin && user != nil {
+			meta["admin_actor_id"] = user.ID
+		}
+		s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, targetUserID, auditMeta(meta))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"stripe_customer_id": input.StripeCustomerID,
 			"email_sent":         sent,

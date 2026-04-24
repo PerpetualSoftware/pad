@@ -129,6 +129,10 @@
 				case 'register':
 					if (data.email) return data.email;
 					break;
+				case 'payment_failed_email_sent':
+					if (data.sent === 'true') return `sent (${data.stripe_customer_id ?? ''})`.trim();
+					if (data.reason) return `skipped: ${data.reason}${data.stripe_customer_id ? ` (${data.stripe_customer_id})` : ''}`;
+					break;
 				default:
 					break;
 			}
