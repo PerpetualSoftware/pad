@@ -61,6 +61,15 @@ func (s *Sender) Configure(apiKey, fromAddr, fromName, baseURL string) {
 	}
 }
 
+// SetEndpoint overrides the Maileroo API endpoint. Intended for tests that
+// stand up an httptest server mimicking Maileroo's v2 API — production
+// callers should leave the default in place. Thread-safe.
+func (s *Sender) SetEndpoint(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.endpoint = url
+}
+
 // BaseURL returns the configured base URL.
 func (s *Sender) BaseURL() string {
 	s.mu.RLock()
@@ -94,8 +103,9 @@ func (s *Sender) Send(ctx context.Context, to, toName, subject, html, plain stri
 	s.mu.RLock()
 	fromAddr := s.fromAddr
 	fromName := s.fromName
+	endpoint := s.endpoint
 	s.mu.RUnlock()
-	return s.sendWith(ctx, s.endpoint, fromAddr, fromName, to, toName, subject, html, plain)
+	return s.sendWith(ctx, endpoint, fromAddr, fromName, to, toName, subject, html, plain)
 }
 
 // SendAs sends an email with a custom from name (address stays the same
@@ -103,8 +113,9 @@ func (s *Sender) Send(ctx context.Context, to, toName, subject, html, plain stri
 func (s *Sender) SendAs(ctx context.Context, fromName, to, toName, subject, html, plain string) error {
 	s.mu.RLock()
 	fromAddr := s.fromAddr
+	endpoint := s.endpoint
 	s.mu.RUnlock()
-	return s.sendWith(ctx, s.endpoint, fromAddr, fromName, to, toName, subject, html, plain)
+	return s.sendWith(ctx, endpoint, fromAddr, fromName, to, toName, subject, html, plain)
 }
 
 // sendWith is the internal send implementation.

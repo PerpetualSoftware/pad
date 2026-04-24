@@ -907,24 +907,45 @@ func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	// auditAndRespond records a single audit row for every outcome of the
+	// payment-failed flow — including the skip paths before we even try to
+	// send — and writes the JSON response. Keeping the audit in one place
+	// guarantees that no-customer / no-email / email-not-configured /
+	// send-failed all leave a durable trail that /audit-log can surface
+	// during dunning reconciliation. UserID attaches to the target user
+	// when we have one so /audit-log?user=<id> finds the event; when the
+	// customer is unknown, the row still exists, just unfiltered by user.
+	auditAndRespond := func(targetUserID, reason string, sent bool) {
+		actorIsAdmin := "false"
+		if user != nil && user.Role == "admin" {
+			actorIsAdmin = "true"
+		}
+		s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, targetUserID, auditMeta(map[string]string{
+			"stripe_customer_id": input.StripeCustomerID,
+			"amount_display":     input.AmountDisplay,
+			"next_retry_display": input.NextRetryDisplay,
+			"reason":             reason,
+			"sent":               boolToString(sent),
+			"actor_is_admin":     actorIsAdmin,
+		}))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         sent,
+			"reason":             reason,
+		})
+	}
+
 	if targetUser == nil {
 		slog.Info("payment-failed: no user for customer",
 			"customer_id", input.StripeCustomerID)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"stripe_customer_id": input.StripeCustomerID,
-			"email_sent":         false,
-			"reason":             "no_customer",
-		})
+		auditAndRespond("", "no_customer", false)
 		return
 	}
 	if targetUser.Email == "" {
 		slog.Info("payment-failed: user has no email on file",
 			"user_id", targetUser.ID)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"stripe_customer_id": input.StripeCustomerID,
-			"email_sent":         false,
-			"reason":             "no_email_address",
-		})
+		auditAndRespond(targetUser.ID, "no_email_address", false)
 		return
 	}
 
@@ -934,11 +955,7 @@ func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
 	if s.email == nil || s.baseURL == "" {
 		slog.Warn("payment-failed: email provider not configured; skipping send",
 			"user_id", targetUser.ID)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"stripe_customer_id": input.StripeCustomerID,
-			"email_sent":         false,
-			"reason":             "email_not_configured",
-		})
+		auditAndRespond(targetUser.ID, "email_not_configured", false)
 		return
 	}
 
@@ -947,38 +964,16 @@ func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
 		targetUser.Email, targetUser.Name,
 		input.AmountDisplay, input.NextRetryDisplay, billingPortalURL)
 
-	// 5. Audit log every attempt — success AND failure — so operators can
-	//    reconstruct whether a customer was notified before a downgrade.
-	actorID := ""
-	if user != nil {
-		actorID = user.ID
-	}
-	s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, actorID, auditMeta(map[string]string{
-		"target_user_id":     targetUser.ID,
-		"stripe_customer_id": input.StripeCustomerID,
-		"amount_display":     input.AmountDisplay,
-		"next_retry_display": input.NextRetryDisplay,
-		"sent":               boolToString(sendErr == nil),
-	}))
-
 	if sendErr != nil {
 		slog.Error("payment-failed: email send failed",
 			"user_id", targetUser.ID, "error", sendErr)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"stripe_customer_id": input.StripeCustomerID,
-			"email_sent":         false,
-			"reason":             "send_failed",
-		})
+		auditAndRespond(targetUser.ID, "send_failed", false)
 		return
 	}
 
 	slog.Info("payment-failed email sent",
 		"user_id", targetUser.ID, "customer_id", input.StripeCustomerID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"stripe_customer_id": input.StripeCustomerID,
-		"email_sent":         true,
-		"reason":             "sent",
-	})
+	auditAndRespond(targetUser.ID, "sent", true)
 }
 
 // boolToString converts a Go bool to the string representation used in

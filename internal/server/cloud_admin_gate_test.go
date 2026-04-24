@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/models"
 )
 
@@ -717,6 +718,206 @@ func TestPaymentFailed_EmailNotConfigured_Returns200_NoEmail(t *testing.T) {
 	}
 	if got, _ := resp["reason"].(string); got != "email_not_configured" {
 		t.Errorf("reason=%q with no Maileroo config; want email_not_configured", got)
+	}
+}
+
+// paymentFailedAuditForUser walks the audit log for a given user and
+// returns every payment_failed_email_sent row's parsed metadata. Used
+// by the send-path tests to assert reason + sent fields land correctly
+// for each branch.
+func paymentFailedAuditForUser(t *testing.T, srv *Server, userID string) []map[string]string {
+	t.Helper()
+	events, err := srv.store.ListAuditLog(models.AuditLogParams{
+		Action: models.ActionPaymentFailedEmailSent,
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	var out []map[string]string
+	for _, ev := range events {
+		if userID != "" && ev.UserID != userID {
+			continue
+		}
+		var meta map[string]string
+		_ = json.Unmarshal([]byte(ev.Metadata), &meta)
+		out = append(out, meta)
+	}
+	return out
+}
+
+// mockMailerooEndpoint stands up an httptest server that speaks enough
+// of Maileroo's v2 JSON API to satisfy email.Sender. Returning 500
+// exercises the send_failed branch; returning 200 + success:true
+// exercises the sent branch.
+func mockMailerooEndpoint(t *testing.T, status int, success bool) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		body := `{"success":true,"message":"sent"}`
+		if !success {
+			body = `{"success":false,"message":"mock failure"}`
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// configureEmailForTest attaches an email.Sender wired to the given
+// mock endpoint plus a base URL so s.baseURL != "" (the configured
+// check looks at both).
+func configureEmailForTest(srv *Server, endpoint, baseURL string) {
+	sender := email.NewSender("test-key", "noreply@test.getpad.dev", "Pad Test", baseURL)
+	sender.SetEndpoint(endpoint)
+	srv.SetEmailSender(sender, "test-key")
+	srv.SetBaseURL(baseURL)
+}
+
+// TestPaymentFailed_HappyPath_SendsAndAudits covers the end-to-end
+// success path: Maileroo returns 200/success, pad records an audit row
+// with reason=sent and sent=true attached to the target user ID.
+func TestPaymentFailed_HappyPath_SendsAndAudits(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "paying@example.com", "Paying User")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	payingUser, err := srv.store.GetUserByEmail("paying@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+	if err := srv.store.SetUserStripeCustomerID(payingUser.ID, "cus_happy_path"); err != nil {
+		t.Fatalf("SetUserStripeCustomerID: %v", err)
+	}
+
+	mock := mockMailerooEndpoint(t, http.StatusOK, true)
+	configureEmailForTest(srv, mock.URL, "https://app.test.getpad.dev")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+		"stripe_customer_id": "cus_happy_path",
+		"amount_display":     "10.00 USD",
+		"next_retry_display": "April 30, 2026",
+		"cloud_secret":       "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("happy path: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sent, _ := resp["email_sent"].(bool); !sent {
+		t.Errorf("email_sent=false on happy path; want true: %v", resp)
+	}
+	if got, _ := resp["reason"].(string); got != "sent" {
+		t.Errorf("reason=%q on happy path; want sent", got)
+	}
+
+	audit := paymentFailedAuditForUser(t, srv, payingUser.ID)
+	if len(audit) != 1 {
+		t.Fatalf("expected 1 audit row for happy path, got %d", len(audit))
+	}
+	if audit[0]["reason"] != "sent" || audit[0]["sent"] != "true" {
+		t.Errorf("audit metadata wrong: %v", audit[0])
+	}
+	if audit[0]["stripe_customer_id"] != "cus_happy_path" {
+		t.Errorf("audit missing stripe_customer_id: %v", audit[0])
+	}
+}
+
+// TestPaymentFailed_MailerooError_Returns200_SendFailed_AndAudits covers
+// the send_failed branch: Maileroo 500 → response stays 200 + reason=
+// send_failed so the sidecar does not retry the Stripe webhook, and an
+// audit row with reason=send_failed + sent=false is written against
+// the target user ID.
+func TestPaymentFailed_MailerooError_Returns200_SendFailed_AndAudits(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "unlucky@example.com", "Unlucky User")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	unluckyUser, err := srv.store.GetUserByEmail("unlucky@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+	if err := srv.store.SetUserStripeCustomerID(unluckyUser.ID, "cus_send_fail"); err != nil {
+		t.Fatalf("SetUserStripeCustomerID: %v", err)
+	}
+
+	mock := mockMailerooEndpoint(t, http.StatusInternalServerError, false)
+	configureEmailForTest(srv, mock.URL, "https://app.test.getpad.dev")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+		"stripe_customer_id": "cus_send_fail",
+		"cloud_secret":       "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("send_failed: expected 200 (so sidecar does not retry webhook), got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sent, _ := resp["email_sent"].(bool); sent {
+		t.Errorf("email_sent=true on send failure; want false")
+	}
+	if got, _ := resp["reason"].(string); got != "send_failed" {
+		t.Errorf("reason=%q on send failure; want send_failed", got)
+	}
+
+	audit := paymentFailedAuditForUser(t, srv, unluckyUser.ID)
+	if len(audit) != 1 {
+		t.Fatalf("expected 1 audit row for send_failed, got %d", len(audit))
+	}
+	if audit[0]["reason"] != "send_failed" || audit[0]["sent"] != "false" {
+		t.Errorf("audit metadata wrong: %v", audit[0])
+	}
+}
+
+// TestPaymentFailed_UnknownCustomer_AuditsWithoutUserID confirms that
+// the no_customer skip path also writes an audit row — just with no
+// user filter, since we don't have a user to attribute it to. This is
+// important for dunning reconciliation: an operator can still find the
+// event via action + stripe_customer_id metadata.
+func TestPaymentFailed_UnknownCustomer_AuditsWithoutUserID(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("shh-its-a-secret")
+
+	req := cloudAdminReq(t, "POST", "/api/v1/admin/payment-failed", map[string]string{
+		"stripe_customer_id": "cus_totally_unknown",
+		"cloud_secret":       "shh-its-a-secret",
+	}, map[string]string{"X-Cloud-Secret": "shh-its-a-secret"})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	audit := paymentFailedAuditForUser(t, srv, "")
+	// Filter to rows whose metadata customer ID matches, since the test
+	// DB might contain other payment_failed rows from earlier tests that
+	// share the same DB instance if testServer is ever pooled.
+	var found map[string]string
+	for _, row := range audit {
+		if row["stripe_customer_id"] == "cus_totally_unknown" {
+			found = row
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected audit row for cus_totally_unknown, got %d rows total", len(audit))
+	}
+	if found["reason"] != "no_customer" || found["sent"] != "false" {
+		t.Errorf("audit metadata wrong: %v", found)
 	}
 }
 
