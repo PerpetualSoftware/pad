@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
+	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 
 	let name = $state('');
@@ -229,6 +230,7 @@
 	</div>
 
 	<LegalFooter cloudMode={authStore.cloudMode} />
+	<SupportFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>
