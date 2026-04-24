@@ -63,6 +63,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/stripe-customer-id":     {},
 	"/api/v1/admin/user-by-customer":       {},
 	"/api/v1/admin/stripe-event-processed": {},
+	"/api/v1/admin/stripe-event-unmark":    {},
 }
 
 // isCloudAdminPath returns true if the request targets one of the three
@@ -651,7 +652,14 @@ func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Reques
 //
 // Response:
 //
-//	{"already_processed": true|false, "event_id": "evt_xxx"}
+//	{"event_id": "evt_xxx", "already_processed": true|false, "processed_at": "RFC3339"}
+//
+// The processed_at field is the row's timestamp: the one we just inserted on
+// a fresh mark, or the existing row's timestamp on a duplicate. Sidecars
+// MUST persist this value and pass it back to /admin/stripe-event-unmark if
+// they later need to roll back a failed handler (TASK-736 race protection:
+// the unmark call uses (event_id, processed_at) as a composite key, so a
+// stale unmark can't delete a fresh marker left by a successful retry).
 //
 // Semantics: the call is transactional — it atomically records the event and
 // tells the caller whether it was new or a duplicate. The caller should skip
@@ -691,7 +699,7 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 3. Atomically record-or-detect-duplicate
-	alreadyProcessed, err := s.store.MarkStripeEventProcessed(input.EventID)
+	alreadyProcessed, processedAt, err := s.store.MarkStripeEventProcessed(input.EventID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -717,7 +725,126 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"event_id":          input.EventID,
 		"already_processed": alreadyProcessed,
+		"processed_at":      processedAt,
 	})
+}
+
+// handleStripeEventUnmark handles POST /api/v1/admin/stripe-event-unmark.
+// Called by the pad-cloud sidecar as a best-effort rollback when a webhook
+// handler fails AFTER /stripe-event-processed marked the event as seen
+// (TASK-736). Without this, Stripe's retries of the same event are
+// short-circuited as duplicates and the un-applied side effect has no
+// automated recovery — operators have to manually DELETE the row and
+// replay from the Stripe dashboard.
+//
+// Request body:
+//
+//	{"event_id": "evt_xxx", "processed_at": "RFC3339", "cloud_secret": "..."}
+//
+// Response:
+//
+//	{"event_id": "evt_xxx", "unmarked": true|false}
+//
+// Semantics: the delete is scoped to the specific (event_id, processed_at)
+// row originally inserted by /stripe-event-processed. processed_at is
+// mandatory — without it, a stale unmark from an earlier failed attempt
+// could silently delete the fresh marker left by a successful retry and
+// reopen the retry window after the event has been handled. With it, a
+// stale token simply doesn't match and the unmark becomes a no-op.
+//
+// Idempotent: unmarked=true means we actually deleted a row; unmarked=false
+// means nothing matched (missing row OR timestamp mismatch — both safe).
+// Either outcome is 200.
+//
+// Audit: every call is persisted to the audit log (ActionStripeEventUnmarked)
+// with the event_id and whether a row actually went away. The endpoint can
+// reopen Stripe retry windows, so a queryable audit trail is required —
+// slog alone would let a compromised cloud_secret spam unmarks invisibly.
+//
+// Auth: same cloud_secret gate as /stripe-event-processed. Admins hitting
+// the endpoint with a browser session can also unmark (useful for manual
+// reconciliation from the admin UI), mirroring the pattern of the
+// other cloud admin endpoints.
+func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		EventID     string `json:"event_id"`
+		ProcessedAt string `json:"processed_at"`
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (body field for POST; admins also allowed).
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate input — must match the shape /stripe-event-processed accepts
+	//    so that an operator copying an event ID from the Stripe dashboard
+	//    gets the same format validation across both endpoints. processed_at
+	//    is mandatory for race protection (see handler godoc).
+	if input.EventID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.EventID, "evt_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id must start with 'evt_'")
+		return
+	}
+	if input.ProcessedAt == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "processed_at is required (pass the value returned by /stripe-event-processed)")
+		return
+	}
+
+	// 3. Delete the row only if (event_id, processed_at) matches.
+	unmarked, err := s.store.UnmarkStripeEventProcessed(input.EventID, input.ProcessedAt)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// 4. Audit log — persisted so admins can see who/when reopened retry
+	//    windows. actor_is_admin distinguishes "manual operator action" from
+	//    "sidecar rollback" so dashboards can filter accordingly.
+	actorID := ""
+	if user != nil {
+		actorID = user.ID
+	}
+	s.logAuditEventForUser(models.ActionStripeEventUnmarked, r, actorID, auditMeta(map[string]string{
+		"event_id":       input.EventID,
+		"processed_at":   input.ProcessedAt,
+		"unmarked":       boolToString(unmarked),
+		"actor_is_admin": boolToString(isAdmin),
+	}))
+
+	if unmarked {
+		slog.Info("unmarked stripe event for replay", "event_id", input.EventID, "actor_is_admin", isAdmin)
+	} else {
+		slog.Info("unmark stripe event: no matching row (idempotent)", "event_id", input.EventID, "actor_is_admin", isAdmin)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"event_id": input.EventID,
+		"unmarked": unmarked,
+	})
+}
+
+// boolToString converts a Go bool to the string representation used in
+// audit metadata. Kept local to this file because audit metadata is
+// string-typed (JSON object of string→string), so we need the literal
+// "true"/"false" spelling rather than fmt.Sprintf's lower-case default
+// (which happens to match but is easy to misread).
+func boolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // --- Public Plan Limits (TASK-511) ---
