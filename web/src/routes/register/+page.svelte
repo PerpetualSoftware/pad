@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 
 	let name = $state('');
 	let username = $state('');
@@ -14,7 +15,6 @@
 	let setupRequired = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
 	let loading = $state(false);
-	let cloudMode = $state(false);
 
 	let usernameManuallyEdited = $state(false);
 	let usernameChecking = $state(false);
@@ -25,7 +25,6 @@
 	onMount(async () => {
 		try {
 			const session = await api.auth.session();
-			cloudMode = session.cloud_mode ?? false;
 			if (session.setup_required) {
 				setupRequired = true;
 				setupMethod = session.setup_method;
@@ -208,7 +207,7 @@
 					{/if}
 				</button>
 
-				{#if cloudMode}
+				{#if authStore.cloudMode}
 					<p class="consent">
 						By creating an account, you agree to our
 						<a href="https://getpad.dev/terms" target="_blank" rel="noopener noreferrer">Terms</a>
@@ -224,7 +223,7 @@
 		{/if}
 	</div>
 
-	<LegalFooter {cloudMode} />
+	<LegalFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>

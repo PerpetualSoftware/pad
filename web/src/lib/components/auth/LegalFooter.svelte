@@ -2,10 +2,11 @@
 	// Legal links shown below the auth card on Pad Cloud (cloudMode=true).
 	// Self-hosted installs do not need these links — the Terms/Privacy that
 	// live at getpad.dev are Perpetual Software LLC's for the hosted service,
-	// not for the user's own instance. Caller passes cloudMode explicitly so
-	// each page can reuse its existing session fetch without a second request.
+	// not for the user's own instance.
 	//
-	// Links open in a new tab so the auth flow is not interrupted.
+	// Caller typically reads cloudMode from authStore (which the root layout
+	// already populates via authStore.load()), so no additional session fetch
+	// is needed. Links open in a new tab so the auth flow is not interrupted.
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 </script>
 
@@ -32,11 +33,19 @@
 
 	.legal-footer a {
 		color: var(--text-muted);
-		text-decoration: none;
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 2px;
+		border-radius: 2px;
 	}
 
 	.legal-footer a:hover {
 		color: var(--text-primary);
-		text-decoration: underline;
+	}
+
+	.legal-footer a:focus-visible {
+		color: var(--text-primary);
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
 	}
 </style>
