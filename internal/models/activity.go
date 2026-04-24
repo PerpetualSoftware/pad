@@ -45,6 +45,11 @@ const (
 	// audit trail is required — a compromised cloud_secret could otherwise
 	// spam unmarks invisible to the admin /audit-log UI.
 	ActionStripeEventUnmarked = "stripe_event_unmarked"
+	// ActionPaymentFailedEmailSent is logged when the sidecar triggers the
+	// /admin/payment-failed endpoint and pad dispatches a failed-payment
+	// notification to the user. Audit trail exists so operators can prove
+	// a customer was notified before a dunning-related plan change.
+	ActionPaymentFailedEmailSent = "payment_failed_email_sent"
 )
 
 type Activity struct {

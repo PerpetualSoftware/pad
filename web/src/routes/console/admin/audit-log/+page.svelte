@@ -23,7 +23,8 @@
 		'token_rotated', 'totp_enabled', 'totp_disabled', 'member_invited',
 		'member_removed', 'role_changed', 'settings_changed', 'oauth_login',
 		'oauth_login_failed', 'plan_changed', 'password_reset_by_admin',
-		'user_disabled', 'user_enabled', 'account_deleted'
+		'user_disabled', 'user_enabled', 'account_deleted',
+		'payment_failed_email_sent'
 	];
 
 	const ACTION_LABELS: Record<string, string> = {
@@ -49,7 +50,8 @@
 		password_reset_by_admin: 'Password Reset (Admin)',
 		user_disabled: 'User Disabled',
 		user_enabled: 'User Enabled',
-		account_deleted: 'Account Deleted'
+		account_deleted: 'Account Deleted',
+		payment_failed_email_sent: 'Payment Failed Email'
 	};
 
 	const LIMIT = 50;
@@ -129,6 +131,20 @@
 				case 'register':
 					if (data.email) return data.email;
 					break;
+				case 'payment_failed_email_sent': {
+					// Differentiate operationally distinct outcomes: a genuine delivery
+					// failure (Maileroo 5xx) should not read the same as a pre-send
+					// skip (unknown customer, no email on file, provider not wired up).
+					// Surface admin_actor_id when present so manual operator calls
+					// show which admin triggered the send; sidecar calls omit that
+					// field and the User column's target user tells the story.
+					const cus = data.stripe_customer_id ? ` (${data.stripe_customer_id})` : '';
+					const by = data.admin_actor_id ? ` by admin:${data.admin_actor_id}` : '';
+					if (data.sent === 'true') return `sent${cus}${by}`;
+					if (data.reason === 'send_failed') return `send failed${cus}${by}`;
+					if (data.reason) return `skipped (${data.reason})${cus}${by}`;
+					break;
+				}
 				default:
 					break;
 			}

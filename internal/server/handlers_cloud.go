@@ -64,6 +64,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/user-by-customer":       {},
 	"/api/v1/admin/stripe-event-processed": {},
 	"/api/v1/admin/stripe-event-unmark":    {},
+	"/api/v1/admin/payment-failed":         {},
 }
 
 // isCloudAdminPath returns true if the request targets one of the three
@@ -833,6 +834,151 @@ func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request)
 		"event_id": input.EventID,
 		"unmarked": unmarked,
 	})
+}
+
+// handlePaymentFailed handles POST /api/v1/admin/payment-failed.
+// Called by the pad-cloud sidecar when it receives an invoice.payment_failed
+// webhook from Stripe. Pad owns the user→email mapping and the Maileroo
+// integration, so the sidecar forwards the invoice metadata here and pad
+// does the actual notification.
+//
+// Request body:
+//
+//	{
+//	  "stripe_customer_id": "cus_...",
+//	  "amount_display":     "$10.00",            // optional, pre-formatted
+//	  "next_retry_display": "April 30, 2026",    // optional, pre-formatted
+//	  "cloud_secret":       "..."
+//	}
+//
+// Response:
+//
+//	{"stripe_customer_id": "cus_...", "email_sent": true|false, "reason": "..."}
+//
+// The handler returns 200 even when no email is sent (e.g. unknown
+// customer, email provider not configured, user has no stored email) —
+// the sidecar should treat those as non-fatal so Stripe does not retry
+// the webhook. Reasons:
+//   - "sent"              — email dispatched
+//   - "no_customer"       — no user matches stripe_customer_id
+//   - "no_email_address"  — user exists but has no email on file
+//   - "email_not_configured" — no Maileroo key / base URL
+//   - "send_failed"       — Maileroo returned an error (details in logs)
+//
+// The email is transactional (dunning) and has no unsubscribe link by
+// design; users who want to stop receiving dunning mail can update
+// their card or cancel the subscription.
+func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		StripeCustomerID string `json:"stripe_customer_id"`
+		AmountDisplay    string `json:"amount_display"`
+		NextRetryDisplay string `json:"next_retry_display"`
+		CloudSecret      string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+
+	// 1. Validate cloud secret (or admin auth)
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+
+	// 2. Validate input
+	if input.StripeCustomerID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "stripe_customer_id is required")
+		return
+	}
+	if !strings.HasPrefix(input.StripeCustomerID, "cus_") {
+		writeError(w, http.StatusBadRequest, "bad_request", "stripe_customer_id must start with 'cus_'")
+		return
+	}
+
+	// 3. Look up user. Missing customer is a non-error — Stripe could be
+	//    firing a webhook for an account that was deleted on our side;
+	//    returning 200 tells the sidecar not to rollback/retry.
+	targetUser, err := s.store.GetUserByStripeCustomerID(input.StripeCustomerID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// auditAndRespond records a single audit row for every outcome of the
+	// payment-failed flow — including the skip paths before we even try to
+	// send — and writes the JSON response. Keeping the audit in one place
+	// guarantees that no-customer / no-email / email-not-configured /
+	// send-failed all leave a durable trail that /audit-log can surface
+	// during dunning reconciliation. UserID attaches to the target user
+	// when we have one so /audit-log?user=<id> finds the event; when the
+	// customer is unknown, the row still exists, just unfiltered by user.
+	auditAndRespond := func(targetUserID, reason string, sent bool) {
+		meta := map[string]string{
+			"stripe_customer_id": input.StripeCustomerID,
+			"amount_display":     input.AmountDisplay,
+			"next_retry_display": input.NextRetryDisplay,
+			"reason":             reason,
+			"sent":               boolToString(sent),
+		}
+		// When an authenticated admin hits this endpoint manually (instead
+		// of the sidecar with cloud_secret), record which admin did it.
+		// logAuditEventForUser only carries one UserID field, which we use
+		// for the TARGET user so /audit-log?user=<id> surfaces the event —
+		// the admin's own ID has to live in metadata. Sidecar calls have
+		// no authenticated user, so admin_actor_id is absent for those.
+		if isAdmin && user != nil {
+			meta["admin_actor_id"] = user.ID
+		}
+		s.logAuditEventForUser(models.ActionPaymentFailedEmailSent, r, targetUserID, auditMeta(meta))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stripe_customer_id": input.StripeCustomerID,
+			"email_sent":         sent,
+			"reason":             reason,
+		})
+	}
+
+	if targetUser == nil {
+		slog.Info("payment-failed: no user for customer",
+			"customer_id", input.StripeCustomerID)
+		auditAndRespond("", "no_customer", false)
+		return
+	}
+	if targetUser.Email == "" {
+		slog.Info("payment-failed: user has no email on file",
+			"user_id", targetUser.ID)
+		auditAndRespond(targetUser.ID, "no_email_address", false)
+		return
+	}
+
+	// 4. Verify email provider is wired up. Same pattern as password reset
+	//    (handlers_auth.go) — no panic if the operator hasn't configured
+	//    Maileroo, just log and skip.
+	if s.email == nil || s.baseURL == "" {
+		slog.Warn("payment-failed: email provider not configured; skipping send",
+			"user_id", targetUser.ID)
+		auditAndRespond(targetUser.ID, "email_not_configured", false)
+		return
+	}
+
+	billingPortalURL := strings.TrimRight(s.baseURL, "/") + "/billing/portal"
+	sendErr := s.email.SendPaymentFailed(r.Context(),
+		targetUser.Email, targetUser.Name,
+		input.AmountDisplay, input.NextRetryDisplay, billingPortalURL)
+
+	if sendErr != nil {
+		slog.Error("payment-failed: email send failed",
+			"user_id", targetUser.ID, "error", sendErr)
+		auditAndRespond(targetUser.ID, "send_failed", false)
+		return
+	}
+
+	slog.Info("payment-failed email sent",
+		"user_id", targetUser.ID, "customer_id", input.StripeCustomerID)
+	auditAndRespond(targetUser.ID, "sent", true)
 }
 
 // boolToString converts a Go bool to the string representation used in
