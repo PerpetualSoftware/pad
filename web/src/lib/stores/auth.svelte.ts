@@ -25,6 +25,17 @@ export const authStore = {
 		return session;
 	},
 
+	// ensureLoaded returns the cached session when one exists, otherwise fetches it.
+	// Use this on auth pages (register, forgot-password, etc.) that navigate in via
+	// SPA routing after the user has logged out — logout clears the store, and the
+	// root layout's one-shot onMount doesn't re-run on subsequent navigation, so a
+	// page that relies on session fields (e.g. cloud_mode) would otherwise see
+	// stale nulls and render the self-hosted branch on Pad Cloud.
+	async ensureLoaded() {
+		if (session) return session;
+		return this.load();
+	},
+
 	clear() {
 		session = null;
 	}

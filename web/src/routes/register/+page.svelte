@@ -24,13 +24,18 @@
 
 	onMount(async () => {
 		try {
-			const session = await api.auth.session();
-			if (session.setup_required) {
+			// Route session fetch through authStore so authStore.cloudMode is
+			// populated after a logout → /register navigation (the root layout's
+			// authStore.load() only runs once, so the store can be cleared and
+			// never re-filled without this). ensureLoaded is a no-op when the
+			// store already has a session.
+			const session = await authStore.ensureLoaded();
+			if (session?.setup_required) {
 				setupRequired = true;
 				setupMethod = session.setup_method;
 				return;
 			}
-			if (session.authenticated) {
+			if (session?.authenticated) {
 				goto('/console', { replaceState: true });
 				return;
 			}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
@@ -7,6 +8,15 @@
 	let error = $state('');
 	let loading = $state(false);
 	let sent = $state(false);
+
+	onMount(() => {
+		// Re-populate authStore if a prior logout cleared it (see auth.svelte.ts
+		// ensureLoaded). Without this, authStore.cloudMode would stay false here
+		// on Pad Cloud after a logout → /forgot-password SPA navigation, and the
+		// legal footer would silently disappear. Swallow fetch errors — the page
+		// remains functional for users who can't reach the session endpoint.
+		authStore.ensureLoaded().catch(() => {});
+	});
 
 	async function handleSubmit() {
 		error = '';
