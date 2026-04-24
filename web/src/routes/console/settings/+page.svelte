@@ -537,8 +537,8 @@
 							{/if}
 						</div>
 					{/each}
-					{#if providerMsg}<p class="success">{providerMsg}</p>{/if}
-					{#if providerError}<p class="error">{providerError}</p>{/if}
+					{#if providerMsg}<p class="success" role="status" aria-live="polite">{providerMsg}</p>{/if}
+					{#if providerError}<p class="error" role="alert" aria-live="assertive">{providerError}</p>{/if}
 				</div>
 			</section>
 		{/if}
