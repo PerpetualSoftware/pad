@@ -3,6 +3,8 @@
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 
 	let name = $state('');
 	let username = $state('');
@@ -22,13 +24,18 @@
 
 	onMount(async () => {
 		try {
-			const session = await api.auth.session();
-			if (session.setup_required) {
+			// Route session fetch through authStore so authStore.cloudMode is
+			// populated after a logout → /register navigation (the root layout's
+			// authStore.load() only runs once, so the store can be cleared and
+			// never re-filled without this). ensureLoaded is a no-op when the
+			// store already has a session.
+			const session = await authStore.ensureLoaded();
+			if (session?.setup_required) {
 				setupRequired = true;
 				setupMethod = session.setup_method;
 				return;
 			}
-			if (session.authenticated) {
+			if (session?.authenticated) {
 				goto('/console', { replaceState: true });
 				return;
 			}
@@ -204,6 +211,15 @@
 						Create account
 					{/if}
 				</button>
+
+				{#if authStore.cloudMode}
+					<p class="consent">
+						By creating an account, you agree to our
+						<a href="https://getpad.dev/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+						and
+						<a href="https://getpad.dev/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
+					</p>
+				{/if}
 			</div>
 
 			<p class="login-link">
@@ -211,11 +227,14 @@
 			</p>
 		{/if}
 	</div>
+
+	<LegalFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>
 	.register-page {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		min-height: 100vh;
@@ -320,6 +339,23 @@
 
 	.login-link a:hover {
 		text-decoration: underline;
+	}
+
+	.consent {
+		margin-top: var(--space-2);
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		line-height: 1.4;
+		text-align: center;
+	}
+
+	.consent a {
+		color: var(--text-secondary);
+		text-decoration: underline;
+	}
+
+	.consent a:hover {
+		color: var(--text-primary);
 	}
 
 	.username-field {
