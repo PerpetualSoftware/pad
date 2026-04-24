@@ -58,7 +58,53 @@
 
 	let loading = $state(true);
 
+	// Map pad-cloud's /console/settings?error= / ?linked= redirect codes to
+	// the Linked Accounts section's provider banner. Kept near onMount so
+	// the full list of codes the UI handles is easy to audit against
+	// pad-cloud/oauth.go.
+	function readOAuthQueryStatus() {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		const linked = url.searchParams.get('linked');
+		const errCode = url.searchParams.get('error');
+		const provider = url.searchParams.get('provider'); // optional hint
+
+		if (linked === 'github') {
+			providerMsg = 'GitHub linked.';
+		} else if (linked === 'google') {
+			providerMsg = 'Google linked.';
+		} else if (errCode) {
+			const providerName =
+				provider === 'github' ? 'GitHub' : provider === 'google' ? 'Google' : 'the provider';
+			switch (errCode) {
+				case 'not_logged_in':
+					providerError = 'Your session expired while linking. Sign in and try again.';
+					break;
+				case 'email_mismatch':
+					providerError = `The ${providerName} account uses a different email than your Pad account. Sign into ${providerName} as your Pad email, then retry.`;
+					break;
+				case 'link_failed':
+					providerError = `Couldn't link ${providerName}. Try again in a moment.`;
+					break;
+				default:
+					// Unknown code — never break the page.
+					providerError = 'Linking failed. Try again.';
+					break;
+			}
+		} else {
+			return;
+		}
+
+		// Strip ?linked / ?error / ?provider so a refresh / back-button
+		// doesn't re-show the banner.
+		url.searchParams.delete('linked');
+		url.searchParams.delete('error');
+		url.searchParams.delete('provider');
+		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
+	}
+
 	onMount(async () => {
+		readOAuthQueryStatus();
 		try {
 			const [me, tokenList] = await Promise.all([
 				api.auth.me(),
@@ -491,8 +537,8 @@
 							{/if}
 						</div>
 					{/each}
-					{#if providerMsg}<p class="success">{providerMsg}</p>{/if}
-					{#if providerError}<p class="error">{providerError}</p>{/if}
+					{#if providerMsg}<p class="success" role="status" aria-live="polite">{providerMsg}</p>{/if}
+					{#if providerError}<p class="error" role="alert" aria-live="assertive">{providerError}</p>{/if}
 				</div>
 			</section>
 		{/if}
