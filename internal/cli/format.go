@@ -150,7 +150,7 @@ func PrintItemTable(items []models.Item) {
 			pin = color.YellowString("* ")
 		}
 		ref := ItemRef(item)
-		titlePart := item.Title
+		var titlePart string
 		if ref != "" {
 			titlePart = BoldCyan.Sprint(ref) + "  " + Bold.Sprint(item.Title)
 		} else {
@@ -384,23 +384,4 @@ func PrintCommentTable(comments []models.Comment) {
 			fmt.Println()
 		}
 	}
-}
-
-func stripHTMLTags(s string) string {
-	var result strings.Builder
-	inTag := false
-	for _, r := range s {
-		if r == '<' {
-			inTag = true
-			continue
-		}
-		if r == '>' {
-			inTag = false
-			continue
-		}
-		if !inTag {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
 }

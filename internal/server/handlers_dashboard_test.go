@@ -20,18 +20,6 @@ func createItem(t *testing.T, srv *Server, wsSlug, collSlug string, body map[str
 	return item
 }
 
-// helper: update an item by slug and return the parsed Item
-func updateItem(t *testing.T, srv *Server, wsSlug, itemSlug string, body map[string]interface{}) models.Item {
-	t.Helper()
-	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("update item %s: expected 200, got %d: %s", itemSlug, rr.Code, rr.Body.String())
-	}
-	var item models.Item
-	parseJSON(t, rr, &item)
-	return item
-}
-
 // helper: fetch the dashboard and return the parsed response
 func getDashboard(t *testing.T, srv *Server, wsSlug string) DashboardResponse {
 	t.Helper()

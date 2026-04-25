@@ -11,9 +11,6 @@ import (
 	"github.com/xarmian/pad/internal/models"
 )
 
-// defaultTokenExpiryDays is used when no platform setting overrides it.
-const defaultTokenExpiryDays = 90
-
 // CreateAPIToken generates a new API token owned by a user, optionally
 // scoped to a workspace. The plaintext token is returned in the response
 // and is never stored — only its SHA-256 hash is persisted.

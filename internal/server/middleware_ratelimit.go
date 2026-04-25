@@ -319,8 +319,3 @@ func writeRateLimitResponse(w http.ResponseWriter, cfg rateLimitConfig) {
 	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Please try again later.")
 }
 
-// writeTooManyRequests sends a basic 429 response (for backward compatibility in tests).
-func writeTooManyRequests(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", strconv.Itoa(60))
-	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Please try again later.")
-}

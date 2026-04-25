@@ -33,6 +33,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/metrics"
@@ -428,10 +430,10 @@ func serveCmd() *cobra.Command {
 
 				// Close event bus first — this terminates SSE handler
 				// goroutines so http.Server.Shutdown won't block on them.
-				if eventBus != nil {
-					eventBus.Close()
-					slog.Info("Event bus closed")
-				}
+				// eventBus is always non-nil here: assigned a few lines
+				// above to a concrete *metrics.InstrumentedBus return value.
+				eventBus.Close()
+				slog.Info("Event bus closed")
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -3315,14 +3317,6 @@ func statusCmd() *cobra.Command {
 	}
 }
 
-func progressBar(pct, width int) string {
-	filled := (pct * width) / 100
-	if filled > width {
-		filled = width
-	}
-	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
-}
-
 func colorProgressBar(pct, width int, filledColor *color.Color) string {
 	filled := (pct * width) / 100
 	if filled > width {
@@ -3923,7 +3917,7 @@ Examples:
 					}
 					fd := models.FieldDef{
 						Key:   parts[0],
-						Label: strings.Title(strings.ReplaceAll(parts[0], "_", " ")),
+						Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
 						Type:  parts[1],
 					}
 					if len(parts) == 3 && parts[2] != "" {
@@ -4629,7 +4623,11 @@ func watchCmd() *cobra.Command {
 					continue
 				}
 
-				// Keepalive comments (lines starting with ":") — ignore silently
+				// Keepalive comments (lines starting with ":") — ignore silently.
+				//lint:ignore SA4017 false positive: the return value is used as
+				// the if condition. Two sibling strings.HasPrefix calls earlier
+				// in the same loop ("event: " and "data: ") are not flagged,
+				// suggesting an SSA-analysis quirk specific to this branch.
 				if strings.HasPrefix(line, ":") {
 					continue
 				}
