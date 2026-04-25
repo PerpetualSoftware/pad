@@ -294,6 +294,12 @@
 	let dragRejected = false;
 	function schedulePersist() {
 		if (persistScheduled) return;
+		// Clear any stale `persistCancelled` from a prior rejected drag.
+		// In target-first finalize order, cancelPersist() can fire when
+		// no microtask was queued (the source's schedulePersist hadn't
+		// run yet). Without this clear, the flag would leak and silently
+		// kill the next valid reorder. (Codex round 3 MEDIUM.)
+		persistCancelled = false;
 		persistScheduled = true;
 		queueMicrotask(async () => {
 			persistScheduled = false;
