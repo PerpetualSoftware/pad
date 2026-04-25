@@ -14,8 +14,8 @@ type InstrumentedBus struct {
 	inner   events.EventBus
 	metrics *Metrics
 
-	mu          sync.Mutex
-	workspaces  map[chan events.Event]string // channel → workspaceID for gauge decrement
+	mu         sync.Mutex
+	workspaces map[chan events.Event]string // channel → workspaceID for gauge decrement
 }
 
 // NewInstrumentedBus wraps an EventBus with Prometheus instrumentation.

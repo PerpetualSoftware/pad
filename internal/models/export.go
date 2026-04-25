@@ -2,7 +2,7 @@ package models
 
 // WorkspaceExport is the complete portable representation of a workspace.
 type WorkspaceExport struct {
-	Version      int                 `json:"version"`    // Export format version (1)
+	Version      int                 `json:"version"` // Export format version (1)
 	ExportedAt   string              `json:"exported_at"`
 	Workspace    WorkspaceExportMeta `json:"workspace"`
 	Collections  []CollectionExport  `json:"collections"`

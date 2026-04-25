@@ -24,7 +24,7 @@ type AgentRole struct {
 // AgentRoleCreate is the input for creating a new agent role.
 type AgentRoleCreate struct {
 	Name        string `json:"name"`
-	Slug        string `json:"slug,omitempty"`        // auto-generated from name if empty
+	Slug        string `json:"slug,omitempty"` // auto-generated from name if empty
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
 	Tools       string `json:"tools,omitempty"`

@@ -5,14 +5,14 @@ import "time"
 type FieldDef struct {
 	Key             string   `json:"key"`
 	Label           string   `json:"label"`
-	Type            string   `json:"type"`                      // text, number, select, multi_select, date, checkbox, url, relation
+	Type            string   `json:"type"` // text, number, select, multi_select, date, checkbox, url, relation
 	Options         []string `json:"options,omitempty"`
 	TerminalOptions []string `json:"terminal_options,omitempty"` // for select fields: which options represent a terminal/finalized state
 	Default         any      `json:"default,omitempty"`
 	Required        bool     `json:"required,omitempty"`
 	Computed        bool     `json:"computed,omitempty"`
-	Collection      string   `json:"collection,omitempty"`      // for relation type
-	Suffix          string   `json:"suffix,omitempty"`          // for number type display
+	Collection      string   `json:"collection,omitempty"` // for relation type
+	Suffix          string   `json:"suffix,omitempty"`     // for number type display
 }
 
 type CollectionSchema struct {
@@ -21,15 +21,15 @@ type CollectionSchema struct {
 
 // QuickAction defines a prompt template that can be triggered from the UI.
 type QuickAction struct {
-	Label    string `json:"label"`              // display label for the button
-	Prompt   string `json:"prompt"`             // prompt template with {ref}, {title}, {status}, etc.
-	Scope    string `json:"scope"`              // "item" or "collection"
-	Icon     string `json:"icon,omitempty"`     // optional emoji/icon
+	Label  string `json:"label"`          // display label for the button
+	Prompt string `json:"prompt"`         // prompt template with {ref}, {title}, {status}, etc.
+	Scope  string `json:"scope"`          // "item" or "collection"
+	Icon   string `json:"icon,omitempty"` // optional emoji/icon
 }
 
 type CollectionSettings struct {
-	Layout          string        `json:"layout,omitempty"`           // fields-primary, content-primary, balanced
-	DefaultView     string        `json:"default_view,omitempty"`     // list, board, table
+	Layout          string        `json:"layout,omitempty"`       // fields-primary, content-primary, balanced
+	DefaultView     string        `json:"default_view,omitempty"` // list, board, table
 	BoardGroupBy    string        `json:"board_group_by,omitempty"`
 	ListSortBy      string        `json:"list_sort_by,omitempty"`
 	ListGroupBy     string        `json:"list_group_by,omitempty"`
@@ -45,7 +45,7 @@ type Collection struct {
 	Icon        string     `json:"icon"`
 	Description string     `json:"description"`
 	Schema      string     `json:"schema"`   // JSON string in DB, parsed via methods
-	Settings    string     `json:"settings"`  // JSON string in DB
+	Settings    string     `json:"settings"` // JSON string in DB
 	Prefix      string     `json:"prefix"`
 	SortOrder   int        `json:"sort_order"`
 	IsDefault   bool       `json:"is_default"`

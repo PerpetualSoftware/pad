@@ -14,9 +14,9 @@ import (
 // rbacTestEnv holds everything needed for RBAC tests:
 // a server with an admin, workspace, and users with different roles.
 type rbacTestEnv struct {
-	srv        *Server
-	wsSlug     string
-	ownerToken string
+	srv         *Server
+	wsSlug      string
+	ownerToken  string
 	editorToken string
 	viewerToken string
 }

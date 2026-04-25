@@ -16,7 +16,7 @@ type mockStore struct {
 	mu       sync.Mutex
 	hooks    []models.Webhook
 	failures map[string]bool // id -> last failed state
-	updated  chan string      // signals when UpdateWebhookFailure is called
+	updated  chan string     // signals when UpdateWebhookFailure is called
 }
 
 func newMockStore(hooks []models.Webhook) *mockStore {

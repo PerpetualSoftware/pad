@@ -197,9 +197,9 @@ func TestConcurrentMixedReadWrite(t *testing.T) {
 	)
 
 	var (
-		readOps, writeOps     atomic.Int64
-		readErrs, writeErrs   atomic.Int64
-		wg                    sync.WaitGroup
+		readOps, writeOps   atomic.Int64
+		readErrs, writeErrs atomic.Int64
+		wg                  sync.WaitGroup
 	)
 
 	deadline := time.Now().Add(duration)

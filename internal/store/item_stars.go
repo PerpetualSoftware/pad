@@ -235,4 +235,3 @@ func (s *Store) DeleteStarsForItem(itemID string) error {
 	}
 	return nil
 }
-

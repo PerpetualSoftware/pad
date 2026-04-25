@@ -41,9 +41,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 //     locked, retry for up to 5 seconds before returning SQLITE_BUSY. The
 //     pragma is applied per-connection by the driver, so every pool member
 //     inherits it.
+//
 //   - `_pragma=foreign_keys(on)`: foreign-key enforcement is per-connection
 //     in SQLite. Setting it via the DSN guarantees ALL pool members enforce
 //     them, not just the one that received a `db.Exec("PRAGMA ...")` call.
+//
 //   - `_txlock=immediate`: makes every `db.Begin()` issue `BEGIN IMMEDIATE`
 //     instead of the default `BEGIN DEFERRED`. With deferred mode, a
 //     transaction starts holding only a SHARED lock and tries to upgrade
@@ -79,6 +81,7 @@ func (s *Store) DB() *sql.DB { return s.db }
 //     model the realistic fallout is small (link tables already cascade),
 //     but the integrity check `PRAGMA foreign_key_check` can surface
 //     any pre-existing offenders.
+//
 //   - `journal_mode=WAL` is set via Exec below; WAL is a database-level
 //     setting (stored in the file header), so it persists across
 //     connections after the first one applies it.

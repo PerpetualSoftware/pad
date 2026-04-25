@@ -1451,8 +1451,9 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 // for GetAllItemProgress).
 //
 // Expression shape:
-//   ((<alias>.collection_id = ? AND LOWER(COALESCE(<field_A>, '')) IN (?,?)) OR
-//    (<alias>.collection_id = ? AND LOWER(COALESCE(<field_B>, '')) IN (?,?)))
+//
+//	((<alias>.collection_id = ? AND LOWER(COALESCE(<field_A>, '')) IN (?,?)) OR
+//	 (<alias>.collection_id = ? AND LOWER(COALESCE(<field_B>, '')) IN (?,?)))
 //
 // The `<field_X>` JSON extract uses scalar text extraction; this works
 // because DoneFieldKey in the models package only resolves done fields to

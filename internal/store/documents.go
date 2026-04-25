@@ -593,4 +593,3 @@ func scanDocuments(rows *sql.Rows) ([]models.Document, error) {
 	}
 	return docs, rows.Err()
 }
-

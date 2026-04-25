@@ -39,14 +39,14 @@ type Document struct {
 }
 
 type DocumentCreate struct {
-	Title          string `json:"title"`
-	Content        string `json:"content,omitempty"`
-	DocType        string `json:"doc_type,omitempty"`
-	Status         string `json:"status,omitempty"`
-	Tags           string `json:"tags,omitempty"`
-	Pinned         bool   `json:"pinned,omitempty"`
-	CreatedBy      string `json:"created_by,omitempty"`
-	Source         string `json:"source,omitempty"`
+	Title     string `json:"title"`
+	Content   string `json:"content,omitempty"`
+	DocType   string `json:"doc_type,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Tags      string `json:"tags,omitempty"`
+	Pinned    bool   `json:"pinned,omitempty"`
+	CreatedBy string `json:"created_by,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 type DocumentUpdate struct {
@@ -63,14 +63,14 @@ type DocumentUpdate struct {
 }
 
 type QuickSave struct {
-	Title          string `json:"title"`
-	Content        string `json:"content"`
-	DocType        string `json:"doc_type,omitempty"`
-	Status         string `json:"status,omitempty"`
-	Tags           string `json:"tags,omitempty"`
-	CreatedBy      string `json:"created_by,omitempty"`
-	Source         string `json:"source,omitempty"`
-	ChangeSummary  string `json:"change_summary,omitempty"`
+	Title         string `json:"title"`
+	Content       string `json:"content"`
+	DocType       string `json:"doc_type,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Tags          string `json:"tags,omitempty"`
+	CreatedBy     string `json:"created_by,omitempty"`
+	Source        string `json:"source,omitempty"`
+	ChangeSummary string `json:"change_summary,omitempty"`
 }
 
 type DocumentListParams struct {

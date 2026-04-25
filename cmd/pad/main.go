@@ -30,9 +30,9 @@ import (
 	"github.com/xarmian/pad/internal/config"
 	"regexp"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
-	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/metrics"

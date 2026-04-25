@@ -155,7 +155,7 @@ make build
 cp pad ~/.local/bin/   # or /usr/local/bin/
 ```
 
-Requires Go 1.25+ and Node.js 22+.
+Requires Go 1.26+ and Node.js 22+.
 
 The `go install github.com/xarmian/pad/cmd/pad@latest` path is not supported for the full Pad binary, because the web UI must be built and embedded during the source build.
 

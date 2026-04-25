@@ -35,8 +35,8 @@ type RedisBus struct {
 
 	// Track which workspace channels we're subscribed to in Redis,
 	// so we subscribe/unsubscribe as local SSE clients come and go.
-	wsCounts map[string]int         // workspace → local subscriber count
-	wsSubs   map[string]*redisSub   // workspace → active Redis subscription
+	wsCounts map[string]int       // workspace → local subscriber count
+	wsSubs   map[string]*redisSub // workspace → active Redis subscription
 
 	// Monotonic sequence counter for event IDs (local to this instance).
 	seq atomic.Int64

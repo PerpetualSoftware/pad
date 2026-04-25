@@ -463,4 +463,3 @@ func (s *Store) ResolveAgentRoleID(workspaceID, idOrSlug string) (string, error)
 	}
 	return role.ID, nil
 }
-

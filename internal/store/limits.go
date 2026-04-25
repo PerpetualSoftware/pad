@@ -50,7 +50,7 @@ var DefaultProLimits = PlanLimits{
 type LimitResult struct {
 	Allowed bool   `json:"allowed"`
 	Feature string `json:"feature"`
-	Limit   int    `json:"limit"`   // -1 means unlimited
+	Limit   int    `json:"limit"` // -1 means unlimited
 	Current int    `json:"current"`
 	Plan    string `json:"plan"`
 }
