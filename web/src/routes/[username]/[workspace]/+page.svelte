@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -37,8 +37,15 @@
 		if (browser) localStorage.removeItem(`pad-onboarding-dismissed-${wsSlug}`);
 	}
 
+	// `load(wsSlug)` calls `workspaceStore.setCurrent(slug)`, which
+	// SYNCHRONOUSLY reads `workspaces.find(...)` before its first await.
+	// That synchronous read would otherwise establish a reactive dependency
+	// on `workspaceStore.workspaces`, so any reorder via the topbar (which
+	// calls `workspaceStore.loadAll()`) would re-fire this effect and cause
+	// the dashboard to refetch + re-render — a visible flicker. Wrap in
+	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
 	$effect(() => {
-		if (wsSlug) load(wsSlug);
+		if (wsSlug) untrack(() => load(wsSlug));
 	});
 
 	// Workspace home shows only the workspace-level title — clear section/item.

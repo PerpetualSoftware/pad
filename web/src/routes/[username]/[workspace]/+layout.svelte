@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
@@ -89,14 +89,26 @@
 		}
 	});
 
-	// Initialize workspace, load collections, and reconnect SSE when workspace changes
+	// Initialize workspace, load collections, and reconnect SSE when the
+	// workspace slug changes. The body is wrapped in `untrack` because
+	// `workspaceStore.setCurrent(wsSlug)` synchronously reads
+	// `workspaces.find(...)`, which would otherwise establish a reactive
+	// dependency on the entire workspaces array. With that dependency,
+	// any reorder via the topbar (which calls `workspaceStore.loadAll()`
+	// after persisting) re-runs this whole effect — re-initializing
+	// the SSE callback and reassigning `workspaceStore.current` to a
+	// fresh object — and the resulting reactivity cascade flickers the
+	// current page. Wrapping in untrack keeps the only tracked dep the
+	// `wsSlug` read in the if-check, matching the comment's intent.
 	$effect(() => {
 		if (wsSlug) {
-			workspaceStore.setCurrent(wsSlug);
-			collectionStore.loadCollections(wsSlug);
-			starredStore.load(wsSlug);
-			syncService.setWorkspace(wsSlug);
-			connectSSE();
+			untrack(() => {
+				workspaceStore.setCurrent(wsSlug);
+				collectionStore.loadCollections(wsSlug);
+				starredStore.load(wsSlug);
+				syncService.setWorkspace(wsSlug);
+				connectSSE();
+			});
 		}
 	});
 

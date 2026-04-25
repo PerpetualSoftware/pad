@@ -41,27 +41,37 @@
 	// We replaced the previous `overflow-x: auto` scroll with a "priority+"
 	// pattern: pills that don't fit move into a `…` overflow menu. To
 	// decide which pills fit, we measure each pill's natural width once in
-	// a hidden ghost row, then walk the ordered list against the visible
-	// container's width. ResizeObserver re-derives on container width
-	// change (window resize, sidebar collapse, etc).
-	let containerEl: HTMLDivElement | null = $state(null);
+	// a hidden ghost row, then walk the ordered list against the centered
+	// row's width. ResizeObserver is on `.workspace-row` (the centered
+	// flex:1 wrapper that holds pills + trigger + add) so we measure the
+	// real available row, not just the content-collapsed pill list. Re-
+	// derives on container width change (window resize, sidebar collapse).
+	let rowEl: HTMLDivElement | null = $state(null);
 	let ghostEl: HTMLDivElement | null = $state(null);
 	let availableWidth = $state(0);
 	let pillWidths = $state(new Map<string, number>());
 
-	// Reserve width for the `…` trigger so the visible/overflow split is
-	// stable — see the rendering note on `.overflow-trigger-wrap.hidden`.
-	const TRIGGER_RESERVATION = 32;
-	const GAP = 2; // matches `.workspace-list` CSS gap
+	// Chrome that shares the centered row with the pills. Broken into
+	// named parts (instead of a single magic 72) so a styling change in
+	// one of the contributing CSS rules has an obvious place to update,
+	// and the math stays auditable. Numbers reflect the current CSS box
+	// model and `var(--space-2)` token (8px); update both together.
+	const TRIGGER_WIDTH = 28; // .overflow-trigger: 24 inner + 2px border × 2
+	const ADD_BUTTON_WIDTH = 28; // .workspace-add: 24 inner + 2px border × 2
+	const ROW_GAP = 2; // .workspace-row gap (between list, anchor, add)
+	const LIST_PADDING_RIGHT = 8; // .workspace-list padding-right (var(--space-2))
+	const CHROME_RESERVATION =
+		TRIGGER_WIDTH + ADD_BUTTON_WIDTH + 2 * ROW_GAP + LIST_PADDING_RIGHT; // = 68
+	const GAP = 2; // matches `.workspace-row` and `.workspace-list` CSS gap
 
 	$effect(() => {
-		if (!containerEl) return;
+		if (!rowEl) return;
 		const ro = new ResizeObserver((entries) => {
 			for (const entry of entries) {
 				availableWidth = entry.contentRect.width;
 			}
 		});
-		ro.observe(containerEl);
+		ro.observe(rowEl);
 		return () => ro.disconnect();
 	});
 
@@ -86,24 +96,24 @@
 	});
 
 	// ── Visible / overflow split ────────────────────────────────────────
-	// Always reserves trigger width when there's overflow, AND renders the
-	// trigger as `visibility: hidden` even when empty so layout is stable.
-	// This avoids oscillation between "trigger hidden → list grows → all
-	// fit → trigger hidden" and the next frame's "all fit → trigger shown
-	// (?) → ...". Stable layout > shaving 28px when not needed.
+	// Pills compete for `budget = availableWidth - CHROME_RESERVATION`.
+	// Chrome (trigger + add button + gaps) is always reserved, so layout
+	// is stable across overflow / no-overflow transitions — the trigger
+	// itself uses visibility: hidden when there's nothing to overflow.
 	let propVisibleWorkspaces = $derived.by(() => {
 		if (!availableWidth || pillWidths.size === 0) return dndWorkspaces;
 
-		// Total width if we tried to fit everything (no trigger).
+		// Pill space = row width minus the chrome that sits beside the pills.
+		const budget = availableWidth - CHROME_RESERVATION;
+
+		// Total width if we tried to fit everything.
 		let total = 0;
 		for (let i = 0; i < dndWorkspaces.length; i++) {
 			total += pillWidths.get(dndWorkspaces[i].slug) ?? 0;
 			if (i > 0) total += GAP;
 		}
-		if (total <= availableWidth) return dndWorkspaces;
+		if (total <= budget) return dndWorkspaces;
 
-		// Some pills overflow — reserve trigger room.
-		const budget = availableWidth - TRIGGER_RESERVATION - GAP;
 		const activeSlug = workspaceStore.current?.slug ?? '';
 
 		// Pin active: claim its width up front regardless of position.
@@ -156,26 +166,94 @@
 	});
 
 	// ── Overflow menu state ──────────────────────────────────────────────
+	// The menu's `.open` class is bound to `overflowOpen || isDragging ||
+	// dragArmed`:
+	//   • `overflowOpen` — user clicked the … trigger.
+	//   • `isDragging`   — drag in progress, auto-show during drag.
+	//   • `dragArmed`    — mousedown on a draggable pill but drag hasn't
+	//      started yet. Pre-arm matters because `svelte-dnd-action` does
+	//      its drop-zone hit-testing with `document.elementsFromPoint`,
+	//      which excludes elements with `pointer-events: none`. If the
+	//      menu is still `pointer-events: none` at the moment the drag
+	//      threshold is crossed, the library evaluates the zone as
+	//      non-interactive and stops considering it as a hit target for
+	//      the rest of this drag — the user can see the menu but drops
+	//      and FLIP animations on existing items don't register. Flipping
+	//      `.open` synchronously on mousedown sidesteps that race.
+	// The menu DOM itself is mounted whenever `overflowZone.length > 0`,
+	// so the dndzone is registered well before any drag starts.
 	let overflowOpen = $state(false);
+	let dragArmed = $state(false);
 	let overflowTriggerEl: HTMLButtonElement | null = $state(null);
-	let springLoadTimer: ReturnType<typeof setTimeout> | null = null;
 	// Single tracked timer for the post-drop cooldown — re-armed on each
 	// drop so two drops within 1s don't see the first timeout end the
 	// cooldown for the second (Codex round 1 MEDIUM).
 	let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
-	const SPRING_LOAD_MS = 400;
 
-	function clearSpringLoad() {
-		if (springLoadTimer) {
-			clearTimeout(springLoadTimer);
-			springLoadTimer = null;
-		}
+	// Drag-end click suppression. After a drop, the browser fires a
+	// synthetic `click` on the original mousedown target (the dragged
+	// `<a>` pill). svelte-dnd-action does NOT cancel that click, so
+	// without this guard the click reaches `handleWsClick`, calls
+	// `goto()`, and navigates to the dragged workspace's restore route
+	// — which the user experiences as the current page refreshing
+	// every time they reorder workspaces. `armDropClickGuard()` is
+	// called at the end of every finalize handler; `handleWsClick`
+	// bails out while the guard is active.
+	let dropClickGuard = false;
+	let dropClickGuardTimer: ReturnType<typeof setTimeout> | null = null;
+	function armDropClickGuard() {
+		dropClickGuard = true;
+		if (dropClickGuardTimer) clearTimeout(dropClickGuardTimer);
+		// 100ms is comfortably longer than the gap between mouseup and
+		// the synthetic click, but short enough that a deliberate click
+		// shortly after a drag isn't accidentally swallowed.
+		dropClickGuardTimer = setTimeout(() => {
+			dropClickGuard = false;
+			dropClickGuardTimer = null;
+		}, 100);
 	}
 
 	function closeOverflow() {
 		overflowOpen = false;
-		clearSpringLoad();
 	}
+
+	function armMenuForDrag(e: MouseEvent) {
+		// Primary button only — secondary clicks shouldn't pre-open.
+		if (e.button !== 0) return;
+		dragArmed = true;
+	}
+
+	function disarmMenu() {
+		// Cleared on mouseup if no drag actually started. If a drag DID
+		// start, `isDragging` is true here and the corresponding finalize
+		// handler clears `dragArmed` itself when the drop completes.
+		if (!isDragging) dragArmed = false;
+	}
+
+	// Roll back any cooldown state set by an earlier (source-zone) finalize
+	// when a later (target-zone) finalize takes the active-pin reject path.
+	// svelte-dnd-action doesn't guarantee finalize ordering across zones, so
+	// the visible-zone finalize may run first, set `dropCooldown = true`,
+	// and `schedulePersist`. If the overflow/trigger finalize then rejects,
+	// `cancelPersist` skips the persist microtask — which means the
+	// cooldown timer (only armed inside `persistGlobalOrder`) is never set,
+	// and `dropCooldown` stays stuck `true`. Both store→local sync effects
+	// are gated on `!dropCooldown`, so a stuck flag detaches the topbar
+	// from `workspaceStore.workspaces` until the next successful drop.
+	function clearCooldownAfterRejection() {
+		dropCooldown = false;
+		if (cooldownTimer) {
+			clearTimeout(cooldownTimer);
+			cooldownTimer = null;
+		}
+	}
+
+	// Visual open state for the overflow menu — used both for the `.open`
+	// CSS class and for `aria-expanded` on the trigger so screen readers
+	// see the same state as sighted users. (The keyboard menu navigation
+	// stays gated on `overflowOpen` only, since drag-driven opens aren't
+	// keyboard-reachable in the first place.)
+	let menuVisible = $derived(overflowOpen || isDragging || dragArmed);
 
 	// ── DnD handlers ─────────────────────────────────────────────────────
 	function handleVisibleConsider(e: CustomEvent<DndEvent<Workspace>>) {
@@ -193,13 +271,23 @@
 		// the order in which the source and target finalize events fire.)
 		if (dragRejected) {
 			dragRejected = false;
+			dragArmed = false;
 			isDragging = false;
-			clearSpringLoad();
+			armDropClickGuard();
 			return;
 		}
 		visibleZone = e.detail.items;
+		// Cooldown MUST be set synchronously, before flipping `isDragging`,
+		// so the resync `$effect` (which runs in a microtask before the
+		// persist microtask) sees `dropCooldown=true` and skips clobbering
+		// `visibleZone` back to the un-updated derived value. Without this
+		// gate, the just-set post-drag order is reset before `persistGlobalOrder`
+		// has a chance to fold it into `dndWorkspaces` — and the API call
+		// then persists the pre-drag order, producing the visual snap-back.
+		dropCooldown = true;
+		dragArmed = false;
 		isDragging = false;
-		clearSpringLoad();
+		armDropClickGuard();
 		schedulePersist();
 	}
 
@@ -220,36 +308,35 @@
 			dragRejected = true;
 			resetZonesFromProps();
 			cancelPersist();
+			// If the visible-zone finalize ran first, it set dropCooldown=true
+			// and scheduled a persist. cancelPersist() above stops that persist,
+			// but the cooldown timer was never armed (it's set inside the
+			// cancelled microtask) — clear the cooldown now so sync effects
+			// don't stay gated off forever.
+			clearCooldownAfterRejection();
+			dragArmed = false;
 			isDragging = false;
-			clearSpringLoad();
+			armDropClickGuard();
 			return;
 		}
 		overflowZone = next;
+		// Set cooldown BEFORE isDragging — see handleVisibleFinalize.
+		dropCooldown = true;
+		dragArmed = false;
 		isDragging = false;
-		clearSpringLoad();
+		armDropClickGuard();
 		schedulePersist();
 	}
 
-	// Trigger zone — single-slot drop target. While a drag is hovering,
-	// schedule the spring-load timer to auto-open the menu so the user
-	// can place the dropped item at a precise position. If the user drops
-	// on the trigger before the timer fires, the dropped item is appended
-	// to the end of overflow.
+	// Trigger zone — single-slot drop target. The menu auto-opens on
+	// drag start (see the `.open` class binding on `.overflow-menu`), so
+	// the older spring-loaded "hover for 400ms to open" behavior is no
+	// longer needed. The trigger zone still exists so dropping directly
+	// on the `…` button appends the item to the end of the overflow set.
 	function handleTriggerConsider(e: CustomEvent<DndEvent<Workspace>>) {
 		triggerZone = e.detail.items;
 		isDragging = true;
 		dragRejected = false;
-
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const hovering = triggerZone.some((item: any) => !!item[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
-		if (hovering && !overflowOpen && !springLoadTimer) {
-			springLoadTimer = setTimeout(() => {
-				springLoadTimer = null;
-				overflowOpen = true;
-			}, SPRING_LOAD_MS);
-		} else if (!hovering) {
-			clearSpringLoad();
-		}
 	}
 
 	async function handleTriggerFinalize(e: CustomEvent<DndEvent<Workspace>>) {
@@ -258,7 +345,6 @@
 			(item: any) => !item[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		triggerZone = [];
-		clearSpringLoad();
 
 		// Active-pin under "drop on trigger": REJECT the whole drag if
 		// active was the dropped item, same as the overflow zone. Don't
@@ -269,14 +355,24 @@
 			dragRejected = true;
 			resetZonesFromProps();
 			cancelPersist();
+			// See clearCooldownAfterRejection comment in handleOverflowFinalize:
+			// the source-zone finalize may have already set dropCooldown=true,
+			// and the cancelled persist won't arm the cooldown timer.
+			clearCooldownAfterRejection();
+			dragArmed = false;
 			isDragging = false;
+			armDropClickGuard();
 			return;
 		}
 
 		if (dropped.length > 0) {
 			overflowZone = [...overflowZone, ...dropped];
 		}
+		// Set cooldown BEFORE isDragging — see handleVisibleFinalize.
+		dropCooldown = true;
+		dragArmed = false;
 		isDragging = false;
+		armDropClickGuard();
 		schedulePersist();
 	}
 
@@ -403,10 +499,13 @@
 	// runtime no-ops the writes, but it's still tidier to cancel.
 	$effect(() => {
 		return () => {
-			clearSpringLoad();
 			if (cooldownTimer) {
 				clearTimeout(cooldownTimer);
 				cooldownTimer = null;
+			}
+			if (dropClickGuardTimer) {
+				clearTimeout(dropClickGuardTimer);
+				dropClickGuardTimer = null;
 			}
 		};
 	});
@@ -445,6 +544,13 @@
 	// Click on the *current* workspace overrides the restore — gives the
 	// user a way back to the workspace dashboard from any deep route.
 	function handleWsClick(e: MouseEvent, ws: Workspace) {
+		// Suppress the synthetic click that fires after a drag finalizes
+		// (see armDropClickGuard). Without this, every drop triggers a
+		// goto() to the dragged workspace, refreshing the current page.
+		if (dropClickGuard) {
+			e.preventDefault();
+			return;
+		}
 		if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 		e.preventDefault();
 		closeOverflow();
@@ -482,13 +588,18 @@
 </script>
 
 <svelte:window
+	onmouseup={disarmMenu}
 	onclick={(e) => {
 		const target = e.target as HTMLElement;
 		if (userMenuOpen && !target.closest('.user-menu-container')) {
 			closeUserMenu();
 		}
+		// Don't close on outside-click during a drag — the click event
+		// fired on mouseup at drag end would otherwise tear down the
+		// menu while finalize handlers are still wiring up state.
 		if (
 			overflowOpen &&
+			!isDragging &&
 			!target.closest('#workspace-overflow-menu') &&
 			!target.closest('.overflow-trigger-wrap')
 		) {
@@ -504,111 +615,47 @@
 		<div class="topbar-left">
 			<PadLogo />
 		</div>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="workspace-list"
-			bind:this={containerEl}
-			use:dndzone={{
-				items: visibleZone,
-				flipDurationMs,
-				type: 'topbar-workspace',
-				dragDisabled: uiStore.isTouch
-			}}
-			onconsider={handleVisibleConsider}
-			onfinalize={handleVisibleFinalize}
-		>
-			{#each visibleZone as ws (ws.id)}
-				<!--
-					href stays pointed at the workspace dashboard so a
-					middle-click / cmd-click / right-click → "Open in new
-					tab" lands on a clean dashboard. Plain left-click is
-					intercepted to restore the last-visited route in that
-					workspace (TASK-754) — the previous behavior was a
-					hard `<a>` nav to the dashboard, which silently
-					overwrote the saved deep route in localStorage on
-					every workspace switch.
-				-->
-				<a
-					href="/{ws.owner_username}/{ws.slug}"
-					class="workspace-item"
-					class:active={ws.slug === currentSlug}
-					title={ws.name}
-					onclick={(e) => handleWsClick(e, ws)}
-				>
-					<span
-						class="workspace-icon"
-						style="background: {ws.slug === currentSlug
-							? wsColor(ws.name)
-							: 'transparent'}; color: {ws.slug === currentSlug
-							? '#fff'
-							: 'var(--text-secondary)'}; border-color: {wsColor(ws.name)}"
-					>
-						{wsInitial(ws.name)}
-					</span>
-					<span class="workspace-name">{ws.name}</span>
-				</a>
-			{/each}
-		</div>
-
 		<!--
-			Overflow trigger. Always rendered (so layout stays stable as
-			workspaces are added/removed) but visually hidden when nothing
-			overflows. The wrapper is a 3rd dndzone with the same `type`
-			as the visible row and the menu, so dropping on the trigger
-			appends to overflow. Spring-loaded auto-open on hover-during-
-			drag is implemented in handleTriggerConsider.
+			Centered row that holds the workspace pills, the overflow `…`
+			trigger, and the `+` add button as a single visual group. The
+			row is `flex: 1 1 auto; justify-content: center` so its
+			contents stay centered as the topbar widens or narrows, and
+			ResizeObserver measures THIS element to know how much space
+			pills can claim (see CHROME_RESERVATION above). Putting the
+			trigger + add inside this group is what keeps the `…` button
+			right next to the last visible pill instead of pinned to the
+			far right of the topbar.
 		-->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="overflow-trigger-wrap"
-			class:hidden={overflowZone.length === 0}
-			use:dndzone={{
-				items: triggerZone,
-				flipDurationMs,
-				type: 'topbar-workspace',
-				dragDisabled: uiStore.isTouch || overflowZone.length === 0
-			}}
-			onconsider={handleTriggerConsider}
-			onfinalize={handleTriggerFinalize}
-		>
-			<button
-				class="overflow-trigger"
-				bind:this={overflowTriggerEl}
-				aria-haspopup="menu"
-				aria-expanded={overflowOpen}
-				aria-controls="workspace-overflow-menu"
-				aria-label="Show {overflowZone.length} more workspace{overflowZone.length === 1
-					? ''
-					: 's'}"
-				title="More workspaces"
-				onclick={() => (overflowOpen = !overflowOpen)}
-			>
-				<span class="overflow-dots" aria-hidden="true">⋯</span>
-			</button>
-		</div>
-
-		{#if overflowOpen && overflowZone.length > 0}
+		<div class="workspace-row" bind:this={rowEl}>
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
-				id="workspace-overflow-menu"
-				class="overflow-menu"
-				role="menu"
+				class="workspace-list"
 				use:dndzone={{
-					items: overflowZone,
+					items: visibleZone,
 					flipDurationMs,
 					type: 'topbar-workspace',
 					dragDisabled: uiStore.isTouch
 				}}
-				onconsider={handleOverflowConsider}
-				onfinalize={handleOverflowFinalize}
+				onconsider={handleVisibleConsider}
+				onfinalize={handleVisibleFinalize}
 			>
-				{#each overflowZone as ws (ws.id)}
+				{#each visibleZone as ws (ws.id)}
+					<!--
+						href stays pointed at the workspace dashboard so a
+						middle-click / cmd-click / right-click → "Open in
+						new tab" lands on a clean dashboard. Plain left-
+						click is intercepted to restore the last-visited
+						route in that workspace (TASK-754) — the previous
+						behavior was a hard `<a>` nav to the dashboard,
+						which silently overwrote the saved deep route in
+						localStorage on every workspace switch.
+					-->
 					<a
 						href="/{ws.owner_username}/{ws.slug}"
-						class="overflow-menu-item"
+						class="workspace-item"
 						class:active={ws.slug === currentSlug}
-						role="menuitem"
 						title={ws.name}
+						onmousedown={armMenuForDrag}
 						onclick={(e) => handleWsClick(e, ws)}
 					>
 						<span
@@ -625,15 +672,118 @@
 					</a>
 				{/each}
 			</div>
-		{/if}
 
-		<button
-			class="workspace-add"
-			onclick={() => uiStore.openCreateWorkspace()}
-			title="New workspace"
-		>
-			<span class="add-icon">+</span>
-		</button>
+			<!--
+				Anchor box: a `position: relative` wrapper around the
+				trigger and its dropdown menu. The menu is `position:
+				absolute; right: 0` relative to this anchor, so it always
+				opens directly under the `…` button instead of being
+				centered against the topbar.
+			-->
+			<div class="overflow-anchor">
+				<!--
+					Overflow trigger. Always rendered (so layout stays
+					stable as workspaces are added/removed) but visually
+					hidden when nothing overflows. The wrapper is a 3rd
+					dndzone with the same `type` as the visible row and
+					the menu, so dropping on the trigger appends to
+					overflow. Spring-loaded auto-open on hover-during-
+					drag is implemented in handleTriggerConsider.
+				-->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="overflow-trigger-wrap"
+					class:hidden={overflowZone.length === 0}
+					use:dndzone={{
+						items: triggerZone,
+						flipDurationMs,
+						type: 'topbar-workspace',
+						dragDisabled: uiStore.isTouch || overflowZone.length === 0
+					}}
+					onconsider={handleTriggerConsider}
+					onfinalize={handleTriggerFinalize}
+				>
+					<button
+						class="overflow-trigger"
+						bind:this={overflowTriggerEl}
+						aria-haspopup="menu"
+						aria-expanded={menuVisible}
+						aria-controls="workspace-overflow-menu"
+						aria-label="Show {overflowZone.length} more workspace{overflowZone.length === 1
+							? ''
+							: 's'}"
+						title="More workspaces"
+						onclick={() => (overflowOpen = !overflowOpen)}
+					>
+						<span class="overflow-dots" aria-hidden="true">⋯</span>
+					</button>
+				</div>
+
+				<!--
+					Always mount the menu DOM whenever overflow exists, so
+					`svelte-dnd-action` can register its dndzone before any
+					drag starts. (Mounting the zone mid-drag — what the old
+					spring-load path did — leaves the in-progress drag
+					unable to recognize the zone as a valid drop target.)
+					Visual show/hide is controlled by the `.open` class:
+					open whenever the user click-opened, a drag is in
+					progress, OR the menu has been pre-armed by mousedown
+					on a draggable pill. Pre-arming flips `pointer-events`
+					to `auto` *before* `svelte-dnd-action`'s drop hit-test
+					runs at drag start — see the dragArmed comment in the
+					script section.
+				-->
+				{#if overflowZone.length > 0}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						id="workspace-overflow-menu"
+						class="overflow-menu"
+						class:open={menuVisible}
+						role="menu"
+						use:dndzone={{
+							items: overflowZone,
+							flipDurationMs,
+							type: 'topbar-workspace',
+							dragDisabled: uiStore.isTouch
+						}}
+						onconsider={handleOverflowConsider}
+						onfinalize={handleOverflowFinalize}
+					>
+						{#each overflowZone as ws (ws.id)}
+							<a
+								href="/{ws.owner_username}/{ws.slug}"
+								class="overflow-menu-item"
+								class:active={ws.slug === currentSlug}
+								role="menuitem"
+								title={ws.name}
+								onmousedown={armMenuForDrag}
+								onclick={(e) => handleWsClick(e, ws)}
+							>
+								<span
+									class="workspace-icon"
+									style="background: {ws.slug === currentSlug
+										? wsColor(ws.name)
+										: 'transparent'}; color: {ws.slug === currentSlug
+										? '#fff'
+										: 'var(--text-secondary)'}; border-color: {wsColor(ws.name)}"
+								>
+									{wsInitial(ws.name)}
+								</span>
+								<span class="workspace-name">{ws.name}</span>
+							</a>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			<button
+				class="workspace-add"
+				onclick={() => uiStore.openCreateWorkspace()}
+				title="New workspace"
+			>
+				<span class="add-icon">+</span>
+			</button>
+		</div>
 
 		<!--
 			Hidden ghost row used to measure each pill's natural width.
@@ -846,10 +996,31 @@
 	}
 
 	/*
+		Centered row that wraps the workspace pills, the … overflow
+		trigger, and the + add button. `flex: 1 1 auto` claims the
+		leftover topbar space so ResizeObserver sees the real available
+		width (not the content-collapsed width of the inner pill list —
+		that was the IDEA-758 regression fix). `justify-content: center`
+		keeps the trio visually centered when there's slack, matching the
+		pre-overflow-menu layout. Putting all three in this row is also
+		what keeps the … button right after the last visible pill rather
+		than pinned to the far edge of the topbar.
+	*/
+	.workspace-row {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: 1 1 auto;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	/*
 		Workspace list — pills that fit. No more `overflow-x: auto`; pills
 		that don't fit are routed into the .overflow-menu via
 		propVisibleWorkspaces / propOverflowWorkspaces. See script for the
-		measurement + split logic.
+		measurement + split logic. Content-sized within `.workspace-row`
+		so the … trigger sits immediately after the last visible pill.
 	*/
 	.workspace-list {
 		display: flex;
@@ -944,6 +1115,21 @@
 	}
 
 	/*
+		Positioning anchor for the overflow trigger + dropdown menu.
+		`position: relative` makes the absolutely-positioned `.overflow-
+		menu` open directly under the `…` button (anchored to the right
+		edge of this box) instead of being centered against the whole
+		topbar. The anchor itself is a flex item inside `.workspace-row`
+		and shrinks to its content (the trigger).
+	*/
+	.overflow-anchor {
+		position: relative;
+		display: flex;
+		align-items: center;
+		flex-shrink: 0;
+	}
+
+	/*
 		Overflow trigger — visually a sibling of .workspace-list and
 		.workspace-add. Always rendered to keep layout stable; visually
 		hidden via `visibility: hidden` when overflowZone is empty (also
@@ -987,13 +1173,41 @@
 	}
 
 	/*
-		Overflow menu — anchored under the trigger. Positioned absolutely
-		from .topbar so it floats over surrounding chrome. Reuses the
-		.user-dropdown look for visual consistency.
+		Overflow menu — anchored under the `…` trigger via `.overflow-
+		anchor`'s `position: relative`. `right: 0` aligns the menu's
+		right edge with the trigger's right edge, so the menu opens
+		below right-aligned (per IDEA-758 spec) and extends leftward
+		toward the pills.
+
+		Mounted whenever `overflowZone.length > 0` so `svelte-dnd-
+		action` registers the dndzone eagerly. Hidden via `visibility:
+		hidden` when not `.open`. Subtle but critical: every other
+		obvious "hide" mechanism breaks svelte-dnd-action's drop-zone
+		hit-test (which uses `getBoundingRectNoTransforms` +
+		`isPointInsideRect`, NOT `elementsFromPoint`):
+		  • `display: none`              → rect is {0,0,0,0}; never hit.
+		  • `pointer-events: none`       → no effect on the rect-based
+		    hit-test, but sometimes interacts oddly with cursor capture.
+		  • `transform: scale(0)`        → the library tries to undo
+		    the transform mathematically (intersection.js:33-37), but
+		    parses transform-origin with plain `parseFloat`, so a
+		    percentage origin like `top right` ("100% 0%") is read as
+		    "100 pixels", and the reconstructed rect lands far from
+		    the visible menu position. The hit-test then always misses.
+		`visibility: hidden` leaves `offsetWidth/Height` and
+		`getBoundingClientRect` untouched, so svelte-dnd-action sees
+		the correct rect at the menu's actual layout position whether
+		the menu is visually shown or not — drops register reliably
+		the moment the cursor enters the rect during a drag. Visibility
+		also blocks pointer events and removes the element from the
+		a11y tree when hidden, so closed-state clicks pass through to
+		page content beneath cleanly. Opacity transitions for the
+		visual fade-in; visibility flips instantly on `.open`.
 	*/
 	.overflow-menu {
 		position: absolute;
 		top: calc(100% + 6px);
+		right: 0;
 		min-width: 220px;
 		max-height: 60vh;
 		overflow-y: auto;
@@ -1006,16 +1220,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		animation: dropdown-in 0.12s ease-out;
-		/*
-			Approximate horizontal anchor: place near the trigger which
-			sits between the list and the + button. Trigger is centered in
-			the topbar by flexbox; menu uses translateX to nudge under it.
-			Precise positioning isn't critical — the menu just needs to be
-			obviously associated with the trigger.
-		*/
-		left: 50%;
-		transform: translateX(-50%);
+		visibility: hidden;
+		opacity: 0;
+		transition: opacity 0.12s ease-out;
+	}
+	.overflow-menu.open {
+		visibility: visible;
+		opacity: 1;
 	}
 	.overflow-menu-item {
 		display: flex;
