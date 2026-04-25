@@ -164,6 +164,77 @@ func schemaFieldKeys(t *testing.T, schemaJSON string) []string {
 	return keys
 }
 
+// TestSQLiteConcurrentWritersNoBusy guards against the BUG-748-followup
+// regression where Go's default deferred-mode transactions returned
+// SQLITE_BUSY immediately under contention because lock-upgrade does not
+// honor busy_timeout. With `_txlock=immediate` set in the DSN, every
+// `db.Begin()` issues `BEGIN IMMEDIATE`, so the write lock is acquired
+// up-front and concurrent writers wait via busy_timeout instead of
+// failing fast.
+//
+// The benchmark in `bench_concurrent_test.go` quantifies throughput;
+// this test specifically asserts ZERO errors under a concurrent-update
+// workload that previously produced multiple `SQLITE_BUSY` returns.
+func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific concurrency test; postgres has its own MVCC semantics")
+	}
+
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer s.Close()
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "concurrency"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	// 20 goroutines each create one item — these all open transactions
+	// (tryCreateItem in items.go uses db.Begin), and previously raced
+	// for the write-lock on upgrade.
+	const workers = 20
+	errCh := make(chan error, workers)
+	doneCh := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		idx := i
+		go func() {
+			_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+				Title:  fmt.Sprintf("concurrent-%d", idx),
+				Fields: `{"status":"open"}`,
+			})
+			if err != nil {
+				errCh <- err
+			}
+			doneCh <- struct{}{}
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		<-doneCh
+	}
+	close(errCh)
+
+	var errs []error
+	for e := range errCh {
+		errs = append(errs, e)
+	}
+	if len(errs) > 0 {
+		t.Errorf("expected zero errors under concurrent writes, got %d:", len(errs))
+		for _, e := range errs {
+			t.Errorf("  - %v", e)
+		}
+	}
+}
+
 func TestNewStore(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("skipping SQLite-specific test when running against PostgreSQL")

@@ -34,20 +34,42 @@ func (s *Store) D() Dialect { return s.dialect }
 func (s *Store) DB() *sql.DB { return s.db }
 
 // New creates a Store backed by SQLite at the given path.
+//
+// The DSN is configured for safe concurrent use under Go's connection pool:
+//
+//   - `_pragma=busy_timeout(5000)`: when a connection finds the database
+//     locked, retry for up to 5 seconds before returning SQLITE_BUSY. The
+//     pragma is applied per-connection by the driver, so every pool member
+//     inherits it.
+//   - `_pragma=foreign_keys(on)`: foreign-key enforcement is per-connection
+//     in SQLite. Setting it via the DSN guarantees ALL pool members enforce
+//     them, not just the one that received a `db.Exec("PRAGMA ...")` call.
+//   - `_txlock=immediate`: makes every `db.Begin()` issue `BEGIN IMMEDIATE`
+//     instead of the default `BEGIN DEFERRED`. With deferred mode, a
+//     transaction starts holding only a SHARED lock and tries to upgrade
+//     to a write lock on the first INSERT/UPDATE — and lock upgrades are
+//     refused with SQLITE_BUSY *immediately* if another connection holds
+//     the write lock, regardless of busy_timeout (SQLite refuses to wait
+//     because that would risk deadlock between two connections both holding
+//     SHARED locks). With IMMEDIATE, the write lock is acquired at BEGIN
+//     time, and busy_timeout's wait-and-retry behaviour does apply, so
+//     concurrent writers serialize cleanly instead of failing with
+//     "database is locked". Reads are unaffected: single-statement SELECTs
+//     don't open a transaction at the SQL layer, so they continue to run
+//     concurrently against the WAL snapshot.
+//   - `journal_mode=WAL` is set via Exec below; WAL is a database-level
+//     setting (stored in the file header), so it persists across
+//     connections after the first one applies it.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Enable WAL mode
+	// Enable WAL mode (database-level: persists across connections).
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-
-	// Enable foreign keys
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	s := &Store{db: db, dialect: &sqliteDialect{}}
