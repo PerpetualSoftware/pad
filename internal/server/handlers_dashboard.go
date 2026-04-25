@@ -208,12 +208,13 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		allCollections = collections
 	}
 	ctxMap := buildDoneContextMap(allCollections)
-	// Note: visibility filtering for the dashboard outputs (summary,
-	// plans, attention, suggestions) is applied through dashCollIDs /
-	// dashItemIDs on the ListItems calls below — not by trimming the
-	// `collections` slice here. `collections` is now only retained as
-	// the fallback target for `allCollections` above when the minimal
-	// listing fails.
+	// Note: the `collections` slice is not part of response visibility
+	// filtering. Dashboard outputs are filtered by dashCollIDs /
+	// dashItemIDs on the ListItems calls below, plus per-item
+	// isCollectionVisible / isItemVisibleToGuest checks for outputs
+	// that walk graphs (plan progress, blocked attention, suggested
+	// next). `collections` is retained only as the fallback target for
+	// `allCollections` above when ListCollectionsMinimal fails.
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{
