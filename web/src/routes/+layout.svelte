@@ -9,6 +9,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
+	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
@@ -209,7 +210,9 @@
 								<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
 							</svg>
 						</button>
-						<a href="/{workspaceStore.current?.owner_username ?? ''}/{workspaceStore.current?.slug ?? ''}" class="mobile-title">{workspaceStore.current?.name ?? 'Pad'}</a>
+						<div class="mobile-switcher-slot">
+							<WorkspaceSwitcher mobile />
+						</div>
 					</div>
 				{/if}
 				{@render children()}
@@ -266,15 +269,11 @@
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
-	.mobile-title {
-		font-weight: 600;
-		font-size: 0.95em;
-		color: var(--text-primary);
-		text-decoration: none;
-	}
-	.mobile-title:hover {
-		color: var(--accent-blue);
-		text-decoration: none;
+	.mobile-switcher-slot {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
 	}
 	.topbar-expand-btn {
 		position: absolute;
