@@ -347,11 +347,9 @@ func ensureSkills() skillResult {
 			result.updated++
 			result.tools = append(result.tools, tool.Label)
 		} else {
-			// Not installed — install
-			if cli.IsTerminal() && len(detected) > 0 {
-				// For new installs in interactive mode, we install without prompting
-				// since this is part of the init flow and the user expects setup
-			}
+			// Not installed — install. In interactive mode this proceeds
+			// without prompting because it's part of the init flow and the
+			// user already opted in.
 			path, err := cli.InstallForTool(tool, expected)
 			if err != nil {
 				continue

@@ -150,7 +150,7 @@ func PrintItemTable(items []models.Item) {
 			pin = color.YellowString("* ")
 		}
 		ref := ItemRef(item)
-		titlePart := item.Title
+		var titlePart string
 		if ref != "" {
 			titlePart = BoldCyan.Sprint(ref) + "  " + Bold.Sprint(item.Title)
 		} else {

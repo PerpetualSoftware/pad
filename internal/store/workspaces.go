@@ -66,13 +66,10 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 		slug = slugify(input.Name)
 	}
 
-	// Ensure unique slug
-	finalSlug, err := s.uniqueSlug("workspaces", "id", "", slug)
-	if err != nil {
-		return nil, err
-	}
-	// For workspaces, slug is globally unique, so we need a different check
-	finalSlug, err = s.uniqueWorkspaceSlug(slug)
+	// Workspace slugs are globally unique (not scoped to a workspace
+	// like collection/item slugs), so we use a workspace-specific
+	// uniqueness check rather than the generic uniqueSlug helper.
+	finalSlug, err := s.uniqueWorkspaceSlug(slug)
 	if err != nil {
 		return nil, err
 	}

@@ -122,13 +122,13 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Convert to interface slice for JSON marshaling.
+	// Convert to interface slice for JSON marshaling. make() always
+	// returns a non-nil slice, which serialises to "[]" rather than
+	// "null", so we only need to guard deletedIDs (which can be nil
+	// when not initialised above).
 	updatedItems := make([]interface{}, len(updated))
 	for i, item := range updated {
 		updatedItems[i] = item
-	}
-	if updatedItems == nil {
-		updatedItems = []interface{}{}
 	}
 	if deletedIDs == nil {
 		deletedIDs = []string{}

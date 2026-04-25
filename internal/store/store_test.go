@@ -93,14 +93,12 @@ func newPostgresConn(connStr string) (*Store, error) {
 // e.g. "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
 // becomes "postgres://pad:pad@localhost:5432/newdb?sslmode=disable"
 func replaceDBName(connStr, newDB string) string {
-	// Find the last '/' before any '?' query string.
+	// Split off any '?' query string so we only operate on the path.
 	query := ""
 	base := connStr
-	if idx := len(connStr) - len(connStr); idx >= 0 {
-		if qIdx := indexOf(connStr, '?'); qIdx >= 0 {
-			query = connStr[qIdx:]
-			base = connStr[:qIdx]
-		}
+	if qIdx := indexOf(connStr, '?'); qIdx >= 0 {
+		query = connStr[qIdx:]
+		base = connStr[:qIdx]
 	}
 	// Find the last '/' in the base to replace the db name.
 	if lastSlash := lastIndexOf(base, '/'); lastSlash >= 0 {
