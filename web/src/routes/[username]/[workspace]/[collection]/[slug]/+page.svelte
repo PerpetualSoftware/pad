@@ -258,6 +258,11 @@
 			} catch { agentRoles = []; }
 		} catch (e: any) {
 			error = e.message ?? 'Failed to load item';
+			// Clear the workspace's last-route cache so the workspace
+			// switcher (TASK-754) doesn't keep restoring this dead item
+			// URL on subsequent re-entries. The workspace +layout will
+			// re-populate the cache as soon as the user navigates again.
+			try { localStorage.removeItem(`pad-last-route-${wsSlug}`); } catch {}
 		} finally {
 			loading = false;
 

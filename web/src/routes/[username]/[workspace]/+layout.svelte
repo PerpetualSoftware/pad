@@ -66,15 +66,24 @@
 	// switcher (WorkspaceSwitcher.svelte) can restore it on switch instead
 	// of always landing on the dashboard. Implements IDEA-753 / TASK-754.
 	//
+	// We persist `pathname + search` so URL-carried state (collection
+	// view mode, sort, group-by, filters, search query — see e.g.
+	// `/[collection]/+page.svelte` which mutates `?view=...`) is part of
+	// the restored location.
+	//
 	// Per CONVE-606, this is its own effect with a clean dependency list
-	// (wsSlug + pathname). Combining with the title sync above would re-run
-	// it on async workspace-name resolution and could overwrite the saved
-	// route at unexpected times. Storage failures (private-mode quota,
-	// disabled storage) are swallowed — restoration just won't kick in.
+	// (wsSlug + pathname + search). Combining with the title sync above
+	// would re-run it on async workspace-name resolution and could
+	// overwrite the saved route at unexpected times. Storage failures
+	// (private-mode quota, disabled storage) are swallowed — restoration
+	// just won't kick in.
 	$effect(() => {
 		if (!wsSlug) return;
 		try {
-			localStorage.setItem(`pad-last-route-${wsSlug}`, page.url.pathname);
+			localStorage.setItem(
+				`pad-last-route-${wsSlug}`,
+				page.url.pathname + page.url.search
+			);
 		} catch {
 			// localStorage unavailable; silent no-op.
 		}

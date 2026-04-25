@@ -66,13 +66,17 @@
 		// Falls back to the dashboard on miss, parse error, storage error,
 		// or any saved path that doesn't belong to this workspace (guards
 		// against username changes / corrupt entries / cross-workspace
-		// bleed). Implements IDEA-753 / TASK-754.
+		// bleed). Saved value can include a `?...` query string — we
+		// validate the path-portion only. Implements IDEA-753 / TASK-754.
 		const fallback = `/${ws.owner_username}/${ws.slug}`;
 		let target = fallback;
 		try {
 			const saved = localStorage.getItem(`pad-last-route-${ws.slug}`);
-			if (saved && (saved === fallback || saved.startsWith(fallback + '/'))) {
-				target = saved;
+			if (saved) {
+				const savedPath = saved.split('?')[0];
+				if (savedPath === fallback || savedPath.startsWith(fallback + '/')) {
+					target = saved;
+				}
 			}
 		} catch {
 			// localStorage unavailable; fall through to dashboard.
