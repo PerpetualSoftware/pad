@@ -57,6 +57,28 @@ func (s *Store) DB() *sql.DB { return s.db }
 //     "database is locked". Reads are unaffected: single-statement SELECTs
 //     don't open a transaction at the SQL layer, so they continue to run
 //     concurrently against the WAL snapshot.
+//
+//     Tradeoff: IMMEDIATE widens the writer critical section. Some update
+//     flows (e.g. items.UpdateItem, documents.UpdateDocument) now hold the
+//     write lock during diff/version-throttle reads and slug-collision
+//     checks, not just during the final INSERT/UPDATE. In practice these
+//     reads are sub-millisecond and dominated by network/HTTP latency,
+//     so concurrent writers wait briefly for cleanly serialized work
+//     rather than failing fast. The pre-fix behaviour was "fail fast
+//     with BUSY"; this is strictly better. If a future hot path produces
+//     pathologically long write transactions (>100ms holding the lock),
+//     the right move is to narrow that specific transaction — not to
+//     revert this fix.
+//
+//     Rollout note for `_pragma=foreign_keys(on)`: FK enforcement was
+//     previously per-connection, applied to only one pool member. If a
+//     database was historically written through a different pool member
+//     with FKs disabled, latent integrity violations may exist; the
+//     `sql.Open` itself will not fail, but the next write touching a
+//     stale relationship can now return an FK error. For Pad's data
+//     model the realistic fallout is small (link tables already cascade),
+//     but the integrity check `PRAGMA foreign_key_check` can surface
+//     any pre-existing offenders.
 //   - `journal_mode=WAL` is set via Exec below; WAL is a database-level
 //     setting (stored in the file header), so it persists across
 //     connections after the first one applies it.

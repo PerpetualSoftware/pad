@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -199,28 +200,41 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 		t.Fatalf("create collection: %v", err)
 	}
 
-	// 20 goroutines each create one item — these all open transactions
+	// 25 goroutines × 5 ops each — these all open transactions
 	// (tryCreateItem in items.go uses db.Begin), and previously raced
 	// for the write-lock on upgrade.
-	const workers = 20
-	errCh := make(chan error, workers)
-	doneCh := make(chan struct{}, workers)
+	//
+	// We use an explicit start gate so all goroutines try to write at
+	// roughly the same moment, maximising lock contention. Without the
+	// gate, slow CI runners could sequentialize the work and the test
+	// would silently pass even on a regressed build. We also do multiple
+	// ops per worker so each goroutine produces several BEGIN/COMMIT
+	// cycles instead of just one.
+	const workers = 25
+	const opsPerWorker = 5
+	errCh := make(chan error, workers*opsPerWorker)
+	var startGate sync.WaitGroup
+	startGate.Add(1)
+	var done sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		idx := i
+		done.Add(1)
 		go func() {
-			_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
-				Title:  fmt.Sprintf("concurrent-%d", idx),
-				Fields: `{"status":"open"}`,
-			})
-			if err != nil {
-				errCh <- err
+			defer done.Done()
+			startGate.Wait() // hold all goroutines until the gate opens
+			for op := 0; op < opsPerWorker; op++ {
+				_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+					Title:  fmt.Sprintf("concurrent-%d-%d", idx, op),
+					Fields: `{"status":"open"}`,
+				})
+				if err != nil {
+					errCh <- err
+				}
 			}
-			doneCh <- struct{}{}
 		}()
 	}
-	for i := 0; i < workers; i++ {
-		<-doneCh
-	}
+	startGate.Done() // release every worker simultaneously
+	done.Wait()
 	close(errCh)
 
 	var errs []error
@@ -228,7 +242,7 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 		errs = append(errs, e)
 	}
 	if len(errs) > 0 {
-		t.Errorf("expected zero errors under concurrent writes, got %d:", len(errs))
+		t.Errorf("expected zero errors under %d concurrent writers × %d ops, got %d:", workers, opsPerWorker, len(errs))
 		for _, e := range errs {
 			t.Errorf("  - %v", e)
 		}
