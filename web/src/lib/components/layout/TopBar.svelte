@@ -181,9 +181,22 @@
 	function handleVisibleConsider(e: CustomEvent<DndEvent<Workspace>>) {
 		visibleZone = e.detail.items;
 		isDragging = true;
+		// Fresh drag — clear any stale rejection flag from a prior cycle.
+		dragRejected = false;
 	}
 
 	async function handleVisibleFinalize(e: CustomEvent<DndEvent<Workspace>>) {
+		// If the OTHER zone (overflow or trigger) already detected an
+		// active-pin rejection and reset state, don't clobber visibleZone
+		// with the post-drag items here — they exclude active. Just
+		// finish the drag cleanly. (svelte-dnd-action does not guarantee
+		// the order in which the source and target finalize events fire.)
+		if (dragRejected) {
+			dragRejected = false;
+			isDragging = false;
+			clearSpringLoad();
+			return;
+		}
 		visibleZone = e.detail.items;
 		isDragging = false;
 		clearSpringLoad();
@@ -193,6 +206,7 @@
 	function handleOverflowConsider(e: CustomEvent<DndEvent<Workspace>>) {
 		overflowZone = e.detail.items;
 		isDragging = true;
+		dragRejected = false;
 	}
 
 	async function handleOverflowFinalize(e: CustomEvent<DndEvent<Workspace>>) {
@@ -203,6 +217,7 @@
 		// drag) so active stays at its original position. Don't persist.
 		const activeSlug = workspaceStore.current?.slug;
 		if (activeSlug && next.some((w) => w.slug === activeSlug)) {
+			dragRejected = true;
 			resetZonesFromProps();
 			cancelPersist();
 			isDragging = false;
@@ -223,6 +238,7 @@
 	function handleTriggerConsider(e: CustomEvent<DndEvent<Workspace>>) {
 		triggerZone = e.detail.items;
 		isDragging = true;
+		dragRejected = false;
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const hovering = triggerZone.some((item: any) => !!item[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
@@ -250,6 +266,7 @@
 		// persisted order entirely (Codex round 1 HIGH).
 		const activeSlug = workspaceStore.current?.slug;
 		if (activeSlug && dropped.some((w) => w.slug === activeSlug)) {
+			dragRejected = true;
 			resetZonesFromProps();
 			cancelPersist();
 			isDragging = false;
@@ -270,6 +287,11 @@
 	// call entirely instead of racing with a corrupted order.
 	let persistScheduled = false;
 	let persistCancelled = false;
+	// `dragRejected` flags an active-pin rejection so the OTHER zone's
+	// finalize (which fires before or after the rejection — order isn't
+	// guaranteed by svelte-dnd-action) doesn't clobber visibleZone with
+	// its post-drag items, which exclude active.
+	let dragRejected = false;
 	function schedulePersist() {
 		if (persistScheduled) return;
 		persistScheduled = true;
@@ -317,14 +339,20 @@
 		}
 		dndWorkspaces = fullOrder;
 		dropCooldown = true;
+		// Cancel any pending cooldown clear from a previous persist BEFORE
+		// awaiting — otherwise the prior timeout can fire mid-request,
+		// flip dropCooldown false, and let SSE clobber the displayed order
+		// while the new write is still in flight.
+		if (cooldownTimer) {
+			clearTimeout(cooldownTimer);
+			cooldownTimer = null;
+		}
 
 		const updates = fullOrder.map((ws, i) => ({ slug: ws.slug, sort_order: i }));
 		try {
 			await api.workspaces.reorder(updates);
 			await workspaceStore.loadAll();
-			// Re-arm the cooldown clear; cancel any prior pending one so
-			// rapid reorders don't end the cooldown for the latest write.
-			if (cooldownTimer) clearTimeout(cooldownTimer);
+			// Re-arm the cooldown clear after success.
 			cooldownTimer = setTimeout(() => {
 				dropCooldown = false;
 				cooldownTimer = null;
