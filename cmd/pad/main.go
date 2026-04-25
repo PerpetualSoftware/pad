@@ -33,8 +33,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/metrics"
@@ -43,6 +41,8 @@ import (
 	"github.com/xarmian/pad/internal/store"
 	"github.com/xarmian/pad/internal/webhooks"
 	"golang.org/x/term"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -4623,12 +4623,15 @@ func watchCmd() *cobra.Command {
 					continue
 				}
 
-				// Keepalive comments (lines starting with ":") — ignore silently.
-				//lint:ignore SA4017 false positive: the return value is used as
-				// the if condition. Two sibling strings.HasPrefix calls earlier
-				// in the same loop ("event: " and "data: ") are not flagged,
-				// suggesting an SSA-analysis quirk specific to this branch.
-				if strings.HasPrefix(line, ":") {
+				// Keepalive comments (lines starting with ":") — ignore
+				// silently. We use a direct byte comparison rather than
+				// strings.HasPrefix to dodge a long-standing staticcheck
+				// SA4017 false positive on this specific branch (the two
+				// sibling HasPrefix calls earlier in the loop don't trip
+				// it; only this one does, which strongly suggests an SSA-
+				// analysis quirk). Behaviour is identical for a single-
+				// byte ASCII prefix.
+				if len(line) > 0 && line[0] == ':' {
 					continue
 				}
 

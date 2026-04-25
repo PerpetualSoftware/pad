@@ -318,4 +318,3 @@ func writeRateLimitResponse(w http.ResponseWriter, cfg rateLimitConfig) {
 	w.Header().Set("X-RateLimit-Remaining", "0")
 	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Please try again later.")
 }
-
