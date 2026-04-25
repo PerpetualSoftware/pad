@@ -6,7 +6,7 @@ Thanks for your interest in contributing to Pad! This guide will help you get se
 
 ### Prerequisites
 
-- [Go 1.25+](https://go.dev/dl/)
+- [Go 1.26+](https://go.dev/dl/)
 - [Node.js 22+](https://nodejs.org/)
 - Make
 
