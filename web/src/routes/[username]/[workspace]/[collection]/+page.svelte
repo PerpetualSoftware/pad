@@ -106,6 +106,75 @@
 		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
 	});
 
+	// ── Scroll position persistence (TASK-755) ─────────────────────────
+	// Save the page scroll (debounced) per workspace+route so the workspace
+	// switcher (TASK-754) brings the user back to where they were scrolled
+	// to. Storage key includes pathname AND search so different filter /
+	// view-mode URLs get their own entries — when filters change the URL,
+	// the entry can't be misapplied to a different view-signature.
+	//
+	// Restore is gated by pathname (not pathname+search), so:
+	//   - first entry to a collection page restores once,
+	//   - in-page filter toggles do NOT re-restore (avoids teleporting the
+	//     user away from where they currently are scrolling),
+	//   - sidebar nav to another collection and back DOES restore again.
+	//
+	// Scope is intentionally page-level scroll only. Board view's internal
+	// horizontal (.board-view) and per-column vertical scroll containers
+	// are not yet captured (BoardView would need to expose scroll refs);
+	// page-level scroll still covers the dominant list and table views.
+	let scrollKey = $derived(
+		wsSlug
+			? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}`
+			: ''
+	);
+	let scrollGateKey = $derived(wsSlug ? `${wsSlug}:${page.url.pathname}` : '');
+	let scrollRestoredFor = $state<string | null>(null);
+	let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function scheduleScrollSave() {
+		if (!scrollKey) return;
+		clearTimeout(scrollSaveTimer);
+		scrollSaveTimer = setTimeout(() => {
+			try {
+				const y = window.scrollY;
+				if (y > 0) {
+					localStorage.setItem(scrollKey, String(y));
+				} else {
+					// At the top of the page — nothing useful to restore;
+					// drop any prior entry so we don't reapply zero offsets.
+					localStorage.removeItem(scrollKey);
+				}
+			} catch {
+				// localStorage unavailable; silent no-op.
+			}
+		}, 200);
+	}
+
+	$effect(() => {
+		if (loading) return;
+		if (!scrollGateKey || !scrollKey) return;
+		if (scrollRestoredFor === scrollGateKey) return;
+		if (filteredItems.length === 0) return;
+		scrollRestoredFor = scrollGateKey;
+		try {
+			const raw = localStorage.getItem(scrollKey);
+			if (!raw) return;
+			const y = Number(raw);
+			if (!Number.isFinite(y) || y <= 0) return;
+			// Two RAFs: layout settles after items render, then we scroll.
+			// 'instant' avoids smooth-scroll on what should feel like a
+			// natural restoration of position, not a user-driven jump.
+			requestAnimationFrame(() =>
+				requestAnimationFrame(() => {
+					window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
+				})
+			);
+		} catch {
+			// localStorage unavailable / parse error — silent no-op.
+		}
+	});
+
 	// Reflect the collection name in the browser tab; clear any stale item ref.
 	$effect(() => {
 		titleStore.setPageTitle({
@@ -820,7 +889,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={handlePageKeydown} />
+<svelte:window onkeydown={handlePageKeydown} onscroll={scheduleScrollSave} />
 
 <div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
