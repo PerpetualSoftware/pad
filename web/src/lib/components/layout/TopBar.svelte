@@ -159,6 +159,10 @@
 	let overflowOpen = $state(false);
 	let overflowTriggerEl: HTMLButtonElement | null = $state(null);
 	let springLoadTimer: ReturnType<typeof setTimeout> | null = null;
+	// Single tracked timer for the post-drop cooldown — re-armed on each
+	// drop so two drops within 1s don't see the first timeout end the
+	// cooldown for the second (Codex round 1 MEDIUM).
+	let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 	const SPRING_LOAD_MS = 400;
 
 	function clearSpringLoad() {
@@ -192,17 +196,18 @@
 	}
 
 	async function handleOverflowFinalize(e: CustomEvent<DndEvent<Workspace>>) {
-		let next = e.detail.items;
-		// Active-pin rule: if active was dragged into overflow, snap it
-		// back to visible and don't persist that move. The active pill is
-		// the only "you are here" cue in the bar — it must always render.
+		const next = e.detail.items;
+		// Active-pin rule: if active landed in overflow, REJECT the entire
+		// drag (no-op). Reset all zones from the pre-drag derived split
+		// (which is computed from `dndWorkspaces` — un-mutated during
+		// drag) so active stays at its original position. Don't persist.
 		const activeSlug = workspaceStore.current?.slug;
 		if (activeSlug && next.some((w) => w.slug === activeSlug)) {
-			const active = next.find((w) => w.slug === activeSlug)!;
-			next = next.filter((w) => w.slug !== activeSlug);
-			if (!visibleZone.some((w) => w.slug === activeSlug)) {
-				visibleZone = [...visibleZone, active];
-			}
+			resetZonesFromProps();
+			cancelPersist();
+			isDragging = false;
+			clearSpringLoad();
+			return;
 		}
 		overflowZone = next;
 		isDragging = false;
@@ -239,15 +244,20 @@
 		triggerZone = [];
 		clearSpringLoad();
 
+		// Active-pin under "drop on trigger": REJECT the whole drag if
+		// active was the dropped item, same as the overflow zone. Don't
+		// silently strip it — that previously dropped active out of the
+		// persisted order entirely (Codex round 1 HIGH).
+		const activeSlug = workspaceStore.current?.slug;
+		if (activeSlug && dropped.some((w) => w.slug === activeSlug)) {
+			resetZonesFromProps();
+			cancelPersist();
+			isDragging = false;
+			return;
+		}
+
 		if (dropped.length > 0) {
-			// Active-pin under "drop on trigger": same rule as overflow zone.
-			const activeSlug = workspaceStore.current?.slug;
-			const droppedSafe = activeSlug
-				? dropped.filter((w) => w.slug !== activeSlug)
-				: dropped;
-			if (droppedSafe.length > 0) {
-				overflowZone = [...overflowZone, ...droppedSafe];
-			}
+			overflowZone = [...overflowZone, ...dropped];
 		}
 		isDragging = false;
 		schedulePersist();
@@ -255,14 +265,34 @@
 
 	// Both zones fire `finalize` for a cross-zone drag. Coalesce both into
 	// a single persist call to avoid racing API writes for one user action.
+	// `persistCancelled` is set when an active-pin rejection happens
+	// between scheduling and the microtask running, so we skip the API
+	// call entirely instead of racing with a corrupted order.
 	let persistScheduled = false;
+	let persistCancelled = false;
 	function schedulePersist() {
 		if (persistScheduled) return;
 		persistScheduled = true;
 		queueMicrotask(async () => {
 			persistScheduled = false;
+			if (persistCancelled) {
+				persistCancelled = false;
+				return;
+			}
 			await persistGlobalOrder();
 		});
+	}
+	function cancelPersist() {
+		persistCancelled = true;
+	}
+
+	// Reset both zones from the (un-mutated during drag) derived split.
+	// Used when an entire drag must be rejected — the spec calls for
+	// active-pin rejection to be a no-op, not a "snap back to end".
+	function resetZonesFromProps() {
+		visibleZone = [...propVisibleWorkspaces];
+		overflowZone = [...propOverflowWorkspaces];
+		triggerZone = [];
 	}
 
 	async function persistGlobalOrder() {
@@ -292,13 +322,26 @@
 		try {
 			await api.workspaces.reorder(updates);
 			await workspaceStore.loadAll();
+			// Re-arm the cooldown clear; cancel any prior pending one so
+			// rapid reorders don't end the cooldown for the latest write.
+			if (cooldownTimer) clearTimeout(cooldownTimer);
+			cooldownTimer = setTimeout(() => {
+				dropCooldown = false;
+				cooldownTimer = null;
+			}, 1000);
 		} catch {
-			// Restore from store on failure.
+			// Failure: restore from the un-reordered store and immediately
+			// resync the displayed zones — the cooldown gate would
+			// otherwise hide the rollback for up to a second.
 			dndWorkspaces = [...workspaceStore.workspaces];
-		}
-		setTimeout(() => {
+			visibleZone = [...propVisibleWorkspaces];
+			overflowZone = [...propOverflowWorkspaces];
+			if (cooldownTimer) {
+				clearTimeout(cooldownTimer);
+				cooldownTimer = null;
+			}
 			dropCooldown = false;
-		}, 1000);
+		}
 	}
 
 	// ── Color palette ────────────────────────────────────────────────────
@@ -318,6 +361,21 @@
 	function wsInitial(name: string): string {
 		return name.charAt(0).toUpperCase();
 	}
+
+	// ── Cleanup ──────────────────────────────────────────────────────────
+	// Clear any pending timers when the component unmounts (e.g. layout
+	// teardown, mobile-branch flip). Without this, a setTimeout that fires
+	// after the component is gone would write to dead state — Svelte's
+	// runtime no-ops the writes, but it's still tidier to cancel.
+	$effect(() => {
+		return () => {
+			clearSpringLoad();
+			if (cooldownTimer) {
+				clearTimeout(cooldownTimer);
+				cooldownTimer = null;
+			}
+		};
+	});
 
 	// ── Theme ────────────────────────────────────────────────────────────
 	onMount(() => {
@@ -350,11 +408,17 @@
 	// Plain left-click is intercepted to restore the last-visited route
 	// (TASK-754). Modifier-clicks fall through to the <a href> so users
 	// can still cmd-click / middle-click into a fresh dashboard tab.
+	// Click on the *current* workspace overrides the restore — gives the
+	// user a way back to the workspace dashboard from any deep route.
 	function handleWsClick(e: MouseEvent, ws: Workspace) {
 		if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 		e.preventDefault();
 		closeOverflow();
-		goto(workspaceRestoreTarget(ws));
+		const target =
+			ws.slug === currentSlug
+				? `/${ws.owner_username}/${ws.slug}`
+				: workspaceRestoreTarget(ws);
+		goto(target);
 	}
 
 	// ── Overflow menu keyboard ───────────────────────────────────────────
@@ -808,6 +872,19 @@
 	.workspace-name {
 		font-size: 0.82em;
 		font-weight: 500;
+	}
+	/*
+		Truncate long workspace names inside the desktop bar (and the
+		ghost row, so measurement and rendered widths match). Without this
+		cap, a single long active-workspace name could blow past the bar
+		because the active pill is pinned visible regardless of fit.
+		Overflow menu rows aren't capped — full names read better there.
+	*/
+	.workspace-list .workspace-name,
+	.workspace-ghost .workspace-name {
+		max-width: 200px;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.workspace-add {
