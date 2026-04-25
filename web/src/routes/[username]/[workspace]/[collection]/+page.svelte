@@ -106,6 +106,150 @@
 		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
 	});
 
+	// ── Scroll position persistence (TASK-755) ─────────────────────────
+	// Save the page scroll (debounced) per workspace+route so the workspace
+	// switcher (TASK-754) brings the user back to where they were scrolled
+	// to. Storage key includes pathname AND search so different filter /
+	// view-mode URLs get their own entries — when filters change the URL,
+	// the entry can't be misapplied to a different view-signature.
+	//
+	// Restore is gated by pathname (not pathname+search), so:
+	//   - first entry to a collection page restores once,
+	//   - in-page filter toggles do NOT re-restore (avoids teleporting the
+	//     user away from where they currently are scrolling),
+	//   - sidebar nav to another collection and back DOES restore again.
+	//
+	// Scope is intentionally page-level scroll only. Board view's internal
+	// horizontal (.board-view) and per-column vertical scroll containers
+	// are not yet captured (BoardView would need to expose scroll refs);
+	// page-level scroll still covers the dominant list and table views.
+	// scrollKey includes `showArchived` because it changes the fetched
+	// dataset but is not synced to the URL — saving a scroll position
+	// while in the archived view would otherwise re-apply to the
+	// non-archived view (different items, unrelated offset).
+	let scrollKey = $derived(
+		wsSlug
+			? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}${showArchived ? '|archived' : ''}`
+			: ''
+	);
+	let scrollGateKey = $derived(wsSlug ? `${wsSlug}:${page.url.pathname}` : '');
+	let scrollRestoredFor = $state<string | null>(null);
+	let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+	// Pending debounced save state. Tracked alongside the timer so that
+	// when scheduleScrollSave is called with a different `key` than the
+	// pending one, we can FLUSH the prior save instead of cancelling it
+	// (which would silently drop the user's last position on collection A
+	// when they navigate to and scroll on B within the 200ms window).
+	let scrollPendingKey: string | null = null;
+	let scrollPendingY = 0;
+	// RAF id of the in-flight restore (or undefined). Tracked so we can
+	// cancel it on unmount — once this component is destroyed, the inner
+	// RAF's `scrollGateKey === expectedGate` check no longer guards us
+	// (the closure observes the destroyed-component's last-computed value),
+	// so without cancellation a queued restore could scrollTo the next
+	// page after a fast cross-route navigation.
+	let scrollRestoreRAF: number | undefined;
+
+	// Reset the restore-once gate when the pathname changes. Without this,
+	// visiting an empty or not-found collection between two visits to A
+	// would keep `scrollRestoredFor` stuck on A's gate-key and skip the
+	// next restore. Kept in its own effect per CONVE-606.
+	$effect(() => {
+		scrollGateKey;
+		scrollRestoredFor = null;
+	});
+
+	function flushPendingScrollSave() {
+		const key = scrollPendingKey;
+		if (key === null) return;
+		const y = scrollPendingY;
+		scrollPendingKey = null;
+		try {
+			if (y > 0) {
+				localStorage.setItem(key, String(y));
+			} else {
+				localStorage.removeItem(key);
+			}
+		} catch {
+			// localStorage unavailable; silent no-op.
+		}
+	}
+
+	function scheduleScrollSave() {
+		// Only save AFTER the restore-once effect has had a chance to run
+		// for this pathname. Until then, SvelteKit's auto-scroll-to-top on
+		// navigation would fire a scroll event with y=0 that, if persisted,
+		// would clobber a previously-saved entry before we ever read it.
+		if (scrollRestoredFor !== scrollGateKey) return;
+		// Capture the key and scrollY synchronously at scroll-event time —
+		// not at timer-fire time. If the user changes filters / navigates
+		// within the debounce window, `scrollKey` would be the NEW value at
+		// timer fire and we'd write the old scroll-y into the wrong entry.
+		const key = scrollKey;
+		const y = window.scrollY;
+		if (!key) return;
+
+		// If a different key is pending, flush it before we cancel its
+		// timer — otherwise we'd lose A's last-known position when B's
+		// first scroll arrives within A's debounce window.
+		if (scrollPendingKey !== null && scrollPendingKey !== key) {
+			clearTimeout(scrollSaveTimer);
+			flushPendingScrollSave();
+		}
+
+		clearTimeout(scrollSaveTimer);
+		scrollPendingKey = key;
+		scrollPendingY = y;
+		scrollSaveTimer = setTimeout(flushPendingScrollSave, 200);
+	}
+
+	$effect(() => {
+		if (loading) return;
+		if (!scrollGateKey || !scrollKey) return;
+		if (scrollRestoredFor === scrollGateKey) return;
+		// Capture the gate / key in the closure so the RAF callback can
+		// confirm both still apply before calling window.scrollTo. A fast
+		// follow-up navigation OR an in-page key-changing toggle (filter,
+		// archive) between effect run and RAF execution would otherwise
+		// scroll to an offset that no longer matches the current view.
+		const expectedGate = scrollGateKey;
+		const expectedKey = scrollKey;
+		// Mark the gate as "restore attempted" BEFORE the empty-items
+		// short-circuit so a later items-appear-on-same-gate event (e.g.
+		// the user creates an item in an empty collection, or an in-page
+		// toggle that doesn't change the gate-key produces items) cannot
+		// trigger a delayed unintended restore.
+		scrollRestoredFor = scrollGateKey;
+		if (filteredItems.length === 0) return;
+		try {
+			const raw = localStorage.getItem(expectedKey);
+			if (!raw) return;
+			const y = Number(raw);
+			if (!Number.isFinite(y) || y <= 0) return;
+			// Two RAFs: layout settles after items render, then we scroll.
+			// 'instant' avoids smooth-scroll on what should feel like a
+			// natural restoration of position, not a user-driven jump.
+			// We track the RAF id so onDestroy can cancel a queued restore
+			// — without that, a fast nav off this collection page can
+			// still scroll the next page (the gate check is insufficient
+			// after the component is destroyed; see scrollRestoreRAF docs).
+			scrollRestoreRAF = requestAnimationFrame(() => {
+				scrollRestoreRAF = requestAnimationFrame(() => {
+					scrollRestoreRAF = undefined;
+					// Bail if either the path-level gate or the
+					// URL-state-level key has changed since this restore
+					// was queued. (Filter/archive toggles change the key
+					// without changing the gate, so we need both checks.)
+					if (scrollGateKey !== expectedGate) return;
+					if (scrollKey !== expectedKey) return;
+					window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
+				});
+			});
+		} catch {
+			// localStorage unavailable / parse error — silent no-op.
+		}
+	});
+
 	// Reflect the collection name in the browser tab; clear any stale item ref.
 	$effect(() => {
 		titleStore.setPageTitle({
@@ -217,6 +361,15 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
+		// Flush any pending debounced scroll save so the user's last
+		// position isn't silently dropped on unmount (TASK-755).
+		clearTimeout(scrollSaveTimer);
+		flushPendingScrollSave();
+		// Cancel a queued restore so it can't scroll the next page.
+		if (scrollRestoreRAF !== undefined) {
+			cancelAnimationFrame(scrollRestoreRAF);
+			scrollRestoreRAF = undefined;
+		}
 	});
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
@@ -820,7 +973,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={handlePageKeydown} />
+<svelte:window onkeydown={handlePageKeydown} onscroll={scheduleScrollSave} />
 
 <div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
