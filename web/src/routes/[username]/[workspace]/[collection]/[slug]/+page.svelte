@@ -213,6 +213,15 @@
 	async function loadData() {
 		loading = true;
 		error = '';
+		// Capture the URL parts this load was scoped to. Used in the catch
+		// path to detect whether the user has navigated away before this
+		// request rejected — without this the stale catch would clobber a
+		// fresh `pad-last-route-{wsSlug}` written by the workspace +layout
+		// effect after the user moved on (TASK-754 round-2 race guard).
+		const reqUsername = username;
+		const reqWsSlug = wsSlug;
+		const reqCollSlug = collSlug;
+		const reqItemSlug = itemSlug;
 		try {
 			const [itemData, collData] = await Promise.all([
 				api.items.get(wsSlug, itemSlug),
@@ -260,9 +269,20 @@
 			error = e.message ?? 'Failed to load item';
 			// Clear the workspace's last-route cache so the workspace
 			// switcher (TASK-754) doesn't keep restoring this dead item
-			// URL on subsequent re-entries. The workspace +layout will
-			// re-populate the cache as soon as the user navigates again.
-			try { localStorage.removeItem(`pad-last-route-${wsSlug}`); } catch {}
+			// URL on subsequent re-entries — but only if the stored value
+			// still points at THIS failed URL. If the user navigated away
+			// while the request was in flight, the +layout effect has
+			// already written a newer entry and we must not clobber it.
+			try {
+				const failedPath = `/${reqUsername}/${reqWsSlug}/${reqCollSlug}/${reqItemSlug}`;
+				const cached = localStorage.getItem(`pad-last-route-${reqWsSlug}`);
+				if (cached) {
+					const cachedPath = cached.split('?')[0].split('#')[0];
+					if (cachedPath === failedPath) {
+						localStorage.removeItem(`pad-last-route-${reqWsSlug}`);
+					}
+				}
+			} catch {}
 		} finally {
 			loading = false;
 

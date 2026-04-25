@@ -63,23 +63,40 @@
 
 		// Restore the last-visited route in this workspace if we have one
 		// in localStorage (written by the workspace +layout on every nav).
-		// Falls back to the dashboard on miss, parse error, storage error,
-		// or any saved path that doesn't belong to this workspace (guards
-		// against username changes / corrupt entries / cross-workspace
-		// bleed). Saved value can include a `?...` query string — we
-		// validate the path-portion only. Implements IDEA-753 / TASK-754.
+		// Implements IDEA-753 / TASK-754.
+		//
+		// The saved value is treated as untrusted input — it could be
+		// stale, corrupt, or crafted. We canonicalize through `URL` and
+		// require:
+		//
+		//  - same origin (rejects scheme/`//host` smuggling),
+		//  - workspace prefix on the *normalized* pathname,
+		//  - no traversal segments or percent-encoded chars in the path
+		//    (the app never generates either; rejecting them blocks
+		//    `%2e%2e/...` style escapes that could pass a naive prefix
+		//    check but resolve elsewhere via `goto()` normalization).
+		//
+		// Anything failing the gauntlet falls back to the dashboard.
 		const fallback = `/${ws.owner_username}/${ws.slug}`;
 		let target = fallback;
 		try {
 			const saved = localStorage.getItem(`pad-last-route-${ws.slug}`);
 			if (saved) {
-				const savedPath = saved.split('?')[0];
-				if (savedPath === fallback || savedPath.startsWith(fallback + '/')) {
-					target = saved;
+				const normalized = new URL(saved, window.location.origin);
+				const path = normalized.pathname;
+				const sameOrigin = normalized.origin === window.location.origin;
+				const inWorkspace = path === fallback || path.startsWith(fallback + '/');
+				const cleanPath =
+					!path.includes('/..') &&
+					!path.includes('/./') &&
+					!path.includes('//') &&
+					!/%[0-9a-fA-F]{2}/.test(path);
+				if (sameOrigin && inWorkspace && cleanPath) {
+					target = normalized.pathname + normalized.search + normalized.hash;
 				}
 			}
 		} catch {
-			// localStorage unavailable; fall through to dashboard.
+			// localStorage unavailable or URL parse failed; fall through to dashboard.
 		}
 		goto(target);
 	}
