@@ -272,12 +272,12 @@ func githubBranchExists(repo, branch string) (bool, error) {
 }
 
 // buildReconcileFindings returns the reconcile findings for the given
-// item. The item argument MUST be non-nil — the caller (reconcileSingle
-// at line 204 + the reconcile_test.go fixtures) is responsible for
-// guaranteeing that. The previous `if item != nil && item.CodeContext == nil`
-// guard was misleading: extractItemStatus(item.Fields) above would have
-// already panicked on a nil item, so the nil-check half of the condition
-// could never fire. Staticcheck flagged it as SA5011.
+// item. The item argument MUST be non-nil — the production caller
+// (reconcileItem) and the reconcile_test.go fixtures all guarantee
+// that. The previous `if item != nil && item.CodeContext == nil`
+// guard was misleading: extractItemStatus(item.Fields) above would
+// have already panicked on a nil item, so the nil-check half of the
+// condition could never fire. Staticcheck flagged it as SA5011.
 func buildReconcileFindings(item *models.Item, livePR *GitHubPR, prErr error, branchExists *bool, branchErr error) []reconcileFinding {
 	findings := []reconcileFinding{}
 	status := extractItemStatus(item.Fields)
