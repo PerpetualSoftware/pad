@@ -208,18 +208,13 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		allCollections = collections
 	}
 	ctxMap := buildDoneContextMap(allCollections)
-
-	// Filter collections by visibility (drives the collection-summary
-	// section; done-detection above already sees every collection).
-	if visibleIDs != nil {
-		filtered := make([]models.Collection, 0, len(collections))
-		for _, c := range collections {
-			if isCollectionVisible(c.ID, visibleIDs) {
-				filtered = append(filtered, c)
-			}
-		}
-		collections = filtered
-	}
+	// Note: the `collections` slice is not part of response visibility
+	// filtering. Dashboard outputs are filtered by dashCollIDs /
+	// dashItemIDs on the ListItems calls below, plus per-item
+	// isCollectionVisible / isItemVisibleToGuest checks for outputs
+	// that walk graphs (plan progress, blocked attention, suggested
+	// next). `collections` is retained only as the fallback target for
+	// `allCollections` above when ListCollectionsMinimal fails.
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{
