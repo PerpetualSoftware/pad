@@ -204,24 +204,37 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 	// (tryCreateItem in items.go uses db.Begin), and previously raced
 	// for the write-lock on upgrade.
 	//
-	// We use an explicit start gate so all goroutines try to write at
-	// roughly the same moment, maximising lock contention. Without the
-	// gate, slow CI runners could sequentialize the work and the test
-	// would silently pass even on a regressed build. We also do multiple
-	// ops per worker so each goroutine produces several BEGIN/COMMIT
-	// cycles instead of just one.
+	// We use a TRUE barrier (not just a start gate) so every worker has
+	// reached the wait point BEFORE we release them. The earlier draft
+	// of this test used a single Done()/Wait() pair, but that doesn't
+	// guarantee all goroutines have parked on Wait() before Done() runs
+	// — late-scheduled goroutines could arrive after Done() and never
+	// hit the gate at all, defeating the contention we're trying to
+	// reproduce on slow CI runners. The two-WaitGroup pattern below
+	// (every worker signals "ready", main thread waits for all, then
+	// releases everyone simultaneously) is the standard fix.
+	//
+	// Combined with multiple ops per worker (each producing its own
+	// BEGIN/COMMIT cycle through CreateItem → tryCreateItem), this
+	// produces a sustained lock-contention window that a regressed
+	// deferred-transaction build cannot pass.
 	const workers = 25
 	const opsPerWorker = 5
 	errCh := make(chan error, workers*opsPerWorker)
-	var startGate sync.WaitGroup
-	startGate.Add(1)
+
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	var release sync.WaitGroup
+	release.Add(1)
 	var done sync.WaitGroup
+
 	for i := 0; i < workers; i++ {
 		idx := i
 		done.Add(1)
 		go func() {
 			defer done.Done()
-			startGate.Wait() // hold all goroutines until the gate opens
+			ready.Done()     // signal "I'm at the gate"
+			release.Wait()   // park here until main thread releases
 			for op := 0; op < opsPerWorker; op++ {
 				_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
 					Title:  fmt.Sprintf("concurrent-%d-%d", idx, op),
@@ -233,7 +246,8 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 			}
 		}()
 	}
-	startGate.Done() // release every worker simultaneously
+	ready.Wait()    // every worker is parked on release.Wait()
+	release.Done()  // release them all at once
 	done.Wait()
 	close(errCh)
 
