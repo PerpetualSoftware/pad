@@ -33,8 +33,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/logging"
 	"github.com/xarmian/pad/internal/metrics"
@@ -43,6 +41,8 @@ import (
 	"github.com/xarmian/pad/internal/store"
 	"github.com/xarmian/pad/internal/webhooks"
 	"golang.org/x/term"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -4623,12 +4623,14 @@ func watchCmd() *cobra.Command {
 					continue
 				}
 
-				// Keepalive comments (lines starting with ":") — ignore silently.
-				//lint:ignore SA4017 false positive: the return value is used as
-				// the if condition. Two sibling strings.HasPrefix calls earlier
-				// in the same loop ("event: " and "data: ") are not flagged,
-				// suggesting an SSA-analysis quirk specific to this branch.
-				if strings.HasPrefix(line, ":") {
+				// Keepalive comments (lines starting with ":") — ignore
+				// silently. The //nolint below silences a staticcheck SA4017
+				// false positive: the HasPrefix return IS used as the if
+				// condition. Two sibling HasPrefix calls earlier in the
+				// same loop ("event: " / "data: ") are not flagged, which
+				// strongly suggests an SSA-analysis quirk specific to this
+				// branch rather than a real defect.
+				if strings.HasPrefix(line, ":") { //nolint:staticcheck // SA4017 false positive — return value used in if condition
 					continue
 				}
 
