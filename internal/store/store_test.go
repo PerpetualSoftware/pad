@@ -238,8 +238,8 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 		done.Add(1)
 		go func() {
 			defer done.Done()
-			ready.Done()     // signal "I'm at the gate"
-			release.Wait()   // park here until main thread releases
+			ready.Done()   // signal "I'm at the gate"
+			release.Wait() // park here until main thread releases
 			for op := 0; op < opsPerWorker; op++ {
 				_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
 					Title:  fmt.Sprintf("concurrent-%d-%d", idx, op),
@@ -251,8 +251,8 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 			}
 		}()
 	}
-	ready.Wait()    // every worker has called ready.Done() (best-effort gate)
-	release.Done()  // release them all at once
+	ready.Wait()   // every worker has called ready.Done() (best-effort gate)
+	release.Done() // release them all at once
 	done.Wait()
 	close(errCh)
 

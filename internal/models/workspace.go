@@ -3,19 +3,19 @@ package models
 import "time"
 
 type Workspace struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Slug        string            `json:"slug"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Slug          string            `json:"slug"`
 	OwnerID       string            `json:"owner_id,omitempty"`       // User ID of workspace owner
 	OwnerUsername string            `json:"owner_username,omitempty"` // Populated by JOIN (not stored)
 	IsGuest       bool              `json:"is_guest,omitempty"`       // True when user has grants but no membership
-	Description string            `json:"description"`
-	Settings    string            `json:"settings"`           // JSON
-	SortOrder   int               `json:"sort_order"`
-	Context     *WorkspaceContext `json:"context,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	DeletedAt   *time.Time        `json:"deleted_at,omitempty"`
+	Description   string            `json:"description"`
+	Settings      string            `json:"settings"` // JSON
+	SortOrder     int               `json:"sort_order"`
+	Context       *WorkspaceContext `json:"context,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
 }
 
 type WorkspaceCreate struct {

@@ -355,7 +355,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// Direct ref hits (e.g. searching "TASK-5") are prepended to results
 	// and always appear first. They occupy slots on page 0; on subsequent
 	// pages we exclude them and adjust the FTS offset accordingly.
-	refHits := results           // save ref results before FTS
+	refHits := results // save ref results before FTS
 	refCount := len(refHits)
 	refIDs := make(map[string]bool, refCount)
 	for _, r := range refHits {

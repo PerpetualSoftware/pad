@@ -64,6 +64,7 @@ func TestCancelCustomer_HappyPath_SendsCorrectRequest(t *testing.T) {
 //   - 403 on cloud_secret mismatch
 //   - 500 on internal / Stripe failure
 //   - 503 when Stripe is not configured
+//
 // All of them must produce a SidecarError — the handler treats every one
 // as "abort the delete", regardless of bucket.
 func TestCancelCustomer_NonOK_ReturnsSidecarError(t *testing.T) {
@@ -159,11 +160,11 @@ func TestCancelCustomer_UnconfiguredClient_ReturnsError(t *testing.T) {
 
 func TestResolveOutboundSecret(t *testing.T) {
 	cases := []struct {
-		name         string
-		explicit     string
-		inboundList  string
-		want         string
-		wantEmpty    bool
+		name        string
+		explicit    string
+		inboundList string
+		want        string
+		wantEmpty   bool
 	}{
 		{
 			name:        "explicit wins over inbound",

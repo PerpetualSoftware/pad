@@ -39,9 +39,9 @@ func TestCollectServerInfoRemoteAuthenticated(t *testing.T) {
 				t.Fatalf("unexpected auth header %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"authenticated": true,
+				"authenticated":  true,
 				"setup_required": false,
-				"auth_method": "password",
+				"auth_method":    "password",
 				"user": map[string]any{
 					"id":    "user-1",
 					"email": "dave@example.com",

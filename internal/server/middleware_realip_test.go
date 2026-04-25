@@ -122,7 +122,7 @@ func TestTrustedProxyRealIP_TrustedPeer_XRealIPUsed(t *testing.T) {
 	mw := TrustedProxyRealIP(cidrs)(next)
 
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.5:12345"       // in trusted CIDR
+	req.RemoteAddr = "10.0.0.5:12345" // in trusted CIDR
 	req.Header.Set("X-Real-IP", "198.51.100.7")
 	mw.ServeHTTP(httptest.NewRecorder(), req)
 

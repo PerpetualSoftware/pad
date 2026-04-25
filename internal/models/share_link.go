@@ -6,15 +6,15 @@ import "time"
 // Tokens are hashed at rest; the raw token is returned only once on creation.
 type ShareLink struct {
 	ID              string     `json:"id"`
-	TokenHash       string     `json:"-"`                              // Never serialized
-	Token           string     `json:"token,omitempty"`                // Only set on creation response
-	TargetType      string     `json:"target_type"`                    // "item" or "collection"
+	TokenHash       string     `json:"-"`               // Never serialized
+	Token           string     `json:"token,omitempty"` // Only set on creation response
+	TargetType      string     `json:"target_type"`     // "item" or "collection"
 	TargetID        string     `json:"target_id"`
 	WorkspaceID     string     `json:"workspace_id"`
-	Permission      string     `json:"permission"`                     // "view" or "edit"
+	Permission      string     `json:"permission"` // "view" or "edit"
 	CreatedBy       string     `json:"created_by"`
-	PasswordHash    *string    `json:"-"`                              // Never serialized
-	HasPassword     bool       `json:"has_password"`                   // Derived: password_hash IS NOT NULL
+	PasswordHash    *string    `json:"-"`            // Never serialized
+	HasPassword     bool       `json:"has_password"` // Derived: password_hash IS NOT NULL
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
 	MaxViews        *int       `json:"max_views,omitempty"`
 	RequireAuth     bool       `json:"require_auth"`

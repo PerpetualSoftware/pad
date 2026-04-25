@@ -15,8 +15,8 @@ import (
 
 // Color definitions for reuse across the CLI.
 var (
-	Bold    = color.New(color.Bold)
-	Dim     = color.New(color.Faint)
+	Bold     = color.New(color.Bold)
+	Dim      = color.New(color.Faint)
 	BoldCyan = color.New(color.Bold, color.FgCyan)
 )
 

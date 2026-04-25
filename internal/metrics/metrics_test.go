@@ -72,11 +72,11 @@ func TestRegisterDBCollector(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		"pad_db_open_connections":             false,
-		"pad_db_idle_connections":             false,
-		"pad_db_in_use_connections":           false,
-		"pad_db_wait_count_total":             false,
-		"pad_db_wait_duration_seconds_total":  false,
+		"pad_db_open_connections":            false,
+		"pad_db_idle_connections":            false,
+		"pad_db_in_use_connections":          false,
+		"pad_db_wait_count_total":            false,
+		"pad_db_wait_duration_seconds_total": false,
 	}
 
 	for _, f := range families {

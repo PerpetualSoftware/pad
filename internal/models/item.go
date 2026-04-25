@@ -47,17 +47,17 @@ type Item struct {
 	AgentRoleName     string `json:"agent_role_name,omitempty"`
 	AgentRoleSlug     string `json:"agent_role_slug,omitempty"`
 	AgentRoleIcon     string `json:"agent_role_icon,omitempty"`
-	CollectionSlug      string                   `json:"collection_slug,omitempty"`
-	CollectionName      string                   `json:"collection_name,omitempty"`
-	CollectionIcon      string                   `json:"collection_icon,omitempty"`
-	CollectionPrefix    string                   `json:"collection_prefix,omitempty"`
+	CollectionSlug    string `json:"collection_slug,omitempty"`
+	CollectionName    string `json:"collection_name,omitempty"`
+	CollectionIcon    string `json:"collection_icon,omitempty"`
+	CollectionPrefix  string `json:"collection_prefix,omitempty"`
 
 	// Parent link (populated by enrichItemForResponse / enrichItemsWithParent)
-	ParentLinkID          string `json:"parent_link_id,omitempty"`
-	ParentRef             string `json:"parent_ref,omitempty"`
-	ParentTitle           string `json:"parent_title,omitempty"`
-	ParentSlug            string `json:"parent_slug,omitempty"`
-	ParentCollectionSlug  string `json:"parent_collection_slug,omitempty"`
+	ParentLinkID         string `json:"parent_link_id,omitempty"`
+	ParentRef            string `json:"parent_ref,omitempty"`
+	ParentTitle          string `json:"parent_title,omitempty"`
+	ParentSlug           string `json:"parent_slug,omitempty"`
+	ParentCollectionSlug string `json:"parent_collection_slug,omitempty"`
 
 	// HasChildren is true if this item has child items linked to it.
 	// Populated by enrichment, not stored in the DB.

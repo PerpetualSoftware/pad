@@ -57,14 +57,14 @@ type serverInfoWorkspace struct {
 }
 
 type serverInfoLocal struct {
-	BindAddr    string `json:"bind_addr"`
-	ServerRunning bool `json:"server_running"`
-	PID         *int   `json:"pid,omitempty"`
-	PIDFile     string `json:"pid_file"`
-	LogFile     string `json:"log_file"`
-	DBPath      string `json:"db_path"`
-	DBExists    bool   `json:"db_exists"`
-	DBSizeBytes int64  `json:"db_size_bytes"`
+	BindAddr      string `json:"bind_addr"`
+	ServerRunning bool   `json:"server_running"`
+	PID           *int   `json:"pid,omitempty"`
+	PIDFile       string `json:"pid_file"`
+	LogFile       string `json:"log_file"`
+	DBPath        string `json:"db_path"`
+	DBExists      bool   `json:"db_exists"`
+	DBSizeBytes   int64  `json:"db_size_bytes"`
 }
 
 func infoCmd() *cobra.Command {
@@ -171,11 +171,11 @@ func includeLocalRuntime(cfg *config.Config) bool {
 
 func collectLocalInfo(cfg *config.Config) *serverInfoLocal {
 	info := &serverInfoLocal{
-		BindAddr:    cfg.Addr(),
+		BindAddr:      cfg.Addr(),
 		ServerRunning: cli.IsServerRunning(cfg),
-		PIDFile:     cfg.PIDFile(),
-		LogFile:     cfg.LogFile(),
-		DBPath:      cfg.DBPath,
+		PIDFile:       cfg.PIDFile(),
+		LogFile:       cfg.LogFile(),
+		DBPath:        cfg.DBPath,
 	}
 
 	if pid, ok := readPID(cfg.PIDFile()); ok {

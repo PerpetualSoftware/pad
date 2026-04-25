@@ -60,4 +60,3 @@ func TestDecodeJSONWithLimit_CustomCap(t *testing.T) {
 		t.Fatal("expected 256 KiB cap to reject 1 MiB body, got nil")
 	}
 }
-

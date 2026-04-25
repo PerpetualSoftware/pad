@@ -30,9 +30,9 @@ type WebhookPayload struct {
 
 // Dispatcher sends webhook HTTP POST notifications for workspace events.
 type Dispatcher struct {
-	store        WebhookStore
-	client       *http.Client
-	SkipSSRF     bool // Skip SSRF validation (for tests only)
+	store    WebhookStore
+	client   *http.Client
+	SkipSSRF bool // Skip SSRF validation (for tests only)
 }
 
 // NewDispatcher creates a Dispatcher with the given store.

@@ -9,21 +9,21 @@ import (
 type User struct {
 	ID               string    `json:"id"`
 	Email            string    `json:"email"`
-	Username         string    `json:"username"`                // Unique handle; empty until set
+	Username         string    `json:"username"` // Unique handle; empty until set
 	Name             string    `json:"name"`
-	PasswordHash     string    `json:"-"`                       // Never serialized
-	Role             string    `json:"role"`                    // "admin" or "member"
+	PasswordHash     string    `json:"-"`    // Never serialized
+	Role             string    `json:"role"` // "admin" or "member"
 	AvatarURL        string    `json:"avatar_url,omitempty"`
-	TOTPSecret       string    `json:"-"`                       // Never serialized
+	TOTPSecret       string    `json:"-"` // Never serialized
 	TOTPEnabled      bool      `json:"totp_enabled"`
-	RecoveryCodes    string    `json:"-"`                       // Never serialized
-	Plan             string    `json:"plan"`                    // "free", "pro", or "self-hosted"
+	RecoveryCodes    string    `json:"-"`    // Never serialized
+	Plan             string    `json:"plan"` // "free", "pro", or "self-hosted"
 	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
-	StripeCustomerID string    `json:"-"`                       // Never serialized
+	StripeCustomerID string    `json:"-"`                        // Never serialized
 	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
-	OAuthProviders   string    `json:"-"`                       // JSON array of linked providers, e.g. ["github","google"]
-	PasswordSet      bool      `json:"password_set"`            // True if the user explicitly set a password (vs. OAuth placeholder hash)
-	DisabledAt       string    `json:"disabled_at,omitempty"`   // Non-empty = account disabled
+	OAuthProviders   string    `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
+	PasswordSet      bool      `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
+	DisabledAt       string    `json:"disabled_at,omitempty"`    // Non-empty = account disabled
 	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
@@ -69,8 +69,8 @@ type UserCreate struct {
 	Email    string `json:"email"`
 	Username string `json:"username,omitempty"` // Optional; auto-generated if empty
 	Name     string `json:"name"`
-	Password string `json:"password"`          // Plaintext, will be hashed
-	Role     string `json:"role,omitempty"`     // Defaults to "member"
+	Password string `json:"password"`       // Plaintext, will be hashed
+	Role     string `json:"role,omitempty"` // Defaults to "member"
 }
 
 // UserUpdate is the input for updating user profile fields.

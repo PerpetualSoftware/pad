@@ -41,9 +41,9 @@ type Config struct {
 	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
 
 	// Cloud mode
-	CloudSecret         string `toml:"cloud_secret"`           // Inbound shared secret(s) accepted from pad-cloud. Comma-separated list supports rotation.
-	CloudSidecarURL     string `toml:"cloud_sidecar_url"`      // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
-	CloudOutboundSecret string `toml:"cloud_outbound_secret"`  // Optional: exact secret to send when calling pad-cloud. Falls back to the LAST entry of CloudSecret (the older rotation value, which is what pad-cloud is usually running). See DEPLOY.md "Cloud secret rotation".
+	CloudSecret         string `toml:"cloud_secret"`          // Inbound shared secret(s) accepted from pad-cloud. Comma-separated list supports rotation.
+	CloudSidecarURL     string `toml:"cloud_sidecar_url"`     // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
+	CloudOutboundSecret string `toml:"cloud_outbound_secret"` // Optional: exact secret to send when calling pad-cloud. Falls back to the LAST entry of CloudSecret (the older rotation value, which is what pad-cloud is usually running). See DEPLOY.md "Cloud secret rotation".
 
 	// Encryption
 	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields

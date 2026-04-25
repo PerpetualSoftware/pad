@@ -10,11 +10,11 @@ import (
 
 // Known platform setting keys. Values are stored in the platform_settings table.
 const (
-	settingEmailProvider  = "email_provider"   // "maileroo" or empty
+	settingEmailProvider  = "email_provider" // "maileroo" or empty
 	settingMailerooAPIKey = "maileroo_api_key"
-	settingEmailFrom      = "email_from"       // Sender address
-	settingEmailFromName  = "email_from_name"  // Sender display name
-	settingPlatformName   = "platform_name"    // Instance name (default: "Pad")
+	settingEmailFrom      = "email_from"      // Sender address
+	settingEmailFromName  = "email_from_name" // Sender display name
+	settingPlatformName   = "platform_name"   // Instance name (default: "Pad")
 
 	// Token policy settings
 	settingTokenDefaultExpiryDays = "token_default_expiry_days" // Default: 90

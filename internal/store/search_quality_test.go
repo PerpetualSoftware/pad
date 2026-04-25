@@ -70,7 +70,7 @@ func TestSearchQualityComparison(t *testing.T) {
 		wsIDs[name] = ws.ID
 
 		coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
-			Name: "Tasks",
+			Name:   "Tasks",
 			Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"priority","label":"Priority","type":"select","options":["low","medium","high"]}]}`,
 		})
 		if err != nil {
@@ -193,7 +193,7 @@ func TestSearchEdgeCases(t *testing.T) {
 
 	ws := createTestWorkspace(t, s, "search-edge")
 	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
-		Name: "Items",
+		Name:   "Items",
 		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
 	})
 	if err != nil {

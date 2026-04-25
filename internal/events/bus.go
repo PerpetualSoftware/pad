@@ -39,7 +39,7 @@ const (
 
 // Default replay buffer settings.
 const (
-	DefaultReplayBufferSize = 1024           // max events to retain per workspace
+	DefaultReplayBufferSize = 1024            // max events to retain per workspace
 	DefaultReplayMaxAge     = 5 * time.Minute // discard events older than this
 )
 

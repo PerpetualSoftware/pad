@@ -12,7 +12,7 @@ const (
 	ItemLinkTypeSplitFrom  = "split_from"
 	ItemLinkTypeSupersedes = "supersedes"
 	ItemLinkTypeImplements = "implements"
-	ItemLinkTypeParent    = "parent"
+	ItemLinkTypeParent     = "parent"
 )
 
 var itemLinkTypeAliases = map[string]string{

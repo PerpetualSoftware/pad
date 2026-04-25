@@ -9,11 +9,11 @@ func TestNormalizeRecoveryCode(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
-		{"ABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP"},   // already normalized
-		{"abcdefghijklmnop", "ABCDEFGHIJKLMNOP"},   // lowercase → upper
-		{"ABCD-EFGH-IJKL-MNOP", "ABCDEFGHIJKLMNOP"}, // dashes stripped
+		{"ABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP"},      // already normalized
+		{"abcdefghijklmnop", "ABCDEFGHIJKLMNOP"},      // lowercase → upper
+		{"ABCD-EFGH-IJKL-MNOP", "ABCDEFGHIJKLMNOP"},   // dashes stripped
 		{" abcd efgh ijkl mnop ", "ABCDEFGHIJKLMNOP"}, // whitespace stripped
-		{"ABcd-EFgh\nIJkl", "ABCDEFGHIJKL"},          // mixed + newline
+		{"ABcd-EFgh\nIJkl", "ABCDEFGHIJKL"},           // mixed + newline
 		{"", ""},
 	}
 	for _, tt := range tests {

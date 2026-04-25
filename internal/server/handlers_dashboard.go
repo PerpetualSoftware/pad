@@ -15,14 +15,14 @@ import (
 // Dashboard response types
 
 type DashboardResponse struct {
-	Summary        DashboardSummary       `json:"summary"`
-	ActiveItems    []DashboardActiveItem  `json:"active_items"`
-	ActivePlans    []DashboardPlan         `json:"active_plans"`
-	StarredItems   []DashboardActiveItem  `json:"starred_items,omitempty"`
-	ByRole         []store.RoleBreakdown  `json:"by_role,omitempty"`
-	Attention      []DashboardAttention   `json:"attention"`
-	RecentActivity []DashboardActivity    `json:"recent_activity"`
-	SuggestedNext  []DashboardSuggestion  `json:"suggested_next"`
+	Summary        DashboardSummary      `json:"summary"`
+	ActiveItems    []DashboardActiveItem `json:"active_items"`
+	ActivePlans    []DashboardPlan       `json:"active_plans"`
+	StarredItems   []DashboardActiveItem `json:"starred_items,omitempty"`
+	ByRole         []store.RoleBreakdown `json:"by_role,omitempty"`
+	Attention      []DashboardAttention  `json:"attention"`
+	RecentActivity []DashboardActivity   `json:"recent_activity"`
+	SuggestedNext  []DashboardSuggestion `json:"suggested_next"`
 }
 
 type DashboardActiveItem struct {
