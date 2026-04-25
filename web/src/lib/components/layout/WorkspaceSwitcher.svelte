@@ -57,13 +57,21 @@
 
 	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;
-		// Close the mobile sidebar if open — the TopBar's previous inline
-		// workspace links did this on click, so preserve the behavior now
-		// that the switcher is the mobile nav entry point.
-		uiStore.onNavigate();
-		// Restore the last-visited route in this workspace if cached
-		// (TASK-754). Validation lives in workspaceRestoreTarget.
-		goto(workspaceRestoreTarget(ws));
+		// IDEA-760: preserve mobile sidebar visibility across workspace
+		// switches. Previously this called uiStore.onNavigate() to mirror
+		// the TopBar's old inline-link behavior, but per the idea the
+		// switcher must work as a navbar control whether the sidebar is
+		// open or hidden, and the user's sidebar state should carry over
+		// to the new workspace.
+		//
+		// Click on the *current* workspace overrides the last-route
+		// restore — gives the user a one-tap path back to the workspace
+		// dashboard from any deep route. Mirrors TopBar.handleWsClick.
+		const isCurrent = ws.slug === workspaceStore.current?.slug;
+		const target = isCurrent
+			? `/${ws.owner_username ?? ''}/${ws.slug}`
+			: workspaceRestoreTarget(ws);
+		goto(target);
 	}
 
 	function openCreateModal() {
