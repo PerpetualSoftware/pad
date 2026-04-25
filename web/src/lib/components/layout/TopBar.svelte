@@ -146,7 +146,14 @@
 						// so users can still open the dashboard in a new tab.
 						if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 						e.preventDefault();
-						goto(workspaceRestoreTarget(ws));
+						// Click on the workspace you're already in → go to
+						// dashboard (overrides restore — gives users a way back
+						// to the workspace home from any nested route).
+						// Click on a different workspace → restore last route.
+						const target = ws.slug === currentSlug
+							? `/${ws.owner_username}/${ws.slug}`
+							: workspaceRestoreTarget(ws);
+						goto(target);
 					}}
 				>
 					<span
