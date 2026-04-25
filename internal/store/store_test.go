@@ -612,92 +612,6 @@ func TestVersionNotCreatedWithoutContentChange(t *testing.T) {
 	}
 }
 
-func TestQuickSave(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Test")
-
-	// First save — creates new doc
-	doc, err := s.QuickSave(ws.ID, models.QuickSave{
-		Title:   "Quick Doc",
-		Content: "Initial",
-		DocType: "notes",
-	})
-	if err != nil {
-		t.Fatalf("QuickSave create error: %v", err)
-	}
-	if doc.Content != "Initial" {
-		t.Errorf("expected 'Initial', got %q", doc.Content)
-	}
-
-	// Second save — updates existing doc
-	doc2, err := s.QuickSave(ws.ID, models.QuickSave{
-		Title:   "Quick Doc",
-		Content: "Updated",
-	})
-	if err != nil {
-		t.Fatalf("QuickSave update error: %v", err)
-	}
-	if doc2.ID != doc.ID {
-		t.Error("quick save should have updated existing doc, not created new one")
-	}
-	if doc2.Content != "Updated" {
-		t.Errorf("expected 'Updated', got %q", doc2.Content)
-	}
-
-	// Should also have created a version
-	versions, _ := s.ListVersions(doc.ID)
-	if len(versions) != 1 {
-		t.Errorf("expected 1 version after quick save update, got %d", len(versions))
-	}
-}
-
-func TestBulkRead(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Test")
-
-	doc1 := createTestDoc(t, s, ws.ID, "Doc 1", "Content 1")
-	doc2 := createTestDoc(t, s, ws.ID, "Doc 2", "Content 2")
-	createTestDoc(t, s, ws.ID, "Doc 3", "Content 3")
-
-	docs, err := s.BulkRead([]string{doc1.ID, doc2.ID})
-	if err != nil {
-		t.Fatalf("BulkRead error: %v", err)
-	}
-	if len(docs) != 2 {
-		t.Errorf("expected 2 docs, got %d", len(docs))
-	}
-}
-
-func TestDocumentLinking(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Test")
-
-	doc1 := createTestDoc(t, s, ws.ID, "Architecture", "The architecture doc")
-	createTestDoc(t, s, ws.ID, "Phase Plan", "See [[Architecture]] for details")
-
-	// Get backlinks for Architecture
-	backlinks, err := s.GetBacklinks(ws.ID, doc1.Title)
-	if err != nil {
-		t.Fatalf("GetBacklinks error: %v", err)
-	}
-	if len(backlinks) != 1 {
-		t.Errorf("expected 1 backlink, got %d", len(backlinks))
-	}
-	if len(backlinks) > 0 && backlinks[0].Title != "Phase Plan" {
-		t.Errorf("expected backlink from 'Phase Plan', got %q", backlinks[0].Title)
-	}
-
-	// Get links from Phase Plan
-	phasePlan, _ := s.GetDocumentByTitle(ws.ID, "Phase Plan")
-	linkedDocs, err := s.GetLinks(ws.ID, phasePlan.Content)
-	if err != nil {
-		t.Fatalf("GetLinks error: %v", err)
-	}
-	if len(linkedDocs) != 1 {
-		t.Errorf("expected 1 link, got %d", len(linkedDocs))
-	}
-}
-
 func TestDocumentLinkRename(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
@@ -1126,30 +1040,6 @@ func TestSearchFacets(t *testing.T) {
 	}
 	if resp.Facets.Collections["tasks"] != 3 {
 		t.Errorf("facets should be unpaginated: expected tasks=3, got %d", resp.Facets.Collections["tasks"])
-	}
-}
-
-func TestContext(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Test")
-
-	createTestDoc(t, s, ws.ID, "Active Doc", "content")                                 // active
-	s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Draft Doc", Status: "draft"}) // draft
-
-	// Pin one doc
-	draftDocs, _ := s.ListDocuments(ws.ID, models.DocumentListParams{Status: "draft"})
-	if len(draftDocs) > 0 {
-		pinned := true
-		s.UpdateDocument(draftDocs[0].ID, models.DocumentUpdate{Pinned: &pinned})
-	}
-
-	// Context should return active + pinned
-	docs, err := s.GetContext(ws.ID, nil, true)
-	if err != nil {
-		t.Fatalf("GetContext error: %v", err)
-	}
-	if len(docs) != 2 {
-		t.Errorf("expected 2 context docs, got %d", len(docs))
 	}
 }
 

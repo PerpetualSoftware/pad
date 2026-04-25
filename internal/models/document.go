@@ -62,17 +62,6 @@ type DocumentUpdate struct {
 	ChangeSummary  string  `json:"change_summary,omitempty"`
 }
 
-type QuickSave struct {
-	Title         string `json:"title"`
-	Content       string `json:"content"`
-	DocType       string `json:"doc_type,omitempty"`
-	Status        string `json:"status,omitempty"`
-	Tags          string `json:"tags,omitempty"`
-	CreatedBy     string `json:"created_by,omitempty"`
-	Source        string `json:"source,omitempty"`
-	ChangeSummary string `json:"change_summary,omitempty"`
-}
-
 type DocumentListParams struct {
 	Type   string
 	Status string
