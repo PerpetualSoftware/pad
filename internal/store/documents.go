@@ -197,21 +197,6 @@ func (s *Store) GetDocument(id string) (*models.Document, error) {
 	return &d, nil
 }
 
-func (s *Store) GetDocumentByTitle(workspaceID, title string) (*models.Document, error) {
-	var id string
-	err := s.db.QueryRow(s.q(`
-		SELECT id FROM documents
-		WHERE workspace_id = ? AND title = ? AND deleted_at IS NULL
-	`), workspaceID, title).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.GetDocument(id)
-}
-
 func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.Document, error) {
 	existing, err := s.GetDocument(id)
 	if err != nil {

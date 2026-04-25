@@ -616,17 +616,12 @@ func TestDocumentLinkRename(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
-	createTestDoc(t, s, ws.ID, "Old Name", "The original doc")
+	origDoc := createTestDoc(t, s, ws.ID, "Old Name", "The original doc")
 	refDoc := createTestDoc(t, s, ws.ID, "Referencing Doc", "See [[Old Name]] for details")
 
-	// Rename the document
+	// Rename the original document
 	newTitle := "New Name"
-	s.UpdateDocument(refDoc.ID, models.DocumentUpdate{}) // ensure the first doc exists
-
-	// Get the original doc and rename it
-	origDoc, _ := s.GetDocumentByTitle(ws.ID, "Old Name")
-	_, err := s.UpdateDocument(origDoc.ID, models.DocumentUpdate{Title: &newTitle})
-	if err != nil {
+	if _, err := s.UpdateDocument(origDoc.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
 		t.Fatalf("rename error: %v", err)
 	}
 
