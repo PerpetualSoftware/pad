@@ -276,6 +276,16 @@
 		color: var(--accent-blue);
 		text-decoration: none;
 	}
+	/*
+		Expand tabs (both .topbar-expand-btn and .sidebar-expand-btn).
+		IDEA-757: persistent low-opacity affordance. ⌘\ toggles BOTH the
+		sidebar and the topbar at once — a user who hits it accidentally
+		needs to see *something* clickable to recover, even before they
+		move the mouse. Idle opacity (0.5) keeps the tabs faintly visible
+		so the affordance never disappears; hover amplifies to full. The
+		button tooltip ("Show workspace bar (⌘\)" / "Open sidebar (⌘\)")
+		teaches the shortcut once the user notices the tab.
+	*/
 	.topbar-expand-btn {
 		position: absolute;
 		top: 0;
@@ -294,7 +304,7 @@
 		color: var(--text-muted);
 		cursor: pointer;
 		padding: 0;
-		opacity: 0;
+		opacity: 0.5;
 		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
 	}
 	.app-layout:hover .topbar-expand-btn {
@@ -322,7 +332,7 @@
 		color: var(--text-muted);
 		cursor: pointer;
 		padding: 0;
-		opacity: 0;
+		opacity: 0.5;
 		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
 	}
 	.app-shell:hover .sidebar-expand-btn {
