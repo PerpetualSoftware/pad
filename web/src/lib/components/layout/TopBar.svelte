@@ -7,8 +7,10 @@
 	import { api } from '$lib/api/client';
 	import type { Workspace } from '$lib/types';
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
+	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -124,11 +126,28 @@
 			onfinalize={handleFinalize}
 		>
 			{#each dndWorkspaces as ws (ws.id)}
+				<!--
+					href stays pointed at the workspace dashboard so a
+					middle-click / cmd-click / right-click → "Open in new
+					tab" lands on a clean dashboard. Plain left-click is
+					intercepted to restore the last-visited route in that
+					workspace (TASK-754) — the previous behavior was a
+					hard `<a>` nav to the dashboard, which silently
+					overwrote the saved deep route in localStorage on
+					every workspace switch.
+				-->
 				<a
 					href="/{ws.owner_username}/{ws.slug}"
 					class="workspace-item"
 					class:active={ws.slug === currentSlug}
 					title={ws.name}
+					onclick={(e) => {
+						// Respect modifier-clicks and middle-click (button !== 0)
+						// so users can still open the dashboard in a new tab.
+						if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+						e.preventDefault();
+						goto(workspaceRestoreTarget(ws));
+					}}
 				>
 					<span
 						class="workspace-icon"
