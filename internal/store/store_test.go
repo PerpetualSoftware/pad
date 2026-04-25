@@ -216,10 +216,12 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 	// concurrent BEGIN IMMEDIATE attempts to exercise the race.
 	//
 	// Empirical check (2026-04-25): with `_txlock=immediate` removed
-	// from the DSN this test reliably FAILS — 22 errors out of 125 ops
-	// per run, all `database is locked (5) (SQLITE_BUSY)`. With the
-	// fix in place, 20 consecutive `go test -count=20` runs all pass.
-	// So the imprecision in the barrier doesn't impair the test's
+	// from the DSN this test reliably FAILS — a representative run on
+	// a developer laptop produced ~22 errors out of 125 ops, all
+	// `database is locked (5) (SQLITE_BUSY)`; the exact rate is
+	// host- and scheduler-dependent but consistently >0. With the fix
+	// in place, 20 consecutive `go test -count=20` runs all pass. So
+	// the imprecision in the barrier doesn't impair the test's
 	// regression-catching ability.
 	const workers = 25
 	const opsPerWorker = 5
@@ -249,7 +251,7 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 			}
 		}()
 	}
-	ready.Wait()    // every worker is parked on release.Wait()
+	ready.Wait()    // every worker has called ready.Done() (best-effort gate)
 	release.Done()  // release them all at once
 	done.Wait()
 	close(errCh)
