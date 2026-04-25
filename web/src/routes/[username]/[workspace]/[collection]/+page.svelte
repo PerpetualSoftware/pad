@@ -131,6 +131,13 @@
 	let scrollGateKey = $derived(wsSlug ? `${wsSlug}:${page.url.pathname}` : '');
 	let scrollRestoredFor = $state<string | null>(null);
 	let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+	// Pending debounced save state. Tracked alongside the timer so that
+	// when scheduleScrollSave is called with a different `key` than the
+	// pending one, we can FLUSH the prior save instead of cancelling it
+	// (which would silently drop the user's last position on collection A
+	// when they navigate to and scroll on B within the 200ms window).
+	let scrollPendingKey: string | null = null;
+	let scrollPendingY = 0;
 
 	// Reset the restore-once gate when the pathname changes. Without this,
 	// visiting an empty or not-found collection between two visits to A
@@ -140,6 +147,22 @@
 		scrollGateKey;
 		scrollRestoredFor = null;
 	});
+
+	function flushPendingScrollSave() {
+		const key = scrollPendingKey;
+		if (key === null) return;
+		const y = scrollPendingY;
+		scrollPendingKey = null;
+		try {
+			if (y > 0) {
+				localStorage.setItem(key, String(y));
+			} else {
+				localStorage.removeItem(key);
+			}
+		} catch {
+			// localStorage unavailable; silent no-op.
+		}
+	}
 
 	function scheduleScrollSave() {
 		// Only save AFTER the restore-once effect has had a chance to run
@@ -154,20 +177,19 @@
 		const key = scrollKey;
 		const y = window.scrollY;
 		if (!key) return;
+
+		// If a different key is pending, flush it before we cancel its
+		// timer — otherwise we'd lose A's last-known position when B's
+		// first scroll arrives within A's debounce window.
+		if (scrollPendingKey !== null && scrollPendingKey !== key) {
+			clearTimeout(scrollSaveTimer);
+			flushPendingScrollSave();
+		}
+
 		clearTimeout(scrollSaveTimer);
-		scrollSaveTimer = setTimeout(() => {
-			try {
-				if (y > 0) {
-					localStorage.setItem(key, String(y));
-				} else {
-					// At the top of the page — nothing useful to restore;
-					// drop any prior entry so we don't reapply zero offsets.
-					localStorage.removeItem(key);
-				}
-			} catch {
-				// localStorage unavailable; silent no-op.
-			}
-		}, 200);
+		scrollPendingKey = key;
+		scrollPendingY = y;
+		scrollSaveTimer = setTimeout(flushPendingScrollSave, 200);
 	}
 
 	$effect(() => {
@@ -175,9 +197,15 @@
 		if (!scrollGateKey || !scrollKey) return;
 		if (scrollRestoredFor === scrollGateKey) return;
 		if (filteredItems.length === 0) return;
+		// Capture the gate / key in the closure so the RAF callback can
+		// confirm it still applies before calling window.scrollTo. A fast
+		// follow-up navigation between effect run and RAF execution would
+		// otherwise scroll the *new* page to the *old* saved offset.
+		const expectedGate = scrollGateKey;
+		const expectedKey = scrollKey;
 		scrollRestoredFor = scrollGateKey;
 		try {
-			const raw = localStorage.getItem(scrollKey);
+			const raw = localStorage.getItem(expectedKey);
 			if (!raw) return;
 			const y = Number(raw);
 			if (!Number.isFinite(y) || y <= 0) return;
@@ -186,6 +214,7 @@
 			// natural restoration of position, not a user-driven jump.
 			requestAnimationFrame(() =>
 				requestAnimationFrame(() => {
+					if (scrollGateKey !== expectedGate) return;
 					window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
 				})
 			);
@@ -305,9 +334,10 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
-		// Clear any pending debounced scroll save so it can't fire after
-		// teardown and write to localStorage post-unmount (TASK-755).
+		// Flush any pending debounced scroll save so the user's last
+		// position isn't silently dropped on unmount (TASK-755).
 		clearTimeout(scrollSaveTimer);
+		flushPendingScrollSave();
 	});
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
