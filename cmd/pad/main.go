@@ -4631,7 +4631,11 @@ func watchCmd() *cobra.Command {
 					continue
 				}
 
-				// Keepalive comments (lines starting with ":") — ignore silently
+				// Keepalive comments (lines starting with ":") — ignore silently.
+				//lint:ignore SA4017 false positive: the return value is used as
+				// the if condition. Two sibling strings.HasPrefix calls earlier
+				// in the same loop ("event: " and "data: ") are not flagged,
+				// suggesting an SSA-analysis quirk specific to this branch.
 				if strings.HasPrefix(line, ":") {
 					continue
 				}
