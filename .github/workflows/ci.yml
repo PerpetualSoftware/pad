@@ -36,10 +36,12 @@ jobs:
 
       - name: Run golangci-lint
         # only-new-issues: false means CI fails on ANY linter finding,
-        # not just findings on PR-changed lines. Main is currently clean
-        # of staticcheck SA*/U1000, ineffassign, and gofmt findings (per
-        # IDEA-732 cleanup, PRs #247/#249/#251/#252), so flipping this
-        # gate is safe today and prevents regression drift going forward.
+        # not just findings on PR-changed lines. The IDEA-732 cleanup
+        # (PRs #247/#249/#251/#252) cleared the existing findings under
+        # the configured linter set in .golangci.yml — staticcheck SA*,
+        # govet, ineffassign, gofmt, and the standalone `unused` linter
+        # (which reports U1000). Flipping the gate now prevents
+        # regression drift going forward.
         # v2 of golangci-lint is required because v1 is capped at older
         # Go releases that we no longer support.
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0

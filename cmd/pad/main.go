@@ -4624,13 +4624,14 @@ func watchCmd() *cobra.Command {
 				}
 
 				// Keepalive comments (lines starting with ":") — ignore
-				// silently. The //nolint below silences a staticcheck SA4017
-				// false positive: the HasPrefix return IS used as the if
-				// condition. Two sibling HasPrefix calls earlier in the
-				// same loop ("event: " / "data: ") are not flagged, which
-				// strongly suggests an SSA-analysis quirk specific to this
-				// branch rather than a real defect.
-				if strings.HasPrefix(line, ":") { //nolint:staticcheck // SA4017 false positive — return value used in if condition
+				// silently. We use a direct byte comparison rather than
+				// strings.HasPrefix to dodge a long-standing staticcheck
+				// SA4017 false positive on this specific branch (the two
+				// sibling HasPrefix calls earlier in the loop don't trip
+				// it; only this one does, which strongly suggests an SSA-
+				// analysis quirk). Behaviour is identical for a single-
+				// byte ASCII prefix.
+				if len(line) > 0 && line[0] == ':' {
 					continue
 				}
 
