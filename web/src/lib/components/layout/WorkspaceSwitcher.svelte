@@ -107,7 +107,7 @@
 	<button
 		class="current"
 		onclick={() => open = !open}
-		aria-haspopup="menu"
+		aria-haspopup={isMobile ? 'dialog' : 'menu'}
 		aria-expanded={open}
 	>
 		<span class="name">{workspaceStore.current?.name ?? 'Select workspace'}</span>
