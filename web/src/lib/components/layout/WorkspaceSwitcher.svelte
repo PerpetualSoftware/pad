@@ -65,11 +65,18 @@
 		// to the new workspace.
 		//
 		// Click on the *current* workspace overrides the last-route
-		// restore — gives the user a one-tap path back to the workspace
+		// restore — gives the user a path back to the workspace
 		// dashboard from any deep route. Mirrors TopBar.handleWsClick.
-		const isCurrent = ws.slug === workspaceStore.current?.slug;
+		// Use workspaceStore.current (rather than ws.owner_username,
+		// which is typed optional) for the dashboard URL — when isCurrent
+		// is true we know `current` is non-null and shares this slug, so
+		// its `owner_username` is guaranteed present. Avoids producing
+		// `//slug` (scheme-relative URL) if a caller passes a workspace
+		// shape without owner_username.
+		const current = workspaceStore.current;
+		const isCurrent = !!current && ws.slug === current.slug;
 		const target = isCurrent
-			? `/${ws.owner_username ?? ''}/${ws.slug}`
+			? `/${current.owner_username}/${current.slug}`
 			: workspaceRestoreTarget(ws);
 		goto(target);
 	}
@@ -97,9 +104,14 @@
 {/snippet}
 
 <div class="switcher">
-	<button class="current" onclick={() => open = !open}>
+	<button
+		class="current"
+		onclick={() => open = !open}
+		aria-haspopup="menu"
+		aria-expanded={open}
+	>
 		<span class="name">{workspaceStore.current?.name ?? 'Select workspace'}</span>
-		<span class="chevron">{open ? '▲' : '▼'}</span>
+		<span class="chevron" aria-hidden="true">{open ? '▲' : '▼'}</span>
 	</button>
 
 	{#if isMobile && open}
