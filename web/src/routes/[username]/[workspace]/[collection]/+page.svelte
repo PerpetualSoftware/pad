@@ -132,18 +132,37 @@
 	let scrollRestoredFor = $state<string | null>(null);
 	let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
+	// Reset the restore-once gate when the pathname changes. Without this,
+	// visiting an empty or not-found collection between two visits to A
+	// would keep `scrollRestoredFor` stuck on A's gate-key and skip the
+	// next restore. Kept in its own effect per CONVE-606.
+	$effect(() => {
+		scrollGateKey;
+		scrollRestoredFor = null;
+	});
+
 	function scheduleScrollSave() {
-		if (!scrollKey) return;
+		// Only save AFTER the restore-once effect has had a chance to run
+		// for this pathname. Until then, SvelteKit's auto-scroll-to-top on
+		// navigation would fire a scroll event with y=0 that, if persisted,
+		// would clobber a previously-saved entry before we ever read it.
+		if (scrollRestoredFor !== scrollGateKey) return;
+		// Capture the key and scrollY synchronously at scroll-event time —
+		// not at timer-fire time. If the user changes filters / navigates
+		// within the debounce window, `scrollKey` would be the NEW value at
+		// timer fire and we'd write the old scroll-y into the wrong entry.
+		const key = scrollKey;
+		const y = window.scrollY;
+		if (!key) return;
 		clearTimeout(scrollSaveTimer);
 		scrollSaveTimer = setTimeout(() => {
 			try {
-				const y = window.scrollY;
 				if (y > 0) {
-					localStorage.setItem(scrollKey, String(y));
+					localStorage.setItem(key, String(y));
 				} else {
 					// At the top of the page — nothing useful to restore;
 					// drop any prior entry so we don't reapply zero offsets.
-					localStorage.removeItem(scrollKey);
+					localStorage.removeItem(key);
 				}
 			} catch {
 				// localStorage unavailable; silent no-op.
@@ -286,6 +305,9 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
+		// Clear any pending debounced scroll save so it can't fire after
+		// teardown and write to localStorage post-unmount (TASK-755).
+		clearTimeout(scrollSaveTimer);
 	});
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
