@@ -385,22 +385,3 @@ func PrintCommentTable(comments []models.Comment) {
 		}
 	}
 }
-
-func stripHTMLTags(s string) string {
-	var result strings.Builder
-	inTag := false
-	for _, r := range s {
-		if r == '<' {
-			inTag = true
-			continue
-		}
-		if r == '>' {
-			inTag = false
-			continue
-		}
-		if !inTag {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
-}

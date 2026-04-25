@@ -19,9 +19,6 @@ const (
 	// All instances share this counter so SSE event IDs are globally ordered
 	// and Last-Event-ID is valid across any instance on reconnect.
 	redisSeqKey = "pad:event_seq"
-
-	// reconnectDelay is how long to wait before retrying a failed Redis subscription.
-	reconnectDelay = 2 * time.Second
 )
 
 // RedisBus distributes events across multiple Pad instances via Redis pub/sub.

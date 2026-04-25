@@ -914,20 +914,6 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }
 
-// guestVisibleItemIDs returns the item IDs a guest has item-level grants on.
-// Returns nil for non-guests or if the guest has no item-level grants.
-func (s *Server) guestVisibleItemIDs(r *http.Request, workspaceID string) ([]string, error) {
-	if workspaceRole(r) != "guest" {
-		return nil, nil
-	}
-	user := currentUser(r)
-	if user == nil {
-		return nil, nil
-	}
-	_, itemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
-	return itemIDs, err
-}
-
 // requireItemVisible checks that the item's collection is visible to the
 // requesting user. For guests with item-level grants, also verifies that the
 // specific item is granted (not just the collection). Writes a 404 and returns

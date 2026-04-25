@@ -283,8 +283,8 @@ type sseVisibility struct {
 // the latest state from the store so revoked grants or narrowed roles
 // stop leaking on the next event dispatch.
 //
-// Unlike the request-scoped helpers (visibleCollectionIDs,
-// guestVisibleItemIDs) this function re-fetches the authenticated user
+// Unlike the request-scoped helpers (visibleCollectionIDs)
+// this function re-fetches the authenticated user
 // from the store so mid-stream role changes (admin demotion,
 // user.disabled flips) take effect on the next tick. The cached
 // currentUser(r) snapshot is only used to look up which user to

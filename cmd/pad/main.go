@@ -3317,14 +3317,6 @@ func statusCmd() *cobra.Command {
 	}
 }
 
-func progressBar(pct, width int) string {
-	filled := (pct * width) / 100
-	if filled > width {
-		filled = width
-	}
-	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
-}
-
 func colorProgressBar(pct, width int, filledColor *color.Color) string {
 	filled := (pct * width) / 100
 	if filled > width {
