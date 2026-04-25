@@ -207,14 +207,20 @@
 		if (loading) return;
 		if (!scrollGateKey || !scrollKey) return;
 		if (scrollRestoredFor === scrollGateKey) return;
-		if (filteredItems.length === 0) return;
 		// Capture the gate / key in the closure so the RAF callback can
-		// confirm it still applies before calling window.scrollTo. A fast
-		// follow-up navigation between effect run and RAF execution would
-		// otherwise scroll the *new* page to the *old* saved offset.
+		// confirm both still apply before calling window.scrollTo. A fast
+		// follow-up navigation OR an in-page key-changing toggle (filter,
+		// archive) between effect run and RAF execution would otherwise
+		// scroll to an offset that no longer matches the current view.
 		const expectedGate = scrollGateKey;
 		const expectedKey = scrollKey;
+		// Mark the gate as "restore attempted" BEFORE the empty-items
+		// short-circuit so a later items-appear-on-same-gate event (e.g.
+		// the user creates an item in an empty collection, or an in-page
+		// toggle that doesn't change the gate-key produces items) cannot
+		// trigger a delayed unintended restore.
 		scrollRestoredFor = scrollGateKey;
+		if (filteredItems.length === 0) return;
 		try {
 			const raw = localStorage.getItem(expectedKey);
 			if (!raw) return;
@@ -230,7 +236,12 @@
 			scrollRestoreRAF = requestAnimationFrame(() => {
 				scrollRestoreRAF = requestAnimationFrame(() => {
 					scrollRestoreRAF = undefined;
+					// Bail if either the path-level gate or the
+					// URL-state-level key has changed since this restore
+					// was queued. (Filter/archive toggles change the key
+					// without changing the gate, so we need both checks.)
 					if (scrollGateKey !== expectedGate) return;
+					if (scrollKey !== expectedKey) return;
 					window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
 				});
 			});
