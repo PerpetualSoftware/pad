@@ -62,6 +62,24 @@
 		titleStore.setPageTitle({ section: null, item: null });
 	});
 
+	// Persist the user's last-visited route per workspace so the workspace
+	// switcher (WorkspaceSwitcher.svelte) can restore it on switch instead
+	// of always landing on the dashboard. Implements IDEA-753 / TASK-754.
+	//
+	// Per CONVE-606, this is its own effect with a clean dependency list
+	// (wsSlug + pathname). Combining with the title sync above would re-run
+	// it on async workspace-name resolution and could overwrite the saved
+	// route at unexpected times. Storage failures (private-mode quota,
+	// disabled storage) are swallowed — restoration just won't kick in.
+	$effect(() => {
+		if (!wsSlug) return;
+		try {
+			localStorage.setItem(`pad-last-route-${wsSlug}`, page.url.pathname);
+		} catch {
+			// localStorage unavailable; silent no-op.
+		}
+	});
+
 	// Initialize workspace, load collections, and reconnect SSE when workspace changes
 	$effect(() => {
 		if (wsSlug) {

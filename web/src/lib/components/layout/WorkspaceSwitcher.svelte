@@ -60,7 +60,24 @@
 		// workspace links did this on click, so preserve the behavior now
 		// that the switcher is the mobile nav entry point.
 		uiStore.onNavigate();
-		goto(`/${ws.owner_username}/${ws.slug}`);
+
+		// Restore the last-visited route in this workspace if we have one
+		// in localStorage (written by the workspace +layout on every nav).
+		// Falls back to the dashboard on miss, parse error, storage error,
+		// or any saved path that doesn't belong to this workspace (guards
+		// against username changes / corrupt entries / cross-workspace
+		// bleed). Implements IDEA-753 / TASK-754.
+		const fallback = `/${ws.owner_username}/${ws.slug}`;
+		let target = fallback;
+		try {
+			const saved = localStorage.getItem(`pad-last-route-${ws.slug}`);
+			if (saved && (saved === fallback || saved.startsWith(fallback + '/'))) {
+				target = saved;
+			}
+		} catch {
+			// localStorage unavailable; fall through to dashboard.
+		}
+		goto(target);
 	}
 
 	function openCreateModal() {
