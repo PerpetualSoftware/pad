@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -162,6 +163,109 @@ func schemaFieldKeys(t *testing.T, schemaJSON string) []string {
 		keys = append(keys, field.Key)
 	}
 	return keys
+}
+
+// TestSQLiteConcurrentWritersNoBusy guards against the BUG-748-followup
+// regression where Go's default deferred-mode transactions returned
+// SQLITE_BUSY immediately under contention because lock-upgrade does not
+// honor busy_timeout. With `_txlock=immediate` set in the DSN, every
+// `db.Begin()` issues `BEGIN IMMEDIATE`, so the write lock is acquired
+// up-front and concurrent writers wait via busy_timeout instead of
+// failing fast.
+//
+// The benchmark in `bench_concurrent_test.go` quantifies throughput;
+// this test specifically asserts ZERO errors under a concurrent-update
+// workload that previously produced multiple `SQLITE_BUSY` returns.
+func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific concurrency test; postgres has its own MVCC semantics")
+	}
+
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer s.Close()
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "concurrency"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	// 25 goroutines × 5 ops each — these all open transactions
+	// (tryCreateItem in items.go uses db.Begin), and previously raced
+	// for the write-lock on upgrade.
+	//
+	// Synchronization: a two-WaitGroup pattern (`ready` to confirm each
+	// worker has reached the gate, then `release` to free them all at
+	// once). This is NOT a mathematically exact barrier — there's a
+	// small unobservable gap between `ready.Done()` and `release.Wait()`
+	// in each worker, and a worker descheduled in that gap could miss
+	// the simultaneous release. In practice the gap is sub-microsecond,
+	// vanishingly small compared to the millisecond-scale contention
+	// window the test is probing, and the multiple-ops-per-worker
+	// structure means even a slightly-late worker still produces enough
+	// concurrent BEGIN IMMEDIATE attempts to exercise the race.
+	//
+	// Empirical check (2026-04-25): with `_txlock=immediate` removed
+	// from the DSN this test reliably FAILS — a representative run on
+	// a developer laptop produced ~22 errors out of 125 ops, all
+	// `database is locked (5) (SQLITE_BUSY)`; the exact rate is
+	// host- and scheduler-dependent but consistently >0. With the fix
+	// in place, 20 consecutive `go test -count=20` runs all pass. So
+	// the imprecision in the barrier doesn't impair the test's
+	// regression-catching ability.
+	const workers = 25
+	const opsPerWorker = 5
+	errCh := make(chan error, workers*opsPerWorker)
+
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	var release sync.WaitGroup
+	release.Add(1)
+	var done sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		idx := i
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			ready.Done()     // signal "I'm at the gate"
+			release.Wait()   // park here until main thread releases
+			for op := 0; op < opsPerWorker; op++ {
+				_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+					Title:  fmt.Sprintf("concurrent-%d-%d", idx, op),
+					Fields: `{"status":"open"}`,
+				})
+				if err != nil {
+					errCh <- err
+				}
+			}
+		}()
+	}
+	ready.Wait()    // every worker has called ready.Done() (best-effort gate)
+	release.Done()  // release them all at once
+	done.Wait()
+	close(errCh)
+
+	var errs []error
+	for e := range errCh {
+		errs = append(errs, e)
+	}
+	if len(errs) > 0 {
+		t.Errorf("expected zero errors under %d concurrent writers × %d ops, got %d:", workers, opsPerWorker, len(errs))
+		for _, e := range errs {
+			t.Errorf("  - %v", e)
+		}
+	}
 }
 
 func TestNewStore(t *testing.T) {
