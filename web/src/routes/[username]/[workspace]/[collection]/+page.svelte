@@ -138,6 +138,13 @@
 	// when they navigate to and scroll on B within the 200ms window).
 	let scrollPendingKey: string | null = null;
 	let scrollPendingY = 0;
+	// RAF id of the in-flight restore (or undefined). Tracked so we can
+	// cancel it on unmount — once this component is destroyed, the inner
+	// RAF's `scrollGateKey === expectedGate` check no longer guards us
+	// (the closure observes the destroyed-component's last-computed value),
+	// so without cancellation a queued restore could scrollTo the next
+	// page after a fast cross-route navigation.
+	let scrollRestoreRAF: number | undefined;
 
 	// Reset the restore-once gate when the pathname changes. Without this,
 	// visiting an empty or not-found collection between two visits to A
@@ -212,12 +219,17 @@
 			// Two RAFs: layout settles after items render, then we scroll.
 			// 'instant' avoids smooth-scroll on what should feel like a
 			// natural restoration of position, not a user-driven jump.
-			requestAnimationFrame(() =>
-				requestAnimationFrame(() => {
+			// We track the RAF id so onDestroy can cancel a queued restore
+			// — without that, a fast nav off this collection page can
+			// still scroll the next page (the gate check is insufficient
+			// after the component is destroyed; see scrollRestoreRAF docs).
+			scrollRestoreRAF = requestAnimationFrame(() => {
+				scrollRestoreRAF = requestAnimationFrame(() => {
+					scrollRestoreRAF = undefined;
 					if (scrollGateKey !== expectedGate) return;
 					window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
-				})
-			);
+				});
+			});
 		} catch {
 			// localStorage unavailable / parse error — silent no-op.
 		}
@@ -338,6 +350,11 @@
 		// position isn't silently dropped on unmount (TASK-755).
 		clearTimeout(scrollSaveTimer);
 		flushPendingScrollSave();
+		// Cancel a queued restore so it can't scroll the next page.
+		if (scrollRestoreRAF !== undefined) {
+			cancelAnimationFrame(scrollRestoreRAF);
+			scrollRestoreRAF = undefined;
+		}
 	});
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
