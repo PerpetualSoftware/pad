@@ -123,9 +123,13 @@
 	// horizontal (.board-view) and per-column vertical scroll containers
 	// are not yet captured (BoardView would need to expose scroll refs);
 	// page-level scroll still covers the dominant list and table views.
+	// scrollKey includes `showArchived` because it changes the fetched
+	// dataset but is not synced to the URL — saving a scroll position
+	// while in the archived view would otherwise re-apply to the
+	// non-archived view (different items, unrelated offset).
 	let scrollKey = $derived(
 		wsSlug
-			? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}`
+			? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}${showArchived ? '|archived' : ''}`
 			: ''
 	);
 	let scrollGateKey = $derived(wsSlug ? `${wsSlug}:${page.url.pathname}` : '');
