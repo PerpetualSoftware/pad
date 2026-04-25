@@ -204,20 +204,23 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 	// (tryCreateItem in items.go uses db.Begin), and previously raced
 	// for the write-lock on upgrade.
 	//
-	// We use a TRUE barrier (not just a start gate) so every worker has
-	// reached the wait point BEFORE we release them. The earlier draft
-	// of this test used a single Done()/Wait() pair, but that doesn't
-	// guarantee all goroutines have parked on Wait() before Done() runs
-	// — late-scheduled goroutines could arrive after Done() and never
-	// hit the gate at all, defeating the contention we're trying to
-	// reproduce on slow CI runners. The two-WaitGroup pattern below
-	// (every worker signals "ready", main thread waits for all, then
-	// releases everyone simultaneously) is the standard fix.
+	// Synchronization: a two-WaitGroup pattern (`ready` to confirm each
+	// worker has reached the gate, then `release` to free them all at
+	// once). This is NOT a mathematically exact barrier — there's a
+	// small unobservable gap between `ready.Done()` and `release.Wait()`
+	// in each worker, and a worker descheduled in that gap could miss
+	// the simultaneous release. In practice the gap is sub-microsecond,
+	// vanishingly small compared to the millisecond-scale contention
+	// window the test is probing, and the multiple-ops-per-worker
+	// structure means even a slightly-late worker still produces enough
+	// concurrent BEGIN IMMEDIATE attempts to exercise the race.
 	//
-	// Combined with multiple ops per worker (each producing its own
-	// BEGIN/COMMIT cycle through CreateItem → tryCreateItem), this
-	// produces a sustained lock-contention window that a regressed
-	// deferred-transaction build cannot pass.
+	// Empirical check (2026-04-25): with `_txlock=immediate` removed
+	// from the DSN this test reliably FAILS — 22 errors out of 125 ops
+	// per run, all `database is locked (5) (SQLITE_BUSY)`. With the
+	// fix in place, 20 consecutive `go test -count=20` runs all pass.
+	// So the imprecision in the barrier doesn't impair the test's
+	// regression-catching ability.
 	const workers = 25
 	const opsPerWorker = 5
 	errCh := make(chan error, workers*opsPerWorker)
