@@ -167,13 +167,13 @@ docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
 
 This publishes Pad to `localhost:7777` on the host machine, which is the recommended default for local use.
 
-To expose Pad beyond localhost intentionally, publish the port more broadly:
+**Single user, more than one device?** Publish to all interfaces so you can reach Pad from your phone, tablet, or another machine on the same LAN, Tailscale network, or home VPN:
 
 ```bash
 docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
 ```
 
-Use broader publishing only when you intend to make Pad reachable from other machines or interfaces.
+For multi-user team setups, [Pad Cloud](https://app.getpad.dev) is the supported path — same product, hosted, with team features.
 
 ### Docker Compose
 
@@ -383,65 +383,6 @@ make test       # Run Go tests
 make dev-web    # SvelteKit dev server with hot reload
 make install    # Build, install to ~/.local/bin, restart server
 ```
-
-## Hardening for public deployments
-
-Pad ships with defaults tuned for **local, single-user** development. If you plan to expose a Pad instance beyond `127.0.0.1` — whether to a LAN, a VPS, or the public internet — walk the checklist below before opening the firewall. None of these are optional once the server is reachable by an untrusted network.
-
-### Network boundary
-
-- **Bind to loopback by default.** Docker Compose publishes `127.0.0.1:7777:7777`. Keep that on any host the server shares with other users. Only set `PAD_BIND_ADDR=0.0.0.0` when the host's firewall or reverse proxy is already in front.
-- **Terminate TLS in front.** Pad does not listen on TLS directly. Put Caddy, nginx, or a cloud load balancer in front so every request is HTTPS. Then set `PAD_SECURE_COOKIES=true` so session and CSRF cookies are flagged `Secure`.
-- **Trust one proxy, not the internet.** If a reverse proxy is in front, configure `PAD_TRUSTED_PROXIES` with its CIDR(s). This gates the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-IP` headers so only traffic from your proxy can influence rate limits, the bootstrap loopback check, or the CLI-auth scheme. Leave it unset for direct-exposed deployments — Pad will then ignore proxy headers entirely.
-
-  ```bash
-  # Example for a single reverse proxy in a private subnet:
-  export PAD_TRUSTED_PROXIES=10.0.0.0/8
-  ```
-
-### Secrets
-
-- **Generate `PAD_ENCRYPTION_KEY` before the first start.** The SQLite build auto-generates one at `~/.pad/encryption.key`; the Postgres / clustered build refuses to start without an explicit key so replicas can't diverge. Rotate only during a maintenance window; rotating destroys any encrypted-at-rest values that were decrypted with the old key.
-
-  ```bash
-  openssl rand -hex 32   # paste into PAD_ENCRYPTION_KEY
-  ```
-
-- **Scope API tokens deliberately.** `POST /api/v1/auth/tokens` accepts a `scopes` field. `["*"]` grants full access (useful for CI / agents that must write) and `["read"]` limits the token to safe methods. Unrecognized scope strings are **denied** as of TASK-667 — tokens with legacy custom scopes must be reissued with one of the supported values.
-- **Bootstrap from the server host.** `pad auth setup` is gated on the loopback check for exactly this reason: it creates an unauthenticated window during which the first admin is minted. Open that window only while physically on the server, then close it by completing the bootstrap.
-
-### Authentication hardening
-
-- **Enable strict session IP binding for high-sensitivity workloads.** `PAD_IP_CHANGE_ENFORCE=strict` rejects requests whose client IP no longer matches the one recorded at session creation. Good for server-to-server API use; breaks mobile roaming, VPN toggles, and carrier NAT for interactive users — leave unset (log-only mode) for most deployments. Either mode writes an `ActionSessionIPChanged` audit-log row.
-- **Make password strength visible to users.** Bootstrap / register / rotation / reset now enforce a minimum zxcvbn score of 2 plus identity-aware penalties (email, name, username). Surface the returned `validation_error` text in your UI so users understand why a password was rejected rather than blaming themselves.
-- **Require CORS origins explicitly.** Set `PAD_CORS_ORIGINS` to the comma-separated origins of your web UI hosts. Without this, cookie-authenticated browser fetches from other origins are rejected by default — which is what you want.
-
-### Observability
-
-- **Gate `/metrics` with a shared bearer.** Set `PAD_METRICS_TOKEN` to a 32-byte hex string. Without it, `/metrics` is reachable **only from loopback** — safe for Prometheus on the same host, but useless for external scrapers. With the token set, every scrape must send `Authorization: Bearer $PAD_METRICS_TOKEN`.
-- **Forward audit-log entries.** `GET /api/v1/admin/audit-log` (admin-only) exposes login attempts, password changes, token issuance, session-IP changes, and member/role changes. Ship them to your log aggregator for alerting — the most interesting events (`login_failed`, `session_ip_changed`, `token_created`) are the ones you'll want dashboards on.
-
-### CI gates
-
-The project ships two security gates you should mirror in your deployment pipeline:
-
-- **`npm audit --audit-level=high --production`** — run from `web/` to block frontend PRs that pull in vulnerable deps.
-- **`govulncheck ./...`** — run at the repo root to block Go PRs that pull in vulnerable deps. Install a **pinned** version so your CI is reproducible (mirror the tag in `.github/workflows/ci.yml`). For example: `go install golang.org/x/vuln/cmd/govulncheck@v1.2.0`. Bump the pin intentionally when upstream ships a new release rather than tracking `@latest`.
-
-Both are fast enough to run in PR CI.
-
-### Quick checklist
-
-Before flipping a Pad deployment public:
-
-- [ ] TLS terminated in front, `PAD_SECURE_COOKIES=true`
-- [ ] `PAD_TRUSTED_PROXIES` configured (or the server is directly exposed)
-- [ ] `PAD_ENCRYPTION_KEY` set from a cryptographically random source
-- [ ] `PAD_CORS_ORIGINS` allow-list configured for the UI's origin(s)
-- [ ] `PAD_METRICS_TOKEN` set (or `/metrics` is loopback-only by accident)
-- [ ] `pad auth setup` completed so the bootstrap window is closed
-- [ ] Audit log shipped to external storage
-- [ ] `npm audit` + `govulncheck` running in CI
 
 ## Security
 
