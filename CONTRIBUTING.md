@@ -95,6 +95,20 @@ enabling progress tracking on the phase detail page.
 - **Svelte:** Follow existing component patterns. Use Svelte 5 runes (`$state`, `$derived`, `$effect`).
 - **TypeScript:** Types live in `web/src/lib/types/index.ts`.
 
+### Quality Gates
+
+PR CI runs two security gates that block merging on regressions:
+
+- **`npm audit --audit-level=high --omit=dev`** — fails on any HIGH or CRITICAL advisory in production frontend deps. Run from `web/` locally to catch findings before opening a PR.
+- **`govulncheck ./...`** — fails on any known vulnerability in a Go package the binary actually reaches via the call graph. Pinned to a specific version in `.github/workflows/ci.yml`; bump intentionally rather than tracking `@latest`.
+
+Both are fast enough to run locally:
+
+```bash
+cd web && npm audit --audit-level=high --omit=dev
+go install golang.org/x/vuln/cmd/govulncheck@v1.2.0 && govulncheck ./...
+```
+
 ## Adding Features
 
 ### New API Endpoint
