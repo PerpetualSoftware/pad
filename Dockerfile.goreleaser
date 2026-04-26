@@ -1,6 +1,10 @@
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
-COPY pad /usr/local/bin/pad
+# dockers_v2 organizes goreleaser-built binaries under ${TARGETPLATFORM}/pad
+# (e.g. linux/amd64/pad, linux/arm64/pad). buildx sets TARGETPLATFORM
+# automatically per platform when the image is built.
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/pad /usr/local/bin/pad
 RUN adduser -D -u 1000 -h /home/pad pad \
     && mkdir -p /data \
     && chown -R pad:pad /data

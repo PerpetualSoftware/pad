@@ -74,6 +74,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo PAT for pushing the brew formula to xarmian/homebrew-tap.
+          # The default GITHUB_TOKEN above only has access to xarmian/pad.
+          # Add this secret in repo settings before tagging a release that ships
+          # a brew formula — without it goreleaser fails at the brew publish step.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # SLSA build provenance for every archive GoReleaser produced.
       # Writes a Sigstore-backed attestation to the repo so downstream
