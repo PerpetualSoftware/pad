@@ -106,6 +106,11 @@ brews:
   - repository:
       owner: xarmian
       name: homebrew-tap
+      # Cross-repo PAT — the default GITHUB_TOKEN is scoped to xarmian/pad
+      # only and cannot push to the separate tap repo. Set the secret
+      # `HOMEBREW_TAP_GITHUB_TOKEN` on this repo (fine-grained PAT,
+      # `Contents: write` + `Metadata: read` on xarmian/homebrew-tap only).
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: "https://getpad.dev"
     description: "Project management for developers and AI agents"
