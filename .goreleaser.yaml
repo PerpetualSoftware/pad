@@ -26,11 +26,11 @@ builds:
       - -X main.buildTime={{.Date}}
 
 archives:
-  - format: tar.gz
+  - formats: ["tar.gz"]
     name_template: "pad_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: ["zip"]
 
 checksum:
   name_template: "checksums.txt"
@@ -102,7 +102,7 @@ changelog:
     - title: "Other changes"
       order: 999
 
-brews:
+homebrew_casks:
   - repository:
       owner: xarmian
       name: homebrew-tap
@@ -111,42 +111,27 @@ brews:
       # `HOMEBREW_TAP_GITHUB_TOKEN` on this repo (fine-grained PAT,
       # `Contents: write` + `Metadata: read` on xarmian/homebrew-tap only).
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: "https://getpad.dev"
     description: "Project management for developers and AI agents"
     license: "Apache-2.0"
-    test: |
-      system "#{bin}/pad", "--version"
 
-dockers:
-  - image_templates:
-      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-    goarch: amd64
+# dockers_v2 replaces the legacy `dockers:` + `docker_manifests:` blocks.
+# A single declaration handles multi-platform builds via buildx; goreleaser
+# pre-organizes binaries under `${TARGETPLATFORM}/pad` for the Dockerfile
+# to consume (see Dockerfile.goreleaser's COPY line).
+dockers_v2:
+  - images:
+      - "ghcr.io/xarmian/pad"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
     dockerfile: Dockerfile.goreleaser
     extra_files:
       - web/build
-  - image_templates:
-      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-    goarch: arm64
-    dockerfile: Dockerfile.goreleaser
-    extra_files:
-      - web/build
-
-docker_manifests:
-  - name_template: "ghcr.io/xarmian/pad:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
-      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/xarmian/pad:latest"
-    image_templates:
-      - "ghcr.io/xarmian/pad:{{ .Version }}-amd64"
-      - "ghcr.io/xarmian/pad:{{ .Version }}-arm64"
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 release:
   github:
