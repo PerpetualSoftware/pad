@@ -352,7 +352,13 @@ type BillingAggregates struct {
 func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, error) {
 	out := &BillingAggregates{CustomersByPlan: map[string]int{}}
 
-	rows, err := s.db.Query(s.q(`SELECT COALESCE(NULLIF(plan, ''), 'free') AS plan, COUNT(*) FROM users GROUP BY plan`))
+	// GROUP BY must match the projected expression — grouping on the raw
+	// `plan` column would split '' and 'free' into two result rows that
+	// both scan as "free" in Go and overwrite each other in the map,
+	// silently underreporting the free-tier count (Codex round 2).
+	rows, err := s.db.Query(s.q(`SELECT COALESCE(NULLIF(plan, ''), 'free') AS plan, COUNT(*)
+		FROM users
+		GROUP BY COALESCE(NULLIF(plan, ''), 'free')`))
 	if err != nil {
 		return nil, fmt.Errorf("count users by plan: %w", err)
 	}

@@ -220,10 +220,15 @@ func TestCountBillingAggregates(t *testing.T) {
 		t.Errorf("empty store: want NewProSignups=0, got %d", agg.NewProSignups)
 	}
 
-	// Two free users (one auto-bucketed from empty plan), one pro inside
-	// window, one pro outside window, one self-hosted outside window.
-	createTestUser(t, s, "free1@test.com", "Free One", "pass")    // empty plan → "free"
-	createTestUser(t, s, "free2@test.com", "Free Two", "pass")    // empty plan → "free"
+	// Mix: explicit-empty plan (older legacy rows) + explicit "free"
+	// (current default) + pro recent + pro old + self-hosted. Both the
+	// '' and 'free' rows must roll up into the same "free" bucket — Codex
+	// round 2 caught this regression where GROUP BY plan (raw column)
+	// produced two scanned rows both labelled "free" that overwrote each
+	// other in the result map.
+	insertWithPlanAndDate(t, s, "legacy_blank@test.com", "", now.Add(-100*24*time.Hour))
+	insertWithPlanAndDate(t, s, "free_explicit@test.com", "free", now.Add(-2*24*time.Hour))
+	insertWithPlanAndDate(t, s, "free_explicit2@test.com", "free", now.Add(-1*24*time.Hour))
 	insertWithPlanAndDate(t, s, "pro_recent@test.com", "pro", now.Add(-5*24*time.Hour))
 	insertWithPlanAndDate(t, s, "pro_old@test.com", "pro", now.Add(-90*24*time.Hour))
 	insertWithPlanAndDate(t, s, "self@test.com", "self-hosted", now.Add(-60*24*time.Hour))
@@ -232,8 +237,9 @@ func TestCountBillingAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountBillingAggregates: %v", err)
 	}
-	if got, want := agg.CustomersByPlan["free"], 2; got != want {
-		t.Errorf("free: want %d, got %d (full map: %v)", want, got, agg.CustomersByPlan)
+	// 1 legacy blank + 2 explicit "free" must roll up to 3.
+	if got, want := agg.CustomersByPlan["free"], 3; got != want {
+		t.Errorf("free (rolls up '' + 'free'): want %d, got %d (full map: %v)", want, got, agg.CustomersByPlan)
 	}
 	if got, want := agg.CustomersByPlan["pro"], 2; got != want {
 		t.Errorf("pro: want %d, got %d", want, got)
