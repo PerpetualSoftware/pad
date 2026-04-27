@@ -1356,6 +1356,127 @@ func TestListDocuments_HyphenatedQuery(t *testing.T) {
 	}
 }
 
+// TestMigration046_DocumentsFTSTriggersExist verifies that after all
+// migrations run on a fresh DB, the three documents_* triggers are present.
+// This regression-protects BUG-822 — production DBs ended up missing these
+// triggers (likely from a transient quirk during migration 025), and
+// migration 046 restores them.
+func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
+	s := testStore(t)
+
+	// SQLite-only — Postgres uses a different tsvector trigger setup and
+	// is unaffected.
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("documents_ai/au/ad triggers are SQLite-FTS5 specific")
+	}
+
+	for _, want := range []string{"documents_ai", "documents_au", "documents_ad"} {
+		var name string
+		err := s.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='documents' AND name=?",
+			want,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("expected trigger %q to exist after migrations, got error: %v", want, err)
+		}
+	}
+}
+
+// TestMigration046_RebuildRecoversUnindexedDocs pins the *recovery* half of
+// migration 046 — the part that rescues already-broken DBs. We simulate the
+// production state Codex flagged: triggers were missing, so a document was
+// inserted into the documents table but never made it into documents_fts.
+// Migration 046's `INSERT INTO documents_fts(documents_fts) VALUES('rebuild')`
+// step is what makes such a document searchable again. Without this test,
+// removing the rebuild step would not break either of the other two BUG-822
+// tests — flagged in Codex review.
+func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
+	s := testStore(t)
+
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("FTS5 rebuild idiom is SQLite-specific")
+	}
+
+	ws := createTestWorkspace(t, s, "Test")
+
+	// Simulate the BUG-822 broken state: drop the FTS triggers so subsequent
+	// inserts don't propagate into documents_fts.
+	for _, name := range []string{"documents_ai", "documents_au", "documents_ad"} {
+		if _, err := s.db.Exec("DROP TRIGGER IF EXISTS " + name); err != nil {
+			t.Fatalf("DROP TRIGGER %s: %v", name, err)
+		}
+	}
+
+	// Insert via the normal store path; trigger is gone so it won't reach FTS.
+	doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title: "Bug822recoverable distinctive",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	// Pin the broken state — the doc must NOT be searchable yet, otherwise
+	// the test isn't actually exercising the recovery path.
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "Bug822recoverable"})
+	if err != nil {
+		t.Fatalf("ListDocuments (pre-rebuild): %v", err)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("test setup invalid: expected doc to be invisible to FTS pre-rebuild, got %d results", len(docs))
+	}
+
+	// Run just the rebuild step from migration 046 — the recovery action.
+	if _, err := s.db.Exec(`INSERT INTO documents_fts(documents_fts) VALUES ('rebuild')`); err != nil {
+		t.Fatalf("FTS rebuild: %v", err)
+	}
+
+	// Now the previously-unindexed doc must be findable.
+	docs, err = s.ListDocuments(ws.ID, models.DocumentListParams{Query: "Bug822recoverable"})
+	if err != nil {
+		t.Fatalf("ListDocuments (post-rebuild): %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != doc.ID {
+		t.Errorf("expected doc to become searchable post-rebuild, got %d results", len(docs))
+	}
+}
+
+// TestCreateDocument_IsSearchableImmediately is the BUG-822 regression test:
+// a freshly-created document must be findable via FTS without any manual
+// rebuild. This was failing on production DBs whose documents_* triggers
+// were missing — Store.CreateDocument inserted into documents but the
+// after-insert trigger never fired to populate documents_fts, leaving the
+// new doc invisible to ListDocuments(Query=...).
+func TestCreateDocument_IsSearchableImmediately(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "uniquesearchableword scratch",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "uniquesearchableword"})
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("expected to find newly-created doc by FTS, got 0 results (the BUG-822 regression)")
+	}
+	found := false
+	for _, d := range docs {
+		if d.ID == doc.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("FTS results don't include the new doc, got %d unrelated results", len(docs))
+	}
+}
+
 // TestListDocuments_FTS_TagFilter pins BUG-820: when a search query is set,
 // the FTS branch must still re-apply Tag filters (the documents analog of
 // BUG-812). Before the fix, /documents?q=foo&tag=bar returned all docs
