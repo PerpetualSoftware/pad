@@ -1356,6 +1356,88 @@ func TestListDocuments_HyphenatedQuery(t *testing.T) {
 	}
 }
 
+// TestListDocuments_FTS_TagFilter pins BUG-820: when a search query is set,
+// the FTS branch must still re-apply Tag filters (the documents analog of
+// BUG-812). Before the fix, /documents?q=foo&tag=bar returned all docs
+// matching "foo" regardless of tag.
+func TestListDocuments_FTS_TagFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	tagged, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title: "FTSdocfilter alpha",
+		Tags:  `["urgent"]`,
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument tagged: %v", err)
+	}
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title: "FTSdocfilter beta",
+		Tags:  `[]`,
+	}); err != nil {
+		t.Fatalf("CreateDocument untagged: %v", err)
+	}
+
+	// Sanity: search alone returns both.
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "FTSdocfilter"})
+	if err != nil {
+		t.Fatalf("ListDocuments sanity: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("sanity expected 2 docs via search, got %d", len(docs))
+	}
+
+	// Search + tag must narrow to the tagged doc only.
+	docs, err = s.ListDocuments(ws.ID, models.DocumentListParams{Query: "FTSdocfilter", Tag: "urgent"})
+	if err != nil {
+		t.Fatalf("ListDocuments search+tag: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != tagged.ID {
+		t.Errorf("expected exactly the tagged doc, got %d docs", len(docs))
+	}
+}
+
+// TestListDocuments_FTS_PinnedFilter pins BUG-820 for the pinned filter:
+// /documents?q=foo&pinned=true used to ignore the pin bit when the FTS
+// branch took over. Documents analog of BUG-812.
+func TestListDocuments_FTS_PinnedFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	pinned, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:  "FTSpindoc alpha",
+		Pinned: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument pinned: %v", err)
+	}
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:  "FTSpindoc beta",
+		Pinned: false,
+	}); err != nil {
+		t.Fatalf("CreateDocument unpinned: %v", err)
+	}
+
+	pinTrue := true
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "FTSpindoc", Pinned: &pinTrue})
+	if err != nil {
+		t.Fatalf("ListDocuments search+pinned=true: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != pinned.ID {
+		t.Errorf("expected exactly the pinned doc via search+pinned=true, got %d docs", len(docs))
+	}
+
+	// And the inverse: pinned=false narrows to the other one.
+	pinFalse := false
+	docs, err = s.ListDocuments(ws.ID, models.DocumentListParams{Query: "FTSpindoc", Pinned: &pinFalse})
+	if err != nil {
+		t.Fatalf("ListDocuments search+pinned=false: %v", err)
+	}
+	if len(docs) != 1 || docs[0].Pinned {
+		t.Errorf("expected exactly the unpinned doc via search+pinned=false, got %d docs", len(docs))
+	}
+}
+
 // TestFTS_WhitespaceOnlyQuery_DoesNotCrash exercises the whitespace-only
 // guard on each FTS entry point. sanitizeFTSQuery turns "   " into "" and
 // SQLite FTS5 errors on `MATCH ''`, so the routing/guard has to short-circuit
