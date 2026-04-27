@@ -1356,6 +1356,69 @@ func TestListDocuments_HyphenatedQuery(t *testing.T) {
 	}
 }
 
+// TestMigration046_DocumentsFTSTriggersExist verifies that after all
+// migrations run on a fresh DB, the three documents_* triggers are present.
+// This regression-protects BUG-822 — production DBs ended up missing these
+// triggers (likely from a transient quirk during migration 025), and
+// migration 046 restores them.
+func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
+	s := testStore(t)
+
+	// SQLite-only — Postgres uses a different tsvector trigger setup and
+	// is unaffected.
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("documents_ai/au/ad triggers are SQLite-FTS5 specific")
+	}
+
+	for _, want := range []string{"documents_ai", "documents_au", "documents_ad"} {
+		var name string
+		err := s.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='documents' AND name=?",
+			want,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("expected trigger %q to exist after migrations, got error: %v", want, err)
+		}
+	}
+}
+
+// TestCreateDocument_IsSearchableImmediately is the BUG-822 regression test:
+// a freshly-created document must be findable via FTS without any manual
+// rebuild. This was failing on production DBs whose documents_* triggers
+// were missing — Store.CreateDocument inserted into documents but the
+// after-insert trigger never fired to populate documents_fts, leaving the
+// new doc invisible to ListDocuments(Query=...).
+func TestCreateDocument_IsSearchableImmediately(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "uniquesearchableword scratch",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "uniquesearchableword"})
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("expected to find newly-created doc by FTS, got 0 results (the BUG-822 regression)")
+	}
+	found := false
+	for _, d := range docs {
+		if d.ID == doc.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("FTS results don't include the new doc, got %d unrelated results", len(docs))
+	}
+}
+
 // TestListDocuments_FTS_TagFilter pins BUG-820: when a search query is set,
 // the FTS branch must still re-apply Tag filters (the documents analog of
 // BUG-812). Before the fix, /documents?q=foo&tag=bar returned all docs
