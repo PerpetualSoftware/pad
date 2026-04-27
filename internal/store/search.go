@@ -97,6 +97,13 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		return &SearchResponse{Results: []SearchResult{}, Limit: params.Limit, Offset: params.Offset}, nil
 	}
 
+	// Whitespace-only queries collapse to empty after FTS5 sanitization and
+	// would error on `MATCH ''`. Treat them as no-result rather than letting
+	// SQLite raise a syntax error. See BUG-818.
+	if strings.TrimSpace(params.Query) == "" {
+		return &SearchResponse{Results: []SearchResult{}, Limit: params.Limit, Offset: params.Offset}, nil
+	}
+
 	var results []SearchResult
 
 	// Check if the query looks like an item ref (e.g. "TASK-5", "BUG-8")

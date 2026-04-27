@@ -1316,6 +1316,72 @@ func TestSearchItems_HyphenatedQuery(t *testing.T) {
 	}
 }
 
+// TestListDocuments_HyphenatedQuery covers BUG-818 on the documents FTS path.
+// Same root cause as items: hyphenated queries hit FTS5's boolean parser and
+// 500 unless sanitized. Surfaces /documents?q=task-5 and the web UI doc list.
+func TestListDocuments_HyphenatedQuery(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	want, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "release-notes-q2",
+		Content: "Quarterly release notes for the Q2 2026 milestone.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "unrelated topic",
+		Content: "Nothing matching.",
+	}); err != nil {
+		t.Fatalf("CreateDocument unrelated: %v", err)
+	}
+
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "release-notes-q2"})
+	if err != nil {
+		t.Fatalf("ListDocuments(query=hyphenated) errored (FTS5 boolean parser regression?): %v", err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("ListDocuments returned 0 docs, expected to find %s", want.Title)
+	}
+	found := false
+	for _, d := range docs {
+		if d.ID == want.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ListDocuments didn't include %s, got %d docs", want.Title, len(docs))
+	}
+}
+
+// TestFTS_WhitespaceOnlyQuery_DoesNotCrash exercises the whitespace-only
+// guard on each FTS entry point. sanitizeFTSQuery turns "   " into "" and
+// SQLite FTS5 errors on `MATCH ''`, so the routing/guard has to short-circuit
+// before binding. See BUG-818 / Codex follow-up.
+func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	createTestItem(t, s, ws.ID, col.ID, "anything", "")
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "anything"}); err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	for _, q := range []string{"   ", "\t", "\n  \t"} {
+		if _, err := s.ListItems(ws.ID, models.ItemListParams{Search: q}); err != nil {
+			t.Errorf("ListItems(search=%q) errored: %v", q, err)
+		}
+		if _, err := s.SearchItems(ws.ID, q); err != nil {
+			t.Errorf("SearchItems(%q) errored: %v", q, err)
+		}
+		if _, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: q}); err != nil {
+			t.Errorf("ListDocuments(query=%q) errored: %v", q, err)
+		}
+	}
+}
+
 // TestSanitizeFTSQuery is a unit test for the helper that wraps each token in
 // double quotes so SQLite FTS5 treats special characters as literals. See
 // internal/store/search.go and BUG-818.

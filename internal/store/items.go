@@ -447,8 +447,10 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		return nil, nil
 	}
 
-	// When search is specified, use FTS
-	if params.Search != "" {
+	// When search is specified, use FTS. Whitespace-only input is treated as
+	// "no search filter" (would otherwise sanitize to empty and crash SQLite
+	// FTS5 with "syntax error near \"\"" — see BUG-818).
+	if strings.TrimSpace(params.Search) != "" {
 		return s.listItemsFTS(workspaceID, params)
 	}
 
@@ -920,6 +922,13 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 }
 
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
+	// Whitespace-only queries collapse to empty after FTS5 sanitization and
+	// would error on `MATCH ''`. Treat them as no-result rather than failing.
+	// See BUG-818.
+	if strings.TrimSpace(query) == "" {
+		return []ItemSearchResult{}, nil
+	}
+
 	var sqlQuery string
 	var args []interface{}
 
