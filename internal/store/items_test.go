@@ -1382,6 +1382,64 @@ func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
 	}
 }
 
+// TestMigration046_RebuildRecoversUnindexedDocs pins the *recovery* half of
+// migration 046 — the part that rescues already-broken DBs. We simulate the
+// production state Codex flagged: triggers were missing, so a document was
+// inserted into the documents table but never made it into documents_fts.
+// Migration 046's `INSERT INTO documents_fts(documents_fts) VALUES('rebuild')`
+// step is what makes such a document searchable again. Without this test,
+// removing the rebuild step would not break either of the other two BUG-822
+// tests — flagged in Codex review.
+func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
+	s := testStore(t)
+
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("FTS5 rebuild idiom is SQLite-specific")
+	}
+
+	ws := createTestWorkspace(t, s, "Test")
+
+	// Simulate the BUG-822 broken state: drop the FTS triggers so subsequent
+	// inserts don't propagate into documents_fts.
+	for _, name := range []string{"documents_ai", "documents_au", "documents_ad"} {
+		if _, err := s.db.Exec("DROP TRIGGER IF EXISTS " + name); err != nil {
+			t.Fatalf("DROP TRIGGER %s: %v", name, err)
+		}
+	}
+
+	// Insert via the normal store path; trigger is gone so it won't reach FTS.
+	doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title: "Bug822recoverable distinctive",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	// Pin the broken state — the doc must NOT be searchable yet, otherwise
+	// the test isn't actually exercising the recovery path.
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "Bug822recoverable"})
+	if err != nil {
+		t.Fatalf("ListDocuments (pre-rebuild): %v", err)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("test setup invalid: expected doc to be invisible to FTS pre-rebuild, got %d results", len(docs))
+	}
+
+	// Run just the rebuild step from migration 046 — the recovery action.
+	if _, err := s.db.Exec(`INSERT INTO documents_fts(documents_fts) VALUES ('rebuild')`); err != nil {
+		t.Fatalf("FTS rebuild: %v", err)
+	}
+
+	// Now the previously-unindexed doc must be findable.
+	docs, err = s.ListDocuments(ws.ID, models.DocumentListParams{Query: "Bug822recoverable"})
+	if err != nil {
+		t.Fatalf("ListDocuments (post-rebuild): %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != doc.ID {
+		t.Errorf("expected doc to become searchable post-rebuild, got %d results", len(docs))
+	}
+}
+
 // TestCreateDocument_IsSearchableImmediately is the BUG-822 regression test:
 // a freshly-created document must be findable via FTS without any manual
 // rebuild. This was failing on production DBs whose documents_* triggers
