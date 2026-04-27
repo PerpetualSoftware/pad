@@ -14,12 +14,18 @@
 		}
 	});
 
-	const tabs = [
+	// Billing is cloud-only — the underlying endpoint returns 404 in
+	// self-host. Hide the tab when adminStore.stats reports cloud_mode=false
+	// so a self-host operator doesn't see a tab that always 404s on click.
+	let cloudMode = $derived(adminStore.stats?.cloud_mode ?? false);
+
+	let tabs = $derived([
 		{ label: 'Users', href: '/console/admin' },
 		{ label: 'Invitations', href: '/console/admin/invitations' },
 		{ label: 'Audit Log', href: '/console/admin/audit-log' },
+		...(cloudMode ? [{ label: 'Billing', href: '/console/admin/billing' }] : []),
 		{ label: 'Settings', href: '/console/admin/settings' }
-	];
+	]);
 
 	function isActive(href: string): boolean {
 		const path = page.url.pathname;
