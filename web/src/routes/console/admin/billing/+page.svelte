@@ -115,7 +115,7 @@
 				Pad Cloud sidecar unreachable &mdash; showing local data only. Try refreshing.
 			</div>
 		{:else if !stats.stripe_configured}
-			<div class="banner info">
+			<div class="banner info" role="status" aria-live="polite">
 				<span class="badge info-badge">Stripe not configured</span>
 				Stripe billing is not yet configured. Stripe-derived metrics will be zero
 				until <code>STRIPE_SECRET_KEY</code> is set on pad-cloud.
