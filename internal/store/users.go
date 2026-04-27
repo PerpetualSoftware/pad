@@ -324,6 +324,62 @@ func (s *Store) UserCount() (int, error) {
 	return count, nil
 }
 
+// BillingAggregates is the set of users-table aggregates returned by
+// CountBillingAggregates: per-plan customer counts and the number of
+// new pro signups since a given cutoff. Intentionally narrow — the admin
+// billing dashboard is the only consumer today (PLAN-825).
+type BillingAggregates struct {
+	// CustomersByPlan maps plan slug ("free" / "pro" / "self-hosted") to
+	// user count. Users with an empty plan column are bucketed as "free"
+	// so the result matches handleAdminStats' presentation.
+	CustomersByPlan map[string]int
+	// NewProSignups is the count of users with plan='pro' whose
+	// created_at is strictly after the supplied cutoff.
+	NewProSignups int
+}
+
+// CountBillingAggregates returns the per-plan customer counts and the
+// count of new "pro" signups since `since`. Implemented as two scalar
+// SQL queries so the admin Billing dashboard does not have to materialise
+// every users row + decrypt every TOTP secret on each refresh
+// (Codex round 1, MEDIUM, PR for TASK-827).
+//
+// `since` is compared lexicographically against the stored RFC3339
+// created_at strings — that matches the rest of the store, where times
+// are stored as RFC3339 strings (see store.now / store.parseTime). For
+// any caller outside the test suite this is just time.Now().UTC()
+// minus the desired window.
+func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, error) {
+	out := &BillingAggregates{CustomersByPlan: map[string]int{}}
+
+	rows, err := s.db.Query(s.q(`SELECT COALESCE(NULLIF(plan, ''), 'free') AS plan, COUNT(*) FROM users GROUP BY plan`))
+	if err != nil {
+		return nil, fmt.Errorf("count users by plan: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var plan string
+		var count int
+		if err := rows.Scan(&plan, &count); err != nil {
+			return nil, fmt.Errorf("scan users-by-plan row: %w", err)
+		}
+		out.CustomersByPlan[plan] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users-by-plan: %w", err)
+	}
+
+	cutoff := since.UTC().Format(time.RFC3339)
+	if err := s.db.QueryRow(
+		s.q(`SELECT COUNT(*) FROM users WHERE plan = 'pro' AND created_at > ?`),
+		cutoff,
+	).Scan(&out.NewProSignups); err != nil {
+		return nil, fmt.Errorf("count new pro signups: %w", err)
+	}
+
+	return out, nil
+}
+
 // CreateOAuthUser creates a user from an OAuth provider with a random unusable password.
 // OAuth users can later set a password via the password reset flow if they want.
 func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, error) {

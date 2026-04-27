@@ -727,7 +727,9 @@ export interface ApiError {
 // - `stripe_configured=false` → sidecar reachable but no Stripe wired up yet;
 //   render "Stripe not configured" placeholder on Stripe-derived cards.
 //
-// Both false = healthy, render real numbers everywhere.
+// `cloud_unreachable=false` AND `stripe_configured=true` → fully healthy;
+// render real numbers on every card. Other combinations imply a degraded
+// state — see the two bullets above.
 export interface AdminBillingStats {
 	stripe_configured: boolean;
 	cloud_unreachable: boolean;

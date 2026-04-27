@@ -59,29 +59,18 @@ func (s *Server) handleAdminBillingStats(w http.ResponseWriter, r *http.Request)
 		Currency: "usd",
 	}
 
-	// Local fields: a single ListUsers walk computes both customers_by_plan
-	// and new_signups_30d. Same scaling profile as handleAdminStats; if
-	// users grows large the right next step is a SQL aggregate.
-	users, err := s.store.ListUsers()
+	// Local fields: two scalar SQL queries via store.CountBillingAggregates
+	// (per-plan COUNT(*) GROUP BY + a single COUNT(*) for new pro signups).
+	// Avoids the ListUsers + per-row TOTP decrypt that would otherwise burn
+	// CPU + bandwidth on every admin refresh as the user table grows.
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	agg, err := s.store.CountBillingAggregates(cutoff)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	planCounts := map[string]int{}
-	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
-	newSignups := 0
-	for _, u := range users {
-		plan := u.Plan
-		if plan == "" {
-			plan = "free"
-		}
-		planCounts[plan]++
-		if plan == "pro" && u.CreatedAt.After(cutoff) {
-			newSignups++
-		}
-	}
-	resp.CustomersByPlan = planCounts
-	resp.NewSignups30d = newSignups
+	resp.CustomersByPlan = agg.CustomersByPlan
+	resp.NewSignups30d = agg.NewProSignups
 
 	// Remote fields. cloudSidecar is nil when the operator is in cloud mode
 	// but hasn't wired PAD_CLOUD_SIDECAR_URL — treat that as unreachable.
