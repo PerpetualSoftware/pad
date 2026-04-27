@@ -83,6 +83,20 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 			query += " AND d.status = ?"
 			args = append(args, params.Status)
 		}
+		// Tag and Pinned filters were silently dropped by the FTS branch
+		// before this fix — see BUG-820 (documents analog of BUG-812).
+		if params.Tag != "" {
+			tagExpr, tagArg := s.dialect.JSONArrayContains("d.tags", params.Tag)
+			query += " AND " + tagExpr
+			args = append(args, tagArg)
+		}
+		if params.Pinned != nil {
+			if *params.Pinned {
+				query += " AND d.pinned = TRUE"
+			} else {
+				query += " AND d.pinned = FALSE"
+			}
+		}
 	}
 
 	// Sort
