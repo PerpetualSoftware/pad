@@ -40,7 +40,11 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 			query += " AND pinned = FALSE"
 		}
 	}
-	if params.Query != "" {
+	// Whitespace-only queries collapse to empty after FTS sanitization, and
+	// SQLite FTS5 errors on `MATCH ''`. Treat them as "no search filter" to
+	// match the !="" semantics callers expect. See BUG-818.
+	hasSearch := strings.TrimSpace(params.Query) != ""
+	if hasSearch {
 		// Use FTS for search
 		if s.dialect.Driver() == DriverSQLite {
 			ftsMatch := s.dialect.FTSMatch("documents_fts", "search_vector")
@@ -53,8 +57,12 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 				WHERE d.workspace_id = ? AND d.deleted_at IS NULL
 				AND %s
 			`, ftsMatch)
+			// Sanitize so FTS5 specials (hyphens, AND/OR/NOT, parens) are
+			// treated as literals rather than boolean operators — see BUG-818.
+			args = []interface{}{workspaceID, sanitizeFTSQuery(params.Query)}
 		} else {
 			// PostgreSQL: search_vector lives on the documents table (aliased as "d").
+			// plainto_tsquery handles arbitrary user input safely; no sanitize needed.
 			ftsMatch := s.dialect.FTSMatch("d", "search_vector")
 			query = fmt.Sprintf(`
 				SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,
@@ -64,8 +72,8 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 				WHERE d.workspace_id = ? AND d.deleted_at IS NULL
 				AND %s
 			`, ftsMatch)
+			args = []interface{}{workspaceID, params.Query}
 		}
-		args = []interface{}{workspaceID, params.Query}
 
 		if params.Type != "" {
 			query += " AND d.doc_type = ?"
@@ -96,7 +104,7 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 		order = "ASC"
 	}
 
-	if params.Query != "" {
+	if hasSearch {
 		if s.dialect.Driver() == DriverPostgres {
 			// PostgreSQL ts_rank(): higher = more relevant → DESC
 			ftsRank := s.dialect.FTSRank("d", "search_vector")

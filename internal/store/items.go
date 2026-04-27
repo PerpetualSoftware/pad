@@ -447,8 +447,10 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		return nil, nil
 	}
 
-	// When search is specified, use FTS
-	if params.Search != "" {
+	// When search is specified, use FTS. Whitespace-only input is treated as
+	// "no search filter" (would otherwise sanitize to empty and crash SQLite
+	// FTS5 with "syntax error near \"\"" — see BUG-818).
+	if strings.TrimSpace(params.Search) != "" {
 		return s.listItemsFTS(workspaceID, params)
 	}
 
@@ -629,7 +631,12 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 			AND %s
 		`, ftsMatch)
-		args = []interface{}{workspaceID, params.Search}
+		// Wrap each whitespace-delimited token in double quotes so FTS5 treats
+		// hyphens (and other special chars like AND/OR/NOT/(/)) as literals
+		// rather than boolean operators. Without this, `?search=TASK-5` raises
+		// "no such column: 5" — see BUG-818. Postgres path stays unsanitized
+		// because plainto_tsquery accepts arbitrary input.
+		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
 	}
 
 	if params.CollectionSlug != "" {
@@ -915,6 +922,13 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 }
 
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
+	// Whitespace-only queries collapse to empty after FTS5 sanitization and
+	// would error on `MATCH ''`. Treat them as no-result rather than failing.
+	// See BUG-818.
+	if strings.TrimSpace(query) == "" {
+		return []ItemSearchResult{}, nil
+	}
+
 	var sqlQuery string
 	var args []interface{}
 
@@ -967,7 +981,9 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			WHERE %s
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
-		args = []interface{}{query}
+		// Sanitize the user query so FTS5 special characters (hyphens, boolean
+		// operators) are treated as literals — see BUG-818.
+		args = []interface{}{sanitizeFTSQuery(query)}
 	}
 
 	if workspaceID != "" {

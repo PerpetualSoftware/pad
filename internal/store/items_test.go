@@ -1245,6 +1245,174 @@ func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 	}
 }
 
+// TestListItems_FTS_HyphenatedSearchTerm pins BUG-818: a hyphen in the search
+// query used to throw FTS5 boolean-parser errors ("no such column: foo")
+// because the input was bound verbatim into the MATCH clause. The fix wraps
+// each token in double quotes so FTS5 treats specials as literals.
+func TestListItems_FTS_HyphenatedSearchTerm(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Single-word distinctive title for control.
+	want := createTestItem(t, s, ws.ID, col.ID, "task-five-distinctive", "")
+	// Plain non-matching item.
+	createTestItem(t, s, ws.ID, col.ID, "unrelated thing", "")
+
+	// Each of these queries used to raise an FTS5 syntax error before the fix.
+	// Now they should each return the matching item.
+	hyphenQueries := []string{
+		"task-five-distinctive", // full slug-ish
+		"task-five",             // partial hyphenated
+	}
+	for _, q := range hyphenQueries {
+		t.Run(q, func(t *testing.T) {
+			items, err := s.ListItems(ws.ID, models.ItemListParams{Search: q})
+			if err != nil {
+				t.Fatalf("ListItems(search=%q) errored (FTS5 boolean parser regression?): %v", q, err)
+			}
+			if len(items) == 0 {
+				t.Fatalf("ListItems(search=%q) returned 0 items, expected to find %s", q, want.Title)
+			}
+			found := false
+			for _, it := range items {
+				if it.ID == want.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("ListItems(search=%q) didn't include %s, got %d items", q, want.Title, len(items))
+			}
+		})
+	}
+}
+
+// TestSearchItems_HyphenatedQuery is the BUG-818 regression test on the
+// /api/v1/search code path, which routes through Store.SearchItems instead
+// of Store.listItemsFTS.
+func TestSearchItems_HyphenatedQuery(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	want := createTestItem(t, s, ws.ID, col.ID, "alpha-beta-gamma marker", "")
+
+	results, err := s.SearchItems(ws.ID, "alpha-beta-gamma")
+	if err != nil {
+		t.Fatalf("SearchItems errored on hyphenated query: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("SearchItems returned 0 results, expected to find %s", want.Title)
+	}
+	found := false
+	for _, r := range results {
+		if r.Item.ID == want.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SearchItems didn't include %s, got %d results", want.Title, len(results))
+	}
+}
+
+// TestListDocuments_HyphenatedQuery covers BUG-818 on the documents FTS path.
+// Same root cause as items: hyphenated queries hit FTS5's boolean parser and
+// 500 unless sanitized. Surfaces /documents?q=task-5 and the web UI doc list.
+func TestListDocuments_HyphenatedQuery(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+
+	want, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "release-notes-q2",
+		Content: "Quarterly release notes for the Q2 2026 milestone.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{
+		Title:   "unrelated topic",
+		Content: "Nothing matching.",
+	}); err != nil {
+		t.Fatalf("CreateDocument unrelated: %v", err)
+	}
+
+	docs, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: "release-notes-q2"})
+	if err != nil {
+		t.Fatalf("ListDocuments(query=hyphenated) errored (FTS5 boolean parser regression?): %v", err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("ListDocuments returned 0 docs, expected to find %s", want.Title)
+	}
+	found := false
+	for _, d := range docs {
+		if d.ID == want.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ListDocuments didn't include %s, got %d docs", want.Title, len(docs))
+	}
+}
+
+// TestFTS_WhitespaceOnlyQuery_DoesNotCrash exercises the whitespace-only
+// guard on each FTS entry point. sanitizeFTSQuery turns "   " into "" and
+// SQLite FTS5 errors on `MATCH ''`, so the routing/guard has to short-circuit
+// before binding. See BUG-818 / Codex follow-up.
+func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	createTestItem(t, s, ws.ID, col.ID, "anything", "")
+	if _, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "anything"}); err != nil {
+		t.Fatalf("CreateDocument: %v", err)
+	}
+
+	for _, q := range []string{"   ", "\t", "\n  \t"} {
+		if _, err := s.ListItems(ws.ID, models.ItemListParams{Search: q}); err != nil {
+			t.Errorf("ListItems(search=%q) errored: %v", q, err)
+		}
+		if _, err := s.SearchItems(ws.ID, q); err != nil {
+			t.Errorf("SearchItems(%q) errored: %v", q, err)
+		}
+		if _, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: q}); err != nil {
+			t.Errorf("ListDocuments(query=%q) errored: %v", q, err)
+		}
+	}
+}
+
+// TestSanitizeFTSQuery is a unit test for the helper that wraps each token in
+// double quotes so SQLite FTS5 treats special characters as literals. See
+// internal/store/search.go and BUG-818.
+func TestSanitizeFTSQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"plain word", "hello", `"hello"`},
+		{"hyphenated phrase", "task-5", `"task-5"`},
+		{"multiple tokens", "foo bar", `"foo" "bar"`},
+		{"FTS5 boolean operator", "foo AND bar", `"foo" "AND" "bar"`},
+		{"NOT operator", "foo NOT bar", `"foo" "NOT" "bar"`},
+		{"parens", "(foo OR bar)", `"(foo" "OR" "bar)"`},
+		{"embedded quotes are stripped", `"foo"bar`, `"foobar"`},
+		{"surrounding whitespace trimmed", "  hello  ", `"hello"`},
+		{"unicode token preserved", "café-au-lait", `"café-au-lait"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeFTSQuery(tc.in)
+			if got != tc.want {
+				t.Errorf("sanitizeFTSQuery(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- BUG-812: listItemsFTS filter parity ---
 //
 // listItemsFTS used to silently drop most non-collection filters when the
