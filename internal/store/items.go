@@ -529,9 +529,12 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
-	// Parent link filter via item_links
+	// Parent link filter via item_links. Joins items so we ignore links pointing
+	// to a soft-deleted parent — slug/ref filtering already rejects deleted
+	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
+	// Codex review on PR #259.
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -632,6 +635,17 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
+	}
+
+	// Parent link filter — must mirror the non-FTS path so combining
+	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
+	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
+	// See Codex review on PR #259. Note: other filter kinds (tags, assignee,
+	// role, fields, ParentID) are also currently ignored in the FTS path —
+	// pre-existing behavior outside BUG-734's scope; tracked separately.
+	if params.ParentLinkID != "" {
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		args = append(args, params.ParentLinkID)
 	}
 
 	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
@@ -987,6 +1001,13 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	return s.getItemLink(id)
 }
 
+// getItemLink is the unfiltered post-insert readback used by CreateItemLink to
+// hydrate the freshly-inserted row with collection/source/target metadata. It
+// intentionally does NOT filter on items.deleted_at IS NULL: the only caller
+// is the immediate readback after INSERT, and a delete race against either
+// endpoint would otherwise cause the just-successful insert to return nil
+// (Codex review on PR #259). User-facing surfaces all read links via
+// GetItemLinks (plural) or GetParentForItem, both of which DO filter.
 func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	var link models.ItemLink
 	var createdAt string
@@ -1040,6 +1061,12 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	return &link, nil
 }
 
+// GetItemLinks returns links where the given item is either source or target.
+// Links pointing to or from soft-deleted items are filtered out so callers (e.g.
+// `pad item related`, the lineage panel, the dashboard enrichment pass) don't
+// surface dangling endpoints. The link rows themselves are preserved on disk —
+// restoring a soft-deleted item resurrects its relationships automatically. See
+// BUG-734.
 func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 	srcStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
 	tgtStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
@@ -1049,8 +1076,8 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id
-		JOIN items t ON t.id = l.target_id
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? OR l.target_id = ?
@@ -1165,17 +1192,10 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 		return nil, fmt.Errorf("commit parent link: %w", err)
 	}
 
-	// Return the full link with enriched fields
-	links, err := s.GetItemLinks(itemID)
-	if err != nil {
-		return nil, err
-	}
-	for _, link := range links {
-		if link.ID == id {
-			return &link, nil
-		}
-	}
-	return nil, fmt.Errorf("parent link created but not found")
+	// Return the full link with enriched fields. Use the unfiltered readback
+	// helper so that a delete race against either endpoint between commit and
+	// readback doesn't cause the successful insert to surface as nil.
+	return s.getItemLink(id)
 }
 
 // checkParentCycle walks the ancestor chain from parentID and returns an error
@@ -1213,6 +1233,8 @@ func (s *Store) ClearParentLink(itemID string) error {
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
+// A parent link pointing to a soft-deleted item is treated as no parent — the
+// breadcrumb / lineage UI shouldn't show a deleted ancestor. See BUG-734.
 func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 	sStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
 	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
@@ -1222,8 +1244,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id
-		JOIN items t ON t.id = l.target_id
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? AND l.link_type IN (%s)
@@ -1272,10 +1294,17 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 
 // GetParentMap returns a map of item ID -> parent item ID for all parent links
 // in a workspace. Used for efficient batch lookups (e.g., dashboard, list enrichment).
+//
+// Links whose source or target item is soft-deleted are excluded so that
+// dashboard orphan-detection (handlers_dashboard.go) and similar enrichment
+// passes don't treat a task whose parent has been archived as still parented.
+// See BUG-734.
 func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
-		SELECT source_id, target_id FROM item_links
-		WHERE workspace_id = ? AND link_type IN (%s)
+		SELECT il.source_id, il.target_id FROM item_links il
+		JOIN items s ON s.id = il.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = il.target_id AND t.deleted_at IS NULL
+		WHERE il.workspace_id = ? AND il.link_type IN (%s)
 	`, childLinkTypeSQL())), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent map: %w", err)
