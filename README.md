@@ -189,7 +189,7 @@ pad init "My App"
 
 - Configures this client's connection (local server, remote, or Docker)
 - Auto-starts the local server
-- Creates the first admin account on a fresh install
+- Creates the first admin account on a fresh local install (Docker / remote hosts run `pad auth setup` on the server instead)
 - Logs you in if needed
 - Creates or links a workspace for the current directory (writes `.pad.toml`)
 - Installs the `/pad` skill for any AI tools detected in the project
