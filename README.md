@@ -309,10 +309,10 @@ All commands accept `--format json` for machine-readable output and `--workspace
 
 ### Authentication
 
-Pad runs without authentication by default for frictionless local use. On a fresh instance, run `pad auth setup` on the server host to create the first admin account:
+Pad runs without authentication by default for frictionless local use. For local installs, `pad init` creates the first admin account inline. The lower-level commands are useful when you're hosting a Pad server (Docker / remote) and need to set up auth on the server host directly:
 
 ```bash
-pad auth setup         # Initialize the first admin account
+pad auth setup         # Initialize the first admin account (server host, non-local mode)
 pad auth login         # Sign in
 pad auth whoami        # Show current user
 pad auth logout        # Sign out
