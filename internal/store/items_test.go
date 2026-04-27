@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/xarmian/pad/internal/models"
@@ -1354,6 +1356,116 @@ func TestListDocuments_HyphenatedQuery(t *testing.T) {
 	if !found {
 		t.Errorf("ListDocuments didn't include %s, got %d docs", want.Title, len(docs))
 	}
+}
+
+// TestStartupInvariants_AllFTSTriggersExist asserts every trigger in the
+// canonical expectedFTSTriggers list is present after migrations run on a
+// fresh DB. This is a forward-looking guard — any future migration that
+// inadvertently breaks one of these will fail this test, before it can
+// silently drift on production DBs the way BUG-822 did.
+func TestStartupInvariants_AllFTSTriggersExist(t *testing.T) {
+	s := testStore(t)
+
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("FTS triggers are SQLite-specific; Postgres uses a different model")
+	}
+
+	for _, want := range expectedFTSTriggers {
+		var name string
+		err := s.db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND name=?`,
+			want.table, want.name,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("expected trigger %q on table %q to exist after migrations, got error: %v",
+				want.name, want.table, err)
+		}
+	}
+}
+
+// TestStartupInvariants_LogsOnMissingTrigger verifies the alarm actually
+// fires: drop a trigger, run validateFTSInvariants, capture the slog
+// output, assert a warning was emitted naming the missing trigger.
+//
+// Without this test, the validator could regress (e.g. a typo in the
+// SELECT, a dialect check that always returns early) and the BUG-822
+// class of drift would go undetected again.
+func TestStartupInvariants_LogsOnMissingTrigger(t *testing.T) {
+	s := testStore(t)
+
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("FTS trigger invariant check runs only on SQLite")
+	}
+
+	// Drop a known trigger to simulate the BUG-822 broken state.
+	target := "documents_ai"
+	if _, err := s.db.Exec("DROP TRIGGER " + target); err != nil {
+		t.Fatalf("DROP TRIGGER %s: %v", target, err)
+	}
+
+	// Capture slog output via a custom handler that records records into
+	// a slice we can inspect after.
+	var captured []slog.Record
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(&recordCapturingHandler{records: &captured}))
+
+	s.validateFTSInvariants()
+
+	// Look for a warning record that mentions the trigger name we dropped.
+	found := false
+	for _, r := range captured {
+		if r.Level != slog.LevelWarn {
+			continue
+		}
+		mentioned := false
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "trigger" && a.Value.String() == target {
+				mentioned = true
+				return false
+			}
+			return true
+		})
+		if mentioned {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a slog.Warn record naming trigger=%q after dropping it, got %d records", target, len(captured))
+		for _, r := range captured {
+			t.Logf("  %s: %s", r.Level, r.Message)
+		}
+	}
+}
+
+// recordCapturingHandler is a minimal slog.Handler used by
+// TestStartupInvariants_LogsOnMissingTrigger to capture records without
+// emitting them to stderr. Not safe for concurrent use; tests are
+// single-threaded.
+type recordCapturingHandler struct {
+	records *[]slog.Record
+	attrs   []slog.Attr
+}
+
+func (h *recordCapturingHandler) Enabled(_ context.Context, _ slog.Level) bool {
+	return true
+}
+func (h *recordCapturingHandler) Handle(_ context.Context, r slog.Record) error {
+	// Apply any handler-bound attrs to the record so callers see them.
+	for _, a := range h.attrs {
+		r.AddAttrs(a)
+	}
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *recordCapturingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	clone := *h
+	clone.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return &clone
+}
+func (h *recordCapturingHandler) WithGroup(_ string) slog.Handler {
+	return h
 }
 
 // TestMigration046_DocumentsFTSTriggersExist verifies that after all
