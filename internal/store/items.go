@@ -997,14 +997,15 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 
 	srcStatus := s.dialect.JSONExtractText("s.fields", "status")
 	tgtStatus := s.dialect.JSONExtractText("t.fields", "status")
+	// Filter out links pointing to or from soft-deleted items — see BUG-734.
 	err := s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id
-		JOIN items t ON t.id = l.target_id
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.id = ?
@@ -1040,6 +1041,12 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	return &link, nil
 }
 
+// GetItemLinks returns links where the given item is either source or target.
+// Links pointing to or from soft-deleted items are filtered out so callers (e.g.
+// `pad item related`, the lineage panel, the dashboard enrichment pass) don't
+// surface dangling endpoints. The link rows themselves are preserved on disk —
+// restoring a soft-deleted item resurrects its relationships automatically. See
+// BUG-734.
 func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 	srcStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
 	tgtStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
@@ -1049,8 +1056,8 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id
-		JOIN items t ON t.id = l.target_id
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? OR l.target_id = ?
@@ -1213,6 +1220,8 @@ func (s *Store) ClearParentLink(itemID string) error {
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
+// A parent link pointing to a soft-deleted item is treated as no parent — the
+// breadcrumb / lineage UI shouldn't show a deleted ancestor. See BUG-734.
 func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 	sStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
 	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
@@ -1222,8 +1231,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id
-		JOIN items t ON t.id = l.target_id
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.source_id = ? AND l.link_type IN (%s)

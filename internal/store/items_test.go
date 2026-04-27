@@ -954,6 +954,122 @@ func TestItemLinks(t *testing.T) {
 	}
 }
 
+// TestItemLinks_HidesSoftDeletedEndpoints exercises BUG-734: when an item that
+// is the source or target of a link gets soft-deleted, GetItemLinks should not
+// surface the link from the surviving endpoint's perspective. Restoring the
+// deleted item should resurrect the link automatically — the row is preserved
+// on disk; only the query layer filters it.
+func TestItemLinks_HidesSoftDeletedEndpoints(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	plan := createTestItem(t, s, ws.ID, col.ID, "Plan", "")
+	implementer := createTestItem(t, s, ws.ID, col.ID, "Implementer task", "")
+
+	// implementer --implements--> plan
+	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{
+		TargetID: plan.ID,
+		LinkType: "implements",
+	}, implementer.ID); err != nil {
+		t.Fatalf("CreateItemLink: %v", err)
+	}
+
+	// Sanity: link visible from both endpoints.
+	if links, _ := s.GetItemLinks(plan.ID); len(links) != 1 {
+		t.Fatalf("expected 1 link from plan side before delete, got %d", len(links))
+	}
+	if links, _ := s.GetItemLinks(implementer.ID); len(links) != 1 {
+		t.Fatalf("expected 1 link from implementer side before delete, got %d", len(links))
+	}
+
+	// Soft-delete the implementer (the BUG-734 scenario: source side gone).
+	if err := s.DeleteItem(implementer.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+
+	// From the plan's perspective, the dangling implementer must not surface.
+	links, err := s.GetItemLinks(plan.ID)
+	if err != nil {
+		t.Fatalf("GetItemLinks after delete: %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected 0 links from plan side after implementer deleted, got %d (orphan leak — BUG-734)", len(links))
+	}
+
+	// Restore the implementer — the link row was never deleted, so the
+	// relationship should reappear automatically.
+	if _, err := s.RestoreItem(implementer.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	links, err = s.GetItemLinks(plan.ID)
+	if err != nil {
+		t.Fatalf("GetItemLinks after restore: %v", err)
+	}
+	if len(links) != 1 {
+		t.Errorf("expected 1 link from plan side after restore, got %d (link should be preserved across soft-delete/restore)", len(links))
+	}
+
+	// Now soft-delete the plan side instead (target side gone) and verify the
+	// implementer's view also drops the dangling link.
+	if err := s.DeleteItem(plan.ID); err != nil {
+		t.Fatalf("DeleteItem plan: %v", err)
+	}
+	links, err = s.GetItemLinks(implementer.ID)
+	if err != nil {
+		t.Fatalf("GetItemLinks after target delete: %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected 0 links from implementer side after plan deleted, got %d (target-side orphan leak)", len(links))
+	}
+}
+
+// TestGetParentForItem_HidesSoftDeletedParent ensures lineage / breadcrumb
+// queries don't surface a soft-deleted ancestor. See BUG-734.
+func TestGetParentForItem_HidesSoftDeletedParent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Before delete: parent visible.
+	if link, err := s.GetParentForItem(child.ID); err != nil {
+		t.Fatalf("GetParentForItem: %v", err)
+	} else if link == nil {
+		t.Fatal("expected parent link before delete, got nil")
+	}
+
+	// Soft-delete parent.
+	if err := s.DeleteItem(parent.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+
+	// After delete: must read as no parent (don't render a deleted breadcrumb).
+	link, err := s.GetParentForItem(child.ID)
+	if err != nil {
+		t.Fatalf("GetParentForItem after delete: %v", err)
+	}
+	if link != nil {
+		t.Errorf("expected nil parent link after soft-delete, got %+v", link)
+	}
+
+	// After restore: parent visible again.
+	if _, err := s.RestoreItem(parent.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	if link, err := s.GetParentForItem(child.ID); err != nil {
+		t.Fatalf("GetParentForItem after restore: %v", err)
+	} else if link == nil {
+		t.Error("expected parent link to reappear after restore")
+	}
+}
+
 func TestItemLinkDefaultType(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
