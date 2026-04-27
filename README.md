@@ -13,7 +13,7 @@
 
 ---
 
-> One binary. Local-first. No accounts. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data never leaves your laptop.
+> One binary. Local-first. No accounts required. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data never leaves your laptop.
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" width="900" alt="Pad dashboard showing collection summaries, active work, an active plan with progress, and a recent activity feed" />
@@ -24,12 +24,11 @@
 ```bash
 brew install xarmian/tap/pad
 cd your-project
-pad auth configure
-pad workspace init
-pad server open
+pad init                    # configure, auth, workspace, AI skill — all in one
+pad server open             # opens the web UI at localhost:7777
 ```
 
-For a local install, choose `Local` in `pad auth configure`. Pad will remember that this client manages a local server, auto-start it when needed, and open the web UI at `localhost:7777`.
+`pad init` is the smart entry point — it auto-detects what's needed, walks you through each step, and is safe to re-run anytime (it skips finished steps and prints a status summary).
 
 ## Why Pad?
 
@@ -37,7 +36,7 @@ Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is bui
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|
-| **Setup** | `pad auth configure` + `pad workspace init` | Create account, invite team, configure | Create account, pick template |
+| **Setup** | `pad init` | Create account, invite team, configure | Create account, pick template |
 | **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
 | **Data** | Local SQLite, you own it | Their cloud | Their cloud |
 | **Offline** | Full functionality | Read-only cache at best | Limited |
@@ -171,19 +170,7 @@ This publishes Pad to `localhost:7777` on the host machine, which is the recomme
 docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
 ```
 
-For multi-user team setups, [Pad Cloud](https://app.getpad.dev) is the supported path — same product, hosted, with team features.
-
-### Docker Compose
-
-The repo ships a `docker-compose.yml` that wires Pad + PostgreSQL + Redis. Before the first `docker compose up`, copy the env template and fill in a Postgres password:
-
-```bash
-cp .env.example .env
-# Edit .env and set POSTGRES_PASSWORD (e.g. `openssl rand -base64 32`).
-docker compose up -d
-```
-
-Compose refuses to start when `POSTGRES_PASSWORD` is missing — this is deliberate so a fresh deploy cannot silently inherit a known-weak default credential. The web UI binds to `127.0.0.1:7777` on the host by default. Set `PAD_BIND_ADDR=0.0.0.0` in `.env` to expose it to the LAN, or point a reverse proxy at the container on the `pad-net` network (see `docker-compose.prod.yml`).
+For multi-instance deployments, Pad supports Postgres + Redis via `docker-compose.yml` — see [docs/deployment.md](docs/deployment.md) for the full setup.
 
 ### Binary Download
 
@@ -191,43 +178,37 @@ Pre-built binaries for macOS, Linux, and Windows are available on the [releases 
 
 ## Getting Started
 
-### 1. Configure this Pad client
-
-```bash
-pad auth configure
-```
-
-For most local installs, choose `Local`. If you're connecting to another Pad server, choose `Remote` or `Docker` and enter its base URL.
-
-### 2. Initialize a workspace
+### 1. Set up Pad
 
 ```bash
 cd ~/projects/myapp
-pad workspace init "My App"
+pad init "My App"
 ```
 
-This creates a `.pad.toml` file linking your project directory to a Pad workspace with default collections. Running `pad init` without `--template` in a terminal opens an interactive picker grouped by category (Software / People / …) so you can pick the one that fits.
+`pad init` is the smart entry point that handles everything in one command:
+
+- Configures this client's connection (local server, remote, or Docker)
+- Auto-starts the local server
+- Creates the first admin account on a fresh local install (Docker / remote hosts run `pad auth setup` on the server instead)
+- Logs you in if needed
+- Creates or links a workspace for the current directory (writes `.pad.toml`)
+- Installs the `/pad` skill for any AI tools detected in the project
+
+Run from your project root. Safe to re-run anytime — it skips finished steps and prints a status summary if nothing's needed.
+
+**Choose a template** with `--template`, or omit it for an interactive picker grouped by category (Software / People / …):
 
 ```bash
 pad workspace init --list-templates                   # See the full catalog grouped by category
-pad workspace init "My App" --template scrum          # Scrum-style with sprints
-pad workspace init "My App" --template product        # Product management focused
-pad workspace init "My Hiring" --template hiring      # Company-side: requisitions, candidates, interview loops, feedback
-pad workspace init "Job Search" --template interviewing  # Candidate-side: applications, interviews, companies, contacts
+pad init "My App" --template scrum                    # Scrum-style with sprints
+pad init "My App" --template product                  # Product management focused
+pad init "My Hiring" --template hiring                # Company-side: requisitions, candidates, interview loops, feedback
+pad init "Job Search" --template interviewing         # Candidate-side: applications, interviews, companies, contacts
 ```
 
 Pad ships templates for software (startup / scrum / product), people workflows (hiring, interviewing), and has reserved categories for research, content, operations, and personal use so the same project-management primitives fit well beyond code projects.
 
-### 3. Install the AI skill
-
-```bash
-pad agent install            # Auto-detect and install for all found tools
-pad agent install claude     # Or install for a specific tool
-pad agent install cursor
-pad agent install copilot
-```
-
-### 4. Start working
+### 2. Start working
 
 ```bash
 # From the CLI
@@ -242,7 +223,7 @@ pad server open              # Opens localhost:7777 in your browser
 # Just use /pad in Claude Code, Cursor, etc.
 ```
 
-### 5. Teach your agents the rules
+### 3. Teach your agents the rules
 
 ```bash
 pad workspace onboard        # Auto-analyze project, save workspace context, and suggest conventions
@@ -316,9 +297,9 @@ pad agent install [tool]              Install /pad skill for AI coding tools
 pad agent status                      Show supported tools and installation status
 pad agent update                      Update installed tool integrations
 
-pad github link [item-ref]   Link current branch's PR to item
-pad github status [item-ref] Show PR status for linked items
-pad github unlink <item-ref> Remove PR link from item
+pad github link [item-ref]            Link current branch's PR to item
+pad github status [item-ref]          Show PR status for linked items
+pad github unlink <item-ref>          Remove PR link from item
 
 pad webhook list             List workspace webhooks
 pad webhook create <url>     Create webhook
@@ -328,10 +309,10 @@ All commands accept `--format json` for machine-readable output and `--workspace
 
 ### Authentication
 
-Pad runs without authentication by default for frictionless local use. On a fresh instance, run `pad auth setup` on the server host to create the first admin account:
+Pad runs without authentication by default for frictionless local use. For local installs, `pad init` creates the first admin account inline. The lower-level commands are useful when you're hosting a Pad server (Docker / remote) and need to set up auth on the server host directly:
 
 ```bash
-pad auth setup         # Initialize the first admin account
+pad auth setup         # Initialize the first admin account (server host, non-local mode)
 pad auth login         # Sign in
 pad auth whoami        # Show current user
 pad auth logout        # Sign out
@@ -369,7 +350,7 @@ pad workspace join <code>
 - **Single binary** — serves the API and web UI, runs on macOS, Linux, and Windows
 - **Workspace-per-project** — each project gets its own workspace linked by a `.pad.toml` file
 
-All data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no cloud, no accounts.
+All data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no cloud, no accounts required.
 
 ## Contributing
 
