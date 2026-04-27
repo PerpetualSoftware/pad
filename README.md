@@ -36,7 +36,7 @@ Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is bui
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|
-| **Setup** | `pad auth configure` + `pad workspace init` | Create account, invite team, configure | Create account, pick template |
+| **Setup** | `pad init` | Create account, invite team, configure | Create account, pick template |
 | **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
 | **Data** | Local SQLite, you own it | Their cloud | Their cloud |
 | **Offline** | Full functionality | Read-only cache at best | Limited |
