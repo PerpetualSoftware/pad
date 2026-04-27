@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -229,7 +230,82 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// Defensive: log a warning for any FTS trigger that should exist but
+	// doesn't. Catches the BUG-822 class of regression — a table-rebuild
+	// migration that recorded as applied but silently failed to recreate
+	// its triggers, leaving search broken until someone notices.
+	s.validateFTSInvariants()
+
 	return nil
+}
+
+// expectedFTSTriggers is the canonical list of FTS5 triggers that ship with
+// the SQLite migrations. Each entry is (trigger name, table the trigger is
+// attached to). The migrations file at the right of each row defines them:
+//
+//   - items_fts_*    — internal/store/migrations/001_initial.sql
+//   - comments_fts_* — internal/store/migrations/007_comments.sql
+//   - documents_*    — internal/store/migrations/001_initial.sql,
+//                      restored by 046 after BUG-822 drift.
+//
+// If a future migration intentionally renames or removes any of these,
+// update this list in the same commit.
+var expectedFTSTriggers = []struct {
+	name  string
+	table string
+}{
+	{"items_fts_insert", "items"},
+	{"items_fts_update", "items"},
+	{"items_fts_delete", "items"},
+	{"comments_fts_insert", "comments"},
+	{"comments_fts_update", "comments"},
+	{"comments_fts_delete", "comments"},
+	{"documents_ai", "documents"},
+	{"documents_au", "documents"},
+	{"documents_ad", "documents"},
+}
+
+// validateFTSInvariants checks that every trigger in expectedFTSTriggers
+// exists. Missing triggers are logged as structured warnings; this function
+// is intentionally non-fatal and non-repairing.
+//
+// Non-fatal: a missing trigger doesn't prevent server startup — the
+// operator may have legitimately removed one and just not updated this
+// list yet, and we'd rather warn loudly than refuse to boot.
+//
+// Non-repairing: auto-creating triggers here would mask future legitimate
+// removals and obscure the source of truth (the migrations directory).
+// The recovery path is a targeted migration like 046_restore_documents_fts_triggers.sql.
+//
+// SQLite-only: Postgres uses a different trigger model and has its own
+// search_vector update functions in pgmigrations.
+func (s *Store) validateFTSInvariants() {
+	if s.dialect.Driver() != DriverSQLite {
+		return
+	}
+	for _, t := range expectedFTSTriggers {
+		var name string
+		err := s.db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND name=?`,
+			t.table, t.name,
+		).Scan(&name)
+		if err == sql.ErrNoRows {
+			slog.Warn(
+				"FTS trigger missing — search may silently miss new rows; consider a restoration migration like 046_restore_documents_fts_triggers.sql",
+				"trigger", t.name,
+				"table", t.table,
+			)
+			continue
+		}
+		if err != nil {
+			slog.Warn(
+				"FTS trigger check errored",
+				"trigger", t.name,
+				"table", t.table,
+				"err", err,
+			)
+		}
+	}
 }
 
 // migratePostgres applies PostgreSQL migrations.
