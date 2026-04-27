@@ -37,6 +37,14 @@ func (f *fakeSidecar) CancelCustomer(customerID string) error {
 	return f.err
 }
 
+// GetBillingMetrics is a stub so fakeSidecar satisfies the extended
+// CloudSidecar interface (TASK-827). The account-delete tests do not
+// exercise the billing dashboard path; the dedicated billing tests use
+// fakeBillingSidecar in handlers_admin_billing_test.go.
+func (f *fakeSidecar) GetBillingMetrics() (*billing.BillingMetricsResponse, error) {
+	return &billing.BillingMetricsResponse{}, nil
+}
+
 func (f *fakeSidecar) callCount() int {
 	return int(atomic.LoadInt32(&f.calls))
 }

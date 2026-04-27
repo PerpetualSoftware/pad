@@ -40,7 +40,8 @@ import type {
 	ShareLink,
 	TOTPSetupResponse,
 	TOTPVerifyResponse,
-	TOTPDisableResponse
+	TOTPDisableResponse,
+	AdminBillingStats
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -717,7 +718,15 @@ export const api = {
 			request<{ ok: boolean; sent_to: string }>('/admin/test-email', {
 				method: 'POST',
 				body: JSON.stringify(to ? { to } : {})
-			})
+			}),
+		// Billing stats for the admin Billing dashboard (TASK-828 / PLAN-825).
+		// Returns merged Stripe-derived metrics (active subs, MRR, ARR, churn,
+		// cancellations) plus local users-table aggregates (customers_by_plan,
+		// new_signups_30d). Always 200 — degraded states surface as the
+		// stripe_configured + cloud_unreachable booleans on the body.
+		// Cloud-mode only (returns 404 in self-host).
+		getBillingStats: () =>
+			request<AdminBillingStats>('/admin/billing-stats')
 	}
 };
 

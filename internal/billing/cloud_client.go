@@ -103,6 +103,83 @@ func (e *SidecarError) Error() string {
 	return fmt.Sprintf("pad-cloud sidecar returned %d: %s", e.Status, e.Body)
 }
 
+// BillingMetricsResponse mirrors the JSON pad-cloud returns from
+// GET /admin/metrics/billing. All numeric fields are zero when
+// StripeConfigured is false (pad-cloud has no STRIPE_SECRET_KEY yet);
+// callers should render a "Stripe not configured" placeholder rather than
+// treating that as an error.
+//
+// Currency is lowercase ISO 4217 (Stripe's convention) and reports the
+// dominant currency across active subscriptions when the Stripe account
+// holds multiple currencies. ComputedAt is the wall-clock time of the
+// pad-cloud cache entry; CacheAgeSeconds is its age at response time.
+type BillingMetricsResponse struct {
+	StripeConfigured    bool      `json:"stripe_configured"`
+	ActiveSubscriptions int       `json:"active_subscriptions"`
+	MRRCents            int64     `json:"mrr_cents"`
+	ARRCents            int64     `json:"arr_cents"`
+	Currency            string    `json:"currency"`
+	ChurnRate30d        float64   `json:"churn_rate_30d"`
+	Cancelled30d        int       `json:"cancelled_30d"`
+	ComputedAt          time.Time `json:"computed_at"`
+	CacheAgeSeconds     int64     `json:"cache_age_seconds"`
+}
+
+// GetBillingMetrics asks pad-cloud for an aggregated Stripe-derived snapshot
+// (active subs, MRR, ARR, churn, cancellations). Auth is the same shared
+// CloudSecret pad-cloud uses for inbound calls — we send it via the
+// X-Cloud-Secret header rather than a body field because this endpoint is
+// a GET.
+//
+// Request: GET {baseURL}/admin/metrics/billing
+// Header:  X-Cloud-Secret: <CloudSecret>
+// 200 OK:  BillingMetricsResponse JSON
+//
+// Returns the decoded response on 200. On any non-200, returns a
+// *SidecarError so the caller can branch on Status (typically 403 for an
+// auth gate failure or 500 if the upstream Stripe call broke). On
+// transport failure (DNS, connect, timeout) returns a bare error — the
+// admin handler treats both as "degrade to local-only" and surfaces the
+// distinction via the cloud_unreachable flag in its own response.
+func (c *CloudClient) GetBillingMetrics() (*BillingMetricsResponse, error) {
+	if c == nil {
+		return nil, errors.New("billing: GetBillingMetrics called on nil CloudClient")
+	}
+	if c.baseURL == "" || c.cloudSecret == "" {
+		return nil, errors.New("billing: CloudClient is not configured (missing baseURL or cloudSecret)")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/admin/metrics/billing", nil)
+	if err != nil {
+		return nil, fmt.Errorf("billing: build billing-metrics request: %w", err)
+	}
+	req.Header.Set("X-Cloud-Secret", c.cloudSecret)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("billing: billing-metrics request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	if resp.StatusCode != http.StatusOK {
+		return nil, &SidecarError{
+			Status: resp.StatusCode,
+			Body:   string(bodyBytes),
+		}
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("billing: read billing-metrics response: %w", readErr)
+	}
+
+	var out BillingMetricsResponse
+	if err := json.Unmarshal(bodyBytes, &out); err != nil {
+		return nil, fmt.Errorf("billing: decode billing-metrics response: %w", err)
+	}
+	return &out, nil
+}
+
 // CancelCustomer asks pad-cloud to cancel every active Stripe subscription
 // for customerID and then delete the Stripe customer object. Idempotent at
 // the pad-cloud side (it treats a 404/resource_missing from Stripe as

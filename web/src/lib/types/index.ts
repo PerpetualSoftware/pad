@@ -716,6 +716,35 @@ export interface ApiError {
 	message: string;
 }
 
+// ─── Admin Billing Stats (PLAN-825) ──────────────────────────────────────────
+
+// Returned by GET /api/v1/admin/billing-stats. Merges Stripe-derived metrics
+// from the pad-cloud sidecar with local users-table aggregates. Two booleans
+// drive UI presentation:
+//
+// - `cloud_unreachable=true`  → sidecar errored; render banner, Stripe fields
+//   are zero, local fields are still valid.
+// - `stripe_configured=false` → sidecar reachable but no Stripe wired up yet;
+//   render "Stripe not configured" placeholder on Stripe-derived cards.
+//
+// `cloud_unreachable=false` AND `stripe_configured=true` → fully healthy;
+// render real numbers on every card. Other combinations imply a degraded
+// state — see the two bullets above.
+export interface AdminBillingStats {
+	stripe_configured: boolean;
+	cloud_unreachable: boolean;
+	customers_by_plan: Record<string, number>;
+	new_signups_30d: number;
+	active_subscriptions: number;
+	mrr_cents: number;
+	arr_cents: number;
+	currency: string;
+	churn_rate_30d: number;
+	cancelled_30d: number;
+	computed_at: string;
+	cache_age_seconds: number;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

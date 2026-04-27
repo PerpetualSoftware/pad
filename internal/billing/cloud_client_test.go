@@ -20,6 +20,155 @@ func newStub(t *testing.T, h http.HandlerFunc) (*CloudClient, *httptest.Server) 
 	return NewCloudClient(ts.URL, "test-secret"), ts
 }
 
+func TestGetBillingMetrics_HappyPath(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotSecret string
+		gotAccept string
+	)
+	want := BillingMetricsResponse{
+		StripeConfigured:    true,
+		ActiveSubscriptions: 7,
+		MRRCents:            49000,
+		ARRCents:            588000,
+		Currency:            "usd",
+		ChurnRate30d:        0.05,
+		Cancelled30d:        2,
+		ComputedAt:          time.Date(2026, 4, 27, 18, 0, 0, 0, time.UTC),
+		CacheAgeSeconds:     12,
+	}
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotSecret = r.Header.Get("X-Cloud-Secret")
+		gotAccept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusOK)
+		body, _ := json.Marshal(want)
+		_, _ = w.Write(body)
+	})
+
+	got, err := client.GetBillingMetrics()
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if gotMethod != http.MethodGet {
+		t.Errorf("method: want GET, got %s", gotMethod)
+	}
+	if gotPath != "/admin/metrics/billing" {
+		t.Errorf("path: want /admin/metrics/billing, got %s", gotPath)
+	}
+	if gotSecret != "test-secret" {
+		t.Errorf("X-Cloud-Secret: want test-secret, got %s", gotSecret)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("Accept: want application/json, got %s", gotAccept)
+	}
+
+	if got.ActiveSubscriptions != want.ActiveSubscriptions ||
+		got.MRRCents != want.MRRCents ||
+		got.ARRCents != want.ARRCents ||
+		got.Currency != want.Currency ||
+		got.ChurnRate30d != want.ChurnRate30d ||
+		got.Cancelled30d != want.Cancelled30d ||
+		got.CacheAgeSeconds != want.CacheAgeSeconds ||
+		!got.ComputedAt.Equal(want.ComputedAt) {
+		t.Errorf("decoded response mismatch:\nwant %+v\ngot  %+v", want, *got)
+	}
+}
+
+func TestGetBillingMetrics_StripeNotConfigured(t *testing.T) {
+	// pad-cloud returns 200 + stripe_configured=false when STRIPE_SECRET_KEY
+	// is unset. The client must treat this as a successful call (no error).
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"stripe_configured":false,"currency":"usd","computed_at":"2026-04-27T18:00:00Z"}`))
+	})
+
+	got, err := client.GetBillingMetrics()
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if got.StripeConfigured {
+		t.Errorf("stripe_configured: want false, got true")
+	}
+}
+
+func TestGetBillingMetrics_NonOK_ReturnsSidecarError(t *testing.T) {
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Forbidden"}`))
+	})
+
+	_, err := client.GetBillingMetrics()
+	var sidecarErr *SidecarError
+	if !errors.As(err, &sidecarErr) {
+		t.Fatalf("want *SidecarError, got %T: %v", err, err)
+	}
+	if sidecarErr.Status != http.StatusForbidden {
+		t.Errorf("status: want 403, got %d", sidecarErr.Status)
+	}
+	if !strings.Contains(sidecarErr.Body, "Forbidden") {
+		t.Errorf("body: want contains 'Forbidden', got %q", sidecarErr.Body)
+	}
+}
+
+func TestGetBillingMetrics_ServerError(t *testing.T) {
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	})
+
+	_, err := client.GetBillingMetrics()
+	var sidecarErr *SidecarError
+	if !errors.As(err, &sidecarErr) || sidecarErr.Status != 500 {
+		t.Errorf("want *SidecarError status=500, got %v", err)
+	}
+}
+
+func TestGetBillingMetrics_TransportError(t *testing.T) {
+	// Closed server triggers a transport-level error from c.http.Do.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	client := NewCloudClient(srv.URL, "test-secret")
+	srv.Close()
+
+	_, err := client.GetBillingMetrics()
+	if err == nil {
+		t.Fatal("want transport error, got nil")
+	}
+	// Transport errors should NOT be wrapped as *SidecarError — handler
+	// callers branch on type to log them differently.
+	var sidecarErr *SidecarError
+	if errors.As(err, &sidecarErr) {
+		t.Errorf("transport error should not be SidecarError, got %v", err)
+	}
+}
+
+func TestGetBillingMetrics_NilClient(t *testing.T) {
+	var c *CloudClient
+	if _, err := c.GetBillingMetrics(); err == nil {
+		t.Error("nil client: want error, got nil")
+	}
+}
+
+func TestGetBillingMetrics_UnconfiguredClient(t *testing.T) {
+	c := &CloudClient{} // empty baseURL + cloudSecret
+	if _, err := c.GetBillingMetrics(); err == nil {
+		t.Error("unconfigured client: want error, got nil")
+	}
+}
+
+func TestGetBillingMetrics_MalformedJSON(t *testing.T) {
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not json`))
+	})
+	if _, err := client.GetBillingMetrics(); err == nil {
+		t.Error("malformed JSON: want error, got nil")
+	}
+}
+
 func TestCancelCustomer_HappyPath_SendsCorrectRequest(t *testing.T) {
 	var (
 		gotMethod      string
