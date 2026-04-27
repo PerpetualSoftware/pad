@@ -1383,6 +1383,52 @@ func TestStartupInvariants_AllFTSTriggersExist(t *testing.T) {
 	}
 }
 
+// TestExpectedFTSTriggers_MatchesActual catches drift in the *opposite*
+// direction from TestStartupInvariants_AllFTSTriggersExist: if a future
+// migration adds a new trigger on items / comments / documents and the
+// author forgets to add it to expectedFTSTriggers, the invariant check
+// won't know to monitor it. This test compares the actual set of triggers
+// on those tables against expectedFTSTriggers and fails if anything is
+// missing from the list.
+//
+// If a new non-FTS trigger is legitimately added to one of these tables,
+// either add it to expectedFTSTriggers (if it serves an FTS-like role) or
+// extend the exclusion below.
+func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
+	s := testStore(t)
+
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("FTS triggers are SQLite-specific")
+	}
+
+	expected := map[string]bool{}
+	for _, e := range expectedFTSTriggers {
+		expected[e.table+"/"+e.name] = true
+	}
+
+	rows, err := s.db.Query(`
+		SELECT name, tbl_name FROM sqlite_master
+		WHERE type='trigger' AND tbl_name IN ('items', 'comments', 'documents')
+	`)
+	if err != nil {
+		t.Fatalf("query triggers: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, table string
+		if err := rows.Scan(&name, &table); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		key := table + "/" + name
+		if !expected[key] {
+			t.Errorf("found trigger %q on table %q that's not in expectedFTSTriggers — "+
+				"update the list in store.go (or exclude in this test if it's not an FTS-style trigger)",
+				name, table)
+		}
+	}
+}
+
 // TestStartupInvariants_LogsOnMissingTrigger verifies the alarm actually
 // fires: drop a trigger, run validateFTSInvariants, capture the slog
 // output, assert a warning was emitted naming the missing trigger.
@@ -1452,7 +1498,9 @@ func (h *recordCapturingHandler) Enabled(_ context.Context, _ slog.Level) bool {
 	return true
 }
 func (h *recordCapturingHandler) Handle(_ context.Context, r slog.Record) error {
-	// Apply any handler-bound attrs to the record so callers see them.
+	// slog.Record has internal shared state; clone before retaining so we
+	// don't depend on the caller refraining from mutating it after Handle.
+	r = r.Clone()
 	for _, a := range h.attrs {
 		r.AddAttrs(a)
 	}
