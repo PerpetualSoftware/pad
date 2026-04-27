@@ -97,7 +97,13 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		return nil, err
 	}
 
-	// Item links
+	// Item links — exported in full, including links whose source or target item
+	// is soft-deleted. This is intentional and differs from user-facing reads
+	// (GetItemLinks/GetParentForItem/GetParentMap, which all filter on
+	// items.deleted_at IS NULL — see BUG-734). Backups need to round-trip the
+	// raw graph so that re-importing into a workspace where the deleted items
+	// are restored preserves the original relationships. The import path
+	// already silently skips links whose endpoints are missing entirely.
 	linkRows, err := s.db.Query(s.q(`
 		SELECT id, source_id, target_id, link_type, created_by, created_at
 		FROM item_links WHERE workspace_id = ?

@@ -1070,6 +1070,68 @@ func TestGetParentForItem_HidesSoftDeletedParent(t *testing.T) {
 	}
 }
 
+// TestGetParentMap_ExcludesSoftDeletedEndpoints covers the dashboard
+// orphan-detection path: a task whose parent has been soft-deleted should
+// NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the
+// task as orphaned. See BUG-734 / Codex review on PR #259.
+func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Sanity: child→parent mapping present.
+	m, err := s.GetParentMap(ws.ID)
+	if err != nil {
+		t.Fatalf("GetParentMap: %v", err)
+	}
+	if m[child.ID] != parent.ID {
+		t.Fatalf("expected parent map %s→%s, got %s→%s", child.ID, parent.ID, child.ID, m[child.ID])
+	}
+
+	// Soft-delete the parent. The child must now look "parentless" so the
+	// dashboard orphan detector flags it.
+	if err := s.DeleteItem(parent.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	m, err = s.GetParentMap(ws.ID)
+	if err != nil {
+		t.Fatalf("GetParentMap after parent delete: %v", err)
+	}
+	if _, hasEntry := m[child.ID]; hasEntry {
+		t.Errorf("expected child to drop from parent map after parent soft-deleted (orphan-detection regression)")
+	}
+
+	// Restoring the parent should bring the mapping back.
+	if _, err := s.RestoreItem(parent.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	m, err = s.GetParentMap(ws.ID)
+	if err != nil {
+		t.Fatalf("GetParentMap after parent restore: %v", err)
+	}
+	if m[child.ID] != parent.ID {
+		t.Errorf("expected parent map to be restored to %s→%s, got %s→%s", child.ID, parent.ID, child.ID, m[child.ID])
+	}
+
+	// Soft-deleting the child side should also drop the entry.
+	if err := s.DeleteItem(child.ID); err != nil {
+		t.Fatalf("DeleteItem child: %v", err)
+	}
+	m, err = s.GetParentMap(ws.ID)
+	if err != nil {
+		t.Fatalf("GetParentMap after child delete: %v", err)
+	}
+	if _, hasEntry := m[child.ID]; hasEntry {
+		t.Errorf("expected child to drop from parent map after the child itself was soft-deleted")
+	}
+}
+
 func TestItemLinkDefaultType(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

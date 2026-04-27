@@ -987,6 +987,13 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	return s.getItemLink(id)
 }
 
+// getItemLink is the unfiltered post-insert readback used by CreateItemLink to
+// hydrate the freshly-inserted row with collection/source/target metadata. It
+// intentionally does NOT filter on items.deleted_at IS NULL: the only caller
+// is the immediate readback after INSERT, and a delete race against either
+// endpoint would otherwise cause the just-successful insert to return nil
+// (Codex review on PR #259). User-facing surfaces all read links via
+// GetItemLinks (plural) or GetParentForItem, both of which DO filter.
 func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	var link models.ItemLink
 	var createdAt string
@@ -997,15 +1004,14 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 
 	srcStatus := s.dialect.JSONExtractText("s.fields", "status")
 	tgtStatus := s.dialect.JSONExtractText("t.fields", "status")
-	// Filter out links pointing to or from soft-deleted items — see BUG-734.
 	err := s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
-		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		JOIN items s ON s.id = l.source_id
+		JOIN items t ON t.id = l.target_id
 		JOIN collections sc ON sc.id = s.collection_id
 		JOIN collections tc ON tc.id = t.collection_id
 		WHERE l.id = ?
@@ -1172,17 +1178,10 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 		return nil, fmt.Errorf("commit parent link: %w", err)
 	}
 
-	// Return the full link with enriched fields
-	links, err := s.GetItemLinks(itemID)
-	if err != nil {
-		return nil, err
-	}
-	for _, link := range links {
-		if link.ID == id {
-			return &link, nil
-		}
-	}
-	return nil, fmt.Errorf("parent link created but not found")
+	// Return the full link with enriched fields. Use the unfiltered readback
+	// helper so that a delete race against either endpoint between commit and
+	// readback doesn't cause the successful insert to surface as nil.
+	return s.getItemLink(id)
 }
 
 // checkParentCycle walks the ancestor chain from parentID and returns an error
@@ -1281,10 +1280,17 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 
 // GetParentMap returns a map of item ID -> parent item ID for all parent links
 // in a workspace. Used for efficient batch lookups (e.g., dashboard, list enrichment).
+//
+// Links whose source or target item is soft-deleted are excluded so that
+// dashboard orphan-detection (handlers_dashboard.go) and similar enrichment
+// passes don't treat a task whose parent has been archived as still parented.
+// See BUG-734.
 func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
-		SELECT source_id, target_id FROM item_links
-		WHERE workspace_id = ? AND link_type IN (%s)
+		SELECT il.source_id, il.target_id FROM item_links il
+		JOIN items s ON s.id = il.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = il.target_id AND t.deleted_at IS NULL
+		WHERE il.workspace_id = ? AND il.link_type IN (%s)
 	`, childLinkTypeSQL())), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent map: %w", err)
