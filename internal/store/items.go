@@ -629,7 +629,12 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 			AND %s
 		`, ftsMatch)
-		args = []interface{}{workspaceID, params.Search}
+		// Wrap each whitespace-delimited token in double quotes so FTS5 treats
+		// hyphens (and other special chars like AND/OR/NOT/(/)) as literals
+		// rather than boolean operators. Without this, `?search=TASK-5` raises
+		// "no such column: 5" — see BUG-818. Postgres path stays unsanitized
+		// because plainto_tsquery accepts arbitrary input.
+		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
 	}
 
 	if params.CollectionSlug != "" {
@@ -967,7 +972,9 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			WHERE %s
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
-		args = []interface{}{query}
+		// Sanitize the user query so FTS5 special characters (hyphens, boolean
+		// operators) are treated as literals — see BUG-818.
+		args = []interface{}{sanitizeFTSQuery(query)}
 	}
 
 	if workspaceID != "" {
