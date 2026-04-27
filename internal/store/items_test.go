@@ -1245,6 +1245,237 @@ func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 	}
 }
 
+// --- BUG-812: listItemsFTS filter parity ---
+//
+// listItemsFTS used to silently drop most non-collection filters when the
+// search param was set, so combining `?search=...&tag=...&assigned_user=...`
+// (etc.) returned more items than the caller asked for. These tests pin the
+// fix: each filter, applied alongside an FTS search query that matches both
+// items, must narrow the result to only the matching item.
+
+func TestListItems_FTS_TagFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	tagged, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword tagged",
+		Fields: `{"status":"open"}`,
+		Tags:   `["urgent"]`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem tagged: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword untagged",
+		Fields: `{"status":"open"}`,
+		Tags:   `[]`,
+	}); err != nil {
+		t.Fatalf("CreateItem untagged: %v", err)
+	}
+
+	// Sanity: search alone returns both.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword"})
+	if err != nil {
+		t.Fatalf("ListItems sanity: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("sanity expected 2 items via search, got %d", len(items))
+	}
+
+	// Search + tag must narrow to the tagged item only.
+	items, err = s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword", Tag: "urgent"})
+	if err != nil {
+		t.Fatalf("ListItems search+tag: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != tagged.ID {
+		t.Errorf("expected exactly the tagged item, got %d items", len(items))
+	}
+}
+
+func TestListItems_FTS_ParentIDFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent item", "")
+	parentID := parent.ID
+
+	withParent, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:    "Searchhitkeyword child",
+		Fields:   `{"status":"open"}`,
+		ParentID: &parentID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem with parent: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword sibling-without-parent",
+		Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("CreateItem without parent: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword", ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("ListItems search+parentID: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != withParent.ID {
+		t.Errorf("expected exactly the child of parent, got %d items", len(items))
+	}
+}
+
+func TestListItems_FTS_AssignedUserFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	user := createTestUser(t, s, "fts-assignee@test.com", "FTS Assignee", "password123")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	uid := user.ID
+
+	assigned, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:          "Searchhitkeyword assigned",
+		Fields:         `{"status":"open"}`,
+		AssignedUserID: &uid,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem assigned: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword unassigned",
+		Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("CreateItem unassigned: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword", AssignedUserID: user.ID})
+	if err != nil {
+		t.Fatalf("ListItems search+assignee: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != assigned.ID {
+		t.Errorf("expected exactly the assigned item, got %d items", len(items))
+	}
+}
+
+func TestListItems_FTS_AgentRoleFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	role, err := s.CreateAgentRole(ws.ID, models.AgentRoleCreate{
+		Name: "Implementer",
+		Slug: "implementer",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRole: %v", err)
+	}
+	rid := role.ID
+
+	withRole, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:       "Searchhitkeyword role-bearing",
+		Fields:      `{"status":"open"}`,
+		AgentRoleID: &rid,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem with role: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword no-role",
+		Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("CreateItem without role: %v", err)
+	}
+
+	// Filter by role ID — exercises the i.agent_role_id = ? branch.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword", AgentRoleID: role.ID})
+	if err != nil {
+		t.Fatalf("ListItems search+role-by-id: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != withRole.ID {
+		t.Errorf("expected the role-bearing item via role-ID filter, got %d items", len(items))
+	}
+
+	// Filter by role slug — exercises the OR ar.slug = ? branch.
+	items, err = s.ListItems(ws.ID, models.ItemListParams{Search: "Searchhitkeyword", AgentRoleID: "implementer"})
+	if err != nil {
+		t.Fatalf("ListItems search+role-by-slug: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != withRole.ID {
+		t.Errorf("expected the role-bearing item via role-slug filter, got %d items", len(items))
+	}
+}
+
+func TestListItems_FTS_FieldFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	high, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword high-priority",
+		Fields: `{"status":"open","priority":"high"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem high: %v", err)
+	}
+	medium, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword medium-priority",
+		Fields: `{"status":"open","priority":"medium"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem medium: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Searchhitkeyword low-priority",
+		Fields: `{"status":"open","priority":"low"}`,
+	}); err != nil {
+		t.Fatalf("CreateItem low: %v", err)
+	}
+
+	// Single-value field filter — narrows to 1.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{
+		Search: "Searchhitkeyword",
+		Fields: map[string]string{"priority": "high"},
+	})
+	if err != nil {
+		t.Fatalf("ListItems search+field=high: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != high.ID {
+		t.Errorf("expected exactly the high-priority item, got %d items", len(items))
+	}
+
+	// Comma-separated — narrows to 2 (high + medium).
+	items, err = s.ListItems(ws.ID, models.ItemListParams{
+		Search: "Searchhitkeyword",
+		Fields: map[string]string{"priority": "high,medium"},
+	})
+	if err != nil {
+		t.Fatalf("ListItems search+field=high,medium: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, it := range items {
+		gotIDs[it.ID] = true
+	}
+	if len(items) != 2 || !gotIDs[high.ID] || !gotIDs[medium.ID] {
+		t.Errorf("expected high+medium via IN clause, got %d items: %+v", len(items), gotIDs)
+	}
+
+	// Invalid field key must be silently ignored (isValidFieldKey rejects),
+	// not crash or return zero results. The non-FTS path has the same
+	// guarantee.
+	items, err = s.ListItems(ws.ID, models.ItemListParams{
+		Search: "Searchhitkeyword",
+		Fields: map[string]string{"bad key with spaces": "anything"},
+	})
+	if err != nil {
+		t.Fatalf("ListItems search+invalid-field-key: %v", err)
+	}
+	// 3 because the invalid key is dropped — search alone returns all 3.
+	if len(items) != 3 {
+		t.Errorf("expected invalid field key to be ignored (3 search hits), got %d items", len(items))
+	}
+}
+
 func TestItemLinkDefaultType(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

@@ -637,12 +637,9 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.CollectionSlug)
 	}
 
-	// Parent link filter — must mirror the non-FTS path so combining
+	// Parent link filter — mirrors the non-FTS path so combining
 	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
 	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
-	// See Codex review on PR #259. Note: other filter kinds (tags, assignee,
-	// role, fields, ParentID) are also currently ignored in the FTS path —
-	// pre-existing behavior outside BUG-734's scope; tracked separately.
 	if params.ParentLinkID != "" {
 		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
@@ -674,6 +671,52 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			args = append(args, id)
 		}
 		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	// Filter parity with the non-FTS path. Without these, `?search=...` combined
+	// with any of these filter params silently drops the filter and over-returns
+	// items. See BUG-812.
+
+	if params.Tag != "" {
+		tagExpr, tagArg := s.dialect.JSONArrayContains("i.tags", params.Tag)
+		query += " AND " + tagExpr
+		args = append(args, tagArg)
+	}
+
+	if params.ParentID != "" {
+		query += " AND i.parent_id = ?"
+		args = append(args, params.ParentID)
+	}
+
+	if params.AssignedUserID != "" {
+		query += " AND i.assigned_user_id = ?"
+		args = append(args, params.AssignedUserID)
+	}
+
+	if params.AgentRoleID != "" {
+		query += " AND (i.agent_role_id = ? OR ar.slug = ?)"
+		args = append(args, params.AgentRoleID, params.AgentRoleID)
+	}
+
+	// Field filters — supports comma-separated values as OR. Field keys are
+	// user-controlled (query params), so isValidFieldKey gates SQL composition.
+	for key, value := range params.Fields {
+		if !isValidFieldKey(key) {
+			continue
+		}
+		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
+		if strings.Contains(value, ",") {
+			values := strings.Split(value, ",")
+			placeholders := make([]string, len(values))
+			for i, v := range values {
+				placeholders[i] = "?"
+				args = append(args, strings.TrimSpace(v))
+			}
+			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+		} else {
+			query += " AND " + jsonExpr + " = ?"
+			args = append(args, value)
+		}
 	}
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).
