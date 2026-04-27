@@ -1132,6 +1132,57 @@ func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	}
 }
 
+// TestListItems_ParentFilter_RespectsSoftDeletedParent ensures the
+// `parent=<UUID>` query filter doesn't return children of a soft-deleted
+// parent. Slug/ref filters already reject deleted parents upstream via
+// GetItem/GetItemBySlug, but raw-UUID input bypasses that path. See
+// BUG-734 / Codex review on PR #259.
+func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Sanity: child is reachable via the parent filter.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{ParentLinkID: parent.ID})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != child.ID {
+		t.Fatalf("expected to find 1 child via parent filter before delete, got %+v", items)
+	}
+
+	// Soft-delete the parent. Filter must now return no children — no
+	// caller should be able to list children of a deleted parent by UUID.
+	if err := s.DeleteItem(parent.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	items, err = s.ListItems(ws.ID, models.ItemListParams{ParentLinkID: parent.ID})
+	if err != nil {
+		t.Fatalf("ListItems after parent delete: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 children after parent soft-deleted, got %d (parent-filter regression)", len(items))
+	}
+
+	// Restoring the parent should bring the child back into the filter.
+	if _, err := s.RestoreItem(parent.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	items, err = s.ListItems(ws.ID, models.ItemListParams{ParentLinkID: parent.ID})
+	if err != nil {
+		t.Fatalf("ListItems after restore: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != child.ID {
+		t.Errorf("expected 1 child after restoring parent, got %d", len(items))
+	}
+}
+
 func TestItemLinkDefaultType(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

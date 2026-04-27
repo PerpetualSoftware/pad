@@ -529,9 +529,12 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
-	// Parent link filter via item_links
+	// Parent link filter via item_links. Joins items so we ignore links pointing
+	// to a soft-deleted parent — slug/ref filtering already rejects deleted
+	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
+	// Codex review on PR #259.
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
