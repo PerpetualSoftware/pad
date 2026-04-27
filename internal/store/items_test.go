@@ -1132,6 +1132,68 @@ func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	}
 }
 
+// TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent covers the
+// `parent=<UUID>&search=<q>` combination. The search path routes through
+// listItemsFTS, which the non-FTS parent filter doesn't touch; the FTS
+// path needs to enforce the same deleted-parent rejection. See BUG-734 /
+// Codex review on PR #259 (3rd pass).
+func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	// Use a distinctive title so the FTS match is unambiguous.
+	child := createTestItem(t, s, ws.ID, col.ID, "Distinctivekeyword child", "")
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Sanity: search + parent finds the child while parent is live.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{
+		ParentLinkID: parent.ID,
+		Search:       "Distinctivekeyword",
+	})
+	if err != nil {
+		t.Fatalf("ListItems (FTS+parent): %v", err)
+	}
+	if len(items) != 1 || items[0].ID != child.ID {
+		t.Fatalf("expected to find 1 child via FTS+parent before delete, got %d", len(items))
+	}
+
+	// Soft-delete the parent. The FTS path must also reject the now-deleted
+	// parent, otherwise `?parent=<deleted-uuid>&search=foo` continues to leak
+	// active children of an archived parent (the gap Codex flagged).
+	if err := s.DeleteItem(parent.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	items, err = s.ListItems(ws.ID, models.ItemListParams{
+		ParentLinkID: parent.ID,
+		Search:       "Distinctivekeyword",
+	})
+	if err != nil {
+		t.Fatalf("ListItems (FTS+parent) after delete: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 children via FTS+parent after parent soft-deleted, got %d (FTS-path parent-filter regression)", len(items))
+	}
+
+	// Restore brings the child back through the FTS+parent path.
+	if _, err := s.RestoreItem(parent.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	items, err = s.ListItems(ws.ID, models.ItemListParams{
+		ParentLinkID: parent.ID,
+		Search:       "Distinctivekeyword",
+	})
+	if err != nil {
+		t.Fatalf("ListItems (FTS+parent) after restore: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != child.ID {
+		t.Errorf("expected child to reappear via FTS+parent after restoring parent, got %d", len(items))
+	}
+}
+
 // TestListItems_ParentFilter_RespectsSoftDeletedParent ensures the
 // `parent=<UUID>` query filter doesn't return children of a soft-deleted
 // parent. Slug/ref filters already reject deleted parents upstream via

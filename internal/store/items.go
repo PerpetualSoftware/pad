@@ -637,6 +637,17 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.CollectionSlug)
 	}
 
+	// Parent link filter — must mirror the non-FTS path so combining
+	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
+	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
+	// See Codex review on PR #259. Note: other filter kinds (tags, assignee,
+	// role, fields, ParentID) are also currently ignored in the FTS path —
+	// pre-existing behavior outside BUG-734's scope; tracked separately.
+	if params.ParentLinkID != "" {
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		args = append(args, params.ParentLinkID)
+	}
+
 	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
 		collPlaceholders := make([]string, len(params.CollectionIDs))
 		for i, id := range params.CollectionIDs {
