@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/xarmian/pad/internal/billing"
 	"github.com/xarmian/pad/internal/email"
 	"github.com/xarmian/pad/internal/events"
 	"github.com/xarmian/pad/internal/metrics"
@@ -146,6 +147,17 @@ type CloudSidecar interface {
 	// would wipe the user's StripeCustomerID while leaving the subscription
 	// billing, which is exactly the regression TASK-690 exists to prevent.
 	CancelCustomer(customerID string) error
+
+	// GetBillingMetrics fetches an aggregated Stripe-derived snapshot from
+	// pad-cloud's /admin/metrics/billing endpoint (active subs, MRR, ARR,
+	// churn, cancellations). Used by handleAdminBillingStats to power the
+	// admin Billing dashboard (TASK-827 / PLAN-825).
+	//
+	// Failure contract: returns an error on transport failure or non-200
+	// status. The admin handler treats any error as "degrade to local-only"
+	// and surfaces the distinction in its response via cloud_unreachable —
+	// it never propagates the upstream failure to the operator's browser.
+	GetBillingMetrics() (*billing.BillingMetricsResponse, error)
 }
 
 // SetCloudSidecar installs the reverse pad → pad-cloud client. Called from
@@ -446,6 +458,14 @@ func (s *Server) setupRouter() {
 					r.Post("/stripe-event-processed", s.handleStripeEventProcessed) // Cloud: sidecar webhook idempotency (TASK-696)
 					r.Post("/stripe-event-unmark", s.handleStripeEventUnmark)       // Cloud: sidecar handler-failure rollback (TASK-736)
 					r.Post("/payment-failed", s.handlePaymentFailed)                // Cloud: sidecar forwards invoice.payment_failed to trigger email (TASK-712)
+
+					// Admin Billing dashboard data (TASK-827 / PLAN-825). Proxies
+					// pad-cloud's /admin/metrics/billing for Stripe-derived stats
+					// (active subs, MRR, ARR, churn) and merges with local
+					// users-table aggregates (customers_by_plan, new_signups_30d).
+					// Always returns 200; degraded states (sidecar unreachable,
+					// Stripe not configured) are surfaced as flags in the body.
+					r.Get("/billing-stats", s.handleAdminBillingStats)
 				})
 
 				// User management
