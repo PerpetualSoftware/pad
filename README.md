@@ -15,13 +15,9 @@
 
 > One binary. Local-first. No accounts. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data never leaves your laptop.
 
-<!-- Screenshots: dashboard, board view, CLI output -->
-<!-- TODO: Replace with actual screenshots -->
-<!--
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" width="800" alt="Pad dashboard showing collection overview, active plans, and activity feed" />
+  <img src="docs/screenshots/dashboard.png" width="900" alt="Pad dashboard showing collection summaries, active work, an active plan with progress, and a recent activity feed" />
 </p>
--->
 
 ## Quick Start
 
@@ -73,7 +69,9 @@ pad server info                         # How this client is connected to Pad
 - **Real-time updates** — agent creates a task in the terminal, it appears in the browser instantly (via SSE)
 - **Dashboard** — collection overview, active work, plan tracking, activity feed
 
-<!-- TODO: Screenshot of board view with drag-and-drop -->
+<p align="center">
+  <img src="docs/screenshots/board.png" width="900" alt="Pad tasks board view: kanban columns for Open, In-Progress, Done, Cancelled with task cards in each" />
+</p>
 
 ### For AI Agents
 
