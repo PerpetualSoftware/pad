@@ -1,11 +1,11 @@
 version: 2
 
-before:
-  hooks:
-    # Build web UI before Go compilation so it gets embedded.
-    # v2 accepts simple string hooks only at this level; object-with-cmd
-    # form (v1 syntax) is rejected with "cannot unmarshal !!map into string".
-    - bash -c "cd web && npm ci && npm run build"
+# NOTE: the SvelteKit web UI is built by a dedicated workflow step in
+# .github/workflows/release.yml *before* the goreleaser-action runs, NOT
+# by a `before:` hook here. Done deliberately so the npm install/build
+# does not inherit the macOS signing secrets (Developer ID .p12, .p8 notary
+# key, etc.) that are scoped only to the `Run GoReleaser` step's env.
+# Reduces blast radius from any npm supply-chain compromise.
 
 builds:
   - main: ./cmd/pad

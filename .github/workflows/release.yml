@@ -66,11 +66,27 @@ jobs:
       - name: Install syft (for SBOM generation)
         uses: anchore/sbom-action/download-syft@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
 
+      # Build the SvelteKit web UI before GoReleaser so the static assets
+      # get embedded into the Go binary. Done as a dedicated step (instead
+      # of a goreleaser `before:` hook) so the npm install/build does NOT
+      # inherit the MACOS_* signing secrets — those are scoped only to the
+      # `Run GoReleaser` step's env block below. This isolates the 5-year
+      # Developer ID cert from any npm supply-chain compromise during
+      # dependency install.
+      - name: Build web UI
+        run: cd web && npm ci && npm run build
+
       - name: Run GoReleaser
         id: goreleaser
+        # GoReleaser binary is pinned to an exact version (not "~> v2") to
+        # match the SHA-pinning policy applied to the Actions themselves —
+        # see the comment at the top of this file. With Apple signing
+        # credentials now flowing through this step, a compromised or
+        # regressed GoReleaser release would carry meaningful blast radius;
+        # pinning forces an explicit, reviewed bump.
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
-          version: "~> v2"
+          version: "v2.15.4"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
