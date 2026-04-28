@@ -258,6 +258,25 @@ func (c *Config) BaseURL() string {
 	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
 }
 
+// BrowserURL returns a URL suitable for displaying to humans in CLI prompts
+// (e.g. "Or open the web UI at X"). It behaves like BaseURL except that
+// when the URL is constructed from host:port, an unspecified bind-all host
+// (empty, "0.0.0.0", "::", "[::]") is rewritten to "127.0.0.1" because
+// 0.0.0.0 is a bind address and not reliably usable as a browser
+// destination. When URL is explicitly set (Remote/Docker/Cloud) it is
+// returned as-is.
+func (c *Config) BrowserURL() string {
+	if c.URL != "" {
+		return strings.TrimRight(c.URL, "/")
+	}
+	host := c.Host
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%d", host, c.Port)
+}
+
 func (c *Config) PIDFile() string {
 	return filepath.Join(c.DataDir, "pad.pid")
 }
