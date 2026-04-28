@@ -1247,44 +1247,58 @@ func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 	}
 }
 
-// TestListItems_FTS_HyphenatedSearchTerm pins BUG-818: a hyphen in the search
-// query used to throw FTS5 boolean-parser errors ("no such column: foo")
-// because the input was bound verbatim into the MATCH clause. The fix wraps
-// each token in double quotes so FTS5 treats specials as literals.
+// TestListItems_FTS_HyphenatedSearchTerm pins BUG-818 (FTS5 boolean parser
+// regression on bare hyphens) AND BUG-842 (PG plainto_tsquery missing
+// hyphenated-word matches). Each subtest indexes a distinct title and
+// searches for a hyphenated form; both backends MUST return the match.
+//
+// The two cases exercise the two failure modes:
+//   - `task-five` against `task-five-distinctive`: PG indexes the full
+//     asciihword as `task-five-distinct`; a naive plainto_tsquery on the
+//     query produces `task-fiv` (stemmed asciihword for the partial
+//     query) which is NOT in the vector. Fixed by ORing in a
+//     hyphen-as-space variant — see sanitizePGFTSQuery.
+//   - `BUG-842` against `BUG-842 fix the cleanup race`: PG indexes the
+//     `-842` token (negative number lexeme); a hyphen-as-space variant
+//     would search for `842` and miss. The OR-combined query keeps the
+//     raw form alive too, so `-842` matches.
 func TestListItems_FTS_HyphenatedSearchTerm(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 
-	// Single-word distinctive title for control.
-	want := createTestItem(t, s, ws.ID, col.ID, "task-five-distinctive", "")
+	// Two distinctive titles, each exercising one tokenization mode.
+	wantFive := createTestItem(t, s, ws.ID, col.ID, "task-five-distinctive", "")
+	wantBug := createTestItem(t, s, ws.ID, col.ID, "BUG-842 fix the cleanup race", "")
 	// Plain non-matching item.
 	createTestItem(t, s, ws.ID, col.ID, "unrelated thing", "")
 
-	// Each of these queries used to raise an FTS5 syntax error before the fix.
-	// Now they should each return the matching item.
-	hyphenQueries := []string{
-		"task-five-distinctive", // full slug-ish
-		"task-five",             // partial hyphenated
+	cases := []struct {
+		query string
+		want  *models.Item
+	}{
+		{"task-five-distinctive", wantFive}, // full slug-ish
+		{"task-five", wantFive},             // partial hyphenated — BUG-842 PG case
+		{"BUG-842", wantBug},                // word-NUMBER hyphen — would regress under naive sanitize
 	}
-	for _, q := range hyphenQueries {
-		t.Run(q, func(t *testing.T) {
-			items, err := s.ListItems(ws.ID, models.ItemListParams{Search: q})
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			items, err := s.ListItems(ws.ID, models.ItemListParams{Search: tc.query})
 			if err != nil {
-				t.Fatalf("ListItems(search=%q) errored (FTS5 boolean parser regression?): %v", q, err)
+				t.Fatalf("ListItems(search=%q) errored (FTS5 boolean parser regression?): %v", tc.query, err)
 			}
 			if len(items) == 0 {
-				t.Fatalf("ListItems(search=%q) returned 0 items, expected to find %s", q, want.Title)
+				t.Fatalf("ListItems(search=%q) returned 0 items, expected to find %s", tc.query, tc.want.Title)
 			}
 			found := false
 			for _, it := range items {
-				if it.ID == want.ID {
+				if it.ID == tc.want.ID {
 					found = true
 					break
 				}
 			}
 			if !found {
-				t.Errorf("ListItems(search=%q) didn't include %s, got %d items", q, want.Title, len(items))
+				t.Errorf("ListItems(search=%q) didn't include %s, got %d items", tc.query, tc.want.Title, len(items))
 			}
 		})
 	}
@@ -1743,6 +1757,33 @@ func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
 		if _, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: q}); err != nil {
 			t.Errorf("ListDocuments(query=%q) errored: %v", q, err)
 		}
+	}
+}
+
+// TestSanitizePGFTSQuery is a unit test for the BUG-842 helper that
+// produces the second leg of the OR-combined PG FTS query (raw +
+// hyphen-as-space). See internal/store/search.go.
+func TestSanitizePGFTSQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"plain word", "hello", "hello"},
+		{"hyphenated phrase", "task-five", "task five"},
+		{"BUG-842 form", "BUG-842", "BUG 842"},
+		{"multiple hyphens", "task-five-distinctive", "task five distinctive"},
+		{"multi-token with hyphens", "task-five other-thing", "task five other thing"},
+		{"no hyphens preserved", "foo bar baz", "foo bar baz"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizePGFTSQuery(tc.in)
+			if got != tc.want {
+				t.Errorf("sanitizePGFTSQuery(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
