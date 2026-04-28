@@ -78,12 +78,14 @@ func (s *Server) goAsync(fn func()) {
 	}()
 }
 
-// Stop waits for all background goroutines started via goAsync to finish.
-// Safe to call multiple times. Should be called before Store.Close() so
-// in-flight DB writes don't race a closed connection (or worse, the
-// SQLite -wal/-shm file removal in t.TempDir cleanup).
+// Stop waits for all background goroutines started via goAsync to finish
+// AND drains the rate-limiter cleanup goroutines spawned at construction
+// time (BUG-851). Safe to call multiple times. Should be called before
+// Store.Close() so in-flight DB writes don't race a closed connection
+// (or worse, the SQLite -wal/-shm file removal in t.TempDir cleanup).
 func (s *Server) Stop() {
 	s.bg.Wait()
+	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
 
 func New(s *store.Store) *Server {

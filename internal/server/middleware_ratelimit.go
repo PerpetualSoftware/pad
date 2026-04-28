@@ -36,6 +36,15 @@ type ipRateLimiter struct {
 	limiters  map[string]*rateLimiterEntry
 	config    rateLimitConfig
 	retention time.Duration
+
+	// stopCh / stopOnce / stopWg let Server.Stop() shut the cleanup
+	// goroutine down. Without this, every call to NewRateLimiters spawned
+	// 9 forever-sleeping goroutines that never exited — under -race the
+	// accumulation pushed the test runtime past the 10-minute timeout.
+	// See BUG-851.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	stopWg   sync.WaitGroup
 }
 
 type rateLimiterEntry struct {
@@ -52,10 +61,24 @@ func newIPRateLimiter(cfg rateLimitConfig) *ipRateLimiter {
 		limiters:  make(map[string]*rateLimiterEntry),
 		config:    cfg,
 		retention: retention,
+		stopCh:    make(chan struct{}),
 	}
-	// Background cleanup of stale entries every 5 minutes
+	// Background cleanup of stale entries every 5 minutes. Tracked via
+	// stopWg so Stop() can drain it before the surrounding Server is torn
+	// down (BUG-851).
+	rl.stopWg.Add(1)
 	go rl.cleanup()
 	return rl
+}
+
+// Stop signals the cleanup goroutine to exit and blocks until it does.
+// Safe to call multiple times — stopOnce guards the channel close.
+func (rl *ipRateLimiter) Stop() {
+	if rl == nil {
+		return
+	}
+	rl.stopOnce.Do(func() { close(rl.stopCh) })
+	rl.stopWg.Wait()
 }
 
 func (rl *ipRateLimiter) getLimiter(key string) *rate.Limiter {
@@ -76,15 +99,22 @@ func (rl *ipRateLimiter) getLimiter(key string) *rate.Limiter {
 }
 
 func (rl *ipRateLimiter) cleanup() {
+	defer rl.stopWg.Done()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
 	for {
-		time.Sleep(5 * time.Minute)
-		rl.mu.Lock()
-		for key, entry := range rl.limiters {
-			if time.Since(entry.lastSeen) > rl.retention {
-				delete(rl.limiters, key)
+		select {
+		case <-rl.stopCh:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			for key, entry := range rl.limiters {
+				if time.Since(entry.lastSeen) > rl.retention {
+					delete(rl.limiters, key)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -180,6 +210,29 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(6.0 / 3600.0),
 			Burst: 6,
 		}),
+	}
+}
+
+// Stop drains the cleanup goroutine of every limiter in the bundle. Called
+// from Server.Stop() so test cleanup (and graceful shutdown) doesn't leak
+// the 9 forever-sleeping goroutines NewRateLimiters spawns. Safe to call
+// on a nil receiver and idempotent per-limiter via stopOnce. See BUG-851.
+func (rls *RateLimiters) Stop() {
+	if rls == nil {
+		return
+	}
+	for _, rl := range []*ipRateLimiter{
+		rls.Auth,
+		rls.AuthEmail,
+		rls.PasswordReset,
+		rls.Register,
+		rls.OAuthLogin,
+		rls.CloudAdmin,
+		rls.API,
+		rls.Search,
+		rls.RecoveryCode,
+	} {
+		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}
 }
 
