@@ -38,10 +38,22 @@ func (s *Store) DB() *sql.DB { return s.db }
 //
 // The DSN is configured for safe concurrent use under Go's connection pool:
 //
-//   - `_pragma=busy_timeout(5000)`: when a connection finds the database
-//     locked, retry for up to 5 seconds before returning SQLITE_BUSY. The
-//     pragma is applied per-connection by the driver, so every pool member
-//     inherits it.
+//   - `_pragma=busy_timeout(30000)`: when a connection finds the database
+//     locked, retry for up to 30 seconds before returning SQLITE_BUSY.
+//     The pragma is applied per-connection by the driver, so every pool
+//     member inherits it.
+//
+//     30s is much larger than the millisecond-scale p95 we observe under
+//     normal load — the slack is there to absorb shared-runner jitter
+//     under heavy CI contention. With the previous 5s value,
+//     TestSQLiteConcurrentWritersNoBusy (25 writers × 5 ops, all
+//     contending for BEGIN IMMEDIATE) intermittently failed on the
+//     GitHub-hosted SQLite job: the cumulative wall-time of 125
+//     serialized inserts on a slow runner can exceed 5s, leaving the
+//     unluckiest writer to time out. See BUG-853. Genuine deadlocks
+//     don't happen with WAL + BEGIN IMMEDIATE, so the only thing the
+//     larger value costs is "how long we wait before declaring lock
+//     contention pathological"; for Pad's workload, 30s is fine.
 //
 //   - `_pragma=foreign_keys(on)`: foreign-key enforcement is per-connection
 //     in SQLite. Setting it via the DSN guarantees ALL pool members enforce
@@ -87,7 +99,7 @@ func (s *Store) DB() *sql.DB { return s.db }
 //     setting (stored in the file header), so it persists across
 //     connections after the first one applies it.
 func New(dbPath string) (*Store, error) {
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)&_txlock=immediate"
+	dsn := dbPath + "?_pragma=busy_timeout(30000)&_pragma=foreign_keys(on)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
