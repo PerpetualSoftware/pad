@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/google/uuid"
 )
 
 // testStore creates a Store for testing. When PAD_TEST_POSTGRES_URL is set,

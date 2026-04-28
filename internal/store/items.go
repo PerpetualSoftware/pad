@@ -609,7 +609,12 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 			AND %s
 		`, ftsMatch)
-		args = []interface{}{workspaceID, params.Search}
+		// PG FTSMatch consumes TWO args: the raw user query AND its
+		// hyphen-sanitized form, OR-combined inside the SQL fragment so
+		// that hyphenated terms like `task-five` match titles indexed as
+		// `task-five-distinctive` while preserving `BUG-842`-style
+		// matches (BUG-842).
+		args = []interface{}{workspaceID, params.Search, sanitizePGFTSQuery(params.Search)}
 	} else {
 		// SQLite: uses FTS5 virtual table "items_fts".
 		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
@@ -634,8 +639,8 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		// Wrap each whitespace-delimited token in double quotes so FTS5 treats
 		// hyphens (and other special chars like AND/OR/NOT/(/)) as literals
 		// rather than boolean operators. Without this, `?search=TASK-5` raises
-		// "no such column: 5" — see BUG-818. Postgres path stays unsanitized
-		// because plainto_tsquery accepts arbitrary input.
+		// "no such column: 5" — see BUG-818. Postgres handles raw input via
+		// the OR-combined plainto_tsquery in the dialect (BUG-842).
 		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
 	}
 
@@ -728,10 +733,11 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
-	// PostgreSQL FTSRank embeds a plainto_tsquery(?) that needs the search term.
+	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
+	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
 	if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC"
-		args = append(args, params.Search)
+		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
 	} else {
 		query += " ORDER BY " + ftsRank
 	}
@@ -955,8 +961,11 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			WHERE %s
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
-		// PostgreSQL: FTSSnippet, FTSRank, and FTSMatch each consume a "?" for plainto_tsquery
-		args = []interface{}{query, query, query}
+		// PG FTSSnippet, FTSRank, and FTSMatch each consume TWO "?" args
+		// (raw query + hyphen-sanitized query) for the OR-combined
+		// plainto_tsquery — see dialect.go and BUG-842.
+		sanitized := sanitizePGFTSQuery(query)
+		args = []interface{}{query, sanitized, query, sanitized, query, sanitized}
 	} else {
 		// SQLite: uses FTS5 virtual table "items_fts".
 		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")

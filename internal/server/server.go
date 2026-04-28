@@ -56,6 +56,34 @@ type Server struct {
 	commit                string               // git commit hash
 	buildTime             string               // build timestamp
 	twoFAChallengeSecret  []byte               // HMAC key for 2FA challenge tokens
+
+	// bg tracks fire-and-forget goroutines spawned by request handlers
+	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
+	// the server can drain them before shutdown / test cleanup. Without
+	// this, tests using t.TempDir() race the still-running goroutine's
+	// SQLite WAL write against TempDir RemoveAll, leaving "directory not
+	// empty" cleanup errors in CI. See BUG-842.
+	bg sync.WaitGroup
+}
+
+// goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can
+// wait for in-flight background work to finish. Use this for any
+// fire-and-forget work that touches the database, filesystem, or external
+// services from inside a request handler — never bare `go func() {...}()`.
+func (s *Server) goAsync(fn func()) {
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		fn()
+	}()
+}
+
+// Stop waits for all background goroutines started via goAsync to finish.
+// Safe to call multiple times. Should be called before Store.Close() so
+// in-flight DB writes don't race a closed connection (or worse, the
+// SQLite -wal/-shm file removal in t.TempDir cleanup).
+func (s *Server) Stop() {
+	s.bg.Wait()
 }
 
 func New(s *store.Store) *Server {

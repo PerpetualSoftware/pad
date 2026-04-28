@@ -62,7 +62,8 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 			args = []interface{}{workspaceID, sanitizeFTSQuery(params.Query)}
 		} else {
 			// PostgreSQL: search_vector lives on the documents table (aliased as "d").
-			// plainto_tsquery handles arbitrary user input safely; no sanitize needed.
+			// PG FTSMatch consumes TWO args (raw + hyphen-sanitized) for the
+			// OR-combined plainto_tsquery — see dialect.go and BUG-842.
 			ftsMatch := s.dialect.FTSMatch("d", "search_vector")
 			query = fmt.Sprintf(`
 				SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,
@@ -72,7 +73,7 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 				WHERE d.workspace_id = ? AND d.deleted_at IS NULL
 				AND %s
 			`, ftsMatch)
-			args = []interface{}{workspaceID, params.Query}
+			args = []interface{}{workspaceID, params.Query, sanitizePGFTSQuery(params.Query)}
 		}
 
 		if params.Type != "" {
@@ -120,10 +121,11 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 
 	if hasSearch {
 		if s.dialect.Driver() == DriverPostgres {
-			// PostgreSQL ts_rank(): higher = more relevant → DESC
+			// PostgreSQL ts_rank(): higher = more relevant → DESC.
+			// PG FTSRank consumes TWO args (raw + sanitized) — BUG-842.
 			ftsRank := s.dialect.FTSRank("d", "search_vector")
 			query += fmt.Sprintf(" ORDER BY %s DESC, d.%s %s", ftsRank, sortCol, order)
-			args = append(args, params.Query) // extra placeholder for ts_rank
+			args = append(args, params.Query, sanitizePGFTSQuery(params.Query))
 		} else {
 			// SQLite FTS5: rank is a hidden column on the FTS JOIN (ascending = better)
 			query += fmt.Sprintf(" ORDER BY rank, d.%s %s", sortCol, order)

@@ -709,7 +709,8 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 	// 4. Opportunistic pruning (1% of calls; keeps the table bounded without
 	//    a dedicated goroutine). Failures here are non-fatal — log and continue.
 	if store.ShouldPruneStripeEvents() {
-		go func(eventID string) {
+		eventID := input.EventID
+		s.goAsync(func() {
 			// Run in background so we don't block the response. 7-day retention
 			// covers Stripe's 72h retry window with a generous safety margin.
 			removed, perr := s.store.PruneStripeProcessedEvents(7 * 24 * time.Hour)
@@ -720,7 +721,7 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 			if removed > 0 {
 				slog.Info("pruned stripe_processed_events", "removed", removed)
 			}
-		}(input.EventID)
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

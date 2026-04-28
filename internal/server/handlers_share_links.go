@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // validateShareLinkOpts checks that share link creation constraints are sane.

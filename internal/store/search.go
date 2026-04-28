@@ -211,8 +211,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		ftsRank := s.dialect.FTSRank("i", "search_vector")
 		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
 
-		// FTSSnippet, FTSRank, and FTSMatch each consume a "?" placeholder
-		// for the query parameter (plainto_tsquery('english', ?)).
+		// PG FTSSnippet, FTSRank, and FTSMatch each consume TWO "?" args
+		// (raw query + hyphen-sanitized query) for the OR-combined
+		// plainto_tsquery — see dialect.go and BUG-842.
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -231,7 +232,12 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
 		searchQuery := params.Query
-		args = []interface{}{searchQuery, searchQuery, searchQuery}
+		sanitized := sanitizePGFTSQuery(searchQuery)
+		args = []interface{}{
+			searchQuery, sanitized, // FTSSnippet
+			searchQuery, sanitized, // FTSRank
+			searchQuery, sanitized, // FTSMatch
+		}
 	} else {
 		// SQLite: uses FTS5 virtual table with JOIN on rowid.
 		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
@@ -323,7 +329,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s AND i.deleted_at IS NULL
 		`, ftsMatch)
-		countArgs = []interface{}{params.Query}
+		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
+		countArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
 	} else {
 		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
 		countQuery = fmt.Sprintf(`
@@ -544,7 +551,8 @@ func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s AND i.deleted_at IS NULL
 		`, ftsMatch)
-		baseArgs = []interface{}{params.Query}
+		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
+		baseArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
 	} else {
 		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
 		baseQuery = fmt.Sprintf(`
@@ -613,4 +621,20 @@ func sanitizeFTSQuery(q string) string {
 		tokens[i] = `"` + t + `"`
 	}
 	return strings.Join(tokens, " ")
+}
+
+// sanitizePGFTSQuery returns a copy of q with hyphens replaced by spaces.
+// Used as the second leg of the OR-combined PG FTS query: postgres'
+// english parser indexes a hyphenated word as both an asciihword token
+// and its parts (`task-five-distinctive` → `task-five-distinct, task,
+// five, distinct`), but plainto_tsquery applied to a partial hyphenated
+// query produces the stemmed asciihword for that partial input
+// (`task-fiv`), which is NOT in the vector — so the bare match returns
+// 0 rows. ORing in `plainto_tsquery(<hyphens-as-spaces>)` makes the
+// part lexemes (`task & five`) participate in the match, fixing the
+// regression for `task-five` while leaving cases like `BUG-842` (which
+// the english parser indexes as `bug, -842` and DOES match the bare
+// query) untouched. See BUG-842 and the FTSMatch dialect method.
+func sanitizePGFTSQuery(q string) string {
+	return strings.ReplaceAll(q, "-", " ")
 }

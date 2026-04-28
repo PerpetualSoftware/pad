@@ -9,8 +9,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/fatih/color"
 )
 
 // Color definitions for reuse across the CLI.

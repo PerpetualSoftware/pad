@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -21,8 +23,17 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return New(s)
+	srv := New(s)
+	// Drain background goroutines BEFORE closing the store. Without this,
+	// fire-and-forget writes spawned by request middleware (e.g.
+	// TouchUserActivity in middleware_auth) can race the SQLite WAL/SHM
+	// file removal in t.TempDir's cleanup, causing
+	// "TempDir RemoveAll cleanup: directory not empty" — see BUG-842.
+	t.Cleanup(func() {
+		srv.Stop()
+		s.Close()
+	})
+	return srv
 }
 
 func doRequest(srv *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
@@ -387,5 +398,54 @@ func TestActivityEndpoints(t *testing.T) {
 	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/documents/"+doc.ID+"/activity", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("doc activity: expected 200, got %d", rr.Code)
+	}
+}
+
+// TestServer_Stop_DrainsBackgroundGoroutines pins BUG-842 part 2: any
+// fire-and-forget goroutine spawned via Server.goAsync must be drained by
+// Server.Stop() before the call returns, so test cleanup (and graceful
+// shutdown) can close the SQLite store without racing in-flight WAL writes
+// against t.TempDir's RemoveAll.
+func TestServer_Stop_DrainsBackgroundGoroutines(t *testing.T) {
+	srv := testServer(t)
+
+	// Block the goroutine on a release channel so we can prove Stop() is
+	// actually waiting (not just racing past a goroutine that already
+	// finished). A naive `go func(){...}()` would let Stop return
+	// immediately while the goroutine is still running — that's the bug.
+	release := make(chan struct{})
+	var done atomic.Bool
+	srv.goAsync(func() {
+		<-release
+		done.Store(true)
+	})
+
+	// Stop() must block until the goroutine sees release + sets done.
+	// Run Stop in a goroutine so the test can release after a brief wait.
+	stopReturned := make(chan struct{})
+	go func() {
+		srv.Stop()
+		close(stopReturned)
+	}()
+
+	// Stop should NOT have returned yet — the goAsync goroutine is blocked.
+	select {
+	case <-stopReturned:
+		t.Fatal("Server.Stop() returned before background goroutine finished")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: still waiting.
+	}
+
+	close(release)
+
+	select {
+	case <-stopReturned:
+		// Expected: Stop drained the goroutine and returned.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Stop() did not return within 2s of releasing the goroutine")
+	}
+
+	if !done.Load() {
+		t.Fatal("background goroutine did not run to completion before Stop returned")
 	}
 }

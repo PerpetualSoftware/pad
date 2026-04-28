@@ -930,11 +930,11 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Send reset email
 	if s.email != nil && s.baseURL != "" {
 		resetURL := s.baseURL + "/reset-password/" + token
-		go func() {
+		s.goAsync(func() {
 			if err := s.email.SendPasswordReset(context.Background(), user.Email, user.Name, resetURL); err != nil {
 				slog.Error("failed to send password reset email", "error", err)
 			}
-		}()
+		})
 	} else {
 		slog.Info("password reset token generated (email not configured)")
 	}
