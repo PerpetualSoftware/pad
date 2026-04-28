@@ -245,8 +245,7 @@ func (s *Store) migrate() error {
 //
 //   - items_fts_*    — internal/store/migrations/001_initial.sql
 //   - comments_fts_* — internal/store/migrations/007_comments.sql
-//   - documents_*    — internal/store/migrations/001_initial.sql,
-//                      restored by 046 after BUG-822 drift.
+//   - documents_*    — internal/store/migrations/001_initial.sql (restored by 046 after BUG-822 drift)
 //
 // If a future migration intentionally renames or removes any of these,
 // update this list in the same commit.

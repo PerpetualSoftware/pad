@@ -1721,8 +1721,9 @@ func TestListDocuments_FTS_PinnedFilter(t *testing.T) {
 
 // TestFTS_WhitespaceOnlyQuery_DoesNotCrash exercises the whitespace-only
 // guard on each FTS entry point. sanitizeFTSQuery turns "   " into "" and
-// SQLite FTS5 errors on `MATCH ''`, so the routing/guard has to short-circuit
-// before binding. See BUG-818 / Codex follow-up.
+// SQLite FTS5 errors on a MATCH against an empty string, so the
+// routing/guard has to short-circuit before binding.
+// See BUG-818 / Codex follow-up.
 func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

@@ -91,10 +91,10 @@ func TestPromptForModeAtoiSafe(t *testing.T) {
 		{"1", 1},
 		{"3", 3},
 		{"42", 42},
-		{"-1", 0},          // leading minus is not a digit, rejected
-		{"1.5", 0},         // dot is not a digit, rejected
-		{"abc", 0},         // non-numeric input, rejected
-		{"100000000", 0},   // overflow guard rejects very large numbers
+		{"-1", 0},        // leading minus is not a digit, rejected
+		{"1.5", 0},       // dot is not a digit, rejected
+		{"abc", 0},       // non-numeric input, rejected
+		{"100000000", 0}, // overflow guard rejects very large numbers
 	}
 	for _, tc := range cases {
 		if got := atoiSafe(tc.in); got != tc.want {
