@@ -526,8 +526,6 @@ func setupCmd() *cobra.Command {
 
 			if cfg.IsConfigured() {
 				switch cfg.Mode {
-				case config.ModeDocker:
-					return fmt.Errorf("docker-managed Pad must be initialized from inside the container; run 'docker exec -it <container> pad auth setup'")
 				case config.ModeRemote, config.ModeCloud:
 					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
 				}
@@ -815,8 +813,6 @@ func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
 func printSetupRequiredHint(cfg *config.Config) {
 	fmt.Println("This Pad instance has not been initialized yet.")
 	switch cfg.Mode {
-	case config.ModeDocker:
-		fmt.Println("Run 'pad auth setup' inside the container, for example: docker exec -it <container> pad auth setup")
 	case config.ModeRemote, config.ModeCloud:
 		fmt.Println("Run 'pad auth setup' on the machine or container running the Pad server, then try again.")
 	default:

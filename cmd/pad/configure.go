@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"github.com/xarmian/pad/internal/config"
 	"golang.org/x/term"
@@ -28,11 +29,10 @@ func configureCmd() *cobra.Command {
 		Long: `Configure how this Pad client connects to a server.
 
 Modes:
-  local   This client manages a local Pad server.
-  remote  This client connects to another Pad server by base URL.
-  docker  This client connects to a Docker-managed Pad server, usually at localhost.
-
-Pad Cloud mode is reserved for a future release and is not yet available.`,
+  cloud   This client connects to your Pad Cloud account at ` + config.CloudBaseURL + `.
+          Managed, OAuth sign-in, no setup. Recommended.
+  local   This client manages a local Pad server on this machine.
+  remote  This client connects to your own self-hosted Pad server by base URL.`,
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			// Mirror pad init: an explicit cancel keyword from a prompt
 			// surfaces as errCancelled. Convert to the canonical exit so
@@ -57,8 +57,8 @@ Pad Cloud mode is reserved for a future release and is not yet available.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&values.Mode, "mode", "", "connection mode: local, remote, docker")
-	cmd.Flags().StringVar(&values.URL, "url", "", "server base URL for remote or docker mode")
+	cmd.Flags().StringVar(&values.Mode, "mode", "", "connection mode: cloud, local, remote")
+	cmd.Flags().StringVar(&values.URL, "url", "", "server base URL for remote mode")
 	cmd.Flags().StringVar(&values.Host, "host", "", "local server host override for local mode")
 	cmd.Flags().IntVar(&values.Port, "port", 0, "local server port override for local mode")
 
@@ -141,17 +141,12 @@ func applyConfigureValues(cfg *config.Config, values *configureValues) error {
 			cfg.Port = 7777
 		}
 		return nil
-	case config.ModeRemote, config.ModeDocker:
+	case config.ModeRemote:
 		if values.URL == "" {
 			if !canPromptForConfig() {
 				return fmt.Errorf("--url is required for %s mode", mode)
 			}
-			prompt := "Server URL"
-			defaultURL := "http://127.0.0.1:7777"
-			if mode == config.ModeRemote {
-				defaultURL = ""
-			}
-			url, err := promptForValue(prompt, defaultURL)
+			url, err := promptForValue("Server URL", "")
 			if err != nil {
 				return err
 			}
@@ -161,45 +156,144 @@ func applyConfigureValues(cfg *config.Config, values *configureValues) error {
 		if err != nil {
 			return err
 		}
-		cfg.Mode = mode
+		cfg.Mode = config.ModeRemote
 		cfg.URL = normalizedURL
 		return nil
 	case config.ModeCloud:
-		return fmt.Errorf("Pad Cloud is not available yet")
+		// Cloud is a labeled-Remote at runtime: same flow, hardcoded URL.
+		// The CLI doesn't need to know about OAuth-vs-password — that
+		// distinction lives entirely on the web side at /auth/cli/{code}.
+		// Ignore any --url passed in; Cloud is anchored to the canonical
+		// public endpoint.
+		cfg.Mode = config.ModeCloud
+		cfg.URL = config.CloudBaseURL
+		return nil
 	default:
 		return fmt.Errorf("invalid mode %q", values.Mode)
 	}
 }
 
-func promptForMode() (string, error) {
-	reader := bufio.NewReader(os.Stdin)
+// modeOption describes one row in the connection-mode picker. Order in
+// promptForMode dictates display order — Cloud is intentionally first as
+// the recommended path for new users.
+type modeOption struct {
+	key         string   // canonical config.Mode* value
+	icon        string   // emoji shown next to the label
+	label       string   // short human label ("Cloud", "Local", "Remote")
+	tagline     string   // primary one-line description
+	subline     string   // optional second descriptive line ("" to omit)
+	recommended bool     // adds a "(recommended)" marker after the label
+	aliases     []string // case-insensitive accepted typed inputs (besides the row number)
+}
 
-	fmt.Println("How should this client connect to Pad?")
-	fmt.Println("  1. Local")
-	fmt.Println("  2. Remote")
-	fmt.Println("  3. Docker")
+func promptForMode() (string, error) {
+	bold := color.New(color.Bold)
+	dim := color.New(color.Faint)
+	cyan := color.New(color.FgCyan)
+
+	options := []modeOption{
+		{
+			key:         config.ModeCloud,
+			icon:        "☁️ ",
+			label:       "Cloud",
+			tagline:     "Connect to your Pad Cloud account at " + config.CloudBaseURL,
+			subline:     "Managed, OAuth sign-in, no setup",
+			recommended: true,
+			aliases:     []string{"cloud"},
+		},
+		{
+			key:     config.ModeLocal,
+			icon:    "💻",
+			label:   "Local",
+			tagline: "Run a Pad server on this machine (data stays on your computer)",
+			aliases: []string{"local"},
+		},
+		{
+			key:     config.ModeRemote,
+			icon:    "🌐",
+			label:   "Remote",
+			tagline: "Connect to your own self-hosted Pad server by URL",
+			aliases: []string{"remote"},
+		},
+	}
+
+	fmt.Println()
+	fmt.Println(bold.Sprint("How should this client connect to Pad?"))
+	fmt.Println()
+	for i, opt := range options {
+		marker := ""
+		if opt.recommended {
+			marker = " " + cyan.Sprint("(recommended)")
+		}
+		fmt.Printf("  %d. %s  %s%s\n", i+1, opt.icon, bold.Sprint(opt.label), marker)
+		fmt.Printf("        %s\n", opt.tagline)
+		if opt.subline != "" {
+			fmt.Printf("        %s\n", dim.Sprint(opt.subline))
+		}
+	}
 	fmt.Println()
 
+	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("Select a mode [1-3, 'c' to cancel]: ")
+		fmt.Printf("Select a mode [1-%d, 'c' to cancel]: ", len(options))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return "", err
 		}
+		input := strings.ToLower(strings.TrimSpace(line))
 
-		switch strings.TrimSpace(line) {
-		case "1", "local", "Local":
-			return config.ModeLocal, nil
-		case "2", "remote", "Remote":
-			return config.ModeRemote, nil
-		case "3", "docker", "Docker":
-			return config.ModeDocker, nil
-		case "c", "C", "q", "Q", "cancel", "Cancel", "quit", "Quit":
+		switch input {
+		case "c", "q", "cancel", "quit":
 			return "", errCancelled
-		default:
-			fmt.Println("Enter 1, 2, 3, or 'c' to cancel.")
+		}
+
+		// Numeric selection (1-based to match the displayed indexes).
+		if n := atoiSafe(input); n >= 1 && n <= len(options) {
+			return options[n-1].key, nil
+		}
+
+		// Alias selection — accept "cloud", "local", "remote" as typed input.
+		if matched := matchModeAlias(options, input); matched != "" {
+			return matched, nil
+		}
+
+		fmt.Printf("Invalid choice %q. Enter a number between 1 and %d, a mode name, or 'c' to cancel.\n", input, len(options))
+	}
+}
+
+// atoiSafe returns the decimal value of s, or 0 if s is not a positive
+// decimal integer. Used by promptForMode where 0 (no match) is always an
+// invalid mode selection so we don't need to distinguish "not a number"
+// from "zero".
+func atoiSafe(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+		if n > 1_000_000 {
+			return 0
 		}
 	}
+	return n
+}
+
+func matchModeAlias(options []modeOption, input string) string {
+	if input == "" {
+		return ""
+	}
+	for _, opt := range options {
+		for _, a := range opt.aliases {
+			if a == input {
+				return opt.key
+			}
+		}
+	}
+	return ""
 }
 
 func promptForValue(label, defaultValue string) (string, error) {
@@ -221,9 +315,8 @@ func promptForValue(label, defaultValue string) (string, error) {
 	case "c", "q", "cancel", "quit":
 		// Recognized cancel keyword — let the caller convert to the
 		// canonical 'pad init' exit. Important: when a defaultValue
-		// is in scope (e.g. docker mode's localhost suggestion),
-		// pressing enter still selects the default; only an explicit
-		// keyword cancels.
+		// is in scope, pressing enter still selects the default;
+		// only an explicit keyword cancels.
 		return "", errCancelled
 	}
 	if value == "" {

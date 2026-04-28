@@ -16,7 +16,7 @@ func TestParseWorkspaceSettingsEmpty(t *testing.T) {
 }
 
 func TestParseWorkspaceSettingsExtractsStructuredContext(t *testing.T) {
-	settings, err := ParseWorkspaceSettings(`{"context":{"repositories":[{"name":"docapp","role":"primary","path":".","repo":"xarmian/pad"}],"paths":{"docs_repo":"../pad-web"},"commands":{"build":"make install","test":"go test ./..."},"stack":{"languages":["go","typescript"],"frameworks":["sveltekit"],"package_managers":["npm"]},"deployment":{"mode":"docker","base_url":"http://127.0.0.1:7777"},"assumptions":["pad-web lives at ../pad-web"]}}`)
+	settings, err := ParseWorkspaceSettings(`{"context":{"repositories":[{"name":"docapp","role":"primary","path":".","repo":"xarmian/pad"}],"paths":{"docs_repo":"../pad-web"},"commands":{"build":"make install","test":"go test ./..."},"stack":{"languages":["go","typescript"],"frameworks":["sveltekit"],"package_managers":["npm"]},"deployment":{"mode":"remote","base_url":"http://127.0.0.1:7777"},"assumptions":["pad-web lives at ../pad-web"]}}`)
 	if err != nil {
 		t.Fatalf("ParseWorkspaceSettings error: %v", err)
 	}
@@ -35,8 +35,8 @@ func TestParseWorkspaceSettingsExtractsStructuredContext(t *testing.T) {
 	if settings.Context.Stack == nil || len(settings.Context.Stack.Languages) != 2 {
 		t.Fatalf("expected stack languages, got %#v", settings.Context.Stack)
 	}
-	if settings.Context.Deployment == nil || settings.Context.Deployment.Mode != "docker" {
-		t.Fatalf("expected deployment mode docker, got %#v", settings.Context.Deployment)
+	if settings.Context.Deployment == nil || settings.Context.Deployment.Mode != "remote" {
+		t.Fatalf("expected deployment mode remote, got %#v", settings.Context.Deployment)
 	}
 }
 

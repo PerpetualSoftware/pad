@@ -16,8 +16,13 @@ import (
 const (
 	ModeLocal  = "local"
 	ModeRemote = "remote"
-	ModeDocker = "docker"
 	ModeCloud  = "cloud"
+
+	// CloudBaseURL is the canonical public endpoint that `pad configure`
+	// (and `pad init`) anchor "Cloud" mode to. Picking Cloud sets
+	// cfg.URL to this value verbatim — there is no per-user URL prompt
+	// because Cloud is, by definition, our managed deployment.
+	CloudBaseURL = "https://app.getpad.dev"
 )
 
 type Config struct {
@@ -230,7 +235,7 @@ func (c *Config) ManagesLocalServer() bool {
 
 func ValidMode(mode string) bool {
 	switch mode {
-	case "", ModeLocal, ModeRemote, ModeDocker, ModeCloud:
+	case "", ModeLocal, ModeRemote, ModeCloud:
 		return true
 	default:
 		return false
@@ -263,7 +268,7 @@ func (c *Config) BaseURL() string {
 // when the URL is constructed from host:port, an unspecified bind-all host
 // (empty, "0.0.0.0", "::", "[::]") is rewritten to "127.0.0.1" because
 // 0.0.0.0 is a bind address and not reliably usable as a browser
-// destination. When URL is explicitly set (Remote/Docker/Cloud) it is
+// destination. When URL is explicitly set (Remote/Cloud) it is
 // returned as-is.
 func (c *Config) BrowserURL() string {
 	if c.URL != "" {

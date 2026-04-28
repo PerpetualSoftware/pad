@@ -47,15 +47,83 @@ func TestApplyConfigureValuesRemote(t *testing.T) {
 	}
 }
 
-func TestApplyConfigureValuesCloudUnavailable(t *testing.T) {
+func TestApplyConfigureValuesCloud(t *testing.T) {
 	cfg := config.DefaultConfig()
 
+	// Cloud mode should ignore any incoming --url and pin to the canonical
+	// public endpoint. Picking Cloud is, by definition, opting into our
+	// managed deployment.
 	err := applyConfigureValues(cfg, &configureValues{
 		Mode: config.ModeCloud,
-		URL:  "https://cloud.getpad.dev",
+		URL:  "https://someone-tried-to-override.example.com",
+	})
+	if err != nil {
+		t.Fatalf("apply cloud configure values: %v", err)
+	}
+	if cfg.Mode != config.ModeCloud {
+		t.Fatalf("expected cloud mode, got %q", cfg.Mode)
+	}
+	if cfg.URL != config.CloudBaseURL {
+		t.Fatalf("expected cloud URL to be %q, got %q", config.CloudBaseURL, cfg.URL)
+	}
+}
+
+func TestApplyConfigureValuesRejectsDocker(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	// Docker mode was removed. Pre-launch — no back-compat. Any value
+	// other than "", local, remote, cloud must be rejected by ValidMode.
+	err := applyConfigureValues(cfg, &configureValues{
+		Mode: "docker",
+		URL:  "http://127.0.0.1:7777",
 	})
 	if err == nil {
-		t.Fatal("expected cloud mode to be unavailable")
+		t.Fatal("expected docker mode to be rejected after removal")
+	}
+}
+
+func TestPromptForModeAtoiSafe(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"1", 1},
+		{"3", 3},
+		{"42", 42},
+		{"-1", 0},          // leading minus is not a digit, rejected
+		{"1.5", 0},         // dot is not a digit, rejected
+		{"abc", 0},         // non-numeric input, rejected
+		{"100000000", 0},   // overflow guard rejects very large numbers
+	}
+	for _, tc := range cases {
+		if got := atoiSafe(tc.in); got != tc.want {
+			t.Fatalf("atoiSafe(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchModeAlias(t *testing.T) {
+	options := []modeOption{
+		{key: config.ModeCloud, aliases: []string{"cloud"}},
+		{key: config.ModeLocal, aliases: []string{"local"}},
+		{key: config.ModeRemote, aliases: []string{"remote"}},
+	}
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"cloud", config.ModeCloud},
+		{"local", config.ModeLocal},
+		{"remote", config.ModeRemote},
+		{"", ""},
+		{"docker", ""}, // intentionally unmapped — picker rejects "docker"
+		{"bogus", ""},
+	}
+	for _, tc := range cases {
+		if got := matchModeAlias(options, tc.in); got != tc.want {
+			t.Fatalf("matchModeAlias(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

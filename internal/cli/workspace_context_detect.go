@@ -129,10 +129,10 @@ func detectWorkspaceAssumptions(dir string, cfg *config.Config) []string {
 	}
 	if cfg != nil {
 		switch cfg.Mode {
-		case config.ModeDocker:
-			assumptions = append(assumptions, "This client is configured for a docker-managed Pad instance")
+		case config.ModeCloud:
+			assumptions = append(assumptions, "This client connects to Pad Cloud at "+config.CloudBaseURL)
 		case config.ModeRemote:
-			assumptions = append(assumptions, "This client connects to a remote-managed Pad server")
+			assumptions = append(assumptions, "This client connects to a self-hosted remote Pad server")
 		case config.ModeLocal:
 			assumptions = append(assumptions, "This client manages a local Pad server by default")
 		}

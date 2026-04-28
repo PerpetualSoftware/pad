@@ -67,7 +67,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_URL` | — | Public-facing base URL (e.g., `https://pad.example.com`). Used for invitation links. |
 | `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config |
 | `PAD_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `PAD_MODE` | `local` | Mode: `local`, `remote`, `docker`, `cloud` |
+| `PAD_MODE` | `local` | Mode: `local`, `remote`, `cloud` |
 
 ### Database
 

@@ -132,8 +132,8 @@ There is only one binary, `pad`. Some commands run purely client-side
 - All other `pad <verb>` commands are CLI → HTTP → daemon → SQLite.
 
 The CLI discovers the daemon via `~/.pad/credentials.json` (see
-`internal/cli/client.go`). In Docker/Kubernetes mode, a different
-client targets the network-served Pad instance.
+`internal/cli/client.go`). In Remote or Cloud mode, the same client
+targets a network-served Pad instance instead of a local daemon.
 
 ## Agent integration
 

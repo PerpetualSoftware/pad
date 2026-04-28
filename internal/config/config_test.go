@@ -20,8 +20,8 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		t.Fatal("expected config without file or overrides to be unconfigured")
 	}
 
-	cfg.Mode = ModeDocker
-	cfg.URL = "http://127.0.0.1:7777"
+	cfg.Mode = ModeRemote
+	cfg.URL = "https://pad.example.com"
 	cfg.Host = "127.0.0.1"
 	cfg.Port = 7777
 	if err := cfg.Save(); err != nil {
@@ -38,11 +38,11 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if !reloaded.IsConfigured() {
 		t.Fatal("expected saved config to count as configured")
 	}
-	if reloaded.Mode != ModeDocker {
-		t.Fatalf("expected mode %q, got %q", ModeDocker, reloaded.Mode)
+	if reloaded.Mode != ModeRemote {
+		t.Fatalf("expected mode %q, got %q", ModeRemote, reloaded.Mode)
 	}
-	if reloaded.URL != "http://127.0.0.1:7777" {
-		t.Fatalf("expected docker URL to round-trip, got %q", reloaded.URL)
+	if reloaded.URL != "https://pad.example.com" {
+		t.Fatalf("expected remote URL to round-trip, got %q", reloaded.URL)
 	}
 	if reloaded.ConfigPath != filepath.Join(home, ".pad", "config.toml") {
 		t.Fatalf("unexpected config path %q", reloaded.ConfigPath)
@@ -88,9 +88,50 @@ func TestManagesLocalServerRequiresConfiguredLocalMode(t *testing.T) {
 		t.Fatal("expected configured local mode to manage a local server")
 	}
 
-	cfg.Mode = ModeDocker
+	cfg.Mode = ModeRemote
 	if cfg.ManagesLocalServer() {
-		t.Fatal("expected docker mode to avoid local server management")
+		t.Fatal("expected remote mode to avoid local server management")
+	}
+
+	cfg.Mode = ModeCloud
+	if cfg.ManagesLocalServer() {
+		t.Fatal("expected cloud mode to avoid local server management")
+	}
+}
+
+func TestValidModeAcceptsKnownModes(t *testing.T) {
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{"", true},
+		{ModeLocal, true},
+		{ModeRemote, true},
+		{ModeCloud, true},
+		{"docker", false}, // removed in favor of Remote — pre-launch, no back-compat
+		{"bogus", false},
+	}
+	for _, tc := range cases {
+		if got := ValidMode(tc.mode); got != tc.want {
+			t.Fatalf("ValidMode(%q) = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestIsCloudReportsCloudMode(t *testing.T) {
+	cfg := &Config{Mode: ModeCloud}
+	if !cfg.IsCloud() {
+		t.Fatal("expected IsCloud() to be true when Mode == ModeCloud")
+	}
+	cfg.Mode = ModeRemote
+	if cfg.IsCloud() {
+		t.Fatal("expected IsCloud() to be false when Mode == ModeRemote")
+	}
+}
+
+func TestCloudBaseURLIsCanonicalAppURL(t *testing.T) {
+	if CloudBaseURL != "https://app.getpad.dev" {
+		t.Fatalf("CloudBaseURL changed unexpectedly: %q — coordinate with pad-cloud and `pad configure` Cloud-mode handler before changing", CloudBaseURL)
 	}
 }
 
