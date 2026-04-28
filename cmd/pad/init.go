@@ -41,9 +41,7 @@ Examples:
   pad init                    # Auto-detect everything, use directory name
   pad init myproject          # Specify workspace name
   pad init --template scrum   # Use scrum template for new workspace`,
-		Args:          cobra.MaximumNArgs(1),
-		SilenceErrors: true,
-		SilenceUsage:  true,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			// Install the SIGINT/SIGTERM handler first so the user can
 			// abort cleanly at any interactive prompt. Defers run in LIFO

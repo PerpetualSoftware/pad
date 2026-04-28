@@ -71,6 +71,12 @@ func getConfiguredConfig() *config.Config {
 	fmt.Println("Let's configure how this client connects to Pad.")
 	fmt.Println()
 	if err := runConfigureFlow(cfg, configureValues{}); err != nil {
+		// User-initiated cancellation routes through the canonical
+		// "Cancelled." + 130 exit even when triggered from this
+		// non-init entry point.
+		if isCancellation(err) {
+			cancelInit()
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -191,9 +197,9 @@ func promptForValue(label, defaultValue string) (string, error) {
 	reader := bufio.NewReader(os.Stdin)
 
 	if defaultValue != "" {
-		fmt.Printf("%s [%s]: ", label, defaultValue)
+		fmt.Printf("%s [%s, 'c' to cancel]: ", label, defaultValue)
 	} else {
-		fmt.Printf("%s: ", label)
+		fmt.Printf("%s ['c' to cancel]: ", label)
 	}
 
 	line, err := reader.ReadString('\n')
@@ -202,6 +208,15 @@ func promptForValue(label, defaultValue string) (string, error) {
 	}
 
 	value := strings.TrimSpace(line)
+	switch strings.ToLower(value) {
+	case "c", "q", "cancel", "quit":
+		// Recognized cancel keyword — let the caller convert to the
+		// canonical 'pad init' exit. Important: when a defaultValue
+		// is in scope (e.g. docker mode's localhost suggestion),
+		// pressing enter still selects the default; only an explicit
+		// keyword cancels.
+		return "", errCancelled
+	}
 	if value == "" {
 		value = defaultValue
 	}

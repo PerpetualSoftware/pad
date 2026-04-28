@@ -30,7 +30,7 @@ func cancelInit() {
 
 // installInitCancelHandler installs a SIGINT/SIGTERM handler for the
 // duration of an interactive init run. On signal receipt it calls
-// cancelInit().
+// cancelInit() — but only if init has not already completed.
 //
 // The returned function MUST be deferred — it stops the signal listener
 // and lets the goroutine return when init completes successfully.
@@ -40,6 +40,11 @@ func cancelInit() {
 // printed message, which can surface oddly in some terminal stacks. A
 // custom handler guarantees a friendly "Cancelled." line before the
 // process exits.
+//
+// Cleanup race: a signal can arrive after init finished but before the
+// goroutine has been told to return. The inner select on done suppresses
+// that — once cleanup() runs, late signals are ignored rather than
+// turning a successful init into a spurious 130 exit.
 func installInitCancelHandler() func() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -48,14 +53,27 @@ func installInitCancelHandler() func() {
 	go func() {
 		select {
 		case <-sigCh:
-			cancelInit()
+			// Re-check whether init completed in the moment between the
+			// signal being delivered and this goroutine being scheduled.
+			// If done is closed, cleanup has already run and the user is
+			// no longer in init — suppress the cancellation.
+			select {
+			case <-done:
+				return
+			default:
+				cancelInit()
+			}
 		case <-done:
 		}
 	}()
 
 	return func() {
-		close(done)
+		// Stop signal delivery first so no new signals enter sigCh while
+		// we close done. Then close done so the goroutine returns
+		// cleanly. Any signal already buffered in sigCh is consumed by
+		// the inner select-on-done check above and discarded.
 		signal.Stop(sigCh)
+		close(done)
 	}
 }
 
