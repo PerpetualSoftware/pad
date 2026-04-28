@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xarmian/pad/internal/diff"
-	"github.com/xarmian/pad/internal/links"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/diff"
+	"github.com/PerpetualSoftware/pad/internal/links"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func (s *Store) ListDocuments(workspaceID string, params models.DocumentListParams) ([]models.Document, error) {

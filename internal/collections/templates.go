@@ -3,7 +3,7 @@ package collections
 import (
 	"encoding/json"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Template categories. Templates are grouped in the picker by category so

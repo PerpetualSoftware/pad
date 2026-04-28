@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xarmian/pad/internal/collections"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func (s *Store) CreateCollection(workspaceID string, input models.CollectionCreate) (*models.Collection, error) {

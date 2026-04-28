@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // validateCloudSecret checks the cloud_secret field in a JSON request body

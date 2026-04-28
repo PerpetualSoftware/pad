@@ -13,7 +13,7 @@ import (
 
 	"github.com/pquerna/otp/totp"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 const (

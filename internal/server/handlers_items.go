@@ -12,9 +12,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/items"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/items"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // handleListItems lists all items across collections in a workspace.

@@ -7,7 +7,7 @@ If you discover a security vulnerability in Pad, **please do not open a public i
 Instead, report it privately:
 
 - **Email:** security@perpetualsoftware.org
-- **GitHub:** Use [GitHub's private vulnerability reporting](https://github.com/xarmian/pad/security/advisories/new)
+- **GitHub:** Use [GitHub's private vulnerability reporting](https://github.com/PerpetualSoftware/pad/security/advisories/new)
 
 Please include:
 

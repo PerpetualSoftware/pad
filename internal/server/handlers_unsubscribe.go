@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xarmian/pad/internal/email"
+	"github.com/PerpetualSoftware/pad/internal/email"
 )
 
 // unsubscribeSecret derives a stable HMAC key from the Maileroo API key.

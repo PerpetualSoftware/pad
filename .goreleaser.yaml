@@ -47,7 +47,7 @@ sboms:
 # CA + Rekor transparency log via GitHub Actions OIDC — no long-lived keys
 # to store. Verify with:
 #   cosign verify-blob --certificate-identity-regexp \
-#     "^https://github.com/xarmian/pad/.github/workflows/release.yml@.*" \
+#     "^https://github.com/PerpetualSoftware/pad/.github/workflows/release.yml@.*" \
 #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
 #     --bundle checksums.txt.cosign.bundle checksums.txt
 signs:
@@ -104,16 +104,16 @@ changelog:
 
 homebrew_casks:
   - repository:
-      owner: xarmian
+      owner: PerpetualSoftware
       name: homebrew-tap
-      # Cross-repo PAT — the default GITHUB_TOKEN is scoped to xarmian/pad
+      # Cross-repo PAT — the default GITHUB_TOKEN is scoped to PerpetualSoftware/pad
       # only and cannot push to the separate tap repo. Set the secret
       # `HOMEBREW_TAP_GITHUB_TOKEN` on this repo (fine-grained PAT,
-      # `Contents: write` + `Metadata: read` on xarmian/homebrew-tap only).
+      # `Contents: write` + `Metadata: read` on PerpetualSoftware/homebrew-tap only).
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: "https://getpad.dev"
-    description: "Project management for developers and AI agents"
+    description: "Collaborate with your AI agents"
     license: "Apache-2.0"
 
 # dockers_v2 replaces the legacy `dockers:` + `docker_manifests:` blocks.
@@ -122,7 +122,7 @@ homebrew_casks:
 # to consume (see Dockerfile.goreleaser's COPY line).
 dockers_v2:
   - images:
-      - "ghcr.io/xarmian/pad"
+      - "ghcr.io/perpetualsoftware/pad"
     tags:
       - "{{ .Version }}"
       - "latest"
@@ -135,7 +135,7 @@ dockers_v2:
 
 release:
   github:
-    owner: xarmian
+    owner: PerpetualSoftware
     name: pad
   draft: false
   prerelease: auto

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // StarItem stars an item for a user. Idempotent — re-starring is a no-op.

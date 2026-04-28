@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 
-	"github.com/xarmian/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 )
 
 func TestMetricsMiddleware_RecordsRequestMetrics(t *testing.T) {

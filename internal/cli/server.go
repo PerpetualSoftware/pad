@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // EnsureServer checks if the pad server is running; if not, starts it in the background.

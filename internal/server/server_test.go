@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 func testServer(t *testing.T) *Server {
@@ -165,7 +165,7 @@ func TestWorkspaceContextAPI(t *testing.T) {
 		"name": "Contextual",
 		"context": map[string]interface{}{
 			"repositories": []map[string]string{
-				{"name": "docapp", "role": "primary", "path": ".", "repo": "xarmian/pad"},
+				{"name": "docapp", "role": "primary", "path": ".", "repo": "PerpetualSoftware/pad"},
 			},
 			"commands": map[string]string{
 				"build": "make install",

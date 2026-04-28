@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xarmian/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/billing"
 )
 
 // fakeSidecar is a controllable CloudSidecar used to assert the cancel-before-

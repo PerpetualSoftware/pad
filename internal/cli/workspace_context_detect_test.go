@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 func TestDetectProjectCapturesMakeAndNestedWebSignals(t *testing.T) {
@@ -95,11 +95,11 @@ func TestBuildWorkspaceContext(t *testing.T) {
 }
 
 func TestNormalizeGitRemoteSlug(t *testing.T) {
-	if got := normalizeGitRemoteSlug("git@github.com:xarmian/pad.git\n"); got != "xarmian/pad" {
-		t.Fatalf("expected SSH slug xarmian/pad, got %q", got)
+	if got := normalizeGitRemoteSlug("git@github.com:PerpetualSoftware/pad.git\n"); got != "PerpetualSoftware/pad" {
+		t.Fatalf("expected SSH slug PerpetualSoftware/pad, got %q", got)
 	}
-	if got := normalizeGitRemoteSlug("https://github.com/xarmian/pad.git"); got != "xarmian/pad" {
-		t.Fatalf("expected HTTPS slug xarmian/pad, got %q", got)
+	if got := normalizeGitRemoteSlug("https://github.com/PerpetualSoftware/pad.git"); got != "PerpetualSoftware/pad" {
+		t.Fatalf("expected HTTPS slug PerpetualSoftware/pad, got %q", got)
 	}
 	if got := normalizeGitRemoteSlug("ssh://git@example.com/foo"); got != "" {
 		t.Fatalf("expected unsupported remote to be blank, got %q", got)

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func testServerWithEvents(t *testing.T) *Server {

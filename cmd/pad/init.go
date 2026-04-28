@@ -11,11 +11,11 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	pad "github.com/xarmian/pad"
-	"github.com/xarmian/pad/internal/cli"
-	"github.com/xarmian/pad/internal/collections"
-	"github.com/xarmian/pad/internal/config"
-	"github.com/xarmian/pad/internal/models"
+	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func padInitCmd() *cobra.Command {

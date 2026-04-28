@@ -1,11 +1,11 @@
 <p align="center">
   <h1 align="center">Pad</h1>
-  <p align="center"><strong>Project management for developers and AI agents.</strong></p>
+  <p align="center"><strong>Collaborate with your AI agents.</strong></p>
   <p align="center">
-    <a href="https://github.com/xarmian/pad/actions/workflows/ci.yml"><img src="https://github.com/xarmian/pad/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <a href="https://github.com/xarmian/pad/releases"><img src="https://img.shields.io/github/v/release/xarmian/pad" alt="Release"></a>
-    <a href="https://goreportcard.com/report/github.com/xarmian/pad"><img src="https://goreportcard.com/badge/github.com/xarmian/pad" alt="Go Report Card"></a>
-    <a href="https://github.com/xarmian/pad/pkgs/container/pad"><img src="https://img.shields.io/badge/ghcr.io-xarmian%2Fpad-blue?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
+    <a href="https://github.com/PerpetualSoftware/pad/actions/workflows/ci.yml"><img src="https://github.com/PerpetualSoftware/pad/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/PerpetualSoftware/pad/releases"><img src="https://img.shields.io/github/v/release/PerpetualSoftware/pad" alt="Release"></a>
+    <a href="https://goreportcard.com/report/github.com/PerpetualSoftware/pad"><img src="https://goreportcard.com/badge/github.com/PerpetualSoftware/pad" alt="Go Report Card"></a>
+    <a href="https://github.com/PerpetualSoftware/pad/pkgs/container/pad"><img src="https://img.shields.io/badge/ghcr.io-perpetualsoftware%2Fpad-blue?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
     <a href="https://github.com/sponsors/xarmian"><img src="https://img.shields.io/github/sponsors/xarmian?label=sponsors&logo=github" alt="GitHub Sponsors"></a>
   </p>
@@ -22,7 +22,7 @@
 ## Quick Start
 
 ```bash
-brew install xarmian/tap/pad
+brew install PerpetualSoftware/tap/pad
 cd your-project
 pad init                    # configure, auth, workspace, AI skill — all in one
 pad server open             # opens the web UI at localhost:7777
@@ -140,13 +140,13 @@ Items get reference numbers automatically (`TASK-5`, `BUG-12`) and can be moved 
 ### Homebrew (macOS and Linux)
 
 ```bash
-brew install xarmian/tap/pad
+brew install PerpetualSoftware/tap/pad
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/xarmian/pad
+git clone https://github.com/PerpetualSoftware/pad
 cd pad
 make build
 cp pad ~/.local/bin/   # or /usr/local/bin/
@@ -154,12 +154,12 @@ cp pad ~/.local/bin/   # or /usr/local/bin/
 
 Requires Go 1.26+ and Node.js 22+.
 
-The `go install github.com/xarmian/pad/cmd/pad@latest` path is not supported for the full Pad binary, because the web UI must be built and embedded during the source build.
+The `go install github.com/PerpetualSoftware/pad/cmd/pad@latest` path is not supported for the full Pad binary, because the web UI must be built and embedded during the source build.
 
 ### Docker
 
 ```bash
-docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
+docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pad
 ```
 
 This publishes Pad to `localhost:7777` on the host machine, which is the recommended default for local use.
@@ -167,14 +167,14 @@ This publishes Pad to `localhost:7777` on the host machine, which is the recomme
 **Single user, more than one device?** Publish to all interfaces so you can reach Pad from your phone, tablet, or another machine on the same LAN, Tailscale network, or home VPN:
 
 ```bash
-docker run -p 7777:7777 -v pad-data:/data ghcr.io/xarmian/pad
+docker run -p 7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pad
 ```
 
 For multi-instance deployments, Pad supports Postgres + Redis via `docker-compose.yml` — see [docs/deployment.md](docs/deployment.md) for the full setup.
 
 ### Binary Download
 
-Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/xarmian/pad/releases).
+Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/PerpetualSoftware/pad/releases).
 
 ## Getting Started
 

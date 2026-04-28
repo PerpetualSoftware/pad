@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func (s *Store) ListCustomTemplates(workspaceID string) ([]models.CustomTemplate, error) {

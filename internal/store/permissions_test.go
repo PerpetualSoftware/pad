@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Phase 2 permission test suite (TASK-488).

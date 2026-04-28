@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
 

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // SessionInfo holds the result of session validation, including the

@@ -12,7 +12,7 @@ import (
 	"github.com/fatih/color"
 	"golang.org/x/term"
 
-	"github.com/xarmian/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/collections"
 )
 
 const defaultTemplateName = "startup"

@@ -24,22 +24,22 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	pad "github.com/xarmian/pad"
-	"github.com/xarmian/pad/internal/cli"
-	"github.com/xarmian/pad/internal/collections"
-	"github.com/xarmian/pad/internal/config"
+	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/config"
 	"regexp"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/xarmian/pad/internal/billing"
-	"github.com/xarmian/pad/internal/email"
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/logging"
-	"github.com/xarmian/pad/internal/metrics"
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/server"
-	"github.com/xarmian/pad/internal/store"
-	"github.com/xarmian/pad/internal/webhooks"
+	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/email"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/logging"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/webhooks"
 	"golang.org/x/term"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -5154,7 +5154,7 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		return nil, fmt.Errorf("failed to parse gh output: %w", err)
 	}
 
-	// Extract owner/repo from the PR URL (e.g. https://github.com/xarmian/pad/pull/5)
+	// Extract owner/repo from the PR URL (e.g. https://github.com/PerpetualSoftware/pad/pull/5)
 	repo := ""
 	if parts := strings.Split(raw.URL, "/"); len(parts) >= 5 {
 		repo = parts[3] + "/" + parts[4]

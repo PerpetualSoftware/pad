@@ -3,7 +3,7 @@ package store
 import (
 	"fmt"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // AddReaction adds an emoji reaction to a comment. Returns the created reaction,

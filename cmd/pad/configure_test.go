@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 func TestApplyConfigureValuesLocal(t *testing.T) {

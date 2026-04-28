@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // helper: create an item in a collection and return the parsed Item

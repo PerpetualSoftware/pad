@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // OpenInEditor opens a temp file with content in the user's editor,

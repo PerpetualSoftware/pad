@@ -13,7 +13,7 @@ Thanks for your interest in contributing to Pad! This guide will help you get se
 ### Setup
 
 ```bash
-git clone https://github.com/xarmian/pad
+git clone https://github.com/PerpetualSoftware/pad
 cd pad
 make build    # Build web UI + Go binary
 ```

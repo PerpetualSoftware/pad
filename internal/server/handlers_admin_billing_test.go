@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xarmian/pad/internal/billing"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // fakeBillingSidecar is a controllable CloudSidecar used by the

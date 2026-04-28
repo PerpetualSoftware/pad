@@ -9,7 +9,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/config"
 	"golang.org/x/term"
 )
 

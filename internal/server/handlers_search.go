@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // safeFieldKey matches safe JSON field keys: starts with a letter, alphanumeric/underscore/hyphen.

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func createTestUser(t *testing.T, s *Store, email, name, password string) *models.User {

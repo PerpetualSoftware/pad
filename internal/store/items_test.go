@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // --- Collection helpers ---
@@ -572,7 +572,7 @@ func TestItemCodeContextIsHydratedOnRead(t *testing.T) {
 
 	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
 		Title:  "Link PR",
-		Fields: `{"status":"open","github_pr":{"number":7,"url":"https://github.com/xarmian/pad/pull/7","title":"Link PR","state":"OPEN","branch":"feat/link-pr","repo":"xarmian/pad","updated_at":"2026-04-02T14:00:00Z"}}`,
+		Fields: `{"status":"open","github_pr":{"number":7,"url":"https://github.com/PerpetualSoftware/pad/pull/7","title":"Link PR","state":"OPEN","branch":"feat/link-pr","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T14:00:00Z"}}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateItem error: %v", err)
@@ -600,7 +600,7 @@ func TestListItemsIncludesCodeContext(t *testing.T) {
 
 	_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
 		Title:  "Linked Item",
-		Fields: `{"status":"open","github_pr":{"number":9,"url":"https://github.com/xarmian/pad/pull/9","title":"Linked Item","state":"MERGED","branch":"feat/linked-item","repo":"xarmian/pad","updated_at":"2026-04-02T14:10:00Z"}}`,
+		Fields: `{"status":"open","github_pr":{"number":9,"url":"https://github.com/PerpetualSoftware/pad/pull/9","title":"Linked Item","state":"MERGED","branch":"feat/linked-item","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T14:10:00Z"}}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateItem error: %v", err)

@@ -4,21 +4,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestBuildReconcileFindingsMergedPROpenTask(t *testing.T) {
 	item := &models.Item{
-		Fields:      `{"status":"open","github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
-		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
+		Fields:      `{"status":"open","github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
+		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
 	}
 	livePR := &GitHubPR{
 		Number:    41,
-		URL:       "https://github.com/xarmian/pad/pull/41",
+		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
 		State:     "MERGED",
 		Branch:    "feat/test",
-		Repo:      "xarmian/pad",
+		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:05:00Z",
 	}
 
@@ -41,16 +41,16 @@ func TestBuildReconcileFindingsMergedPROpenTask(t *testing.T) {
 
 func TestBuildReconcileFindingsOpenPRDoneTask(t *testing.T) {
 	item := &models.Item{
-		Fields:      `{"status":"done","github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
-		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
+		Fields:      `{"status":"done","github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
+		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
 	}
 	livePR := &GitHubPR{
 		Number:    41,
-		URL:       "https://github.com/xarmian/pad/pull/41",
+		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
 		State:     "OPEN",
 		Branch:    "feat/test",
-		Repo:      "xarmian/pad",
+		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:00:00Z",
 	}
 
@@ -62,16 +62,16 @@ func TestBuildReconcileFindingsOpenPRDoneTask(t *testing.T) {
 
 func TestBuildReconcileFindingsMissingBranchOnOpenPR(t *testing.T) {
 	item := &models.Item{
-		Fields:      `{"status":"in-progress","github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
-		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
+		Fields:      `{"status":"in-progress","github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
+		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"PR","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
 	}
 	livePR := &GitHubPR{
 		Number:    41,
-		URL:       "https://github.com/xarmian/pad/pull/41",
+		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
 		State:     "OPEN",
 		Branch:    "feat/test",
-		Repo:      "xarmian/pad",
+		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:00:00Z",
 	}
 	branchExists := false
@@ -84,16 +84,16 @@ func TestBuildReconcileFindingsMissingBranchOnOpenPR(t *testing.T) {
 
 func TestNeedsPRMetadataRefresh(t *testing.T) {
 	item := &models.Item{
-		Fields:      `{"status":"open","github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"Old title","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
-		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/xarmian/pad/pull/41","title":"Old title","state":"OPEN","branch":"feat/test","repo":"xarmian/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
+		Fields:      `{"status":"open","github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"Old title","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`,
+		CodeContext: models.ExtractItemCodeContext(`{"github_pr":{"number":41,"url":"https://github.com/PerpetualSoftware/pad/pull/41","title":"Old title","state":"OPEN","branch":"feat/test","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T15:00:00Z"}}`),
 	}
 	livePR := &GitHubPR{
 		Number:    41,
-		URL:       "https://github.com/xarmian/pad/pull/41",
+		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "New title",
 		State:     "MERGED",
 		Branch:    "feat/test",
-		Repo:      "xarmian/pad",
+		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:05:00Z",
 	}
 
@@ -105,11 +105,11 @@ func TestNeedsPRMetadataRefresh(t *testing.T) {
 func TestMergeGitHubPRIntoFieldsPreservesOtherFields(t *testing.T) {
 	fields, err := mergeGitHubPRIntoFields(`{"status":"open","priority":"high"}`, &GitHubPR{
 		Number:    41,
-		URL:       "https://github.com/xarmian/pad/pull/41",
+		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
 		State:     "MERGED",
 		Branch:    "feat/test",
-		Repo:      "xarmian/pad",
+		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:05:00Z",
 	})
 	if err != nil {

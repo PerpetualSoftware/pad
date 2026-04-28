@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // InvitationTTL is how long a newly-created workspace invitation stays

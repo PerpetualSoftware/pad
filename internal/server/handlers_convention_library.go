@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/xarmian/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/collections"
 )
 
 func (s *Server) handleConventionLibrary(w http.ResponseWriter, r *http.Request) {

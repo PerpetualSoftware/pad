@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xarmian/pad/internal/cli"
-	"github.com/xarmian/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 func TestCollectServerInfoRemoteAuthenticated(t *testing.T) {
