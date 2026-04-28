@@ -483,7 +483,7 @@ func openCmd() *cobra.Command {
 				return fmt.Errorf("start server: %w", err)
 			}
 
-			url := cfg.BaseURL()
+			url := cfg.BrowserURL()
 
 			// If there's a workspace, go directly to it
 			ws, _ := cli.DetectWorkspace(workspaceFlag)
