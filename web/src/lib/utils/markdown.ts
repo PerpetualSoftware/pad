@@ -1,18 +1,48 @@
-import { marked, type Tokens } from 'marked';
+import { marked, Renderer, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
 
-// Custom renderer to open external links in new tabs
-const renderer = new marked.Renderer();
-renderer.link = ({ href, title, tokens }: Tokens.Link) => {
-	const text = marked.parseInline(tokens.map(t => t.raw).join(''));
-	const isExternal = href && /^https?:\/\//.test(href);
-	const titleAttr = title ? ` title="${title}"` : '';
-	if (isExternal) {
-		return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer" class="external-link">${text}<span class="external-icon" aria-hidden="true"> ↗</span></a>`;
+// Mirror of marked's internal cleanUrl() — percent-encodes the href so the
+// rendered HTML stays well-formed even when input contains spaces, quotes, or
+// other URL-unsafe characters. The %25 → % round-trip avoids double-encoding
+// hrefs that already contain percent-encoded bytes (e.g. `%20`). Returns null
+// when encodeURI throws on a malformed surrogate, matching marked's default
+// behavior of degrading to plain text rather than emitting a broken anchor.
+// DOMPurify still has the final say on URL safety; this is defense-in-depth
+// plus correctness for the intermediate HTML.
+function cleanUrl(href: string): string | null {
+	try {
+		return encodeURI(href).replace(/%25/g, '%');
+	} catch {
+		return null;
 	}
-	return `<a href="${href}"${titleAttr}>${text}</a>`;
+}
+
+// Custom renderer to open external links in new tabs.
+//
+// Use a regular `function` (not an arrow) so `this` resolves to the Renderer
+// instance — marked invokes overrides via `override.apply(rendererInstance, args)`,
+// which gives us access to `this.parser.parseInline(tokens)`. We render the
+// already-parsed inline tokens; re-parsing the raw text via
+// `marked.parseInline(tokens.map(t => t.raw).join(''))` would re-tokenize bare
+// URLs in the link text as autolinks and recurse infinitely through this same
+// `link` renderer (e.g. for content like `https://example.com` inside a comment).
+const renderer = new marked.Renderer();
+renderer.link = function (this: Renderer, { href, title, tokens }: Tokens.Link) {
+	const text = this.parser.parseInline(tokens);
+	const cleanHref = cleanUrl(href);
+	if (cleanHref === null) {
+		// encodeURI failed (malformed surrogate). Drop the link and emit just
+		// the parsed link text — same fallback marked's default renderer uses.
+		return text;
+	}
+	const isExternal = /^https?:\/\//.test(cleanHref);
+	const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+	if (isExternal) {
+		return `<a href="${cleanHref}"${titleAttr} target="_blank" rel="noopener noreferrer" class="external-link">${text}<span class="external-icon" aria-hidden="true"> ↗</span></a>`;
+	}
+	return `<a href="${cleanHref}"${titleAttr}>${text}</a>`;
 };
 
 marked.use({ renderer });
