@@ -576,7 +576,18 @@ func loginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Pad",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// doBrowserLogin returns errCancelled when its inner SIGINT
+			// listener fires. Outside of pad init this command is the
+			// final exit path, so route the sentinel through the
+			// canonical "Cancelled." + 130 exit instead of letting it
+			// surface as a generic cobra error.
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
@@ -651,7 +662,15 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 		select {
 		case <-ctx.Done():
 			fmt.Println("\n  Login cancelled.")
-			return fmt.Errorf("login cancelled")
+			// Return the canonical cancellation sentinel so callers
+			// (e.g. pad init's RunE) treat this exactly like an abort
+			// at any other interactive prompt — same "Cancelled." +
+			// exit-130 path. This matters most when both this
+			// goroutine and the outer init signal handler race on
+			// the same SIGINT; whichever wins, the exit code stays
+			// 130 instead of falling back to cobra's generic error
+			// path.
+			return errCancelled
 		case <-ticker.C:
 			status, err := client.PollCLIAuthSession(sess.SessionCode)
 			if err != nil {
@@ -1070,7 +1089,20 @@ Use --list-templates to see available templates.
 Tip: 'pad init' handles everything — configure, authenticate, and create
 a workspace in one step.`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// Same SIGINT/SIGTERM handling as 'pad init'. Installed BEFORE
+			// any interactive prompt so the user can abort cleanly. The
+			// LIFO defer order ensures the cancellation check converts
+			// errCancelled into the canonical exit before cleanup
+			// detaches the signal listener.
+			cleanup := installInitCancelHandler()
+			defer cleanup()
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			// Handle --list-templates
 			if listTemplates {
 				fmt.Println("Available templates:")

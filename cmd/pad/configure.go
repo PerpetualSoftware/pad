@@ -33,7 +33,16 @@ Modes:
   docker  This client connects to a Docker-managed Pad server, usually at localhost.
 
 Pad Cloud mode is reserved for a future release and is not yet available.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// Mirror pad init: an explicit cancel keyword from a prompt
+			// surfaces as errCancelled. Convert to the canonical exit so
+			// it doesn't render as a generic cobra error.
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			cfg := getConfig()
 			if err := runConfigureFlow(cfg, values); err != nil {
 				return err
@@ -71,6 +80,12 @@ func getConfiguredConfig() *config.Config {
 	fmt.Println("Let's configure how this client connects to Pad.")
 	fmt.Println()
 	if err := runConfigureFlow(cfg, configureValues{}); err != nil {
+		// User-initiated cancellation routes through the canonical
+		// "Cancelled." + 130 exit even when triggered from this
+		// non-init entry point.
+		if isCancellation(err) {
+			cancelInit()
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -166,7 +181,7 @@ func promptForMode() (string, error) {
 	fmt.Println()
 
 	for {
-		fmt.Print("Select a mode [1-3]: ")
+		fmt.Print("Select a mode [1-3, 'c' to cancel]: ")
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return "", err
@@ -179,8 +194,10 @@ func promptForMode() (string, error) {
 			return config.ModeRemote, nil
 		case "3", "docker", "Docker":
 			return config.ModeDocker, nil
+		case "c", "C", "q", "Q", "cancel", "Cancel", "quit", "Quit":
+			return "", errCancelled
 		default:
-			fmt.Println("Enter 1, 2, or 3.")
+			fmt.Println("Enter 1, 2, 3, or 'c' to cancel.")
 		}
 	}
 }
@@ -189,9 +206,9 @@ func promptForValue(label, defaultValue string) (string, error) {
 	reader := bufio.NewReader(os.Stdin)
 
 	if defaultValue != "" {
-		fmt.Printf("%s [%s]: ", label, defaultValue)
+		fmt.Printf("%s [%s, 'c' to cancel]: ", label, defaultValue)
 	} else {
-		fmt.Printf("%s: ", label)
+		fmt.Printf("%s ['c' to cancel]: ", label)
 	}
 
 	line, err := reader.ReadString('\n')
@@ -200,6 +217,15 @@ func promptForValue(label, defaultValue string) (string, error) {
 	}
 
 	value := strings.TrimSpace(line)
+	switch strings.ToLower(value) {
+	case "c", "q", "cancel", "quit":
+		// Recognized cancel keyword — let the caller convert to the
+		// canonical 'pad init' exit. Important: when a defaultValue
+		// is in scope (e.g. docker mode's localhost suggestion),
+		// pressing enter still selects the default; only an explicit
+		// keyword cancels.
+		return "", errCancelled
+	}
 	if value == "" {
 		value = defaultValue
 	}
