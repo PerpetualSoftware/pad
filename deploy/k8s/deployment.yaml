@@ -24,7 +24,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: pad
-          image: ghcr.io/xarmian/pad:latest
+          image: ghcr.io/perpetualsoftware/pad:latest
           ports:
             - containerPort: 7777
               name: http

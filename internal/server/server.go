@@ -20,13 +20,13 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/xarmian/pad/internal/billing"
-	"github.com/xarmian/pad/internal/email"
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/metrics"
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/store"
-	"github.com/xarmian/pad/internal/webhooks"
+	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/email"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
 
 type Server struct {

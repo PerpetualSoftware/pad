@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestCreateActivityDebounced_NonUpdateActions(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Known platform setting keys. Values are stored in the platform_settings table.

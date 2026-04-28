@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/xarmian/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 )
 
 // MetricsMiddleware returns a chi middleware that records Prometheus metrics

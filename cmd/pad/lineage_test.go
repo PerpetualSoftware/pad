@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestFindMatchingLinkIDMatchesCanonicalType(t *testing.T) {

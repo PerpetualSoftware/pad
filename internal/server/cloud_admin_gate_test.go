@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xarmian/pad/internal/email"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/email"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // cloudAdminReq is a small helper that builds a request with optional JSON body

@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks

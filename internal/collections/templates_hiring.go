@@ -1,6 +1,6 @@
 package collections
 
-import "github.com/xarmian/pad/internal/models"
+import "github.com/PerpetualSoftware/pad/internal/models"
 
 // Trigger + scope vocabularies used by the hiring workspace's Conventions
 // and Playbooks collections. Separate from the software vocabularies so a

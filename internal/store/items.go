@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/diff"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/diff"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // childLinkTypes lists the link types that establish a parent→child relationship

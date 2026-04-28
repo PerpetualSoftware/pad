@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // doRequestWithCookieFrom is like doRequestWithCookie but lets the caller

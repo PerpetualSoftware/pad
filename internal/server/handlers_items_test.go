@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // createWSWithCollections creates a workspace and returns its slug.
@@ -730,7 +730,7 @@ func TestGetItemIncludesCodeContext(t *testing.T) {
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	fields := `{"status":"open","github_pr":{"number":40,"url":"https://github.com/xarmian/pad/pull/40","title":"Surface lineage relationships and derived closure for TASK-122","state":"MERGED","branch":"feat/task-122-lineage-display","repo":"xarmian/pad","updated_at":"2026-04-02T14:46:09Z"}}`
+	fields := `{"status":"open","github_pr":{"number":40,"url":"https://github.com/PerpetualSoftware/pad/pull/40","title":"Surface lineage relationships and derived closure for TASK-122","state":"MERGED","branch":"feat/task-122-lineage-display","repo":"PerpetualSoftware/pad","updated_at":"2026-04-02T14:46:09Z"}}`
 	updated, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields})
 	if err != nil {
 		t.Fatalf("update item fields: %v", err)

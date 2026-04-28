@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Color definitions for reuse across the CLI.

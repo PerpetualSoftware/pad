@@ -10,9 +10,9 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/xarmian/pad/internal/cli"
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
 type relatedEntry struct {

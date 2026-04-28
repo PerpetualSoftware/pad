@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Client is a thin HTTP client for the Pad API.

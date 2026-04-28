@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // mockStore implements WebhookStore for testing.

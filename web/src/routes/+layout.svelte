@@ -153,9 +153,9 @@
 
 <svelte:head>
 	<title>{titleStore.title}</title>
-	<meta name="description" content="Project management for developers and AI agents" />
+	<meta name="description" content="Collaborate with your AI agents" />
 	<meta property="og:title" content="Pad" />
-	<meta property="og:description" content="Project management for developers and AI agents" />
+	<meta property="og:description" content="Collaborate with your AI agents" />
 	<meta property="og:image" content="/padicon.png" />
 	<meta property="og:type" content="website" />
 </svelte:head>

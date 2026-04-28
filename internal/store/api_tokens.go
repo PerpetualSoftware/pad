@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // CreateAPIToken generates a new API token owned by a user, optionally

@@ -16,7 +16,7 @@ func TestParseWorkspaceSettingsEmpty(t *testing.T) {
 }
 
 func TestParseWorkspaceSettingsExtractsStructuredContext(t *testing.T) {
-	settings, err := ParseWorkspaceSettings(`{"context":{"repositories":[{"name":"docapp","role":"primary","path":".","repo":"xarmian/pad"}],"paths":{"docs_repo":"../pad-web"},"commands":{"build":"make install","test":"go test ./..."},"stack":{"languages":["go","typescript"],"frameworks":["sveltekit"],"package_managers":["npm"]},"deployment":{"mode":"remote","base_url":"http://127.0.0.1:7777"},"assumptions":["pad-web lives at ../pad-web"]}}`)
+	settings, err := ParseWorkspaceSettings(`{"context":{"repositories":[{"name":"docapp","role":"primary","path":".","repo":"PerpetualSoftware/pad"}],"paths":{"docs_repo":"../pad-web"},"commands":{"build":"make install","test":"go test ./..."},"stack":{"languages":["go","typescript"],"frameworks":["sveltekit"],"package_managers":["npm"]},"deployment":{"mode":"remote","base_url":"http://127.0.0.1:7777"},"assumptions":["pad-web lives at ../pad-web"]}}`)
 	if err != nil {
 		t.Fatalf("ParseWorkspaceSettings error: %v", err)
 	}

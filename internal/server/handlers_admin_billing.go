@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xarmian/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/billing"
 )
 
 // AdminBillingStatsResponse is the JSON shape returned by

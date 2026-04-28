@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xarmian/pad/internal/metrics"
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // newMetricsTestServer builds a Server with metrics enabled and the given

@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {

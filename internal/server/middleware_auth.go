@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 type contextKey string

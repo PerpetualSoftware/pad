@@ -3,7 +3,7 @@ package metrics
 import (
 	"sync"
 
-	"github.com/xarmian/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/events"
 )
 
 // InstrumentedBus wraps an events.EventBus to record Prometheus metrics

@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/xarmian/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // handleRoleBoardReorder updates role_sort_order for items within a lane.

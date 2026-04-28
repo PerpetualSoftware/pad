@@ -1,6 +1,6 @@
 package collections
 
-import "github.com/xarmian/pad/internal/models"
+import "github.com/PerpetualSoftware/pad/internal/models"
 
 // DefaultCollection holds the definition for a default collection that gets
 // created when a workspace is initialized.

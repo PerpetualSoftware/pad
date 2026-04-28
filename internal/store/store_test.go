@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // testStore creates a Store for testing. When PAD_TEST_POSTGRES_URL is set,
@@ -385,8 +385,8 @@ func TestWorkspaceSettingsHydrateStructuredContext(t *testing.T) {
 	settings, err := models.SerializeWorkspaceSettings(&models.WorkspaceSettings{
 		Context: &models.WorkspaceContext{
 			Repositories: []models.WorkspaceRepository{
-				{Name: "docapp", Role: "primary", Path: ".", Repo: "xarmian/pad"},
-				{Name: "pad-web", Role: "docs", Path: "../pad-web", Repo: "xarmian/pad-web"},
+				{Name: "docapp", Role: "primary", Path: ".", Repo: "PerpetualSoftware/pad"},
+				{Name: "pad-web", Role: "docs", Path: "../pad-web", Repo: "PerpetualSoftware/pad-web"},
 			},
 			Commands: &models.WorkspaceCommands{
 				Build: "make install",

@@ -3,7 +3,7 @@ package items
 import (
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestMigrateFields_MatchingTypes(t *testing.T) {

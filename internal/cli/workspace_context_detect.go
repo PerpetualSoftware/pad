@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xarmian/pad/internal/config"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // BuildWorkspaceContext converts detected project metadata plus the current Pad

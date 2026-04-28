@@ -10,8 +10,8 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/xarmian/pad/internal/cli"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func noteCmd() *cobra.Command {

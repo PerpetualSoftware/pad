@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/xarmian/pad/internal/collections"
-	"github.com/xarmian/pad/internal/events"
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func normalizeWorkspaceInput(input *models.WorkspaceCreate) error {

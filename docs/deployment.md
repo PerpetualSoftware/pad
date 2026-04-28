@@ -30,7 +30,7 @@ Pad is a single Go binary with an embedded web UI. It supports SQLite (default) 
 
 ```bash
 # Clone the repo
-git clone https://github.com/xarmian/pad.git
+git clone https://github.com/PerpetualSoftware/pad.git
 cd pad
 
 # Start everything (Pad + PostgreSQL + Redis)

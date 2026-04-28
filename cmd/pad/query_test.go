@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/xarmian/pad/internal/models"
-	"github.com/xarmian/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
 func TestFilterAgentAttentionKeepsOnlyActionableBuckets(t *testing.T) {

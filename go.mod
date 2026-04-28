@@ -1,4 +1,4 @@
-module github.com/xarmian/pad
+module github.com/PerpetualSoftware/pad
 
 go 1.26.0
 

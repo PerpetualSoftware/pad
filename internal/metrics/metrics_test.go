@@ -8,7 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 
-	"github.com/xarmian/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/events"
 
 	_ "modernc.org/sqlite"
 )

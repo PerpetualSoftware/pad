@@ -6,10 +6,10 @@
 
 ```bash
 # Via Homebrew
-brew install xarmian/tap/pad
+brew install PerpetualSoftware/tap/pad
 
 # Or build from source
-git clone https://github.com/xarmian/pad
+git clone https://github.com/PerpetualSoftware/pad
 cd pad && make build
 cp pad /usr/local/bin/
 ```

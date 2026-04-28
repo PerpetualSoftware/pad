@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func (s *Store) CreateAgentRole(workspaceID string, input models.AgentRoleCreate) (*models.AgentRole, error) {

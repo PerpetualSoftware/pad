@@ -74,8 +74,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Cross-repo PAT for pushing the brew formula to xarmian/homebrew-tap.
-          # The default GITHUB_TOKEN above only has access to xarmian/pad.
+          # Cross-repo PAT for pushing the brew formula to PerpetualSoftware/homebrew-tap.
+          # The default GITHUB_TOKEN above only has access to PerpetualSoftware/pad.
           # Add this secret in repo settings before tagging a release that ships
           # a brew formula — without it goreleaser fails at the brew publish step.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
@@ -85,7 +85,7 @@ jobs:
       # consumers can verify this binary was actually built by this
       # workflow from this commit, e.g.:
       #   gh attestation verify pad_v1.0.0_linux_amd64.tar.gz \
-      #     --repo xarmian/pad
+      #     --repo PerpetualSoftware/pad
       - name: Generate build provenance for archives
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:

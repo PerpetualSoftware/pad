@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ExportWorkspace exports all data for a workspace into a portable format.

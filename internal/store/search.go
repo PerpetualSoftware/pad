@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xarmian/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // validFieldKey matches safe JSON field keys: alphanumeric, underscores, hyphens only.
