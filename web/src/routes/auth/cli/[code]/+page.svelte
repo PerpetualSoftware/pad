@@ -80,11 +80,26 @@
 
 	async function handleSwitchAccount() {
 		const code = $page.params.code;
+		if (!code) {
+			error = 'Missing CLI session code.';
+			return;
+		}
 		switchingAccount = true;
+		error = '';
 		try {
 			await api.auth.logout();
-		} catch {
-			// Drop the session client-side regardless of server response.
+		} catch (err: unknown) {
+			// Surface the failure rather than swallowing it: if the server
+			// did not invalidate the session cookie, navigating to /login
+			// would bounce straight back here authenticated and "switch
+			// accounts" would appear to be a no-op. Showing the error
+			// gives the user a clear next step (retry / close the tab).
+			switchingAccount = false;
+			error =
+				err instanceof Error && err.message
+					? `Couldn't sign you out: ${err.message}`
+					: "Couldn't sign you out. Please try again or close this tab.";
+			return;
 		}
 		goto(`/login?redirect=/auth/cli/${code}`, { replaceState: true });
 	}
