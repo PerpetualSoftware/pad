@@ -212,7 +212,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
 
 		// FTSSnippet, FTSRank, and FTSMatch each consume a "?" placeholder
-		// for the query parameter (plainto_tsquery('english', ?)).
+		// for the query parameter (websearch_to_tsquery('english', ?)).
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,

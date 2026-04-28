@@ -80,17 +80,17 @@ type Dialect interface {
 
 	// FTSMatch returns the full-text search WHERE clause fragment.
 	// SQLite: "table MATCH ?"
-	// PostgreSQL: "table.tsvector_col @@ plainto_tsquery('english', ?)"
+	// PostgreSQL: "table.tsvector_col @@ websearch_to_tsquery('english', ?)"
 	FTSMatch(table, column string) string
 
 	// FTSSnippet returns SQL for highlighted search result snippets.
 	// SQLite: snippet(fts_table, col_idx, '<mark>', '</mark>', '...', 32)
-	// PostgreSQL: ts_headline('english', col, plainto_tsquery('english', ?))
+	// PostgreSQL: ts_headline('english', col, websearch_to_tsquery('english', ?))
 	FTSSnippet(ftsTable string, colIndex int, sourceColumn string) string
 
 	// FTSRank returns the column/expression for full-text relevance ranking.
 	// SQLite: rank (built-in FTS5 column)
-	// PostgreSQL: ts_rank(tsvector_col, plainto_tsquery('english', ?))
+	// PostgreSQL: ts_rank(tsvector_col, websearch_to_tsquery('english', ?))
 	FTSRank(table, column string) string
 
 	// JSONArrayContains returns SQL + the arg to check if a JSON array column
@@ -226,16 +226,24 @@ func (d *postgresDialect) Concat(exprs ...string) string {
 	return strings.Join(exprs, " || ")
 }
 
+// websearch_to_tsquery (Postgres 11+) is purpose-built for arbitrary user
+// input — it tokenizes hyphenated terms (e.g. `task-five`) the same way
+// to_tsvector does for the indexed document, so a query for `task-five`
+// hits a document indexed as `task-five-distinctive`. plainto_tsquery
+// (the previous choice) silently produced an &-joined query that did NOT
+// match the asciihword lexeme(s) the english parser writes for hyphenated
+// titles, leaving every PG FTS search for hyphenated terms returning 0
+// rows. See BUG-842.
 func (d *postgresDialect) FTSMatch(table, column string) string {
-	return fmt.Sprintf("%s.%s @@ plainto_tsquery('english', ?)", table, column)
+	return fmt.Sprintf("%s.%s @@ websearch_to_tsquery('english', ?)", table, column)
 }
 
 func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn string) string {
-	return fmt.Sprintf("ts_headline('english', %s, plainto_tsquery('english', ?), 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')", sourceColumn)
+	return fmt.Sprintf("ts_headline('english', %s, websearch_to_tsquery('english', ?), 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')", sourceColumn)
 }
 
 func (d *postgresDialect) FTSRank(table, column string) string {
-	return fmt.Sprintf("ts_rank(%s.%s, plainto_tsquery('english', ?))", table, column)
+	return fmt.Sprintf("ts_rank(%s.%s, websearch_to_tsquery('english', ?))", table, column)
 }
 
 func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {

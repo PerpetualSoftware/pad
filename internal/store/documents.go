@@ -62,7 +62,7 @@ func (s *Store) ListDocuments(workspaceID string, params models.DocumentListPara
 			args = []interface{}{workspaceID, sanitizeFTSQuery(params.Query)}
 		} else {
 			// PostgreSQL: search_vector lives on the documents table (aliased as "d").
-			// plainto_tsquery handles arbitrary user input safely; no sanitize needed.
+			// websearch_to_tsquery handles arbitrary user input safely; no sanitize needed.
 			ftsMatch := s.dialect.FTSMatch("d", "search_vector")
 			query = fmt.Sprintf(`
 				SELECT d.id, d.workspace_id, d.title, d.slug, d.content, d.doc_type, d.status, d.tags,

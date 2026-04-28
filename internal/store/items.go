@@ -635,7 +635,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		// hyphens (and other special chars like AND/OR/NOT/(/)) as literals
 		// rather than boolean operators. Without this, `?search=TASK-5` raises
 		// "no such column: 5" — see BUG-818. Postgres path stays unsanitized
-		// because plainto_tsquery accepts arbitrary input.
+		// because websearch_to_tsquery accepts arbitrary input.
 		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
 	}
 
@@ -728,7 +728,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
-	// PostgreSQL FTSRank embeds a plainto_tsquery(?) that needs the search term.
+	// PostgreSQL FTSRank embeds a websearch_to_tsquery(?) that needs the search term.
 	if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC"
 		args = append(args, params.Search)
@@ -955,7 +955,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			WHERE %s
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
-		// PostgreSQL: FTSSnippet, FTSRank, and FTSMatch each consume a "?" for plainto_tsquery
+		// PostgreSQL: FTSSnippet, FTSRank, and FTSMatch each consume a "?" for websearch_to_tsquery
 		args = []interface{}{query, query, query}
 	} else {
 		// SQLite: uses FTS5 virtual table "items_fts".
