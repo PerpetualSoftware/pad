@@ -168,9 +168,10 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, resp)
 
-	// Send invitation email asynchronously (fire-and-forget)
+	// Send invitation email asynchronously (fire-and-forget; tracked via
+	// s.goAsync so test cleanup / shutdown can drain it — BUG-842).
 	if s.email != nil && joinURL != "" {
-		go func() {
+		s.goAsync(func() {
 			// Check if the recipient has opted out of emails
 			if optedOut, err := s.store.IsEmailOptedOut(inv.Email); err == nil && optedOut {
 				slog.Info("skipping invitation email: recipient opted out", "email", inv.Email)
@@ -188,7 +189,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL, unsubURL); err != nil {
 				slog.Error("failed to send invitation email", "error", err)
 			}
-		}()
+		})
 	}
 }
 

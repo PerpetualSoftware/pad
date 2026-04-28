@@ -280,12 +280,13 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 				return
 			}
 			// Use a short-lived context so the write is cancelled if the DB is slow,
-			// preventing goroutine/connection buildup under load.
-			go func() {
+			// preventing goroutine/connection buildup under load. Tracked via
+			// s.goAsync so Stop() can drain it before the DB is closed (BUG-842).
+			s.goAsync(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				s.store.TouchUserActivity(ctx, user.ID)
-			}()
+			})
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -19,10 +19,15 @@ func newMetricsTestServer(t *testing.T, token string) *Server {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
 	srv := New(s)
 	srv.SetMetrics(metrics.New())
 	srv.SetMetricsToken(token)
+	// Drain background goroutines BEFORE closing the store — see
+	// testServer in server_test.go for the BUG-842 race details.
+	t.Cleanup(func() {
+		srv.Stop()
+		s.Close()
+	})
 	return srv
 }
 
