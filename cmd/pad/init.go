@@ -195,7 +195,7 @@ Examples:
 			if !actioned {
 				printInitStatus(client, cfg, ws, skillResults)
 			} else if newlyCreated {
-				printOnboardingHints()
+				printOnboardingHints(cfg)
 			}
 
 			return nil

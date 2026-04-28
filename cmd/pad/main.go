@@ -1137,7 +1137,7 @@ a workspace in one step.`,
 			offerSkillInstall()
 
 			if newlyCreated {
-				printOnboardingHints()
+				printOnboardingHints(cfg)
 			}
 			return nil
 		},
@@ -1315,7 +1315,7 @@ func readChoice() string {
 	return strings.TrimSpace(input)
 }
 
-func printOnboardingHints() {
+func printOnboardingHints(cfg *config.Config) {
 	bold := color.New(color.Bold)
 	dim := color.New(color.Faint)
 	cyan := color.New(color.FgCyan)
@@ -1326,7 +1326,7 @@ func printOnboardingHints() {
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "what conventions should this project follow?")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
 	fmt.Println()
-	fmt.Printf("Or open the web UI at %s\n", bold.Sprint("http://localhost:7777"))
+	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BaseURL()))
 	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
 }
 
@@ -1440,7 +1440,7 @@ recommend conventions from the built-in library.`,
 			choice := readChoice()
 			if choice != "y" && choice != "Y" {
 				fmt.Println("Skipped. You can activate conventions from the library:")
-				fmt.Printf("  http://localhost:7777/%s/library\n", ws)
+				fmt.Printf("  %s/%s/library\n", cfg.BaseURL(), ws)
 				return nil
 			}
 
