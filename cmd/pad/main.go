@@ -576,7 +576,18 @@ func loginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Pad",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// doBrowserLogin returns errCancelled when its inner SIGINT
+			// listener fires. Outside of pad init this command is the
+			// final exit path, so route the sentinel through the
+			// canonical "Cancelled." + 130 exit instead of letting it
+			// surface as a generic cobra error.
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err

@@ -33,7 +33,16 @@ Modes:
   docker  This client connects to a Docker-managed Pad server, usually at localhost.
 
 Pad Cloud mode is reserved for a future release and is not yet available.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// Mirror pad init: an explicit cancel keyword from a prompt
+			// surfaces as errCancelled. Convert to the canonical exit so
+			// it doesn't render as a generic cobra error.
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			cfg := getConfig()
 			if err := runConfigureFlow(cfg, values); err != nil {
 				return err
