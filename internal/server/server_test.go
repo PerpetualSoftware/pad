@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -398,6 +399,61 @@ func TestActivityEndpoints(t *testing.T) {
 	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/documents/"+doc.ID+"/activity", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("doc activity: expected 200, got %d", rr.Code)
+	}
+}
+
+// TestServer_Stop_DrainsRateLimiterCleanup pins BUG-851: NewRateLimiters
+// spawns 9 cleanup goroutines (one per ipRateLimiter), each in a
+// 5-minute Sleep loop. Without explicit drain on Stop(), these leak
+// across every testServer lifecycle and (under -race) push the
+// internal/server suite past the 10-minute test timeout — see the
+// goroutine dump in BUG-851.
+//
+// This test exercises N construct-then-Stop cycles and asserts that the
+// number of live goroutines settles back to baseline. We allow a small
+// tolerance for the test runtime's own bookkeeping goroutines.
+func TestServer_Stop_DrainsRateLimiterCleanup(t *testing.T) {
+	// Let any prior test scheduler activity quiesce so the baseline
+	// reading is meaningful. Two short waits + a GC pass — anything
+	// stronger and the test becomes its own flake.
+	settle := func() {
+		runtime.GC()
+		time.Sleep(20 * time.Millisecond)
+		runtime.GC()
+	}
+	settle()
+	baseline := runtime.NumGoroutine()
+
+	const cycles = 5
+	for i := 0; i < cycles; i++ {
+		// Use the bare New(s) constructor (not testServer) so we control
+		// when Stop runs and don't entangle with t.Cleanup ordering.
+		dir := t.TempDir()
+		s, err := store.New(filepath.Join(dir, "test.db"))
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		srv := New(s)
+
+		// Each NewRateLimiters spawns 9 cleanup goroutines.
+		if got := runtime.NumGoroutine(); got < baseline+9 {
+			t.Fatalf("cycle %d: expected at least baseline+9 goroutines after New(), got %d (baseline %d)",
+				i, got, baseline)
+		}
+
+		srv.Stop()
+		s.Close()
+	}
+
+	settle()
+	final := runtime.NumGoroutine()
+
+	// Allow ±3 for Go runtime/test-framework noise (timer wheels,
+	// finalizers, etc.). A leak of 9 per cycle would put us at
+	// baseline + 9*5 = baseline + 45 — comfortably outside the tolerance.
+	if final > baseline+3 {
+		t.Errorf("goroutine leak: baseline=%d, after %d Stop cycles=%d (delta %d > 3)",
+			baseline, cycles, final, final-baseline)
 	}
 }
 
