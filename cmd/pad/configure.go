@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-	"github.com/PerpetualSoftware/pad/internal/config"
 	"golang.org/x/term"
 )
 

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
-	"github.com/PerpetualSoftware/pad/internal/collections"
 	_ "modernc.org/sqlite"
 )
 

@@ -30,7 +30,6 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"regexp"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -40,6 +39,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/term"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
