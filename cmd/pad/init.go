@@ -41,8 +41,24 @@ Examples:
   pad init                    # Auto-detect everything, use directory name
   pad init myproject          # Specify workspace name
   pad init --template scrum   # Use scrum template for new workspace`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Args:          cobra.MaximumNArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// Install the SIGINT/SIGTERM handler first so the user can
+			// abort cleanly at any interactive prompt. Defers run in LIFO
+			// order: the cancellation check fires before the cleanup
+			// removes the signal listener, so a sentinel error propagated
+			// from a prompt is converted into the canonical exit before
+			// returning to cobra.
+			cleanup := installInitCancelHandler()
+			defer cleanup()
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			// Validate template name up front before any state changes
 			if templateFlag != "" {
 				tmpl := collections.GetTemplate(templateFlag)

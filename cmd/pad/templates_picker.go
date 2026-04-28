@@ -129,7 +129,7 @@ func pickTemplateInteractive(in io.Reader, out io.Writer) (string, error) {
 	reader := bufio.NewReader(in)
 	for {
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "Select a template [%d] (press enter for default): ", defaultIdx)
+		fmt.Fprintf(out, "Select a template [%d] (press enter for default, 'c' to cancel): ", defaultIdx)
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			// EOF is a benign signal (pipe closed, stdin exhausted in a
@@ -145,13 +145,19 @@ func pickTemplateInteractive(in io.Reader, out io.Writer) (string, error) {
 		if line == "" {
 			return defaultTemplateName, nil
 		}
+		// Explicit cancel — equivalent to Ctrl+C. Returning errCancelled
+		// lets the caller treat this exactly like a SIGINT abort.
+		switch strings.ToLower(line) {
+		case "c", "q", "cancel", "quit":
+			return "", errCancelled
+		}
 		// Allow typing a name directly as an escape hatch.
 		if tmpl := collections.GetTemplate(line); tmpl != nil && !tmpl.Hidden {
 			return tmpl.Name, nil
 		}
 		n, err := strconv.Atoi(line)
 		if err != nil || n < 1 || n > len(flat) {
-			fmt.Fprintf(out, "Invalid choice %q. Enter a number between 1 and %d, or a template name.\n", line, len(flat))
+			fmt.Fprintf(out, "Invalid choice %q. Enter a number between 1 and %d, a template name, or 'c' to cancel.\n", line, len(flat))
 			continue
 		}
 		return flat[n-1].tmpl.Name, nil

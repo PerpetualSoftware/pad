@@ -1069,8 +1069,23 @@ Use --list-templates to see available templates.
 
 Tip: 'pad init' handles everything — configure, authenticate, and create
 a workspace in one step.`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Args:          cobra.MaximumNArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			// Same SIGINT/SIGTERM handling as 'pad init'. Installed BEFORE
+			// any interactive prompt so the user can abort cleanly. The
+			// LIFO defer order ensures the cancellation check converts
+			// errCancelled into the canonical exit before cleanup
+			// detaches the signal listener.
+			cleanup := installInitCancelHandler()
+			defer cleanup()
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
+
 			// Handle --list-templates
 			if listTemplates {
 				fmt.Println("Available templates:")

@@ -166,7 +166,7 @@ func promptForMode() (string, error) {
 	fmt.Println()
 
 	for {
-		fmt.Print("Select a mode [1-3]: ")
+		fmt.Print("Select a mode [1-3, 'c' to cancel]: ")
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return "", err
@@ -179,8 +179,10 @@ func promptForMode() (string, error) {
 			return config.ModeRemote, nil
 		case "3", "docker", "Docker":
 			return config.ModeDocker, nil
+		case "c", "C", "q", "Q", "cancel", "Cancel", "quit", "Quit":
+			return "", errCancelled
 		default:
-			fmt.Println("Enter 1, 2, or 3.")
+			fmt.Println("Enter 1, 2, 3, or 'c' to cancel.")
 		}
 	}
 }

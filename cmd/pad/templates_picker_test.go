@@ -89,6 +89,40 @@ func TestPickTemplateInteractiveSurfacesNonEOFReadErrors(t *testing.T) {
 	}
 }
 
+// TestPickTemplateInteractiveCancelKeywords verifies that typing any of
+// the recognized cancel keywords (c, q, cancel, quit — case-insensitive)
+// returns the canonical errCancelled sentinel rather than silently
+// defaulting or treating the input as an invalid choice. The init RunE
+// translates this sentinel into the same exit path as a Ctrl+C abort.
+func TestPickTemplateInteractiveCancelKeywords(t *testing.T) {
+	cases := []string{"c\n", "C\n", "q\n", "Q\n", "cancel\n", "Cancel\n", "CANCEL\n", "quit\n", "Quit\n"}
+	for _, input := range cases {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			var out bytes.Buffer
+			picked, err := pickTemplateInteractive(strings.NewReader(input), &out)
+			if !errors.Is(err, errCancelled) {
+				t.Fatalf("pickTemplateInteractive(%q) err = %v, want errCancelled", input, err)
+			}
+			if picked != "" {
+				t.Errorf("pickTemplateInteractive(%q) picked = %q, want empty on cancel", input, picked)
+			}
+			if strings.Contains(out.String(), "Invalid choice") {
+				t.Errorf("expected cancel keyword %q to skip the 'Invalid choice' branch:\n%s", input, out.String())
+			}
+		})
+	}
+}
+
+// TestPickTemplateInteractivePromptMentionsCancel verifies the prompt
+// surfaces the cancel option so users discover it without reading docs.
+func TestPickTemplateInteractivePromptMentionsCancel(t *testing.T) {
+	var out bytes.Buffer
+	_, _ = pickTemplateInteractive(strings.NewReader("\n"), &out)
+	if !strings.Contains(out.String(), "cancel") {
+		t.Errorf("expected picker prompt to mention 'cancel', got:\n%s", out.String())
+	}
+}
+
 // TestPrintGroupedTemplatesIncludesEveryVisibleTemplate is a smoke test
 // that the grouped printer covers each visible template's name.
 func TestPrintGroupedTemplatesIncludesEveryVisibleTemplate(t *testing.T) {
