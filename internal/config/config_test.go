@@ -93,3 +93,38 @@ func TestManagesLocalServerRequiresConfiguredLocalMode(t *testing.T) {
 		t.Fatal("expected docker mode to avoid local server management")
 	}
 }
+
+func TestBrowserURLNormalizesUnspecifiedHost(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"loopback unchanged", "127.0.0.1", "http://127.0.0.1:7777"},
+		{"named host unchanged", "pad.local", "http://pad.local:7777"},
+		{"empty host normalized", "", "http://127.0.0.1:7777"},
+		{"ipv4 unspecified normalized", "0.0.0.0", "http://127.0.0.1:7777"},
+		{"ipv6 unspecified normalized", "::", "http://127.0.0.1:7777"},
+		{"ipv6 bracketed unspecified normalized", "[::]", "http://127.0.0.1:7777"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Host: tc.host, Port: 7777}
+			if got := cfg.BrowserURL(); got != tc.want {
+				t.Fatalf("BrowserURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBrowserURLPrefersExplicitURL(t *testing.T) {
+	cfg := &Config{
+		Host: "0.0.0.0", // would normally be normalized
+		Port: 7777,
+		URL:  "https://app.getpad.dev/",
+	}
+	want := "https://app.getpad.dev"
+	if got := cfg.BrowserURL(); got != want {
+		t.Fatalf("BrowserURL() = %q, want %q (explicit URL must win and trailing slash trimmed)", got, want)
+	}
+}

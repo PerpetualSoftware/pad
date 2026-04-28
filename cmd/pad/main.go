@@ -1326,7 +1326,7 @@ func printOnboardingHints(cfg *config.Config) {
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "what conventions should this project follow?")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
 	fmt.Println()
-	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BaseURL()))
+	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BrowserURL()))
 	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
 }
 
@@ -1440,7 +1440,7 @@ recommend conventions from the built-in library.`,
 			choice := readChoice()
 			if choice != "y" && choice != "Y" {
 				fmt.Println("Skipped. You can activate conventions from the library:")
-				fmt.Printf("  %s/%s/library\n", cfg.BaseURL(), ws)
+				fmt.Printf("  %s/%s/library\n", cfg.BrowserURL(), ws)
 				return nil
 			}
 
