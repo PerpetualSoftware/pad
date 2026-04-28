@@ -62,6 +62,25 @@ signs:
     artifacts: checksum
     output: true
 
+# macOS code-signing + Apple notarization. Gated on MACOS_CERT_P12 being set
+# so PR builds and snapshot mode don't fail when the cert isn't available
+# (e.g. forks, local `goreleaser release --snapshot`). Uses GoReleaser v2's
+# built-in Anchore/Quill backend — no external tools required on the runner.
+# The .p12 cert and .p8 notary key are both supplied as base64-encoded
+# strings via repo secrets; Quill decodes them in-process.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_CERT_P12" }}'
+      sign:
+        certificate: "{{ .Env.MACOS_CERT_P12 }}"
+        password: "{{ .Env.MACOS_CERT_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY_P8 }}"
+        wait: true
+        timeout: 20m
+
 # Keyless cosign signing for every container image manifest.
 docker_signs:
   - cmd: cosign

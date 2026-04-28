@@ -79,6 +79,17 @@ jobs:
           # Add this secret in repo settings before tagging a release that ships
           # a brew formula — without it goreleaser fails at the brew publish step.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          # macOS code-signing + Apple notarization (per IDEA-830). The
+          # `notarize:` block in .goreleaser.yaml is gated on MACOS_CERT_P12
+          # being set, so PR builds + snapshot mode skip cleanly when these
+          # are absent. The .p12 cert and .p8 notary key are stored
+          # base64-encoded; GoReleaser's Quill backend decodes them in-process,
+          # so no external signing tool needs to be installed on the runner.
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
 
       # SLSA build provenance for every archive GoReleaser produced.
       # Writes a Sigstore-backed attestation to the repo so downstream
