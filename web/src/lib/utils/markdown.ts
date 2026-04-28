@@ -1,14 +1,22 @@
-import { marked, type Tokens } from 'marked';
+import { marked, Renderer, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
 
-// Custom renderer to open external links in new tabs
+// Custom renderer to open external links in new tabs.
+//
+// Use a regular `function` (not an arrow) so `this` resolves to the Renderer
+// instance — marked invokes overrides via `override.apply(rendererInstance, args)`,
+// which gives us access to `this.parser.parseInline(tokens)`. We render the
+// already-parsed inline tokens; re-parsing the raw text via
+// `marked.parseInline(tokens.map(t => t.raw).join(''))` would re-tokenize bare
+// URLs in the link text as autolinks and recurse infinitely through this same
+// `link` renderer (e.g. for content like `https://example.com` inside a comment).
 const renderer = new marked.Renderer();
-renderer.link = ({ href, title, tokens }: Tokens.Link) => {
-	const text = marked.parseInline(tokens.map(t => t.raw).join(''));
+renderer.link = function (this: Renderer, { href, title, tokens }: Tokens.Link) {
+	const text = this.parser.parseInline(tokens);
 	const isExternal = href && /^https?:\/\//.test(href);
-	const titleAttr = title ? ` title="${title}"` : '';
+	const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
 	if (isExternal) {
 		return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer" class="external-link">${text}<span class="external-icon" aria-hidden="true"> ↗</span></a>`;
 	}
