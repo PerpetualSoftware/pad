@@ -40,6 +40,16 @@ type Config struct {
 	LoadedFromEnv   bool   `toml:"-"`
 	LoadedFromFlags bool   `toml:"-"`
 
+	// cloudServerOptIn records whether THIS server process was explicitly
+	// asked to run in cloud-tenant mode by an env-var (PAD_CLOUD=true|1
+	// or PAD_MODE=cloud). It is intentionally NOT set by a config-file
+	// `mode = "cloud"` value, which `pad init` writes when the CLI user
+	// picks "Cloud" as their connection mode — that is a CLIENT signal,
+	// not a server-runtime signal. Without this distinction a CLI user
+	// configuring for Pad Cloud would accidentally trip cloud-server
+	// mode the next time `pad server start` ran from the same data dir.
+	cloudServerOptIn bool `toml:"-"`
+
 	// Email (Maileroo)
 	MailerooAPIKey string `toml:"maileroo_api_key"`
 	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
@@ -119,6 +129,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_MODE"); v != "" {
 		cfg.Mode = v
 		cfg.LoadedFromEnv = true
+		if v == ModeCloud {
+			// PAD_MODE=cloud is an explicit operator opt-in to running
+			// THIS server in cloud-tenant mode. See cloudServerOptIn.
+			cfg.cloudServerOptIn = true
+		}
 	}
 	if v := os.Getenv("PAD_HOST"); v != "" {
 		cfg.Host = v
@@ -148,10 +163,12 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_EMAIL_FROM_NAME"); v != "" {
 		cfg.EmailFromName = v
 	}
-	// PAD_CLOUD=true is a convenience alias for PAD_MODE=cloud
+	// PAD_CLOUD=true is a convenience alias for PAD_MODE=cloud and
+	// likewise opts the server process into cloud-tenant mode.
 	if v := os.Getenv("PAD_CLOUD"); v == "true" || v == "1" {
 		cfg.Mode = ModeCloud
 		cfg.LoadedFromEnv = true
+		cfg.cloudServerOptIn = true
 	}
 	if v := os.Getenv("PAD_CLOUD_SECRET"); v != "" {
 		cfg.CloudSecret = v
@@ -242,10 +259,32 @@ func ValidMode(mode string) bool {
 	}
 }
 
-// IsCloud reports whether the server is running in cloud mode.
-// Cloud mode is enabled by PAD_MODE=cloud or PAD_CLOUD=true.
+// IsCloud reports whether the configured connection mode is Cloud
+// (i.e. cfg.Mode == ModeCloud). This is a CLIENT-side signal: the
+// CLI is configured to talk to Pad Cloud at https://app.getpad.dev.
+//
+// For the SERVER-side check ("this server process should run in
+// cloud-tenant mode") use IsCloudServer() instead. IsCloud() is
+// true whenever Mode is "cloud" regardless of source — including
+// a config.toml mode=cloud written by `pad init` — and so is NOT
+// safe to gate server-side cloud-tenant behavior on.
 func (c *Config) IsCloud() bool {
 	return c.Mode == ModeCloud
+}
+
+// IsCloudServer reports whether THIS server process should run in
+// cloud-tenant mode (enabling cloud-specific endpoints, requiring
+// PAD_CLOUD_SECRET, wiring the pad-cloud reverse sidecar).
+//
+// Cloud-tenant mode is opted into ONLY by an env-var: PAD_CLOUD=true|1
+// or PAD_MODE=cloud. A config.toml mode=cloud value (set by `pad init`
+// when a CLI user picks Pad Cloud) signals the CLIENT connection mode
+// and does NOT enable server cloud-tenant mode; without this
+// distinction a user who ran `pad init` against app.getpad.dev would
+// accidentally trip cloud-server-mode startup the next time they ran
+// `pad server start` from the same data dir.
+func (c *Config) IsCloudServer() bool {
+	return c.cloudServerOptIn
 }
 
 // Addr returns the host:port listen address.

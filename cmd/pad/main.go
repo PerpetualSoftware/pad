@@ -281,8 +281,12 @@ func serveCmd() *cobra.Command {
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
 
-			// Cloud mode: enable cloud-specific endpoints and behavior
-			if cfg.IsCloud() {
+			// Cloud-tenant mode: enable cloud-specific endpoints and
+			// behavior. Gated on IsCloudServer() (env-var opt-in) rather
+			// than IsCloud() (which is also true when a CLI user has
+			// picked "Cloud" as their `pad init` connection mode — that
+			// is a client signal, not a server-runtime signal).
+			if cfg.IsCloudServer() {
 				if cfg.CloudSecret == "" {
 					return fmt.Errorf("PAD_CLOUD_SECRET is required when running in cloud mode (PAD_MODE=cloud or PAD_CLOUD=true)")
 				}

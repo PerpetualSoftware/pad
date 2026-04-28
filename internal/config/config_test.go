@@ -135,6 +135,131 @@ func TestCloudBaseURLIsCanonicalAppURL(t *testing.T) {
 	}
 }
 
+// TestIsCloudServerOnlyOptsInViaEnv guards the bug codex caught in PR
+// #272: a `pad init`-written `mode = "cloud"` in config.toml must NOT
+// turn the local pad server into a cloud-tenant deployment. Only an
+// explicit env-var opt-in (PAD_CLOUD=true|1 or PAD_MODE=cloud) should
+// flip IsCloudServer().
+func TestIsCloudServerOnlyOptsInViaEnv(t *testing.T) {
+	t.Run("config-file mode=cloud does NOT opt into server cloud mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		// Defensive: ensure no env vars leak into this case.
+		t.Setenv("PAD_MODE", "")
+		t.Setenv("PAD_CLOUD", "")
+
+		cfg := DefaultConfig()
+		cfg.Mode = ModeCloud
+		cfg.URL = CloudBaseURL
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+
+		reloaded, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if !reloaded.IsCloud() {
+			t.Fatal("expected IsCloud() to be true (Mode == ModeCloud)")
+		}
+		if reloaded.IsCloudServer() {
+			t.Fatal("expected IsCloudServer() to be FALSE for a config-file-only mode=cloud — only env-vars must opt into server cloud-tenant mode")
+		}
+	})
+
+	t.Run("PAD_CLOUD=true opts into server cloud mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_CLOUD", "true")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if !cfg.IsCloud() {
+			t.Fatal("PAD_CLOUD=true should set IsCloud() = true")
+		}
+		if !cfg.IsCloudServer() {
+			t.Fatal("PAD_CLOUD=true must opt into server cloud-tenant mode")
+		}
+	})
+
+	t.Run("PAD_CLOUD=1 opts into server cloud mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_CLOUD", "1")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if !cfg.IsCloudServer() {
+			t.Fatal("PAD_CLOUD=1 must opt into server cloud-tenant mode")
+		}
+	})
+
+	t.Run("PAD_MODE=cloud opts into server cloud mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_MODE", "cloud")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if !cfg.IsCloud() {
+			t.Fatal("PAD_MODE=cloud should set IsCloud() = true")
+		}
+		if !cfg.IsCloudServer() {
+			t.Fatal("PAD_MODE=cloud must opt into server cloud-tenant mode")
+		}
+	})
+
+	t.Run("PAD_MODE=remote does NOT opt into server cloud mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_MODE", "remote")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if cfg.IsCloud() {
+			t.Fatal("PAD_MODE=remote should not set IsCloud() = true")
+		}
+		if cfg.IsCloudServer() {
+			t.Fatal("PAD_MODE=remote must not opt into server cloud-tenant mode")
+		}
+	})
+
+	t.Run("env-var opt-in overrides a non-cloud file config", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		// Persist a non-cloud config first.
+		cfg := DefaultConfig()
+		cfg.Mode = ModeRemote
+		cfg.URL = "https://pad.example.com"
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+
+		// Then start with PAD_CLOUD=true: the env opt-in must win and
+		// flip both signals.
+		t.Setenv("PAD_CLOUD", "true")
+		reloaded, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if !reloaded.IsCloud() {
+			t.Fatal("PAD_CLOUD=true must override file mode=remote in IsCloud()")
+		}
+		if !reloaded.IsCloudServer() {
+			t.Fatal("PAD_CLOUD=true must opt into server cloud-tenant mode regardless of file config")
+		}
+	})
+}
+
 func TestBrowserURLNormalizesUnspecifiedHost(t *testing.T) {
 	cases := []struct {
 		name string
