@@ -32,8 +32,17 @@
 
 	function getRedirectTarget(): string {
 		const redirect = $page.url.searchParams.get('redirect');
-		// Only allow relative redirects (prevent open redirect)
-		if (redirect && redirect.startsWith('/')) {
+		// Only allow relative redirects (prevent open redirect). A bare
+		// `startsWith('/')` is NOT enough: protocol-relative URLs like
+		// `//evil.example` and `/\evil.example` pass that check but are
+		// treated by browsers (and most server-side redirect handlers) as
+		// cross-origin destinations. Reject those explicitly.
+		if (
+			redirect &&
+			redirect.startsWith('/') &&
+			!redirect.startsWith('//') &&
+			!redirect.startsWith('/\\')
+		) {
 			return redirect;
 		}
 		return '/console';
@@ -43,6 +52,16 @@
 		const target = getRedirectTarget();
 		if (target === '/console') return '';
 		return `?redirect=${encodeURIComponent(target)}`;
+	});
+
+	// Same target appended with `&` so it composes with `?force=1` on
+	// the "Use a different <provider> account" banner buttons. Empty
+	// when redirect is the default destination so we don't append a
+	// redundant `&redirect=%2Fconsole`.
+	const oauthRedirectAmpQuery = $derived.by(() => {
+		const target = getRedirectTarget();
+		if (target === '/console') return '';
+		return `&redirect=${encodeURIComponent(target)}`;
 	});
 
 	// Map pad-cloud's /login?error=... redirect codes to a friendly banner
@@ -240,7 +259,7 @@
 					<div class="oauth-banner-actions">
 						{#if oauthBanner.provider === 'github' || oauthBanner.provider === null}
 							<a
-								href="/auth/github?force=1"
+								href="/auth/github?force=1{oauthRedirectAmpQuery}"
 								data-sveltekit-reload
 								class="oauth-banner-btn"
 							>
@@ -249,7 +268,7 @@
 						{/if}
 						{#if oauthBanner.provider === 'google' || oauthBanner.provider === null}
 							<a
-								href="/auth/google?force=1"
+								href="/auth/google?force=1{oauthRedirectAmpQuery}"
 								data-sveltekit-reload
 								class="oauth-banner-btn"
 							>
