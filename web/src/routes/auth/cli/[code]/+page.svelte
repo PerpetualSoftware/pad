@@ -3,10 +3,13 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
+	import type { User } from '$lib/types';
 
 	let status = $state<'loading' | 'pending' | 'approved' | 'expired' | 'error' | 'success' | 'already_approved'>('loading');
 	let error = $state('');
 	let approving = $state(false);
+	let switchingAccount = $state(false);
+	let currentUser = $state<User | null>(null);
 
 	onMount(async () => {
 		const code = $page.params.code;
@@ -34,6 +37,15 @@
 			if (!authSession.authenticated) {
 				goto(`/login?redirect=/auth/cli/${code}`, { replaceState: true });
 				return;
+			}
+
+			// Best-effort load of the current user so we can show which account
+			// the CLI session is about to be linked to. If this fails, the chip
+			// just won't render but the Approve flow still works.
+			try {
+				currentUser = await api.auth.me();
+			} catch {
+				currentUser = null;
 			}
 
 			status = 'pending';
@@ -65,6 +77,32 @@
 			approving = false;
 		}
 	}
+
+	async function handleSwitchAccount() {
+		const code = $page.params.code;
+		if (!code) {
+			error = 'Missing CLI session code.';
+			return;
+		}
+		switchingAccount = true;
+		error = '';
+		try {
+			await api.auth.logout();
+		} catch (err: unknown) {
+			// Surface the failure rather than swallowing it: if the server
+			// did not invalidate the session cookie, navigating to /login
+			// would bounce straight back here authenticated and "switch
+			// accounts" would appear to be a no-op. Showing the error
+			// gives the user a clear next step (retry / close the tab).
+			switchingAccount = false;
+			error =
+				err instanceof Error && err.message
+					? `Couldn't sign you out: ${err.message}`
+					: "Couldn't sign you out. Please try again or close this tab.";
+			return;
+		}
+		goto(`/login?redirect=/auth/cli/${code}`, { replaceState: true });
+	}
 </script>
 
 <div class="login-page">
@@ -89,11 +127,41 @@
 				A CLI session is requesting access to your account. Approve this request to sign in from the terminal.
 			</p>
 
+			{#if currentUser}
+				<div class="account-chip">
+					{#if currentUser.avatar_url}
+						<img
+							class="avatar"
+							src={currentUser.avatar_url}
+							alt=""
+							width="32"
+							height="32"
+						/>
+					{/if}
+					<div class="account-info">
+						<div class="account-name">{currentUser.name || currentUser.username}</div>
+						<div class="account-email">{currentUser.email}</div>
+					</div>
+				</div>
+				<button
+					type="button"
+					class="link-button"
+					onclick={handleSwitchAccount}
+					disabled={switchingAccount || approving}
+				>
+					{#if switchingAccount}
+						Switching...
+					{:else}
+						I'm not {currentUser.name || currentUser.username} — switch accounts
+					{/if}
+				</button>
+			{/if}
+
 			{#if error}
 				<p class="error">{error}</p>
 			{/if}
 
-			<button onclick={handleApprove} disabled={approving}>
+			<button onclick={handleApprove} disabled={approving || switchingAccount}>
 				{#if approving}
 					Approving...
 				{:else}
@@ -187,6 +255,80 @@
 	}
 
 	button:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.account-chip {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		width: 100%;
+		padding: var(--space-3);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		margin-bottom: var(--space-3);
+		text-align: left;
+	}
+
+	.avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+
+	.account-info {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.account-name {
+		color: var(--text-primary);
+		font-size: 0.9rem;
+		font-weight: 500;
+		line-height: 1.3;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.account-email {
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		line-height: 1.3;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	button.link-button {
+		width: 100%;
+		padding: 0;
+		background: none;
+		color: var(--text-muted);
+		border: none;
+		border-radius: 0;
+		font-size: 0.8rem;
+		font-weight: 400;
+		font-family: var(--font-ui);
+		text-align: center;
+		cursor: pointer;
+		margin-bottom: var(--space-5);
+		transition: color 0.15s;
+	}
+
+	button.link-button:hover:not(:disabled) {
+		color: var(--text-primary);
+		opacity: 1;
+		text-decoration: underline;
+	}
+
+	button.link-button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
 	}
