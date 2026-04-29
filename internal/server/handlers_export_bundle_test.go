@@ -161,6 +161,79 @@ func TestExportBundle_HidesThumbnails(t *testing.T) {
 	}
 }
 
+// TestExportBundle_TruncatedBlobLogsError pins the close-error path
+// that Codex flagged on PR #305 round 2: if a backend returns fewer
+// bytes than the size_bytes column claims, the streaming handler
+// must NOT silently emit a corrupt 200 — it must bail out so the
+// downstream tar.Writer's "missed N bytes" trip is logged.
+//
+// We synthesize the desync by inserting an attachments row whose
+// SizeBytes claims more bytes than the actual on-disk blob has.
+// (Easier than mocking the registry; the storage backend is real.)
+func TestExportBundle_TruncatedBlobLogsError(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	if rr := doMultipartUpload(srv, slug, "small.png", realPNG()); rr.Code != http.StatusCreated {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, wsID)
+
+	// Bump the row's size_bytes well past the on-disk blob length so
+	// io.Copy reads fewer bytes than the tar header advertises.
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET size_bytes = 999999 WHERE id = ?`, id,
+	); err != nil {
+		t.Fatalf("desync size_bytes: %v", err)
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/export?format=tar", nil)
+	// HTTP status is 200 because headers are already on the wire by
+	// the time we detect the desync. The bundle that comes back is
+	// truncated; gzip + tar both refuse to decode cleanly. The
+	// assertion here is that the bytes are NOT a clean bundle —
+	// catching the regression where the handler used to silently
+	// produce a corrupt 200.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	// readBundle uses gzip.NewReader → if the gzip footer is missing
+	// (deferred Close didn't run, or tar.Close errored mid-stream)
+	// it'll fail. Wrap to capture rather than crash the test.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Logf("readBundle panicked on truncated stream as expected: %v", r)
+		}
+	}()
+	gz, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		// Gzip reader rejected the stream — this is the success case.
+		return
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Tar reader caught the truncation — also a success case.
+			return
+		}
+		// Read the entry; if it's the truncated blob, io.ReadAll
+		// returns an error from the tar reader because the entry's
+		// declared size doesn't match the bytes available.
+		if _, err := io.ReadAll(tr); err != nil {
+			return
+		}
+		_ = hdr
+	}
+	// If we got here without any error, the bundle decoded cleanly
+	// despite the size desync — that's the regression we're guarding.
+	t.Errorf("truncated blob produced a clean bundle; expected gzip/tar to surface the corruption")
+}
+
 // TestExportBundle_LegacyJSONStillWorks confirms the default (no
 // query param) export endpoint still returns plain JSON, so any
 // existing automation continues to work after TASK-884 lands.

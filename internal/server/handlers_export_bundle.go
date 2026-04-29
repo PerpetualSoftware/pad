@@ -115,9 +115,21 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// transfer-encoding, which the gzip+tar pair handles fine.
 
 	gzw := gzip.NewWriter(w)
-	defer gzw.Close()
 	tw := tar.NewWriter(gzw)
-	defer tw.Close()
+	// Explicit Close ordering matters: tw.Close() flushes the tar
+	// trailer (and reports if a previous entry got fewer bytes than
+	// its declared Size — a corruption signal we don't want to drop
+	// silently); gzw.Close() then flushes the gzip footer. We use a
+	// single defer that handles both errors so a bug-bail-out path
+	// (e.g. context cancel mid-stream) still surfaces a truncation.
+	defer func() {
+		if err := tw.Close(); err != nil {
+			s.logBundleStreamError(r.Context(), "tar close", err)
+		}
+		if err := gzw.Close(); err != nil {
+			s.logBundleStreamError(r.Context(), "gzip close", err)
+		}
+	}()
 
 	// 1. pad-export.json
 	exportJSON, err := json.MarshalIndent(export, "", "  ")
@@ -180,8 +192,19 @@ func (s *Server) streamAttachmentToTar(ctx context.Context, tw *tar.Writer, a *m
 	if err := tw.WriteHeader(hdr); err != nil {
 		return fmt.Errorf("tar header: %w", err)
 	}
-	if _, err := io.Copy(tw, body); err != nil {
+	n, err := io.Copy(tw, body)
+	if err != nil {
 		return fmt.Errorf("copy blob: %w", err)
+	}
+	// io.Copy on a backend that returns fewer bytes than expected
+	// would otherwise return nil and the tar writer would surface a
+	// "missed N bytes" error only at Close. Catch the truncation
+	// here so the per-blob log carries the attachment id +
+	// storage_key; the deferred tw.Close() then trips its own
+	// missed-bytes error which we already log.
+	if n != a.SizeBytes {
+		return fmt.Errorf("blob truncated: copied %d bytes, expected %d (size_bytes column out of sync with backend?)",
+			n, a.SizeBytes)
 	}
 	return nil
 }
