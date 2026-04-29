@@ -406,6 +406,8 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		if modtime.IsZero() {
 			modtime = time.Now()
 		}
+		// http.ServeContent already handles HEAD correctly on this
+		// path — it sets headers and stops without writing the body.
 		http.ServeContent(w, r, att.Filename, modtime, seeker)
 		return
 	}
@@ -415,6 +417,14 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// we only call it here, never on the ServeContent fast path).
 	if size, sErr := store.Stat(r.Context(), att.StorageKey); sErr == nil && size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	// HEAD on the streaming fallback: skip the body. Go's response
+	// writer would silently discard body writes for HEAD anyway, but
+	// reading the entire blob from a non-seekable backend just to
+	// throw it away would burn S3 GetObject bandwidth. Bail out before
+	// io.Copy ever touches the reader.
+	if r.Method == http.MethodHead {
+		return
 	}
 	if _, copyErr := io.Copy(w, body); copyErr != nil {
 		// Body has likely already been written to; can't change status.

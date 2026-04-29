@@ -283,6 +283,28 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			if (filename) wrapper.setAttribute('data-filename', filename);
 			if (filename) wrapper.download = filename;
 
+			// Explicit click handler → window.open. Editor.svelte installs a
+			// global anchor-click suppressor that calls preventDefault on
+			// every <a> inside the editor (so plain text links don't navigate
+			// in edit mode); without this handler the chip's anchor
+			// navigation would also be eaten and clicking the chip would
+			// silently do nothing. Mirrors the pattern AttachmentImage uses
+			// for its lightbox click. stopImmediatePropagation prevents the
+			// global suppressor from running afterwards.
+			wrapper.addEventListener('click', (event) => {
+				if (event.detail > 1) return; // double-click → fall through
+				if (!uuid) return;
+				event.preventDefault();
+				event.stopPropagation();
+				if (typeof window !== 'undefined') {
+					window.open(
+						this.options.getDownloadUrl(uuid),
+						'_blank',
+						'noopener,noreferrer',
+					);
+				}
+			});
+
 			const iconEl = document.createElement('span');
 			iconEl.className = 'file-chip-icon';
 			iconEl.setAttribute('aria-hidden', 'true');
@@ -298,10 +320,12 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 			wrapper.append(iconEl, nameEl, sizeEl);
 
-			// Async metadata enrichment. The HEAD request goes against the
-			// existing GET handler — no new endpoint required, and the cache
-			// keyed by (workspace, uuid) deduplicates repeated chips for the
-			// same attachment. We skip the fetch when no workspace context
+			// Async metadata enrichment via HEAD. Server registers HEAD
+			// alongside GET (chi doesn't auto-route HEAD to GET handlers),
+			// and the response carries Content-Type + Content-Length without
+			// a body. The promise cache keyed by (workspace, uuid)
+			// deduplicates repeated chips for the same attachment and
+			// survives undo/redo. Skip the fetch when no workspace context
 			// is available (e.g. headless rendering) — the chip still works,
 			// just without size/icon refinement.
 			if (uuid && this.options.workspaceSlug) {

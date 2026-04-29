@@ -691,8 +691,16 @@ func (s *Server) setupRouter() {
 					// Attachments
 					//   POST   /attachments              — upload (TASK-871)
 					//   GET    /attachments/{attachmentID} — serve blob (TASK-872, supports ?variant=)
+					//   HEAD   /attachments/{attachmentID} — metadata only (TASK-877 file-chip enrichment)
+					//
+					// chi does not auto-route HEAD to the GET handler, so the
+					// editor's HEAD probe for size + MIME has to be registered
+					// explicitly. The handler short-circuits the streaming
+					// path on HEAD; http.ServeContent already strips the body
+					// on the seekable path.
 					r.Post("/attachments", s.handleUploadAttachment)
 					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
+					r.Head("/attachments/{attachmentID}", s.handleGetAttachment)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {
