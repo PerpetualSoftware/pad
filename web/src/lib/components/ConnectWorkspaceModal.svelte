@@ -21,13 +21,15 @@
 	// from the detected platform on first mount.
 	let activeTab = $state<InstallTab>(defaultInstallTab());
 
+	// All commands mirror the README's Installation section. Homebrew works
+	// on both macOS and Linux. Windows has no first-party one-liner — direct
+	// users to the GitHub releases page. Docker matches the documented run
+	// invocation (data volume at /data, port published to localhost).
 	const installCommands: Record<InstallTab, string> = {
-		// Tap is PerpetualSoftware/tap/pad — see README.md and skills/INSTALL.md.
 		macos: 'brew install PerpetualSoftware/tap/pad',
-		linux: 'curl -fsSL https://getpad.dev/install.sh | sh',
-		// Same shell oneliner under WSL — note that explicitly in helper text.
-		windows: '# WSL2 recommended\ncurl -fsSL https://getpad.dev/install.sh | sh',
-		docker: 'docker run -v $HOME/.pad:/root/.pad ghcr.io/perpetualsoftware/pad:latest'
+		linux: 'brew install PerpetualSoftware/tap/pad',
+		windows: '# Download a Windows binary from\n# https://github.com/PerpetualSoftware/pad/releases',
+		docker: 'docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pad'
 	};
 
 	const tabs: { id: InstallTab; label: string }[] = [
