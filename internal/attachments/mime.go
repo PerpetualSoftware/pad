@@ -149,16 +149,35 @@ func NormalizeMIME(mime string) string {
 	return strings.ToLower(strings.TrimSpace(mime))
 }
 
+// sniffAliases maps stdlib http.DetectContentType quirks to the canonical
+// MIME we record in the allowlist (and store in the DB). net/http's
+// detector returns names that differ from modern IANA / browser
+// conventions for a handful of formats — without aliasing, valid uploads
+// get rejected because the allowlist uses canonical names. Aliasing here
+// keeps the allowlist single-sourced and predictable.
+//
+// Add new entries when a Codex round or a real-world upload turns up
+// another stdlib mismatch.
+var sniffAliases = map[string]string{
+	"audio/wave":         "audio/wav",         // .wav
+	"application/x-gzip": "application/gzip",  // .gz / .tar.gz
+}
+
 // SniffMIME detects the MIME type from the leading bytes of a payload
 // using net/http's stdlib detector (the same RFC 6838 algorithm browsers
-// use). The result is normalized via NormalizeMIME.
+// use). The result is normalized via NormalizeMIME and run through
+// sniffAliases so allowlist lookups always see the canonical name.
 //
 // Pass at most 512 bytes — additional bytes are ignored by the detector.
 func SniffMIME(head []byte) string {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	return NormalizeMIME(http.DetectContentType(head))
+	got := NormalizeMIME(http.DetectContentType(head))
+	if alias, ok := sniffAliases[got]; ok {
+		return alias
+	}
+	return got
 }
 
 // ValidateUpload combines the sniff result, the client-supplied MIME

@@ -210,6 +210,55 @@ func TestValidateUpload_AcceptsOfficeOpenXMLAsZipBytes(t *testing.T) {
 	}
 }
 
+// TestSniffMIME_AliasesStdlibQuirks regression-tests Codex round 3:
+// http.DetectContentType returns names that don't match modern IANA
+// conventions for WAV (audio/wave) and gzip (application/x-gzip).
+// SniffMIME must alias these to the canonical names so allowlist
+// lookups succeed.
+func TestSniffMIME_AliasesStdlibQuirks(t *testing.T) {
+	// Real WAV header: "RIFF....WAVEfmt "
+	wav := []byte{
+		'R', 'I', 'F', 'F', 0x24, 0, 0, 0, 'W', 'A', 'V', 'E',
+		'f', 'm', 't', ' ', 0x10, 0, 0, 0, 0x01, 0, 0x01, 0,
+		0x44, 0xAC, 0, 0, 0x88, 0x58, 0x01, 0,
+	}
+	if got := SniffMIME(wav); got != "audio/wav" {
+		t.Errorf("SniffMIME(WAV) = %q, want audio/wav (stdlib returns audio/wave; alias must canonicalize)", got)
+	}
+
+	// Gzip magic: 0x1f 0x8b 0x08
+	gzip := []byte{0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff, 'h', 'i', '\n'}
+	if got := SniffMIME(gzip); got != "application/gzip" {
+		t.Errorf("SniffMIME(gzip) = %q, want application/gzip (stdlib returns application/x-gzip; alias must canonicalize)", got)
+	}
+}
+
+func TestValidateUpload_AcceptsWAV(t *testing.T) {
+	wav := []byte{
+		'R', 'I', 'F', 'F', 0x24, 0, 0, 0, 'W', 'A', 'V', 'E',
+		'f', 'm', 't', ' ', 0x10, 0, 0, 0, 0x01, 0, 0x01, 0,
+		0x44, 0xAC, 0, 0, 0x88, 0x58, 0x01, 0,
+	}
+	entry, code, err := ValidateUpload(wav, "song.wav")
+	if err != nil {
+		t.Fatalf("ValidateUpload(.wav) rejected (code=%s): %v", code, err)
+	}
+	if entry.MIME != "audio/wav" || entry.Category != CategoryAudio {
+		t.Errorf("entry = {%s, %s}, want {audio/wav, audio}", entry.MIME, entry.Category)
+	}
+}
+
+func TestValidateUpload_AcceptsGzip(t *testing.T) {
+	gzip := []byte{0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff, 'h', 'i', '\n'}
+	entry, code, err := ValidateUpload(gzip, "logs.gz")
+	if err != nil {
+		t.Fatalf("ValidateUpload(.gz) rejected (code=%s): %v", code, err)
+	}
+	if entry.MIME != "application/gzip" || entry.Category != CategoryArchive {
+		t.Errorf("entry = {%s, %s}, want {application/gzip, archive}", entry.MIME, entry.Category)
+	}
+}
+
 func TestValidateUpload_RejectsExeByExtensionAlone(t *testing.T) {
 	// Random bytes (no executable magic) named like an executable. The
 	// extension-blocklist must reject regardless of sniff so an attacker
