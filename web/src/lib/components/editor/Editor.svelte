@@ -7,6 +7,7 @@
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
 	import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+	import { CellSelection } from '@tiptap/pm/tables';
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
@@ -114,6 +115,76 @@
 
 		if (isCut) {
 			const tr = state.tr.delete(from, to);
+			view.dispatch(tr);
+		}
+		return true;
+	}
+
+	// ProseMirror plugin: when the user copies/cuts a selection that lives
+	// entirely inside a single table, write a plain-text representation of
+	// the cells (tab-separated, newline-separated rows) to the clipboard
+	// and clear text/html, so paste targets don't receive the wrapping
+	// <table> markup. Mirrors codeBlockCopyPlugin above.
+	const tableCopyPlugin = new Plugin({
+		props: {
+			handleDOMEvents: {
+				copy: (view, event) => writeTableClipboard(view, event as ClipboardEvent, false),
+				cut: (view, event) => writeTableClipboard(view, event as ClipboardEvent, true),
+			},
+		},
+	});
+
+	function writeTableClipboard(view: any, event: ClipboardEvent, isCut: boolean): boolean {
+		const { state } = view;
+		const selection = state.selection;
+		const { from, to, empty } = selection;
+		if (empty) return false;
+		if (!event.clipboardData) return false;
+
+		let text: string | null = null;
+
+		if (selection instanceof CellSelection) {
+			// Multi-cell selection — iterate cells, group by row, build TSV.
+			const rows: string[][] = [];
+			let currentRow: string[] = [];
+			let prevRow: any = null;
+			selection.forEachCell((cellNode: any, cellPos: number) => {
+				const resolvedCellPos = state.doc.resolve(cellPos);
+				const row = resolvedCellPos.parent;
+				if (row !== prevRow) {
+					if (currentRow.length) rows.push(currentRow);
+					currentRow = [];
+					prevRow = row;
+				}
+				currentRow.push((cellNode.textContent ?? '').replace(/\s+$/g, ''));
+			});
+			if (currentRow.length) rows.push(currentRow);
+			text = rows.map(r => r.join('\t')).join('\n');
+		} else {
+			// Plain text selection — must be entirely inside a single table.
+			const resolvedFrom = state.doc.resolve(from);
+			let tableDepth = -1;
+			for (let d = resolvedFrom.depth; d >= 0; d--) {
+				if (resolvedFrom.node(d).type.name === 'table') {
+					tableDepth = d;
+					break;
+				}
+			}
+			if (tableDepth < 0) return false;
+			const tableStart = resolvedFrom.start(tableDepth);
+			const tableEnd = resolvedFrom.end(tableDepth);
+			if (from < tableStart || to > tableEnd) return false;
+			text = state.doc.textBetween(from, to, '\n', ' ');
+		}
+
+		if (text === null) return false;
+
+		event.preventDefault();
+		event.clipboardData.setData('text/plain', text);
+		event.clipboardData.setData('text/html', '');
+
+		if (isCut) {
+			const tr = state.tr.deleteSelection();
 			view.dispatch(tr);
 		}
 		return true;
@@ -360,7 +431,11 @@
 			}),
 			TaskList,
 			TaskItem.configure({ nested: true }),
-			Table.configure({ resizable: true, HTMLAttributes: { class: 'table-wrapper' } }),
+			Table.extend({
+				addProseMirrorPlugins() {
+					return [...(this.parent?.() ?? []), tableCopyPlugin];
+				},
+			}).configure({ resizable: true, HTMLAttributes: { class: 'table-wrapper' } }),
 			TableRow,
 			TableCell,
 			TableHeader,
