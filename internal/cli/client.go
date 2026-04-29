@@ -431,11 +431,19 @@ func (c *Client) RawStream(path string, w io.Writer) (int64, *http.Response, err
 
 // PostRaw sends raw bytes to the API and decodes the JSON response.
 func (c *Client) PostRaw(path string, data []byte, result interface{}) error {
+	return c.PostRawWithContentType(path, data, "application/json", result)
+}
+
+// PostRawWithContentType is the explicit-content-type variant of
+// PostRaw. Used by the bundle import path to send a tar.gz as
+// application/gzip so the server's content-type dispatch routes the
+// request to the bundle handler instead of the JSON decoder.
+func (c *Client) PostRawWithContentType(path string, data []byte, contentType string, result interface{}) error {
 	req, err := c.newRequest("POST", path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)

@@ -4526,24 +4526,23 @@ Examples:
 
 func exportCmd() *cobra.Command {
 	var outputFile string
-	var bundle bool
+	var jsonOnly bool
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export workspace to JSON or a self-contained tar.gz bundle",
-		Long: `Export the current workspace (collections, items, comments, versions)
-to a portable JSON file. Pass --bundle to include attachment blobs in
-a tar.gz bundle:
+		Short: "Export workspace as a self-contained tar.gz bundle",
+		Long: `Export the current workspace (collections, items, comments, versions,
+and attachments) to a portable tar.gz bundle:
 
   pad-export.json              — workspace metadata + items + collections + ...
   attachments/manifest.json    — uuid → {filename, mime, size, content_hash}
   attachments/<uuid>.<ext>     — original attachment blobs
 
-The default stays JSON for now so existing pad import flows keep
-working. The bundle becomes the default once pad import learns to
-unpack tar.gz (planned for TASK-885).`,
+Pass --json to emit the legacy items-only JSON file (no attachments).
+Both formats can be re-imported via 'pad workspace import'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
+			bundle := !jsonOnly
 
 			path := "/workspaces/" + ws + "/export"
 			defaultExt := ".json"
@@ -4614,7 +4613,7 @@ unpack tar.gz (planned for TASK-885).`,
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
-	cmd.Flags().BoolVar(&bundle, "bundle", false, "emit a tar.gz bundle including attachment blobs (TASK-885 will make this the default once pad import handles bundles)")
+	cmd.Flags().BoolVar(&jsonOnly, "json", false, "emit legacy items-only JSON (no attachments)")
 	return cmd
 }
 
@@ -4624,9 +4623,16 @@ func importCmd() *cobra.Command {
 	var nameFlag string
 	cmd := &cobra.Command{
 		Use:   "import <file>",
-		Short: "Import workspace from JSON export",
-		Long:  `Import a workspace from a previously exported JSON file. Creates a new workspace with regenerated IDs.`,
-		Args:  cobra.ExactArgs(1),
+		Short: "Import workspace from JSON export or tar.gz bundle",
+		Long: `Import a workspace from a previously exported file. Creates a new
+workspace with regenerated IDs.
+
+Accepts both formats produced by 'pad workspace export':
+  - .json (legacy, items only)
+  - .tar.gz (new bundle, includes attachment blobs)
+
+Format is detected by file extension. Override workspace name with --name.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			filePath := args[0]
@@ -4641,14 +4647,27 @@ func importCmd() *cobra.Command {
 				path += "?name=" + nameFlag
 			}
 
+			// Detect bundle by extension. .tar.gz / .tgz route through
+			// the gzip-stream import path; everything else goes the
+			// legacy JSON route. We don't sniff magic bytes — extension
+			// is the explicit signal the user gave us.
+			contentType := "application/json"
+			low := strings.ToLower(filePath)
+			if strings.HasSuffix(low, ".tar.gz") || strings.HasSuffix(low, ".tgz") {
+				contentType = "application/gzip"
+			}
+
 			var ws models.Workspace
-			if err := client.PostRaw(path, data, &ws); err != nil {
+			if err := client.PostRawWithContentType(path, data, contentType, &ws); err != nil {
 				return fmt.Errorf("import: %w", err)
 			}
 
 			fmt.Printf("Imported workspace %q (slug: %s)\n", ws.Name, ws.Slug)
 			fmt.Printf("  Collections: imported\n")
 			fmt.Printf("  Items, comments, links, versions: imported\n")
+			if contentType == "application/gzip" {
+				fmt.Printf("  Attachments: rehydrated from bundle\n")
+			}
 			fmt.Printf("  All IDs regenerated\n")
 			return nil
 		},
