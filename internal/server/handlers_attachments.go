@@ -241,15 +241,14 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Quota tracking — log only, no enforcement in Phase 1. Hard limits
-	// + Stripe metered overage land in Phase 2 (TASK-881 builds the
-	// usage API + effective-limit math; we lazily reuse CheckLimit here
-	// for the warning since it already does the three-tier resolution).
-	go s.maybeWarnStorageQuota(workspaceID)
+	// Quota tracking — log only, no enforcement in Phase 1. The download
+	// URL is intentionally NOT returned by this handler: the serve
+	// endpoint lands in TASK-872. Until then, returning a URL here
+	// would point at a 404 and lull clients into baking it in.
+	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":          att.ID,
-		"url":         attachmentURL(workspaceID, att.ID),
 		"mime":        att.MimeType,
 		"size":        att.SizeBytes,
 		"width":       att.Width,
@@ -258,13 +257,6 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		"category":    string(entry.Category),
 		"render_mode": renderModeString(entry.RenderMode),
 	})
-}
-
-// attachmentURL returns the canonical download URL for an attachment.
-// The serve handler is wired in TASK-872; the path shape is committed
-// here so the upload response can return a usable URL today.
-func attachmentURL(workspaceID, attachmentID string) string {
-	return "/api/v1/workspaces/" + workspaceID + "/attachments/" + attachmentID
 }
 
 func renderModeString(m attachments.RenderMode) string {
@@ -283,23 +275,31 @@ func renderModeString(m attachments.RenderMode) string {
 // maybeWarnStorageQuota emits a slog warning if the workspace's usage
 // has crossed the owner-plan storage limit. Phase 1 is observational
 // only — see DOC-865 "Phase 1 tracks usage and exposes it ... but does
-// not block uploads". The check is fire-and-forget so it never blocks
-// the upload response.
+// not block uploads". Runs via goAsync so it never blocks the upload
+// response and is drained by Server.Stop() at shutdown.
+//
+// CheckLimit is intentionally NOT used here because its featureCount
+// path doesn't know about byte-counted features (storage_bytes is
+// computed via WorkspaceStorageUsage, not COUNT(*)). WorkspaceStorageLimit
+// does the same three-tier resolution but returns the limit only.
 func (s *Server) maybeWarnStorageQuota(workspaceID string) {
 	usage, err := s.store.WorkspaceStorageUsage(workspaceID)
 	if err != nil {
 		slog.Warn("attachments: storage usage probe failed", "workspace_id", workspaceID, "error", err)
 		return
 	}
-	limit, err := s.store.CheckLimit(workspaceID, "storage_bytes")
-	if err != nil || limit == nil || limit.Limit < 0 {
+	limit, err := s.store.WorkspaceStorageLimit(workspaceID)
+	if err != nil {
+		slog.Warn("attachments: storage limit probe failed", "workspace_id", workspaceID, "error", err)
 		return
 	}
-	if usage > int64(limit.Limit) {
+	if limit < 0 {
+		return // unlimited plan
+	}
+	if usage > limit {
 		slog.Warn("attachments: workspace exceeds storage quota (Phase 1 = no enforcement)",
 			"workspace_id", workspaceID,
-			"plan", limit.Plan,
 			"used_bytes", usage,
-			"limit_bytes", limit.Limit)
+			"limit_bytes", limit)
 	}
 }

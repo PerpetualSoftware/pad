@@ -163,6 +163,53 @@ func TestValidateUpload_HTMLForcedDownload(t *testing.T) {
 	}
 }
 
+// Minimal zip header: PK\x03\x04 + version + flags + method + ...
+// This is what application/zip sniffs to. Office Open XML documents
+// share this header because they are zipped XML containers.
+var zipHeader = []byte{
+	0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00,
+	0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+}
+
+func TestValidateUpload_AcceptsOfficeOpenXMLAsZipBytes(t *testing.T) {
+	// .docx / .xlsx / .pptx are zipped XML — http.DetectContentType
+	// correctly returns application/zip for the bytes. The extension is
+	// the only signal that distinguishes a Word doc from a plain zip,
+	// so the validator must trust the extension in this case.
+	cases := map[string]string{
+		"report.docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"sheet.xlsx":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"deck.pptx":   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"notes.odt":   "application/vnd.oasis.opendocument.text",
+		"calc.ods":    "application/vnd.oasis.opendocument.spreadsheet",
+		"slides.odp":  "application/vnd.oasis.opendocument.presentation",
+	}
+	for filename, wantMIME := range cases {
+		entry, code, err := ValidateUpload(zipHeader, filename)
+		if err != nil {
+			t.Errorf("ValidateUpload(%q) rejected (code=%s): %v", filename, code, err)
+			continue
+		}
+		if entry.MIME != wantMIME {
+			t.Errorf("ValidateUpload(%q) entry.MIME = %q, want %q", filename, entry.MIME, wantMIME)
+		}
+		if entry.Category != CategoryDocument {
+			t.Errorf("ValidateUpload(%q) entry.Category = %q, want document", filename, entry.Category)
+		}
+	}
+
+	// Plain .zip with the same bytes still routes to application/zip / archive.
+	entry, code, err := ValidateUpload(zipHeader, "stuff.zip")
+	if err != nil {
+		t.Fatalf("plain .zip rejected (code=%s): %v", code, err)
+	}
+	if entry.MIME != "application/zip" || entry.Category != CategoryArchive {
+		t.Errorf("plain .zip routed wrong: mime=%q cat=%q", entry.MIME, entry.Category)
+	}
+}
+
 func TestValidateUpload_RejectsExeByExtensionAlone(t *testing.T) {
 	// Random bytes (no executable magic) named like an executable. The
 	// extension-blocklist must reject regardless of sniff so an attacker

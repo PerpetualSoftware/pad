@@ -102,3 +102,59 @@ func (s *Store) WorkspaceStorageUsage(workspaceID string) (int64, error) {
 	}
 	return total.Int64, nil
 }
+
+// WorkspaceStorageLimit returns the effective storage limit (bytes) for
+// the workspace owner's plan, or -1 if the plan is unlimited. Resolution
+// matches the existing CheckLimit three-tier order:
+//
+//  1. Per-user override (user.PlanOverrides JSON, key "storage_bytes")
+//  2. Platform setting (plan_limits_<plan>_storage_bytes)
+//  3. Hardcoded fallback (DefaultFreeLimits / DefaultProLimits)
+//
+// CheckLimit itself can't be reused here because its featureCount path
+// only knows about row-counted features (items, members, webhooks, …) —
+// storage_bytes is byte-counted via WorkspaceStorageUsage. TASK-881 will
+// expose a richer endpoint built on top of this helper; TASK-871 uses it
+// only for the observational quota warning.
+func (s *Store) WorkspaceStorageLimit(workspaceID string) (int64, error) {
+	var ownerID sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); err != nil {
+		if err == sql.ErrNoRows {
+			return -1, nil
+		}
+		return 0, fmt.Errorf("workspace storage limit: get owner: %w", err)
+	}
+	// Workspaces created on a fresh install (no users yet) and legacy
+	// workspaces from before owner_id was added have no owner. In both
+	// cases there is no plan to consult — treat as unlimited rather
+	// than rejecting uploads.
+	if !ownerID.Valid || ownerID.String == "" {
+		return -1, nil
+	}
+	user, err := s.GetUser(ownerID.String)
+	if err != nil {
+		return 0, fmt.Errorf("workspace storage limit: get user: %w", err)
+	}
+	if user == nil {
+		// Owner row was deleted but the workspace still references it.
+		// Treat as unlimited; the orphan is a separate cleanup concern.
+		return -1, nil
+	}
+
+	plan := user.Plan
+	if plan == "" {
+		plan = "free"
+	}
+	// Pro and self-hosted have no enforced limit in Phase 1.
+	if plan == "pro" || plan == "self-hosted" {
+		return -1, nil
+	}
+
+	// resolveLimit returns int (32-bit on 32-bit platforms) so we can't
+	// store a quota larger than 2 GiB on 32-bit hosts via this path.
+	// That's a non-issue for Phase 1: hardcoded free=500MB, pro=10GB,
+	// and 32-bit production hosts are not a supported deployment target
+	// for Pad Cloud. If a future plan-tier ever exceeds INT_MAX bytes
+	// we'll widen resolveLimit.
+	return int64(s.resolveLimit(plan, "storage_bytes", user.PlanOverrides)), nil
+}

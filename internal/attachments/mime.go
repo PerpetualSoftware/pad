@@ -197,12 +197,23 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 	//      this is the "exe pretending to be png" defense.
 	if ext := strings.ToLower(filepath.Ext(filename)); ext != "" {
 		if extMIMEStr, hasMapping := extMIMEMap[ext]; hasMapping {
-			extEntry, allowed := allowed[NormalizeMIME(extMIMEStr)]
-			if !allowed {
+			extEntry, extAllowed := allowed[NormalizeMIME(extMIMEStr)]
+			if !extAllowed {
 				return MIMEEntry{}, "extension_blocked",
 					&uploadError{msg: "Filename extension " + ext + " is not allowed (maps to blocked type " + extMIMEStr + ")"}
 			}
 			if extEntry.Category != e.Category {
+				// Office Open XML documents (.docx / .xlsx / .pptx) are
+				// zipped XML containers — http.DetectContentType correctly
+				// identifies them as application/zip on the bytes alone.
+				// The extension is the only way to distinguish a Word doc
+				// from a plain zip, so when the sniff is exactly zip and
+				// the extension maps to one of these document MIMEs, we
+				// trust the extension. Same logic for OpenDocument
+				// formats (.odt/.ods/.odp) which are also zip-based.
+				if sniffed == "application/zip" && extEntry.Category == CategoryDocument {
+					return extEntry, "", nil
+				}
 				return MIMEEntry{}, "mime_extension_mismatch",
 					&uploadError{msg: "Filename extension " + ext + " does not match detected content type " + sniffed}
 			}

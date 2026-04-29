@@ -75,7 +75,6 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 	}
 	var resp struct {
 		ID         string `json:"id"`
-		URL        string `json:"url"`
 		MIME       string `json:"mime"`
 		Size       int64  `json:"size"`
 		Width      *int   `json:"width"`
@@ -105,9 +104,29 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 	if resp.RenderMode != "inline" {
 		t.Errorf("render_mode = %q, want inline", resp.RenderMode)
 	}
-	if !strings.Contains(resp.URL, "/attachments/"+resp.ID) {
-		t.Errorf("url = %q, want to contain attachment id", resp.URL)
+	// URL deliberately omitted from the upload response — TASK-872 adds
+	// the GET handler. Until then we don't want clients baking in a 404.
+	if rawURL := gjson(rr.Body.Bytes(), "url"); rawURL != "" {
+		t.Errorf("response should not include url yet (download API ships in TASK-872), got %q", rawURL)
 	}
+}
+
+// gjson is a minimal JSON field reader for asserting on the absence of
+// a key. We don't pull in tidwall/gjson — callers only ever look at one
+// shallow string field per call.
+func gjson(b []byte, key string) string {
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func TestUpload_RejectsExeAsPNG(t *testing.T) {
@@ -272,6 +291,38 @@ func TestUpload_NoRegistryWired(t *testing.T) {
 	}
 }
 
+// TestUpload_QuotaCheckResolves regression-tests Codex round 1 finding 3:
+// CheckLimit("storage_bytes") returns "unknown workspace feature", so the
+// previous warning path silently dropped every probe. We now use
+// WorkspaceStorageLimit which understands byte-counted features. The
+// test asserts the storage helpers themselves return non-error values
+// after a real upload — that is what the warning path needs to function.
+func TestUpload_QuotaCheckResolves(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	rr := doMultipartUpload(srv, slug, "small.png", realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d", rr.Code)
+	}
+
+	wsID := mustWorkspaceID(t, srv, slug)
+	usage, err := srv.store.WorkspaceStorageUsage(wsID)
+	if err != nil {
+		t.Fatalf("WorkspaceStorageUsage err: %v", err)
+	}
+	if usage <= 0 {
+		t.Fatalf("usage = %d, want > 0", usage)
+	}
+	limit, err := srv.store.WorkspaceStorageLimit(wsID)
+	if err != nil {
+		t.Fatalf("WorkspaceStorageLimit err: %v (the warning path would silently drop this)", err)
+	}
+	// Self-hosted owner → -1 (unlimited). On other plans we'd see a positive limit.
+	if limit < -1 {
+		t.Errorf("limit = %d, want >= -1", limit)
+	}
+}
+
 // Ensure unused imports don't cause CI issues even if helpers are removed.
 var _ = io.Discard
 var _ = models.Attachment{}
+var _ = strings.Contains
