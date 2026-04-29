@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -314,6 +315,16 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
+	// `?format=tar` switches to the tar.gz bundle that includes
+	// attachment blobs (TASK-884). Default stays JSON for backward
+	// compat — existing automation hitting this endpoint without a
+	// query param keeps working unchanged. The CLI's
+	// `pad workspace export` opts into the bundle by default.
+	if strings.EqualFold(r.URL.Query().Get("format"), "tar") {
+		s.handleExportWorkspaceBundle(w, r)
+		return
+	}
+
 	if !requireMinRole(w, r, "owner") {
 		return
 	}

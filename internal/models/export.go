@@ -12,6 +12,41 @@ type WorkspaceExport struct {
 	ItemVersions []ItemVersionExport `json:"item_versions,omitempty"`
 }
 
+// AttachmentManifestEntry describes one attachment blob in the
+// tar-bundle export's attachments/manifest.json. The bundle layout is:
+//
+//	pad-export.json                     # the WorkspaceExport above
+//	attachments/manifest.json           # uuid → AttachmentManifestEntry
+//	attachments/<uuid>.<ext>            # the actual blob bytes
+//
+// Thumbnails are NOT bundled — they're re-derived on import via the
+// existing thumbnail pipeline. ParentID and Variant therefore stay
+// nil/empty for every entry shipped in a bundle, but the fields are
+// kept here for forward compatibility (e.g. if a future format
+// version starts shipping pre-derived variants).
+type AttachmentManifestEntry struct {
+	ID          string `json:"id"`           // attachment UUID (the original)
+	Filename    string `json:"filename"`     // user-facing filename
+	MIME        string `json:"mime"`         // canonical MIME from upload time
+	SizeBytes   int64  `json:"size_bytes"`   // bytes on disk (matches the blob)
+	ContentHash string `json:"content_hash"` // sha256 hex, the dedupe key
+	Width       *int   `json:"width,omitempty"`
+	Height      *int   `json:"height,omitempty"`
+	ItemID      string `json:"item_id,omitempty"` // exporter's item UUID; remapped on import
+	ParentID    string `json:"parent_id,omitempty"`
+	Variant     string `json:"variant,omitempty"`
+	UploadedBy  string `json:"uploaded_by"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// AttachmentManifest is the top-level shape of attachments/manifest.json
+// inside an export bundle. Wraps a list of entries plus a small
+// "schema" version so the import path can validate / migrate.
+type AttachmentManifest struct {
+	Version int                       `json:"version"` // manifest version, 1
+	Entries []AttachmentManifestEntry `json:"entries"`
+}
+
 // WorkspaceExportMeta holds workspace metadata for export.
 type WorkspaceExportMeta struct {
 	Name        string `json:"name"`

@@ -4526,31 +4526,95 @@ Examples:
 
 func exportCmd() *cobra.Command {
 	var outputFile string
+	var bundle bool
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export workspace to JSON",
-		Long:  `Export the current workspace (collections, items, comments, versions) to a portable JSON file.`,
+		Short: "Export workspace to JSON or a self-contained tar.gz bundle",
+		Long: `Export the current workspace (collections, items, comments, versions)
+to a portable JSON file. Pass --bundle to include attachment blobs in
+a tar.gz bundle:
+
+  pad-export.json              — workspace metadata + items + collections + ...
+  attachments/manifest.json    — uuid → {filename, mime, size, content_hash}
+  attachments/<uuid>.<ext>     — original attachment blobs
+
+The default stays JSON for now so existing pad import flows keep
+working. The bundle becomes the default once pad import learns to
+unpack tar.gz (planned for TASK-885).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			resp, err := client.RawGet("/workspaces/" + ws + "/export")
+			path := "/workspaces/" + ws + "/export"
+			defaultExt := ".json"
+			if bundle {
+				path += "?format=tar"
+				defaultExt = ".tar.gz"
+			}
+
+			if outputFile == "" && bundle && term.IsTerminal(int(os.Stdout.Fd())) {
+				// Refuse to dump binary tar.gz to a TTY — would render
+				// as garbage and likely terminate the user's session
+				// when control codes get interpreted.
+				return fmt.Errorf("refusing to write binary tar.gz to a terminal; pass -o <file> or pipe to a file")
+			}
+
+			// Stream rather than buffer. Workspaces with multi-GB of
+			// attachments would otherwise pin the entire bundle in
+			// memory before the first byte hits disk — defeats the
+			// server-side streaming design and risks OOM (Codex
+			// review feedback on PR #305).
+			var dest io.Writer = os.Stdout
+			var f *os.File
+			if outputFile != "" {
+				if filepath.Ext(outputFile) == "" {
+					outputFile += defaultExt
+				}
+				var err error
+				f, err = os.Create(outputFile)
+				if err != nil {
+					return fmt.Errorf("create file: %w", err)
+				}
+				defer f.Close()
+				dest = f
+			}
+
+			n, resp, err := client.RawStream(path, dest)
 			if err != nil {
+				if outputFile != "" {
+					_ = os.Remove(outputFile) // don't leave a partial file behind
+				}
 				return fmt.Errorf("export: %w", err)
 			}
 
-			if outputFile != "" {
-				if err := os.WriteFile(outputFile, resp, 0644); err != nil {
-					return fmt.Errorf("write file: %w", err)
+			// Bundle responses carry an HTTP trailer that signals
+			// whether the server-side stream completed cleanly. A
+			// missing or non-"ok" value means the bundle is corrupt
+			// (an attachment blob got truncated mid-stream, etc.) —
+			// delete the partial file and surface failure rather
+			// than printing success. The legacy JSON path doesn't
+			// set the trailer; we only check it for --bundle.
+			if bundle && resp != nil {
+				status := resp.Trailer.Get("X-Bundle-Status")
+				if status != "ok" {
+					if outputFile != "" {
+						_ = os.Remove(outputFile)
+					}
+					return fmt.Errorf("export bundle is incomplete (server X-Bundle-Status=%q); check server logs for stream errors", status)
 				}
-				fmt.Printf("Exported workspace %q to %s\n", ws, outputFile)
-			} else {
-				os.Stdout.Write(resp)
+			}
+
+			if f != nil {
+				if err := f.Close(); err != nil {
+					return fmt.Errorf("close file: %w", err)
+				}
+				fmt.Printf("Exported workspace %q to %s (%s)\n", ws, outputFile, humanBytes(n))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
+	cmd.Flags().BoolVar(&bundle, "bundle", false, "emit a tar.gz bundle including attachment blobs (TASK-885 will make this the default once pad import handles bundles)")
 	return cmd
 }
 
