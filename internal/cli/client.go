@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -567,6 +568,119 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// --- Attachments ---
+//
+// AttachmentUploadResult mirrors the JSON returned by
+// POST /api/v1/workspaces/{slug}/attachments. It is the API contract
+// callers depend on; do NOT replace it with models.Attachment which has
+// different field names and embeds DB-only fields.
+type AttachmentUploadResult struct {
+	ID         string `json:"id"`
+	URL        string `json:"url"`
+	MIME       string `json:"mime"`
+	Size       int64  `json:"size"`
+	Width      *int   `json:"width,omitempty"`
+	Height     *int   `json:"height,omitempty"`
+	Filename   string `json:"filename"`
+	Category   string `json:"category"`
+	RenderMode string `json:"render_mode"`
+}
+
+// UploadAttachment streams the contents of body to
+// POST /api/v1/workspaces/{wsSlug}/attachments as a multipart file
+// part. filename is what the server stores (after basenaming); itemRef
+// is optional and associates the upload with a parent item via the
+// item_id form field — pass empty string for a free-floating upload.
+//
+// The caller is responsible for closing body if it's a *os.File or
+// other io.Closer; this method only reads from it.
+func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Reader) (*AttachmentUploadResult, error) {
+	// Build the multipart envelope into a pipe so we don't have to
+	// buffer the entire upload in memory before sending.
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+
+	// Spawn a goroutine that writes the multipart body. We can't write
+	// inline because the http.Request.Body needs to be a Reader the
+	// transport pulls from in parallel with us writing.
+	go func() {
+		defer pw.Close()
+		defer mw.Close()
+
+		if itemRef != "" {
+			if err := mw.WriteField("item_id", itemRef); err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("write item_id field: %w", err))
+				return
+			}
+		}
+		part, err := mw.CreateFormFile("file", filename)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("create file part: %w", err))
+			return
+		}
+		if _, err := io.Copy(part, body); err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("stream upload body: %w", err))
+			return
+		}
+	}()
+
+	req, err := c.newRequest("POST", "/workspaces/"+wsSlug+"/attachments", pr)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	// Uploads can be large and slow over a remote link. The default
+	// 10s ClientTimeout is too tight for a 25 MiB upload over a
+	// constrained connection, so use a fresh client with a generous
+	// timeout for this single request only.
+	uploadClient := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := uploadClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("upload attachment: %w", err)
+	}
+	defer resp.Body.Close()
+	var result AttachmentUploadResult
+	if err := c.handleResponse(resp, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DownloadAttachment streams the bytes of an attachment into w. Returns
+// the Content-Type the server set and the number of bytes copied so
+// callers can verify size or render with the right MIME hint.
+//
+// When variant is non-empty, requests ?variant=<variant>; the server
+// silently falls back to the original if the derived row doesn't exist
+// (TASK-872 / TASK-878 contract).
+func (c *Client) DownloadAttachment(wsSlug, attachmentID, variant string, w io.Writer) (mime string, size int64, err error) {
+	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	if variant != "" {
+		path += "?variant=" + url.QueryEscape(variant)
+	}
+	req, err := c.newRequest("GET", path, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	// Use a generous timeout — large blobs over a slow link otherwise
+	// trip the default 10s on the package-shared client.
+	dlClient := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := dlClient.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("download attachment: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", 0, c.parseError(resp)
+	}
+	n, copyErr := io.Copy(w, resp.Body)
+	if copyErr != nil {
+		return resp.Header.Get("Content-Type"), n, fmt.Errorf("stream download: %w", copyErr)
+	}
+	return resp.Header.Get("Content-Type"), n, nil
 }
 
 // newRequest creates an http.Request with auth and agent headers set.

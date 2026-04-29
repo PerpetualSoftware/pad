@@ -41,7 +41,8 @@ import type {
 	TOTPSetupResponse,
 	TOTPVerifyResponse,
 	TOTPDisableResponse,
-	AdminBillingStats
+	AdminBillingStats,
+	AttachmentUploadResult
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -702,6 +703,90 @@ export const api = {
 				request<{ approved: boolean; user: { id: string; email: string; name: string; role: string } }>(`/auth/cli/sessions/${code}/approve`, {
 					method: 'POST'
 				})
+		}
+	},
+
+	// ── Attachments ──────────────────────────────────────────────────────────
+	//
+	// The upload endpoint takes multipart/form-data, not JSON, so it
+	// bypasses the shared `request` helper (which sets Content-Type:
+	// application/json). It still uses fetch directly with cookies and
+	// CSRF — same behavior every other state-changing request gets.
+	//
+	// downloadUrl is a pure URL builder so callers can wire it directly
+	// into <img src=...>, anchor href, etc. — no fetch needed.
+
+	attachments: {
+		/**
+		 * Upload a file via multipart POST. Returns the persisted
+		 * attachment metadata + the canonical download URL.
+		 *
+		 * @param workspaceSlug  workspace slug (not ID)
+		 * @param file           the File / Blob to upload
+		 * @param itemId         optional parent item UUID — pass undefined
+		 *                       for a free-floating upload
+		 * @param onProgress     optional progress callback. Note: fetch()
+		 *                       has no upload-progress API; pass this only
+		 *                       when the caller wraps with XMLHttpRequest.
+		 *                       Currently unused by this method but kept
+		 *                       in the signature so the editor plugin can
+		 *                       opt in later (TASK-875).
+		 */
+		async upload(
+			workspaceSlug: string,
+			file: File | Blob,
+			itemId?: string,
+			_onProgress?: (loaded: number, total: number) => void
+		): Promise<AttachmentUploadResult> {
+			const fd = new FormData();
+			// FormData.append needs a filename string for Blob inputs;
+			// File already carries its own name.
+			if (file instanceof File) {
+				fd.append('file', file);
+			} else {
+				fd.append('file', file, 'upload.bin');
+			}
+			if (itemId) fd.append('item_id', itemId);
+
+			const headers: Record<string, string> = {};
+			const csrf = getCSRFToken();
+			if (csrf) headers['X-CSRF-Token'] = csrf;
+
+			const resp = await fetch(`${BASE}/workspaces/${workspaceSlug}/attachments`, {
+				method: 'POST',
+				headers,
+				credentials: 'same-origin',
+				body: fd
+			});
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					window.location.href = '/login';
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			if (!resp.ok) {
+				const body = await resp.json().catch(() => null);
+				if (body?.error) throw new PadApiError(body.error);
+				throw new Error(`upload failed: ${resp.status}`);
+			}
+			return (await resp.json()) as AttachmentUploadResult;
+		},
+
+		/**
+		 * Build the GET URL for an attachment. Suitable for <img src> and
+		 * <a href> — the browser sends the auth cookie automatically.
+		 *
+		 * `variant` is optional and currently supports "thumb-sm" or
+		 * "thumb-md"; the server falls back to the original if no
+		 * derived row exists.
+		 */
+		downloadUrl(
+			workspaceSlug: string,
+			attachmentId: string,
+			variant?: 'thumb-sm' | 'thumb-md' | 'original'
+		): string {
+			const base = `${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}`;
+			return variant ? `${base}?variant=${encodeURIComponent(variant)}` : base;
 		}
 	},
 

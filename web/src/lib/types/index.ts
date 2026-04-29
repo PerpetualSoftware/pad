@@ -746,6 +746,45 @@ export interface AdminBillingStats {
 	cache_age_seconds: number;
 }
 
+// ─── Attachments ─────────────────────────────────────────────────────────────
+//
+// Mirrors the Go internal/models/attachment.go shape for the database row,
+// plus the upload-handler response shape (AttachmentUploadResult — not all
+// fields overlap with the row because the response also carries derived
+// metadata like category and render_mode).
+
+/** A row in the attachments table. */
+export interface Attachment {
+	id: string;
+	workspace_id: string;
+	item_id?: string | null; // null = orphan, eligible for GC
+	uploaded_by: string;
+	storage_key: string;     // "<backend>:<sha256>"
+	content_hash: string;
+	mime_type: string;
+	size_bytes: number;
+	filename: string;
+	width?: number | null;
+	height?: number | null;
+	parent_id?: string | null;
+	variant?: string | null; // "original" | "thumb-sm" | "thumb-md" | null
+	created_at: string;
+	deleted_at?: string | null;
+}
+
+/** Server response from POST /api/v1/workspaces/{slug}/attachments. */
+export interface AttachmentUploadResult {
+	id: string;
+	url: string;
+	mime: string;
+	size: number;
+	width?: number | null;
+	height?: number | null;
+	filename: string;
+	category: 'image' | 'video' | 'audio' | 'document' | 'text' | 'archive' | 'other';
+	render_mode: 'inline' | 'chip' | 'download';
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

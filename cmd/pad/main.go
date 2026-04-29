@@ -94,6 +94,7 @@ func main() {
 		githubCmd(),
 		roleCmd(),
 		webhooksCmd(),
+		attachmentCmd(),
 		dbCmd(),
 		completionCmd(),
 	)
@@ -6086,5 +6087,157 @@ func starredCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&all, "all", false, "include completed/terminal items")
 
+	return cmd
+}
+
+// attachmentCmd is the root for `pad attachment ...` operations.
+//
+// Phase 1 ships upload + download — the endpoints TASK-871 and TASK-872
+// added. List + delete subcommands are intentionally absent because the
+// underlying endpoints don't exist yet (they ship with TASK-881 / a
+// future GC task). Adding clients that hit 404s is worse than not
+// shipping them — same logic that kept "url" out of the upload response
+// until the GET handler landed.
+func attachmentCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "attachment",
+		Short: "Upload and download item attachments",
+		Long: `Upload and download attachments (images, files) on items.
+
+Examples:
+  pad attachment upload TASK-5 ./screenshot.png
+  pad attachment upload TASK-5 ./design.pdf --filename "Design v2.pdf"
+  pad attachment download <attachment-id> ./screenshot.png
+  pad attachment download <attachment-id> --variant thumb-sm ./thumb.png
+
+Attachments belong to a workspace and may optionally reference an item.
+Pass "-" as the item argument to upload without associating with any item.`,
+	}
+
+	cmd.AddCommand(
+		attachmentUploadCmd(),
+		attachmentDownloadCmd(),
+	)
+	return cmd
+}
+
+func attachmentUploadCmd() *cobra.Command {
+	var filenameFlag string
+
+	cmd := &cobra.Command{
+		Use:   "upload <item-ref-or-dash> <path>",
+		Short: "Upload a file as an item attachment",
+		Long: `Upload a file. The first argument is the parent item (issue ref or slug).
+Use "-" to upload without associating with any item.
+
+Examples:
+  pad attachment upload TASK-5 ./screenshot.png
+  pad attachment upload - ./standalone.pdf
+  pad attachment upload TASK-5 ./design.pdf --filename "Design v2.pdf"`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			itemArg := args[0]
+			path := args[1]
+
+			// "-" means "no parent item".
+			itemRef := ""
+			if itemArg != "" && itemArg != "-" {
+				// Resolve via GetItem so the user can pass either a ref
+				// like TASK-5 or a slug — and we fail fast with a useful
+				// error if the item doesn't exist.
+				it, err := client.GetItem(ws, itemArg)
+				if err != nil {
+					return fmt.Errorf("resolve item %q: %w", itemArg, err)
+				}
+				itemRef = it.ID
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return fmt.Errorf("open %s: %w", path, err)
+			}
+			defer f.Close()
+
+			filename := filenameFlag
+			if filename == "" {
+				filename = filepath.Base(path)
+			}
+
+			result, err := client.UploadAttachment(ws, itemRef, filename, f)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(result)
+			}
+
+			fmt.Printf("Uploaded %s (%s, %d bytes)\n", result.ID, result.MIME, result.Size)
+			fmt.Printf("URL: %s\n", result.URL)
+			if result.Width != nil && result.Height != nil {
+				fmt.Printf("Dimensions: %d × %d\n", *result.Width, *result.Height)
+			}
+			fmt.Printf("Render mode: %s (category: %s)\n", result.RenderMode, result.Category)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&filenameFlag, "filename", "", "override the stored filename (defaults to basename of path)")
+	return cmd
+}
+
+func attachmentDownloadCmd() *cobra.Command {
+	var variantFlag string
+
+	cmd := &cobra.Command{
+		Use:   "download <attachment-id> <out-path>",
+		Short: "Download an attachment by ID",
+		Long: `Download the bytes of an attachment by its UUID. Pass "-" as the out
+path to stream to stdout (useful for piping into image viewers etc.).
+
+Examples:
+  pad attachment download <id> ./screenshot.png
+  pad attachment download <id> --variant thumb-sm ./thumb.png
+  pad attachment download <id> -  | open -f -a Preview`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			id := args[0]
+			outPath := args[1]
+
+			var w io.Writer
+			if outPath == "-" {
+				w = os.Stdout
+			} else {
+				f, err := os.Create(outPath)
+				if err != nil {
+					return fmt.Errorf("create %s: %w", outPath, err)
+				}
+				defer f.Close()
+				w = f
+			}
+
+			mime, n, err := client.DownloadAttachment(ws, id, variantFlag, w)
+			if err != nil {
+				return err
+			}
+
+			// Only chatter to stderr when piping to stdout, so the
+			// payload stream stays clean.
+			if outPath == "-" {
+				fmt.Fprintf(os.Stderr, "wrote %d bytes (%s)\n", n, mime)
+			} else {
+				fmt.Printf("Saved %d bytes (%s) to %s\n", n, mime, outPath)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&variantFlag, "variant", "", "request a derived variant (thumb-sm | thumb-md)")
 	return cmd
 }
