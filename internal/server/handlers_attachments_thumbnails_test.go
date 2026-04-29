@@ -1,3 +1,5 @@
+//go:build !libvips
+
 package server
 
 import (

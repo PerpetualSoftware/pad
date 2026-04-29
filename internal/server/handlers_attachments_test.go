@@ -20,8 +20,13 @@ import (
 
 // testServerWithAttachments returns a fresh test server with the
 // attachment registry wired against an FSStore rooted in t.TempDir(),
-// and the pure-Go image processor wired so thumbnail derivation
-// (TASK-878) runs end-to-end in tests that upload images.
+// and (on the pure-Go default build) the image processor wired so
+// thumbnail derivation (TASK-878) runs end-to-end in tests that
+// upload images. The image processor wiring is delegated to
+// wireTestImageProcessor — split across two build-tagged files
+// (`testimageprocessor_purego_test.go` / `_libvips_test.go`) so
+// `go test -tags libvips ./internal/server` doesn't panic on the
+// not-yet-implemented libvips NewProcessor.
 func testServerWithAttachments(t *testing.T) (*Server, string) {
 	t.Helper()
 	srv := testServer(t)
@@ -33,7 +38,7 @@ func testServerWithAttachments(t *testing.T) (*Server, string) {
 	reg := attachments.NewRegistry()
 	reg.Register(attachments.FSPrefix, fs)
 	srv.SetAttachments(reg, 0)
-	srv.SetImageProcessor(attachments.NewProcessor())
+	wireTestImageProcessor(srv)
 	slug := createWSForTest(t, srv)
 	return srv, slug
 }
