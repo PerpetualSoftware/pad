@@ -8,6 +8,7 @@
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
+	import StorageTab from '$lib/components/settings/StorageTab.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -49,6 +50,7 @@
 		{ id: 'general', label: 'General', icon: '\u2699\uFE0F' },
 		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65' },
 		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1' },
+		{ id: 'storage', label: 'Storage', icon: '\uD83D\uDCBE' },
 		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' },
 	];
 	let validTabIds = $derived(tabs.map(t => t.id));
@@ -676,6 +678,10 @@
 						onclose={() => (editingCollection = null)}
 					/>
 				{/if}
+			</section>
+		{:else if activeTab === 'storage'}
+			<section class="section">
+				<StorageTab {wsSlug} {collections} />
 			</section>
 		{:else if activeTab === 'danger'}
 			<section class="section">

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -125,6 +126,281 @@ func (s *Store) GetAttachmentVariant(parentID, variant string) (*models.Attachme
 		return nil, fmt.Errorf("get attachment variant: %w", err)
 	}
 	return a, nil
+}
+
+// AttachmentListFilters narrow the WorkspaceAttachments result set.
+// Zero values mean "no filter on this dimension". The handler turns
+// query-string parameters into this struct so the SQL builder stays
+// pure and unit-testable.
+type AttachmentListFilters struct {
+	// MimeCategory restricts to a single MIME category bucket
+	// (matches attachments.Category — "image", "document", etc.).
+	// Empty = all categories. Translated to a MIME-prefix LIKE clause
+	// because the attachments table only stores the raw MIME, not a
+	// pre-classified category column.
+	MimeCategory string
+
+	// Attached restricts to attachments associated with an item.
+	Attached bool
+
+	// Unattached restricts to orphan attachments (item_id IS NULL).
+	// Mutually exclusive with Attached — handler validates upstream.
+	Unattached bool
+
+	// CollectionID restricts to attachments belonging to items in
+	// this collection. Empty = no collection filter.
+	CollectionID string
+
+	// Sort field. Accepts "size", "filename", "created_at" with an
+	// optional " desc" suffix. Empty = "created_at desc" (newest first).
+	Sort string
+
+	// Limit caps the page size. Clamped to [1, 200] by the handler.
+	Limit int
+
+	// Offset pages forward. Combined with Limit + Total for the UI's
+	// classic page navigator. Negative values clamped to 0.
+	Offset int
+}
+
+// AttachmentListItem is a row from WorkspaceAttachments enriched with
+// the parent item's title + ref + collection slug so the UI can render
+// a clickable link without a follow-up GET. Item fields are nullable
+// for orphan rows.
+type AttachmentListItem struct {
+	models.Attachment
+	ItemTitle      *string `json:"item_title,omitempty"`
+	ItemRef        *string `json:"item_ref,omitempty"` // "TASK-5" form
+	ItemSlug       *string `json:"item_slug,omitempty"`
+	CollectionSlug *string `json:"collection_slug,omitempty"`
+}
+
+// allowedAttachmentSorts pins the columns + directions the list
+// endpoint accepts, so a hand-crafted sort= query can't smuggle in
+// arbitrary SQL. Map values are the literal SQL fragment we splice in.
+var allowedAttachmentSorts = map[string]string{
+	"size":            "a.size_bytes ASC",
+	"size_desc":       "a.size_bytes DESC",
+	"filename":        "a.filename ASC",
+	"filename_desc":   "a.filename DESC",
+	"created_at":      "a.created_at ASC",
+	"created_at_desc": "a.created_at DESC",
+}
+
+// mimePrefixForCategory maps an attachments.Category value to the
+// SQL LIKE prefix that selects all MIMEs in that bucket. Used by the
+// list filter — kept here next to the SQL it generates so the mapping
+// stays close to the storage layer that consumes it.
+func mimePrefixForCategory(category string) (prefix string, ok bool) {
+	switch category {
+	case "image":
+		return "image/%", true
+	case "video":
+		return "video/%", true
+	case "audio":
+		return "audio/%", true
+	}
+	return "", false
+}
+
+// WorkspaceAttachments lists original (non-derived) attachments in a
+// workspace, with optional filtering + sorting + pagination. Returns
+// the page rows and the total count of matching rows so the UI can
+// render a paginator without a second round-trip.
+//
+// Intentionally hides derived blobs (thumbnails — rows where
+// parent_id IS NOT NULL): they're managed automatically and showing
+// them in the list would clutter the page with rows the user didn't
+// upload. They still count against storage quota via
+// WorkspaceStorageUsage; the totals match the bar even when the list
+// shows only originals.
+//
+// LEFT JOIN to items + collections gives the UI everything it needs
+// to render an "in [[Task X]]" link. Soft-deleted items are returned
+// with item fields nulled out — the attachment is still visible
+// (a deleted item could still be restored), but the link target
+// isn't reachable.
+func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListFilters) ([]AttachmentListItem, int, error) {
+	// Build the WHERE clause incrementally. Every branch parameter
+	// goes through the placeholder slice — no string concatenation of
+	// user input. Sort is the only user-controllable splice and it
+	// goes through the allowedAttachmentSorts allowlist.
+	var conds []string
+	var args []any
+
+	conds = append(conds, "a.workspace_id = ?")
+	args = append(args, workspaceID)
+	conds = append(conds, "a.deleted_at IS NULL")
+	conds = append(conds, "a.parent_id IS NULL") // hide derived blobs
+
+	if filters.Attached {
+		conds = append(conds, "a.item_id IS NOT NULL")
+	}
+	if filters.Unattached {
+		conds = append(conds, "a.item_id IS NULL")
+	}
+	if prefix, ok := mimePrefixForCategory(filters.MimeCategory); ok {
+		conds = append(conds, "a.mime_type LIKE ?")
+		args = append(args, prefix)
+	}
+	if filters.CollectionID != "" {
+		conds = append(conds, "i.collection_id = ?")
+		args = append(args, filters.CollectionID)
+	}
+
+	where := strings.Join(conds, " AND ")
+
+	// Count total before applying limit/offset so the UI can render
+	// "showing 1–25 of 312".
+	var total int
+	if err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM attachments a
+		LEFT JOIN items i ON i.id = a.item_id AND i.deleted_at IS NULL
+		WHERE `+where), args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count workspace attachments: %w", err)
+	}
+
+	orderBy, ok := allowedAttachmentSorts[filters.Sort]
+	if !ok {
+		orderBy = "a.created_at DESC" // sensible default — newest first
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := filters.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Column list is the same as attachmentColumns but prefixed with
+	// `a.` so SQLite doesn't choke on the ambiguous `id` shared with
+	// the joined items table.
+	const aliasedAttachmentColumns = `a.id, a.workspace_id, a.item_id, a.uploaded_by, a.storage_key, a.content_hash,
+		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at`
+
+	q := `
+		SELECT ` + aliasedAttachmentColumns + `,
+		       i.title, i.slug, i.item_number,
+		       c.slug, c.name
+		FROM attachments a
+		LEFT JOIN items i       ON i.id = a.item_id AND i.deleted_at IS NULL
+		LEFT JOIN collections c ON c.id = i.collection_id
+		WHERE ` + where + `
+		ORDER BY ` + orderBy + `
+		LIMIT ? OFFSET ?`
+
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(s.q(q), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list workspace attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AttachmentListItem
+	for rows.Next() {
+		var a models.Attachment
+		var itemID, parentID, variant, deletedAt *string
+		var width, height *int
+		var createdAt string
+
+		// Item + collection columns from the LEFT JOIN. All nullable.
+		var itemTitle, itemSlug *string
+		var itemNumber *int
+		var collSlug, collName *string
+
+		if err := rows.Scan(
+			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
+			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
+			&parentID, &variant, &createdAt, &deletedAt,
+			&itemTitle, &itemSlug, &itemNumber,
+			&collSlug, &collName,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan workspace attachment: %w", err)
+		}
+		a.ItemID = itemID
+		a.ParentID = parentID
+		a.Variant = variant
+		a.Width = width
+		a.Height = height
+		a.CreatedAt = parseTime(createdAt)
+		a.DeletedAt = parseTimePtr(deletedAt)
+
+		row := AttachmentListItem{Attachment: a}
+		if itemTitle != nil {
+			row.ItemTitle = itemTitle
+		}
+		if itemSlug != nil {
+			row.ItemSlug = itemSlug
+		}
+		if collSlug != nil {
+			row.CollectionSlug = collSlug
+		}
+		// Compose ref like "TASK-5" when we have both pieces.
+		// collection.name uppercased + first 5 letters → ref prefix
+		// is non-trivial (it's stored elsewhere), so the UI builds
+		// the display label from item_title + collection_slug. We
+		// surface item_number as the ref so URL building is direct.
+		if itemNumber != nil && collSlug != nil {
+			ref := fmt.Sprintf("%s/%d", *collSlug, *itemNumber)
+			row.ItemRef = &ref
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate workspace attachments: %w", err)
+	}
+	return out, total, nil
+}
+
+// SoftDeleteAttachment marks the given attachment row deleted (and
+// every variant whose parent_id points at it) so the orphan GC will
+// reclaim the bytes after the grace period. Returns sql.ErrNoRows if
+// no live row matches.
+//
+// We mark variants via a separate UPDATE keyed on parent_id rather
+// than letting a foreign-key cascade do it — the attachments table
+// has no FK on parent_id, by design (DOC-865: thumbnails are
+// independent rows so a missing original doesn't break a list query).
+//
+// The blob on disk is NOT removed here; the same content_hash may be
+// referenced by other rows (content-addressed dedupe), so reclamation
+// is the GC's job once it can prove no live row references the hash.
+func (s *Store) SoftDeleteAttachment(id string) error {
+	ts := now()
+	res, err := s.db.Exec(s.q(`
+		UPDATE attachments
+		SET deleted_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`), ts, id)
+	if err != nil {
+		return fmt.Errorf("soft delete attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("soft delete attachment rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	// Also tombstone any thumbnail variants. They're synthetic rows
+	// derived from the original; without the original they have no
+	// reason to exist. Errors here are non-fatal — orphan GC will
+	// still reach them eventually via the deleted-parent path.
+	if _, err := s.db.Exec(s.q(`
+		UPDATE attachments
+		SET deleted_at = ?
+		WHERE parent_id = ? AND deleted_at IS NULL
+	`), ts, id); err != nil {
+		// Log via the caller; we don't have a logger here. The row
+		// went through, so don't fail the request.
+		return nil
+	}
+	return nil
 }
 
 // WorkspaceStorageUsage returns the total bytes consumed by non-deleted

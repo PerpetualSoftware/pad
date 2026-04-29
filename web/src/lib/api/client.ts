@@ -46,7 +46,9 @@ import type {
 	AttachmentTransformRequest,
 	AttachmentTransformResult,
 	ServerCapabilities,
-	WorkspaceStorageInfo
+	WorkspaceStorageInfo,
+	AttachmentListFilters,
+	AttachmentListResponse
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -859,6 +861,49 @@ export const api = {
 		storageUsage(workspaceSlug: string): Promise<WorkspaceStorageInfo> {
 			return request<WorkspaceStorageInfo>(
 				`/workspaces/${workspaceSlug}/storage/usage`
+			);
+		},
+
+		/**
+		 * Paginated list of attachments in a workspace, used by the
+		 * Settings → Storage page. Hides derived blobs (thumbnails) by
+		 * default — those are managed automatically and shouldn't show
+		 * as user-visible rows.
+		 *
+		 * `total` in the response is the count of all matching rows
+		 * (across all pages); pair it with `limit` + `offset` to render
+		 * a classic paginator. Server clamps limit to [1, 200].
+		 */
+		list(
+			workspaceSlug: string,
+			filters: AttachmentListFilters = {}
+		): Promise<AttachmentListResponse> {
+			const params = new URLSearchParams();
+			if (filters.category) params.set('category', filters.category);
+			if (filters.item) params.set('item', filters.item);
+			if (filters.collection) params.set('collection', filters.collection);
+			if (filters.sort) params.set('sort', filters.sort);
+			if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+			if (filters.offset !== undefined) params.set('offset', String(filters.offset));
+			const qs = params.toString();
+			const suffix = qs ? `?${qs}` : '';
+			return request<AttachmentListResponse>(
+				`/workspaces/${workspaceSlug}/attachments${suffix}`
+			);
+		},
+
+		/**
+		 * Soft-delete an attachment by ID. The blob on disk stays put
+		 * (content-addressed dedupe means the same hash may still be
+		 * referenced) — orphan GC reclaims past the grace period.
+		 *
+		 * Returns 204 No Content. Refuses to delete derived
+		 * (thumbnail) rows — caller must delete the original.
+		 */
+		async delete(workspaceSlug: string, attachmentId: string): Promise<void> {
+			await request<void>(
+				`/workspaces/${workspaceSlug}/attachments/${attachmentId}`,
+				{ method: 'DELETE' }
 			);
 		}
 	},

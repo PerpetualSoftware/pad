@@ -731,9 +731,11 @@ func (s *Server) setupRouter() {
 					// path on HEAD; http.ServeContent already strips the body
 					// on the seekable path.
 					r.Post("/attachments", s.handleUploadAttachment)
+					r.Get("/attachments", s.handleListWorkspaceAttachments)
 					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Head("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Post("/attachments/{attachmentID}/transform", s.handleTransformAttachment)
+					r.Delete("/attachments/{attachmentID}", s.handleDeleteWorkspaceAttachment)
 
 					// Storage usage summary for Settings → Storage and other
 					// quota-aware UI surfaces (TASK-881). Cached behind a
