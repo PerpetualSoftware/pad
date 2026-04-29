@@ -28,6 +28,20 @@ import (
 // in cmd/pad/main.go).
 const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 
+// importMetadataMaxBytes is the size ceiling for the small JSON
+// payloads inside a bundle (pad-export.json + attachments/manifest.json).
+// Independent of the per-blob cap so a deployment that LOWERS
+// PAD_ATTACHMENT_MAX_BYTES (e.g. to 1 MiB for a tightly-controlled
+// host) doesn't inadvertently reject metadata for a workspace
+// nobody intended to gate on attachment-blob limits. (Codex P2 on
+// PR #306 round 5.)
+//
+// 100 MiB comfortably holds a workspace with many thousands of
+// items + version history. Bumped via the import bundle cap, not
+// per-attachment cap, since metadata size scales with the export's
+// item count, not attachment sizes.
+const importMetadataMaxBytes int64 = 100 << 20 // 100 MiB
+
 // effectiveBlobMaxBytes returns the per-blob ceiling for bundle
 // import — matches whatever the upload handler accepts so an
 // operator who raised PAD_ATTACHMENT_MAX_BYTES on the source can
@@ -161,11 +175,12 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 		switch {
 		case hdr.Name == "pad-export.json":
 			// pad-export.json can grow large for content-heavy
-			// workspaces (items + version history). Cap at 4× the
-			// per-blob ceiling — generous, still bounded, and scales
-			// with operator-set PAD_ATTACHMENT_MAX_BYTES.
-			if hdr.Size > blobCap*4 {
-				return nil, fmt.Errorf("pad-export.json exceeds %d-byte cap (declared %d)", blobCap*4, hdr.Size)
+			// workspaces (items + version history). Use the
+			// metadata-specific cap so deployments that lower
+			// PAD_ATTACHMENT_MAX_BYTES (e.g. to 1 MiB) don't
+			// inadvertently make metadata fail.
+			if hdr.Size > importMetadataMaxBytes {
+				return nil, fmt.Errorf("pad-export.json exceeds %d-byte cap (declared %d)", importMetadataMaxBytes, hdr.Size)
 			}
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {
@@ -199,9 +214,12 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 					message: "Bundle ordering violation: manifest.json before pad-export.json",
 				}
 			}
-			if hdr.Size > blobCap {
+			// Manifest size scales with attachment count, not blob
+			// content, so use the metadata cap rather than the
+			// per-blob one (same rationale as pad-export.json above).
+			if hdr.Size > importMetadataMaxBytes {
 				return ws, fmt.Errorf("manifest.json exceeds %d-byte cap (declared %d)",
-					blobCap, hdr.Size)
+					importMetadataMaxBytes, hdr.Size)
 			}
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {
