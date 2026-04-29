@@ -2,20 +2,28 @@
 
 package attachments
 
+import "log/slog"
+
 // NewProcessor on the libvips build is a placeholder until Phase 2
-// ships the real vips-backed implementation (DOC-865, "ImageProcessor
-// interface with build-tagged backends" decision). Building with
-// `-tags libvips` still compiles cleanly — the panic only fires if
-// callers actually instantiate the processor at runtime, which gives
-// us a loud, obvious "you booted into a half-finished build" signal
-// rather than silently degrading.
+// ships the real govips-v2-backed implementation (DOC-865,
+// "ImageProcessor interface with build-tagged backends" decision).
 //
-// The Phase 2 PR will replace this body with the real
-// govips-v2-backed implementation (Decode/Resize/Rotate/Crop/Encode
-// over a *vips.ImageRef internally). Format-policy helpers
-// (ThumbnailFormat / ThumbnailMime / ThumbnailExt) live in the
-// untagged processor.go and are shared by both backends as-is.
+// We return `nil` rather than panicking: every call site already
+// nil-checks the processor (the upload handler skips thumbnail
+// derivation, the capabilities endpoint reports a degraded empty
+// formats list, the editor disables rotate/crop UI). That gives a
+// libvips-tagged binary the same runtime profile as a self-host
+// build that opted out of image processing entirely — uploads
+// succeed, originals display, only derived transformations are
+// unavailable. Phase 2 swaps this for the real implementation.
+//
+// The slog.Warn at construction time is the loud-but-non-fatal
+// signal: operators booting the libvips binary today see a clear
+// "this build doesn't have image processing yet" line in their
+// logs without losing service availability for everything else.
 func NewProcessor() Processor {
-	panic("attachments: libvips backend not implemented yet — Phase 2 ships it under -tags libvips. " +
-		"Build without the libvips tag for the pure-Go default backend (TASK-878).")
+	slog.Warn("attachments: libvips backend not implemented yet — image processing disabled. " +
+		"Build without the libvips tag for the pure-Go default backend (TASK-878). " +
+		"Phase 2 will land the real govips-v2 implementation behind this same tag.")
+	return nil
 }
