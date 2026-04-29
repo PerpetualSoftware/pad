@@ -125,9 +125,9 @@ func TestFSStore_PutInvalidHashRejected(t *testing.T) {
 	s := newTestFSStore(t)
 	cases := []string{
 		"",
-		"abc",                                                                  // too short
-		strings.Repeat("g", 64),                                                // non-hex
-		strings.Repeat("a", 63),                                                // wrong length
+		"abc",                   // too short
+		strings.Repeat("g", 64), // non-hex
+		strings.Repeat("a", 63), // wrong length
 		strings.ToUpper(sha256Hex([]byte("uppercase rejected for stable path"))), // wrong case
 	}
 	for _, h := range cases {

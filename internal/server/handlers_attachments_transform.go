@@ -285,4 +285,3 @@ func transformedFilename(parent, op, format string) string {
 	}
 	return base + "." + op + ext
 }
-

@@ -142,7 +142,7 @@ func TestProcessor_Decode_RejectsTooLarge(t *testing.T) {
 		t.Fatalf("PNG template too short: %d bytes", len(template))
 	}
 	patched := append([]byte(nil), template...)
-	const huge = uint32(100000) // 100k x 100k = 1e10 px > MaxPixelsDefault (64M)
+	const huge = uint32(100000)                      // 100k x 100k = 1e10 px > MaxPixelsDefault (64M)
 	binary.BigEndian.PutUint32(patched[16:20], huge) // width
 	binary.BigEndian.PutUint32(patched[20:24], huge) // height
 	crc := crc32.ChecksumIEEE(patched[12:29])        // type + 13-byte data

@@ -33,12 +33,12 @@ func TestLookupMIME_AllowedAndRejected(t *testing.T) {
 	}
 
 	rejected := []string{
-		"image/svg+xml",                                // explicit XSS-vector block
-		"application/x-msdownload",                     // executable
-		"application/x-executable",                     // executable
+		"image/svg+xml",                                 // explicit XSS-vector block
+		"application/x-msdownload",                      // executable
+		"application/x-executable",                      // executable
 		"application/vnd.microsoft.portable-executable", // executable
-		"application/octet-stream",                     // unknown
-		"",                                             // empty
+		"application/octet-stream",                      // unknown
+		"",                                              // empty
 	}
 	for _, m := range rejected {
 		if _, ok := LookupMIME(m); ok {
@@ -78,10 +78,10 @@ var exeHeader = []byte("MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x
 
 func TestSniffMIME(t *testing.T) {
 	cases := map[string][]byte{
-		"image/png":                 pngHeader,
-		"image/jpeg":                jpegHeader,
-		"text/plain":                []byte("hello world\nthis is plain text\n"),
-		"application/octet-stream":  exeHeader, // sniff doesn't classify EXE specifically
+		"image/png":                pngHeader,
+		"image/jpeg":               jpegHeader,
+		"text/plain":               []byte("hello world\nthis is plain text\n"),
+		"application/octet-stream": exeHeader, // sniff doesn't classify EXE specifically
 	}
 	for want, head := range cases {
 		got := SniffMIME(head)
