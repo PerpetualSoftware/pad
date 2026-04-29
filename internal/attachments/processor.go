@@ -118,3 +118,48 @@ var ErrUnsupportedFormat = errors.New("attachments: image format not supported b
 // size isn't — and the upload-side caller may want to surface a
 // distinct user-facing message.
 var ErrImageTooLarge = errors.New("attachments: image dimensions exceed processor limit")
+
+// Format-policy helpers — shared between the pure-Go and libvips
+// backends. These are intentionally NOT inside a build-tagged file
+// so they compile under every build tag. Both backends produce PNG
+// for PNG inputs (preserves alpha) and JPEG for everything else.
+
+// ThumbnailFormat picks the best output format for a thumbnail
+// derived from an input of the given format. PNG inputs stay PNG so
+// transparency survives; everything else encodes as JPEG (smaller
+// files, good enough for thumbnails). Single source of truth shared
+// by the upload pipeline and tests.
+func ThumbnailFormat(inputFormat string) string {
+	if inputFormat == "png" {
+		return "png"
+	}
+	return "jpeg"
+}
+
+// ThumbnailMime returns the canonical MIME type for a thumbnail
+// encoded in `format` (paired with ThumbnailFormat above).
+func ThumbnailMime(format string) string {
+	switch format {
+	case "png":
+		return "image/png"
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// ThumbnailExt returns the file extension for a thumbnail encoded in
+// `format`. Used to build a synthetic filename for the derived row
+// (parent's basename + variant + extension) so downloads with
+// Content-Disposition expose a sensible filename.
+func ThumbnailExt(format string) string {
+	switch format {
+	case "png":
+		return ".png"
+	case "jpeg", "jpg":
+		return ".jpg"
+	default:
+		return ".bin"
+	}
+}
