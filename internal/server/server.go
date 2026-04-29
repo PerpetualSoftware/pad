@@ -64,6 +64,14 @@ type Server struct {
 	attachments        *attachments.Registry
 	attachmentMaxBytes int64 // per-file upload cap; 0 = use defaultAttachmentMaxBytes
 
+	// Image processor used by the upload handler to derive thumbnail
+	// variants (TASK-878) and by the editor's rotate / crop tools
+	// (TASK-879/880). Wired via SetImageProcessor; nil-checked by
+	// callers so a server without image processing — e.g. a self-host
+	// build that doesn't want the dependency — still serves every
+	// other endpoint and stores originals untouched.
+	imageProcessor attachments.Processor
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
@@ -252,6 +260,15 @@ func (s *Server) SetCORSOrigins(origins string) {
 func (s *Server) SetAttachments(reg *attachments.Registry, maxBytes int64) {
 	s.attachments = reg
 	s.attachmentMaxBytes = maxBytes
+}
+
+// SetImageProcessor wires the image processor that the upload handler
+// uses to derive thumbnail variants (TASK-878). Optional — without it
+// uploads still succeed but no thumbnails are generated; the
+// download handler's variant fallback path returns the original blob.
+// The capabilities endpoint reflects whichever processor is wired.
+func (s *Server) SetImageProcessor(p attachments.Processor) {
+	s.imageProcessor = p
 }
 
 // SetSecureCookies enables the Secure flag on all cookies.
@@ -443,6 +460,12 @@ func (s *Server) setupRouter() {
 			r.Get("/health/ready", s.handleHealthReady)
 			r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
 			r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
+
+			// Server capabilities — public so the editor can fetch it
+			// pre-login and gate per-format rotate / crop UI on the
+			// processor's reach (TASK-878). The response is static for
+			// the lifetime of the binary; clients can cache freely.
+			r.Get("/server/capabilities", s.handleServerCapabilities)
 
 			// Auth endpoints (exempt from auth middleware)
 			r.Route("/auth", func(r chi.Router) {

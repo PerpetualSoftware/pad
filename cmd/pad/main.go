@@ -377,6 +377,24 @@ func serveCmd() *cobra.Command {
 			srv.SetAttachments(attachReg, attachMax)
 			slog.Info("Attachment storage wired", "backend", "fs", "dir", attachDir)
 
+			// Wire the image processor used for thumbnail derivation
+			// (TASK-878) and the editor's rotate/crop tools (TASK-879/880).
+			// The default build picks the pure-Go backend (no cgo);
+			// `-tags libvips` will swap in the native backend in Phase 2.
+			//
+			// NewProcessor returns nil on the libvips build until Phase 2
+			// lands the real implementation — the server runs degraded
+			// (no thumbnail derivation, capabilities endpoint reports
+			// empty formats), but the binary boots cleanly. Skipping
+			// SetImageProcessor when the processor is nil keeps the
+			// wired-vs-unwired states cleanly distinct.
+			if imgProc := attachments.NewProcessor(); imgProc != nil {
+				srv.SetImageProcessor(imgProc)
+				slog.Info("Image processor wired", "formats", imgProc.Capabilities().ImageFormats)
+			} else {
+				slog.Info("Image processor not wired — thumbnail derivation disabled for this build")
+			}
+
 			// Initialize Prometheus metrics
 			m := metrics.New()
 			m.RegisterDBCollector(s.DB())
