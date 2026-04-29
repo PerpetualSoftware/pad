@@ -58,11 +58,10 @@
 		}
 	}
 
-	// NOTE: until TASK-863 (PLAN-859) publishes dedicated docs pages, the
-	// "Other install options", "Documentation", and "Troubleshooting" links
-	// fall back to anchors in the GitHub README, which has a complete
-	// install + getting-started section. Once the docs page exists, swap
-	// these for getpad.dev/docs/install and /docs/connect-local-project.
+	// Docs URLs point at getpad.dev/docs (TASK-863 / pad-web#30). The
+	// "Connect a Workspace" guide has its own #troubleshooting anchor;
+	// "Other install options" goes to the broader /docs#installation
+	// section which lists Homebrew, Docker, binary download, and source.
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -131,7 +130,7 @@
 
 					<a
 						class="other-options"
-						href="https://github.com/PerpetualSoftware/pad#installation"
+						href="https://getpad.dev/docs#installation"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -171,7 +170,7 @@
 				<!-- Footer links -->
 				<div class="modal-footer-links">
 					<a
-						href="https://github.com/PerpetualSoftware/pad#getting-started"
+						href="https://getpad.dev/docs/connect-workspace"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -179,7 +178,7 @@
 					</a>
 					<span class="footer-sep">&middot;</span>
 					<a
-						href="https://github.com/PerpetualSoftware/pad#installation"
+						href="https://getpad.dev/docs/connect-workspace#troubleshooting"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
