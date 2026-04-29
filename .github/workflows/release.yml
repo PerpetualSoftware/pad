@@ -5,6 +5,19 @@ on:
     tags:
       - "v*"
 
+# Serialize all release runs. If two v* tags land close together (e.g.
+# rc.3 then rc.4 within a minute), queue rather than race — they share
+# mutable outputs (the GHCR `:latest` tag, the homebrew cask in the
+# separate tap repo, the GitHub Releases page) and parallel runs would
+# interleave nondeterministically. Group is intentionally NOT keyed by
+# `github.ref`: we want different tag names to serialize too, not just
+# repeat pushes of the same tag. cancel-in-progress=false so a queued
+# tag never aborts a release mid-publish (which could leave GHCR and the
+# brew tap in inconsistent states).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
   packages: write
@@ -87,7 +100,14 @@ jobs:
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           version: "v2.15.4"
-          args: release --clean
+          # --timeout=2h overrides GoReleaser's 1h default. With Apple
+          # notarization (`wait: true`, up to 20m per the .goreleaser.yaml
+          # notarize block) layered on top of build + cosign blob-sign +
+          # SBOM + multi-arch docker manifest, slow notary days could push
+          # close to the default ceiling. 2h gives comfortable headroom
+          # without burning excessive Action minutes when notarization
+          # actually fails fast (the worker exits as soon as Apple replies).
+          args: release --clean --timeout=2h
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-repo PAT for pushing the brew formula to PerpetualSoftware/homebrew-tap.
