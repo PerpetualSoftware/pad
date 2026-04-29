@@ -1,11 +1,17 @@
 version: 2
 
-before:
-  hooks:
-    # Build web UI before Go compilation so it gets embedded.
-    # v2 accepts simple string hooks only at this level; object-with-cmd
-    # form (v1 syntax) is rejected with "cannot unmarshal !!map into string".
-    - bash -c "cd web && npm ci && npm run build"
+# NOTE: the SvelteKit web UI is built by a dedicated workflow step in
+# .github/workflows/release.yml *before* the goreleaser-action runs, NOT
+# by a `before:` hook here. Done deliberately so the npm install/build
+# does not inherit the macOS signing secrets (Developer ID .p12, .p8 notary
+# key, etc.) that are scoped only to the `Run GoReleaser` step's env.
+# Reduces blast radius from any npm supply-chain compromise.
+#
+# Local testing (`goreleaser release --snapshot` or similar): run
+# `make web` first (or `cd web && npm ci && npm run build`) so `web/build/`
+# exists — the Go binary embeds it via `//go:embed all:web/build`, so a
+# clean checkout will fail with "embed: no matching files found" otherwise.
+# `make build` / `make install` handle the web build automatically.
 
 builds:
   - main: ./cmd/pad
@@ -61,6 +67,25 @@ signs:
       - "${artifact}"
     artifacts: checksum
     output: true
+
+# macOS code-signing + Apple notarization. Gated on MACOS_CERT_P12 being set
+# so PR builds and snapshot mode don't fail when the cert isn't available
+# (e.g. forks, local `goreleaser release --snapshot`). Uses GoReleaser v2's
+# built-in Anchore/Quill backend — no external tools required on the runner.
+# The .p12 cert and .p8 notary key are both supplied as base64-encoded
+# strings via repo secrets; Quill decodes them in-process.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_CERT_P12" }}'
+      sign:
+        certificate: "{{ .Env.MACOS_CERT_P12 }}"
+        password: "{{ .Env.MACOS_CERT_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY_P8 }}"
+        wait: true
+        timeout: 20m
 
 # Keyless cosign signing for every container image manifest.
 docker_signs:
