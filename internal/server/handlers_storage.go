@@ -187,28 +187,35 @@ func (s *Server) handleListWorkspaceAttachments(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Enforce per-user collection-level access control. Mirrors the
-	// pattern used by handlers_search / handlers_dashboard / etc:
-	// nil = admin/no restriction; explicit (possibly empty) slice =
-	// member with limited visibility.
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	// Enforce per-user collection + item-level access control. Mirrors
+	// the (fullCollIDs, grantedItemIDs) tuple used by handlers_search /
+	// handlers_activity for cross-collection lists. nil/nil from
+	// guestResourceFilter means admin or full-access member — no
+	// restriction. Otherwise a restricted user's view is the union of
+	// their member-access collections + any item-level grants.
+	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	filters.VisibleCollectionIDs = visibleIDs
-	// Mutually exclusive item filter — if a restricted member asks
-	// for unattached, return nothing rather than leak orphan rows.
-	// The store-level filter already excludes orphans for restricted
-	// users; this just makes the handler's intent explicit.
-	if visibleIDs != nil && filters.Unattached {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"attachments": []store.AttachmentListItem{},
-			"total":       0,
-			"limit":       effectiveLimit(filters.Limit),
-			"offset":      effectiveOffset(filters.Offset),
-		})
-		return
+	restricted := fullCollIDs != nil || grantedItemIDs != nil
+	if restricted {
+		filters.Restricted = true
+		filters.FullCollectionIDs = fullCollIDs
+		filters.GrantedItemIDs = grantedItemIDs
+		// Restricted users never see orphans (item_id IS NULL) — the
+		// store filter already excludes them, so the Unattached
+		// filter would always yield zero rows. Short-circuit so the
+		// UI sees an immediate empty page rather than firing the SQL.
+		if filters.Unattached {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"attachments": []store.AttachmentListItem{},
+				"total":       0,
+				"limit":       effectiveLimit(filters.Limit),
+				"offset":      effectiveOffset(filters.Offset),
+			})
+			return
+		}
 	}
 
 	rows, total, err := s.store.WorkspaceAttachments(workspaceID, filters)
@@ -297,6 +304,41 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, "derived_attachment",
 			"Cannot delete a thumbnail directly — delete the original.")
 		return
+	}
+
+	// Item-level visibility check. An editor with restricted collection
+	// access shouldn't be able to delete attachments in collections
+	// they can't see — even if they obtain the attachment ID some
+	// other way. Mirrors requireItemVisible's logic but operates on
+	// the attachment's parent item id rather than a fully-loaded item.
+	if att.ItemID != nil {
+		item, err := s.store.GetItem(*att.ItemID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if item == nil || !s.requireItemVisible(w, r, workspaceID, item) {
+			// requireItemVisible already wrote a 404 on its denial path.
+			// Two cases land us here: the item was hard-deleted out from
+			// under us (item == nil) or the user can't see it.
+			if item == nil {
+				writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+			}
+			return
+		}
+	} else {
+		// Orphan attachments (item_id IS NULL) are not associated with
+		// any collection, so collection-level visibility doesn't apply.
+		// Restricted members shouldn't reach here because the LIST
+		// endpoint hides orphans from them, but a direct DELETE with a
+		// guessed UUID could — gate orphans on full-access editors.
+		if fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID); gErr != nil {
+			writeInternalError(w, gErr)
+			return
+		} else if fullCollIDs != nil || grantedItemIDs != nil {
+			writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+			return
+		}
 	}
 
 	if err := s.store.SoftDeleteAttachment(id); err != nil {

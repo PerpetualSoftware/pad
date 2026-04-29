@@ -162,17 +162,25 @@ type AttachmentListFilters struct {
 	// classic page navigator. Negative values clamped to 0.
 	Offset int
 
-	// VisibleCollectionIDs enforces collection-level access control:
-	// when non-nil, only attachments whose parent item belongs to one
-	// of these collections are returned, plus any orphans (item_id IS
-	// NULL) ARE EXCLUDED so a restricted member can't enumerate
-	// filenames from collections they shouldn't see.
+	// Restricted, FullCollectionIDs, GrantedItemIDs together encode
+	// per-user collection + item visibility. When Restricted is true
+	// the list filters to attachments whose parent item is either
+	// in one of FullCollectionIDs or has its id in GrantedItemIDs.
+	// Orphans (item_id IS NULL) are excluded from restricted views
+	// so a member who only sees one collection can't enumerate
+	// filenames of unattached uploads from collections they don't
+	// have access to.
 	//
-	// nil  → no filter (admin / unrestricted member)
-	// []   → empty filter (member with zero visible collections;
-	//         result set is always empty)
-	// [...] → restrict to listed collection IDs only.
-	VisibleCollectionIDs []string
+	// Restricted=false → no filter (admin / full-access member).
+	// Restricted=true with empty Full+Granted → zero rows.
+	// Restricted=true with one or both populated → SQL OR of the
+	//   two predicates.
+	//
+	// Mirrors the (fullCollIDs, grantedItemIDs) tuple returned by
+	// Server.guestResourceFilter — keep the semantics in sync.
+	Restricted        bool
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
 }
 
 // AttachmentListItem is a row from WorkspaceAttachments enriched with
@@ -345,22 +353,37 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		args = append(args, filters.CollectionID)
 	}
 
-	// Collection-level visibility enforcement. Restricts the result to
-	// attachments whose parent item lives in a visible collection;
-	// orphans (item_id IS NULL) are excluded so a restricted member
-	// can't enumerate filenames from collections they shouldn't see.
-	// nil  → admin / no restriction; empty slice → user has zero
-	// visible collections, query yields zero rows by design.
-	if filters.VisibleCollectionIDs != nil {
-		if len(filters.VisibleCollectionIDs) == 0 {
+	// Collection + item-level visibility enforcement. Two sources of
+	// access: collections the user can see in full (FullCollectionIDs)
+	// and individual items granted to them (GrantedItemIDs). The
+	// predicate ORs them so an item-grant in a hidden collection still
+	// resolves; orphans (item_id IS NULL) are excluded entirely so a
+	// restricted user can't enumerate orphan filenames.
+	//
+	// Restricted=false → no filter (admin / full-access member).
+	// Restricted=true with both lists empty → zero rows.
+	if filters.Restricted {
+		var ors []string
+		if len(filters.FullCollectionIDs) > 0 {
+			ph := make([]string, len(filters.FullCollectionIDs))
+			for i, id := range filters.FullCollectionIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			ors = append(ors, "i.collection_id IN ("+strings.Join(ph, ",")+")")
+		}
+		if len(filters.GrantedItemIDs) > 0 {
+			ph := make([]string, len(filters.GrantedItemIDs))
+			for i, id := range filters.GrantedItemIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			ors = append(ors, "a.item_id IN ("+strings.Join(ph, ",")+")")
+		}
+		if len(ors) == 0 {
 			conds = append(conds, "1 = 0")
 		} else {
-			placeholders := make([]string, len(filters.VisibleCollectionIDs))
-			for i := range filters.VisibleCollectionIDs {
-				placeholders[i] = "?"
-				args = append(args, filters.VisibleCollectionIDs[i])
-			}
-			conds = append(conds, "i.collection_id IN ("+strings.Join(placeholders, ",")+")")
+			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
 		}
 	}
 

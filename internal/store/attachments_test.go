@@ -189,7 +189,8 @@ func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
 
 	// Restricted to tasks only: see task-screenshot, hide secret + orphan.
 	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
-		VisibleCollectionIDs: []string{collA},
+		Restricted:        true,
+		FullCollectionIDs: []string{collA},
 	})
 	if err != nil {
 		t.Fatalf("restricted list: %v", err)
@@ -201,9 +202,28 @@ func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
 		t.Errorf("restricted: filename=%q, want task-screenshot.png", rows[0].Filename)
 	}
 
-	// Empty visibility (member with zero access) — zero rows.
+	// Item-level grant only: a restricted user with a single granted
+	// item in collB should see only that item's attachment, not the
+	// rest of collB's contents. Mirrors handlers_search's
+	// (fullCollIDs, grantedItemIDs) tuple.
 	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
-		VisibleCollectionIDs: []string{},
+		Restricted:     true,
+		GrantedItemIDs: []string{itemB},
+	})
+	if err != nil {
+		t.Fatalf("item-grant list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("item-grant: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+	if rows[0].Filename != "secret-screenshot.png" {
+		t.Errorf("item-grant: filename=%q, want secret-screenshot.png", rows[0].Filename)
+	}
+
+	// Empty visibility (restricted with no collections + no item
+	// grants) — zero rows.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted: true,
 	})
 	if err != nil {
 		t.Fatalf("zero-visibility list: %v", err)
