@@ -285,6 +285,7 @@
 	import { SLASH_ITEMS } from './block-types';
 	import { AttachmentImage, type AttachmentVariant } from './attachment-image';
 	import { AttachmentChip } from './attachment-chip';
+	import { AttachmentUpload } from './attachment-upload';
 
 	let {
 		content = '',
@@ -470,6 +471,29 @@
 			BlockDragHandle,
 			AttachmentImage.configure({ getDownloadUrl: getAttachmentUrl }),
 			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
+			AttachmentUpload.configure({
+				upload: async (file) => {
+					if (!wsSlug) {
+						// Without a workspace context the upload endpoint
+						// has no path to hit. Fail the promise so the
+						// plugin's onError surfaces the limitation rather
+						// than leaving a silent stuck spinner.
+						throw new Error('No workspace context — drop a file from inside a workspace.');
+					}
+					return api.attachments.upload(wsSlug, file);
+				},
+				onError: (filename, message) => {
+					// Surface upload failures to the user. The editor's
+					// host route doesn't yet have a centralized toast
+					// system, so we log to console + window.alert as a
+					// minimal fallback. Replace with a real notification
+					// channel once the workspace ships one.
+					console.error(`[attachment upload] ${filename}: ${message}`);
+					if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+						window.alert(`Couldn't upload ${filename}: ${message}`);
+					}
+				},
+			}),
 		];
 
 		editor = new Editor({

@@ -287,6 +287,45 @@ input:focus, textarea:focus {
 	outline-offset: 1px;
 }
 
+/* Upload-in-progress placeholder — rendered as a ProseMirror widget
+   decoration by the AttachmentUpload extension. Dashed border + faded
+   color so it visually reads as "not yet committed content" while the
+   network round-trip resolves. */
+.attachment-upload-placeholder {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	padding: 4px 10px;
+	margin: 0 1px;
+	background: var(--bg-tertiary);
+	border: 1px dashed color-mix(in srgb, var(--accent-blue) 50%, var(--border));
+	border-radius: 6px;
+	color: var(--text-secondary);
+	font-size: 0.92em;
+	line-height: 1.3;
+	vertical-align: baseline;
+}
+.attachment-upload-spinner {
+	width: 12px;
+	height: 12px;
+	border: 2px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
+	border-top-color: var(--accent-blue);
+	border-radius: 50%;
+	animation: attachment-upload-spin 0.7s linear infinite;
+	flex-shrink: 0;
+}
+@keyframes attachment-upload-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+.attachment-upload-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 30ch;
+}
+
 /* Lightbox dialog — appended to document.body when an attachment image
    is clicked, so styles must be global rather than scoped to Editor.svelte.
    Uses the native <dialog> element; the ::backdrop pseudo handles the
