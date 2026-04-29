@@ -819,6 +819,27 @@ export interface ServerCapabilities {
 	};
 }
 
+/**
+ * Consolidated quota summary returned by
+ * GET /api/v1/workspaces/{ws}/storage/usage.
+ *
+ * `limit_bytes === -1` indicates no enforced cap — the workspace
+ * is on a pro / self-hosted plan (or has no owner). Render a usage
+ * counter rather than a capped bar in that case.
+ *
+ * `override_active === true` means the workspace owner has a
+ * per-user storage_bytes override configured. The flag stays true
+ * for pro/self-hosted plans even though the override doesn't change
+ * the effective limit there — the admin UI uses the flag to surface
+ * "(custom override)" in the user-detail view.
+ */
+export interface WorkspaceStorageInfo {
+	used_bytes: number;
+	limit_bytes: number;
+	plan: string;
+	override_active: boolean;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

@@ -949,6 +949,93 @@ func whoamiCmd() *cobra.Command {
 
 // --- members ---
 
+func storageCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "storage",
+		Short: "Show workspace storage usage and effective limit",
+		Long: `Print the workspace's current attachment storage usage versus the
+effective limit for the workspace owner's plan.
+
+The effective limit follows the resolution chain:
+  1. Per-user storage_bytes override (admin-set)
+  2. Platform plan_limits_<plan>_storage_bytes setting
+  3. Hardcoded plan default (free=500MB, pro=10GB)
+
+A limit of "unlimited" indicates no enforced cap (pro / self-hosted /
+workspaces with no owner).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			raw, err := client.RawGet("/workspaces/" + ws + "/storage/usage")
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				fmt.Println(string(raw))
+				return nil
+			}
+
+			var resp struct {
+				UsedBytes      int64  `json:"used_bytes"`
+				LimitBytes     int64  `json:"limit_bytes"`
+				Plan           string `json:"plan"`
+				OverrideActive bool   `json:"override_active"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("decode storage usage: %w", err)
+			}
+
+			used := humanBytes(resp.UsedBytes)
+			if resp.LimitBytes < 0 {
+				fmt.Printf("%s used (unlimited)\n", used)
+			} else {
+				pct := 0.0
+				if resp.LimitBytes > 0 {
+					pct = float64(resp.UsedBytes) / float64(resp.LimitBytes) * 100
+				}
+				fmt.Printf("%s used of %s (%.1f%%)\n", used, humanBytes(resp.LimitBytes), pct)
+			}
+			plan := resp.Plan
+			if plan == "" {
+				plan = "(none)"
+			}
+			suffix := ""
+			if resp.OverrideActive {
+				suffix = " — admin override active"
+			}
+			fmt.Printf("Plan: %s%s\n", plan, suffix)
+
+			return nil
+		},
+	}
+	return cmd
+}
+
+// humanBytes formats a byte count with the smallest IEC unit that
+// keeps the value under 1024 — matches the convention used across
+// the web UI's storage bar so CLI and browser reads agree.
+func humanBytes(n int64) string {
+	if n < 0 {
+		return "?"
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	suffixes := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
+	if exp >= len(suffixes) {
+		exp = len(suffixes) - 1
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffixes[exp])
+}
+
 func membersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "members",

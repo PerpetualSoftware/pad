@@ -2,10 +2,29 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// WorkspaceStorageInfo is the consolidated quota summary for a workspace:
+// used bytes (from the attachments table), the effective limit for the
+// owner's plan (after override + platform-setting + hardcoded fallback),
+// the plan name, and whether the owner has a per-user storage_bytes
+// override configured. -1 in LimitBytes means unlimited.
+//
+// The override_active flag tracks whether the workspace owner's
+// PlanOverrides JSON contains a storage_bytes key — independent of
+// whether that override actually changes the effective limit. (On
+// pro/self-hosted plans the limit is unlimited regardless; the flag
+// still surfaces the admin's intent in the Settings → Storage UI.)
+type WorkspaceStorageInfo struct {
+	UsedBytes      int64  `json:"used_bytes"`
+	LimitBytes     int64  `json:"limit_bytes"` // -1 = unlimited
+	Plan           string `json:"plan"`
+	OverrideActive bool   `json:"override_active"`
+}
 
 // attachmentColumns is the canonical column list. Keep the column names in
 // alignment with migrations/047_attachments.sql + pgmigrations/026_attachments.sql.
@@ -125,50 +144,93 @@ func (s *Store) WorkspaceStorageUsage(workspaceID string) (int64, error) {
 }
 
 // WorkspaceStorageLimit returns the effective storage limit (bytes) for
-// the workspace owner's plan, or -1 if the plan is unlimited. Resolution
-// matches the existing CheckLimit three-tier order:
+// the workspace owner's plan, or -1 if the plan is unlimited. Thin
+// wrapper around WorkspaceStorageInfo for the upload-time quota check
+// path that doesn't care about used bytes / plan / override metadata.
 //
+// Resolution matches the CheckLimit three-tier order:
 //  1. Per-user override (user.PlanOverrides JSON, key "storage_bytes")
 //  2. Platform setting (plan_limits_<plan>_storage_bytes)
 //  3. Hardcoded fallback (DefaultFreeLimits / DefaultProLimits)
 //
 // CheckLimit itself can't be reused here because its featureCount path
 // only knows about row-counted features (items, members, webhooks, …) —
-// storage_bytes is byte-counted via WorkspaceStorageUsage. TASK-881 will
-// expose a richer endpoint built on top of this helper; TASK-871 uses it
-// only for the observational quota warning.
+// storage_bytes is byte-counted via WorkspaceStorageUsage.
 func (s *Store) WorkspaceStorageLimit(workspaceID string) (int64, error) {
+	info, err := s.WorkspaceStorageInfo(workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return info.LimitBytes, nil
+}
+
+// WorkspaceStorageInfo returns the consolidated quota summary for a
+// workspace (used + limit + plan + override flag) in a single call.
+// Used by the storage usage API (TASK-881) and the Settings → Storage
+// page (TASK-882) so the UI can render the usage bar and the
+// "(override)" badge from one fetch.
+//
+// Limit resolution mirrors WorkspaceStorageLimit; pro and self-hosted
+// plans return -1 (unlimited) in Phase 1. Workspaces with no owner
+// (fresh install, deleted owner) also resolve to unlimited rather than
+// blocking uploads.
+func (s *Store) WorkspaceStorageInfo(workspaceID string) (*WorkspaceStorageInfo, error) {
+	used, err := s.WorkspaceStorageUsage(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	info := &WorkspaceStorageInfo{
+		UsedBytes:  used,
+		LimitBytes: -1, // default: no enforceable limit (no owner / pro / self-hosted)
+	}
+
 	var ownerID sql.NullString
-	if err := s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); err != nil {
-		if err == sql.ErrNoRows {
-			return -1, nil
-		}
-		return 0, fmt.Errorf("workspace storage limit: get owner: %w", err)
+	err = s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
+	if err == sql.ErrNoRows {
+		return info, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("workspace storage info: get owner: %w", err)
 	}
 	// Workspaces created on a fresh install (no users yet) and legacy
 	// workspaces from before owner_id was added have no owner. In both
 	// cases there is no plan to consult — treat as unlimited rather
 	// than rejecting uploads.
 	if !ownerID.Valid || ownerID.String == "" {
-		return -1, nil
+		return info, nil
 	}
 	user, err := s.GetUser(ownerID.String)
 	if err != nil {
-		return 0, fmt.Errorf("workspace storage limit: get user: %w", err)
+		return nil, fmt.Errorf("workspace storage info: get user: %w", err)
 	}
 	if user == nil {
 		// Owner row was deleted but the workspace still references it.
-		// Treat as unlimited; the orphan is a separate cleanup concern.
-		return -1, nil
+		return info, nil
 	}
 
 	plan := user.Plan
 	if plan == "" {
 		plan = "free"
 	}
+	info.Plan = plan
+
+	// Detect whether a per-user storage_bytes override is configured.
+	// We surface this as a flag for the UI even when the plan is
+	// pro/self-hosted (where the override has no effect on the
+	// effective limit) so admins can see the configured value.
+	if user.PlanOverrides != "" {
+		var overrides map[string]int
+		if err := json.Unmarshal([]byte(user.PlanOverrides), &overrides); err == nil {
+			if _, ok := overrides["storage_bytes"]; ok {
+				info.OverrideActive = true
+			}
+		}
+	}
+
 	// Pro and self-hosted have no enforced limit in Phase 1.
 	if plan == "pro" || plan == "self-hosted" {
-		return -1, nil
+		return info, nil
 	}
 
 	// resolveLimit returns int (32-bit on 32-bit platforms) so we can't
@@ -177,5 +239,6 @@ func (s *Store) WorkspaceStorageLimit(workspaceID string) (int64, error) {
 	// and 32-bit production hosts are not a supported deployment target
 	// for Pad Cloud. If a future plan-tier ever exceeds INT_MAX bytes
 	// we'll widen resolveLimit.
-	return int64(s.resolveLimit(plan, "storage_bytes", user.PlanOverrides)), nil
+	info.LimitBytes = int64(s.resolveLimit(plan, "storage_bytes", user.PlanOverrides))
+	return info, nil
 }
