@@ -135,9 +135,9 @@ func (s *Store) GetAttachmentVariant(parentID, variant string) (*models.Attachme
 type AttachmentListFilters struct {
 	// MimeCategory restricts to a single MIME category bucket
 	// (matches attachments.Category — "image", "document", etc.).
-	// Empty = all categories. Translated to a MIME-prefix LIKE clause
-	// because the attachments table only stores the raw MIME, not a
-	// pre-classified category column.
+	// Empty = all categories. Translated to MIME predicates per
+	// mimePredicateForCategory; categories without a clean prefix
+	// (document, text, archive, other) use an explicit IN list.
 	MimeCategory string
 
 	// Attached restricts to attachments associated with an item.
@@ -161,16 +161,32 @@ type AttachmentListFilters struct {
 	// Offset pages forward. Combined with Limit + Total for the UI's
 	// classic page navigator. Negative values clamped to 0.
 	Offset int
+
+	// VisibleCollectionIDs enforces collection-level access control:
+	// when non-nil, only attachments whose parent item belongs to one
+	// of these collections are returned, plus any orphans (item_id IS
+	// NULL) ARE EXCLUDED so a restricted member can't enumerate
+	// filenames from collections they shouldn't see.
+	//
+	// nil  → no filter (admin / unrestricted member)
+	// []   → empty filter (member with zero visible collections;
+	//         result set is always empty)
+	// [...] → restrict to listed collection IDs only.
+	VisibleCollectionIDs []string
 }
 
 // AttachmentListItem is a row from WorkspaceAttachments enriched with
-// the parent item's title + ref + collection slug so the UI can render
+// the parent item's title + slug + collection slug so the UI can render
 // a clickable link without a follow-up GET. Item fields are nullable
 // for orphan rows.
+//
+// URL construction: the item route is /{user}/{ws}/{collection_slug}/{item_slug},
+// so the UI uses ItemSlug — never a synthetic "TASK-5"-style ref. The
+// ref shape isn't 1:1 with the route, and exposing it here led to a
+// double-collection-slug bug in an earlier draft.
 type AttachmentListItem struct {
 	models.Attachment
 	ItemTitle      *string `json:"item_title,omitempty"`
-	ItemRef        *string `json:"item_ref,omitempty"` // "TASK-5" form
 	ItemSlug       *string `json:"item_slug,omitempty"`
 	CollectionSlug *string `json:"collection_slug,omitempty"`
 }
@@ -187,20 +203,101 @@ var allowedAttachmentSorts = map[string]string{
 	"created_at_desc": "a.created_at DESC",
 }
 
-// mimePrefixForCategory maps an attachments.Category value to the
-// SQL LIKE prefix that selects all MIMEs in that bucket. Used by the
-// list filter — kept here next to the SQL it generates so the mapping
-// stays close to the storage layer that consumes it.
-func mimePrefixForCategory(category string) (prefix string, ok bool) {
+// mimePredicateForCategory maps an attachments.Category value to a
+// SQL fragment + matching argument list that selects all MIMEs in
+// that bucket. Categories with a clean type prefix (image/, video/,
+// audio/) use a LIKE; the rest use an explicit IN list mirroring
+// the entries in internal/attachments/mime.go.
+//
+// Returns (frag, args, true) when the category is known. The frag
+// uses ? placeholders that the caller splices into the WHERE. ok=false
+// for unknown categories — caller must skip the filter so the UI
+// shows everything rather than zero rows for typos.
+//
+// Keep the literal MIME lists in lockstep with internal/attachments/
+// mime.go: any time a new MIME is added to the allowlist there, mirror
+// it here so the Settings → Storage filter stays useful.
+func mimePredicateForCategory(category string) (frag string, args []any, ok bool) {
 	switch category {
 	case "image":
-		return "image/%", true
+		return "a.mime_type LIKE ?", []any{"image/%"}, true
 	case "video":
-		return "video/%", true
+		return "a.mime_type LIKE ?", []any{"video/%"}, true
 	case "audio":
-		return "audio/%", true
+		return "a.mime_type LIKE ?", []any{"audio/%"}, true
+	case "document":
+		return mimeInPredicate([]string{
+			"application/pdf",
+			"application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			"application/vnd.ms-excel",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			"application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			"application/vnd.oasis.opendocument.text",
+			"application/vnd.oasis.opendocument.spreadsheet",
+			"application/vnd.oasis.opendocument.presentation",
+			"application/rtf",
+		})
+	case "text":
+		return mimeInPredicate([]string{
+			"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
+			"application/json", "application/xml", "text/xml",
+			"application/yaml", "text/yaml", "application/toml",
+			"text/html", "text/javascript", "application/javascript",
+		})
+	case "archive":
+		return mimeInPredicate([]string{
+			"application/zip", "application/x-tar", "application/gzip",
+			"application/x-bzip2", "application/x-7z-compressed",
+		})
+	case "other":
+		// "Other" is the negation of every named bucket. Easier to
+		// build by exclusion: NOT in the union of all known MIMEs.
+		// Listing the categories explicitly keeps this in lockstep
+		// with the named buckets above without a second source of
+		// truth.
+		all := []string{
+			"application/pdf", "application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			"application/vnd.ms-excel",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			"application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			"application/vnd.oasis.opendocument.text",
+			"application/vnd.oasis.opendocument.spreadsheet",
+			"application/vnd.oasis.opendocument.presentation",
+			"application/rtf",
+			"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
+			"application/json", "application/xml", "text/xml",
+			"application/yaml", "text/yaml", "application/toml",
+			"text/html", "text/javascript", "application/javascript",
+			"application/zip", "application/x-tar", "application/gzip",
+			"application/x-bzip2", "application/x-7z-compressed",
+		}
+		placeholders := make([]string, len(all))
+		args := make([]any, len(all))
+		for i, m := range all {
+			placeholders[i] = "?"
+			args[i] = m
+		}
+		frag := "a.mime_type NOT LIKE 'image/%' AND a.mime_type NOT LIKE 'video/%' AND a.mime_type NOT LIKE 'audio/%' AND a.mime_type NOT IN (" + strings.Join(placeholders, ",") + ")"
+		return frag, args, true
 	}
-	return "", false
+	return "", nil, false
+}
+
+// mimeInPredicate builds a `a.mime_type IN (?,?,...)` fragment with
+// matching args. Helper used by mimePredicateForCategory for the
+// non-prefix categories.
+func mimeInPredicate(mimes []string) (string, []any, bool) {
+	placeholders := make([]string, len(mimes))
+	args := make([]any, len(mimes))
+	for i, m := range mimes {
+		placeholders[i] = "?"
+		args[i] = m
+	}
+	return "a.mime_type IN (" + strings.Join(placeholders, ",") + ")", args, true
 }
 
 // WorkspaceAttachments lists original (non-derived) attachments in a
@@ -239,13 +336,32 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	if filters.Unattached {
 		conds = append(conds, "a.item_id IS NULL")
 	}
-	if prefix, ok := mimePrefixForCategory(filters.MimeCategory); ok {
-		conds = append(conds, "a.mime_type LIKE ?")
-		args = append(args, prefix)
+	if frag, mimeArgs, ok := mimePredicateForCategory(filters.MimeCategory); ok {
+		conds = append(conds, frag)
+		args = append(args, mimeArgs...)
 	}
 	if filters.CollectionID != "" {
 		conds = append(conds, "i.collection_id = ?")
 		args = append(args, filters.CollectionID)
+	}
+
+	// Collection-level visibility enforcement. Restricts the result to
+	// attachments whose parent item lives in a visible collection;
+	// orphans (item_id IS NULL) are excluded so a restricted member
+	// can't enumerate filenames from collections they shouldn't see.
+	// nil  → admin / no restriction; empty slice → user has zero
+	// visible collections, query yields zero rows by design.
+	if filters.VisibleCollectionIDs != nil {
+		if len(filters.VisibleCollectionIDs) == 0 {
+			conds = append(conds, "1 = 0")
+		} else {
+			placeholders := make([]string, len(filters.VisibleCollectionIDs))
+			for i := range filters.VisibleCollectionIDs {
+				placeholders[i] = "?"
+				args = append(args, filters.VisibleCollectionIDs[i])
+			}
+			conds = append(conds, "i.collection_id IN ("+strings.Join(placeholders, ",")+")")
+		}
 	}
 
 	where := strings.Join(conds, " AND ")
@@ -285,7 +401,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 
 	q := `
 		SELECT ` + aliasedAttachmentColumns + `,
-		       i.title, i.slug, i.item_number,
+		       i.title, i.slug,
 		       c.slug, c.name
 		FROM attachments a
 		LEFT JOIN items i       ON i.id = a.item_id AND i.deleted_at IS NULL
@@ -310,14 +426,13 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 
 		// Item + collection columns from the LEFT JOIN. All nullable.
 		var itemTitle, itemSlug *string
-		var itemNumber *int
 		var collSlug, collName *string
 
 		if err := rows.Scan(
 			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 			&parentID, &variant, &createdAt, &deletedAt,
-			&itemTitle, &itemSlug, &itemNumber,
+			&itemTitle, &itemSlug,
 			&collSlug, &collName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan workspace attachment: %w", err)
@@ -339,15 +454,6 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		}
 		if collSlug != nil {
 			row.CollectionSlug = collSlug
-		}
-		// Compose ref like "TASK-5" when we have both pieces.
-		// collection.name uppercased + first 5 letters → ref prefix
-		// is non-trivial (it's stored elsewhere), so the UI builds
-		// the display label from item_title + collection_slug. We
-		// surface item_number as the ref so URL building is direct.
-		if itemNumber != nil && collSlug != nil {
-			ref := fmt.Sprintf("%s/%d", *collSlug, *itemNumber)
-			row.ItemRef = &ref
 		}
 		out = append(out, row)
 	}

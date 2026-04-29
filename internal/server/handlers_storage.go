@@ -187,6 +187,30 @@ func (s *Server) handleListWorkspaceAttachments(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	// Enforce per-user collection-level access control. Mirrors the
+	// pattern used by handlers_search / handlers_dashboard / etc:
+	// nil = admin/no restriction; explicit (possibly empty) slice =
+	// member with limited visibility.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	filters.VisibleCollectionIDs = visibleIDs
+	// Mutually exclusive item filter — if a restricted member asks
+	// for unattached, return nothing rather than leak orphan rows.
+	// The store-level filter already excludes orphans for restricted
+	// users; this just makes the handler's intent explicit.
+	if visibleIDs != nil && filters.Unattached {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"attachments": []store.AttachmentListItem{},
+			"total":       0,
+			"limit":       effectiveLimit(filters.Limit),
+			"offset":      effectiveOffset(filters.Offset),
+		})
+		return
+	}
+
 	rows, total, err := s.store.WorkspaceAttachments(workspaceID, filters)
 	if err != nil {
 		writeInternalError(w, err)

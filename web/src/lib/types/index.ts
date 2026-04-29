@@ -865,7 +865,6 @@ export interface AttachmentListItem {
 	deleted_at?: string | null;
 	item_title?: string | null;
 	item_slug?: string | null;
-	item_ref?: string | null;
 	collection_slug?: string | null;
 }
 

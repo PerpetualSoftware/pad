@@ -215,16 +215,19 @@
 	}
 
 	function itemHref(att: AttachmentListItem): string {
-		// Settings page sits at /{username}/{wsSlug}/settings, so the item
-		// page is two levels up: ../../{collection_slug}/{item_slug-or-ref}.
-		// Prefer absolute when we have username; fall back to relative.
+		// Item route is /{username}/{wsSlug}/{collection_slug}/{item_slug}.
+		// item_ref (collection-prefix + number, e.g. "TASK-5") doesn't
+		// match the route shape — only item_slug does — so we ignore
+		// item_ref here even if a future API surfaces one.
 		const collSlug = att.collection_slug ?? '';
-		const itemId = att.item_ref ?? att.item_slug ?? '';
-		if (!collSlug || !itemId) return '#';
+		const itemSlug = att.item_slug ?? '';
+		if (!collSlug || !itemSlug) return '#';
 		if (username) {
-			return `/${username}/${wsSlug}/${collSlug}/${itemId}`;
+			return `/${username}/${wsSlug}/${collSlug}/${itemSlug}`;
 		}
-		return `../../${collSlug}/${itemId}`;
+		// Settings page sits at /{username}/{wsSlug}/settings, so two
+		// levels up is the item route's parent.
+		return `../../${collSlug}/${itemSlug}`;
 	}
 </script>
 
