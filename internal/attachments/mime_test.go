@@ -1,0 +1,178 @@
+package attachments
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNormalizeMIME(t *testing.T) {
+	cases := map[string]string{
+		"image/png":                 "image/png",
+		"IMAGE/PNG":                 "image/png",
+		"text/plain; charset=utf-8": "text/plain",
+		"  image/png  ":             "image/png",
+	}
+	for in, want := range cases {
+		if got := NormalizeMIME(in); got != want {
+			t.Errorf("NormalizeMIME(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLookupMIME_AllowedAndRejected(t *testing.T) {
+	allowedSamples := []string{
+		"image/png", "image/jpeg", "image/webp",
+		"video/mp4", "audio/mpeg",
+		"application/pdf", "text/plain", "application/zip",
+		"text/html", // forced-download
+	}
+	for _, m := range allowedSamples {
+		if _, ok := LookupMIME(m); !ok {
+			t.Errorf("LookupMIME(%q) = !ok, want allowed", m)
+		}
+	}
+
+	rejected := []string{
+		"image/svg+xml",                                // explicit XSS-vector block
+		"application/x-msdownload",                     // executable
+		"application/x-executable",                     // executable
+		"application/vnd.microsoft.portable-executable", // executable
+		"application/octet-stream",                     // unknown
+		"",                                             // empty
+	}
+	for _, m := range rejected {
+		if _, ok := LookupMIME(m); ok {
+			t.Errorf("LookupMIME(%q) = ok, want rejected", m)
+		}
+	}
+}
+
+func TestLookupMIME_RenderModes(t *testing.T) {
+	must := func(m string) MIMEEntry {
+		t.Helper()
+		e, ok := LookupMIME(m)
+		if !ok {
+			t.Fatalf("LookupMIME(%q) rejected", m)
+		}
+		return e
+	}
+	if must("image/png").RenderMode != RenderInline {
+		t.Errorf("image/png should render inline")
+	}
+	if must("application/pdf").RenderMode != RenderChip {
+		t.Errorf("application/pdf should render as chip")
+	}
+	if must("text/html").RenderMode != RenderForceDownload {
+		t.Errorf("text/html must force download")
+	}
+}
+
+// minimal PNG header
+var pngHeader = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+
+// minimal JPEG header (SOI marker)
+var jpegHeader = []byte{0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0x4a, 0x46, 0x49, 0x46}
+
+// PE/EXE header
+var exeHeader = []byte("MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00")
+
+func TestSniffMIME(t *testing.T) {
+	cases := map[string][]byte{
+		"image/png":                 pngHeader,
+		"image/jpeg":                jpegHeader,
+		"text/plain":                []byte("hello world\nthis is plain text\n"),
+		"application/octet-stream":  exeHeader, // sniff doesn't classify EXE specifically
+	}
+	for want, head := range cases {
+		got := SniffMIME(head)
+		// stdlib sniff sometimes returns "text/plain; charset=utf-8" — NormalizeMIME handles that.
+		if got != want && !strings.HasPrefix(got, want+";") {
+			t.Errorf("SniffMIME(%v...) = %q, want %q", head[:4], got, want)
+		}
+	}
+}
+
+func TestValidateUpload_HappyPath(t *testing.T) {
+	entry, code, err := ValidateUpload(pngHeader, "screenshot.png")
+	if err != nil {
+		t.Fatalf("err = %v code=%s", err, code)
+	}
+	if entry.MIME != "image/png" {
+		t.Errorf("entry.MIME = %q", entry.MIME)
+	}
+	if entry.Category != CategoryImage {
+		t.Errorf("entry.Category = %q", entry.Category)
+	}
+}
+
+func TestValidateUpload_RejectsExe(t *testing.T) {
+	_, code, err := ValidateUpload(exeHeader, "totally-safe.png")
+	if err == nil {
+		t.Fatal("expected rejection")
+	}
+	// Sniff yields application/octet-stream, which is not on the allowlist.
+	if code != "mime_not_allowed" {
+		t.Errorf("code = %q, want mime_not_allowed", code)
+	}
+}
+
+func TestValidateUpload_RejectsExtensionMismatch(t *testing.T) {
+	// PNG bytes but .pdf extension → category mismatch (image vs document)
+	_, code, err := ValidateUpload(pngHeader, "evil.pdf")
+	if err == nil {
+		t.Fatal("expected rejection")
+	}
+	if code != "mime_extension_mismatch" {
+		t.Errorf("code = %q, want mime_extension_mismatch", code)
+	}
+}
+
+func TestValidateUpload_RejectsSVG(t *testing.T) {
+	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+	_, code, err := ValidateUpload(svg, "logo.svg")
+	if err == nil {
+		t.Fatal("expected rejection — SVG is on the explicit blocklist")
+	}
+	// SVG sniffs as text/xml in stdlib (which IS on the allowlist) so the
+	// extension blocklist must do the work. The .svg extension maps to
+	// image/svg+xml which is NOT on the `allowed` map → extension_blocked.
+	if code != "mime_not_allowed" && code != "mime_extension_mismatch" && code != "extension_blocked" {
+		t.Errorf("code = %q, want one of mime_not_allowed/mime_extension_mismatch/extension_blocked", code)
+	}
+}
+
+func TestValidateUpload_AllowsTextPlain(t *testing.T) {
+	body := []byte("just plain text\n")
+	entry, code, err := ValidateUpload(body, "notes.txt")
+	if err != nil {
+		t.Fatalf("err=%v code=%s", err, code)
+	}
+	if entry.RenderMode != RenderChip {
+		t.Errorf("text/plain should render as chip")
+	}
+}
+
+func TestValidateUpload_HTMLForcedDownload(t *testing.T) {
+	body := []byte("<!doctype html><html><body><script>alert(1)</script></body></html>")
+	entry, code, err := ValidateUpload(body, "page.html")
+	if err != nil {
+		t.Fatalf("err=%v code=%s", err, code)
+	}
+	if entry.RenderMode != RenderForceDownload {
+		t.Errorf("html must be force-download, got %v", entry.RenderMode)
+	}
+}
+
+func TestValidateUpload_RejectsExeByExtensionAlone(t *testing.T) {
+	// Random bytes (no executable magic) named like an executable. The
+	// extension-blocklist must reject regardless of sniff so an attacker
+	// can't smuggle an EXE inside what sniffs as text/plain.
+	body := []byte("just text masquerading as a binary\n")
+	_, code, err := ValidateUpload(body, "payload.exe")
+	if err == nil {
+		t.Fatal("expected rejection on .exe extension alone")
+	}
+	if code != "extension_blocked" {
+		t.Errorf("code = %q, want extension_blocked", code)
+	}
+}

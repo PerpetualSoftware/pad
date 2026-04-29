@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -25,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -351,6 +353,28 @@ func serveCmd() *cobra.Command {
 					slog.Warn("failed to set self-hosted plans", "error", err)
 				}
 			}
+
+			// Wire attachment storage. Phase 1 = filesystem only; Phase 2 will
+			// register an "s3" backend alongside (or via a MigratingStore wrapping
+			// both during the cutover). Per-file cap is set by PAD_ATTACHMENT_MAX_BYTES
+			// or falls back to the package default (25 MiB).
+			attachDir := filepath.Join(cfg.DataDir, "attachments")
+			fsStore, err := attachments.NewFSStore(attachDir)
+			if err != nil {
+				return fmt.Errorf("init FS attachment store: %w", err)
+			}
+			attachReg := attachments.NewRegistry()
+			attachReg.Register(attachments.FSPrefix, fsStore)
+			var attachMax int64
+			if v := os.Getenv("PAD_ATTACHMENT_MAX_BYTES"); v != "" {
+				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+					attachMax = n
+				} else {
+					slog.Warn("PAD_ATTACHMENT_MAX_BYTES ignored — not a positive integer", "value", v)
+				}
+			}
+			srv.SetAttachments(attachReg, attachMax)
+			slog.Info("Attachment storage wired", "backend", "fs", "dir", attachDir)
 
 			// Initialize Prometheus metrics
 			m := metrics.New()

@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -56,6 +57,12 @@ type Server struct {
 	commit                string               // git commit hash
 	buildTime             string               // build timestamp
 	twoFAChallengeSecret  []byte               // HMAC key for 2FA challenge tokens
+
+	// Attachments storage. Wired via SetAttachments at startup; nil-checked
+	// by handlers so a server constructed for a test that doesn't need
+	// uploads still compiles and serves every other endpoint.
+	attachments        *attachments.Registry
+	attachmentMaxBytes int64 // per-file upload cap; 0 = use defaultAttachmentMaxBytes
 
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
@@ -237,6 +244,14 @@ func (s *Server) SetEmailSender(e *email.Sender, apiKey ...string) {
 // SetCORSOrigins configures allowed CORS origins (comma-separated).
 func (s *Server) SetCORSOrigins(origins string) {
 	s.corsOrigins = origins
+}
+
+// SetAttachments wires the attachment storage Registry that the upload
+// and download handlers use. Pass maxBytes = 0 to keep the
+// defaultAttachmentMaxBytes ceiling (25 MiB).
+func (s *Server) SetAttachments(reg *attachments.Registry, maxBytes int64) {
+	s.attachments = reg
+	s.attachmentMaxBytes = maxBytes
 }
 
 // SetSecureCookies enables the Secure flag on all cookies.
@@ -672,6 +687,9 @@ func (s *Server) setupRouter() {
 							r.Delete("/", s.handleDeleteAgentRole)
 						})
 					})
+
+					// Attachments (TASK-871 — upload only; download lands in TASK-872)
+					r.Post("/attachments", s.handleUploadAttachment)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {
