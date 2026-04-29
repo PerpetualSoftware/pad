@@ -383,6 +383,161 @@ input:focus, textarea:focus {
 	max-width: 30ch;
 }
 
+/* Crop modal (TASK-880). Appended to document.body so styles must
+   be global. Uses the native <dialog> element with a flex layout
+   so the image fills available space while header/footer stay fixed. */
+dialog.attachment-crop-modal {
+	border: none;
+	background: transparent;
+	padding: 0;
+	max-width: 100vw;
+	max-height: 100vh;
+	color: #fff;
+	overflow: visible;
+}
+dialog.attachment-crop-modal::backdrop {
+	background: rgba(0, 0, 0, 0.85);
+	backdrop-filter: blur(2px);
+}
+.attachment-crop-modal-shell {
+	display: flex;
+	flex-direction: column;
+	width: min(95vw, 1200px);
+	height: min(92vh, 900px);
+	background: var(--bg-secondary);
+	color: var(--text-primary);
+	border-radius: var(--radius);
+	overflow: hidden;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.attachment-crop-modal-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-secondary);
+}
+.attachment-crop-modal-title {
+	font-weight: 600;
+	font-size: 0.95em;
+}
+.attachment-crop-modal-aspects {
+	display: inline-flex;
+	gap: 4px;
+	background: var(--bg-tertiary);
+	padding: 2px;
+	border-radius: var(--radius);
+}
+.attachment-crop-modal-aspect-btn {
+	padding: 4px 12px;
+	border: none;
+	background: transparent;
+	color: var(--text-secondary);
+	border-radius: 4px;
+	font-size: 0.85em;
+	cursor: pointer;
+	font-family: inherit;
+	transition: background 0.15s, color 0.15s;
+}
+.attachment-crop-modal-aspect-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text-primary);
+}
+.attachment-crop-modal-aspect-active,
+.attachment-crop-modal-aspect-active:hover {
+	background: var(--accent-blue);
+	color: #fff;
+}
+.attachment-crop-modal-stage {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+	overflow: hidden;
+	background: rgba(0, 0, 0, 0.4);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	-webkit-user-select: none;
+	user-select: none;
+}
+.attachment-crop-modal-img {
+	max-width: 100%;
+	max-height: 100%;
+	display: block;
+	-webkit-user-drag: none;
+	pointer-events: none;
+}
+.attachment-crop-modal-rect {
+	position: absolute;
+	box-sizing: border-box;
+	border: 1px solid #fff;
+	box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+	cursor: move;
+	touch-action: none;
+}
+.attachment-crop-modal-handle {
+	position: absolute;
+	width: 12px;
+	height: 12px;
+	background: var(--accent-blue);
+	border: 2px solid #fff;
+	border-radius: 50%;
+	touch-action: none;
+}
+.attachment-crop-modal-handle-nw {
+	top: -7px;
+	left: -7px;
+	cursor: nwse-resize;
+}
+.attachment-crop-modal-handle-ne {
+	top: -7px;
+	right: -7px;
+	cursor: nesw-resize;
+}
+.attachment-crop-modal-handle-sw {
+	bottom: -7px;
+	left: -7px;
+	cursor: nesw-resize;
+}
+.attachment-crop-modal-handle-se {
+	bottom: -7px;
+	right: -7px;
+	cursor: nwse-resize;
+}
+.attachment-crop-modal-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-2);
+	padding: var(--space-3) var(--space-4);
+	border-top: 1px solid var(--border);
+	background: var(--bg-secondary);
+}
+.attachment-crop-modal-cancel,
+.attachment-crop-modal-apply {
+	padding: 6px 16px;
+	border: 1px solid var(--border);
+	background: var(--bg-tertiary);
+	color: var(--text-primary);
+	border-radius: var(--radius);
+	font-family: inherit;
+	font-size: 0.92em;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+.attachment-crop-modal-cancel:hover {
+	background: var(--bg-hover);
+}
+.attachment-crop-modal-primary {
+	background: var(--accent-blue);
+	color: #fff;
+	border-color: var(--accent-blue);
+}
+.attachment-crop-modal-primary:hover {
+	filter: brightness(1.1);
+}
+
 /* Lightbox dialog — appended to document.body when an attachment image
    is clicked, so styles must be global rather than scoped to Editor.svelte.
    Uses the native <dialog> element; the ::backdrop pseudo handles the
