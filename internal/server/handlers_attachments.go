@@ -251,6 +251,21 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// surface the {slug} form here so the UI can link directly.
 	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 
+	// Thumbnail derivation (TASK-878). For images on the supported
+	// allowlist we generate two variants — thumb-sm (256px long edge)
+	// and thumb-md (1024px long edge) — each as its own attachments
+	// row with parent_id pointing at the original. Runs async via
+	// goAsync so the upload response doesn't wait on imaging work,
+	// and Server.Stop() waits for in-flight thumbnailing before the
+	// process exits / SQLite is closed. The download handler's
+	// variant fallback already serves the original when no derived
+	// row exists, so the upload response is correct the moment it
+	// returns regardless of when the goroutine completes.
+	if entry.Category == attachments.CategoryImage && s.imageProcessor != nil {
+		original := att.ID
+		s.goAsync(func() { s.deriveThumbnails(original) })
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":          att.ID,
 		"url":         attachmentURL(chi.URLParam(r, "slug"), att.ID),

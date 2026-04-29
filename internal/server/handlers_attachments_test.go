@@ -19,7 +19,9 @@ import (
 )
 
 // testServerWithAttachments returns a fresh test server with the
-// attachment registry wired against an FSStore rooted in t.TempDir().
+// attachment registry wired against an FSStore rooted in t.TempDir(),
+// and the pure-Go image processor wired so thumbnail derivation
+// (TASK-878) runs end-to-end in tests that upload images.
 func testServerWithAttachments(t *testing.T) (*Server, string) {
 	t.Helper()
 	srv := testServer(t)
@@ -31,6 +33,7 @@ func testServerWithAttachments(t *testing.T) (*Server, string) {
 	reg := attachments.NewRegistry()
 	reg.Register(attachments.FSPrefix, fs)
 	srv.SetAttachments(reg, 0)
+	srv.SetImageProcessor(attachments.NewProcessor())
 	slug := createWSForTest(t, srv)
 	return srv, slug
 }
