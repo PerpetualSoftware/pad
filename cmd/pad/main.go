@@ -4526,64 +4526,74 @@ Examples:
 
 func exportCmd() *cobra.Command {
 	var outputFile string
-	var jsonOnly bool
+	var bundle bool
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export workspace to a self-contained tar.gz bundle",
-		Long: `Export the current workspace (collections, items, comments, versions,
-and attachments) to a portable tar.gz bundle.
+		Short: "Export workspace to JSON or a self-contained tar.gz bundle",
+		Long: `Export the current workspace (collections, items, comments, versions)
+to a portable JSON file. Pass --bundle to include attachment blobs in
+a tar.gz bundle:
 
-The bundle contains:
   pad-export.json              — workspace metadata + items + collections + ...
   attachments/manifest.json    — uuid → {filename, mime, size, content_hash}
   attachments/<uuid>.<ext>     — original attachment blobs
 
-Use --json to emit the legacy items-only JSON instead. The legacy
-format does not include attachments and cannot be round-tripped on a
-workspace that uses inline images or file chips.`,
+The default stays JSON for now so existing pad import flows keep
+working. The bundle becomes the default once pad import learns to
+unpack tar.gz (planned for TASK-885).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
 
 			path := "/workspaces/" + ws + "/export"
-			defaultExt := ".tar.gz"
-			if jsonOnly {
-				defaultExt = ".json"
-			} else {
+			defaultExt := ".json"
+			if bundle {
 				path += "?format=tar"
+				defaultExt = ".tar.gz"
 			}
 
-			resp, err := client.RawGet(path)
-			if err != nil {
-				return fmt.Errorf("export: %w", err)
-			}
-
-			if outputFile == "" && !jsonOnly && term.IsTerminal(int(os.Stdout.Fd())) {
+			if outputFile == "" && bundle && term.IsTerminal(int(os.Stdout.Fd())) {
 				// Refuse to dump binary tar.gz to a TTY — would render
 				// as garbage and likely terminate the user's session
 				// when control codes get interpreted.
 				return fmt.Errorf("refusing to write binary tar.gz to a terminal; pass -o <file> or pipe to a file")
 			}
 
+			// Stream rather than buffer. Workspaces with multi-GB of
+			// attachments would otherwise pin the entire bundle in
+			// memory before the first byte hits disk — defeats the
+			// server-side streaming design and risks OOM (Codex
+			// review feedback on PR #305).
+			var dest io.Writer = os.Stdout
+			var f *os.File
 			if outputFile != "" {
-				// If the user passed -o without an extension, append
-				// the conventional one for the format they chose so a
-				// follow-up `tar tf` works without renaming.
 				if filepath.Ext(outputFile) == "" {
 					outputFile += defaultExt
 				}
-				if err := os.WriteFile(outputFile, resp, 0644); err != nil {
-					return fmt.Errorf("write file: %w", err)
+				var err error
+				f, err = os.Create(outputFile)
+				if err != nil {
+					return fmt.Errorf("create file: %w", err)
 				}
-				fmt.Printf("Exported workspace %q to %s (%s)\n", ws, outputFile, humanBytes(int64(len(resp))))
-			} else {
-				os.Stdout.Write(resp)
+				defer f.Close()
+				dest = f
+			}
+
+			n, err := client.RawStream(path, dest)
+			if err != nil {
+				return fmt.Errorf("export: %w", err)
+			}
+			if f != nil {
+				if err := f.Close(); err != nil {
+					return fmt.Errorf("close file: %w", err)
+				}
+				fmt.Printf("Exported workspace %q to %s (%s)\n", ws, outputFile, humanBytes(n))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
-	cmd.Flags().BoolVar(&jsonOnly, "json", false, "emit legacy items-only JSON (no attachments)")
+	cmd.Flags().BoolVar(&bundle, "bundle", false, "emit a tar.gz bundle including attachment blobs (TASK-885 will make this the default once pad import handles bundles)")
 	return cmd
 }
 

@@ -377,6 +377,10 @@ func (c *Client) DeleteAgentRole(wsSlug, idOrSlug string) error {
 // --- Export / Import ---
 
 // RawGet fetches raw bytes from the API.
+//
+// Buffers the entire response in memory; do NOT use for endpoints that
+// can return arbitrarily large bodies (e.g. workspace export bundles).
+// Reach for RawStream for those callers — see TASK-884 review feedback.
 func (c *Client) RawGet(path string) ([]byte, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {
@@ -391,6 +395,31 @@ func (c *Client) RawGet(path string) ([]byte, error) {
 		return nil, c.parseError(resp)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// RawStream issues a GET and copies the response body into w as it
+// arrives. Returns the number of bytes written. Used for large
+// payloads (workspace export bundles, future S3-backed downloads)
+// where buffering the whole body would defeat the server's streaming
+// design and risk OOM on multi-GB exports.
+//
+// The HTTP status check still consumes the body if non-2xx (so the
+// error message can include the server's response), but only for the
+// error case — the happy path streams directly.
+func (c *Client) RawStream(path string, w io.Writer) (int64, error) {
+	req, err := c.newRequest("GET", path, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return 0, c.parseError(resp)
+	}
+	return io.Copy(w, resp.Body)
 }
 
 // PostRaw sends raw bytes to the API and decodes the JSON response.
