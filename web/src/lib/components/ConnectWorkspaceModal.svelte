@@ -22,7 +22,8 @@
 	let activeTab = $state<InstallTab>(defaultInstallTab());
 
 	const installCommands: Record<InstallTab, string> = {
-		macos: 'brew install xarmian/pad/pad',
+		// Tap is PerpetualSoftware/tap/pad — see README.md and skills/INSTALL.md.
+		macos: 'brew install PerpetualSoftware/tap/pad',
 		linux: 'curl -fsSL https://getpad.dev/install.sh | sh',
 		// Same shell oneliner under WSL — note that explicitly in helper text.
 		windows: '# WSL2 recommended\ncurl -fsSL https://getpad.dev/install.sh | sh',
@@ -55,10 +56,11 @@
 		}
 	}
 
-	// NOTE: docs URLs below (https://getpad.dev/docs/install,
-	// https://getpad.dev/docs/connect-local-project) are placeholders to be
-	// wired up by TASK-863 once TASK-4 (in PLAN-859) publishes the actual
-	// docs pages.
+	// NOTE: until TASK-863 (PLAN-859) publishes dedicated docs pages, the
+	// "Other install options", "Documentation", and "Troubleshooting" links
+	// fall back to anchors in the GitHub README, which has a complete
+	// install + getting-started section. Once the docs page exists, swap
+	// these for getpad.dev/docs/install and /docs/connect-local-project.
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -127,7 +129,7 @@
 
 					<a
 						class="other-options"
-						href="https://getpad.dev/docs/install"
+						href="https://github.com/PerpetualSoftware/pad#installation"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -167,7 +169,7 @@
 				<!-- Footer links -->
 				<div class="modal-footer-links">
 					<a
-						href="https://getpad.dev/docs/connect-local-project"
+						href="https://github.com/PerpetualSoftware/pad#getting-started"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -175,7 +177,7 @@
 					</a>
 					<span class="footer-sep">&middot;</span>
 					<a
-						href="https://getpad.dev/docs/connect-local-project#troubleshooting"
+						href="https://github.com/PerpetualSoftware/pad#installation"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
