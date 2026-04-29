@@ -12,7 +12,13 @@ export interface AdminUser {
 	role: string;
 	plan: string;
 	plan_expires_at: string | null;
-	plan_overrides: Record<string, number> | null;
+	/**
+	 * Per-user limit overrides as a raw JSON string (e.g.
+	 * `{"storage_bytes":10737418240}`). The API returns the raw
+	 * column value rather than a decoded object, so the UI must
+	 * JSON.parse it before reading keys. Empty string = no overrides.
+	 */
+	plan_overrides: string | null;
 	totp_enabled: boolean;
 	disabled_at: string | null;
 	last_active_at: string | null;

@@ -246,6 +246,18 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+
+		// Audit-log the change. Stored as before/after JSON strings so
+		// an operator reviewing the feed can see exactly which key
+		// flipped (e.g. storage_bytes 524288000 → 10737418240). The
+		// per-key diff is small and the strings are bounded (one row
+		// per override key); cheaper than a separate event-per-key
+		// fanout.
+		s.logAuditEvent(models.ActionPlanOverridesChanged, r, auditMeta(map[string]string{
+			"target_user_id": userID,
+			"old_overrides":  user.PlanOverrides,
+			"new_overrides":  *input.PlanOverrides,
+		}))
 	}
 
 	// Return updated user

@@ -7,7 +7,10 @@
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
 	let editRole = $state('member');
-	// Plan override fields — empty string means "use plan default", a number overrides it
+	// Plan override fields — empty string means "use plan default", a number overrides it.
+	// storage_bytes is omitted from this list because it has its own
+	// dedicated input (parses "500 MB" / "10 GB" shorthand into a byte
+	// count rather than forcing the admin to type 536870912 by hand).
 	const overrideFields = [
 		{ key: 'workspaces', label: 'Workspaces', hint: 'Max workspaces owned' },
 		{ key: 'items_per_workspace', label: 'Items per workspace', hint: 'Max items in each workspace' },
@@ -15,8 +18,17 @@
 		{ key: 'api_tokens', label: 'API tokens', hint: 'Max API tokens' },
 		{ key: 'webhooks', label: 'Webhooks', hint: 'Max webhooks per workspace' },
 	];
-	const overrideFieldKeys = new Set(overrideFields.map(f => f.key));
+	// Keys the UI explicitly knows how to render (overrideFields plus
+	// the dedicated storage_bytes input). Anything else is preserved
+	// as-is in extraOverrides so an unrelated override key set via the
+	// API doesn't get clobbered when an admin saves the structured form.
+	const overrideFieldKeys = new Set([...overrideFields.map(f => f.key), 'storage_bytes']);
 	let editOverrides = $state<Record<string, string>>({});
+	// Storage override input: text rather than number so the admin can
+	// type "10 GB" / "500MB" / "-1" (unlimited) / "" (clear, falls back
+	// to plan default). Parsed by parseStorageInput on save.
+	let editStorageOverride = $state('');
+	let storageOverrideError = $state('');
 	let extraOverrides = $state<Record<string, number>>({});
 	let saving = $state(false);
 	let saveMsg = $state('');
@@ -65,13 +77,24 @@
 		selectedId = u.id;
 		editPlan = u.plan || 'free';
 		editRole = u.role || 'member';
-		// Populate override fields from the user's plan_overrides object
-		const ov = u.plan_overrides ?? {};
+		// plan_overrides is a raw JSON string from the API. Parse it
+		// once here; downstream code reads keys / Object.entries on
+		// the resulting object. Tolerant of malformed JSON (returns
+		// {} instead of throwing) so a corrupt row doesn't lock the
+		// user out of the admin form — the save path will overwrite
+		// it cleanly.
+		const ov = parsePlanOverrides(u.plan_overrides);
 		editOverrides = {};
 		extraOverrides = {};
 		for (const f of overrideFields) {
 			editOverrides[f.key] = f.key in ov ? String(ov[f.key]) : '';
 		}
+		// storage_bytes has its own dedicated input. Format the raw
+		// byte count as human-readable so an admin who already set
+		// "10 GB" doesn't see "10737418240" on the next visit.
+		editStorageOverride =
+			'storage_bytes' in ov ? formatStorageBytes(ov.storage_bytes) : '';
+		storageOverrideError = '';
 		// Preserve any override keys not in our UI fields
 		for (const [k, v] of Object.entries(ov)) {
 			if (!overrideFieldKeys.has(k)) {
@@ -179,6 +202,7 @@
 		if (!selectedId) return;
 		saving = true;
 		saveMsg = '';
+		storageOverrideError = '';
 		try {
 			// Build plan_overrides JSON from structured fields, preserving unknown keys
 			const overrides: Record<string, number> = { ...extraOverrides };
@@ -194,7 +218,30 @@
 					overrides[f.key] = num;
 				}
 			}
-			const overridesJSON = Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null;
+			// Storage quota override: empty input clears the override
+			// (falls back to plan default); otherwise parse "500 MB" /
+			// "10 GB" / "-1" (unlimited) / a raw byte count.
+			const rawStorage = editStorageOverride.trim();
+			if (rawStorage !== '') {
+				const parsed = parseStorageInput(rawStorage);
+				if (parsed === null) {
+					storageOverrideError =
+						'Storage override must be bytes (1024), shorthand (500 MB / 10 GB), or -1 for unlimited';
+					saveMsg = '';
+					saving = false;
+					return;
+				}
+				overrides['storage_bytes'] = parsed;
+			}
+			// Empty overrides object → send "" so the backend's
+			// nil-vs-non-nil pointer logic actually runs the update
+			// path (SetUserPlanOverrides("") clears the column).
+			// Sending null would JSON-decode to a nil *string and
+			// the handler would skip the update entirely — clearing
+			// the form would silently no-op. Codex caught this on
+			// PR #304 round 1.
+			const overridesJSON =
+				Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : '';
 			await adminPatch(`/admin/users/${selectedId}`, {
 				plan: editPlan,
 				plan_overrides: overridesJSON
@@ -208,6 +255,99 @@
 			saving = false;
 		}
 	}
+
+	// Reset clears the storage override field. The actual save still
+	// runs through saveUser so an admin can review the change before
+	// committing — matches the flow for the other override fields.
+	function resetStorageOverride() {
+		editStorageOverride = '';
+		storageOverrideError = '';
+	}
+
+	// parsePlanOverrides decodes the raw JSON string the API returns
+	// for `plan_overrides` into a Record<string, number>. Tolerant of
+	// malformed / null / empty input so the UI doesn't crash on a
+	// row that somehow has bad JSON in the column.
+	function parsePlanOverrides(raw: unknown): Record<string, number> {
+		if (raw == null || raw === '') return {};
+		// Defensive: if a future API revision starts returning the
+		// decoded object directly, accept it without breaking.
+		if (typeof raw === 'object') return raw as Record<string, number>;
+		if (typeof raw !== 'string') return {};
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				return parsed as Record<string, number>;
+			}
+		} catch {
+			/* fall through to empty */
+		}
+		return {};
+	}
+
+	// parseStorageInput accepts (in order of priority):
+	//   • "-1" → -1 (unlimited)
+	//   • Raw byte count: "1024", "536870912"
+	//   • IEC shorthand: "500 KB", "10MB", "10GB", "1.5gb"
+	// Returns the byte count as an integer, or null on parse failure.
+	// Mirrors the server-side hardcodedLimit byte values (KB=1024 etc).
+	function parseStorageInput(input: string): number | null {
+		const trimmed = input.trim();
+		if (trimmed === '-1') return -1;
+		// Allow plain integers up to JS safe-integer range.
+		if (/^\d+$/.test(trimmed)) {
+			const n = Number(trimmed);
+			return Number.isSafeInteger(n) && n >= 0 ? n : null;
+		}
+		// Shorthand: <number> [unit]. Unit is optional (treated as B).
+		const m = trimmed.match(/^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$/i);
+		if (!m) return null;
+		const value = parseFloat(m[1]);
+		if (isNaN(value) || value < 0) return null;
+		const unit = m[2].toUpperCase().replace(/B$/, '');
+		const mult: Record<string, number> = {
+			'': 1,
+			'K': 1024,
+			'M': 1024 * 1024,
+			'G': 1024 * 1024 * 1024,
+			'T': 1024 * 1024 * 1024 * 1024,
+		};
+		const factor = mult[unit];
+		if (factor === undefined) return null;
+		const bytes = Math.round(value * factor);
+		return Number.isSafeInteger(bytes) ? bytes : null;
+	}
+
+	// formatStorageBytes is the inverse of parseStorageInput: render a
+	// raw byte count as the admin would have typed it. -1 → "-1"
+	// (unlimited); other values pick the largest unit that keeps the
+	// number readable.
+	function formatStorageBytes(n: number): string {
+		if (n === -1) return '-1';
+		if (n < 0) return String(n);
+		const KB = 1024;
+		const MB = KB * 1024;
+		const GB = MB * 1024;
+		const TB = GB * 1024;
+		if (n >= TB && n % TB === 0) return `${n / TB} TB`;
+		if (n >= GB && n % GB === 0) return `${n / GB} GB`;
+		if (n >= MB && n % MB === 0) return `${n / MB} MB`;
+		if (n >= KB && n % KB === 0) return `${n / KB} KB`;
+		return String(n);
+	}
+
+	// storageOverridePreview renders the current input as the admin
+	// would see it after parsing — gives instant feedback on whether
+	// "10 gb" was understood as 10 GiB. Empty/invalid input → "" so
+	// the helper text doesn't flicker as the admin types.
+	let storageOverridePreview = $derived.by(() => {
+		const trimmed = editStorageOverride.trim();
+		if (trimmed === '') return '';
+		const parsed = parseStorageInput(trimmed);
+		if (parsed === null) return 'Invalid input';
+		if (parsed === -1) return 'Unlimited';
+		return `= ${formatStorageBytes(parsed)} (${parsed.toLocaleString()} bytes)`;
+	});
 
 	function relativeTime(dateStr: string | null): string {
 		if (!dateStr) return 'Never';
@@ -443,6 +583,50 @@
 															/>
 														</div>
 													{/each}
+												</div>
+												<!-- Dedicated storage override row.
+												     Storage is byte-counted, not row-counted, so a number
+												     input forcing the admin to type 536870912 for 512MB
+												     would be hostile. Accept "10 GB" / "500MB" / "-1"
+												     (unlimited) / a raw byte count and show the parsed
+												     value live.
+												     Effective limit cascades:
+												       per-user override → platform setting → hardcoded plan default.
+												     The Settings → Storage page (TASK-882) reflects the
+												     effective limit immediately after save.
+												-->
+												<div class="storage-override-row">
+													<div class="override-field storage-override-field">
+														<label for="override-storage_bytes">Storage quota override</label>
+														<div class="storage-input-group">
+															<input
+																id="override-storage_bytes"
+																type="text"
+																class="storage-input"
+																bind:value={editStorageOverride}
+																placeholder="default (e.g. 10 GB, 500 MB, -1 for unlimited)"
+															/>
+															<button
+																type="button"
+																class="btn btn-small reset-storage-btn"
+																onclick={resetStorageOverride}
+																disabled={editStorageOverride.trim() === ''}
+															>
+																Reset to plan default
+															</button>
+														</div>
+														{#if storageOverridePreview}
+															<p
+																class="storage-preview"
+																class:storage-preview-error={storageOverridePreview === 'Invalid input'}
+															>
+																{storageOverridePreview}
+															</p>
+														{/if}
+														{#if storageOverrideError}
+															<p class="storage-error">{storageOverrideError}</p>
+														{/if}
+													</div>
 												</div>
 											</div>
 											<div class="edit-actions">
@@ -686,6 +870,60 @@
 	.override-field input::placeholder {
 		color: var(--text-muted);
 		font-family: inherit;
+	}
+	/* Storage override row: dedicated row outside the 2-column grid
+	   because it has unique controls (preview, reset button, units). */
+	.storage-override-row {
+		margin-top: var(--space-3);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--border);
+	}
+	.storage-override-field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	.storage-input-group {
+		display: flex;
+		gap: var(--space-2);
+		align-items: stretch;
+		flex-wrap: wrap;
+	}
+	.storage-input {
+		flex: 1;
+		min-width: 220px;
+		padding: var(--space-1) var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		font-family: var(--font-mono, monospace);
+		outline: none;
+	}
+	.storage-input:focus {
+		border-color: var(--accent-blue);
+	}
+	.btn-small {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.78rem;
+	}
+	.reset-storage-btn {
+		white-space: nowrap;
+	}
+	.storage-preview {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		font-family: var(--font-mono, monospace);
+	}
+	.storage-preview-error {
+		color: #ef4444;
+	}
+	.storage-error {
+		margin: 0;
+		font-size: 0.82rem;
+		color: #ef4444;
 	}
 	.edit-actions {
 		display: flex;
