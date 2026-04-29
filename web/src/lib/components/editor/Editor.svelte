@@ -184,7 +184,7 @@
 		event.clipboardData.setData('text/html', '');
 
 		if (isCut) {
-			const tr = state.tr.delete(from, to);
+			const tr = state.tr.deleteSelection();
 			view.dispatch(tr);
 		}
 		return true;
@@ -431,7 +431,11 @@
 			}),
 			TaskList,
 			TaskItem.configure({ nested: true }),
-			Table.extend({ addProseMirrorPlugins() { return [tableCopyPlugin]; } }).configure({ resizable: true, HTMLAttributes: { class: 'table-wrapper' } }),
+			Table.extend({
+				addProseMirrorPlugins() {
+					return [...(this.parent?.() ?? []), tableCopyPlugin];
+				},
+			}).configure({ resizable: true, HTMLAttributes: { class: 'table-wrapper' } }),
 			TableRow,
 			TableCell,
 			TableHeader,
