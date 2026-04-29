@@ -175,6 +175,11 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, fmt.Errorf("resolve destination backend: %w", err))
 		return
 	}
+	// Same orphan-GC fence as the upload handler — see the comment
+	// at handlers_attachments.go's store.Put callsite. Released
+	// after CreateAttachment below regardless of outcome.
+	releaseInFlight := s.markUploadInFlight(hash)
+	defer releaseInFlight()
 	storageKey, err := dstStore.Put(r.Context(), hash, attachments.ThumbnailMime(outFormat), bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("put transformed blob: %w", err))

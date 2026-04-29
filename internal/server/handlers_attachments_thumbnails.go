@@ -161,6 +161,12 @@ func (s *Server) persistThumbnail(
 	if err != nil {
 		return fmt.Errorf("resolve storage backend: %w", err)
 	}
+	// Fence the Put + CreateAttachment pair against orphan-GC blob
+	// deletion. See handlers_attachments.go for the upload-handler
+	// rationale; thumbnails hit the same race when an old soft-
+	// deleted thumbnail shares the same hash as a freshly-derived one.
+	releaseInFlight := s.markUploadInFlight(hash)
+	defer releaseInFlight()
 	storageKey, err := store.Put(ctx, hash, attachments.ThumbnailMime(format), bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("put thumbnail blob: %w", err)

@@ -226,6 +226,106 @@ func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
 	}
 }
 
+// TestOrphanGC_KeepsReferencedNeverAttachedRows pins Codex P1 on
+// PR #307 round 1: the editor's normal upload flow leaves
+// attachments.item_id NULL and only the markdown reference inside
+// item.content connects them. So a "never-attached" row past the
+// grace period might still be referenced — the GC must scan item
+// content before reclaiming.
+func TestOrphanGC_KeepsReferencedNeverAttachedRows(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	if rr := doMultipartUpload(srv, slug, "kept.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, wsID)
+
+	// Create an item whose content references the attachment, but
+	// don't update attachments.item_id — exactly mirrors the
+	// production editor flow (upload → PATCH content with the ref).
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/docs/items",
+		map[string]any{"title": "Holds Image", "content": "ref: pad-attachment:" + id})
+	if rr.Code != 201 {
+		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Backdate the attachment's created_at past the 30-day grace
+	// so the orphan SELECT picks it up.
+	pastTs := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET created_at = ? WHERE id = ?`, pastTs, id,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(),
+		time.Now().UTC().Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted=%d, want 0 (item content references the attachment)", res.Deleted)
+	}
+	if got, _ := srv.store.GetAttachment(id); got == nil {
+		t.Errorf("referenced attachment was hard-deleted by GC; row gone")
+	}
+}
+
+// TestOrphanGC_RespectsInFlightUploads pins Codex P2 on PR #307
+// round 1: an upload that called Put but hasn't yet inserted the
+// attachments row must NOT lose its blob to GC reclamation of an
+// older soft-deleted row sharing the same hash.
+//
+// We simulate the race by registering an in-flight hash directly,
+// running a sweep against an old soft-deleted row at that hash,
+// and asserting the blob stayed.
+func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	if rr := doMultipartUpload(srv, slug, "victim.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, workspaceIDForSlug(t, srv, slug))
+
+	att, _ := srv.store.GetAttachment(id)
+	if att == nil {
+		t.Fatal("expected attachment row")
+	}
+
+	// Soft-delete it.
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil)
+	if rr.Code != 204 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+
+	// Pretend an upload is in flight for the same hash. (Production
+	// upload code would have called this between Put and
+	// CreateAttachment; the GC must see the in-flight signal.)
+	release := srv.markUploadInFlight(att.ContentHash)
+	defer release()
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("Deleted=%d, want >= 1 (DB row should still go)", res.Deleted)
+	}
+	if res.BlobsReclaimed != 0 {
+		t.Errorf("BlobsReclaimed=%d, want 0 (in-flight upload protects the blob)",
+			res.BlobsReclaimed)
+	}
+	// Blob still on disk so the in-flight upload can complete.
+	store, err := srv.attachments.Resolve(att.StorageKey)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), att.StorageKey); err != nil {
+		t.Errorf("blob disappeared despite in-flight signal: %v", err)
+	}
+}
+
 // TestOrphanGC_StartStop pins the lifecycle: StartOrphanGC kicks the
 // loop, Stop signals it to exit, and Server.Stop() actually drains.
 // Catches regressions where a leaked goroutine would compound across

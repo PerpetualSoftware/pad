@@ -60,6 +60,29 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
+		// "Never-attached" rows (item_id IS NULL, deleted_at IS NULL)
+		// can still be referenced from item content via
+		// `pad-attachment:UUID` — the editor uploads first, then
+		// PATCHes content with the reference, but the attachments
+		// row's item_id stays NULL. Scan items.content + items.fields
+		// before reclaiming so the GC doesn't destroy a legitimate
+		// reference. Codex P1 on PR #307 round 1.
+		if a.ItemID == nil && a.DeletedAt == nil {
+			referenced, err := s.store.AttachmentReferencedInItems(a.WorkspaceID, a.ID)
+			if err != nil {
+				slog.Warn("orphan GC: ref-scan failed",
+					"attachment_id", a.ID, "workspace_id", a.WorkspaceID, "error", err)
+				res.Skipped++
+				continue
+			}
+			if referenced {
+				// Item content references the attachment — leave it
+				// alone. Bonus side effect: the row will be picked
+				// up next sweep if the reference goes away.
+				continue
+			}
+		}
+
 		// Decide whether the on-disk blob can also be reclaimed.
 		// content-addressed dedupe: the same hash may be referenced
 		// by other live rows. Only delete the blob when this is the
@@ -70,6 +93,16 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				"attachment_id", a.ID, "hash", a.ContentHash, "error", err)
 			res.Skipped++
 			continue
+		}
+
+		// Concurrent-upload race: an upload that called
+		// AttachmentStore.Put with this hash but hasn't yet
+		// inserted the DB row would otherwise look like "0 live
+		// refs" to the count query. The in-flight tracker on Server
+		// (markUploadInFlight) closes that gap. Codex P2 on PR
+		// #307 round 1.
+		if s.uploadInFlight(a.ContentHash) {
+			others++
 		}
 
 		if others == 0 {

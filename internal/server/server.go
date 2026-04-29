@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -91,6 +92,19 @@ type Server struct {
 	// SetOrphanGCConfig and started via StartOrphanGC. Stop() signals
 	// the loop to exit and waits for it via the bg WaitGroup.
 	orphanGC orphanGCConfig
+
+	// inFlightUploadHashes tracks content_hash values for uploads
+	// that have called AttachmentStore.Put but not yet inserted the
+	// attachments row. Without this, the orphan GC could delete a
+	// blob between Put and CreateAttachment, leaving a live row that
+	// references a missing blob (Codex P2 on PR #307 round 1).
+	//
+	// Map value is a *atomic int64 reference count: same hash can
+	// have multiple in-flight uploads (the upload handler uses the
+	// hash as the dedup key), so we can't just use sync.Map's bool
+	// presence semantics. The orphan GC checks `> 0` before
+	// reclaiming a blob.
+	inFlightUploadHashes sync.Map
 
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
@@ -294,6 +308,34 @@ func (s *Server) SetAttachments(reg *attachments.Registry, maxBytes int64) {
 // The capabilities endpoint reflects whichever processor is wired.
 func (s *Server) SetImageProcessor(p attachments.Processor) {
 	s.imageProcessor = p
+}
+
+// markUploadInFlight increments the in-flight counter for a content
+// hash. Returns a release func the caller MUST defer; the release
+// decrements and removes the entry once it hits zero. Used by the
+// upload handler to fence Put + CreateAttachment against orphan-GC
+// blob deletions of the same hash.
+func (s *Server) markUploadInFlight(hash string) func() {
+	v, _ := s.inFlightUploadHashes.LoadOrStore(hash, new(int64))
+	counter := v.(*int64)
+	atomic.AddInt64(counter, 1)
+	return func() {
+		if atomic.AddInt64(counter, -1) == 0 {
+			s.inFlightUploadHashes.Delete(hash)
+		}
+	}
+}
+
+// uploadInFlight reports whether any upload is currently materializing
+// a blob with the given hash. The orphan GC consults this before
+// deleting a blob — if an upload just finished Put but hasn't
+// inserted the row yet, GC must NOT reclaim the blob.
+func (s *Server) uploadInFlight(hash string) bool {
+	v, ok := s.inFlightUploadHashes.Load(hash)
+	if !ok {
+		return false
+	}
+	return atomic.LoadInt64(v.(*int64)) > 0
 }
 
 // SetImportBundleMaxBytes overrides the default 2 GiB cap on a

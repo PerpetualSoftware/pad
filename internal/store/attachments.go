@@ -591,6 +591,38 @@ func (s *Store) CountLiveAttachmentsForHash(hash, excludeID string) (int, error)
 	return n, nil
 }
 
+// AttachmentReferencedInItems returns true when any live item in the
+// workspace mentions "pad-attachment:<id>" in its content or fields
+// JSON. The editor upload flow leaves attachments.item_id NULL —
+// the canonical association is the markdown reference inside the
+// item's content, NOT a column in the attachments table — so the
+// orphan GC has to look at item content directly before reclaiming
+// a "never-attached" row, otherwise it'd hard-delete attachments
+// that markdown still points at.
+//
+// Scoped to one workspace because a "pad-attachment:UUID" reference
+// only resolves within the workspace where the attachment lives;
+// cross-workspace references are intentionally not supported.
+func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (bool, error) {
+	if workspaceID == "" || attachmentID == "" {
+		return false, nil
+	}
+	needle := "pad-attachment:" + attachmentID
+	// SQLite + PostgreSQL both support LIKE on TEXT columns. The
+	// reference includes the exact UUID so collision risk is nil.
+	pattern := "%" + needle + "%"
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM items
+		WHERE workspace_id = ? AND deleted_at IS NULL
+		  AND (content LIKE ? OR fields LIKE ?)
+	`), workspaceID, pattern, pattern).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("attachment referenced in items: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SoftDeleteAttachment marks the given attachment row deleted (and
 // every variant whose parent_id points at it) so the orphan GC will
 // reclaim the bytes after the grace period. Returns sql.ErrNoRows if

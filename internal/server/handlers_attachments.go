@@ -217,6 +217,15 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, fmt.Errorf("resolve attachment store: %w", err))
 		return
 	}
+	// Fence Put + CreateAttachment against the orphan GC. The
+	// in-flight tracker keeps the GC from reclaiming a blob with
+	// this hash between Put (blob lands on disk) and
+	// CreateAttachment (DB row inserted) — without it, a GC sweep
+	// of an old soft-deleted row sharing the same hash could delete
+	// the blob and strand the new live row. Released after the
+	// CreateAttachment call below (whether it succeeds or fails).
+	releaseInFlight := s.markUploadInFlight(hash)
+	defer releaseInFlight()
 	storageKey, err := store.Put(r.Context(), hash, entry.MIME, tmp)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("attachment store.Put: %w", err))
