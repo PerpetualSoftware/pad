@@ -113,6 +113,10 @@
 		tabindex="0"
 		onclick={openModal}
 		onkeydown={(e) => {
+			// Only react when the keydown originated on the banner itself —
+			// otherwise keyboard activation of nested focusable elements
+			// (e.g. the dismiss button) would also open the modal.
+			if (e.target !== e.currentTarget) return;
 			if (e.key === 'Enter' || e.key === ' ') {
 				e.preventDefault();
 				openModal();
