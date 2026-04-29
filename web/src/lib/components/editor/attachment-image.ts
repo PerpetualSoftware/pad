@@ -34,6 +34,7 @@ import {
 	invalidateAttachmentMetadata,
 	mimeToFormat
 } from './attachment-metadata';
+import { openCropModal, type CropResult } from './attachment-crop-modal';
 import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
 // Re-export the shared types so existing call sites keep working.
@@ -274,6 +275,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (toolbar) return toolbar;
 				toolbar = buildRotateToolbar({
 					onRotate: (degrees) => runRotate(degrees),
+					onCrop: () => runCrop(),
 				});
 				wrapper.appendChild(toolbar);
 				// Subscribe to capability-change notifications. The
@@ -302,32 +304,65 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				return toolbar;
 			};
 
+			const swapNodeUuid = (newId: string): void => {
+				const pos = typeof getPos === 'function' ? getPos() : null;
+				if (pos == null) return;
+				// Replace the node's UUID at its current position.
+				// setNodeMarkup keeps the same node type and only
+				// rewrites attributes, which is what we want — the
+				// transform produced a NEW attachment row, but it's
+				// still an attachmentImage.
+				const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
+					...node.attrs,
+					uuid: newId,
+				});
+				editor.view.dispatch(tr);
+				// Drop the cached metadata for the OLD UUID — the
+				// editor may render the original elsewhere later and
+				// we want the next probe to refresh.
+				if (uuid && opts.workspaceSlug) {
+					invalidateAttachmentMetadata(opts.workspaceSlug, uuid);
+				}
+			};
+
 			const runRotate = async (degrees: 90 | 180 | 270): Promise<void> => {
 				if (!uuid) return;
 				try {
 					const result = await opts.transform(uuid, { operation: 'rotate', degrees });
-					const pos = typeof getPos === 'function' ? getPos() : null;
-					if (pos == null) return;
-					// Replace the node's UUID at its current position.
-					// setNodeMarkup keeps the same node type and only
-					// rewrites attributes, which is what we want — the
-					// transform produced a NEW attachment row, but it's
-					// still an attachmentImage.
-					const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
-						...node.attrs,
-						uuid: result.id,
-					});
-					editor.view.dispatch(tr);
-					// Drop the cached metadata for the OLD UUID — the
-					// editor may render the original elsewhere later
-					// and we want the next probe to refresh.
-					if (opts.workspaceSlug) {
-						invalidateAttachmentMetadata(opts.workspaceSlug, uuid);
-					}
+					swapNodeUuid(result.id);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : 'Rotation failed';
 					if (opts.onError) opts.onError(msg);
 					else if (typeof console !== 'undefined') console.error('[attachmentImage] rotate', err);
+				}
+			};
+
+			const runCrop = async (): Promise<void> => {
+				if (!uuid) return;
+				// Open the crop modal pointing at the original-resolution
+				// variant — the user is composing pixel-precise rect
+				// coordinates, so we can't show the thumb-md downscale.
+				// The modal returns rect coordinates already translated
+				// to natural-image pixel space, ready to send to the
+				// server unchanged.
+				const fullUrl = opts.getDownloadUrl(uuid, 'original');
+				let rect: CropResult | null = null;
+				try {
+					rect = await openCropModal({ imageUrl: fullUrl, alt });
+				} catch {
+					// openCropModal never rejects today, but defensive
+					// catch keeps the editor responsive if that contract
+					// changes — treat as cancel.
+					rect = null;
+				}
+				if (rect == null) return;
+				try {
+					const result = await opts.transform(uuid, { operation: 'crop', rect });
+					swapNodeUuid(result.id);
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : 'Crop failed';
+					if (opts.onError) opts.onError(msg);
+					else if (typeof console !== 'undefined') console.error('[attachmentImage] crop', err);
 				}
 			};
 
@@ -395,18 +430,20 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 });
 
 /**
- * Build the rotate toolbar — three buttons (rotate left 90°,
- * rotate 180°, rotate right 90°). Each button delegates to the
- * supplied onRotate callback; the NodeView wires that into a
- * setNodeMarkup transaction once the server returns the new UUID.
+ * Build the image-edit toolbar — rotate trio (left 90°, 180°, right
+ * 90°) plus a crop button. Each button delegates to the supplied
+ * callback; the NodeView wires those into setNodeMarkup transactions
+ * once the server returns the new UUID.
  *
  * The toolbar starts in its enabled state. refreshToolbarState
- * disables individual buttons (with tooltip) once the image's
- * MIME has been probed and compared to the processor's supported
- * formats list.
+ * disables individual buttons (with tooltip) once the image's MIME
+ * has been probed and compared to the processor's supported formats
+ * list — every button gates on the same per-format check, since
+ * both rotate and crop go through the same /transform path.
  */
 function buildRotateToolbar(opts: {
 	onRotate: (degrees: 90 | 180 | 270) => void;
+	onCrop: () => void;
 }): HTMLElement {
 	const toolbar = document.createElement('div');
 	toolbar.className = 'attachment-image-toolbar';
@@ -418,7 +455,7 @@ function buildRotateToolbar(opts: {
 	// Editor.svelte.
 	toolbar.addEventListener('mousedown', (e) => e.preventDefault());
 
-	const button = (label: string, title: string, deg: 90 | 180 | 270): HTMLButtonElement => {
+	const rotateButton = (label: string, title: string, deg: 90 | 180 | 270): HTMLButtonElement => {
 		const btn = document.createElement('button');
 		btn.type = 'button';
 		btn.className = 'attachment-image-toolbar-btn';
@@ -434,10 +471,27 @@ function buildRotateToolbar(opts: {
 		return btn;
 	};
 
+	const cropButton = (): HTMLButtonElement => {
+		const btn = document.createElement('button');
+		btn.type = 'button';
+		btn.className = 'attachment-image-toolbar-btn';
+		btn.textContent = '⌶';
+		btn.title = 'Crop…';
+		btn.dataset.action = 'crop';
+		btn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (btn.disabled) return;
+			opts.onCrop();
+		});
+		return btn;
+	};
+
 	toolbar.append(
-		button('↶', 'Rotate left 90°', 270),
-		button('↻', 'Rotate 180°', 180),
-		button('↷', 'Rotate right 90°', 90)
+		rotateButton('↶', 'Rotate left 90°', 270),
+		rotateButton('↻', 'Rotate 180°', 180),
+		rotateButton('↷', 'Rotate right 90°', 90),
+		cropButton()
 	);
 	return toolbar;
 }

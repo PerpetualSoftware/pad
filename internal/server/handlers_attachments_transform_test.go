@@ -243,6 +243,121 @@ func TestTransform_ServedDownloadDecodesAtNewDimensions(t *testing.T) {
 	}
 }
 
+func TestTransform_CropProducesNewBlobAtRectDimensions(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
+	srv.Stop()
+
+	rect := &struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+		W int `json:"w"`
+		H int `json:"h"`
+	}{X: 100, Y: 50, W: 300, H: 200}
+
+	rr := doTransform(srv, slug, id, transformRequestBody{Operation: "crop", Rect: rect})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("crop status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ID     string `json:"id"`
+		Width  *int   `json:"width"`
+		Height *int   `json:"height"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Width == nil || resp.Height == nil {
+		t.Fatal("response missing dimensions")
+	}
+	if *resp.Width != rect.W || *resp.Height != rect.H {
+		t.Errorf("crop dims = %dx%d, want %dx%d", *resp.Width, *resp.Height, rect.W, rect.H)
+	}
+	// Decode the served bytes to double-check the dimensions
+	// — guards against an off-by-one in the encode pipeline.
+	getReq := httptest.NewRequest("GET", "/api/v1/workspaces/"+slug+"/attachments/"+resp.ID, nil)
+	getReq.RemoteAddr = "127.0.0.1:1234"
+	getRR := httptest.NewRecorder()
+	srv.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get cropped status = %d", getRR.Code)
+	}
+	out, _, err := image.Decode(bytes.NewReader(getRR.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode cropped bytes: %v", err)
+	}
+	if out.Bounds().Dx() != rect.W || out.Bounds().Dy() != rect.H {
+		t.Errorf("served crop dims = %v, want %dx%d", out.Bounds(), rect.W, rect.H)
+	}
+}
+
+func TestTransform_CropClipsToImageBounds(t *testing.T) {
+	// Rect that extends past the image must clip rather than 400.
+	// The processor's Crop intersects with image bounds and the
+	// editor relies on this — its rounding can yield rect+1px past
+	// the natural width/height in rare fractional-scale cases.
+	srv, slug := testServerWithAttachments(t)
+	id, _ := uploadIntegrationPNG(t, srv, slug, 100, 100)
+	srv.Stop()
+
+	rect := &struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+		W int `json:"w"`
+		H int `json:"h"`
+	}{X: 50, Y: 50, W: 200, H: 200}
+
+	rr := doTransform(srv, slug, id, transformRequestBody{Operation: "crop", Rect: rect})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp struct{ Width, Height *int }
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	// Clipped to (50,50)..(100,100) → 50×50 result.
+	if resp.Width == nil || resp.Height == nil || *resp.Width != 50 || *resp.Height != 50 {
+		t.Errorf("clipped dims = %v×%v, want 50×50", resp.Width, resp.Height)
+	}
+}
+
+func TestTransform_CropRejectsBadRect(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	id, _ := uploadIntegrationPNG(t, srv, slug, 100, 100)
+	srv.Stop()
+
+	cases := []struct {
+		name string
+		body transformRequestBody
+	}{
+		{"missing rect", transformRequestBody{Operation: "crop"}},
+		{"zero width", transformRequestBody{Operation: "crop", Rect: &struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+			W int `json:"w"`
+			H int `json:"h"`
+		}{0, 0, 0, 100}}},
+		{"negative xy", transformRequestBody{Operation: "crop", Rect: &struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+			W int `json:"w"`
+			H int `json:"h"`
+		}{-10, -10, 50, 50}}},
+		{"rect entirely outside", transformRequestBody{Operation: "crop", Rect: &struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+			W int `json:"w"`
+			H int `json:"h"`
+		}{500, 500, 100, 100}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rr := doTransform(srv, slug, id, c.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rr.Code)
+			}
+		})
+	}
+}
+
 func TestTransform_DerivedRowInheritsUploadedByFromParent(t *testing.T) {
 	// A user who rotates someone else's upload should NOT take
 	// ownership of the resulting blob. The transform pipeline
