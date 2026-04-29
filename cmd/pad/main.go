@@ -6249,6 +6249,13 @@ Examples:
 			if err := tmp.Close(); err != nil {
 				return fmt.Errorf("close temp: %w", err)
 			}
+			// os.Rename atomically replaces an existing destination on
+			// every supported platform: POSIX rename(2) is atomic-replace
+			// by definition, and Windows uses MoveFileEx with
+			// MOVEFILE_REPLACE_EXISTING (see Go stdlib
+			// internal/syscall/windows/syscall_windows.go Rename — this
+			// has been the behavior since Go 1.5, released 2015). No
+			// platform-specific shim required.
 			if err := os.Rename(tmpPath, outPath); err != nil {
 				return fmt.Errorf("rename %s -> %s: %w", tmpPath, outPath, err)
 			}
