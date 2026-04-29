@@ -6,6 +6,12 @@ version: 2
 # does not inherit the macOS signing secrets (Developer ID .p12, .p8 notary
 # key, etc.) that are scoped only to the `Run GoReleaser` step's env.
 # Reduces blast radius from any npm supply-chain compromise.
+#
+# Local testing (`goreleaser release --snapshot` or similar): run
+# `make web` first (or `cd web && npm ci && npm run build`) so `web/build/`
+# exists — the Go binary embeds it via `//go:embed all:web/build`, so a
+# clean checkout will fail with "embed: no matching files found" otherwise.
+# `make build` / `make install` handle the web build automatically.
 
 builds:
   - main: ./cmd/pad
