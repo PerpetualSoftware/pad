@@ -113,22 +113,43 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// Bundles are streamed; we don't know the final size up front. No
 	// Content-Length header — http.Server falls through to chunked
 	// transfer-encoding, which the gzip+tar pair handles fine.
+	//
+	// X-Bundle-Status is an HTTP trailer that CLI clients check after
+	// streaming — without it, mid-stream errors are invisible because
+	// headers + the first tar entries are already on the wire. The
+	// trailer is set to "ok" only when every entry wrote cleanly;
+	// otherwise the client treats the file as corrupt and discards it.
+	// Codex caught the silent-corruption gap on PR #305 round 3.
+	w.Header().Set("Trailer", BundleStatusTrailer)
 
 	gzw := gzip.NewWriter(w)
 	tw := tar.NewWriter(gzw)
-	// Explicit Close ordering matters: tw.Close() flushes the tar
-	// trailer (and reports if a previous entry got fewer bytes than
-	// its declared Size — a corruption signal we don't want to drop
-	// silently); gzw.Close() then flushes the gzip footer. We use a
-	// single defer that handles both errors so a bug-bail-out path
-	// (e.g. context cancel mid-stream) still surfaces a truncation.
+	// Track streaming success. On error we want the gzip stream to
+	// terminate WITHOUT a clean trailer so a client that ignores the
+	// HTTP trailer still detects corruption via gunzip failure.
+	// Closing tw/gzw flushes the gzip trailer (CRC + size); skipping
+	// those calls leaves the gzip footer unwritten and the client's
+	// gzip reader returns ErrUnexpectedEOF.
+	streamOK := false
 	defer func() {
+		if !streamOK {
+			// Mid-stream failure path. Don't write a clean gzip
+			// trailer — CLI clients will see an io error reading
+			// the gzip stream AND a missing X-Bundle-Status:ok
+			// trailer. Either signal is sufficient on its own.
+			return
+		}
 		if err := tw.Close(); err != nil {
 			s.logBundleStreamError(r.Context(), "tar close", err)
+			return
 		}
 		if err := gzw.Close(); err != nil {
 			s.logBundleStreamError(r.Context(), "gzip close", err)
+			return
 		}
+		// Only mark the bundle ok in the trailer once every byte is
+		// flushed and both close calls returned without error.
+		w.Header().Set(BundleStatusTrailer, BundleStatusOK)
 	}()
 
 	// 1. pad-export.json
@@ -161,7 +182,20 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+
+	// All entries wrote cleanly. The deferred close + trailer set
+	// run after this returns; nothing else to do here.
+	streamOK = true
 }
+
+// BundleStatusTrailer is the HTTP response trailer that signals
+// whether the export bundle stream completed without errors. A
+// successful response sets it to BundleStatusOK; mid-stream errors
+// leave it absent. Exported so the CLI can check after streaming.
+const (
+	BundleStatusTrailer = "X-Bundle-Status"
+	BundleStatusOK      = "ok"
+)
 
 // streamAttachmentToTar resolves the storage backend for one
 // attachment row, writes a tar header sized to size_bytes, and copies

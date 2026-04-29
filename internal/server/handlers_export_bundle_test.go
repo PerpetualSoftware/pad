@@ -161,16 +161,21 @@ func TestExportBundle_HidesThumbnails(t *testing.T) {
 	}
 }
 
-// TestExportBundle_TruncatedBlobLogsError pins the close-error path
-// that Codex flagged on PR #305 round 2: if a backend returns fewer
-// bytes than the size_bytes column claims, the streaming handler
-// must NOT silently emit a corrupt 200 — it must bail out so the
-// downstream tar.Writer's "missed N bytes" trip is logged.
+// TestExportBundle_TruncatedBlobAbortsStream pins the close-error
+// path that Codex flagged on PR #305 round 2/3: if a backend returns
+// fewer bytes than the size_bytes column claims, the streaming
+// handler must NOT silently emit a corrupt 200. Two complementary
+// signals must surface so a downstream client can detect corruption:
 //
-// We synthesize the desync by inserting an attachments row whose
-// SizeBytes claims more bytes than the actual on-disk blob has.
-// (Easier than mocking the registry; the storage backend is real.)
-func TestExportBundle_TruncatedBlobLogsError(t *testing.T) {
+//   - The HTTP trailer X-Bundle-Status is absent or != "ok"
+//     (handler skips setting it on the error path).
+//   - The gzip stream itself is truncated (handler skips the clean
+//     close so the gzip trailer is unwritten and a gzip reader
+//     returns ErrUnexpectedEOF when reaching EOF).
+//
+// We synthesize the desync by setting size_bytes higher than the
+// actual on-disk blob length.
+func TestExportBundle_TruncatedBlobAbortsStream(t *testing.T) {
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -179,8 +184,6 @@ func TestExportBundle_TruncatedBlobLogsError(t *testing.T) {
 	}
 	id := getOnlyAttachmentID(t, srv, wsID)
 
-	// Bump the row's size_bytes well past the on-disk blob length so
-	// io.Copy reads fewer bytes than the tar header advertises.
 	if _, err := srv.store.DB().Exec(
 		`UPDATE attachments SET size_bytes = 999999 WHERE id = ?`, id,
 	); err != nil {
@@ -188,50 +191,71 @@ func TestExportBundle_TruncatedBlobLogsError(t *testing.T) {
 	}
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/export?format=tar", nil)
-	// HTTP status is 200 because headers are already on the wire by
-	// the time we detect the desync. The bundle that comes back is
-	// truncated; gzip + tar both refuse to decode cleanly. The
-	// assertion here is that the bytes are NOT a clean bundle —
-	// catching the regression where the handler used to silently
-	// produce a corrupt 200.
 	if rr.Code != http.StatusOK {
 		t.Fatalf("export: status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	// readBundle uses gzip.NewReader → if the gzip footer is missing
-	// (deferred Close didn't run, or tar.Close errored mid-stream)
-	// it'll fail. Wrap to capture rather than crash the test.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("readBundle panicked on truncated stream as expected: %v", r)
-		}
-	}()
+	// The httptest recorder doesn't echo trailers separately the way
+	// a real http.Response does, but the handler's ResponseWriter is
+	// the recorder itself — so any trailer the handler set lands in
+	// rr.Header(). Assert the success trailer is absent.
+	if got := rr.Header().Get("X-Bundle-Status"); got == "ok" {
+		t.Errorf("X-Bundle-Status=%q after truncation; want absent or non-ok", got)
+	}
+
+	// Independently: the gzip stream should fail to fully decode
+	// because the handler never closed the gzip writer cleanly.
 	gz, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
 	if err != nil {
-		// Gzip reader rejected the stream — this is the success case.
+		// Truncated gzip header is acceptable too.
 		return
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	sawErr := false
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			// Tar reader caught the truncation — also a success case.
-			return
+			sawErr = true
+			break
 		}
-		// Read the entry; if it's the truncated blob, io.ReadAll
-		// returns an error from the tar reader because the entry's
-		// declared size doesn't match the bytes available.
 		if _, err := io.ReadAll(tr); err != nil {
-			return
+			sawErr = true
+			break
 		}
 		_ = hdr
 	}
-	// If we got here without any error, the bundle decoded cleanly
-	// despite the size desync — that's the regression we're guarding.
-	t.Errorf("truncated blob produced a clean bundle; expected gzip/tar to surface the corruption")
+	// Belt: if the tar reader didn't error, the gzip footer should
+	// have been malformed and gz.Close() should report it.
+	if !sawErr {
+		if err := gz.Close(); err != nil {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Errorf("truncated blob produced a clean bundle; expected gzip/tar to surface the corruption")
+	}
+}
+
+// TestExportBundle_SuccessTrailer pins the success path of the
+// X-Bundle-Status trailer added in PR #305 round 3: a clean stream
+// sets the trailer to "ok" so a CLI can confirm the bundle is
+// complete before reporting success to the user.
+func TestExportBundle_SuccessTrailer(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	if rr := doMultipartUpload(srv, slug, "x.png", realPNG()); rr.Code != http.StatusCreated {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/export?format=tar", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Bundle-Status"); got != "ok" {
+		t.Errorf("X-Bundle-Status = %q on clean stream, want ok", got)
+	}
 }
 
 // TestExportBundle_LegacyJSONStillWorks confirms the default (no

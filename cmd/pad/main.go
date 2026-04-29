@@ -4579,10 +4579,31 @@ unpack tar.gz (planned for TASK-885).`,
 				dest = f
 			}
 
-			n, err := client.RawStream(path, dest)
+			n, resp, err := client.RawStream(path, dest)
 			if err != nil {
+				if outputFile != "" {
+					_ = os.Remove(outputFile) // don't leave a partial file behind
+				}
 				return fmt.Errorf("export: %w", err)
 			}
+
+			// Bundle responses carry an HTTP trailer that signals
+			// whether the server-side stream completed cleanly. A
+			// missing or non-"ok" value means the bundle is corrupt
+			// (an attachment blob got truncated mid-stream, etc.) —
+			// delete the partial file and surface failure rather
+			// than printing success. The legacy JSON path doesn't
+			// set the trailer; we only check it for --bundle.
+			if bundle && resp != nil {
+				status := resp.Trailer.Get("X-Bundle-Status")
+				if status != "ok" {
+					if outputFile != "" {
+						_ = os.Remove(outputFile)
+					}
+					return fmt.Errorf("export bundle is incomplete (server X-Bundle-Status=%q); check server logs for stream errors", status)
+				}
+			}
+
 			if f != nil {
 				if err := f.Close(); err != nil {
 					return fmt.Errorf("close file: %w", err)

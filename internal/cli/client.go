@@ -398,28 +398,35 @@ func (c *Client) RawGet(path string) ([]byte, error) {
 }
 
 // RawStream issues a GET and copies the response body into w as it
-// arrives. Returns the number of bytes written. Used for large
-// payloads (workspace export bundles, future S3-backed downloads)
-// where buffering the whole body would defeat the server's streaming
+// arrives. Returns the number of bytes written and a *http.Response
+// pointer the caller can inspect for trailers (used by the export
+// bundle path to verify X-Bundle-Status). Used for large payloads
+// (workspace export bundles, future S3-backed downloads) where
+// buffering the whole body would defeat the server's streaming
 // design and risk OOM on multi-GB exports.
 //
 // The HTTP status check still consumes the body if non-2xx (so the
 // error message can include the server's response), but only for the
 // error case — the happy path streams directly.
-func (c *Client) RawStream(path string, w io.Writer) (int64, error) {
+//
+// IMPORTANT: trailers are only populated AFTER the body has been
+// fully consumed (Go runtime guarantee). Callers that want to read
+// resp.Trailer must wait until after io.Copy returns.
+func (c *Client) RawStream(path string, w io.Writer) (int64, *http.Response, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("request failed: %w", err)
+		return 0, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return 0, c.parseError(resp)
+		return 0, resp, c.parseError(resp)
 	}
-	return io.Copy(w, resp.Body)
+	n, err := io.Copy(w, resp.Body)
+	return n, resp, err
 }
 
 // PostRaw sends raw bytes to the API and decodes the JSON response.
