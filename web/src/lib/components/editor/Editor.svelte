@@ -284,6 +284,7 @@
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
 	import { AttachmentImage, type AttachmentVariant } from './attachment-image';
+	import { AttachmentChip } from './attachment-chip';
 
 	let {
 		content = '',
@@ -468,6 +469,7 @@
 			}),
 			BlockDragHandle,
 			AttachmentImage.configure({ getDownloadUrl: getAttachmentUrl }),
+			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
 		];
 
 		editor = new Editor({

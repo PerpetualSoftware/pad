@@ -96,6 +96,61 @@ func TestDownload_NotFound(t *testing.T) {
 	}
 }
 
+func TestDownload_HEADReturnsHeadersWithoutBody(t *testing.T) {
+	// The editor's file-chip NodeView (TASK-877) probes attachment metadata
+	// via a HEAD request — Content-Type powers the MIME-aware icon and
+	// Content-Length feeds the size readout. chi doesn't auto-route HEAD
+	// to the GET handler, so the registration is explicit; this test
+	// guards that registration plus the seekable-path HEAD behavior of
+	// http.ServeContent (headers set, body omitted).
+	srv, slug := testServerWithAttachments(t)
+	body := realPNG()
+	_, mime, urlPath := uploadHelper(t, srv, slug, "screen.png", body)
+
+	req := httptest.NewRequest("HEAD", urlPath, nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != mime {
+		t.Errorf("HEAD Content-Type = %q, want %q", got, mime)
+	}
+	// Content-Length must reflect the actual blob size so the chip can
+	// render the readout. http.ServeContent computes this from the
+	// underlying ReadSeeker.
+	if got := rr.Header().Get("Content-Length"); got == "" {
+		t.Errorf("HEAD missing Content-Length header")
+	} else if n, err := strconv.Atoi(got); err != nil || n != len(body) {
+		t.Errorf("HEAD Content-Length = %q, want %d", got, len(body))
+	}
+	// Body MUST be empty on HEAD — Go's responseWriter discards body
+	// writes, but the assertion catches a regression where someone
+	// changes the handler in a way that bypasses ServeContent.
+	if rr.Body.Len() != 0 {
+		t.Errorf("HEAD response body should be empty, got %d bytes", rr.Body.Len())
+	}
+}
+
+func TestDownload_HEADCrossWorkspaceReturns404(t *testing.T) {
+	// Cross-workspace probing must return 404, not 403, on HEAD too —
+	// otherwise the metadata HEAD becomes a side-channel that lets a
+	// member of workspace B enumerate attachment IDs in workspace A.
+	srv, slugA := testServerWithAttachments(t)
+	slugB := createWSForTest(t, srv)
+	id, _, _ := uploadHelper(t, srv, slugA, "secret.png", realPNG())
+
+	req := httptest.NewRequest("HEAD", "/api/v1/workspaces/"+slugB+"/attachments/"+id, nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("HEAD cross-workspace status = %d, want 404 (NOT 403)", rr.Code)
+	}
+}
+
 func TestDownload_CrossWorkspaceReturns404(t *testing.T) {
 	srv, slugA := testServerWithAttachments(t)
 	slugB := createWSForTest(t, srv)
