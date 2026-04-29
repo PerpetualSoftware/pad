@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -85,6 +87,30 @@ func TestStorageUsage_TracksUploads(t *testing.T) {
 	if afterSecond.UsedBytes != 2*int64(len(first)) {
 		t.Errorf("after second upload used_bytes = %d, want %d (cache should have been invalidated)",
 			afterSecond.UsedBytes, 2*int64(len(first)))
+	}
+}
+
+// TestStorageUsage_RejectsGuests pins the requireMinRole("viewer") guard.
+// RequireWorkspaceAccess admits item-grant guests (workspaceRole=="guest")
+// who shouldn't see workspace-wide quota numbers — the explicit gate is
+// what the activity / members / versions read endpoints all use.
+//
+// We exercise the gate by calling the handler directly with a context
+// pre-populated with the "guest" role, rather than building an
+// item-grant fixture (which would require a member-role user, an item,
+// a grant row, and a session — all just to flip a single role string).
+func TestStorageUsage_RejectsGuests(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+slug+"/storage/usage", nil)
+	ctx := context.WithValue(req.Context(), ctxWorkspaceRole, "guest")
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	srv.handleGetWorkspaceStorageUsage(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("guest got status %d, want 403; body=%s", rr.Code, rr.Body.String())
 	}
 }
 

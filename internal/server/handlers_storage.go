@@ -96,7 +96,11 @@ func (c *storageInfoCache) invalidate(workspaceID string) {
 //
 // GET /api/v1/workspaces/{ws}/storage/usage
 //
-// Auth: viewer+ (route is already gated by RequireWorkspaceAccess).
+// Auth: viewer+. RequireWorkspaceAccess admits item-grant guests
+// with workspaceRole=="guest", who shouldn't see workspace-wide
+// quota numbers — requireMinRole("viewer") is the explicit gate that
+// matches the activity / members / versions read endpoints.
+//
 // Response: {used_bytes, limit_bytes, plan, override_active}.
 //
 // limit_bytes == -1 means unlimited (pro / self-hosted plans, or
@@ -104,6 +108,9 @@ func (c *storageInfoCache) invalidate(workspaceID string) {
 // decide whether to render a usage bar (capped) or a counter
 // ("3.2 GB used") with no maximum.
 func (s *Server) handleGetWorkspaceStorageUsage(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
