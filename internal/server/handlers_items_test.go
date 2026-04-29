@@ -1,12 +1,37 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// doRequestWithHeaders is a thin variant of doRequest that lets a test set
+// arbitrary request headers (e.g. Authorization) without spinning up a real
+// auth flow. Mirrors doRequest's body marshalling + remote-addr behavior.
+func doRequestWithHeaders(srv *Server, method, path string, body interface{}, headers map[string]string) *httptest.ResponseRecorder {
+	var bodyReader io.Reader
+	if body != nil {
+		data, _ := json.Marshal(body)
+		bodyReader = bytes.NewReader(data)
+	}
+	req := httptest.NewRequest(method, path, bodyReader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
 
 // createWSWithCollections creates a workspace and returns its slug.
 // The workspace will have default collections seeded automatically.
@@ -1002,4 +1027,99 @@ func TestItemCrossCollectionListing(t *testing.T) {
 			t.Errorf("item %q missing collection_name", item.Title)
 		}
 	}
+}
+
+// TestCreateItemSourcePersistedFromAuth covers the fix for the bug Codex
+// caught while reviewing TASK-862's PR: items created via the CLI were
+// persisting with source='web' (the column default) instead of 'cli',
+// because the handler decoded ItemCreate from the body — which has no
+// Source set by the CLI client — and only consulted actorFromRequest
+// AFTER persisting (for SSE / activity logs). With the fix, the handler
+// now backfills input.Source from actorFromRequest before calling
+// store.CreateItem, so items created with a Bearer auth header land as
+// source='cli'. Without it, the dashboard's has_cli_source signal
+// (TASK-862) would never flip on for normal CLI usage.
+//
+// The bearer-auth test uses a real bootstrapped session token because
+// the auth middleware validates token format (rejects "pad_anything"
+// shapes with 401 before the handler ever runs).
+func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// Create the workspace via the cookie path so subsequent tests have
+	// a real workspace to write into. CSRF is handled by doRequestWithCookie.
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Source Test"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	t.Run("bearer auth header persists source as cli", func(t *testing.T) {
+		// Reusing the session token in the Authorization header simulates
+		// the CLI flow (CLI auth tokens are also surfaced this way through
+		// TokenAuth's padsess_ branch). actorFromRequest only checks
+		// Authorization-header presence to flip source, so this exercises
+		// the same branch.
+		rr := doRequestWithHeaders(srv, "POST",
+			"/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
+			map[string]interface{}{
+				"title":  "From CLI",
+				"fields": `{"status":"open"}`,
+			},
+			map[string]string{"Authorization": "Bearer " + sessionToken},
+		)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var item models.Item
+		parseJSON(t, rr, &item)
+		if item.Source != "cli" {
+			t.Fatalf("expected source=cli when Authorization header is present, got %q", item.Source)
+		}
+	})
+
+	t.Run("cookie session persists source as web", func(t *testing.T) {
+		rr := doRequestWithCookie(srv, "POST",
+			"/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
+			map[string]interface{}{
+				"title":  "From Web",
+				"fields": `{"status":"open"}`,
+			},
+			sessionToken,
+		)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var item models.Item
+		parseJSON(t, rr, &item)
+		if item.Source != "web" {
+			t.Fatalf("expected source=web with cookie session and no Authorization header, got %q", item.Source)
+		}
+	})
+
+	t.Run("explicit source in body wins over auth-derived", func(t *testing.T) {
+		// e.g. an agent acting through the CLI explicitly marks itself as
+		// 'skill'. We must respect that and not clobber it with the
+		// auth-derived 'cli' default.
+		rr := doRequestWithHeaders(srv, "POST",
+			"/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
+			map[string]interface{}{
+				"title":  "From Skill",
+				"fields": `{"status":"open"}`,
+				"source": "skill",
+			},
+			map[string]string{"Authorization": "Bearer " + sessionToken},
+		)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var item models.Item
+		parseJSON(t, rr, &item)
+		if item.Source != "skill" {
+			t.Fatalf("expected source=skill when explicitly set in body, got %q", item.Source)
+		}
+	})
 }
