@@ -171,6 +171,7 @@
 		{:else if status === 'success'}
 			<p class="subtitle">Authorized</p>
 			<p class="success-message">CLI session authorized. You can close this tab.</p>
+			<a href="/console" class="primary-link">Go to your workspaces</a>
 		{/if}
 	</div>
 </div>
@@ -257,6 +258,27 @@
 	button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.primary-link {
+		display: block;
+		width: 100%;
+		padding: var(--space-3) var(--space-4);
+		margin-top: var(--space-4);
+		background: var(--accent-blue);
+		color: #fff;
+		border: none;
+		border-radius: var(--radius);
+		font-size: 0.95rem;
+		font-weight: 500;
+		font-family: var(--font-ui);
+		text-align: center;
+		text-decoration: none;
+		transition: opacity 0.15s;
+	}
+
+	.primary-link:hover {
+		opacity: 0.9;
 	}
 
 	.account-chip {
