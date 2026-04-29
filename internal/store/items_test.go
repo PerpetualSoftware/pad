@@ -2217,3 +2217,84 @@ func TestItemVersionCreation(t *testing.T) {
 		t.Errorf("expected at least 1 version, got %d", len(versions))
 	}
 }
+
+func TestWorkspaceHasCLISource(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Connect Banner")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Empty workspace — false.
+	has, err := s.WorkspaceHasCLISource(ws.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource: %v", err)
+	}
+	if has {
+		t.Fatal("expected false on empty workspace")
+	}
+
+	// Non-cli items shouldn't flip it on.
+	for _, src := range []string{"web", "skill"} {
+		_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+			Title:  fmt.Sprintf("From %s", src),
+			Fields: `{"status":"open"}`,
+			Source: src,
+		})
+		if err != nil {
+			t.Fatalf("create %s item: %v", src, err)
+		}
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (non-cli): %v", err)
+	}
+	if has {
+		t.Fatal("expected false when only web/skill items exist")
+	}
+
+	// One CLI item — true.
+	cliItem, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "From CLI",
+		Fields: `{"status":"open"}`,
+		Source: "cli",
+	})
+	if err != nil {
+		t.Fatalf("create cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (with cli): %v", err)
+	}
+	if !has {
+		t.Fatal("expected true after a cli-sourced item exists")
+	}
+
+	// Soft-deleting the only CLI item should flip it back off.
+	if err := s.DeleteItem(cliItem.ID); err != nil {
+		t.Fatalf("delete cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (after delete): %v", err)
+	}
+	if has {
+		t.Fatal("expected false after the only cli item was deleted")
+	}
+
+	// Workspace isolation — a cli item in another workspace must not leak.
+	otherWS := createTestWorkspace(t, s, "Other")
+	otherCol := createTestCollection(t, s, otherWS.ID, "Tasks")
+	if _, err := s.CreateItem(otherWS.ID, otherCol.ID, models.ItemCreate{
+		Title:  "Other CLI",
+		Fields: `{"status":"open"}`,
+		Source: "cli",
+	}); err != nil {
+		t.Fatalf("create other-ws cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (after other-ws cli): %v", err)
+	}
+	if has {
+		t.Fatal("a cli item in a different workspace must not flip ours on")
+	}
+}

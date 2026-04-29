@@ -2009,6 +2009,24 @@ func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []stri
 	return results, rows.Err()
 }
 
+// WorkspaceHasCLISource reports whether any non-deleted item in the workspace
+// was created via the CLI (source='cli'). Used by the dashboard to auto-hide
+// the "connect your local project" banner once a user has wired up the CLI.
+// Backed by EXISTS so it short-circuits on the first match.
+func (s *Store) WorkspaceHasCLISource(workspaceID string) (bool, error) {
+	var has bool
+	err := s.db.QueryRow(s.q(`
+		SELECT EXISTS(
+			SELECT 1 FROM items
+			WHERE workspace_id = ? AND source = 'cli' AND deleted_at IS NULL
+		)
+	`), workspaceID).Scan(&has)
+	if err != nil {
+		return false, fmt.Errorf("workspace has cli source: %w", err)
+	}
+	return has, nil
+}
+
 func hydrateItemComputedMetadata(item *models.Item) {
 	if item == nil {
 		return

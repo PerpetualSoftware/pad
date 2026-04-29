@@ -10,6 +10,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 
 	let { children } = $props();
 
@@ -189,5 +190,11 @@
 		});
 	}
 </script>
+
+<ConnectBanner
+	{wsSlug}
+	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
+	workspaceName={workspaceStore.current?.name ?? ''}
+/>
 
 {@render children()}

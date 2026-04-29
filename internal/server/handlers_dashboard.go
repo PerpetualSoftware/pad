@@ -23,6 +23,11 @@ type DashboardResponse struct {
 	Attention      []DashboardAttention  `json:"attention"`
 	RecentActivity []DashboardActivity   `json:"recent_activity"`
 	SuggestedNext  []DashboardSuggestion `json:"suggested_next"`
+	// HasCLISource is true when any non-deleted item in the workspace was
+	// created via the CLI. Drives the "connect your local project" banner
+	// auto-hide — once true, the user is wired up and the banner stops
+	// nagging them on this workspace.
+	HasCLISource bool `json:"has_cli_source"`
 }
 
 type DashboardActiveItem struct {
@@ -226,6 +231,15 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		RecentActivity: []DashboardActivity{},
 		SuggestedNext:  []DashboardSuggestion{},
 	}
+
+	// Cheap EXISTS query — drives the connect-CLI banner's auto-hide on the
+	// web side. See WorkspaceHasCLISource for the rationale.
+	hasCLI, err := s.store.WorkspaceHasCLISource(workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp.HasCLISource = hasCLI
 
 	// Summary: items grouped by collection slug and status field
 	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})

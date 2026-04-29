@@ -623,6 +623,7 @@ export interface DashboardResponse {
 		collection: string;
 		reason: string;
 	}[];
+	has_cli_source: boolean;
 }
 
 // ─── Incremental Sync ────────────────────────────────────────────────────────
