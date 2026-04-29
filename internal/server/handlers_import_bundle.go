@@ -373,6 +373,12 @@ func (s *Server) rehydrateAttachment(
 	if err != nil {
 		return "", fmt.Errorf("resolve attachment store: %w", err)
 	}
+	// Fence the Put + CreateAttachment pair against orphan-GC blob
+	// deletion (Codex P2 on PR #307). The bundle import races GC the
+	// same way uploads do — possibly more so, since a workspace
+	// re-import touches thousands of hashes in quick succession.
+	releaseInFlight := s.markUploadInFlight(hash)
+	defer releaseInFlight()
 	storageKey, err := store.Put(ctx, hash, allowed.MIME, strings.NewReader(string(blob)))
 	if err != nil {
 		return "", fmt.Errorf("store.Put: %w", err)

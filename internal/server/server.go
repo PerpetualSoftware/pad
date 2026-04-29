@@ -86,6 +86,27 @@ type Server struct {
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
 
+	// orphanGC holds the periodic-sweep config + lifecycle for the
+	// attachment orphan garbage collector (TASK-886). Configured via
+	// SetOrphanGCConfig and started via StartOrphanGC. Stop() signals
+	// the loop to exit and waits for it via the bg WaitGroup.
+	orphanGC orphanGCConfig
+
+	// inFlightUploadHashes tracks content_hash values for uploads
+	// that have called AttachmentStore.Put but not yet inserted the
+	// attachments row. Without this, the orphan GC could delete a
+	// blob between Put and CreateAttachment, leaving a live row that
+	// references a missing blob (Codex P2 on PR #307 round 1).
+	//
+	// A plain map + mutex rather than sync.Map: counters need
+	// atomic-with-delete semantics (decrement-then-delete-if-zero
+	// must be one critical section, not two — sync.Map.CompareAndDelete
+	// addresses the entry but not the inc/dec interleaving). Codex
+	// P1 round 2 caught the prior sync.Map version racing on
+	// release-vs-reload of the same hash.
+	inFlightHashesMu sync.Mutex
+	inFlightHashes   map[string]int64
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
@@ -113,6 +134,10 @@ func (s *Server) goAsync(fn func()) {
 // Store.Close() so in-flight DB writes don't race a closed connection
 // (or worse, the SQLite -wal/-shm file removal in t.TempDir cleanup).
 func (s *Server) Stop() {
+	// Signal long-running background loops (orphan GC, etc.) to exit.
+	// Each loop registers itself on s.bg, so the Wait() below blocks
+	// until they actually finish and any in-flight goroutines drain.
+	s.stopOrphanGC()
 	s.bg.Wait()
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
@@ -284,6 +309,45 @@ func (s *Server) SetAttachments(reg *attachments.Registry, maxBytes int64) {
 // The capabilities endpoint reflects whichever processor is wired.
 func (s *Server) SetImageProcessor(p attachments.Processor) {
 	s.imageProcessor = p
+}
+
+// markUploadInFlight increments the in-flight counter for a content
+// hash. Returns a release func the caller MUST defer; the release
+// decrements and removes the entry once it hits zero. Used by the
+// upload handler to fence Put + CreateAttachment against orphan-GC
+// blob deletions of the same hash.
+//
+// Increment + map-store + decrement + delete all run under one
+// mutex so a concurrent uploadInFlight call can't observe a stale
+// "0" between the last release-decrement and the next-upload
+// increment. The earlier sync.Map version split increment from
+// LoadOrStore-then-atomic-add and missed that window (Codex P1 on
+// PR #307 round 2).
+func (s *Server) markUploadInFlight(hash string) func() {
+	s.inFlightHashesMu.Lock()
+	if s.inFlightHashes == nil {
+		s.inFlightHashes = make(map[string]int64)
+	}
+	s.inFlightHashes[hash]++
+	s.inFlightHashesMu.Unlock()
+	return func() {
+		s.inFlightHashesMu.Lock()
+		defer s.inFlightHashesMu.Unlock()
+		s.inFlightHashes[hash]--
+		if s.inFlightHashes[hash] <= 0 {
+			delete(s.inFlightHashes, hash)
+		}
+	}
+}
+
+// uploadInFlight reports whether any upload is currently materializing
+// a blob with the given hash. The orphan GC consults this before
+// deleting a blob — if an upload just finished Put but hasn't
+// inserted the row yet, GC must NOT reclaim the blob.
+func (s *Server) uploadInFlight(hash string) bool {
+	s.inFlightHashesMu.Lock()
+	defer s.inFlightHashesMu.Unlock()
+	return s.inFlightHashes[hash] > 0
 }
 
 // SetImportBundleMaxBytes overrides the default 2 GiB cap on a

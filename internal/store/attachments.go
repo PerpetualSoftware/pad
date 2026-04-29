@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -506,6 +507,140 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		return nil, 0, fmt.Errorf("iterate workspace attachments: %w", err)
 	}
 	return out, total, nil
+}
+
+// OrphanedAttachments returns rows eligible for orphan GC reclamation
+// (TASK-886). Two cases qualify:
+//
+//   - Never-attached uploads: item_id IS NULL AND deleted_at IS NULL
+//     AND created_at < grace cutoff. The editor uploads first and
+//     PATCHes the item content second; a tab-close in between leaves
+//     a row in this state. 30 days is comfortable headroom for that
+//     race plus any deferred-attachment workflow we add later.
+//
+//   - Soft-deleted past grace: deleted_at IS NOT NULL AND
+//     deleted_at < grace cutoff. Delete handlers tombstone rows
+//     immediately so undelete is possible; GC reclaims after the
+//     grace period.
+//
+// Both filters compare the timestamp column (TEXT, ISO 8601 UTC)
+// against the cutoff string lexicographically — UTC RFC3339 collates
+// in chronological order without parsing. The cutoff is computed by
+// the caller so tests can inject a deterministic time.
+//
+// Returned rows include thumbnail variants (parent_id != NULL) when
+// they meet either criterion — soft-deleting an original cascades
+// to its thumbnails (SoftDeleteAttachment), so they all share the
+// same deleted_at and reach the GC together.
+func (s *Store) OrphanedAttachments(graceCutoff time.Time) ([]models.Attachment, error) {
+	cutoffStr := graceCutoff.UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(s.q(`
+		SELECT `+attachmentColumns+`
+		FROM attachments
+		WHERE
+		  (item_id IS NULL AND deleted_at IS NULL AND created_at < ?)
+		  OR
+		  (deleted_at IS NOT NULL AND deleted_at < ?)
+		ORDER BY created_at, id
+	`), cutoffStr, cutoffStr)
+	if err != nil {
+		return nil, fmt.Errorf("orphaned attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Attachment
+	for rows.Next() {
+		a, err := scanAttachment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan orphan: %w", err)
+		}
+		out = append(out, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate orphans: %w", err)
+	}
+	return out, nil
+}
+
+// HardDeleteAttachment removes the attachments row outright. Used by
+// orphan GC after the grace period; never call from a request
+// handler — soft-delete is the safe default for user-facing flows.
+func (s *Store) HardDeleteAttachment(id string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM attachments WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("hard delete attachment: %w", err)
+	}
+	return nil
+}
+
+// CountProtectingAttachmentsForHash returns the number of rows
+// pointing at the given content_hash whose presence requires the
+// on-disk blob to stay. A row protects the blob when it is either:
+//
+//   - live (deleted_at IS NULL), or
+//   - soft-deleted but still inside the grace window
+//     (deleted_at >= graceCutoff)
+//
+// excludeID is the row currently being GC'd; we don't count it
+// against itself. Codex P2 round 3 caught the earlier version's
+// gap: counting only deleted_at IS NULL would have GC reclaim the
+// blob from row A (soft-deleted 31d ago) even though row B is
+// also soft-deleted but still 1 day old — within grace, so its
+// blob must stay reachable until its own grace expires.
+func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceCutoff time.Time) (int, error) {
+	var n int
+	cutoff := graceCutoff.UTC().Format(time.RFC3339)
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM attachments
+		WHERE content_hash = ? AND id <> ?
+		  AND (deleted_at IS NULL OR deleted_at >= ?)
+	`), hash, excludeID, cutoff).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count protecting attachments for hash: %w", err)
+	}
+	return n, nil
+}
+
+// AttachmentReferencedInItems returns true when any live item in the
+// workspace mentions "pad-attachment:<id>" in its content or fields
+// JSON. The editor upload flow leaves attachments.item_id NULL —
+// the canonical association is the markdown reference inside the
+// item's content, NOT a column in the attachments table — so the
+// orphan GC has to look at item content directly before reclaiming
+// a "never-attached" row, otherwise it'd hard-delete attachments
+// that markdown still points at.
+//
+// Scoped to one workspace because a "pad-attachment:UUID" reference
+// only resolves within the workspace where the attachment lives;
+// cross-workspace references are intentionally not supported.
+//
+// Dialect note: items.fields is TEXT on SQLite but JSONB on
+// PostgreSQL (see migrations + pgmigrations). LIKE doesn't work on
+// JSONB so the Postgres path casts to text first. Codex P1 round 2
+// caught this — without the cast, the GC's reference scan errored
+// on Postgres and every never-attached row got skipped.
+func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (bool, error) {
+	if workspaceID == "" || attachmentID == "" {
+		return false, nil
+	}
+	needle := "pad-attachment:" + attachmentID
+	pattern := "%" + needle + "%"
+
+	fieldsExpr := "fields"
+	if s.dialect.Driver() == DriverPostgres {
+		fieldsExpr = "fields::text"
+	}
+
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM items
+		WHERE workspace_id = ? AND deleted_at IS NULL
+		  AND (content LIKE ? OR `+fieldsExpr+` LIKE ?)
+	`), workspaceID, pattern, pattern).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("attachment referenced in items: %w", err)
+	}
+	return n > 0, nil
 }
 
 // SoftDeleteAttachment marks the given attachment row deleted (and
