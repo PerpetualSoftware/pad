@@ -33,22 +33,49 @@
 		}
 	});
 
-	// Effect B — fetch `has_cli_source` from the dashboard whenever the
-	// workspace slug changes. Reset to `null` first so we don't briefly
-	// render the banner for the new workspace based on the previous
-	// workspace's signal. Failures fall back to `false` (fail-open: better
-	// to show the banner than to hide it on a transient error).
-	$effect(() => {
-		if (!wsSlug) return;
+	// Fetch `has_cli_source` for a specific slug. The slug is captured at
+	// call time and re-checked before assigning, so a slow response from a
+	// previous workspace can't overwrite the current workspace's signal
+	// (e.g. the user clicks Workspace A → Workspace B before A's request
+	// resolves). Failures fall back to `false` (fail-open: better to show
+	// the banner than to hide it on a transient error).
+	function refreshHasCliSource(slug: string) {
+		if (!slug) return;
 		hasCliSource = null;
 		api.dashboard
-			.get(wsSlug)
+			.get(slug)
 			.then((d) => {
+				if (slug !== wsSlug) return; // stale response — ignore
 				hasCliSource = d.has_cli_source;
 			})
 			.catch(() => {
+				if (slug !== wsSlug) return;
 				hasCliSource = false;
 			});
+	}
+
+	// Effect B — refetch on workspace change. Per CONVE-606, kept separate
+	// from the localStorage sync above.
+	$effect(() => {
+		refreshHasCliSource(wsSlug);
+	});
+
+	// Effect C — refetch when the modal CLOSES. The user's most common
+	// flow is: see banner → open modal → copy command → run it in their
+	// terminal → close the modal. By that point a CLI-sourced item has
+	// almost certainly landed; a fresh fetch makes the banner auto-hide
+	// in-session instead of waiting for a route change or page reload.
+	// `$effect.pre` + a tracked previous value matches the transition
+	// pattern used in ShareDialog. Out of scope for this PR but left as a
+	// follow-up: subscribe to SSE item-created events to also catch
+	// "user ran the CLI from another terminal without ever opening the
+	// modal" — see PLAN-859 for any spawned follow-up tasks.
+	let prevConnectOpen = $state(false);
+	$effect.pre(() => {
+		if (prevConnectOpen && !connectOpen) {
+			refreshHasCliSource(wsSlug);
+		}
+		prevConnectOpen = connectOpen;
 	});
 
 	let visible = $derived(
