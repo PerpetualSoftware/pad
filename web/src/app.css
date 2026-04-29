@@ -230,6 +230,63 @@ input:focus, textarea:focus {
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 35%, transparent);
 }
 
+/* Attachment file chips — Notion-style chip rendering for non-image
+   attachments. Used by both the editor's AttachmentChip node and the
+   read-only markdown render path (TASK-874). Styles target the same
+   class names from both surfaces so the visual matches edge to edge. */
+.file-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	max-width: 100%;
+	padding: 4px 10px;
+	margin: 0 1px;
+	background: var(--bg-tertiary);
+	border: 1px solid var(--border-subtle);
+	border-radius: 6px;
+	color: var(--text-primary);
+	text-decoration: none;
+	font-size: 0.92em;
+	line-height: 1.3;
+	vertical-align: baseline;
+	transition: background 0.15s, border-color 0.15s;
+	cursor: pointer;
+}
+.file-chip:hover {
+	background: var(--bg-hover);
+	border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border));
+	text-decoration: none;
+}
+.file-chip-icon {
+	flex-shrink: 0;
+	font-size: 1.05em;
+	line-height: 1;
+}
+.file-chip-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 38ch;
+	font-weight: 500;
+}
+.file-chip-size {
+	flex-shrink: 0;
+	color: var(--text-muted);
+	font-size: 0.88em;
+}
+.file-chip-size:empty {
+	display: none;
+}
+
+/* Editor selection styling — when the chip is the ProseMirror
+   selection (atom node selected for delete/replace), give it the same
+   selection treatment ProseMirror gives other inline nodes. */
+.ProseMirror-selectednode.file-chip,
+.file-chip.ProseMirror-selectednode {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 1px;
+}
+
 /* Lightbox dialog — appended to document.body when an attachment image
    is clicked, so styles must be global rather than scoped to Editor.svelte.
    Uses the native <dialog> element; the ::backdrop pseudo handles the
