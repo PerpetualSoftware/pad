@@ -222,7 +222,13 @@ func isPublicAPIPath(path string) bool {
 		path == "/api/v1/health" ||
 		strings.HasPrefix(path, "/api/v1/health/") ||
 		strings.HasPrefix(path, "/api/v1/s/") ||
-		path == "/api/v1/plan-limits"
+		path == "/api/v1/plan-limits" ||
+		// Server capability profile (TASK-878). The editor reads this
+		// before login on shared-item preview surfaces, and the
+		// handler is intentionally read-only (no DB writes, no
+		// per-user state). Keeping it public matches the route's
+		// register-time intent in server.go.
+		path == "/api/v1/server/capabilities"
 }
 
 // RequireAuth middleware blocks unauthenticated requests when users exist

@@ -299,3 +299,26 @@ func TestServerCapabilities_DegradedWhenProcessorMissing(t *testing.T) {
 		t.Error("CanTranscode = true with no processor wired")
 	}
 }
+
+// TestServerCapabilities_PublicAfterBootstrap — once any user exists
+// the RequireAuth middleware kicks in for non-public paths, so the
+// capabilities endpoint must be on the isPublicAPIPath allowlist.
+// Without that, the editor's pre-login fetch (e.g. on the share
+// preview surface) gets 401'd. Regression guard for the exact issue
+// Codex flagged in the round-1 review of TASK-878.
+func TestServerCapabilities_PublicAfterBootstrap(t *testing.T) {
+	srv := testServer(t)
+	// Bootstrap an admin so the RequireAuth gate is active for
+	// non-public paths. The test client below sends NO auth cookie,
+	// so any path NOT on the public allowlist would return 401.
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest("GET", "/api/v1/server/capabilities", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unauthenticated capabilities fetch returned %d (want 200); body = %s",
+			w.Code, w.Body.String())
+	}
+}
