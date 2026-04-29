@@ -2,6 +2,12 @@ import { marked, Renderer, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
+import {
+	type AttachmentResolver,
+	isAttachmentHref,
+	resolveAttachmentImage,
+	resolveAttachmentLink
+} from '$lib/markdown/attachments';
 
 // Mirror of marked's internal cleanUrl() — percent-encodes the href so the
 // rendered HTML stays well-formed even when input contains spaces, quotes, or
@@ -19,6 +25,19 @@ function cleanUrl(href: string): string | null {
 	}
 }
 
+// Per-call attachment context. Set by renderMarkdown before invoking marked()
+// and cleared in the finally block. Marked's parsing is synchronous, so a
+// module-level slot is safe — every call drives the renderer through
+// completion before returning. We avoid a per-call `new Renderer()` because
+// the global renderer is also reached by `marked.parseInline` and the share
+// page's bare `marked()` calls; threading context through the global instance
+// keeps both paths consistent without forcing every call site to opt in.
+type AttachmentRenderContext = {
+	resolver: AttachmentResolver;
+	workspaceSlug: string;
+};
+let currentAttachmentCtx: AttachmentRenderContext | null = null;
+
 // Custom renderer to open external links in new tabs.
 //
 // Use a regular `function` (not an arrow) so `this` resolves to the Renderer
@@ -29,7 +48,30 @@ function cleanUrl(href: string): string | null {
 // URLs in the link text as autolinks and recurse infinitely through this same
 // `link` renderer (e.g. for content like `https://example.com` inside a comment).
 const renderer = new marked.Renderer();
-renderer.link = function (this: Renderer, { href, title, tokens }: Tokens.Link) {
+renderer.link = function (this: Renderer, { href, title, text: rawText, tokens }: Tokens.Link) {
+	// pad-attachment:UUID links resolve to a file chip when a resolver is in
+	// scope. Without one (e.g. the bare `marked()` calls on the share page
+	// before that route opts in) the reference falls through to the default
+	// link rendering — the user sees the literal `pad-attachment:UUID` href,
+	// which is graceful degradation for SSR/preview environments that don't
+	// have the attachment registry hydrated yet.
+	//
+	// We pass the link token's raw `text` (not parseInline output) to the
+	// chip helper because renderAttachmentChip HTML-escapes its label
+	// argument. Feeding pre-rendered HTML (e.g. <strong>Report</strong>
+	// from `[**Report**](pad-attachment:…)`) would double-escape into
+	// `&lt;strong&gt;Report&lt;/strong&gt;`. Plain text matches the Go
+	// side's regex-based extraction and keeps both renderers byte-aligned;
+	// markdown emphasis inside chip labels degrades to literal markers,
+	// which is acceptable for the filename-style labels chips usually carry.
+	if (currentAttachmentCtx && isAttachmentHref(href)) {
+		return resolveAttachmentLink(
+			href,
+			rawText,
+			currentAttachmentCtx.workspaceSlug,
+			currentAttachmentCtx.resolver
+		);
+	}
 	const text = this.parser.parseInline(tokens);
 	const cleanHref = cleanUrl(href);
 	if (cleanHref === null) {
@@ -43,6 +85,28 @@ renderer.link = function (this: Renderer, { href, title, tokens }: Tokens.Link) 
 		return `<a href="${cleanHref}"${titleAttr} target="_blank" rel="noopener noreferrer" class="external-link">${text}<span class="external-icon" aria-hidden="true"> ↗</span></a>`;
 	}
 	return `<a href="${cleanHref}"${titleAttr}>${text}</a>`;
+};
+
+renderer.image = function (this: Renderer, { href, title, text }: Tokens.Image) {
+	// pad-attachment:UUID image references resolve to <img> for image MIMEs
+	// or a file chip for non-image MIMEs. Without a resolver in scope, fall
+	// through to the default image rendering so the literal href is at
+	// least visible (rendered as a broken image, which is the right UX
+	// signal: "we couldn't resolve this attachment").
+	if (currentAttachmentCtx && isAttachmentHref(href)) {
+		return resolveAttachmentImage(
+			href,
+			text,
+			currentAttachmentCtx.workspaceSlug,
+			currentAttachmentCtx.resolver
+		);
+	}
+	// Default image rendering. Mirrors marked's stdout behavior so
+	// overriding renderer.image here doesn't regress existing markdown.
+	const cleanHref = cleanUrl(href);
+	if (cleanHref === null) return escapeHtml(text);
+	const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+	return `<img src="${cleanHref}" alt="${escapeHtml(text)}"${titleAttr}>`;
 };
 
 marked.use({ renderer });
@@ -62,7 +126,14 @@ const MARKDOWN_ALLOWED_ATTR = [
 	'href', 'title', 'target', 'rel', 'class', 'aria-hidden',
 	'alt', 'src', 'id', 'name', 'align', 'type', 'checked', 'disabled',
 	// <ol start="N"> — marked emits this for lists that don't begin at 1.
-	'start'
+	'start',
+	// Attachment renderer attributes. `data-attachment-id` is the editor's
+	// hook for click-to-zoom / rotate / crop interactions; `download` lets
+	// the browser save file chips with their canonical filename; `width`
+	// and `height` reserve layout space for inline images so the page
+	// doesn't reflow when the bytes arrive. ALLOW_DATA_ATTR stays false so
+	// only this single data-* attribute is permitted.
+	'data-attachment-id', 'download', 'width', 'height'
 ] as const;
 
 /**
@@ -109,13 +180,19 @@ function escapeHtml(s: string): string {
  *
  * @param visibleCollectionSlugs - Set of collection slugs the user can see.
  *   undefined = all visible (no filtering). Empty set = nothing visible (anonymous).
+ * @param attachmentResolver - Optional lookup that resolves
+ *   `pad-attachment:UUID` references to image / file-chip / missing HTML.
+ *   When omitted, those references render as plain markdown links pointing
+ *   at the literal `pad-attachment:UUID` href — clearly broken in the UI,
+ *   which is the right signal for unresolved environments.
  */
 export function renderMarkdown(
 	content: string,
 	items: Item[],
 	workspaceSlug: string,
 	username?: string,
-	visibleCollectionSlugs?: Set<string>
+	visibleCollectionSlugs?: Set<string>,
+	attachmentResolver?: AttachmentResolver
 ): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
 		// Escape user-controlled title so it can't break out of attribute
@@ -134,7 +211,17 @@ export function renderMarkdown(
 		}
 		return `<span class="doc-link broken">${safeTitle}</span>`;
 	});
-	return sanitizeMarkdownHtml(marked(withLinks) as string);
+	// Wire the attachment resolver into the global renderer for the duration
+	// of this synchronous parse. The try/finally ensures we never leak the
+	// context across calls, even when marked throws on malformed input.
+	if (attachmentResolver) {
+		currentAttachmentCtx = { resolver: attachmentResolver, workspaceSlug };
+	}
+	try {
+		return sanitizeMarkdownHtml(marked(withLinks) as string);
+	} finally {
+		currentAttachmentCtx = null;
+	}
 }
 
 export function wordCount(content: string): number {
