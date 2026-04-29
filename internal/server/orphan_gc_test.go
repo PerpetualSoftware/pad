@@ -327,6 +327,87 @@ func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
 	}
 }
 
+// TestOrphanGC_RespectsSoftDeletedInGracePeer pins Codex P2 round
+// 3: when two rows share a content_hash, GC reclaims the older one
+// past grace but MUST NOT delete the blob if the second row is
+// still inside its own grace window — the second row could be
+// restored / inspected and would otherwise hit a missing blob.
+func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	body := realPNG()
+	if rr := doMultipartUpload(srv, slug, "a.png", body); rr.Code != 201 {
+		t.Fatalf("upload a: %d", rr.Code)
+	}
+	if rr := doMultipartUpload(srv, slug, "b.png", body); rr.Code != 201 {
+		t.Fatalf("upload b: %d", rr.Code)
+	}
+
+	dbRows, err := srv.store.DB().Query(
+		`SELECT id, storage_key, content_hash FROM attachments WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY created_at, id`, wsID)
+	if err != nil {
+		t.Fatalf("list rows: %v", err)
+	}
+	var firstID, secondID, sharedKey, sharedHash string
+	for dbRows.Next() {
+		var id, key, hash string
+		if err := dbRows.Scan(&id, &key, &hash); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if firstID == "" {
+			firstID = id
+			sharedKey = key
+			sharedHash = hash
+		} else {
+			secondID = id
+		}
+	}
+	dbRows.Close()
+	if firstID == "" || secondID == "" {
+		t.Fatalf("expected two rows; got %q / %q", firstID, secondID)
+	}
+
+	// Soft-delete BOTH rows. Then backdate ONLY the first row's
+	// deleted_at past the 30-day grace; the second stays "fresh".
+	for _, id := range []string{firstID, secondID} {
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil)
+		if rr.Code != 204 {
+			t.Fatalf("delete %s: %d", id, rr.Code)
+		}
+	}
+	pastTs := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET deleted_at = ? WHERE id = ?`, pastTs, firstID,
+	); err != nil {
+		t.Fatalf("backdate first: %v", err)
+	}
+
+	// Sweep with a 30-day cutoff. Only the first row qualifies.
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	res, err := srv.runOrphanGCSweep(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 1 {
+		t.Errorf("Deleted=%d, want 1 (only the older row qualifies)", res.Deleted)
+	}
+	if res.BlobsReclaimed != 0 {
+		t.Errorf("BlobsReclaimed=%d, want 0 (newer soft-deleted peer is still in grace)",
+			res.BlobsReclaimed)
+	}
+	// Blob still on disk so the still-in-grace row's hypothetical
+	// undelete works.
+	store, err := srv.attachments.Resolve(sharedKey)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), sharedKey); err != nil {
+		t.Errorf("shared blob disappeared while peer still in grace: %v", err)
+	}
+	_ = sharedHash
+}
+
 // TestInFlightUploadHashes_ConcurrentReleaseReacquire pins Codex P1
 // round 2 on PR #307: the prior sync.Map version raced when one
 // release's decrement-to-zero ran in parallel with another upload's

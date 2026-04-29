@@ -573,20 +573,30 @@ func (s *Store) HardDeleteAttachment(id string) error {
 	return nil
 }
 
-// CountLiveAttachmentsForHash returns the number of NON-deleted rows
-// pointing at the given content_hash, excluding excludeID. Used by
-// orphan GC to decide whether deleting a row also lets us reclaim
-// the on-disk blob — content-addressed dedupe means several rows
-// can share one blob, and the blob must stay until the last live
-// row goes away.
-func (s *Store) CountLiveAttachmentsForHash(hash, excludeID string) (int, error) {
+// CountProtectingAttachmentsForHash returns the number of rows
+// pointing at the given content_hash whose presence requires the
+// on-disk blob to stay. A row protects the blob when it is either:
+//
+//   - live (deleted_at IS NULL), or
+//   - soft-deleted but still inside the grace window
+//     (deleted_at >= graceCutoff)
+//
+// excludeID is the row currently being GC'd; we don't count it
+// against itself. Codex P2 round 3 caught the earlier version's
+// gap: counting only deleted_at IS NULL would have GC reclaim the
+// blob from row A (soft-deleted 31d ago) even though row B is
+// also soft-deleted but still 1 day old — within grace, so its
+// blob must stay reachable until its own grace expires.
+func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceCutoff time.Time) (int, error) {
 	var n int
+	cutoff := graceCutoff.UTC().Format(time.RFC3339)
 	err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM attachments
-		WHERE content_hash = ? AND deleted_at IS NULL AND id <> ?
-	`), hash, excludeID).Scan(&n)
+		WHERE content_hash = ? AND id <> ?
+		  AND (deleted_at IS NULL OR deleted_at >= ?)
+	`), hash, excludeID, cutoff).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("count live attachments for hash: %w", err)
+		return 0, fmt.Errorf("count protecting attachments for hash: %w", err)
 	}
 	return n, nil
 }

@@ -84,36 +84,50 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		}
 
 		// Decide whether the on-disk blob can also be reclaimed.
-		// content-addressed dedupe: the same hash may be referenced
-		// by other live rows. Only delete the blob when this is the
-		// last reference.
-		others, err := s.store.CountLiveAttachmentsForHash(a.ContentHash, a.ID)
+		// Two protections to consider:
+		//
+		//   1. content-addressed dedupe: another row at the same
+		//      hash may still need the blob. CountProtecting includes
+		//      both LIVE rows and soft-deleted rows still inside
+		//      their own grace window — the latter case keeps the
+		//      blob around for un-delete / inspection until each
+		//      row's own grace lapses.
+		//
+		//   2. in-flight uploads: an upload that called
+		//      AttachmentStore.Put but hasn't yet inserted its DB
+		//      row. markUploadInFlight registers the hash before
+		//      Put; we MUST observe that under the same mutex we
+		//      use to gate blob deletion, otherwise a TOCTOU race
+		//      between our check and store.Delete lets a new
+		//      upload's Put land on a blob we're about to remove.
+		//      Codex P1 round 3.
+		others, err := s.store.CountProtectingAttachmentsForHash(a.ContentHash, a.ID, graceCutoff)
 		if err != nil {
-			slog.Warn("orphan GC: count live refs failed",
+			slog.Warn("orphan GC: count protecting refs failed",
 				"attachment_id", a.ID, "hash", a.ContentHash, "error", err)
 			res.Skipped++
 			continue
 		}
 
-		// Concurrent-upload race: an upload that called
-		// AttachmentStore.Put with this hash but hasn't yet
-		// inserted the DB row would otherwise look like "0 live
-		// refs" to the count query. The in-flight tracker on Server
-		// (markUploadInFlight) closes that gap. Codex P2 on PR
-		// #307 round 1.
-		if s.uploadInFlight(a.ContentHash) {
-			others++
-		}
-
-		if others == 0 {
-			store, err := s.attachments.Resolve(a.StorageKey)
-			if err != nil {
+		// Critical section: hold the in-flight mutex across the
+		// uploadInFlight check AND the FS Delete so a concurrent
+		// markUploadInFlight blocks until we either skip (because
+		// it's in flight) or finish deleting. The lock window is
+		// ms-class on FSStore; for S3 backends in Phase 2 a
+		// per-hash lock will replace this server-wide mutex.
+		blobDeleted := false
+		s.inFlightHashesMu.Lock()
+		inFlight := s.inFlightHashes[a.ContentHash] > 0
+		if others == 0 && !inFlight {
+			store, resolveErr := s.attachments.Resolve(a.StorageKey)
+			if resolveErr != nil {
 				slog.Warn("orphan GC: resolve backend failed",
-					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", err)
+					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", resolveErr)
+				s.inFlightHashesMu.Unlock()
 				res.Skipped++
 				continue
 			}
-			if err := store.Delete(ctx, a.StorageKey); err != nil {
+			if delErr := store.Delete(ctx, a.StorageKey); delErr != nil {
 				// AttachmentStore.Delete documents that deleting a
 				// missing key is NOT an error, so anything reaching
 				// here is a real failure (permission, IO, etc.).
@@ -121,11 +135,16 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				// row indefinitely; the operator will have to clean
 				// the disk by hand either way.
 				slog.Warn("orphan GC: blob delete failed",
-					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", err)
+					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", delErr)
 			} else {
-				res.BlobsReclaimed++
-				res.BytesReclaimed += a.SizeBytes
+				blobDeleted = true
 			}
+		}
+		s.inFlightHashesMu.Unlock()
+
+		if blobDeleted {
+			res.BlobsReclaimed++
+			res.BytesReclaimed += a.SizeBytes
 		}
 
 		if err := s.store.HardDeleteAttachment(a.ID); err != nil {
