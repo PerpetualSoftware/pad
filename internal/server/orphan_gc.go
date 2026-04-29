@@ -56,6 +56,15 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 	}
 	res.Scanned = len(orphans)
 
+	// Track hashes whose blob has already been deleted earlier in
+	// this same sweep so we don't double-count. Without this, two
+	// soft-deleted peers sharing a content_hash would both report
+	// BlobsReclaimed=1 — AttachmentStore.Delete treats a missing
+	// key as success, so the second row's Delete returns nil and
+	// the counter increments again. Functional cleanup is correct
+	// (idempotent); only the metric was wrong. Codex round 4.
+	reclaimedThisSweep := make(map[string]bool)
+
 	for _, a := range orphans {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -116,9 +125,10 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// ms-class on FSStore; for S3 backends in Phase 2 a
 		// per-hash lock will replace this server-wide mutex.
 		blobDeleted := false
+		alreadyReclaimed := reclaimedThisSweep[a.ContentHash]
 		s.inFlightHashesMu.Lock()
 		inFlight := s.inFlightHashes[a.ContentHash] > 0
-		if others == 0 && !inFlight {
+		if others == 0 && !inFlight && !alreadyReclaimed {
 			store, resolveErr := s.attachments.Resolve(a.StorageKey)
 			if resolveErr != nil {
 				slog.Warn("orphan GC: resolve backend failed",
@@ -145,6 +155,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		if blobDeleted {
 			res.BlobsReclaimed++
 			res.BytesReclaimed += a.SizeBytes
+			reclaimedThisSweep[a.ContentHash] = true
 		}
 
 		if err := s.store.HardDeleteAttachment(a.ID); err != nil {

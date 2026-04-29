@@ -408,6 +408,65 @@ func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
 	_ = sharedHash
 }
 
+// TestOrphanGC_DedupesBlobReclaimMetric pins Codex round 4: when
+// multiple soft-deleted peers share a content_hash and all are
+// past grace, the blob is deleted on the first peer and the
+// remaining peers' Delete calls are idempotent no-ops. The earlier
+// version still bumped BlobsReclaimed / BytesReclaimed for each
+// no-op, inflating the sweep metrics.
+func TestOrphanGC_DedupesBlobReclaimMetric(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	body := realPNG()
+	if rr := doMultipartUpload(srv, slug, "a.png", body); rr.Code != 201 {
+		t.Fatalf("upload a: %d", rr.Code)
+	}
+	if rr := doMultipartUpload(srv, slug, "b.png", body); rr.Code != 201 {
+		t.Fatalf("upload b: %d", rr.Code)
+	}
+
+	// Soft-delete both rows + backdate both deleted_at past 30d so
+	// they BOTH qualify for reclamation in the same sweep.
+	dbRows, _ := srv.store.DB().Query(
+		`SELECT id FROM attachments WHERE workspace_id = ? AND deleted_at IS NULL`, wsID)
+	var ids []string
+	for dbRows.Next() {
+		var id string
+		dbRows.Scan(&id)
+		ids = append(ids, id)
+	}
+	dbRows.Close()
+	for _, id := range ids {
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil)
+		if rr.Code != 204 {
+			t.Fatalf("delete %s: %d", id, rr.Code)
+		}
+	}
+	pastTs := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET deleted_at = ?`, pastTs,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	res, err := srv.runOrphanGCSweep(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted < 2 {
+		t.Errorf("Deleted=%d, want >= 2 (both rows past grace)", res.Deleted)
+	}
+	if res.BlobsReclaimed != 1 {
+		t.Errorf("BlobsReclaimed=%d, want 1 (single shared blob)", res.BlobsReclaimed)
+	}
+	if res.BytesReclaimed != int64(len(body)) {
+		t.Errorf("BytesReclaimed=%d, want %d (single shared blob's size)",
+			res.BytesReclaimed, len(body))
+	}
+}
+
 // TestInFlightUploadHashes_ConcurrentReleaseReacquire pins Codex P1
 // round 2 on PR #307: the prior sync.Map version raced when one
 // release's decrement-to-zero ran in parallel with another upload's
