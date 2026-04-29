@@ -100,6 +100,67 @@ func TestAdminUpdateUser_StorageOverrideRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAdminUpdateUser_OmittedOverridesPreserved pins the contract
+// the admin UI relies on: PATCH with no plan_overrides field at
+// all (e.g. when only the role is being changed) MUST NOT clear
+// existing overrides — the handler's nil-pointer check ensures
+// that. Empty string ("" → SetUserPlanOverrides("")) is the
+// explicit "clear" signal used by the Reset-to-default button.
+//
+// Codex caught the related bug on PR #304 round 1: the UI was
+// sending null when all override fields were blank, which JSON-
+// decoded to a nil pointer and the handler skipped the update.
+// This test pins the OTHER half of the contract — that omitting
+// the field is genuinely a no-op.
+func TestAdminUpdateUser_OmittedOverridesPreserved(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "owner@test.com",
+		Name:     "Owner",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	const overrides = `{"storage_bytes":1073741824}`
+	if err := srv.store.SetUserPlanOverrides(target.ID, overrides); err != nil {
+		t.Fatalf("SetUserPlanOverrides: %v", err)
+	}
+
+	// PATCH with only the role field. plan_overrides is intentionally
+	// absent from the body — the handler must leave the column alone.
+	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/admin/users/"+target.ID,
+		map[string]any{"role": "member"}, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch role-only: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, err := srv.store.GetUser(target.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if got.PlanOverrides != overrides {
+		t.Errorf("after role-only patch: PlanOverrides=%q, want %q", got.PlanOverrides, overrides)
+	}
+
+	// PATCH with explicit empty string → clears the column.
+	rr = doRequestWithCookie(srv, "PATCH", "/api/v1/admin/users/"+target.ID,
+		map[string]any{"plan_overrides": ""}, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch clear: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	got, err = srv.store.GetUser(target.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if got.PlanOverrides != "" {
+		t.Errorf("after empty-string patch: PlanOverrides=%q, want empty", got.PlanOverrides)
+	}
+}
+
 // TestAdminUpdateUser_NonAdminForbidden pins the existing admin gate:
 // a member-role user can't PATCH another user's plan_overrides.
 // Already covered indirectly elsewhere — re-asserted here so the

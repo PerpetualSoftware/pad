@@ -77,8 +77,13 @@
 		selectedId = u.id;
 		editPlan = u.plan || 'free';
 		editRole = u.role || 'member';
-		// Populate override fields from the user's plan_overrides object
-		const ov = u.plan_overrides ?? {};
+		// plan_overrides is a raw JSON string from the API. Parse it
+		// once here; downstream code reads keys / Object.entries on
+		// the resulting object. Tolerant of malformed JSON (returns
+		// {} instead of throwing) so a corrupt row doesn't lock the
+		// user out of the admin form — the save path will overwrite
+		// it cleanly.
+		const ov = parsePlanOverrides(u.plan_overrides);
 		editOverrides = {};
 		extraOverrides = {};
 		for (const f of overrideFields) {
@@ -228,7 +233,15 @@
 				}
 				overrides['storage_bytes'] = parsed;
 			}
-			const overridesJSON = Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null;
+			// Empty overrides object → send "" so the backend's
+			// nil-vs-non-nil pointer logic actually runs the update
+			// path (SetUserPlanOverrides("") clears the column).
+			// Sending null would JSON-decode to a nil *string and
+			// the handler would skip the update entirely — clearing
+			// the form would silently no-op. Codex caught this on
+			// PR #304 round 1.
+			const overridesJSON =
+				Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : '';
 			await adminPatch(`/admin/users/${selectedId}`, {
 				plan: editPlan,
 				plan_overrides: overridesJSON
@@ -249,6 +262,27 @@
 	function resetStorageOverride() {
 		editStorageOverride = '';
 		storageOverrideError = '';
+	}
+
+	// parsePlanOverrides decodes the raw JSON string the API returns
+	// for `plan_overrides` into a Record<string, number>. Tolerant of
+	// malformed / null / empty input so the UI doesn't crash on a
+	// row that somehow has bad JSON in the column.
+	function parsePlanOverrides(raw: unknown): Record<string, number> {
+		if (raw == null || raw === '') return {};
+		// Defensive: if a future API revision starts returning the
+		// decoded object directly, accept it without breaking.
+		if (typeof raw === 'object') return raw as Record<string, number>;
+		if (typeof raw !== 'string') return {};
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				return parsed as Record<string, number>;
+			}
+		} catch {
+			/* fall through to empty */
+		}
+		return {};
 	}
 
 	// parseStorageInput accepts (in order of priority):
