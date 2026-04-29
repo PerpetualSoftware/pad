@@ -20,6 +20,10 @@
 	let quickAddCollection = $state<Collection | null>(null);
 	let quickAddTitle = $state('');
 	let quickAddInputEl = $state<HTMLTextAreaElement>();
+	let pickerOpen = $state(false);
+	let pickerHighlight = $state(0);
+	let pillRef = $state<HTMLButtonElement>();
+	let pickerRef = $state<HTMLDivElement>();
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
@@ -77,6 +81,9 @@
 		collectionStore.collections.filter(c => agentSlugs.includes(c.slug))
 	);
 
+	let pickerCollections = $derived(regularCollections);
+	let canSwitchCollection = $derived(pickerCollections.length > 1);
+
 	$effect(() => {
 		if (!isDraggingSidebar) {
 			sidebarCollections = [...regularCollections];
@@ -118,6 +125,7 @@
 	function startQuickAdd(coll: Collection) {
 		quickAddCollection = coll;
 		quickAddTitle = '';
+		pickerOpen = false;
 	}
 
 	// Watch for Cmd-N quick-add requests from the layout
@@ -140,6 +148,7 @@
 	function cancelQuickAdd() {
 		quickAddCollection = null;
 		quickAddTitle = '';
+		pickerOpen = false;
 	}
 
 	async function submitQuickAdd() {
@@ -173,9 +182,77 @@
 			e.preventDefault();
 			submitQuickAdd();
 		} else if (e.key === 'Escape') {
+			if (pickerOpen) {
+				pickerOpen = false;
+				return;
+			}
 			cancelQuickAdd();
 		}
 	}
+
+	function togglePicker() {
+		if (!canSwitchCollection) return;
+		pickerOpen = !pickerOpen;
+		if (pickerOpen) {
+			const i = pickerCollections.findIndex(c => c.id === quickAddCollection?.id);
+			pickerHighlight = i >= 0 ? i : 0;
+			requestAnimationFrame(() => pickerRef?.focus());
+		}
+	}
+
+	function selectCollection(coll: Collection) {
+		quickAddCollection = coll;
+		pickerOpen = false;
+		requestAnimationFrame(() => quickAddInputEl?.focus());
+	}
+
+	function handlePillKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+			e.preventDefault();
+			if (!pickerOpen) togglePicker();
+		} else if (e.key === 'Escape' && pickerOpen) {
+			e.preventDefault();
+			pickerOpen = false;
+		}
+	}
+
+	function handlePickerKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			pickerOpen = false;
+			requestAnimationFrame(() => pillRef?.focus());
+		} else if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			pickerHighlight = (pickerHighlight + 1) % pickerCollections.length;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			pickerHighlight = (pickerHighlight - 1 + pickerCollections.length) % pickerCollections.length;
+		} else if (e.key === 'Home') {
+			e.preventDefault();
+			pickerHighlight = 0;
+		} else if (e.key === 'End') {
+			e.preventDefault();
+			pickerHighlight = pickerCollections.length - 1;
+		} else if (e.key === 'Enter') {
+			e.preventDefault();
+			const coll = pickerCollections[pickerHighlight];
+			if (coll) selectCollection(coll);
+		}
+	}
+
+	$effect(() => {
+		if (!pickerOpen) return;
+		function onDocMouseDown(e: MouseEvent) {
+			const t = e.target as Node | null;
+			if (!t) return;
+			if (pickerRef?.contains(t)) return;
+			if (pillRef?.contains(t)) return;
+			pickerOpen = false;
+		}
+		document.addEventListener('mousedown', onDocMouseDown);
+		return () => document.removeEventListener('mousedown', onDocMouseDown);
+	});
 
 	let versionLabel = $state('');
 
@@ -524,8 +601,49 @@
 	<div class="quick-add-overlay" onclick={cancelQuickAdd}>
 		<div class="quick-add-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="quick-add-header">
-				<span class="quick-add-icon">{quickAddCollection.icon}</span>
-				<span class="quick-add-label">New {quickAddCollection.name.replace(/s$/, '')}</span>
+				<button
+					type="button"
+					class="quick-add-pill"
+					class:disabled={!canSwitchCollection}
+					onclick={togglePicker}
+					onkeydown={handlePillKeydown}
+					bind:this={pillRef}
+					aria-haspopup="listbox"
+					aria-expanded={pickerOpen}
+					aria-label="Choose collection"
+					disabled={!canSwitchCollection}
+				>
+					<span class="quick-add-icon">{quickAddCollection.icon}</span>
+					<span class="quick-add-label">New {quickAddCollection.name.replace(/s$/, '')}</span>
+					{#if canSwitchCollection}
+						<span class="quick-add-caret" aria-hidden="true">▾</span>
+					{/if}
+				</button>
+				{#if pickerOpen && canSwitchCollection}
+					<div
+						class="quick-add-picker"
+						role="listbox"
+						tabindex="-1"
+						bind:this={pickerRef}
+						onkeydown={handlePickerKeydown}
+					>
+						{#each pickerCollections as coll, i (coll.id)}
+							<button
+								type="button"
+								role="option"
+								class="quick-add-picker-option"
+								class:active={coll.id === quickAddCollection.id}
+								class:highlighted={i === pickerHighlight}
+								aria-selected={coll.id === quickAddCollection.id}
+								onclick={() => selectCollection(coll)}
+								onmouseenter={() => { pickerHighlight = i; }}
+							>
+								<span class="quick-add-picker-icon">{coll.icon}</span>
+								<span class="quick-add-picker-name">New {coll.name.replace(/s$/, '')}</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
 			</div>
 			<textarea
 				class="quick-add-input"
@@ -851,6 +969,92 @@
 	.quick-add-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.quick-add-header {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.quick-add-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: 4px 10px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 0.9em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.quick-add-pill:hover:not(.disabled),
+	.quick-add-pill:focus-visible {
+		border-color: var(--accent-blue);
+		color: var(--text-primary);
+		outline: none;
+	}
+	.quick-add-pill.disabled {
+		cursor: default;
+		opacity: 0.85;
+	}
+	.quick-add-pill .quick-add-icon {
+		font-size: 1.1em;
+	}
+	.quick-add-pill .quick-add-label {
+		font-size: inherit;
+		font-weight: inherit;
+		color: inherit;
+	}
+	.quick-add-caret {
+		font-size: 0.7em;
+		color: var(--text-muted);
+		margin-left: 2px;
+	}
+	.quick-add-picker {
+		position: absolute;
+		top: calc(100% + 6px);
+		left: 0;
+		min-width: 200px;
+		max-height: 280px;
+		overflow-y: auto;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+		z-index: 60;
+		padding: 4px;
+		outline: none;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.quick-add-picker-option {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: 6px 8px;
+		background: transparent;
+		border: none;
+		border-radius: var(--radius);
+		color: var(--text-primary);
+		font: inherit;
+		font-size: 0.9em;
+		text-align: left;
+		cursor: pointer;
+	}
+	.quick-add-picker-option.highlighted {
+		background: var(--bg-tertiary);
+	}
+	.quick-add-picker-option.active .quick-add-picker-name {
+		color: var(--accent-blue);
+		font-weight: 600;
+	}
+	.quick-add-picker-icon {
+		font-size: 1.05em;
 	}
 
 	/* Footer */
