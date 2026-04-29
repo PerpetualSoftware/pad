@@ -33,22 +33,33 @@
 		}
 	});
 
-	// Fetch `has_cli_source` for a specific slug. The slug is captured at
-	// call time and re-checked before assigning, so a slow response from a
-	// previous workspace can't overwrite the current workspace's signal
-	// (e.g. the user clicks Workspace A → Workspace B before A's request
-	// resolves). Failures fall back to `false` (fail-open: better to show
-	// the banner than to hide it on a transient error).
+	// Fetch `has_cli_source` for a specific slug. Two safeguards against
+	// stale responses overwriting fresher ones:
+	//
+	// 1. A monotonic sequence id captured at call time — only the LATEST
+	//    request's result is applied. This handles same-workspace races,
+	//    e.g. an in-flight workspace-change fetch that resolves AFTER the
+	//    modal-close refetch (which would otherwise stomp the newer
+	//    `true` with the older `false`).
+	// 2. A captured slug recheck — if the user has already navigated to a
+	//    different workspace by the time the response lands, drop it.
+	//
+	// Failures fall back to `false` (fail-open: better to show the banner
+	// than to hide it on a transient error).
+	let fetchSeq = 0;
 	function refreshHasCliSource(slug: string) {
 		if (!slug) return;
+		const mySeq = ++fetchSeq;
 		hasCliSource = null;
 		api.dashboard
 			.get(slug)
 			.then((d) => {
-				if (slug !== wsSlug) return; // stale response — ignore
+				if (mySeq !== fetchSeq) return; // a newer request superseded us
+				if (slug !== wsSlug) return; // workspace changed under us
 				hasCliSource = d.has_cli_source;
 			})
 			.catch(() => {
+				if (mySeq !== fetchSeq) return;
 				if (slug !== wsSlug) return;
 				hasCliSource = false;
 			});
