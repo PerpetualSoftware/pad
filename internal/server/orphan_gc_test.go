@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -323,6 +324,49 @@ func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
 	}
 	if _, err := store.Stat(context.Background(), att.StorageKey); err != nil {
 		t.Errorf("blob disappeared despite in-flight signal: %v", err)
+	}
+}
+
+// TestInFlightUploadHashes_ConcurrentReleaseReacquire pins Codex P1
+// round 2 on PR #307: the prior sync.Map version raced when one
+// release's decrement-to-zero ran in parallel with another upload's
+// LoadOrStore-then-increment, leaving an in-flight upload's signal
+// invisible to the GC. The mutex-protected map closes the window.
+//
+// Stress test: hammer a single hash with overlapping
+// markUploadInFlight / release pairs. At every observation point,
+// uploadInFlight must report > 0 whenever ANY goroutine is between
+// its mark and its release.
+func TestInFlightUploadHashes_ConcurrentReleaseReacquire(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+
+	const goroutines = 20
+	const iterations = 500
+	hash := "race-test-hash"
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	// Spawn goroutines that each loop mark/release; all share the
+	// same hash so the inc/dec interleaving is maximized.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				release := srv.markUploadInFlight(hash)
+				// At least one goroutine (this one) is in flight.
+				if !srv.uploadInFlight(hash) {
+					t.Errorf("uploadInFlight=false while one goroutine holds the mark")
+				}
+				release()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// After everyone finishes, the counter should be exactly zero
+	// and the map entry deleted.
+	if srv.uploadInFlight(hash) {
+		t.Errorf("uploadInFlight=true after all releases; counter leaked")
 	}
 }
 

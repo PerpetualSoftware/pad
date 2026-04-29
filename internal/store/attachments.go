@@ -603,19 +603,29 @@ func (s *Store) CountLiveAttachmentsForHash(hash, excludeID string) (int, error)
 // Scoped to one workspace because a "pad-attachment:UUID" reference
 // only resolves within the workspace where the attachment lives;
 // cross-workspace references are intentionally not supported.
+//
+// Dialect note: items.fields is TEXT on SQLite but JSONB on
+// PostgreSQL (see migrations + pgmigrations). LIKE doesn't work on
+// JSONB so the Postgres path casts to text first. Codex P1 round 2
+// caught this — without the cast, the GC's reference scan errored
+// on Postgres and every never-attached row got skipped.
 func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (bool, error) {
 	if workspaceID == "" || attachmentID == "" {
 		return false, nil
 	}
 	needle := "pad-attachment:" + attachmentID
-	// SQLite + PostgreSQL both support LIKE on TEXT columns. The
-	// reference includes the exact UUID so collision risk is nil.
 	pattern := "%" + needle + "%"
+
+	fieldsExpr := "fields"
+	if s.dialect.Driver() == DriverPostgres {
+		fieldsExpr = "fields::text"
+	}
+
 	var n int
 	err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM items
 		WHERE workspace_id = ? AND deleted_at IS NULL
-		  AND (content LIKE ? OR fields LIKE ?)
+		  AND (content LIKE ? OR `+fieldsExpr+` LIKE ?)
 	`), workspaceID, pattern, pattern).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("attachment referenced in items: %w", err)

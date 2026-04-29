@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -99,12 +98,14 @@ type Server struct {
 	// blob between Put and CreateAttachment, leaving a live row that
 	// references a missing blob (Codex P2 on PR #307 round 1).
 	//
-	// Map value is a *atomic int64 reference count: same hash can
-	// have multiple in-flight uploads (the upload handler uses the
-	// hash as the dedup key), so we can't just use sync.Map's bool
-	// presence semantics. The orphan GC checks `> 0` before
-	// reclaiming a blob.
-	inFlightUploadHashes sync.Map
+	// A plain map + mutex rather than sync.Map: counters need
+	// atomic-with-delete semantics (decrement-then-delete-if-zero
+	// must be one critical section, not two — sync.Map.CompareAndDelete
+	// addresses the entry but not the inc/dec interleaving). Codex
+	// P1 round 2 caught the prior sync.Map version racing on
+	// release-vs-reload of the same hash.
+	inFlightHashesMu sync.Mutex
+	inFlightHashes   map[string]int64
 
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
@@ -315,13 +316,26 @@ func (s *Server) SetImageProcessor(p attachments.Processor) {
 // decrements and removes the entry once it hits zero. Used by the
 // upload handler to fence Put + CreateAttachment against orphan-GC
 // blob deletions of the same hash.
+//
+// Increment + map-store + decrement + delete all run under one
+// mutex so a concurrent uploadInFlight call can't observe a stale
+// "0" between the last release-decrement and the next-upload
+// increment. The earlier sync.Map version split increment from
+// LoadOrStore-then-atomic-add and missed that window (Codex P1 on
+// PR #307 round 2).
 func (s *Server) markUploadInFlight(hash string) func() {
-	v, _ := s.inFlightUploadHashes.LoadOrStore(hash, new(int64))
-	counter := v.(*int64)
-	atomic.AddInt64(counter, 1)
+	s.inFlightHashesMu.Lock()
+	if s.inFlightHashes == nil {
+		s.inFlightHashes = make(map[string]int64)
+	}
+	s.inFlightHashes[hash]++
+	s.inFlightHashesMu.Unlock()
 	return func() {
-		if atomic.AddInt64(counter, -1) == 0 {
-			s.inFlightUploadHashes.Delete(hash)
+		s.inFlightHashesMu.Lock()
+		defer s.inFlightHashesMu.Unlock()
+		s.inFlightHashes[hash]--
+		if s.inFlightHashes[hash] <= 0 {
+			delete(s.inFlightHashes, hash)
 		}
 	}
 }
@@ -331,11 +345,9 @@ func (s *Server) markUploadInFlight(hash string) func() {
 // deleting a blob — if an upload just finished Put but hasn't
 // inserted the row yet, GC must NOT reclaim the blob.
 func (s *Server) uploadInFlight(hash string) bool {
-	v, ok := s.inFlightUploadHashes.Load(hash)
-	if !ok {
-		return false
-	}
-	return atomic.LoadInt64(v.(*int64)) > 0
+	s.inFlightHashesMu.Lock()
+	defer s.inFlightHashesMu.Unlock()
+	return s.inFlightHashes[hash] > 0
 }
 
 // SetImportBundleMaxBytes overrides the default 2 GiB cap on a
