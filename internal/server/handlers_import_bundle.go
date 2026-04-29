@@ -28,12 +28,19 @@ import (
 // in cmd/pad/main.go).
 const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 
-// importBlobMaxBytes caps any single blob inside a bundle. Defense
-// against a malicious bundle declaring a multi-TiB blob in the tar
-// header and forcing us to read it all before checking quota. Same
-// limit as the per-upload cap (25 MiB by default) — bundles can't
-// smuggle larger blobs than the upload endpoint accepts.
-const importBlobMaxBytes = 25 << 20
+// effectiveBlobMaxBytes returns the per-blob ceiling for bundle
+// import — matches whatever the upload handler accepts so an
+// operator who raised PAD_ATTACHMENT_MAX_BYTES on the source can
+// re-import the resulting export on a destination configured the
+// same way. Codex flagged the hard-coded 25 MiB cap on PR #306
+// round 4: a workspace with attachments uploaded under a larger
+// cap would round-trip the export but fail the re-import.
+func (s *Server) effectiveBlobMaxBytes() int64 {
+	if s.attachmentMaxBytes > 0 {
+		return s.attachmentMaxBytes
+	}
+	return defaultAttachmentMaxBytes
+}
 
 // handleImportWorkspaceBundle accepts a tar.gz bundle produced by
 // the export endpoint and rebuilds the workspace including all
@@ -120,8 +127,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // violate the ordering — e.g. a third-party tool that put blobs
 // first — are rejected with a clear error.
 //
-// Memory footprint: at most one blob (≤ importBlobMaxBytes) held at
-// a time during rehydration, plus the small JSON payloads at the
+// Memory footprint: at most one blob (≤ effectiveBlobMaxBytes) held
+// at a time during rehydration, plus the small JSON payloads at the
 // front. A 2 GiB bundle with thousands of 25 MiB images now needs
 // ~25 MiB peak rather than ~2 GiB. (Codex P1 on PR #306 round 1.)
 //
@@ -130,6 +137,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // a live HTTP server.
 func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID string) (*models.Workspace, error) {
 	tr := tar.NewReader(r)
+	blobCap := s.effectiveBlobMaxBytes()
 
 	var ws *models.Workspace
 	var manifestByPath map[string]*models.AttachmentManifestEntry
@@ -152,11 +160,12 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 
 		switch {
 		case hdr.Name == "pad-export.json":
-			if hdr.Size > importBlobMaxBytes*4 {
-				// Allow up to 100 MiB for the JSON payload — items +
-				// content + versions can grow large. Still bounded so
-				// a malicious header can't force unbounded read.
-				return nil, fmt.Errorf("pad-export.json exceeds 100 MiB cap (declared %d)", hdr.Size)
+			// pad-export.json can grow large for content-heavy
+			// workspaces (items + version history). Cap at 4× the
+			// per-blob ceiling — generous, still bounded, and scales
+			// with operator-set PAD_ATTACHMENT_MAX_BYTES.
+			if hdr.Size > blobCap*4 {
+				return nil, fmt.Errorf("pad-export.json exceeds %d-byte cap (declared %d)", blobCap*4, hdr.Size)
 			}
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {
@@ -190,9 +199,9 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 					message: "Bundle ordering violation: manifest.json before pad-export.json",
 				}
 			}
-			if hdr.Size > importBlobMaxBytes {
+			if hdr.Size > blobCap {
 				return ws, fmt.Errorf("manifest.json exceeds %d-byte cap (declared %d)",
-					importBlobMaxBytes, hdr.Size)
+					blobCap, hdr.Size)
 			}
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {
@@ -236,9 +245,9 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 				}
 				continue
 			}
-			if hdr.Size > importBlobMaxBytes {
-				return ws, fmt.Errorf("blob %s exceeds %d-byte cap (declared %d)",
-					hdr.Name, importBlobMaxBytes, hdr.Size)
+			if hdr.Size > blobCap {
+				return ws, fmt.Errorf("blob %s exceeds %d-byte cap (declared %d) — raise PAD_ATTACHMENT_MAX_BYTES on this server to allow",
+					hdr.Name, blobCap, hdr.Size)
 			}
 			blob, err := readEntry(tr, hdr.Size)
 			if err != nil {
