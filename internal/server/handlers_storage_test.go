@@ -301,6 +301,73 @@ func TestDeleteAttachment_HappyPath(t *testing.T) {
 	}
 }
 
+// TestDeleteAttachment_AfterParentSoftDeleted pins Codex P2 from
+// PR #303 round 3: when the parent item is soft-deleted, the
+// attachment row remains in the storage list (so the user can see
+// it's still consuming quota), and the Delete button must work.
+//
+// The earlier draft used GetItem which filters out soft-deleted
+// items, so the handler returned 404 before ever calling
+// SoftDeleteAttachment. This test creates an item, attaches a row,
+// soft-deletes the item, and then exercises the delete endpoint.
+func TestDeleteAttachment_AfterParentSoftDeleted(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	// Create a real item so the attachment has a parent. Use the
+	// docs collection (preseeded by the workspace template).
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/docs/items",
+		map[string]any{"title": "Doomed", "content": "x"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+	}
+	var item struct{ ID string }
+	if err := json.Unmarshal(rr.Body.Bytes(), &item); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+
+	// Attach a row to the item directly via the store — easier than
+	// orchestrating an upload + association sequence.
+	att := &models.Attachment{
+		WorkspaceID: wsID,
+		ItemID:      &item.ID,
+		UploadedBy:  "system",
+		StorageKey:  "fs:" + "x",
+		ContentHash: "fakehash3",
+		MimeType:    "image/png",
+		SizeBytes:   123,
+		Filename:    "doomed.png",
+	}
+	if err := srv.store.CreateAttachment(att); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	// Soft-delete the parent item.
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+item.ID, nil)
+	if rr.Code != http.StatusNoContent && rr.Code != http.StatusOK {
+		t.Fatalf("soft-delete item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Attachment should still be visible in the storage list.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/attachments", nil)
+	var resp struct {
+		Total       int                        `json:"total"`
+		Attachments []store.AttachmentListItem `json:"attachments"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("after soft-delete: total=%d, want 1 (attachment must remain visible)", resp.Total)
+	}
+
+	// Delete must succeed despite the parent item being soft-deleted.
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+att.ID, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete after parent soft-delete: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestDeleteAttachment_DerivedRefused pins the carve-out for thumbnail
 // rows: a direct delete of a derived attachment should return 400
 // rather than silently succeed (which would leave the original

@@ -311,8 +311,14 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 	// they can't see — even if they obtain the attachment ID some
 	// other way. Mirrors requireItemVisible's logic but operates on
 	// the attachment's parent item id rather than a fully-loaded item.
+	//
+	// GetItemIncludeDeleted is used (not GetItem) because the storage
+	// list intentionally surfaces attachments whose parent item is
+	// soft-deleted — they're still consuming quota and the user
+	// needs a path to delete the blob. The collection_id stays set
+	// after a soft delete, so the visibility predicate still works.
 	if att.ItemID != nil {
-		item, err := s.store.GetItem(*att.ItemID)
+		item, err := s.store.GetItemIncludeDeleted(*att.ItemID)
 		if err != nil {
 			writeInternalError(w, err)
 			return
