@@ -116,6 +116,12 @@ func (s *Server) deriveThumbnails(parentID string) {
 			continue
 		}
 	}
+
+	// Derived rows count toward workspace storage usage. Drop the
+	// cached summary so the next storage/usage GET reflects the new
+	// thumbnail bytes; the upload handler already invalidated when
+	// inserting the original, but thumbnail rows land later.
+	s.storageInfoCache.invalidate(parent.WorkspaceID)
 }
 
 // openOriginalForThumbnail resolves the parent row's storage key

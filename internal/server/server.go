@@ -72,6 +72,13 @@ type Server struct {
 	// other endpoint and stores originals untouched.
 	imageProcessor attachments.Processor
 
+	// storageInfoCache memoizes per-workspace storage usage summaries
+	// behind a short TTL (storageInfoTTL). Reduces DB load on the
+	// Settings → Storage page and quota-aware UI surfaces. Initialized
+	// in newServer; never nil so handlers can call get/set without
+	// guarding.
+	storageInfoCache *storageInfoCache
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
@@ -105,8 +112,9 @@ func (s *Server) Stop() {
 
 func New(s *store.Store) *Server {
 	return &Server{
-		store:        s,
-		rateLimiters: NewRateLimiters(),
+		store:            s,
+		rateLimiters:     NewRateLimiters(),
+		storageInfoCache: newStorageInfoCache(storageInfoTTL),
 	}
 }
 
@@ -726,6 +734,11 @@ func (s *Server) setupRouter() {
 					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Head("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Post("/attachments/{attachmentID}/transform", s.handleTransformAttachment)
+
+					// Storage usage summary for Settings → Storage and other
+					// quota-aware UI surfaces (TASK-881). Cached behind a
+					// short TTL — see handleGetWorkspaceStorageUsage.
+					r.Get("/storage/usage", s.handleGetWorkspaceStorageUsage)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {

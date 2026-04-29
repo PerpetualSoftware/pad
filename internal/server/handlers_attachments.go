@@ -245,6 +245,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Bump the storage-usage cache so the next GET sees fresh used_bytes
+	// without waiting for TTL expiry. Done eagerly here (and after each
+	// thumbnail derivation / transform) so the Settings → Storage UI
+	// stays consistent with the actual on-disk total.
+	s.storageInfoCache.invalidate(workspaceID)
+
 	// Quota tracking — log only, no enforcement in Phase 1. The download
 	// URL points at the GET handler shipped in TASK-872 (same PR series).
 	// Workspaces are addressed by slug everywhere else in the API; we

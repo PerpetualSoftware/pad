@@ -213,6 +213,11 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Drop the storage-usage cache so the Settings → Storage UI sees
+	// the new attachment bytes on the next read. Same rationale as
+	// the upload path.
+	s.storageInfoCache.invalidate(workspaceID)
+
 	// Quota tracking — observational only in Phase 1, same as upload.
 	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 

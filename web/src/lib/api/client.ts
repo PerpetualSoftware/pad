@@ -45,7 +45,8 @@ import type {
 	AttachmentUploadResult,
 	AttachmentTransformRequest,
 	AttachmentTransformResult,
-	ServerCapabilities
+	ServerCapabilities,
+	WorkspaceStorageInfo
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -838,6 +839,27 @@ export const api = {
 				throw new Error(`transform failed: ${resp.status}`);
 			}
 			return (await resp.json()) as AttachmentTransformResult;
+		},
+
+		/**
+		 * Workspace storage usage summary: bytes consumed by live
+		 * attachments + the effective limit for the workspace owner's
+		 * plan + a flag for whether an admin-set per-user override is
+		 * configured.
+		 *
+		 * Server caches per-workspace for ~30s — uploads invalidate
+		 * the cache eagerly so the bar doesn't lag behind a new
+		 * upload, but multiple page loads in the cache window collapse
+		 * to a single DB read.
+		 *
+		 * `limit_bytes === -1` means unlimited (pro / self-hosted /
+		 * unowned workspaces). Callers should branch on that to render
+		 * a counter rather than a capped usage bar.
+		 */
+		storageUsage(workspaceSlug: string): Promise<WorkspaceStorageInfo> {
+			return request<WorkspaceStorageInfo>(
+				`/workspaces/${workspaceSlug}/storage/usage`
+			);
 		}
 	},
 
