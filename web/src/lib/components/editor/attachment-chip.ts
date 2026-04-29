@@ -27,12 +27,17 @@
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
+import {
+	type AttachmentUrlBuilder,
+	type AttachmentVariant,
+	fetchAttachmentMetadata
+} from './attachment-metadata';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
 
-/** Variants the download URL builder must support — mirrors AttachmentImage. */
-export type AttachmentVariant = 'thumb-sm' | 'thumb-md' | 'original';
-export type AttachmentUrlBuilder = (uuid: string, variant?: AttachmentVariant) => string;
+// Re-export the shared types so existing chip-importing call sites
+// keep working without having to change their imports.
+export type { AttachmentVariant, AttachmentUrlBuilder };
 
 export interface AttachmentChipOptions {
 	HTMLAttributes: Record<string, unknown>;
@@ -52,48 +57,6 @@ declare module '@tiptap/core' {
 			setAttachmentChip: (options: { uuid: string; filename: string }) => ReturnType;
 		};
 	}
-}
-
-/** Per-chip metadata fetched via HEAD. Null means "still loading or fetch failed". */
-interface AttachmentMetadata {
-	mime: string;
-	size: number;
-}
-
-/**
- * Module-level cache of metadata promises keyed by `${ws}:${uuid}`. A single
- * HEAD request fans out to every chip pointing at the same attachment, and
- * subsequent edits (paste, undo/redo) hit the cache without a network round
- * trip. Cache lives for the page lifetime — the underlying attachment row
- * is immutable, so there's no staleness concern.
- */
-const metadataCache = new Map<string, Promise<AttachmentMetadata | null>>();
-
-function fetchAttachmentMetadata(
-	workspaceSlug: string,
-	uuid: string,
-	getDownloadUrl: AttachmentUrlBuilder,
-): Promise<AttachmentMetadata | null> {
-	const key = `${workspaceSlug}:${uuid}`;
-	const cached = metadataCache.get(key);
-	if (cached) return cached;
-	const promise: Promise<AttachmentMetadata | null> = (async () => {
-		try {
-			const resp = await fetch(getDownloadUrl(uuid), {
-				method: 'HEAD',
-				credentials: 'same-origin',
-			});
-			if (!resp.ok) return null;
-			const ctype = resp.headers.get('content-type') ?? '';
-			const mime = ctype.split(';')[0].trim();
-			const len = parseInt(resp.headers.get('content-length') ?? '0', 10);
-			return { mime, size: Number.isFinite(len) && len >= 0 ? len : 0 };
-		} catch {
-			return null;
-		}
-	})();
-	metadataCache.set(key, promise);
-	return promise;
 }
 
 /**

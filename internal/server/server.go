@@ -712,9 +712,10 @@ func (s *Server) setupRouter() {
 					})
 
 					// Attachments
-					//   POST   /attachments              — upload (TASK-871)
-					//   GET    /attachments/{attachmentID} — serve blob (TASK-872, supports ?variant=)
-					//   HEAD   /attachments/{attachmentID} — metadata only (TASK-877 file-chip enrichment)
+					//   POST   /attachments                          — upload (TASK-871)
+					//   GET    /attachments/{attachmentID}           — serve blob (TASK-872, supports ?variant=)
+					//   HEAD   /attachments/{attachmentID}           — metadata only (TASK-877 file-chip enrichment)
+					//   POST   /attachments/{attachmentID}/transform — server-side rotate/crop (TASK-879/880)
 					//
 					// chi does not auto-route HEAD to the GET handler, so the
 					// editor's HEAD probe for size + MIME has to be registered
@@ -724,6 +725,7 @@ func (s *Server) setupRouter() {
 					r.Post("/attachments", s.handleUploadAttachment)
 					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Head("/attachments/{attachmentID}", s.handleGetAttachment)
+					r.Post("/attachments/{attachmentID}/transform", s.handleTransformAttachment)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {

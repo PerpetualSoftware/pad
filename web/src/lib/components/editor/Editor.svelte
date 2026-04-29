@@ -283,7 +283,11 @@
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
-	import { AttachmentImage, type AttachmentVariant } from './attachment-image';
+	import {
+		AttachmentImage,
+		type AttachmentVariant,
+		notifyAttachmentImageCapabilitiesChanged,
+	} from './attachment-image';
 	import { AttachmentChip } from './attachment-chip';
 	import { AttachmentUpload } from './attachment-upload';
 
@@ -469,7 +473,29 @@
 				transformCopiedText: true,
 			}),
 			BlockDragHandle,
-			AttachmentImage.configure({ getDownloadUrl: getAttachmentUrl }),
+			AttachmentImage.configure({
+				getDownloadUrl: getAttachmentUrl,
+				workspaceSlug: wsSlug,
+				// Initial supportedFormats is empty — server capabilities
+				// are fetched async below. The toolbar starts disabled
+				// for all formats until capabilities resolve, then
+				// updates per-button via refreshToolbarState. The
+				// editor lifetime is long-lived so the one-call cost
+				// is amortized; no per-render fetch.
+				supportedFormats: [] as string[],
+				transform: async (uuid, payload) => {
+					if (!wsSlug) {
+						throw new Error('No workspace context — open the image inside a workspace to edit it.');
+					}
+					return api.attachments.transform(wsSlug, uuid, payload);
+				},
+				onError: (message) => {
+					console.error('[attachment image]', message);
+					if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+						window.alert(`Couldn't transform image: ${message}`);
+					}
+				},
+			}),
 			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
 			AttachmentUpload.configure({
 				upload: async (file) => {
@@ -601,6 +627,33 @@
 
 		lastMarkdown = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
 		onEditor?.(editor);
+
+		// Fetch the server's image-processor capabilities and push the
+		// supported-formats list into the AttachmentImage extension so
+		// its rotate toolbar can gate per-format. Async / fire-and-
+		// forget — the toolbar starts disabled (empty list) and
+		// snaps to the right state once this resolves. The endpoint
+		// is public, so the fetch works pre-login on shared-item
+		// preview surfaces too.
+		api.server.capabilities()
+			.then((caps) => {
+				const ext = editor?.extensionManager.extensions.find(
+					(e: { name: string }) => e.name === 'attachmentImage'
+				);
+				if (ext) ext.options.supportedFormats = caps.image.image_formats;
+				// Push the new list to any toolbars that were already
+				// open before this fetch resolved — without this, a
+				// user who selected an image during the in-flight
+				// capabilities request would see an indefinitely-
+				// disabled toolbar.
+				notifyAttachmentImageCapabilitiesChanged();
+			})
+			.catch(() => {
+				// Network blip / pre-login fetch failure → toolbar
+				// stays in its degraded "disabled with tooltip" state.
+				// We don't surface this to the user — the toolbar
+				// itself communicates the limitation.
+			});
 
 		editor.on('focus', () => { editorFocused = true; });
 		editor.on('blur', () => { editorFocused = false; });

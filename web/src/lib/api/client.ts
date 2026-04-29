@@ -42,7 +42,10 @@ import type {
 	TOTPVerifyResponse,
 	TOTPDisableResponse,
 	AdminBillingStats,
-	AttachmentUploadResult
+	AttachmentUploadResult,
+	AttachmentTransformRequest,
+	AttachmentTransformResult,
+	ServerCapabilities
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -787,7 +790,67 @@ export const api = {
 		): string {
 			const base = `${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}`;
 			return variant ? `${base}?variant=${encodeURIComponent(variant)}` : base;
+		},
+
+		/**
+		 * Apply a server-side image transform (rotate / crop) to an
+		 * attachment, producing a NEW attachment row whose UUID the
+		 * editor swaps into the corresponding node. The original is
+		 * left in place and reclaimed by orphan GC after the grace
+		 * period (TASK-886) once nothing references it.
+		 *
+		 * Returns the same shape as the upload endpoint so callers
+		 * have everything they need (id, dimensions, etc.) to update
+		 * the editor node attrs without a follow-up GET.
+		 *
+		 * Only callable on attachments whose MIME the server's
+		 * configured Processor supports (the response is 415 when
+		 * not). Editors should gate the UI on
+		 * `server.capabilities()` upfront so users don't see a
+		 * disabled-then-enabled spinner cycle on each click.
+		 */
+		async transform(
+			workspaceSlug: string,
+			attachmentId: string,
+			payload: AttachmentTransformRequest
+		): Promise<AttachmentTransformResult> {
+			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+			const csrf = getCSRFToken();
+			if (csrf) headers['X-CSRF-Token'] = csrf;
+			const resp = await fetch(
+				`${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}/transform`,
+				{
+					method: 'POST',
+					headers,
+					credentials: 'same-origin',
+					body: JSON.stringify(payload)
+				}
+			);
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					window.location.href = '/login';
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			if (!resp.ok) {
+				const body = await resp.json().catch(() => null);
+				if (body?.error) throw new PadApiError(body.error);
+				throw new Error(`transform failed: ${resp.status}`);
+			}
+			return (await resp.json()) as AttachmentTransformResult;
 		}
+	},
+
+	// ── Server capabilities ─────────────────────────────────────────────────
+	//
+	// Reports what the configured image processor can do (formats,
+	// transcode flag, max-pixels ceiling). Public endpoint — the
+	// editor reads it pre-login on shared-item preview surfaces. The
+	// response is static for the lifetime of the binary, so callers
+	// can cache freely.
+
+	server: {
+		capabilities: () => request<ServerCapabilities>('/server/capabilities')
 	},
 
 	// ── Admin ────────────────────────────────────────────────────────────────
