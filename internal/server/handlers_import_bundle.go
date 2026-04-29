@@ -18,13 +18,15 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// importBundleMaxBytes caps an uploaded bundle. Mirrors the upload
-// handler's defaultAttachmentMaxBytes scaling: a single workspace
-// export can contain thousands of attachments, so we set this much
+// defaultImportBundleMaxBytes caps an uploaded bundle. Mirrors the
+// upload handler's defaultAttachmentMaxBytes scaling: a workspace
+// export can contain thousands of attachments, so this is much
 // higher than any single-file upload limit. The cap exists primarily
-// to bound the temp-file footprint on the import host — operators
-// can raise it via SetAttachments once we surface it.
-const importBundleMaxBytes = 2 << 30 // 2 GiB
+// to bound the temp-file footprint on the import host. Operators
+// running larger workspaces should override via
+// Server.SetImportBundleMaxBytes (wired from PAD_IMPORT_BUNDLE_MAX_BYTES
+// in cmd/pad/main.go).
+const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 
 // importBlobMaxBytes caps any single blob inside a bundle. Defense
 // against a malicious bundle declaring a multi-TiB blob in the tar
@@ -69,7 +71,11 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// Bound the request body BEFORE the gzip reader spools any of it.
-	r.Body = http.MaxBytesReader(w, r.Body, importBundleMaxBytes)
+	maxBytes := s.importBundleMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultImportBundleMaxBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	gz, err := gzip.NewReader(r.Body)
 	if err != nil {

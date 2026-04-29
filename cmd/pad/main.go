@@ -377,6 +377,19 @@ func serveCmd() *cobra.Command {
 			srv.SetAttachments(attachReg, attachMax)
 			slog.Info("Attachment storage wired", "backend", "fs", "dir", attachDir)
 
+			// Workspace bundle import cap. Default is 2 GiB inside
+			// internal/server; PAD_IMPORT_BUNDLE_MAX_BYTES lets
+			// operators with larger exports raise the ceiling without
+			// recompiling (Codex review on PR #306 round 3).
+			if v := os.Getenv("PAD_IMPORT_BUNDLE_MAX_BYTES"); v != "" {
+				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+					srv.SetImportBundleMaxBytes(n)
+					slog.Info("Import bundle cap overridden", "max_bytes", n)
+				} else {
+					slog.Warn("PAD_IMPORT_BUNDLE_MAX_BYTES ignored — not a positive integer", "value", v)
+				}
+			}
+
 			// Wire the image processor used for thumbnail derivation
 			// (TASK-878) and the editor's rotate/crop tools (TASK-879/880).
 			// The default build picks the pure-Go backend (no cgo);
