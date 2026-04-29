@@ -18,8 +18,14 @@ import (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
-	authToken  string // session or API token, sent as Authorization: Bearer
-	agentName  string // optional agent name, sent as X-Pad-Agent header
+	// streamClient has a much longer timeout than httpClient and is
+	// used by RawStream / PostStreamWithContentType for endpoints
+	// that can transfer multi-GiB payloads (workspace export
+	// bundles). Sharing the default 10s timeout would kill those
+	// transfers mid-flight on anything but a local network.
+	streamClient *http.Client
+	authToken    string // session or API token, sent as Authorization: Bearer
+	agentName    string // optional agent name, sent as X-Pad-Agent header
 }
 
 func NewClient(host string, port int) *Client {
@@ -33,6 +39,17 @@ func NewClientFromURL(baseURL string) *Client {
 		baseURL: baseURL + "/api/v1",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
+		},
+		// Long-running transfer client for streaming endpoints
+		// (workspace export bundles in/out, future S3 downloads).
+		// 10s on the default client is the right SLA for normal API
+		// calls but kills a multi-GiB bundle upload mid-stream over
+		// anything but a fast local link. 1 hour is generous enough
+		// for ~100 MB/s uplinks shipping a 350 GiB bundle and still
+		// caps a hung connection eventually. (Codex review on PR
+		// #306 round 2.)
+		streamClient: &http.Client{
+			Timeout: 1 * time.Hour,
 		},
 	}
 
@@ -417,7 +434,7 @@ func (c *Client) RawStream(path string, w io.Writer) (int64, *http.Response, err
 	if err != nil {
 		return 0, nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -463,7 +480,7 @@ func (c *Client) PostStreamWithContentType(path string, body io.Reader, contentT
 		return err
 	}
 	req.Header.Set("Content-Type", contentType)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
