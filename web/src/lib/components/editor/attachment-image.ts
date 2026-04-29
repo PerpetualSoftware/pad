@@ -27,12 +27,27 @@
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
+import {
+	type AttachmentUrlBuilder,
+	type AttachmentVariant,
+	fetchAttachmentMetadata,
+	invalidateAttachmentMetadata,
+	mimeToFormat
+} from './attachment-metadata';
+import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
-/** Variants the download URL builder must support. Mirrors the API. */
-export type AttachmentVariant = 'thumb-sm' | 'thumb-md' | 'original';
+// Re-export the shared types so existing call sites keep working.
+export type { AttachmentVariant, AttachmentUrlBuilder };
 
-/** URL builder injected by Editor.svelte at configure time. */
-export type AttachmentUrlBuilder = (uuid: string, variant?: AttachmentVariant) => string;
+/**
+ * Result of a server-side image transform. The editor uses the new
+ * row's id + dimensions to swap the node's attrs without a follow-up
+ * GET — same shape as the upload response.
+ */
+export type AttachmentTransform = (
+	uuid: string,
+	payload: AttachmentTransformRequest
+) => Promise<AttachmentTransformResult>;
 
 export interface AttachmentImageOptions {
 	HTMLAttributes: Record<string, unknown>;
@@ -43,6 +58,34 @@ export interface AttachmentImageOptions {
 	 * `/api/v1/workspaces/{ws}/attachments/{id}` endpoint so images render.
 	 */
 	getDownloadUrl: AttachmentUrlBuilder;
+	/**
+	 * Workspace slug used for HEAD-probing the image's MIME (so the
+	 * rotate toolbar can gate buttons on the processor's supported
+	 * formats). Empty string disables the probe — the toolbar still
+	 * shows but skips per-format gating.
+	 */
+	workspaceSlug: string;
+	/**
+	 * Image formats the server-side processor supports. Drives the
+	 * rotate toolbar's enabled state per attachment: a button is
+	 * disabled (with tooltip) when the image's MIME isn't in this
+	 * list. Empty list ⇒ all transforms disabled (degraded build).
+	 */
+	supportedFormats: string[];
+	/**
+	 * Calls the server's /transform endpoint. Set by Editor.svelte to
+	 * `api.attachments.transform(workspaceSlug, uuid, payload)`.
+	 * Defaulting to a thrown error means a misconfigured editor
+	 * fails loudly when the user clicks rotate, rather than silently
+	 * swallowing the click.
+	 */
+	transform: AttachmentTransform;
+	/**
+	 * Optional error sink the editor can wire to its toast / logger.
+	 * Receives the user-facing message; the toolbar already handled
+	 * the technical error before calling this.
+	 */
+	onError?: (message: string) => void;
 }
 
 declare module '@tiptap/core' {
@@ -80,6 +123,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 		return {
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
+			workspaceSlug: '',
+			supportedFormats: [] as string[],
+			transform: async () => {
+				throw new Error('AttachmentImage: configure({ transform }) is required to use rotate/crop');
+			},
+			onError: undefined,
 		};
 	},
 
@@ -134,20 +183,31 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 	},
 
 	/**
-	 * NodeView attaches a click handler that opens the original-resolution
-	 * variant in a lightbox dialog. Tiptap calls renderHTML for clipboard
-	 * / `getHTML()` / serialization paths, so both must stay in sync — the
-	 * NodeView is only the live editor representation.
+	 * NodeView wraps the <img> in a positioned <span> so we can layer a
+	 * rotate toolbar on top of it when the node is selected. The
+	 * toolbar's per-button enabled state is recomputed when the
+	 * image's MIME resolves via the metadata cache — disabled state
+	 * carries an explanatory tooltip so the user knows why
+	 * rotation is unavailable on their build.
+	 *
+	 * Tiptap's renderHTML still emits a bare <img> for clipboard /
+	 * `getHTML()` / SSR paths; only the live editor view goes through
+	 * this NodeView.
 	 */
 	addNodeView() {
-		return ({ node }) => {
+		return ({ node, editor, getPos }) => {
+			const opts = this.options;
+			const wrapper = document.createElement('span');
+			wrapper.className = 'attachment-image-wrapper';
+			wrapper.setAttribute('contenteditable', 'false');
+
 			const img = document.createElement('img');
 			img.classList.add('attachment-image');
 			img.loading = 'lazy';
 			const uuid = (node.attrs.uuid as string | null) ?? '';
 			const alt = (node.attrs.alt as string | null) ?? '';
 			if (uuid) {
-				img.src = this.options.getDownloadUrl(uuid, 'thumb-md');
+				img.src = opts.getDownloadUrl(uuid, 'thumb-md');
 				img.setAttribute('data-attachment-id', uuid);
 			}
 			if (alt) img.alt = alt;
@@ -163,11 +223,81 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				event.preventDefault();
 				event.stopPropagation();
 				if (!uuid) return;
-				const fullUrl = this.options.getDownloadUrl(uuid, 'original');
+				const fullUrl = opts.getDownloadUrl(uuid, 'original');
 				openImageLightbox(fullUrl, alt);
 			});
 
-			return { dom: img };
+			// Build the toolbar lazily — only when the node is first
+			// selected — so non-selected images don't carry the DOM
+			// cost. Subsequent selections reuse the same toolbar.
+			let toolbar: HTMLElement | null = null;
+			let toolbarMime: string | null = null;
+			const ensureToolbar = (): HTMLElement => {
+				if (toolbar) return toolbar;
+				toolbar = buildRotateToolbar({
+					onRotate: (degrees) => runRotate(degrees),
+				});
+				wrapper.appendChild(toolbar);
+				// Probe the image's MIME so we can refine the toolbar's
+				// enabled state. Empty workspaceSlug = no probe (e.g.
+				// SSR / preview surfaces) — the toolbar stays in its
+				// initial enabled state, which falls back to the
+				// supportedFormats list alone.
+				if (uuid && opts.workspaceSlug) {
+					fetchAttachmentMetadata(opts.workspaceSlug, uuid, opts.getDownloadUrl).then(
+						(meta) => {
+							if (!toolbar) return;
+							toolbarMime = meta?.mime ?? null;
+							refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+						}
+					);
+				}
+				refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+				return toolbar;
+			};
+
+			const runRotate = async (degrees: 90 | 180 | 270): Promise<void> => {
+				if (!uuid) return;
+				try {
+					const result = await opts.transform(uuid, { operation: 'rotate', degrees });
+					const pos = typeof getPos === 'function' ? getPos() : null;
+					if (pos == null) return;
+					// Replace the node's UUID at its current position.
+					// setNodeMarkup keeps the same node type and only
+					// rewrites attributes, which is what we want — the
+					// transform produced a NEW attachment row, but it's
+					// still an attachmentImage.
+					const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
+						...node.attrs,
+						uuid: result.id,
+					});
+					editor.view.dispatch(tr);
+					// Drop the cached metadata for the OLD UUID — the
+					// editor may render the original elsewhere later
+					// and we want the next probe to refresh.
+					if (opts.workspaceSlug) {
+						invalidateAttachmentMetadata(opts.workspaceSlug, uuid);
+					}
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : 'Rotation failed';
+					if (opts.onError) opts.onError(msg);
+					else if (typeof console !== 'undefined') console.error('[attachmentImage] rotate', err);
+				}
+			};
+
+			wrapper.appendChild(img);
+			return {
+				dom: wrapper,
+				selectNode() {
+					wrapper.classList.add('attachment-image-selected');
+					const tb = ensureToolbar();
+					tb.classList.remove('attachment-image-toolbar-hidden');
+				},
+				deselectNode() {
+					wrapper.classList.remove('attachment-image-selected');
+					if (toolbar) toolbar.classList.add('attachment-image-toolbar-hidden');
+				},
+			};
 		};
 	},
 
@@ -207,6 +337,103 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 		};
 	},
 });
+
+/**
+ * Build the rotate toolbar — three buttons (rotate left 90°,
+ * rotate 180°, rotate right 90°). Each button delegates to the
+ * supplied onRotate callback; the NodeView wires that into a
+ * setNodeMarkup transaction once the server returns the new UUID.
+ *
+ * The toolbar starts in its enabled state. refreshToolbarState
+ * disables individual buttons (with tooltip) once the image's
+ * MIME has been probed and compared to the processor's supported
+ * formats list.
+ */
+function buildRotateToolbar(opts: {
+	onRotate: (degrees: 90 | 180 | 270) => void;
+}): HTMLElement {
+	const toolbar = document.createElement('div');
+	toolbar.className = 'attachment-image-toolbar';
+	toolbar.setAttribute('contenteditable', 'false');
+	// Stop mousedown from racing the editor's click-to-select handler
+	// — without this, clicking a button steals selection focus from the
+	// node and the subsequent setNodeMarkup transaction lands on the
+	// wrong target. Same trick as the code-block "Copy" button in
+	// Editor.svelte.
+	toolbar.addEventListener('mousedown', (e) => e.preventDefault());
+
+	const button = (label: string, title: string, deg: 90 | 180 | 270): HTMLButtonElement => {
+		const btn = document.createElement('button');
+		btn.type = 'button';
+		btn.className = 'attachment-image-toolbar-btn';
+		btn.textContent = label;
+		btn.title = title;
+		btn.dataset.degrees = String(deg);
+		btn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (btn.disabled) return;
+			opts.onRotate(deg);
+		});
+		return btn;
+	};
+
+	toolbar.append(
+		button('↶', 'Rotate left 90°', 270),
+		button('↻', 'Rotate 180°', 180),
+		button('↷', 'Rotate right 90°', 90)
+	);
+	return toolbar;
+}
+
+/**
+ * Update each toolbar button's enabled state + tooltip based on the
+ * image's MIME and the processor's supported-formats list.
+ *
+ *   - Empty supportedFormats → all buttons disabled with a "no image
+ *     processor on this build" message. Covers the libvips-tagged
+ *     binary that hasn't shipped Phase 2 yet, plus self-hosters who
+ *     opted out of image processing.
+ *   - MIME unknown (still loading the HEAD probe, or the probe
+ *     failed) → keep buttons enabled. Server returns 415 if the
+ *     format actually isn't supported, and the editor's onError
+ *     surfaces the message inline at click time.
+ *   - MIME known and unsupported → disable with format-specific
+ *     tooltip ("Image editing for image/webp requires libvips").
+ *   - MIME known and supported → enabled with the original tooltip.
+ */
+function refreshToolbarState(
+	toolbar: HTMLElement,
+	mime: string | null,
+	supportedFormats: string[]
+): void {
+	const btns = toolbar.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn');
+	const noProcessor = supportedFormats.length === 0;
+	const format = mime ? mimeToFormat(mime) : null;
+	const knownUnsupported = !!format && !supportedFormats.includes(format);
+
+	btns.forEach((btn) => {
+		// Re-derive the original tooltip from the dataset. We keep the
+		// canonical title in the data-original-title attribute so we
+		// can restore it after the disabled state clears.
+		const originalTitle =
+			btn.dataset.originalTitle ?? btn.title ?? '';
+		btn.dataset.originalTitle = originalTitle;
+
+		if (noProcessor) {
+			btn.disabled = true;
+			btn.title = 'Image editing not available in this build (libvips backend not shipped yet)';
+			return;
+		}
+		if (knownUnsupported) {
+			btn.disabled = true;
+			btn.title = `Image editing for ${mime} requires libvips (this build supports ${supportedFormats.join(', ')})`;
+			return;
+		}
+		btn.disabled = false;
+		btn.title = originalTitle;
+	});
+}
 
 /**
  * Open a centered <dialog> showing the full-resolution attachment.

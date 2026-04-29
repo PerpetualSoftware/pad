@@ -785,6 +785,40 @@ export interface AttachmentUploadResult {
 	render_mode: 'inline' | 'chip' | 'download';
 }
 
+/**
+ * Request body for POST /api/v1/workspaces/{slug}/attachments/{id}/transform
+ * (TASK-879/880). Discriminated by `operation`. Per-op params live in
+ * their own fields rather than a generic args bag — keeps the wire
+ * format tight and lets the type checker prove the request is well-formed.
+ */
+export type AttachmentTransformRequest =
+	| { operation: 'rotate'; degrees: 90 | 180 | 270 }
+	| { operation: 'crop'; rect: { x: number; y: number; w: number; h: number } };
+
+/** Server response shape from /transform. Subset of AttachmentUploadResult. */
+export interface AttachmentTransformResult {
+	id: string;
+	url: string;
+	mime: string;
+	size: number;
+	width?: number | null;
+	height?: number | null;
+	filename: string;
+}
+
+/**
+ * Server capability profile from GET /api/v1/server/capabilities.
+ * The editor reads this once at mount and gates rotate/crop UI on
+ * the image processor's reach.
+ */
+export interface ServerCapabilities {
+	image: {
+		image_formats: string[];
+		can_transcode: boolean;
+		max_pixels: number;
+	};
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

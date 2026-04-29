@@ -230,6 +230,63 @@ input:focus, textarea:focus {
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 35%, transparent);
 }
 
+/* Wrapper appended by the AttachmentImage NodeView to host the
+   selection-time rotate toolbar (TASK-879). Position relative so
+   the toolbar can pin to the top-right corner of the image. */
+.attachment-image-wrapper {
+	position: relative;
+	display: inline-block;
+	max-width: 100%;
+}
+.attachment-image-wrapper.attachment-image-selected .attachment-image {
+	box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+/* Rotate toolbar — appears when the AttachmentImage node is
+   selected. Pinned top-right with absolute positioning so it doesn't
+   shift the image's layout when toggling visibility. */
+.attachment-image-toolbar {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	display: inline-flex;
+	gap: 2px;
+	padding: 4px;
+	background: rgba(20, 20, 20, 0.85);
+	border-radius: var(--radius);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+	z-index: 5;
+	-webkit-user-select: none;
+	user-select: none;
+}
+.attachment-image-toolbar-hidden {
+	display: none;
+}
+.attachment-image-toolbar-btn {
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: #fff;
+	font-size: 18px;
+	line-height: 1;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 0.15s, opacity 0.15s;
+	font-family: inherit;
+}
+.attachment-image-toolbar-btn:hover:not(:disabled) {
+	background: rgba(255, 255, 255, 0.15);
+}
+.attachment-image-toolbar-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
 /* Attachment file chips — Notion-style chip rendering for non-image
    attachments. Used by both the editor's AttachmentChip node and the
    read-only markdown render path (TASK-874). Styles target the same
