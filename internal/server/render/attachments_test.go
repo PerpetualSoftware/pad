@@ -392,6 +392,82 @@ func TestResolveAttachmentReferences_HandlesTitleSuffix(t *testing.T) {
 	}
 }
 
+func TestResolveAttachmentReferences_EscapedBrackets(t *testing.T) {
+	// Marked's tokenizer accepts `\]` inside link/image labels and emits the
+	// literal `]`. The Go regex must do the same to keep server/client
+	// rendering byte-aligned for edge-case labels.
+	resolver := func(uuid string) *AttachmentMeta {
+		switch uuid {
+		case "img-1":
+			return &AttachmentMeta{ID: "img-1", MimeType: "image/png", Filename: "a.png", SizeBytes: 1}
+		case "doc-1":
+			return &AttachmentMeta{ID: "doc-1", MimeType: "application/pdf", Filename: "doc.pdf", SizeBytes: 1}
+		}
+		return nil
+	}
+	cases := []struct {
+		name     string
+		in       string
+		wantSubs []string
+	}{
+		{
+			name: "escaped close bracket in image alt",
+			in:   `![Q1 \] report](pad-attachment:img-1)`,
+			wantSubs: []string{
+				`data-attachment-id="img-1"`,
+				`alt="Q1 ] report"`,
+			},
+		},
+		{
+			name: "escaped close bracket in link text",
+			in:   `[A \] B](pad-attachment:doc-1)`,
+			wantSubs: []string{
+				`data-attachment-id="doc-1"`,
+				`>A ] B</span>`,
+			},
+		},
+		{
+			name: "escaped backslash and bracket combo",
+			in:   `[a \\ b \[ c \] d](pad-attachment:doc-1)`,
+			wantSubs: []string{
+				`>a \ b [ c ] d</span>`,
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ResolveAttachmentReferences(c.in, "ws", resolver)
+			for _, s := range c.wantSubs {
+				if !strings.Contains(got, s) {
+					t.Errorf("missing %q in: %s", s, got)
+				}
+			}
+		})
+	}
+}
+
+func TestUnescapeMarkdownText(t *testing.T) {
+	cases := map[string]string{
+		"":                  "",
+		"plain":             "plain",
+		`\\`:                `\`,
+		`\]`:                `]`,
+		`\[`:                `[`,
+		`\(`:                `(`,
+		`\)`:                `)`,
+		`\!`:                `!`,
+		`a \] b`:            `a ] b`,
+		`a \\ b \[ c \] d`:  `a \ b [ c ] d`,
+		`unaffected: \n \t`: `unaffected: \n \t`, // non-punctuation escapes pass through
+		`trailing \`:        `trailing \`,        // dangling backslash preserved
+	}
+	for in, want := range cases {
+		if got := unescapeMarkdownText(in); got != want {
+			t.Errorf("unescapeMarkdownText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSplitCodeFences_NestedAndUnclosed(t *testing.T) {
 	// An unclosed fence at end-of-input should not crash. Everything after
 	// the opener is treated as inside the fence.

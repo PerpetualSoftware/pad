@@ -48,18 +48,26 @@ let currentAttachmentCtx: AttachmentRenderContext | null = null;
 // URLs in the link text as autolinks and recurse infinitely through this same
 // `link` renderer (e.g. for content like `https://example.com` inside a comment).
 const renderer = new marked.Renderer();
-renderer.link = function (this: Renderer, { href, title, tokens }: Tokens.Link) {
+renderer.link = function (this: Renderer, { href, title, text: rawText, tokens }: Tokens.Link) {
 	// pad-attachment:UUID links resolve to a file chip when a resolver is in
 	// scope. Without one (e.g. the bare `marked()` calls on the share page
 	// before that route opts in) the reference falls through to the default
 	// link rendering — the user sees the literal `pad-attachment:UUID` href,
 	// which is graceful degradation for SSR/preview environments that don't
 	// have the attachment registry hydrated yet.
+	//
+	// We pass the link token's raw `text` (not parseInline output) to the
+	// chip helper because renderAttachmentChip HTML-escapes its label
+	// argument. Feeding pre-rendered HTML (e.g. <strong>Report</strong>
+	// from `[**Report**](pad-attachment:…)`) would double-escape into
+	// `&lt;strong&gt;Report&lt;/strong&gt;`. Plain text matches the Go
+	// side's regex-based extraction and keeps both renderers byte-aligned;
+	// markdown emphasis inside chip labels degrades to literal markers,
+	// which is acceptable for the filename-style labels chips usually carry.
 	if (currentAttachmentCtx && isAttachmentHref(href)) {
-		const text = this.parser.parseInline(tokens);
 		return resolveAttachmentLink(
 			href,
-			text,
+			rawText,
 			currentAttachmentCtx.workspaceSlug,
 			currentAttachmentCtx.resolver
 		);

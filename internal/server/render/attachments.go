@@ -224,18 +224,52 @@ func ResolveAttachmentLink(href, text, workspaceSlug string, resolve AttachmentR
 //	[text](pad-attachment:UUID)
 //
 // The leading `!?` captures whether the form is image or link. The
-// alt/text capture rejects literal `]` so it stops at the closing
-// bracket; the UUID capture rejects whitespace and `)` so it stops at
-// the closing paren. Markdown's optional " title" suffix on a link
-// destination is handled — anything between the UUID and `)` after a
-// space is captured into a title group we currently ignore (matches
-// our HTML output, which doesn't surface the title attribute today).
+// alt/text capture accepts CommonMark escape sequences (`\]`, `\\`, etc.)
+// so labels containing literal brackets — e.g. `[Q1 \] report](pad-…)` —
+// match the same way marked does on the TS side; without this, the two
+// renderers disagree on edge-case labels and the lock-step contract
+// breaks. Captured escapes are unwound in unescapeMarkdownText before the
+// label reaches the render helpers. The UUID capture rejects whitespace
+// and `)` so it stops at the closing paren. Markdown's optional " title"
+// suffix on a link destination is handled — anything between the UUID
+// and `)` after a space matches the title group we currently ignore
+// (our HTML output doesn't surface the title attribute today).
 //
 // References inside fenced code blocks must be skipped — that's done
 // by ResolveAttachmentReferences's caller via splitCodeFences.
 var markdownAttachmentRefRE = regexp.MustCompile(
-	`(!?)\[([^\]]*)\]\(pad-attachment:([^\s)]+)(?:\s+"[^"]*")?\)`,
+	`(!?)\[((?:\\.|[^\]\\])*)\]\(pad-attachment:([^\s)]+)(?:\s+"[^"]*")?\)`,
 )
+
+// unescapeMarkdownText reverses CommonMark escape sequences in a captured
+// label. Marked's tokenizer drops the backslash and emits the literal
+// character, so the regex-based Go path needs to mirror that behavior
+// before passing the label to the render helpers — otherwise a label
+// like `Q1 \] report` would render with the backslash visible.
+//
+// We only unescape backslash + ASCII punctuation that can appear inside
+// a label match: `\\`, `\]`, `\[`, `\(`, `\)`, `\!`. Other escapes
+// pass through unchanged — matches CommonMark §6.1 closely enough for
+// the labels Pad's editor produces.
+func unescapeMarkdownText(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '\\', ']', '[', '(', ')', '!':
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
 
 // ResolveAttachmentReferences scans `markdown` for `pad-attachment:UUID`
 // references in standard markdown image/link syntax and replaces each
@@ -272,7 +306,7 @@ func ResolveAttachmentReferences(markdown, workspaceSlug string, resolve Attachm
 				return match
 			}
 			isImage := sub[1] == "!"
-			altOrText := sub[2]
+			altOrText := unescapeMarkdownText(sub[2])
 			uuid := strings.TrimSpace(sub[3])
 			href := attachmentRefPrefix + uuid
 			if isImage {
