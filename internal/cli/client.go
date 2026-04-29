@@ -452,6 +452,25 @@ func (c *Client) PostRawWithContentType(path string, data []byte, contentType st
 	return c.handleResponse(resp, result)
 }
 
+// PostStreamWithContentType POSTs a streaming body (typically an
+// *os.File for a multi-GiB bundle import) without buffering the full
+// payload in memory client-side. Mirrors the server's streaming
+// import path — together they keep import memory bounded by the
+// largest single blob (~25 MiB) rather than the full bundle size.
+func (c *Client) PostStreamWithContentType(path string, body io.Reader, contentType string, result interface{}) error {
+	req, err := c.newRequest("POST", path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, result)
+}
+
 // --- Auth API ---
 
 // LoginResponse is the response from POST /auth/login.

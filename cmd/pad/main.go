@@ -4637,11 +4637,6 @@ Format is detected by file extension. Override workspace name with --name.`,
 			client, _ := getClient()
 			filePath := args[0]
 
-			data, err := os.ReadFile(filePath)
-			if err != nil {
-				return fmt.Errorf("read file: %w", err)
-			}
-
 			path := "/workspaces/import"
 			if nameFlag != "" {
 				path += "?name=" + nameFlag
@@ -4657,8 +4652,18 @@ Format is detected by file extension. Override workspace name with --name.`,
 				contentType = "application/gzip"
 			}
 
+			// Stream the file rather than reading it all in. A multi-
+			// GiB bundle would otherwise pin that much memory client-
+			// side before the first byte hits the wire — defeats the
+			// server's streaming import (Codex P2 on PR #306 round 1).
+			f, err := os.Open(filePath)
+			if err != nil {
+				return fmt.Errorf("open file: %w", err)
+			}
+			defer f.Close()
+
 			var ws models.Workspace
-			if err := client.PostRawWithContentType(path, data, contentType, &ws); err != nil {
+			if err := client.PostStreamWithContentType(path, f, contentType, &ws); err != nil {
 				return fmt.Errorf("import: %w", err)
 			}
 

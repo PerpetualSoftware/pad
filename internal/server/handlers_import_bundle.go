@@ -106,26 +106,31 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // importBundle reads a tar (already gzip-decompressed) from r and
 // orchestrates the two-phase import. Returns the new workspace.
 //
+// Single-pass streaming: the export bundler always writes
+// pad-export.json + attachments/manifest.json BEFORE any blob, so
+// we can run ImportWorkspace + parse the manifest as soon as those
+// two entries land, then stream-rehydrate each subsequent blob
+// without ever holding the full bundle in memory. Bundles that
+// violate the ordering — e.g. a third-party tool that put blobs
+// first — are rejected with a clear error.
+//
+// Memory footprint: at most one blob (≤ importBlobMaxBytes) held at
+// a time during rehydration, plus the small JSON payloads at the
+// front. A 2 GiB bundle with thousands of 25 MiB images now needs
+// ~25 MiB peak rather than ~2 GiB. (Codex P1 on PR #306 round 1.)
+//
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
 func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID string) (*models.Workspace, error) {
 	tr := tar.NewReader(r)
 
-	// Pass 1: walk the tar, capture pad-export.json + manifest.json
-	// into memory, and remember each blob's offset so we can stream
-	// it on pass 2 — but tar streams are forward-only, so we actually
-	// just spool blobs into temp files keyed by tar-entry name. For
-	// realistic bundle sizes (≤ 2GiB total, ≤25 MiB per blob) this is
-	// fine; the temp-file lifecycle is bounded by this function.
-	//
-	// Future optimization: stream blobs straight through if we adopt
-	// a manifest-first ordering convention. Current export already
-	// writes manifest before blobs, so that's a one-line change once
-	// we're confident no in-the-wild bundle violates it.
-	var exportJSON []byte
-	var manifestJSON []byte
-	blobs := map[string][]byte{}
+	var ws *models.Workspace
+	var manifestByPath map[string]*models.AttachmentManifestEntry
+	var oldItemIDToSlug, slugToNewID map[string]string
+	oldAttachToNew := map[string]string{}
+	exportSeen := false
+	manifestSeen := false
 
 	for {
 		hdr, err := tr.Next()
@@ -138,106 +143,126 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA accepted for older bundles
 			continue
 		}
-		// Hard cap per-blob size before we read into memory.
-		if hdr.Size > importBlobMaxBytes {
-			return nil, fmt.Errorf("entry %s exceeds %d-byte cap (declared %d)",
-				hdr.Name, importBlobMaxBytes, hdr.Size)
-		}
-		buf, err := io.ReadAll(io.LimitReader(tr, hdr.Size+1))
-		if err != nil {
-			return nil, fmt.Errorf("read entry %s: %w", hdr.Name, err)
-		}
-		if int64(len(buf)) != hdr.Size {
-			return nil, fmt.Errorf("entry %s: read %d bytes, header says %d", hdr.Name, len(buf), hdr.Size)
-		}
 
 		switch {
 		case hdr.Name == "pad-export.json":
-			exportJSON = buf
+			if hdr.Size > importBlobMaxBytes*4 {
+				// Allow up to 100 MiB for the JSON payload — items +
+				// content + versions can grow large. Still bounded so
+				// a malicious header can't force unbounded read.
+				return nil, fmt.Errorf("pad-export.json exceeds 100 MiB cap (declared %d)", hdr.Size)
+			}
+			buf, err := readEntry(tr, hdr.Size)
+			if err != nil {
+				return nil, fmt.Errorf("read pad-export.json: %w", err)
+			}
+			var export models.WorkspaceExport
+			if err := json.Unmarshal(buf, &export); err != nil {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle pad-export.json could not be decoded: " + err.Error(),
+				}
+			}
+			ws, err = s.store.ImportWorkspace(&export, newName, ownerID)
+			if err != nil {
+				return nil, fmt.Errorf("import workspace: %w", err)
+			}
+			oldItemIDToSlug = make(map[string]string, len(export.Items))
+			for _, it := range export.Items {
+				oldItemIDToSlug[it.ID] = it.Slug
+			}
+			slugToNewID, err = s.store.WorkspaceItemSlugMap(ws.ID)
+			if err != nil {
+				return ws, fmt.Errorf("build slug→id map: %w", err)
+			}
+			exportSeen = true
+
 		case hdr.Name == "attachments/manifest.json":
-			manifestJSON = buf
+			if !exportSeen {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle ordering violation: manifest.json before pad-export.json",
+				}
+			}
+			if hdr.Size > importBlobMaxBytes {
+				return ws, fmt.Errorf("manifest.json exceeds %d-byte cap (declared %d)",
+					importBlobMaxBytes, hdr.Size)
+			}
+			buf, err := readEntry(tr, hdr.Size)
+			if err != nil {
+				return ws, fmt.Errorf("read manifest.json: %w", err)
+			}
+			var manifest models.AttachmentManifest
+			if err := json.Unmarshal(buf, &manifest); err != nil {
+				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", err)
+			}
+			if manifest.Version > exportBundleVersion {
+				return ws, fmt.Errorf("manifest version %d not supported by this server (max %d)",
+					manifest.Version, exportBundleVersion)
+			}
+			manifestByPath = make(map[string]*models.AttachmentManifestEntry, len(manifest.Entries))
+			for i := range manifest.Entries {
+				e := &manifest.Entries[i]
+				manifestByPath[bundleAttachmentPath(e.ID, e.Filename)] = e
+			}
+			manifestSeen = true
+
 		case strings.HasPrefix(hdr.Name, "attachments/"):
-			blobs[hdr.Name] = buf
+			if !exportSeen {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle ordering violation: attachment blob before pad-export.json",
+				}
+			}
+			if !manifestSeen {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle ordering violation: attachment blob before manifest.json",
+				}
+			}
+			entry, ok := manifestByPath[hdr.Name]
+			if !ok {
+				// Blob has no manifest entry — could be a stale entry
+				// from a bundle the operator hand-edited. Skip the
+				// bytes (consume the tar slot) and move on.
+				if _, err := io.Copy(io.Discard, io.LimitReader(tr, hdr.Size)); err != nil {
+					return ws, fmt.Errorf("skip unmanifested blob %s: %w", hdr.Name, err)
+				}
+				continue
+			}
+			if hdr.Size > importBlobMaxBytes {
+				return ws, fmt.Errorf("blob %s exceeds %d-byte cap (declared %d)",
+					hdr.Name, importBlobMaxBytes, hdr.Size)
+			}
+			blob, err := readEntry(tr, hdr.Size)
+			if err != nil {
+				return ws, fmt.Errorf("read blob %s: %w", hdr.Name, err)
+			}
+			newAttID, err := s.rehydrateAttachment(ctx, ws.ID, entry, blob,
+				oldItemIDToSlug, slugToNewID, ownerID)
+			if err != nil {
+				slog.Warn("import: rehydrate failed",
+					"attachment_id", entry.ID, "error", err)
+				continue
+			}
+			oldAttachToNew[entry.ID] = newAttID
+
 		default:
-			// Unknown top-level entry — ignored. Forward-compat for
-			// future bundle additions (e.g. a CHANGELOG.md).
+			// Unknown top-level entry — consume it so the tar reader
+			// stays in sync, then forward-compat ignore. Future
+			// bundle versions might add a CHANGELOG.md or schema
+			// migration script we don't recognize yet.
+			if _, err := io.Copy(io.Discard, io.LimitReader(tr, hdr.Size)); err != nil {
+				return ws, fmt.Errorf("skip unknown entry %s: %w", hdr.Name, err)
+			}
 		}
 	}
 
-	if exportJSON == nil {
+	if !exportSeen {
 		return nil, &importStatusError{
 			status: http.StatusBadRequest, code: "bad_bundle",
 			message: "Bundle is missing pad-export.json",
 		}
-	}
-
-	var export models.WorkspaceExport
-	if err := json.Unmarshal(exportJSON, &export); err != nil {
-		return nil, &importStatusError{
-			status: http.StatusBadRequest, code: "bad_bundle",
-			message: "Bundle pad-export.json could not be decoded: " + err.Error(),
-		}
-	}
-
-	// Phase 1: import the workspace + items. Old→new item ID map is
-	// computed inside ImportWorkspace; we don't have direct access to
-	// it from outside, but we can reconstruct it by listing the items
-	// after import. For TASK-885 the attachment rehydration only needs
-	// the attachment-ID map; item references in markdown are resolved
-	// by item slug → new id at PATCH time, which is a separate concern.
-	//
-	// For attachment rewrites specifically, we do need item-id mapping
-	// because pad-attachment:UUID references aren't tied to items —
-	// they're attachment UUIDs alone. So the rewrite scan walks every
-	// imported item and replaces only attachment UUIDs.
-	ws, err := s.store.ImportWorkspace(&export, newName, ownerID)
-	if err != nil {
-		return nil, fmt.Errorf("import workspace: %w", err)
-	}
-
-	// Phase 2: rehydrate attachments. Skip silently when the bundle
-	// has no manifest — older bundles or hand-crafted ones without
-	// attachments are still valid imports.
-	if manifestJSON == nil {
-		return ws, nil
-	}
-
-	var manifest models.AttachmentManifest
-	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
-		return ws, fmt.Errorf("import manifest decode: %w (workspace created but attachments not restored)", err)
-	}
-	if manifest.Version > exportBundleVersion {
-		return ws, fmt.Errorf("manifest version %d not supported by this server (max %d)",
-			manifest.Version, exportBundleVersion)
-	}
-
-	// Build a slug→new-id map for items so we can remap manifest
-	// entries (which have the OLD item id) to the NEW item id.
-	// ImportWorkspace preserves item.slug, so this is straightforward.
-	oldItemIDToSlug := make(map[string]string, len(export.Items))
-	for _, it := range export.Items {
-		oldItemIDToSlug[it.ID] = it.Slug
-	}
-	slugToNewID, err := s.store.WorkspaceItemSlugMap(ws.ID)
-	if err != nil {
-		return ws, fmt.Errorf("build slug→id map: %w", err)
-	}
-
-	oldAttachToNew := make(map[string]string, len(manifest.Entries))
-	for _, e := range manifest.Entries {
-		blob, ok := blobs[bundleAttachmentPath(e.ID, e.Filename)]
-		if !ok {
-			slog.Warn("import: manifest entry missing blob",
-				"attachment_id", e.ID, "filename", e.Filename)
-			continue
-		}
-		newAttID, err := s.rehydrateAttachment(ctx, ws.ID, &e, blob,
-			oldItemIDToSlug, slugToNewID, ownerID)
-		if err != nil {
-			slog.Warn("import: rehydrate failed", "attachment_id", e.ID, "error", err)
-			continue
-		}
-		oldAttachToNew[e.ID] = newAttID
 	}
 
 	// Phase 3: rewrite pad-attachment:OLD references in every imported
@@ -258,6 +283,21 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 	s.storageInfoCache.invalidate(ws.ID)
 
 	return ws, nil
+}
+
+// readEntry reads exactly size bytes from a tar reader (the rest of
+// the current entry) into a buffer, validating that the read length
+// matches the header's declared Size. Tar entries are bounded by the
+// caller; this helper just makes the read+verify pattern uniform.
+func readEntry(tr *tar.Reader, size int64) ([]byte, error) {
+	buf, err := io.ReadAll(io.LimitReader(tr, size+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) != size {
+		return nil, fmt.Errorf("read %d bytes, header says %d", len(buf), size)
+	}
+	return buf, nil
 }
 
 // rehydrateAttachment runs the upload-handler's MIME validation,

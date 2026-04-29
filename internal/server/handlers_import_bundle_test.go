@@ -1,7 +1,9 @@
 package server
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,6 +184,45 @@ func TestImportBundle_LegacyJSONStillWorks(t *testing.T) {
 	dest.ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("legacy JSON import: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestImportBundle_RejectsOutOfOrderTar pins the streaming-import
+// invariant added in PR #306 round 1 (Codex P1): the bundle MUST
+// place pad-export.json + manifest.json BEFORE any blob so the
+// server can stream-rehydrate without buffering. Bundles that put
+// blobs first would still work in the previous implementation but
+// would force buffering of every blob — we now reject them up front
+// with a clear error rather than silently buffering.
+func TestImportBundle_RejectsOutOfOrderTar(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+
+	// Hand-craft a tar.gz where a blob entry comes BEFORE
+	// pad-export.json. Strict-format violation.
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "attachments/abcd.png", Mode: 0o644, Size: 4}); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := tw.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+		t.Fatalf("write blob: %v", err)
+	}
+	// Even if we'd write a manifest after, the blob coming first
+	// already violates the contract. Stop here.
+	tw.Close()
+	gzw.Close()
+
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("out-of-order bundle: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "ordering") {
+		t.Errorf("expected ordering-violation error, got body=%s", rr.Body.String())
 	}
 }
 
