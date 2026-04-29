@@ -233,8 +233,11 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cheap EXISTS query — drives the connect-CLI banner's auto-hide on the
-	// web side. See WorkspaceHasCLISource for the rationale.
-	hasCLI, err := s.store.WorkspaceHasCLISource(workspaceID)
+	// web side. Filtered by the same visibility set used elsewhere in this
+	// handler (dashCollIDs / dashItemIDs) so a guest can't infer the
+	// existence of CLI-sourced items in collections they don't have access
+	// to. See WorkspaceHasCLISource for the rationale.
+	hasCLI, err := s.store.WorkspaceHasCLISource(workspaceID, dashCollIDs, dashItemIDs)
 	if err != nil {
 		writeInternalError(w, err)
 		return
