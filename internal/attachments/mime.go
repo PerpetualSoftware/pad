@@ -296,4 +296,3 @@ var extMIMEMap = map[string]string{
 	".rpm":  "application/x-rpm",
 	".app":  "application/octet-stream",
 }
-
