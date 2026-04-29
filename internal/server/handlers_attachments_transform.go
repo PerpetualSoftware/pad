@@ -189,10 +189,17 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	// row is a peer (NOT a derived/variant row — that's only for
 	// thumbnails) so ParentID and Variant stay nil; the editor
 	// swaps its reference and the original ages into orphan GC.
+	//
+	// UploadedBy inherits from the parent — same policy as the
+	// thumbnail pipeline. A user who rotates someone else's upload
+	// shouldn't inadvertently take ownership of the resulting blob;
+	// audit attribution stays anchored to whoever first put the
+	// bytes into the workspace. (The transform itself is auditable
+	// at the request layer if/when we add a transform-events log.)
 	row := &models.Attachment{
 		WorkspaceID: parent.WorkspaceID,
 		ItemID:      parent.ItemID,
-		UploadedBy:  currentUserOrSystem(r),
+		UploadedBy:  parent.UploadedBy,
 		StorageKey:  storageKey,
 		ContentHash: hash,
 		MimeType:    attachments.ThumbnailMime(outFormat),
@@ -279,12 +286,3 @@ func transformedFilename(parent, op, format string) string {
 	return base + "." + op + ext
 }
 
-// currentUserOrSystem returns the authenticated user ID, falling
-// back to "system" for the no-users-yet case (mirrors the upload
-// handler's attribution policy).
-func currentUserOrSystem(r *http.Request) string {
-	if id := currentUserID(r); id != "" {
-		return id
-	}
-	return "system"
-}

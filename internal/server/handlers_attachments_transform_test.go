@@ -243,6 +243,39 @@ func TestTransform_ServedDownloadDecodesAtNewDimensions(t *testing.T) {
 	}
 }
 
+func TestTransform_DerivedRowInheritsUploadedByFromParent(t *testing.T) {
+	// A user who rotates someone else's upload should NOT take
+	// ownership of the resulting blob. The transform pipeline
+	// inherits parent.UploadedBy (same policy as the thumbnail
+	// pipeline) so audit attribution stays anchored to the
+	// original uploader.
+	srv, slug := testServerWithAttachments(t)
+	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
+	srv.Stop()
+
+	parent, _ := srv.store.GetAttachment(id)
+	if parent == nil {
+		t.Fatal("parent missing")
+	}
+	parentUploader := parent.UploadedBy
+
+	rr := doTransform(srv, slug, id, transformRequestBody{Operation: "rotate", Degrees: 90})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var resp struct{ ID string }
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	derived, _ := srv.store.GetAttachment(resp.ID)
+	if derived == nil {
+		t.Fatal("derived missing")
+	}
+	if derived.UploadedBy != parentUploader {
+		t.Errorf("derived UploadedBy = %q, want %q (inherited from parent)",
+			derived.UploadedBy, parentUploader)
+	}
+}
+
 func TestTransform_DeletedParentReturns404(t *testing.T) {
 	// Edge: the editor sends a transform after the user soft-deleted
 	// the original (race or stale UI). 404, not 500 / corrupt blob.

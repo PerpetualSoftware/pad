@@ -283,7 +283,11 @@
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
-	import { AttachmentImage, type AttachmentVariant } from './attachment-image';
+	import {
+		AttachmentImage,
+		type AttachmentVariant,
+		notifyAttachmentImageCapabilitiesChanged,
+	} from './attachment-image';
 	import { AttachmentChip } from './attachment-chip';
 	import { AttachmentUpload } from './attachment-upload';
 
@@ -637,6 +641,12 @@
 					(e: { name: string }) => e.name === 'attachmentImage'
 				);
 				if (ext) ext.options.supportedFormats = caps.image.image_formats;
+				// Push the new list to any toolbars that were already
+				// open before this fetch resolved — without this, a
+				// user who selected an image during the in-flight
+				// capabilities request would see an indefinitely-
+				// disabled toolbar.
+				notifyAttachmentImageCapabilitiesChanged();
 			})
 			.catch(() => {
 				// Network blip / pre-login fetch failure → toolbar

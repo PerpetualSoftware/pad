@@ -40,6 +40,40 @@ import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib
 export type { AttachmentVariant, AttachmentUrlBuilder };
 
 /**
+ * Live toolbars register a refresher here when constructed; the
+ * editor calls notifyAttachmentImageCapabilitiesChanged() after
+ * capabilities resolve, which in turn re-runs every refresher with
+ * the latest supportedFormats list. Without this, a user who
+ * selected an image before the capabilities fetch returned would
+ * see an indefinitely-disabled toolbar — the existing toolbar DOM
+ * would be stuck in "no processor" state until the NodeView was
+ * destroyed and recreated. Registry-based push fixes that.
+ *
+ * Module-level rather than per-extension storage so a shared editor
+ * surface (multiple Editor instances on one page) only has to fan
+ * out once. Registrations are torn down via the returned dispose
+ * function when the NodeView's destroy callback fires.
+ */
+const toolbarRefreshers = new Set<() => void>();
+
+function registerToolbarRefresher(fn: () => void): () => void {
+	toolbarRefreshers.add(fn);
+	return () => toolbarRefreshers.delete(fn);
+}
+
+/**
+ * Re-run every active toolbar's refresh hook. Called by Editor.svelte
+ * after `api.server.capabilities()` resolves and the new
+ * `supportedFormats` list has been pushed onto the AttachmentImage
+ * extension's options. Any toolbar that was sitting in the
+ * "all-disabled" pre-capabilities state snaps to its correct
+ * per-format gating.
+ */
+export function notifyAttachmentImageCapabilitiesChanged(): void {
+	for (const fn of toolbarRefreshers) fn();
+}
+
+/**
  * Result of a server-side image transform. The editor uses the new
  * row's id + dimensions to swap the node's attrs without a follow-up
  * GET — same shape as the upload response.
@@ -232,27 +266,39 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// cost. Subsequent selections reuse the same toolbar.
 			let toolbar: HTMLElement | null = null;
 			let toolbarMime: string | null = null;
+			let unregisterRefresher: (() => void) | null = null;
+			const refresh = () => {
+				if (toolbar) refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+			};
 			const ensureToolbar = (): HTMLElement => {
 				if (toolbar) return toolbar;
 				toolbar = buildRotateToolbar({
 					onRotate: (degrees) => runRotate(degrees),
 				});
 				wrapper.appendChild(toolbar);
+				// Subscribe to capability-change notifications. The
+				// editor pushes the supportedFormats list async after
+				// /server/capabilities resolves; without this hook a
+				// toolbar created before that arrived would be stuck
+				// in "no processor" state until the NodeView was
+				// destroyed. Disposed in destroy() so the registry
+				// doesn't accumulate leaked refs.
+				unregisterRefresher = registerToolbarRefresher(refresh);
 				// Probe the image's MIME so we can refine the toolbar's
-				// enabled state. Empty workspaceSlug = no probe (e.g.
-				// SSR / preview surfaces) — the toolbar stays in its
-				// initial enabled state, which falls back to the
-				// supportedFormats list alone.
+				// per-format gating. Empty workspaceSlug = no probe
+				// (e.g. SSR / preview surfaces) — the toolbar's state
+				// falls back to the supportedFormats list alone, with
+				// the MIME left null.
 				if (uuid && opts.workspaceSlug) {
 					fetchAttachmentMetadata(opts.workspaceSlug, uuid, opts.getDownloadUrl).then(
 						(meta) => {
 							if (!toolbar) return;
 							toolbarMime = meta?.mime ?? null;
-							refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+							refresh();
 						}
 					);
 				}
-				refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+				refresh();
 				return toolbar;
 			};
 
@@ -296,6 +342,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				deselectNode() {
 					wrapper.classList.remove('attachment-image-selected');
 					if (toolbar) toolbar.classList.add('attachment-image-toolbar-hidden');
+				},
+				destroy() {
+					// Tear down the refresher subscription so the
+					// module-level registry doesn't pile up stale
+					// callbacks across editor lifecycles (e.g. SPA
+					// navigation between item views).
+					if (unregisterRefresher) {
+						unregisterRefresher();
+						unregisterRefresher = null;
+					}
 				},
 			};
 		};
