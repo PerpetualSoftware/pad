@@ -216,20 +216,66 @@ func TestFSStore_ConcurrentPutSameHashConverges(t *testing.T) {
 	}
 }
 
-func TestFSStore_GetWithBadKeyFormat(t *testing.T) {
+func TestFSStore_GetStatDeleteRejectBadKeys(t *testing.T) {
 	s := newTestFSStore(t)
 	cases := []string{
 		"",
 		"no-prefix",
-		"s3:abcd",         // wrong backend
-		"fs:",             // empty hash
-		"fs:notreallyahex", // unrouted prefix? actually still "fs:" prefix — extractHash returns it but pathFor will not find the file → ErrNotFound
+		"s3:" + strings.Repeat("a", 64), // wrong backend
+		"fs:",                           // empty hash
+		"fs:notreallyahex",              // not 64 hex chars
+		"fs:" + strings.Repeat("g", 64), // non-hex
+		"fs:../../../etc/passwd",        // path traversal
+		"fs:aa/bb",                      // path separator
+		"fs:" + strings.ToUpper(sha256Hex([]byte("x"))), // wrong case
 	}
 	for _, k := range cases {
-		_, err := s.Get(context.Background(), k)
-		if err == nil {
-			t.Fatalf("Get(%q) returned nil error", k)
+		if _, err := s.Get(context.Background(), k); err == nil {
+			t.Fatalf("Get(%q) returned nil err", k)
 		}
+		if _, err := s.Stat(context.Background(), k); err == nil {
+			t.Fatalf("Stat(%q) returned nil err", k)
+		}
+		if err := s.Delete(context.Background(), k); err == nil {
+			t.Fatalf("Delete(%q) returned nil err", k)
+		}
+	}
+}
+
+func TestFSStore_PutFastPathStillVerifiesHash(t *testing.T) {
+	s := newTestFSStore(t)
+	ctx := context.Background()
+
+	body := []byte("legit bytes")
+	hash := sha256Hex(body)
+
+	// First call seeds the canonical file.
+	if _, err := s.Put(ctx, hash, "", bytes.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call lies about the hash: target file exists, but the
+	// supplied reader streams bytes that do NOT hash to the supplied
+	// hash. Put MUST refuse — the contract requires verification on
+	// every call, not only the first.
+	wrongBody := []byte("attacker bytes")
+	_, err := s.Put(ctx, hash, "", bytes.NewReader(wrongBody))
+	if err == nil {
+		t.Fatal("expected hash mismatch on fast path, got nil")
+	}
+	if !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("err = %v, want hash mismatch", err)
+	}
+
+	// Original file untouched.
+	rc, err := s.Get(ctx, "fs:"+hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, body) {
+		t.Fatalf("fast-path hash-mismatch corrupted on-disk content: got %q want %q", got, body)
 	}
 }
 

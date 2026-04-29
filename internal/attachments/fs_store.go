@@ -54,24 +54,27 @@ func NewFSStore(baseDir string) (*FSStore, error) {
 // which prefix to scan.
 func (s *FSStore) Prefix() string { return FSPrefix }
 
-// pathFor returns the full on-disk path for a given hash.
+// pathFor returns the full on-disk path for a given hash. Callers MUST
+// have already validated the hash via validHash — this function does not
+// re-check, since every public method routes through extractHash which
+// validates, and Put validates directly.
 func (s *FSStore) pathFor(hash string) string {
-	// hash has already been validated to be at least 4 chars by the
-	// callers — guard here defensively for direct use in tests.
-	if len(hash) < 4 {
-		return filepath.Join(s.baseDir, "_short", hash)
-	}
 	return filepath.Join(s.baseDir, hash[0:2], hash[2:4], hash)
 }
 
-// extractHash pulls the hash component out of an "fs:<hash>" key.
+// extractHash pulls the hash component out of an "fs:<hash>" key and
+// validates it. We require the canonical 64-char lowercase-hex sha256
+// form on every public method — not only Put — because a key segment
+// that ends up as a path component is a path-traversal vector if the
+// caller can sneak in "/" or ".." (e.g. "fs:../../etc/passwd"). The
+// validHash gate makes that impossible.
 func extractHash(key string) (string, error) {
 	prefix, hash, ok := strings.Cut(key, ":")
 	if !ok || prefix != FSPrefix {
 		return "", fmt.Errorf("attachments: FSStore cannot resolve key %q", key)
 	}
-	if hash == "" {
-		return "", fmt.Errorf("attachments: FSStore key %q has empty hash", key)
+	if !validHash(hash) {
+		return "", fmt.Errorf("attachments: FSStore key %q has invalid hash component", key)
 	}
 	return hash, nil
 }
@@ -105,13 +108,21 @@ func (s *FSStore) Put(ctx context.Context, hash, _ string, r io.Reader) (string,
 	target := s.pathFor(hash)
 
 	// Idempotent fast path: if the canonical file already exists we
-	// trust prior writes (every prior write went through the same
-	// hash-verify rename dance). Skipping the write here is what makes
-	// concurrent Puts of the same hash cheap on the second caller.
+	// can skip the temp-write + rename. We still MUST verify that the
+	// supplied reader's bytes hash to the supplied hash — the
+	// AttachmentStore.Put contract requires it, and silently trusting
+	// a caller-supplied hash here would let a buggy upload path
+	// associate the wrong content with a hash. Stream r through a
+	// hasher (no disk I/O) and compare.
 	if _, err := os.Stat(target); err == nil {
-		// Drain r so the caller doesn't hit a stuck stream — they
-		// passed a body in expecting it would be read.
-		_, _ = io.Copy(io.Discard, r)
+		h := sha256.New()
+		if _, err := io.Copy(h, r); err != nil {
+			return "", fmt.Errorf("attachments: FSStore drain reader (target exists): %w", err)
+		}
+		actual := hex.EncodeToString(h.Sum(nil))
+		if actual != hash {
+			return "", fmt.Errorf("attachments: FSStore hash mismatch (target exists): expected %s, got %s", hash, actual)
+		}
 		return key, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("attachments: FSStore stat target %q: %w", target, err)
