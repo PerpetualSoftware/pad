@@ -840,6 +840,68 @@ export interface WorkspaceStorageInfo {
 	override_active: boolean;
 }
 
+/**
+ * Row shape from GET /api/v1/workspaces/{ws}/attachments. Mirrors
+ * the store's AttachmentListItem — base attachment columns plus
+ * LEFT JOIN'd item title / slug / collection slug for the "in
+ * [[Item X]]" link in the settings page. Item fields are absent
+ * for orphan attachments.
+ */
+export interface AttachmentListItem {
+	id: string;
+	workspace_id: string;
+	item_id?: string | null;
+	uploaded_by: string;
+	storage_key: string;
+	content_hash: string;
+	mime_type: string;
+	size_bytes: number;
+	filename: string;
+	width?: number | null;
+	height?: number | null;
+	parent_id?: string | null;
+	variant?: string | null;
+	created_at: string;
+	deleted_at?: string | null;
+	item_title?: string | null;
+	item_slug?: string | null;
+	/**
+	 * True when the parent item is soft-deleted. The attachment is
+	 * still surfaced (the bytes still count toward quota) but the
+	 * UI should render "(deleted)" instead of a clickable link.
+	 */
+	item_deleted?: boolean;
+	collection_slug?: string | null;
+}
+
+/**
+ * Paginated response from GET /api/v1/workspaces/{ws}/attachments.
+ * `total` is the count of all matching rows (across all pages); the
+ * UI uses it with `limit` + `offset` to render a classic paginator.
+ */
+export interface AttachmentListResponse {
+	attachments: AttachmentListItem[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+/** Filters accepted by attachments.list — translated to query params. */
+export interface AttachmentListFilters {
+	category?: 'image' | 'video' | 'audio' | 'document' | 'text' | 'archive' | 'other';
+	item?: 'attached' | 'unattached';
+	collection?: string;
+	sort?:
+		| 'size'
+		| 'size_desc'
+		| 'filename'
+		| 'filename_desc'
+		| 'created_at'
+		| 'created_at_desc';
+	limit?: number;
+	offset?: number;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

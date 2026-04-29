@@ -121,6 +121,286 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	}
 }
 
+// TestWorkspaceAttachments_VisibilityFilter verifies that
+// VisibleCollectionIDs gates the result set per Codex P1 from
+// PR #303 round 1: a restricted member must not see attachments
+// in collections they can't access, and orphans (item_id IS NULL)
+// must be hidden as well so filenames don't leak.
+func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
+	s := testStore(t)
+
+	wsID := newID()
+	collA := newID()
+	collB := newID()
+	itemA := newID()
+	itemB := newID()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, slug, name, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`),
+		wsID, "ws", "WS", "{}", ts, ts); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	for _, c := range []struct{ id, slug, name string }{{collA, "tasks", "Tasks"}, {collB, "secrets", "Secrets"}} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO collections (id, workspace_id, name, slug, schema, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			c.id, wsID, c.name, c.slug, `{"fields":[]}`, ts, ts); err != nil {
+			t.Fatalf("insert collection %s: %v", c.slug, err)
+		}
+	}
+	mkItem := func(id, collID, slug, title string) {
+		t.Helper()
+		if _, err := s.db.Exec(s.q(`INSERT INTO items (id, workspace_id, collection_id, title, slug, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			id, wsID, collID, title, slug, ts, ts); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
+	}
+	mkItem(itemA, collA, "task-1", "Task 1")
+	mkItem(itemB, collB, "secret-1", "Secret")
+
+	mkAttach := func(itemID *string, filename string) {
+		t.Helper()
+		a := &models.Attachment{
+			WorkspaceID: wsID,
+			ItemID:      itemID,
+			UploadedBy:  "system",
+			StorageKey:  "fs:" + newID(),
+			ContentHash: newID(),
+			MimeType:    "image/png",
+			SizeBytes:   100,
+			Filename:    filename,
+		}
+		if err := s.CreateAttachment(a); err != nil {
+			t.Fatalf("CreateAttachment: %v", err)
+		}
+	}
+	mkAttach(&itemA, "task-screenshot.png")
+	mkAttach(&itemB, "secret-screenshot.png")
+	mkAttach(nil, "orphan.png")
+
+	// Admin / unrestricted (nil) sees everything.
+	rows, total, err := s.WorkspaceAttachments(wsID, AttachmentListFilters{})
+	if err != nil {
+		t.Fatalf("admin list: %v", err)
+	}
+	if total != 3 || len(rows) != 3 {
+		t.Errorf("admin: total=%d rows=%d, want 3/3", total, len(rows))
+	}
+
+	// Restricted to tasks only: see task-screenshot, hide secret + orphan.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted:        true,
+		FullCollectionIDs: []string{collA},
+	})
+	if err != nil {
+		t.Fatalf("restricted list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("restricted: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+	if rows[0].Filename != "task-screenshot.png" {
+		t.Errorf("restricted: filename=%q, want task-screenshot.png", rows[0].Filename)
+	}
+
+	// Item-level grant only: a restricted user with a single granted
+	// item in collB should see only that item's attachment, not the
+	// rest of collB's contents. Mirrors handlers_search's
+	// (fullCollIDs, grantedItemIDs) tuple.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted:     true,
+		GrantedItemIDs: []string{itemB},
+	})
+	if err != nil {
+		t.Fatalf("item-grant list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("item-grant: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+	if rows[0].Filename != "secret-screenshot.png" {
+		t.Errorf("item-grant: filename=%q, want secret-screenshot.png", rows[0].Filename)
+	}
+
+	// Empty visibility (restricted with no collections + no item
+	// grants) — zero rows.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted: true,
+	})
+	if err != nil {
+		t.Fatalf("zero-visibility list: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("zero-visibility: total=%d rows=%d, want 0/0", total, len(rows))
+	}
+}
+
+// TestWorkspaceAttachments_SurfacesSoftDeletedParents pins Codex P2
+// from PR #303 round 4: an attachment whose parent item is soft-
+// deleted must remain in the list so the user can reclaim the
+// bytes, AND the collection-level visibility filter must still see
+// the (still-set) collection_id so restricted users with access to
+// that collection can find the attachment.
+//
+// Two assertions:
+//   - Full-access caller (Restricted=false) sees the row.
+//   - Restricted caller scoped to the right collection sees the row;
+//     restricted to a different collection does not.
+//   - The row carries item_deleted=true so the UI can render the
+//     "(deleted)" badge.
+func TestWorkspaceAttachments_SurfacesSoftDeletedParents(t *testing.T) {
+	s := testStore(t)
+
+	wsID := newID()
+	collA := newID()
+	collB := newID()
+	itemA := newID()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, slug, name, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`),
+		wsID, "ws", "WS", "{}", ts, ts); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	for _, c := range []struct{ id, slug, name string }{{collA, "tasks", "Tasks"}, {collB, "ideas", "Ideas"}} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO collections (id, workspace_id, name, slug, schema, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			c.id, wsID, c.name, c.slug, `{"fields":[]}`, ts, ts); err != nil {
+			t.Fatalf("insert collection: %v", err)
+		}
+	}
+	// Soft-deleted item — deleted_at is set.
+	if _, err := s.db.Exec(s.q(`INSERT INTO items (id, workspace_id, collection_id, title, slug, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+		itemA, wsID, collA, "Doomed", "doomed", ts, ts, ts); err != nil {
+		t.Fatalf("insert deleted item: %v", err)
+	}
+	if err := s.CreateAttachment(&models.Attachment{
+		WorkspaceID: wsID,
+		ItemID:      &itemA,
+		UploadedBy:  "system",
+		StorageKey:  "fs:" + newID(),
+		ContentHash: newID(),
+		MimeType:    "image/png",
+		SizeBytes:   100,
+		Filename:    "doomed.png",
+	}); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	// 1. Admin / full-access sees the row + item_deleted flag.
+	rows, total, err := s.WorkspaceAttachments(wsID, AttachmentListFilters{})
+	if err != nil {
+		t.Fatalf("admin list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("admin: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+	if !rows[0].ItemDeleted {
+		t.Errorf("admin: ItemDeleted=false, want true (parent is soft-deleted)")
+	}
+	if rows[0].ItemTitle == nil || *rows[0].ItemTitle != "Doomed" {
+		t.Errorf("admin: item_title=%v, want Doomed (soft-deleted parent's title still surfaces)", rows[0].ItemTitle)
+	}
+
+	// 2. Restricted to collA sees the row.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted:        true,
+		FullCollectionIDs: []string{collA},
+	})
+	if err != nil {
+		t.Fatalf("restricted-collA list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("restricted-collA: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+
+	// 3. Restricted to collB does NOT see the row.
+	rows, total, err = s.WorkspaceAttachments(wsID, AttachmentListFilters{
+		Restricted:        true,
+		FullCollectionIDs: []string{collB},
+	})
+	if err != nil {
+		t.Fatalf("restricted-collB list: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("restricted-collB: total=%d rows=%d, want 0/0", total, len(rows))
+	}
+}
+
+// TestWorkspaceAttachments_CategoryFilters covers the document/text/
+// archive/other filter buckets per Codex P2 from PR #303 round 1:
+// the earlier prefix-only mapping silently passed those filters
+// through with no MIME predicate, returning the full list.
+func TestWorkspaceAttachments_CategoryFilters(t *testing.T) {
+	s := testStore(t)
+
+	wsID := newID()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, slug, name, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`),
+		wsID, "ws", "WS", "{}", ts, ts); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+
+	mk := func(mime, filename string) {
+		t.Helper()
+		a := &models.Attachment{
+			WorkspaceID: wsID,
+			UploadedBy:  "system",
+			StorageKey:  "fs:" + newID(),
+			ContentHash: newID(),
+			MimeType:    mime,
+			SizeBytes:   1,
+			Filename:    filename,
+		}
+		if err := s.CreateAttachment(a); err != nil {
+			t.Fatalf("CreateAttachment: %v", err)
+		}
+	}
+	mk("image/png", "a.png")
+	mk("application/pdf", "b.pdf")
+	mk("text/markdown", "c.md")
+	mk("application/zip", "d.zip")
+	mk("application/octet-stream", "e.bin") // not in any named bucket → "other"
+
+	cases := []struct {
+		category string
+		want     []string
+	}{
+		{"image", []string{"a.png"}},
+		{"document", []string{"b.pdf"}},
+		{"text", []string{"c.md"}},
+		{"archive", []string{"d.zip"}},
+		{"other", []string{"e.bin"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.category, func(t *testing.T) {
+			rows, total, err := s.WorkspaceAttachments(wsID, AttachmentListFilters{
+				MimeCategory: tc.category,
+			})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if total != len(tc.want) {
+				t.Fatalf("total=%d, want %d", total, len(tc.want))
+			}
+			got := make([]string, len(rows))
+			for i, r := range rows {
+				got[i] = r.Filename
+			}
+			for _, want := range tc.want {
+				found := false
+				for _, g := range got {
+					if g == want {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("missing %q in result %v", want, got)
+				}
+			}
+		})
+	}
+}
+
 // TestWorkspaceStorageInfo_TracksLiveAttachments inserts a few
 // attachment rows directly and asserts SUM(size_bytes) shows up in
 // used_bytes — and that soft-deleted rows are excluded so the user

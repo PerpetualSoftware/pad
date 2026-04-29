@@ -392,6 +392,58 @@ func parseItemRef(s string) (string, int, bool) {
 	return prefix, num, true
 }
 
+// GetItemIncludeDeleted finds an item by id including soft-deleted
+// items. Used by code paths that need to act on records the user
+// already owns even though the parent item has been moved to trash —
+// the most common case is the Settings → Storage attachment list,
+// where attachments survive a soft-deleted parent (so the user can
+// see what's still consuming quota and decide whether to delete the
+// blob). The visibility check still keys off the (still-set)
+// collection_id, so soft-deleting an item doesn't escalate access.
+func (s *Store) GetItemIncludeDeleted(id string) (*models.Item, error) {
+	var item models.Item
+	var createdAt, updatedAt string
+	var deletedAt *string
+	var pinned bool
+
+	err := s.db.QueryRow(s.q(`
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.id = ?
+	`), id).Scan(
+		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+		&item.Content, &item.Fields, &item.Tags,
+		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
+		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
+		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+		&item.AssignedUserName, &item.AssignedUserEmail,
+		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get item (include deleted): %w", err)
+	}
+
+	item.Pinned = pinned
+	item.CreatedAt = parseTime(createdAt)
+	item.UpdatedAt = parseTime(updatedAt)
+	item.DeletedAt = parseTimePtr(deletedAt)
+	hydrateItemComputedMetadata(&item)
+	return &item, nil
+}
+
 // GetItemBySlugIncludeDeleted finds an item by slug including soft-deleted items.
 // Used for restore operations where the item is archived.
 func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.Item, error) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -125,6 +126,432 @@ func (s *Store) GetAttachmentVariant(parentID, variant string) (*models.Attachme
 		return nil, fmt.Errorf("get attachment variant: %w", err)
 	}
 	return a, nil
+}
+
+// AttachmentListFilters narrow the WorkspaceAttachments result set.
+// Zero values mean "no filter on this dimension". The handler turns
+// query-string parameters into this struct so the SQL builder stays
+// pure and unit-testable.
+type AttachmentListFilters struct {
+	// MimeCategory restricts to a single MIME category bucket
+	// (matches attachments.Category — "image", "document", etc.).
+	// Empty = all categories. Translated to MIME predicates per
+	// mimePredicateForCategory; categories without a clean prefix
+	// (document, text, archive, other) use an explicit IN list.
+	MimeCategory string
+
+	// Attached restricts to attachments associated with an item.
+	Attached bool
+
+	// Unattached restricts to orphan attachments (item_id IS NULL).
+	// Mutually exclusive with Attached — handler validates upstream.
+	Unattached bool
+
+	// CollectionID restricts to attachments belonging to items in
+	// this collection. Empty = no collection filter.
+	CollectionID string
+
+	// Sort field. Accepts "size", "filename", "created_at" with an
+	// optional " desc" suffix. Empty = "created_at desc" (newest first).
+	Sort string
+
+	// Limit caps the page size. Clamped to [1, 200] by the handler.
+	Limit int
+
+	// Offset pages forward. Combined with Limit + Total for the UI's
+	// classic page navigator. Negative values clamped to 0.
+	Offset int
+
+	// Restricted, FullCollectionIDs, GrantedItemIDs together encode
+	// per-user collection + item visibility. When Restricted is true
+	// the list filters to attachments whose parent item is either
+	// in one of FullCollectionIDs or has its id in GrantedItemIDs.
+	// Orphans (item_id IS NULL) are excluded from restricted views
+	// so a member who only sees one collection can't enumerate
+	// filenames of unattached uploads from collections they don't
+	// have access to.
+	//
+	// Restricted=false → no filter (admin / full-access member).
+	// Restricted=true with empty Full+Granted → zero rows.
+	// Restricted=true with one or both populated → SQL OR of the
+	//   two predicates.
+	//
+	// Mirrors the (fullCollIDs, grantedItemIDs) tuple returned by
+	// Server.guestResourceFilter — keep the semantics in sync.
+	Restricted        bool
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
+}
+
+// AttachmentListItem is a row from WorkspaceAttachments enriched with
+// the parent item's title + slug + collection slug so the UI can render
+// a clickable link without a follow-up GET. Item fields are nullable
+// for orphan rows.
+//
+// URL construction: the item route is /{user}/{ws}/{collection_slug}/{item_slug},
+// so the UI uses ItemSlug — never a synthetic "TASK-5"-style ref. The
+// ref shape isn't 1:1 with the route, and exposing it here led to a
+// double-collection-slug bug in an earlier draft.
+//
+// ItemDeleted is true when the parent item exists but has been soft-
+// deleted. The row is still surfaced because the bytes still consume
+// quota; the UI uses the flag to render "(deleted)" instead of a
+// clickable link to a 404'd item.
+type AttachmentListItem struct {
+	models.Attachment
+	ItemTitle      *string `json:"item_title,omitempty"`
+	ItemSlug       *string `json:"item_slug,omitempty"`
+	ItemDeleted    bool    `json:"item_deleted,omitempty"`
+	CollectionSlug *string `json:"collection_slug,omitempty"`
+}
+
+// allowedAttachmentSorts pins the columns + directions the list
+// endpoint accepts, so a hand-crafted sort= query can't smuggle in
+// arbitrary SQL. Map values are the literal SQL fragment we splice in.
+var allowedAttachmentSorts = map[string]string{
+	"size":            "a.size_bytes ASC",
+	"size_desc":       "a.size_bytes DESC",
+	"filename":        "a.filename ASC",
+	"filename_desc":   "a.filename DESC",
+	"created_at":      "a.created_at ASC",
+	"created_at_desc": "a.created_at DESC",
+}
+
+// mimePredicateForCategory maps an attachments.Category value to a
+// SQL fragment + matching argument list that selects all MIMEs in
+// that bucket. Categories with a clean type prefix (image/, video/,
+// audio/) use a LIKE; the rest use an explicit IN list mirroring
+// the entries in internal/attachments/mime.go.
+//
+// Returns (frag, args, true) when the category is known. The frag
+// uses ? placeholders that the caller splices into the WHERE. ok=false
+// for unknown categories — caller must skip the filter so the UI
+// shows everything rather than zero rows for typos.
+//
+// Keep the literal MIME lists in lockstep with internal/attachments/
+// mime.go: any time a new MIME is added to the allowlist there, mirror
+// it here so the Settings → Storage filter stays useful.
+func mimePredicateForCategory(category string) (frag string, args []any, ok bool) {
+	switch category {
+	case "image":
+		return "a.mime_type LIKE ?", []any{"image/%"}, true
+	case "video":
+		return "a.mime_type LIKE ?", []any{"video/%"}, true
+	case "audio":
+		return "a.mime_type LIKE ?", []any{"audio/%"}, true
+	case "document":
+		return mimeInPredicate([]string{
+			"application/pdf",
+			"application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			"application/vnd.ms-excel",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			"application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			"application/vnd.oasis.opendocument.text",
+			"application/vnd.oasis.opendocument.spreadsheet",
+			"application/vnd.oasis.opendocument.presentation",
+			"application/rtf",
+		})
+	case "text":
+		return mimeInPredicate([]string{
+			"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
+			"application/json", "application/xml", "text/xml",
+			"application/yaml", "text/yaml", "application/toml",
+			"text/html", "text/javascript", "application/javascript",
+		})
+	case "archive":
+		return mimeInPredicate([]string{
+			"application/zip", "application/x-tar", "application/gzip",
+			"application/x-bzip2", "application/x-7z-compressed",
+		})
+	case "other":
+		// "Other" is the negation of every named bucket. Easier to
+		// build by exclusion: NOT in the union of all known MIMEs.
+		// Listing the categories explicitly keeps this in lockstep
+		// with the named buckets above without a second source of
+		// truth.
+		all := []string{
+			"application/pdf", "application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			"application/vnd.ms-excel",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			"application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			"application/vnd.oasis.opendocument.text",
+			"application/vnd.oasis.opendocument.spreadsheet",
+			"application/vnd.oasis.opendocument.presentation",
+			"application/rtf",
+			"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
+			"application/json", "application/xml", "text/xml",
+			"application/yaml", "text/yaml", "application/toml",
+			"text/html", "text/javascript", "application/javascript",
+			"application/zip", "application/x-tar", "application/gzip",
+			"application/x-bzip2", "application/x-7z-compressed",
+		}
+		placeholders := make([]string, len(all))
+		args := make([]any, len(all))
+		for i, m := range all {
+			placeholders[i] = "?"
+			args[i] = m
+		}
+		frag := "a.mime_type NOT LIKE 'image/%' AND a.mime_type NOT LIKE 'video/%' AND a.mime_type NOT LIKE 'audio/%' AND a.mime_type NOT IN (" + strings.Join(placeholders, ",") + ")"
+		return frag, args, true
+	}
+	return "", nil, false
+}
+
+// mimeInPredicate builds a `a.mime_type IN (?,?,...)` fragment with
+// matching args. Helper used by mimePredicateForCategory for the
+// non-prefix categories.
+func mimeInPredicate(mimes []string) (string, []any, bool) {
+	placeholders := make([]string, len(mimes))
+	args := make([]any, len(mimes))
+	for i, m := range mimes {
+		placeholders[i] = "?"
+		args[i] = m
+	}
+	return "a.mime_type IN (" + strings.Join(placeholders, ",") + ")", args, true
+}
+
+// WorkspaceAttachments lists original (non-derived) attachments in a
+// workspace, with optional filtering + sorting + pagination. Returns
+// the page rows and the total count of matching rows so the UI can
+// render a paginator without a second round-trip.
+//
+// Intentionally hides derived blobs (thumbnails — rows where
+// parent_id IS NOT NULL): they're managed automatically and showing
+// them in the list would clutter the page with rows the user didn't
+// upload. They still count against storage quota via
+// WorkspaceStorageUsage; the totals match the bar even when the list
+// shows only originals.
+//
+// LEFT JOIN to items + collections gives the UI everything it needs
+// to render an "in [[Task X]]" link. Soft-deleted items are returned
+// with item fields nulled out — the attachment is still visible
+// (a deleted item could still be restored), but the link target
+// isn't reachable.
+func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListFilters) ([]AttachmentListItem, int, error) {
+	// Build the WHERE clause incrementally. Every branch parameter
+	// goes through the placeholder slice — no string concatenation of
+	// user input. Sort is the only user-controllable splice and it
+	// goes through the allowedAttachmentSorts allowlist.
+	var conds []string
+	var args []any
+
+	conds = append(conds, "a.workspace_id = ?")
+	args = append(args, workspaceID)
+	conds = append(conds, "a.deleted_at IS NULL")
+	conds = append(conds, "a.parent_id IS NULL") // hide derived blobs
+
+	if filters.Attached {
+		conds = append(conds, "a.item_id IS NOT NULL")
+	}
+	if filters.Unattached {
+		conds = append(conds, "a.item_id IS NULL")
+	}
+	if frag, mimeArgs, ok := mimePredicateForCategory(filters.MimeCategory); ok {
+		conds = append(conds, frag)
+		args = append(args, mimeArgs...)
+	}
+	if filters.CollectionID != "" {
+		conds = append(conds, "i.collection_id = ?")
+		args = append(args, filters.CollectionID)
+	}
+
+	// Collection + item-level visibility enforcement. Two sources of
+	// access: collections the user can see in full (FullCollectionIDs)
+	// and individual items granted to them (GrantedItemIDs). The
+	// predicate ORs them so an item-grant in a hidden collection still
+	// resolves; orphans (item_id IS NULL) are excluded entirely so a
+	// restricted user can't enumerate orphan filenames.
+	//
+	// Restricted=false → no filter (admin / full-access member).
+	// Restricted=true with both lists empty → zero rows.
+	if filters.Restricted {
+		var ors []string
+		if len(filters.FullCollectionIDs) > 0 {
+			ph := make([]string, len(filters.FullCollectionIDs))
+			for i, id := range filters.FullCollectionIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			ors = append(ors, "i.collection_id IN ("+strings.Join(ph, ",")+")")
+		}
+		if len(filters.GrantedItemIDs) > 0 {
+			ph := make([]string, len(filters.GrantedItemIDs))
+			for i, id := range filters.GrantedItemIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			ors = append(ors, "a.item_id IN ("+strings.Join(ph, ",")+")")
+		}
+		if len(ors) == 0 {
+			conds = append(conds, "1 = 0")
+		} else {
+			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
+		}
+	}
+
+	where := strings.Join(conds, " AND ")
+
+	// Count total before applying limit/offset so the UI can render
+	// "showing 1–25 of 312".
+	//
+	// The items LEFT JOIN intentionally does NOT filter on
+	// items.deleted_at — attachments survive a soft-deleted parent
+	// (they still consume quota), so the storage list must surface
+	// them and the collection-level visibility predicate
+	// (i.collection_id IN ...) must keep working. The handler's
+	// delete path uses GetItemIncludeDeleted for the same reason.
+	var total int
+	if err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM attachments a
+		LEFT JOIN items i ON i.id = a.item_id
+		WHERE `+where), args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count workspace attachments: %w", err)
+	}
+
+	orderBy, ok := allowedAttachmentSorts[filters.Sort]
+	if !ok {
+		orderBy = "a.created_at DESC" // sensible default — newest first
+	}
+
+	limit := filters.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := filters.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Column list is the same as attachmentColumns but prefixed with
+	// `a.` so SQLite doesn't choke on the ambiguous `id` shared with
+	// the joined items table.
+	const aliasedAttachmentColumns = `a.id, a.workspace_id, a.item_id, a.uploaded_by, a.storage_key, a.content_hash,
+		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at`
+
+	// Same rationale as the count query above: include soft-deleted
+	// parent items so the row is still visible for users who would
+	// be allowed to see the live item, and so the collection-level
+	// ACL predicate sees a non-NULL i.collection_id. The response
+	// surfaces deleted_at on the joined item via item_deleted so the
+	// UI can render a "(deleted)" tag instead of a clickable link.
+	q := `
+		SELECT ` + aliasedAttachmentColumns + `,
+		       i.title, i.slug, i.deleted_at,
+		       c.slug, c.name
+		FROM attachments a
+		LEFT JOIN items i       ON i.id = a.item_id
+		LEFT JOIN collections c ON c.id = i.collection_id
+		WHERE ` + where + `
+		ORDER BY ` + orderBy + `
+		LIMIT ? OFFSET ?`
+
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(s.q(q), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list workspace attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AttachmentListItem
+	for rows.Next() {
+		var a models.Attachment
+		var itemID, parentID, variant, deletedAt *string
+		var width, height *int
+		var createdAt string
+
+		// Item + collection columns from the LEFT JOIN. All nullable.
+		var itemTitle, itemSlug, itemDeletedAt *string
+		var collSlug, collName *string
+
+		if err := rows.Scan(
+			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
+			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
+			&parentID, &variant, &createdAt, &deletedAt,
+			&itemTitle, &itemSlug, &itemDeletedAt,
+			&collSlug, &collName,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan workspace attachment: %w", err)
+		}
+		a.ItemID = itemID
+		a.ParentID = parentID
+		a.Variant = variant
+		a.Width = width
+		a.Height = height
+		a.CreatedAt = parseTime(createdAt)
+		a.DeletedAt = parseTimePtr(deletedAt)
+
+		row := AttachmentListItem{Attachment: a}
+		if itemTitle != nil {
+			row.ItemTitle = itemTitle
+		}
+		if itemSlug != nil {
+			row.ItemSlug = itemSlug
+		}
+		if itemDeletedAt != nil && *itemDeletedAt != "" {
+			row.ItemDeleted = true
+		}
+		if collSlug != nil {
+			row.CollectionSlug = collSlug
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate workspace attachments: %w", err)
+	}
+	return out, total, nil
+}
+
+// SoftDeleteAttachment marks the given attachment row deleted (and
+// every variant whose parent_id points at it) so the orphan GC will
+// reclaim the bytes after the grace period. Returns sql.ErrNoRows if
+// no live row matches.
+//
+// We mark variants via a separate UPDATE keyed on parent_id rather
+// than letting a foreign-key cascade do it — the attachments table
+// has no FK on parent_id, by design (DOC-865: thumbnails are
+// independent rows so a missing original doesn't break a list query).
+//
+// The blob on disk is NOT removed here; the same content_hash may be
+// referenced by other rows (content-addressed dedupe), so reclamation
+// is the GC's job once it can prove no live row references the hash.
+func (s *Store) SoftDeleteAttachment(id string) error {
+	ts := now()
+	res, err := s.db.Exec(s.q(`
+		UPDATE attachments
+		SET deleted_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`), ts, id)
+	if err != nil {
+		return fmt.Errorf("soft delete attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("soft delete attachment rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	// Also tombstone any thumbnail variants. They're synthetic rows
+	// derived from the original; without the original they have no
+	// reason to exist. Errors here are non-fatal — orphan GC will
+	// still reach them eventually via the deleted-parent path.
+	if _, err := s.db.Exec(s.q(`
+		UPDATE attachments
+		SET deleted_at = ?
+		WHERE parent_id = ? AND deleted_at IS NULL
+	`), ts, id); err != nil {
+		// Log via the caller; we don't have a logger here. The row
+		// went through, so don't fail the request.
+		return nil
+	}
+	return nil
 }
 
 // WorkspaceStorageUsage returns the total bytes consumed by non-deleted
