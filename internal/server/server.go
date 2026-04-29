@@ -79,6 +79,13 @@ type Server struct {
 	// guarding.
 	storageInfoCache *storageInfoCache
 
+	// importBundleMaxBytes caps a single workspace import bundle.
+	// 0 → defaultImportBundleMaxBytes (2 GiB). Set via
+	// SetImportBundleMaxBytes from cmd/pad/main.go using the
+	// PAD_IMPORT_BUNDLE_MAX_BYTES env var so operators with larger
+	// exports can opt in without recompiling.
+	importBundleMaxBytes int64
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
@@ -277,6 +284,16 @@ func (s *Server) SetAttachments(reg *attachments.Registry, maxBytes int64) {
 // The capabilities endpoint reflects whichever processor is wired.
 func (s *Server) SetImageProcessor(p attachments.Processor) {
 	s.imageProcessor = p
+}
+
+// SetImportBundleMaxBytes overrides the default 2 GiB cap on a
+// single workspace import bundle. Set to 0 to fall back to the
+// default. Wired from PAD_IMPORT_BUNDLE_MAX_BYTES in cmd/pad/main.go
+// so operators with workspaces over 2 GiB can opt in without
+// recompiling. Larger caps trade memory headroom (one blob in
+// flight at a time, ≤25 MiB) for a longer import wall-clock.
+func (s *Server) SetImportBundleMaxBytes(n int64) {
+	s.importBundleMaxBytes = n
 }
 
 // SetSecureCookies enables the Secure flag on all cookies.

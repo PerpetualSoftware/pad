@@ -343,6 +343,26 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
+	// Content-Type dispatch:
+	//   application/gzip / application/x-gzip / application/x-tar
+	//     → tar.gz bundle path (TASK-885) — handles attachments.
+	//   anything else → JSON path (legacy items-only).
+	//
+	// We prefer Content-Type over file-magic sniffing so a misnamed
+	// upload fails fast with a clear error rather than silently going
+	// through the wrong code path. The CLI's pad import command sets
+	// the right header based on the file extension; web UI does the
+	// same when uploading a .tar.gz.
+	ct := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "application/gzip" || ct == "application/x-gzip" || ct == "application/x-tar" {
+		s.handleImportWorkspaceBundle(w, r)
+		return
+	}
+
 	var data models.WorkspaceExport
 	// WorkspaceExport contains all collections, items, comments, and item
 	// versions for the workspace — even a modest project export blows past

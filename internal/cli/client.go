@@ -18,8 +18,14 @@ import (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
-	authToken  string // session or API token, sent as Authorization: Bearer
-	agentName  string // optional agent name, sent as X-Pad-Agent header
+	// streamClient has a much longer timeout than httpClient and is
+	// used by RawStream / PostStreamWithContentType for endpoints
+	// that can transfer multi-GiB payloads (workspace export
+	// bundles). Sharing the default 10s timeout would kill those
+	// transfers mid-flight on anything but a local network.
+	streamClient *http.Client
+	authToken    string // session or API token, sent as Authorization: Bearer
+	agentName    string // optional agent name, sent as X-Pad-Agent header
 }
 
 func NewClient(host string, port int) *Client {
@@ -33,6 +39,17 @@ func NewClientFromURL(baseURL string) *Client {
 		baseURL: baseURL + "/api/v1",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
+		},
+		// Long-running transfer client for streaming endpoints
+		// (workspace export bundles in/out, future S3 downloads).
+		// 10s on the default client is the right SLA for normal API
+		// calls but kills a multi-GiB bundle upload mid-stream over
+		// anything but a fast local link. 1 hour is generous enough
+		// for ~100 MB/s uplinks shipping a 350 GiB bundle and still
+		// caps a hung connection eventually. (Codex review on PR
+		// #306 round 2.)
+		streamClient: &http.Client{
+			Timeout: 1 * time.Hour,
 		},
 	}
 
@@ -417,7 +434,7 @@ func (c *Client) RawStream(path string, w io.Writer) (int64, *http.Response, err
 	if err != nil {
 		return 0, nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -431,12 +448,39 @@ func (c *Client) RawStream(path string, w io.Writer) (int64, *http.Response, err
 
 // PostRaw sends raw bytes to the API and decodes the JSON response.
 func (c *Client) PostRaw(path string, data []byte, result interface{}) error {
+	return c.PostRawWithContentType(path, data, "application/json", result)
+}
+
+// PostRawWithContentType is the explicit-content-type variant of
+// PostRaw. Used by the bundle import path to send a tar.gz as
+// application/gzip so the server's content-type dispatch routes the
+// request to the bundle handler instead of the JSON decoder.
+func (c *Client) PostRawWithContentType(path string, data []byte, contentType string, result interface{}) error {
 	req, err := c.newRequest("POST", path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, result)
+}
+
+// PostStreamWithContentType POSTs a streaming body (typically an
+// *os.File for a multi-GiB bundle import) without buffering the full
+// payload in memory client-side. Mirrors the server's streaming
+// import path — together they keep import memory bounded by the
+// largest single blob (~25 MiB) rather than the full bundle size.
+func (c *Client) PostStreamWithContentType(path string, body io.Reader, contentType string, result interface{}) error {
+	req, err := c.newRequest("POST", path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}

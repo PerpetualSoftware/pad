@@ -554,6 +554,126 @@ func (s *Store) SoftDeleteAttachment(id string) error {
 	return nil
 }
 
+// WorkspaceItemSlugMap returns slug → id for every live item in a
+// workspace. Used by the bundle import path (TASK-885) to remap an
+// old attachment's item_id (from the manifest) to the freshly-
+// generated id, via item.slug which ImportWorkspace preserves.
+//
+// Soft-deleted items are excluded; the import path can't realistically
+// recreate an attachment under a deleted parent without also
+// resurrecting the parent, and the manifest's item_id only has
+// meaning for live items at export time.
+func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id, slug FROM items WHERE workspace_id = ? AND deleted_at IS NULL
+	`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("workspace item slug map: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, slug string
+		if err := rows.Scan(&id, &slug); err != nil {
+			return nil, fmt.Errorf("scan slug map: %w", err)
+		}
+		out[slug] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate slug map: %w", err)
+	}
+	return out, nil
+}
+
+// RemapAttachmentReferencesInWorkspace rewrites every
+// "pad-attachment:OLD" reference in items.content + items.fields
+// to "pad-attachment:NEW" for every (old, new) pair in the map.
+// Run after a bundle import has rehydrated attachments so item
+// content points at the new attachment ids instead of the source
+// workspace's ids.
+//
+// Implementation: a single transaction that loads every item's
+// content+fields, runs strings.ReplaceAll for each pair, and
+// writes back only when something changed. ReplaceAll is safe
+// because attachment UUIDs don't appear as substrings of other
+// UUIDs (RFC4122 hex, length 36, all unique by construction).
+//
+// FTS reindex via the existing rebuild helper happens AFTER the
+// transaction commits — direct UPDATE bypasses the SQLite FTS
+// triggers the same way ImportWorkspace's INSERTs do.
+func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNew map[string]string) error {
+	if len(oldToNew) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin remap tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(s.q(`SELECT id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID)
+	if err != nil {
+		return fmt.Errorf("scan items for remap: %w", err)
+	}
+	type rowUpdate struct {
+		id      string
+		content string
+		fields  string
+	}
+	var updates []rowUpdate
+	for rows.Next() {
+		var id, content, fields string
+		if err := rows.Scan(&id, &content, &fields); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan item: %w", err)
+		}
+		newContent := remapAttachmentRefs(content, oldToNew)
+		newFields := remapAttachmentRefs(fields, oldToNew)
+		if newContent != content || newFields != fields {
+			updates = append(updates, rowUpdate{id: id, content: newContent, fields: newFields})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate items for remap: %w", err)
+	}
+	rows.Close()
+
+	for _, u := range updates {
+		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
+			u.content, u.fields, u.id); err != nil {
+			return fmt.Errorf("update item %s: %w", u.id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit remap: %w", err)
+	}
+
+	// Refresh FTS so search queries see the rewritten content.
+	s.rebuildFTSForWorkspace(workspaceID)
+	return nil
+}
+
+// remapAttachmentRefs replaces "pad-attachment:OLD" with
+// "pad-attachment:NEW" for every (old, new) pair in the map. Pure
+// string operation — kept private so callers go through
+// RemapAttachmentReferencesInWorkspace which also handles the FTS
+// reindex.
+//
+// The "pad-attachment:" prefix is part of the search key so we don't
+// accidentally rewrite a UUID that happens to appear in unrelated
+// content (e.g. an item title that mentions an attachment id by
+// accident — unlikely but free to guard against).
+func remapAttachmentRefs(s string, oldToNew map[string]string) string {
+	for old, fresh := range oldToNew {
+		if old == "" || fresh == "" || old == fresh {
+			continue
+		}
+		s = strings.ReplaceAll(s, "pad-attachment:"+old, "pad-attachment:"+fresh)
+	}
+	return s
+}
+
 // WorkspaceAttachmentsForExport returns every original (non-derived,
 // non-deleted) attachment in the workspace so the export bundler
 // can stream them into the tar. Derived rows (thumbnails) are
