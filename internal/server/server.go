@@ -688,8 +688,11 @@ func (s *Server) setupRouter() {
 						})
 					})
 
-					// Attachments (TASK-871 — upload only; download lands in TASK-872)
+					// Attachments
+					//   POST   /attachments              — upload (TASK-871)
+					//   GET    /attachments/{attachmentID} — serve blob (TASK-872, supports ?variant=)
 					r.Post("/attachments", s.handleUploadAttachment)
+					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {

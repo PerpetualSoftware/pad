@@ -87,6 +87,27 @@ func (s *Store) GetAttachment(id string) (*models.Attachment, error) {
 	return a, nil
 }
 
+// GetAttachmentVariant returns the derived attachment row for parentID
+// with the given variant key (e.g. "thumb-sm"), or (nil, nil) if no such
+// row exists. Used by the download handler when a client passes
+// ?variant=thumb-sm — TASK-878 will populate these rows; TASK-872
+// implements the lookup so the handler degrades gracefully when no
+// thumbnail exists yet.
+func (s *Store) GetAttachmentVariant(parentID, variant string) (*models.Attachment, error) {
+	a, err := scanAttachment(s.db.QueryRow(s.q(`
+		SELECT `+attachmentColumns+` FROM attachments
+		WHERE parent_id = ? AND variant = ? AND deleted_at IS NULL
+		LIMIT 1
+	`), parentID, variant))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get attachment variant: %w", err)
+	}
+	return a, nil
+}
+
 // WorkspaceStorageUsage returns the total bytes consumed by non-deleted
 // attachments in the workspace. Includes derived blobs (thumbnails) —
 // those are real bytes on disk and count against quota.
