@@ -6210,30 +6210,51 @@ Examples:
 			id := args[0]
 			outPath := args[1]
 
-			var w io.Writer
+			// Stdout case: we can't roll back partial output, so any
+			// failure mid-stream is just visible as a short payload.
 			if outPath == "-" {
-				w = os.Stdout
-			} else {
-				f, err := os.Create(outPath)
+				mime, n, err := client.DownloadAttachment(ws, id, variantFlag, os.Stdout)
 				if err != nil {
-					return fmt.Errorf("create %s: %w", outPath, err)
+					return err
 				}
-				defer f.Close()
-				w = f
+				fmt.Fprintf(os.Stderr, "wrote %d bytes (%s)\n", n, mime)
+				return nil
 			}
 
-			mime, n, err := client.DownloadAttachment(ws, id, variantFlag, w)
+			// File case: write to a sibling temp file first and rename
+			// on success. A bad attachment ID, auth failure, or partial
+			// download otherwise truncates the existing destination
+			// file (Codex round 1, P2).
+			dir := filepath.Dir(outPath)
+			tmp, err := os.CreateTemp(dir, "."+filepath.Base(outPath)+".*.tmp")
+			if err != nil {
+				return fmt.Errorf("create download temp in %s: %w", dir, err)
+			}
+			tmpPath := tmp.Name()
+			committed := false
+			defer func() {
+				tmp.Close()
+				if !committed {
+					_ = os.Remove(tmpPath)
+				}
+			}()
+
+			mime, n, err := client.DownloadAttachment(ws, id, variantFlag, tmp)
 			if err != nil {
 				return err
 			}
-
-			// Only chatter to stderr when piping to stdout, so the
-			// payload stream stays clean.
-			if outPath == "-" {
-				fmt.Fprintf(os.Stderr, "wrote %d bytes (%s)\n", n, mime)
-			} else {
-				fmt.Printf("Saved %d bytes (%s) to %s\n", n, mime, outPath)
+			if err := tmp.Sync(); err != nil {
+				return fmt.Errorf("sync temp: %w", err)
 			}
+			if err := tmp.Close(); err != nil {
+				return fmt.Errorf("close temp: %w", err)
+			}
+			if err := os.Rename(tmpPath, outPath); err != nil {
+				return fmt.Errorf("rename %s -> %s: %w", tmpPath, outPath, err)
+			}
+			committed = true
+
+			fmt.Printf("Saved %d bytes (%s) to %s\n", n, mime, outPath)
 			return nil
 		},
 	}
