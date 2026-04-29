@@ -311,12 +311,12 @@ func TestDownload_FilenameSanitized(t *testing.T) {
 	// We can't trigger this via upload (filepath.Base strips path
 	// separators) so test the helper directly.
 	cases := map[string]string{
-		"normal.png":   "normal.png",
-		`"quoted".png`: "quoted.png",
-		"control\x00\x01.png":   "control.png",
+		"normal.png":          "normal.png",
+		`"quoted".png`:        "quoted.png",
+		"control\x00\x01.png": "control.png",
 		`with\backslash.png`:  "withbackslash.png",
-		"":                     "attachment",
-		"\x00\x01\x02":         "attachment",
+		"":                    "attachment",
+		"\x00\x01\x02":        "attachment",
 	}
 	for in, want := range cases {
 		if got := sanitizeHeaderFilename(in); got != want {

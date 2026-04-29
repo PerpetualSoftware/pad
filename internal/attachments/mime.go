@@ -159,8 +159,8 @@ func NormalizeMIME(mime string) string {
 // Add new entries when a Codex round or a real-world upload turns up
 // another stdlib mismatch.
 var sniffAliases = map[string]string{
-	"audio/wave":         "audio/wav",         // .wav
-	"application/x-gzip": "application/gzip",  // .gz / .tar.gz
+	"audio/wave":         "audio/wav",        // .wav
+	"application/x-gzip": "application/gzip", // .gz / .tar.gz
 }
 
 // SniffMIME detects the MIME type from the leading bytes of a payload
@@ -303,15 +303,15 @@ var extMIMEMap = map[string]string{
 
 	// Known-blocked: included here ONLY so ValidateUpload can see them
 	// and reject by extension. None of these are on the `allowed` map.
-	".svg":  "image/svg+xml",
-	".exe":  "application/x-msdownload",
-	".dll":  "application/x-msdownload",
-	".msi":  "application/x-msi",
-	".bat":  "application/x-bat",
-	".sh":   "application/x-sh",
-	".com":  "application/x-msdownload",
-	".dmg":  "application/x-apple-diskimage",
-	".deb":  "application/vnd.debian.binary-package",
-	".rpm":  "application/x-rpm",
-	".app":  "application/octet-stream",
+	".svg": "image/svg+xml",
+	".exe": "application/x-msdownload",
+	".dll": "application/x-msdownload",
+	".msi": "application/x-msi",
+	".bat": "application/x-bat",
+	".sh":  "application/x-sh",
+	".com": "application/x-msdownload",
+	".dmg": "application/x-apple-diskimage",
+	".deb": "application/vnd.debian.binary-package",
+	".rpm": "application/x-rpm",
+	".app": "application/octet-stream",
 }

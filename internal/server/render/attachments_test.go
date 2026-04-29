@@ -62,17 +62,17 @@ func TestAttachmentDownloadURL(t *testing.T) {
 
 func TestIsImageMime(t *testing.T) {
 	cases := map[string]bool{
-		"image/png":          true,
-		"image/jpeg":         true,
-		"image/webp":         true,
-		"IMAGE/PNG":          true, // case-insensitive
-		" image/png":         true, // whitespace tolerated
-		"application/pdf":    false,
-		"text/plain":         false,
-		"video/mp4":          false,
-		"":                   false,
-		"image":              false,
-		"images/png":         false,
+		"image/png":       true,
+		"image/jpeg":      true,
+		"image/webp":      true,
+		"IMAGE/PNG":       true, // case-insensitive
+		" image/png":      true, // whitespace tolerated
+		"application/pdf": false,
+		"text/plain":      false,
+		"video/mp4":       false,
+		"":                false,
+		"image":           false,
+		"images/png":      false,
 	}
 	for mime, want := range cases {
 		if got := IsImageMime(mime); got != want {

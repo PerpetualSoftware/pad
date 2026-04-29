@@ -71,9 +71,13 @@ jobs:
         if: github.ref == 'refs/heads/main'
         # Default 10m is tight: the full server-package suite under -race
         # measures ~13m locally on a developer laptop after BUG-851 (the
-        # ipRateLimiter goroutine drain) — 20m gives margin for the
-        # GitHub-hosted runner without papering over an actual hang.
-        run: go test -race -timeout=20m ./...
+        # ipRateLimiter goroutine drain). The PLAN-866 attachment work
+        # (image decode/encode/resize across thumbnail + transform tests)
+        # pushes total race-step runtime past 20m on the GitHub-hosted
+        # runner — bumped to 30m to give headroom without papering over
+        # an actual hang. Genuine deadlocks would still hit this and
+        # produce the goroutine-dump panic.
+        run: go test -race -timeout=30m ./...
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -117,9 +121,12 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-        # See SQLite race-detector step: 20m headroom over the default 10m
-        # because the full suite under -race exceeds 10m post-BUG-851 fix.
-        run: go test -race -timeout=20m ./... -count=1
+        # See SQLite race-detector step: 30m headroom over the default 10m.
+        # PostgreSQL adds latency on every CREATE/DROP and bcrypt under
+        # -race is ~3s per call — TestSessionIPChange-style tests that
+        # bootstrap a fresh user pay the full cost each time. The PLAN-866
+        # attachment work pushed the cumulative wall over 20m.
+        run: go test -race -timeout=30m ./... -count=1
 
   web:
     name: Web
