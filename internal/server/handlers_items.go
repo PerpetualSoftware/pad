@@ -266,6 +266,18 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Fields = string(validatedFields)
 
+	// Persist the source from the request's auth context so the item row
+	// reflects which client created it. Without this, items created via
+	// the CLI would persist as 'web' (the column default) since the CLI's
+	// ItemCreate body has no Source field set, and downstream signals like
+	// the dashboard's has_cli_source flag (TASK-862) would never flip on.
+	// If a client explicitly sent a source in the body (e.g. an agent
+	// marking itself as 'skill'), respect it.
+	if input.Source == "" {
+		_, src := actorFromRequest(r)
+		input.Source = src
+	}
+
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {

@@ -2217,3 +2217,154 @@ func TestItemVersionCreation(t *testing.T) {
 		t.Errorf("expected at least 1 version, got %d", len(versions))
 	}
 }
+
+func TestWorkspaceHasCLISource(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Connect Banner")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Empty workspace — false.
+	has, err := s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource: %v", err)
+	}
+	if has {
+		t.Fatal("expected false on empty workspace")
+	}
+
+	// Non-cli items shouldn't flip it on.
+	for _, src := range []string{"web", "skill"} {
+		_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+			Title:  fmt.Sprintf("From %s", src),
+			Fields: `{"status":"open"}`,
+			Source: src,
+		})
+		if err != nil {
+			t.Fatalf("create %s item: %v", src, err)
+		}
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (non-cli): %v", err)
+	}
+	if has {
+		t.Fatal("expected false when only web/skill items exist")
+	}
+
+	// One CLI item — true.
+	cliItem, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "From CLI",
+		Fields: `{"status":"open"}`,
+		Source: "cli",
+	})
+	if err != nil {
+		t.Fatalf("create cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (with cli): %v", err)
+	}
+	if !has {
+		t.Fatal("expected true after a cli-sourced item exists")
+	}
+
+	// Soft-deleting the only CLI item should flip it back off.
+	if err := s.DeleteItem(cliItem.ID); err != nil {
+		t.Fatalf("delete cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (after delete): %v", err)
+	}
+	if has {
+		t.Fatal("expected false after the only cli item was deleted")
+	}
+
+	// Workspace isolation — a cli item in another workspace must not leak.
+	otherWS := createTestWorkspace(t, s, "Other")
+	otherCol := createTestCollection(t, s, otherWS.ID, "Tasks")
+	if _, err := s.CreateItem(otherWS.ID, otherCol.ID, models.ItemCreate{
+		Title:  "Other CLI",
+		Fields: `{"status":"open"}`,
+		Source: "cli",
+	}); err != nil {
+		t.Fatalf("create other-ws cli item: %v", err)
+	}
+	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasCLISource (after other-ws cli): %v", err)
+	}
+	if has {
+		t.Fatal("a cli item in a different workspace must not flip ours on")
+	}
+}
+
+// TestWorkspaceHasCLISourceVisibility covers the visibility filter so a
+// guest with restricted access can't infer the existence of CLI items in
+// collections they don't have visibility into. Codex flagged this as a
+// P2 leak during PR #284 review — without filtering, has_cli_source
+// reflected the whole workspace regardless of caller visibility.
+func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Visibility")
+	visibleColl := createTestCollection(t, s, ws.ID, "Visible")
+	hiddenColl := createTestCollection(t, s, ws.ID, "Hidden")
+
+	// CLI item in the HIDDEN collection only.
+	hiddenCLI, err := s.CreateItem(ws.ID, hiddenColl.ID, models.ItemCreate{
+		Title:  "Hidden CLI",
+		Fields: `{"status":"open"}`,
+		Source: "cli",
+	})
+	if err != nil {
+		t.Fatalf("create hidden cli item: %v", err)
+	}
+
+	// Web item in the VISIBLE collection (so the visible set isn't empty).
+	if _, err := s.CreateItem(ws.ID, visibleColl.ID, models.ItemCreate{
+		Title:  "Visible Web",
+		Fields: `{"status":"open"}`,
+		Source: "web",
+	}); err != nil {
+		t.Fatalf("create visible web item: %v", err)
+	}
+
+	// Unfiltered (full-visibility caller) sees the CLI item.
+	has, err := s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("unfiltered: %v", err)
+	}
+	if !has {
+		t.Fatal("unfiltered call must see the hidden CLI item")
+	}
+
+	// Caller with only the VISIBLE collection in scope must NOT see the
+	// CLI item that lives in a hidden collection.
+	has, err = s.WorkspaceHasCLISource(ws.ID, []string{visibleColl.ID}, nil)
+	if err != nil {
+		t.Fatalf("visible-coll only: %v", err)
+	}
+	if has {
+		t.Fatal("must not surface CLI items in collections outside the caller's visible set")
+	}
+
+	// Item-level grant on the hidden CLI item should expose it via the
+	// guest-item path even when the collection isn't in scope.
+	has, err = s.WorkspaceHasCLISource(ws.ID, []string{visibleColl.ID}, []string{hiddenCLI.ID})
+	if err != nil {
+		t.Fatalf("with item grant: %v", err)
+	}
+	if !has {
+		t.Fatal("an explicit item grant for the CLI item must surface it")
+	}
+
+	// Non-nil empty collectionIDs + no item grants = no visibility =
+	// short-circuit false (matches ListItems' early-exit semantics).
+	has, err = s.WorkspaceHasCLISource(ws.ID, []string{}, nil)
+	if err != nil {
+		t.Fatalf("empty visibility: %v", err)
+	}
+	if has {
+		t.Fatal("an empty visibility set must short-circuit to false")
+	}
+}

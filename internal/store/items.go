@@ -2009,6 +2009,70 @@ func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []stri
 	return results, rows.Err()
 }
 
+// WorkspaceHasCLISource reports whether any non-deleted item VISIBLE to the
+// caller was created via the CLI (source='cli'). Used by the dashboard to
+// auto-hide the "connect your local project" banner once a user has wired
+// up the CLI.
+//
+// Visibility filtering matches the dashboard's existing model (see
+// handleGetDashboard): an item counts when its collection is in
+// collectionIDs OR its id is in itemIDs (union — guest item-level grants
+// can expose items in otherwise-hidden collections). Pass nil for both to
+// run unfiltered (full-visibility caller). A non-nil empty
+// collectionIDs slice with no itemIDs means "no visible collections" and
+// returns false without hitting the DB — symmetric with ListItems.
+//
+// Backed by EXISTS so it short-circuits on the first match.
+func (s *Store) WorkspaceHasCLISource(workspaceID string, collectionIDs, itemIDs []string) (bool, error) {
+	// Symmetric early-exit with ListItems: caller signaled no visibility.
+	if collectionIDs != nil && len(collectionIDs) == 0 && len(itemIDs) == 0 {
+		return false, nil
+	}
+
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM items
+			WHERE workspace_id = ? AND source = 'cli' AND deleted_at IS NULL
+	`
+	args := []interface{}{workspaceID}
+
+	if len(collectionIDs) > 0 && len(itemIDs) > 0 {
+		collPlaceholders := make([]string, len(collectionIDs))
+		for i, id := range collectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(itemIDs))
+		for i, id := range itemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(collectionIDs) > 0 {
+		placeholders := make([]string, len(collectionIDs))
+		for i, id := range collectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(itemIDs) > 0 {
+		placeholders := make([]string, len(itemIDs))
+		for i, id := range itemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	query += ")"
+
+	var has bool
+	if err := s.db.QueryRow(s.q(query), args...).Scan(&has); err != nil {
+		return false, fmt.Errorf("workspace has cli source: %w", err)
+	}
+	return has, nil
+}
+
 func hydrateItemComputedMetadata(item *models.Item) {
 	if item == nil {
 		return
