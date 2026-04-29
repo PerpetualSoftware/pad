@@ -554,6 +554,42 @@ func (s *Store) SoftDeleteAttachment(id string) error {
 	return nil
 }
 
+// WorkspaceAttachmentsForExport returns every original (non-derived,
+// non-deleted) attachment in the workspace so the export bundler
+// can stream them into the tar. Derived rows (thumbnails) are
+// excluded — they're re-derived on import via the existing pipeline.
+//
+// Soft-deleted parents are NOT excluded here: the attachment row is
+// still live, the bytes still exist on disk, and the user explicitly
+// chose to export the workspace. Surfacing them lets a round-trip
+// preserve the audit trail (the import path will recreate the row
+// as an orphan, or the soft-deleted item gets restored separately).
+func (s *Store) WorkspaceAttachmentsForExport(workspaceID string) ([]models.Attachment, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT `+attachmentColumns+`
+		FROM attachments
+		WHERE workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL
+		ORDER BY created_at, id
+	`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("export attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Attachment
+	for rows.Next() {
+		a, err := scanAttachment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan export attachment: %w", err)
+		}
+		out = append(out, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate export attachments: %w", err)
+	}
+	return out, nil
+}
+
 // WorkspaceStorageUsage returns the total bytes consumed by non-deleted
 // attachments in the workspace. Includes derived blobs (thumbnails) —
 // those are real bytes on disk and count against quota.

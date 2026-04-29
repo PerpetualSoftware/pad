@@ -4526,24 +4526,56 @@ Examples:
 
 func exportCmd() *cobra.Command {
 	var outputFile string
+	var jsonOnly bool
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export workspace to JSON",
-		Long:  `Export the current workspace (collections, items, comments, versions) to a portable JSON file.`,
+		Short: "Export workspace to a self-contained tar.gz bundle",
+		Long: `Export the current workspace (collections, items, comments, versions,
+and attachments) to a portable tar.gz bundle.
+
+The bundle contains:
+  pad-export.json              — workspace metadata + items + collections + ...
+  attachments/manifest.json    — uuid → {filename, mime, size, content_hash}
+  attachments/<uuid>.<ext>     — original attachment blobs
+
+Use --json to emit the legacy items-only JSON instead. The legacy
+format does not include attachments and cannot be round-tripped on a
+workspace that uses inline images or file chips.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			resp, err := client.RawGet("/workspaces/" + ws + "/export")
+			path := "/workspaces/" + ws + "/export"
+			defaultExt := ".tar.gz"
+			if jsonOnly {
+				defaultExt = ".json"
+			} else {
+				path += "?format=tar"
+			}
+
+			resp, err := client.RawGet(path)
 			if err != nil {
 				return fmt.Errorf("export: %w", err)
 			}
 
+			if outputFile == "" && !jsonOnly && term.IsTerminal(int(os.Stdout.Fd())) {
+				// Refuse to dump binary tar.gz to a TTY — would render
+				// as garbage and likely terminate the user's session
+				// when control codes get interpreted.
+				return fmt.Errorf("refusing to write binary tar.gz to a terminal; pass -o <file> or pipe to a file")
+			}
+
 			if outputFile != "" {
+				// If the user passed -o without an extension, append
+				// the conventional one for the format they chose so a
+				// follow-up `tar tf` works without renaming.
+				if filepath.Ext(outputFile) == "" {
+					outputFile += defaultExt
+				}
 				if err := os.WriteFile(outputFile, resp, 0644); err != nil {
 					return fmt.Errorf("write file: %w", err)
 				}
-				fmt.Printf("Exported workspace %q to %s\n", ws, outputFile)
+				fmt.Printf("Exported workspace %q to %s (%s)\n", ws, outputFile, humanBytes(int64(len(resp))))
 			} else {
 				os.Stdout.Write(resp)
 			}
@@ -4551,6 +4583,7 @@ func exportCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
+	cmd.Flags().BoolVar(&jsonOnly, "json", false, "emit legacy items-only JSON (no attachments)")
 	return cmd
 }
 
