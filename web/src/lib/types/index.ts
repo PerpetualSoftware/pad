@@ -865,6 +865,12 @@ export interface AttachmentListItem {
 	deleted_at?: string | null;
 	item_title?: string | null;
 	item_slug?: string | null;
+	/**
+	 * True when the parent item is soft-deleted. The attachment is
+	 * still surfaced (the bytes still count toward quota) but the
+	 * UI should render "(deleted)" instead of a clickable link.
+	 */
+	item_deleted?: boolean;
 	collection_slug?: string | null;
 }
 

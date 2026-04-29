@@ -192,10 +192,16 @@ type AttachmentListFilters struct {
 // so the UI uses ItemSlug — never a synthetic "TASK-5"-style ref. The
 // ref shape isn't 1:1 with the route, and exposing it here led to a
 // double-collection-slug bug in an earlier draft.
+//
+// ItemDeleted is true when the parent item exists but has been soft-
+// deleted. The row is still surfaced because the bytes still consume
+// quota; the UI uses the flag to render "(deleted)" instead of a
+// clickable link to a 404'd item.
 type AttachmentListItem struct {
 	models.Attachment
 	ItemTitle      *string `json:"item_title,omitempty"`
 	ItemSlug       *string `json:"item_slug,omitempty"`
+	ItemDeleted    bool    `json:"item_deleted,omitempty"`
 	CollectionSlug *string `json:"collection_slug,omitempty"`
 }
 
@@ -391,10 +397,17 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 
 	// Count total before applying limit/offset so the UI can render
 	// "showing 1–25 of 312".
+	//
+	// The items LEFT JOIN intentionally does NOT filter on
+	// items.deleted_at — attachments survive a soft-deleted parent
+	// (they still consume quota), so the storage list must surface
+	// them and the collection-level visibility predicate
+	// (i.collection_id IN ...) must keep working. The handler's
+	// delete path uses GetItemIncludeDeleted for the same reason.
 	var total int
 	if err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM attachments a
-		LEFT JOIN items i ON i.id = a.item_id AND i.deleted_at IS NULL
+		LEFT JOIN items i ON i.id = a.item_id
 		WHERE `+where), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count workspace attachments: %w", err)
 	}
@@ -422,12 +435,18 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	const aliasedAttachmentColumns = `a.id, a.workspace_id, a.item_id, a.uploaded_by, a.storage_key, a.content_hash,
 		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at`
 
+	// Same rationale as the count query above: include soft-deleted
+	// parent items so the row is still visible for users who would
+	// be allowed to see the live item, and so the collection-level
+	// ACL predicate sees a non-NULL i.collection_id. The response
+	// surfaces deleted_at on the joined item via item_deleted so the
+	// UI can render a "(deleted)" tag instead of a clickable link.
 	q := `
 		SELECT ` + aliasedAttachmentColumns + `,
-		       i.title, i.slug,
+		       i.title, i.slug, i.deleted_at,
 		       c.slug, c.name
 		FROM attachments a
-		LEFT JOIN items i       ON i.id = a.item_id AND i.deleted_at IS NULL
+		LEFT JOIN items i       ON i.id = a.item_id
 		LEFT JOIN collections c ON c.id = i.collection_id
 		WHERE ` + where + `
 		ORDER BY ` + orderBy + `
@@ -448,14 +467,14 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		var createdAt string
 
 		// Item + collection columns from the LEFT JOIN. All nullable.
-		var itemTitle, itemSlug *string
+		var itemTitle, itemSlug, itemDeletedAt *string
 		var collSlug, collName *string
 
 		if err := rows.Scan(
 			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 			&parentID, &variant, &createdAt, &deletedAt,
-			&itemTitle, &itemSlug,
+			&itemTitle, &itemSlug, &itemDeletedAt,
 			&collSlug, &collName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan workspace attachment: %w", err)
@@ -474,6 +493,9 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		}
 		if itemSlug != nil {
 			row.ItemSlug = itemSlug
+		}
+		if itemDeletedAt != nil && *itemDeletedAt != "" {
+			row.ItemDeleted = true
 		}
 		if collSlug != nil {
 			row.CollectionSlug = collSlug

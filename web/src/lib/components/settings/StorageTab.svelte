@@ -391,7 +391,14 @@
 							<div class="att-line3">
 								{#if att.item_title && att.collection_slug}
 									in
-									<a href={itemHref(att)}>[[{att.item_title}]]</a>
+									{#if att.item_deleted}
+										<!-- Parent item is soft-deleted: render the title without
+										     a link so the user knows the link target would 404. -->
+										<span class="deleted-item">[[{att.item_title}]]</span>
+										<span class="deleted-tag">deleted</span>
+									{:else}
+										<a href={itemHref(att)}>[[{att.item_title}]]</a>
+									{/if}
 								{:else}
 									<span class="unattached-tag">Unattached</span>
 								{/if}
@@ -657,6 +664,21 @@
 
 	.unattached-tag {
 		font-style: italic;
+	}
+
+	.deleted-item {
+		opacity: 0.7;
+		text-decoration: line-through;
+	}
+
+	.deleted-tag {
+		margin-left: var(--space-1);
+		font-size: 0.7em;
+		text-transform: uppercase;
+		color: #ef4444;
+		background: color-mix(in srgb, #ef4444 12%, transparent);
+		padding: 0 var(--space-1);
+		border-radius: var(--radius-sm);
 	}
 
 	.att-actions {
