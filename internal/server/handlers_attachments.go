@@ -11,7 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -242,13 +246,14 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Quota tracking — log only, no enforcement in Phase 1. The download
-	// URL is intentionally NOT returned by this handler: the serve
-	// endpoint lands in TASK-872. Until then, returning a URL here
-	// would point at a 404 and lull clients into baking it in.
+	// URL points at the GET handler shipped in TASK-872 (same PR series).
+	// Workspaces are addressed by slug everywhere else in the API; we
+	// surface the {slug} form here so the UI can link directly.
 	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":          att.ID,
+		"url":         attachmentURL(chi.URLParam(r, "slug"), att.ID),
 		"mime":        att.MimeType,
 		"size":        att.SizeBytes,
 		"width":       att.Width,
@@ -257,6 +262,13 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		"category":    string(entry.Category),
 		"render_mode": renderModeString(entry.RenderMode),
 	})
+}
+
+// attachmentURL returns the canonical download URL for an attachment.
+// Uses the workspace slug from the request — the same shape every other
+// API endpoint uses, so clients can build it without an extra lookup.
+func attachmentURL(workspaceSlug, attachmentID string) string {
+	return "/api/v1/workspaces/" + workspaceSlug + "/attachments/" + attachmentID
 }
 
 func renderModeString(m attachments.RenderMode) string {
@@ -270,6 +282,185 @@ func renderModeString(m attachments.RenderMode) string {
 	default:
 		return "chip"
 	}
+}
+
+// handleGetAttachment streams an attachment back to the caller. Auth is
+// enforced by the route's RequireWorkspaceAccess middleware; we
+// additionally require viewer+ here.
+//
+// The handler:
+//   - Looks up the row by ID (TASK-871's UUID), refusing with 404 if it
+//     belongs to a different workspace — leaking 403 vs 404 on a
+//     cross-workspace probe would let a member of workspace A enumerate
+//     attachment IDs in workspace B.
+//   - Optionally resolves a derived variant (?variant=thumb-sm|thumb-md).
+//     If the variant row is missing (TASK-878 hasn't generated thumbnails
+//     for this attachment yet), falls back to the original — clients can
+//     always ask for a thumb and get something renderable.
+//   - Resolves the storage backend via the Registry and opens the blob.
+//   - Sets Content-Type from the DB row (which is already the canonical
+//     post-allowlist MIME, not the client-supplied one).
+//   - Sets Content-Disposition from the MIME's RenderMode entry:
+//     RenderForceDownload → "attachment", everything else → "inline".
+//   - Hands off to http.ServeContent when the backend supports Seek
+//     (FSStore returns *os.File, so this is the common path) — that
+//     gives us If-Modified-Since, If-None-Match, Range/206, Accept-Ranges
+//     all for free. Backends that only support Read fall back to a
+//     plain stream copy with no Range support.
+//   - Sets a short Cache-Control: private, max-age=3600. Phase 3 will
+//     revisit for CDN caching.
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "viewer") {
+		return
+	}
+	if s.attachments == nil {
+		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
+			"Attachment storage is not configured on this server")
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	id := chi.URLParam(r, "attachmentID")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "Missing attachment id")
+		return
+	}
+
+	att, err := s.store.GetAttachment(id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	// Cross-workspace defense: 404 (not 403) so an attacker can't
+	// distinguish "exists in another workspace" from "doesn't exist".
+	if att == nil || att.WorkspaceID != workspaceID || att.DeletedAt != nil {
+		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		return
+	}
+
+	// Optional variant lookup. If the requested variant doesn't exist
+	// yet (TASK-878 generates thumbnails — until that ships, every
+	// variant fetch falls back to the original) we silently serve the
+	// original. The editor uses thumbnails as an optimization, not a
+	// correctness requirement, so falling back keeps every render path
+	// working as soon as TASK-872 ships.
+	if variant := r.URL.Query().Get("variant"); variant != "" {
+		if !isKnownVariant(variant) {
+			writeError(w, http.StatusBadRequest, "bad_variant",
+				"Unknown variant — supported: thumb-sm, thumb-md")
+			return
+		}
+		if derived, dErr := s.store.GetAttachmentVariant(att.ID, variant); dErr != nil {
+			writeInternalError(w, dErr)
+			return
+		} else if derived != nil {
+			att = derived
+		}
+	}
+
+	store, err := s.attachments.Resolve(att.StorageKey)
+	if err != nil {
+		writeInternalError(w, fmt.Errorf("resolve attachment store for %s: %w", att.StorageKey, err))
+		return
+	}
+	body, err := store.Get(r.Context(), att.StorageKey)
+	if err != nil {
+		if errors.Is(err, attachments.ErrNotFound) {
+			// DB row exists but the on-disk blob is missing. This is a
+			// "shouldn't happen" state — log it and return 404 so the
+			// client can surface a useful error to the user.
+			slog.Warn("attachments: blob missing for live row",
+				"attachment_id", att.ID, "storage_key", att.StorageKey)
+			writeError(w, http.StatusNotFound, "blob_missing",
+				"Attachment metadata exists but the file is missing on disk")
+			return
+		}
+		writeInternalError(w, fmt.Errorf("get attachment blob: %w", err))
+		return
+	}
+	defer body.Close()
+
+	// Headers come BEFORE ServeContent / io.Copy so they make it onto
+	// the wire even when the response is a 304 / 206.
+	w.Header().Set("Content-Type", att.MimeType)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	disposition := "inline"
+	if entry, ok := attachments.LookupMIME(att.MimeType); ok && entry.RenderMode == attachments.RenderForceDownload {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(att.Filename)))
+
+	// http.ServeContent gives Range, conditional GETs, and 206
+	// responses for free — but it requires an io.ReadSeeker. FSStore
+	// returns an *os.File, which satisfies that. Backends that don't
+	// support Seek (a future S3 streaming reader, say) fall back to a
+	// plain Copy with no Range / 304 support.
+	if seeker, ok := body.(io.ReadSeeker); ok {
+		modtime := att.CreatedAt
+		if modtime.IsZero() {
+			modtime = time.Now()
+		}
+		http.ServeContent(w, r, att.Filename, modtime, seeker)
+		return
+	}
+
+	// Streaming fallback. Set Content-Length when the backend exposes
+	// it (Stat is cheap on the FS but may be a network call on S3 —
+	// we only call it here, never on the ServeContent fast path).
+	if size, sErr := store.Stat(r.Context(), att.StorageKey); sErr == nil && size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	if _, copyErr := io.Copy(w, body); copyErr != nil {
+		// Body has likely already been written to; can't change status.
+		// Just log so we have a trail.
+		slog.Warn("attachments: streaming copy failed",
+			"attachment_id", att.ID, "error", copyErr)
+	}
+}
+
+// isKnownVariant gates the ?variant= query against a closed set so an
+// attacker can't probe arbitrary variant strings. Mirrors the constants
+// in models.Attachment.
+func isKnownVariant(v string) bool {
+	switch v {
+	case models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd, models.AttachmentVariantOriginal:
+		return true
+	}
+	return false
+}
+
+// sanitizeHeaderFilename strips characters that can't safely appear in
+// a Content-Disposition filename header — quotes, CR, LF, and any
+// control byte. The Filename column was already basenamed at upload
+// time so path separators are not a concern; we only need to keep the
+// header value parseable.
+func sanitizeHeaderFilename(name string) string {
+	if name == "" {
+		return "attachment"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r == '"' || r == '\\':
+			// Drop quotes and backslashes — they break the quoted-string syntax.
+		case r < 0x20 || r == 0x7f:
+			// Drop control bytes — protect against header injection.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "attachment"
+	}
+	return out
 }
 
 // maybeWarnStorageQuota emits a slog warning if the workspace's usage

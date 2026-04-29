@@ -75,6 +75,7 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 	}
 	var resp struct {
 		ID         string `json:"id"`
+		URL        string `json:"url"`
 		MIME       string `json:"mime"`
 		Size       int64  `json:"size"`
 		Width      *int   `json:"width"`
@@ -104,29 +105,12 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 	if resp.RenderMode != "inline" {
 		t.Errorf("render_mode = %q, want inline", resp.RenderMode)
 	}
-	// URL deliberately omitted from the upload response — TASK-872 adds
-	// the GET handler. Until then we don't want clients baking in a 404.
-	if rawURL := gjson(rr.Body.Bytes(), "url"); rawURL != "" {
-		t.Errorf("response should not include url yet (download API ships in TASK-872), got %q", rawURL)
+	// URL is the slug-based download path. Now that TASK-872 ships, the
+	// upload response includes it so the editor doesn't have to build
+	// the path itself.
+	if !strings.Contains(resp.URL, "/attachments/"+resp.ID) || !strings.Contains(resp.URL, "/workspaces/"+slug) {
+		t.Errorf("url = %q, want to contain workspace slug %q and attachment id %q", resp.URL, slug, resp.ID)
 	}
-}
-
-// gjson is a minimal JSON field reader for asserting on the absence of
-// a key. We don't pull in tidwall/gjson — callers only ever look at one
-// shallow string field per call.
-func gjson(b []byte, key string) string {
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
 }
 
 func TestUpload_RejectsExeAsPNG(t *testing.T) {
