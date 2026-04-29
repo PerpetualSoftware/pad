@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,6 +101,19 @@ Examples:
 				fmt.Println()
 				fmt.Println()
 				actioned = true
+			} else if urlFlag != "" && !cfg.LoadedFromFile {
+				// Cold-start shortcut: `pad init --url <server>` on a fresh
+				// machine. The flag override made IsConfigured() true, but
+				// nothing is persisted yet — so without saving, every
+				// subsequent command would also need --url. Persist now so
+				// this is a true one-shot configure.
+				if err := cfg.Save(); err != nil {
+					return fmt.Errorf("save config: %w", err)
+				}
+				green.Print("✓ ")
+				fmt.Printf("Configured: %s mode (%s)\n", cfg.Mode, cfg.BaseURL())
+				fmt.Println()
+				actioned = true
 			}
 
 			// ── Step 2: Ensure server is running ──────────────────────
@@ -191,7 +205,14 @@ Examples:
 				wsName = filepath.Base(cwd)
 			}
 
-			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, wsName, templateFlag)
+			// When both a positional name and --workspace <slug> are passed,
+			// the slug wins (it unambiguously identifies an existing workspace
+			// on the server). Warn the user so the silent override is visible.
+			if workspaceFlag != "" && len(args) > 0 {
+				fmt.Fprintf(os.Stderr, "Note: --workspace %q overrides positional name %q.\n", workspaceFlag, args[0])
+			}
+
+			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, wsName, workspaceFlag, templateFlag)
 			if err != nil {
 				return err
 			}
@@ -225,19 +246,67 @@ Examples:
 // ensureWorkspace checks if the current directory is linked to a workspace.
 // If not, it creates or links one. Returns the workspace, whether it was newly
 // created, and any error.
-func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, templateFlag string) (*models.Workspace, bool, error) {
+//
+// When wsSlug is non-empty, the caller has explicitly identified a workspace
+// by slug (typically `pad init --workspace <slug>`). In that mode we will
+// ONLY attach to a workspace with that exact slug — never silently fall
+// through to "create a new workspace named after the slug." This is the
+// keystone behavior for the web-first onboarding flow (IDEA-750/PLAN-859).
+func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, templateFlag string) (*models.Workspace, bool, error) {
 	green := color.New(color.FgGreen)
 	bold := color.New(color.Bold)
 	dim := color.New(color.Faint)
 
-	// Check if already linked
-	existingSlug, err := cli.DetectWorkspace("")
-	if err == nil {
+	// Always check for an existing CWD link first — never blindly clobber.
+	existingSlug, _ := cli.DetectWorkspace("")
+
+	// ── Slug-driven path ──────────────────────────────────────
+	// Caller said "use this exact workspace by slug." Look it up; never
+	// create. Refuse to relink a directory already pinned to a different
+	// workspace.
+	if wsSlug != "" {
+		if existingSlug != "" && existingSlug != wsSlug {
+			return nil, false, fmt.Errorf(
+				"this directory is already linked to workspace %q; refusing to relink to %q.\n"+
+					"Remove or edit the existing .pad.toml, or run from a different directory",
+				existingSlug, wsSlug)
+		}
+
+		ws, err := client.GetWorkspace(wsSlug)
+		if err != nil {
+			var apiErr *cli.APIError
+			if errors.As(err, &apiErr) && apiErr.Code == "not_found" {
+				return nil, false, fmt.Errorf(
+					"workspace %q not found on %s.\n"+
+						"Check the slug, or run 'pad workspace list' to see available workspaces",
+					wsSlug, cfg.BaseURL())
+			}
+			return nil, false, fmt.Errorf(
+				"look up workspace %q on %s: %w", wsSlug, cfg.BaseURL(), err)
+		}
+
+		// Already linked to this exact slug — idempotent, no-op.
+		if existingSlug == wsSlug {
+			return ws, false, nil
+		}
+
+		if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+			return nil, false, fmt.Errorf("write .pad.toml: %w", err)
+		}
+		green.Print("✓ ")
+		fmt.Printf("Linked to existing workspace %s %s\n",
+			bold.Sprint(ws.Name),
+			dim.Sprintf("(slug: %s)", ws.Slug))
+		return ws, false, nil
+	}
+
+	// ── Name-driven path (legacy interactive behavior) ────────
+	if existingSlug != "" {
 		ws, err := client.GetWorkspace(existingSlug)
 		if err == nil && ws != nil {
 			return ws, false, nil
 		}
-		// Linked but workspace doesn't exist on server — fall through to create/link
+		// Linked but workspace doesn't exist on server — fall through to create/link.
 	}
 
 	// Check if a workspace with this name already exists

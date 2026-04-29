@@ -1157,7 +1157,11 @@ a workspace in one step.`,
 				name = filepath.Base(cwd)
 			}
 
-			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, name, templateFlag)
+			if workspaceFlag != "" && len(args) > 0 {
+				fmt.Fprintf(os.Stderr, "Note: --workspace %q overrides positional name %q.\n", workspaceFlag, args[0])
+			}
+
+			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, name, workspaceFlag, templateFlag)
 			if err != nil {
 				return err
 			}
