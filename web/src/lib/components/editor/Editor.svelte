@@ -280,8 +280,10 @@
 	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { SLASH_ITEMS } from './block-types';
+	import { AttachmentImage, type AttachmentVariant } from './attachment-image';
 
 	let {
 		content = '',
@@ -421,6 +423,17 @@
 	onMount(() => {
 		if (!element) return;
 
+		// Resolve the workspace slug at mount time. The Editor lives inside
+		// a route that has page.params.workspace set; falling back to the
+		// workspace store covers code paths where the editor is rendered
+		// outside that route shape (e.g. component-driven previews). When
+		// neither is available, attachment images render the literal
+		// `pad-attachment:UUID` href and fail to load — clearly broken in
+		// the UI, which is the right signal for "no workspace context".
+		const wsSlug = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
+			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
+
 		const extensions = [
 			StarterKit.configure({
 				codeBlock: false,
@@ -454,6 +467,7 @@
 				transformCopiedText: true,
 			}),
 			BlockDragHandle,
+			AttachmentImage.configure({ getDownloadUrl: getAttachmentUrl }),
 		];
 
 		editor = new Editor({
