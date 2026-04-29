@@ -390,6 +390,19 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// Orphan GC (TASK-886). Periodic sweep that reclaims
+			// attachments tombstoned past the grace period, plus
+			// uploads that were never associated with an item.
+			// Defaults: 24h interval, 30-day grace. Both override-
+			// able via env (e.g. PAD_ORPHAN_GC_INTERVAL=1m for tests
+			// where you want to see the sweep land within a CI run).
+			gcInterval := parseDurationEnv("PAD_ORPHAN_GC_INTERVAL", 0)
+			gcGrace := parseDurationEnv("PAD_ORPHAN_GC_GRACE", 0)
+			if gcInterval != 0 || gcGrace != 0 {
+				srv.SetOrphanGCConfig(gcInterval, gcGrace)
+			}
+			srv.StartOrphanGC()
+
 			// Wire the image processor used for thumbnail derivation
 			// (TASK-878) and the editor's rotate/crop tools (TASK-879/880).
 			// The default build picks the pure-Go backend (no cgo);
@@ -1029,6 +1042,23 @@ workspaces with no owner).`,
 // humanBytes formats a byte count with the smallest IEC unit that
 // keeps the value under 1024 — matches the convention used across
 // the web UI's storage bar so CLI and browser reads agree.
+// parseDurationEnv reads a duration env var (Go syntax: 1h, 30m,
+// 24h, 720h, etc). Returns the default when the var is unset; logs
+// a warning and returns the default on a parse error so a typo
+// doesn't silently break the GC schedule.
+func parseDurationEnv(name string, def time.Duration) time.Duration {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Warn(name+" ignored — not a valid Go duration", "value", v, "error", err)
+		return def
+	}
+	return d
+}
+
 func humanBytes(n int64) string {
 	if n < 0 {
 		return "?"

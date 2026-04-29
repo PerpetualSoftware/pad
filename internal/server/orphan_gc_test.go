@@ -1,0 +1,246 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/attachments"
+)
+
+// TestOrphanGC_ReclaimsSoftDeleted pins TASK-886's main case: a
+// soft-deleted attachment past the grace period gets hard-deleted
+// from the DB AND its blob removed from the storage backend.
+func TestOrphanGC_ReclaimsSoftDeleted(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	body := realPNG()
+	rr := doMultipartUpload(srv, slug, "doomed.png", body)
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	id := getOnlyAttachmentID(t, srv, workspaceIDForSlug(t, srv, slug))
+
+	// Soft-delete via the user-facing endpoint.
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil)
+	if rr.Code != 204 {
+		t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Sanity check: row exists, soft-deleted.
+	att, err := srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if att == nil || att.DeletedAt == nil {
+		t.Fatalf("expected soft-deleted row, got %+v", att)
+	}
+	storageKey := att.StorageKey
+	store, err := srv.attachments.Resolve(storageKey)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), storageKey); err != nil {
+		t.Fatalf("blob missing before GC: %v", err)
+	}
+
+	// Run the sweep with a graceCutoff in the future so the soft-
+	// deleted row qualifies immediately.
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("Deleted=%d, want >= 1", res.Deleted)
+	}
+	if res.BlobsReclaimed < 1 {
+		t.Errorf("BlobsReclaimed=%d, want >= 1", res.BlobsReclaimed)
+	}
+	if res.BytesReclaimed != int64(len(body)) {
+		t.Errorf("BytesReclaimed=%d, want %d", res.BytesReclaimed, len(body))
+	}
+
+	// DB row gone.
+	att, err = srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("post-GC GetAttachment: %v", err)
+	}
+	if att != nil {
+		t.Errorf("row still present after GC: %+v", att)
+	}
+	// Blob gone too.
+	if _, err := store.Stat(context.Background(), storageKey); !errors.Is(err, attachments.ErrNotFound) {
+		t.Errorf("blob still on disk after GC; Stat err=%v", err)
+	}
+}
+
+// TestOrphanGC_ReclaimsLongOrphans pins the never-attached path:
+// rows with item_id IS NULL AND deleted_at IS NULL aged past the
+// grace period get reclaimed.
+func TestOrphanGC_ReclaimsLongOrphans(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	if rr := doMultipartUpload(srv, slug, "orphan.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, workspaceIDForSlug(t, srv, slug))
+
+	// Push the row's created_at into the past via direct SQL — the
+	// upload handler stamps "now" and there's no API to backdate.
+	pastTs := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET created_at = ? WHERE id = ?`, pastTs, id,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// Sweep with a 30-day grace cutoff.
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	res, err := srv.runOrphanGCSweep(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("Deleted=%d, want >= 1", res.Deleted)
+	}
+	if got, _ := srv.store.GetAttachment(id); got != nil {
+		t.Errorf("orphan still present after GC: %+v", got)
+	}
+}
+
+// TestOrphanGC_KeepsRecentRows pins the safety case: rows still
+// inside the grace window MUST NOT be reclaimed. Catches a typo
+// in the WHERE clause that would silently destroy live attachments.
+func TestOrphanGC_KeepsRecentRows(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	if rr := doMultipartUpload(srv, slug, "fresh.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, workspaceIDForSlug(t, srv, slug))
+
+	// Soft-delete it but use a grace cutoff way in the past so the
+	// row is NOT yet past grace.
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil)
+	if rr.Code != 204 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+	cutoff := time.Now().UTC().Add(-365 * 24 * time.Hour)
+	res, err := srv.runOrphanGCSweep(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted=%d, want 0 (row still in grace)", res.Deleted)
+	}
+	// Row must still exist (soft-deleted).
+	if att, _ := srv.store.GetAttachment(id); att == nil {
+		t.Errorf("row hard-deleted while still in grace")
+	}
+}
+
+// TestOrphanGC_PreservesSharedBlob pins the dedupe-safety case:
+// when two rows reference the same content_hash and only one is
+// orphan, the row gets hard-deleted but the blob stays on disk so
+// the other row keeps working.
+func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	body := realPNG()
+	// Two uploads with identical bytes → same content_hash → one
+	// physical blob on disk, two attachment rows.
+	if rr := doMultipartUpload(srv, slug, "a.png", body); rr.Code != 201 {
+		t.Fatalf("upload a: %d", rr.Code)
+	}
+	if rr := doMultipartUpload(srv, slug, "b.png", body); rr.Code != 201 {
+		t.Fatalf("upload b: %d", rr.Code)
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	// Pull both row IDs via direct SQL — easier than the public list
+	// API, which paginates and doesn't expose storage_key.
+	var firstID, secondID, sharedKey string
+	dbRows, err := srv.store.DB().Query(
+		`SELECT id, storage_key FROM attachments WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY created_at, id`, wsID)
+	if err != nil {
+		t.Fatalf("list rows: %v", err)
+	}
+	for dbRows.Next() {
+		var id, key string
+		if err := dbRows.Scan(&id, &key); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if firstID == "" {
+			firstID = id
+			sharedKey = key
+		} else {
+			secondID = id
+		}
+	}
+	dbRows.Close()
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("expected two distinct row ids; got %q / %q", firstID, secondID)
+	}
+
+	// Soft-delete the second row FIRST while item_id is still NULL
+	// (the delete handler's orphan branch is happy with workspace
+	// owner role and doesn't run the requireItemVisible check that
+	// would otherwise 404 on a synthetic item_id).
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+secondID, nil)
+	if rr.Code != 204 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+
+	// Now tag the FIRST (still-live) row with a synthetic item_id so
+	// the never-attached-orphan path doesn't reclaim it under the
+	// future grace cutoff. The test is about dedupe-aware blob
+	// preservation, not the orphan-from-start case (covered by
+	// TestOrphanGC_ReclaimsLongOrphans).
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET item_id = ? WHERE id = ?`,
+		"synthetic-item", firstID,
+	); err != nil {
+		t.Fatalf("attach first row: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("Deleted=%d, want >= 1", res.Deleted)
+	}
+	if res.BlobsReclaimed != 0 {
+		t.Errorf("BlobsReclaimed=%d, want 0 (other row still references the blob)",
+			res.BlobsReclaimed)
+	}
+
+	// First row still works — blob still on disk.
+	store, err := srv.attachments.Resolve(sharedKey)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := store.Stat(context.Background(), sharedKey); err != nil {
+		t.Errorf("shared blob disappeared after GC: %v", err)
+	}
+}
+
+// TestOrphanGC_StartStop pins the lifecycle: StartOrphanGC kicks the
+// loop, Stop signals it to exit, and Server.Stop() actually drains.
+// Catches regressions where a leaked goroutine would compound across
+// every Stop cycle (BUG-851 echo).
+func TestOrphanGC_StartStop(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	srv.SetOrphanGCConfig(1*time.Millisecond, 24*time.Hour)
+	srv.StartOrphanGC()
+
+	// Calling start a second time is a no-op.
+	srv.StartOrphanGC()
+
+	// Stop drains in the t.Cleanup hook from testServer; just give
+	// the loop a tick to actually run a sweep.
+	time.Sleep(10 * time.Millisecond)
+	// If we got here without deadlocking on Stop, the loop drains
+	// correctly. testServer's t.Cleanup will exercise Stop.
+}

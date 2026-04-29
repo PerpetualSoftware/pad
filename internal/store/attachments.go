@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -506,6 +507,88 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		return nil, 0, fmt.Errorf("iterate workspace attachments: %w", err)
 	}
 	return out, total, nil
+}
+
+// OrphanedAttachments returns rows eligible for orphan GC reclamation
+// (TASK-886). Two cases qualify:
+//
+//   - Never-attached uploads: item_id IS NULL AND deleted_at IS NULL
+//     AND created_at < grace cutoff. The editor uploads first and
+//     PATCHes the item content second; a tab-close in between leaves
+//     a row in this state. 30 days is comfortable headroom for that
+//     race plus any deferred-attachment workflow we add later.
+//
+//   - Soft-deleted past grace: deleted_at IS NOT NULL AND
+//     deleted_at < grace cutoff. Delete handlers tombstone rows
+//     immediately so undelete is possible; GC reclaims after the
+//     grace period.
+//
+// Both filters compare the timestamp column (TEXT, ISO 8601 UTC)
+// against the cutoff string lexicographically — UTC RFC3339 collates
+// in chronological order without parsing. The cutoff is computed by
+// the caller so tests can inject a deterministic time.
+//
+// Returned rows include thumbnail variants (parent_id != NULL) when
+// they meet either criterion — soft-deleting an original cascades
+// to its thumbnails (SoftDeleteAttachment), so they all share the
+// same deleted_at and reach the GC together.
+func (s *Store) OrphanedAttachments(graceCutoff time.Time) ([]models.Attachment, error) {
+	cutoffStr := graceCutoff.UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(s.q(`
+		SELECT `+attachmentColumns+`
+		FROM attachments
+		WHERE
+		  (item_id IS NULL AND deleted_at IS NULL AND created_at < ?)
+		  OR
+		  (deleted_at IS NOT NULL AND deleted_at < ?)
+		ORDER BY created_at, id
+	`), cutoffStr, cutoffStr)
+	if err != nil {
+		return nil, fmt.Errorf("orphaned attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Attachment
+	for rows.Next() {
+		a, err := scanAttachment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan orphan: %w", err)
+		}
+		out = append(out, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate orphans: %w", err)
+	}
+	return out, nil
+}
+
+// HardDeleteAttachment removes the attachments row outright. Used by
+// orphan GC after the grace period; never call from a request
+// handler — soft-delete is the safe default for user-facing flows.
+func (s *Store) HardDeleteAttachment(id string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM attachments WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("hard delete attachment: %w", err)
+	}
+	return nil
+}
+
+// CountLiveAttachmentsForHash returns the number of NON-deleted rows
+// pointing at the given content_hash, excluding excludeID. Used by
+// orphan GC to decide whether deleting a row also lets us reclaim
+// the on-disk blob — content-addressed dedupe means several rows
+// can share one blob, and the blob must stay until the last live
+// row goes away.
+func (s *Store) CountLiveAttachmentsForHash(hash, excludeID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM attachments
+		WHERE content_hash = ? AND deleted_at IS NULL AND id <> ?
+	`), hash, excludeID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count live attachments for hash: %w", err)
+	}
+	return n, nil
 }
 
 // SoftDeleteAttachment marks the given attachment row deleted (and

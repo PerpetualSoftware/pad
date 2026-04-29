@@ -86,6 +86,12 @@ type Server struct {
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
 
+	// orphanGC holds the periodic-sweep config + lifecycle for the
+	// attachment orphan garbage collector (TASK-886). Configured via
+	// SetOrphanGCConfig and started via StartOrphanGC. Stop() signals
+	// the loop to exit and waits for it via the bg WaitGroup.
+	orphanGC orphanGCConfig
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
@@ -113,6 +119,10 @@ func (s *Server) goAsync(fn func()) {
 // Store.Close() so in-flight DB writes don't race a closed connection
 // (or worse, the SQLite -wal/-shm file removal in t.TempDir cleanup).
 func (s *Server) Stop() {
+	// Signal long-running background loops (orphan GC, etc.) to exit.
+	// Each loop registers itself on s.bg, so the Wait() below blocks
+	// until they actually finish and any in-flight goroutines drain.
+	s.stopOrphanGC()
 	s.bg.Wait()
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
