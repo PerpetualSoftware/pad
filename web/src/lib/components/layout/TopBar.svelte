@@ -10,12 +10,14 @@
 	import { goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
+	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
 	let userMenuOpen = $state(false);
 	let currentTheme = $state<'dark' | 'light'>('dark');
+	let connectOpen = $state(false);
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
 
@@ -872,6 +874,25 @@
 									Status
 								</a>
 							{/if}
+							<!--
+								"Connect a project…" sits after the cloud-mode Support/Status
+								block (when present) and just above the Sign-out divider —
+								it's a CLI-onboarding action, semantically closer to
+								Settings/Support than to account actions, but visually we
+								want it adjacent to the divider so it reads as a discrete
+								action rather than another link.
+							-->
+							{#if workspaceStore.current?.slug}
+								<button
+									class="dropdown-item"
+									onclick={() => {
+										closeUserMenu();
+										connectOpen = true;
+									}}
+								>
+									Connect a project…
+								</button>
+							{/if}
 							<div class="dropdown-divider"></div>
 							<button class="dropdown-item logout" onclick={handleLogout}>
 								Sign out
@@ -881,6 +902,21 @@
 				</div>
 			{/if}
 		</div>
+
+		<!--
+			Modal lives OUTSIDE the dropdown so it doesn't unmount when the
+			dropdown closes (closeUserMenu fires synchronously with opening
+			the modal). Gated on workspaceStore.current?.slug since the
+			modal needs a workspace to interpolate into the connect snippet.
+		-->
+		{#if workspaceStore.current?.slug}
+			<ConnectWorkspaceModal
+				bind:open={connectOpen}
+				serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
+				workspaceSlug={workspaceStore.current.slug}
+				workspaceName={workspaceStore.current.name}
+			/>
+		{/if}
 	</header>
 {:else}
 	<!-- ── Mobile ─────────────────────────────────────────────────────────── -->
@@ -959,6 +995,18 @@
 								Status
 							</a>
 						{/if}
+						<!-- Connect a project — see desktop branch for placement rationale. -->
+						{#if workspaceStore.current?.slug}
+							<button
+								class="dropdown-item"
+								onclick={() => {
+									closeUserMenu();
+									connectOpen = true;
+								}}
+							>
+								Connect a project…
+							</button>
+						{/if}
 						<div class="dropdown-divider"></div>
 						<button class="dropdown-item logout" onclick={handleLogout}>
 							Sign out
@@ -966,6 +1014,16 @@
 					</div>
 				{/if}
 			</div>
+		{/if}
+
+		<!-- Same Connect modal pattern as the desktop branch — see notes above. -->
+		{#if workspaceStore.current?.slug}
+			<ConnectWorkspaceModal
+				bind:open={connectOpen}
+				serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
+				workspaceSlug={workspaceStore.current.slug}
+				workspaceName={workspaceStore.current.name}
+			/>
 		{/if}
 	</header>
 {/if}

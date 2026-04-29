@@ -8,6 +8,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
+	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
@@ -19,6 +20,7 @@
 	let collections = $state<Collection[]>([]);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
+	let connectOpen = $state(false);
 
 	// Sync dismissed state from localStorage when workspace changes
 	$effect(() => {
@@ -201,6 +203,19 @@
 		{#if totalItems === 0 && !onboardingDismissed}
 			<div class="onboarding-wrapper">
 				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
+				<button class="connect-card" type="button" onclick={() => (connectOpen = true)}>
+					<span class="connect-card-icon" aria-hidden="true">
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="4 17 10 11 4 5" />
+							<line x1="12" y1="19" x2="20" y2="19" />
+						</svg>
+					</span>
+					<span class="connect-card-body">
+						<span class="connect-card-title">Connect your local project</span>
+						<span class="connect-card-subtitle">Manage this workspace from your terminal with the pad CLI.</span>
+					</span>
+					<span class="connect-card-cta" aria-hidden="true">&rarr;</span>
+				</button>
 			</div>
 		{:else if totalItems === 0 && onboardingDismissed}
 			<div class="onboarding-reshow">
@@ -421,6 +436,18 @@
 	{/if}
 </div>
 
+<!--
+	Mount the connect modal unconditionally at the page root so it
+	survives re-renders of the conditional onboarding block above —
+	closing the modal must not be entangled with that branch's state.
+-->
+<ConnectWorkspaceModal
+	bind:open={connectOpen}
+	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
+	workspaceSlug={wsSlug}
+	workspaceName={workspaceStore.current?.name ?? ''}
+/>
+
 <style>
 	/* ── Layout ─────────────────────────────────────────────────────────── */
 	.dashboard {
@@ -495,6 +522,66 @@
 	/* ── Onboarding ─────────────────────────────────────────────────────── */
 	.onboarding-wrapper {
 		margin-bottom: var(--space-6);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	/* Connect-your-local-project card — sibling under OnboardingChecklist. */
+	.connect-card {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		width: 100%;
+		padding: var(--space-3) var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		text-align: left;
+		cursor: pointer;
+		color: inherit;
+		transition: border-color 0.15s, background 0.15s, transform 0.05s;
+	}
+	.connect-card:hover {
+		border-color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 4%, var(--bg-secondary));
+	}
+	.connect-card:active {
+		transform: translateY(1px);
+	}
+	.connect-card-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
+		color: var(--accent-blue);
+		flex-shrink: 0;
+	}
+	.connect-card-body {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		flex: 1;
+		min-width: 0;
+	}
+	.connect-card-title {
+		font-size: 0.95em;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.connect-card-subtitle {
+		font-size: 0.82em;
+		color: var(--text-muted);
+	}
+	.connect-card-cta {
+		font-size: 1.1em;
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.connect-card:hover .connect-card-cta {
+		color: var(--accent-blue);
 	}
 	.onboarding-reshow {
 		margin-bottom: var(--space-4);
