@@ -13,7 +13,15 @@ import { test, type SuiteFixture } from './fixtures';
  * list / table screenshots into docs/screenshots/ at the repo root.
  *
  * Re-run via:
- *   make build-go && PAD_SCREENSHOTS=1 cd web && npx playwright test screenshots --project=desktop-chromium
+ *   make build-go && cd web && PAD_SCREENSHOTS=1 npx playwright test screenshots --project=desktop-chromium
+ *
+ * Theme: captured in DARK mode (Pad's default when no user preference is
+ * set). Playwright's headless Chromium reports prefers-color-scheme: light
+ * by default, which would otherwise make the layout's onMount set
+ * data-theme="light" — producing light-mode screenshots that don't match
+ * what most users see and that clash with getpad.dev's dark marketing site.
+ * `test.use({ colorScheme: 'dark' })` flips this so the layout falls through
+ * to its default (dark) branch.
  *
  * Output:
  *   docs/screenshots/dashboard.png
@@ -39,7 +47,12 @@ test.describe('README screenshots', () => {
 	// 1440x900 ≈ "Macbook Air at default zoom" — the most common desktop
 	// viewport for product screenshots. Wide enough that the board view
 	// shows multiple columns side-by-side without horizontal scroll.
-	test.use({ viewport: { width: 1440, height: 900 } });
+	//
+	// colorScheme: 'dark' makes Chromium report prefers-color-scheme: dark.
+	// The Pad layout's onMount only forces data-theme="light" when matchMedia
+	// reports 'light'; with dark emulation, it leaves the document on the
+	// default theme — which renders dark.
+	test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
 
 	test.beforeAll(async () => {
 		await mkdir(OUT_DIR, { recursive: true });
