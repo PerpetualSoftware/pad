@@ -18,13 +18,14 @@ import (
 // The from address and name are defaults; individual send methods can
 // override them for contextual sender names (e.g. "Dave via Pad").
 type Sender struct {
-	mu       sync.RWMutex
-	apiKey   string
-	fromAddr string
-	fromName string
-	baseURL  string // Pad's public base URL for generating links
-	endpoint string // Maileroo API endpoint (overridable for tests)
-	client   *http.Client
+	mu        sync.RWMutex
+	apiKey    string
+	fromAddr  string
+	fromName  string
+	baseURL   string // Pad's public base URL for generating links
+	endpoint  string // Maileroo API endpoint (overridable for tests)
+	cloudMode bool   // adds getpad.dev marketing footer to outgoing emails
+	client    *http.Client
 }
 
 // defaultEndpoint is the Maileroo v2 email sending API.
@@ -68,6 +69,25 @@ func (s *Sender) SetEndpoint(url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.endpoint = url
+}
+
+// SetCloudMode toggles the getpad.dev marketing footer on outgoing
+// transactional emails. Server callers flip it on after Server.SetCloudMode
+// fires (see internal/server/server.go). Self-hosted deployments leave it
+// off so emails stay neutral. Thread-safe.
+func (s *Sender) SetCloudMode(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cloudMode = enabled
+}
+
+// CloudMode reports whether the marketing footer is currently enabled.
+// Templates read it through getCloudMode() so they pick up the same
+// snapshot for the entire render of one email. Thread-safe.
+func (s *Sender) CloudMode() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cloudMode
 }
 
 // BaseURL returns the configured base URL.
