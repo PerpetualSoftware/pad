@@ -212,6 +212,13 @@ func (s *Server) SetCloudMode(secret string) {
 			s.cloudSecrets = append(s.cloudSecrets, k)
 		}
 	}
+	// Propagate to the email sender so transactional emails carry the
+	// getpad.dev marketing footer (docs/brand.md §7) on Cloud installs.
+	// Self-hosted deployments leave cloudMode false on the sender, keeping
+	// outgoing mail neutral so operators can ship under their own brand.
+	if s.email != nil {
+		s.email.SetCloudMode(true)
+	}
 }
 
 // CloudSidecar is the reverse pad → pad-cloud client interface. Concrete
@@ -282,10 +289,20 @@ func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 
 // SetEmailSender attaches a transactional email sender.
 // The apiKey is stored separately for deriving the unsubscribe HMAC secret.
+//
+// If the server is already in cloud mode when this is called (i.e.
+// SetCloudMode ran before email config arrived from main.go), propagate
+// the flag so the new sender adds the getpad.dev marketing footer to
+// outgoing emails. Without this, the cloud-mode flag would silently
+// fail to take effect when callers wired email and cloud mode in
+// either order.
 func (s *Server) SetEmailSender(e *email.Sender, apiKey ...string) {
 	s.email = e
 	if len(apiKey) > 0 {
 		s.emailAPIKey = apiKey[0]
+	}
+	if s.cloudMode && s.email != nil {
+		s.email.SetCloudMode(true)
 	}
 }
 
@@ -461,6 +478,13 @@ func (s *Server) reconfigureEmail() {
 	} else {
 		// Update existing sender
 		s.email.Configure(apiKey, fromAddr, fromName, s.baseURL)
+	}
+	// Propagate cloud mode whichever way email was wired — see SetEmailSender
+	// for the matching note. Configure() preserves cloudMode on existing
+	// senders since SetCloudMode is independent; this branch covers the
+	// fresh-NewSender path.
+	if s.cloudMode {
+		s.email.SetCloudMode(true)
 	}
 }
 
