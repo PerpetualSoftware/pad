@@ -1080,6 +1080,108 @@ func TestActivity(t *testing.T) {
 	}
 }
 
+// TestSearch_BareNumericQueryFindsItemByNumber verifies that typing a plain
+// number into the search field (e.g. "843") resolves to the workspace-global
+// item with that item_number. This lets the search palette double as a quick
+// "go to item N" jump. See BUG-910.
+func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID, ideasID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+		}
+		if c.Slug == "ideas" {
+			ideasID = c.ID
+		}
+	}
+
+	// Create a few items so item_numbers are 1, 2, 3 (workspace-global).
+	if _, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "First task"}); err != nil {
+		t.Fatalf("CreateItem 1: %v", err)
+	}
+	target, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Target task"})
+	if err != nil {
+		t.Fatalf("CreateItem 2: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Some idea"}); err != nil {
+		t.Fatalf("CreateItem 3: %v", err)
+	}
+
+	// Sanity: the second item should have item_number = 2.
+	if target.ItemNumber == nil || *target.ItemNumber != 2 {
+		t.Fatalf("expected target.ItemNumber=2, got %v", target.ItemNumber)
+	}
+
+	// Bare numeric query "2" should find the item with item_number=2.
+	resp, err := s.Search(SearchParams{Query: "2", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(resp.Results) == 0 {
+		t.Fatalf("expected at least 1 result for bare numeric query, got 0")
+	}
+	if resp.Results[0].Item.ID != target.ID {
+		gotNum := -1
+		if resp.Results[0].Item.ItemNumber != nil {
+			gotNum = *resp.Results[0].Item.ItemNumber
+		}
+		t.Errorf("expected target item first, got %q (item_number=%d)",
+			resp.Results[0].Item.Title, gotNum)
+	}
+
+	// A non-existent number should not surface as a direct hit.
+	resp, err = s.Search(SearchParams{Query: "9999", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	for _, r := range resp.Results {
+		if r.Item.ItemNumber != nil && *r.Item.ItemNumber == 9999 {
+			t.Errorf("did not expect any item with item_number=9999")
+		}
+	}
+
+	// Whitespace around a bare number should still resolve.
+	resp, err = s.Search(SearchParams{Query: "  2  ", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(resp.Results) == 0 || resp.Results[0].Item.ID != target.ID {
+		t.Errorf("expected whitespace-padded numeric query to resolve to target item")
+	}
+}
+
+// TestParseItemNumber covers the helper that gates the bare-numeric search path.
+func TestParseItemNumber(t *testing.T) {
+	cases := []struct {
+		in     string
+		num    int
+		ok     bool
+	}{
+		{"843", 843, true},
+		{"1", 1, true},
+		{"  42  ", 42, true},
+		{"", 0, false},
+		{"0", 0, false},        // zero is not a valid item number
+		{"abc", 0, false},
+		{"843a", 0, false},
+		{"a843", 0, false},
+		{"TASK-843", 0, false}, // hyphens go through parseItemRef instead
+		{"-5", 0, false},
+		{"12.5", 0, false},
+		{"9999999", 0, false},  // exceeds upper bound
+	}
+	for _, c := range cases {
+		num, ok := parseItemNumber(c.in)
+		if num != c.num || ok != c.ok {
+			t.Errorf("parseItemNumber(%q) = (%d, %v), want (%d, %v)", c.in, num, ok, c.num, c.ok)
+		}
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	tests := []struct {
 		input    string

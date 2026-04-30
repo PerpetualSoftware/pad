@@ -200,6 +200,113 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		// If no ref matches, fall through to FTS below
 	}
 
+	// Bare numeric query (e.g. "843") — resolve to the workspace-global
+	// item with that item_number. Mirrors the parseItemRef block above
+	// but without a collection prefix filter, since item_number is unique
+	// per workspace (idx_items_workspace_number). At most one item matches.
+	// Lets the search palette double as a quick "go to item N" jump. See BUG-910.
+	if number, ok := parseItemNumber(strings.TrimSpace(params.Query)); ok {
+		numQuery := `
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE i.item_number = ? AND i.deleted_at IS NULL
+		`
+		numArgs := []interface{}{number}
+
+		if params.Workspace != "" {
+			numQuery += ` AND i.workspace_id = (SELECT id FROM workspaces WHERE slug = ? AND deleted_at IS NULL)`
+			numArgs = append(numArgs, params.Workspace)
+		} else if len(params.WorkspaceIDs) > 0 {
+			numQuery += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
+			for _, id := range params.WorkspaceIDs {
+				numArgs = append(numArgs, id)
+			}
+		}
+
+		if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+			numQuery += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
+			for _, id := range params.CollectionIDs {
+				numArgs = append(numArgs, id)
+			}
+			for _, id := range params.ItemIDs {
+				numArgs = append(numArgs, id)
+			}
+		} else if len(params.CollectionIDs) > 0 {
+			numQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
+			for _, id := range params.CollectionIDs {
+				numArgs = append(numArgs, id)
+			}
+		} else if len(params.ItemIDs) > 0 {
+			numQuery += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
+			for _, id := range params.ItemIDs {
+				numArgs = append(numArgs, id)
+			}
+		}
+
+		// Apply content filters to numeric lookup too
+		if params.Collection != "" {
+			numQuery += ` AND c.slug = ?`
+			numArgs = append(numArgs, params.Collection)
+		}
+		for key, value := range params.FieldFilters {
+			if !validFieldKey.MatchString(key) {
+				continue
+			}
+			numQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
+			numArgs = append(numArgs, value)
+		}
+
+		// Avoid duplicating an item already added by the parseItemRef path
+		// (can't happen for purely numeric queries, but cheap to be safe).
+		alreadySeen := make(map[string]bool, len(results))
+		for _, r := range results {
+			alreadySeen[r.Item.ID] = true
+		}
+
+		numRows, err := s.db.Query(s.q(numQuery), numArgs...)
+		if err == nil {
+			defer numRows.Close()
+			for numRows.Next() {
+				var r SearchResult
+				var createdAt, updatedAt string
+				var pinned bool
+				if err := numRows.Scan(
+					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
+					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+					&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
+					&r.Item.CreatedBy, &r.Item.LastModifiedBy,
+					&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
+					&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
+					&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
+					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+				); err != nil {
+					continue
+				}
+				if alreadySeen[r.Item.ID] {
+					continue
+				}
+				r.Item.Pinned = pinned
+				r.Item.CreatedAt = parseTime(createdAt)
+				r.Item.UpdatedAt = parseTime(updatedAt)
+				hydrateItemComputedMetadata(&r.Item)
+				r.Item.Content = ""
+				r.Snippet = r.Item.Title
+				r.Rank = -1000 // Best possible rank so it sorts first
+				results = append(results, r)
+			}
+		}
+		// FTS still runs below — bare numeric tokens may also match titles/content
+	}
+
 	// Build the FTS query — the approach differs between SQLite (FTS5 virtual table)
 	// and PostgreSQL (tsvector column on the items table).
 	var query string

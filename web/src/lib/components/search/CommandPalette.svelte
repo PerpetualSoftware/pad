@@ -16,7 +16,9 @@
 	let results = $state<SearchResult[]>([]);
 	let total = $state(0);
 	let facets = $state<SearchFacets | undefined>(undefined);
-	let selectedIdx = $state(0);
+	// -1 means "no result armed". The user must press an arrow key (or type a
+	// bare number) before Enter will navigate. See BUG-864.
+	let selectedIdx = $state(-1);
 	let loading = $state(false);
 	let loadingMore = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
@@ -62,7 +64,7 @@
 			results = [];
 			total = 0;
 			facets = undefined;
-			selectedIdx = 0;
+			selectedIdx = -1;
 			filterCollection = null;
 			filterStatus = null;
 			loading = false;
@@ -86,7 +88,7 @@
 			results = [];
 			total = 0;
 			facets = undefined;
-			selectedIdx = 0;
+			selectedIdx = -1;
 			loading = false;
 			return;
 		}
@@ -99,7 +101,10 @@
 				results = resp.results ?? [];
 				total = resp.total ?? 0;
 				facets = resp.facets;
-				selectedIdx = 0;
+				// BUG-864: do NOT auto-arm the first result. The user must
+				// press an arrow key (or type a bare number + Enter) to
+				// trigger navigation.
+				selectedIdx = -1;
 			} catch {
 				results = [];
 				total = 0;
@@ -150,20 +155,56 @@
 		});
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
+	async function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			uiStore.closeSearch();
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
+			// From -1 ("nothing armed") this lands on 0, the first result.
 			selectedIdx = Math.min(selectedIdx + 1, flatResults.length - 1);
 			scrollSelectedIntoView();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
+			// Clamp at 0 — once the user has armed a selection, ArrowUp
+			// shouldn't deselect back to -1.
 			selectedIdx = Math.max(selectedIdx - 1, 0);
 			scrollSelectedIntoView();
-		} else if (e.key === 'Enter' && flatResults.length > 0) {
+		} else if (e.key === 'Enter') {
 			e.preventDefault();
-			selectResult(flatResults[selectedIdx]);
+			// Numeric go-to mode: typing a bare number + Enter jumps directly
+			// to the item with that item_number — the search palette doubles
+			// as a quick "go to item N" jump. See BUG-910 + BUG-864.
+			const trimmed = query.trim();
+			if (/^\d+$/.test(trimmed)) {
+				const targetNum = parseInt(trimmed, 10);
+				// Flush any pending debounced search so Enter feels instant
+				// even if the user beats the 200ms debounce.
+				clearTimeout(searchTimeout);
+				let item = results.find((r) => r.item.item_number === targetNum);
+				if (!item) {
+					loading = true;
+					try {
+						const resp = await api.search(trimmed, buildFilters(0));
+						results = resp.results ?? [];
+						total = resp.total ?? 0;
+						facets = resp.facets;
+						item = results.find((r) => r.item.item_number === targetNum);
+					} catch {
+						// ignore — falls through to no-op below
+					} finally {
+						loading = false;
+					}
+				}
+				if (item) {
+					selectResult(item);
+				}
+				return;
+			}
+			// BUG-864: for non-numeric queries, only navigate when the user
+			// has explicitly arrow-selected a result.
+			if (selectedIdx >= 0 && flatResults.length > 0 && flatResults[selectedIdx]) {
+				selectResult(flatResults[selectedIdx]);
+			}
 		}
 	}
 
