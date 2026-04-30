@@ -3,7 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 
 	let code = $derived(page.params.code ?? '');
 	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
@@ -29,6 +31,13 @@
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
+		// Hydrate authStore so AuthHeader can branch on cloudMode (matching the
+		// pattern in /forgot-password and /reset-password). Fire-and-forget so
+		// it does not delay the join-flow logic below — the header just won't
+		// render its Cloud branch on the very first paint if the session
+		// fetch is mid-flight, and it lights up once authStore resolves.
+		authStore.ensureLoaded().catch(() => {});
+
 		try {
 			const session = await api.auth.session();
 			if (session.authenticated) {
@@ -192,9 +201,13 @@
 	}
 </script>
 
-<div class="join-page">
+<AuthHeader cloudMode={authStore.cloudMode} />
+
+<div class="join-page" class:cloud-mode={authStore.cloudMode}>
 	<div class="join-card">
-		<h1 class="logo">Pad</h1>
+		{#if !authStore.cloudMode}
+			<h1 class="logo">Pad</h1>
+		{/if}
 
 		{#if status === 'loading'}
 			<p class="subtitle">Checking invitation...</p>
@@ -336,6 +349,10 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		padding: var(--space-4);
+	}
+
+	.join-page.cloud-mode {
+		padding-top: 4rem;
 	}
 
 	.join-card {

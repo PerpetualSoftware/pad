@@ -1,9 +1,21 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 
 	let token = $derived(page.params.token ?? '');
+
+	onMount(() => {
+		// Hydrate authStore so AuthHeader can branch on cloudMode. See the
+		// matching pattern in /forgot-password — without this, a user landing
+		// on a reset-password link after a logout sees the self-hosted layout
+		// even on Pad Cloud. Swallow fetch errors so the reset flow stays
+		// usable even if the session endpoint is unreachable.
+		authStore.ensureLoaded().catch(() => {});
+	});
 
 	let password = $state('');
 	let confirmPassword = $state('');
@@ -44,9 +56,13 @@
 	}
 </script>
 
-<div class="page">
+<AuthHeader cloudMode={authStore.cloudMode} />
+
+<div class="page" class:cloud-mode={authStore.cloudMode}>
 	<div class="card">
-		<h1 class="logo">Pad</h1>
+		{#if !authStore.cloudMode}
+			<h1 class="logo">Pad</h1>
+		{/if}
 		<p class="subtitle">Set a new password</p>
 
 		<div class="form">
@@ -95,6 +111,10 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		padding: var(--space-4);
+	}
+
+	.page.cloud-mode {
+		padding-top: 4rem;
 	}
 
 	.card {

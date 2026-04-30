@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -131,9 +132,13 @@
 	}
 </script>
 
-<div class="register-page">
+<AuthHeader cloudMode={authStore.cloudMode} />
+
+<div class="register-page" class:cloud-mode={authStore.cloudMode}>
 	<div class="register-card">
-		<h1 class="logo">Pad</h1>
+		{#if !authStore.cloudMode}
+			<h1 class="logo">Pad</h1>
+		{/if}
 		{#if setupRequired}
 			<SetupRequiredNotice
 				{setupMethod}
@@ -242,6 +247,10 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		padding: var(--space-4);
+	}
+
+	.register-page.cloud-mode {
+		padding-top: 4rem;
 	}
 
 	.register-card {
