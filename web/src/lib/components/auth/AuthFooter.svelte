@@ -6,10 +6,14 @@
 	// — so the auth pages feel like one continuous property with the marketing
 	// site rather than a stripped-down stub.
 	//
-	// On self-hosted (cloudMode=false) we drop to the legal-essential subset
-	// (Terms / Privacy / Sub-processors). Operators ship Pad under their own
-	// brand and getpad.dev's GitHub / Changelog / FAQ / Security / Support
-	// links are not theirs to advertise.
+	// On self-hosted (cloudMode=false) this renders NOTHING. Operators ship
+	// Pad under their own brand and have their own legal docs; rendering
+	// getpad.dev Terms/Privacy/Sub-processors links would misrepresent the
+	// operator's legal terms as if they were the deployment's own. This
+	// matches the prior LegalFooter + SupportFooter behavior (both gated
+	// their entire body on `{#if cloudMode}`) and the brand spec
+	// (docs/brand.md §7) note that an operator-owned legal/footer
+	// mechanism is deferred to the operator-branding follow-up plan.
 	//
 	// Visual contract: docs/brand.md, section 7. Source of truth for tokens,
 	// link order, and copyright format is pad-web/src/routes/+layout.svelte.
@@ -36,17 +40,6 @@
 		{ label: 'Sub-processors', href: 'https://getpad.dev/subprocessors' }
 	];
 
-	// Self-hosted gets the legal-essentials only — same set as the prior
-	// LegalFooter cloudMode branch so existing self-hosted users see the
-	// same footer they had before this PR.
-	const selfHostedLinks: Array<{ label: string; href: string }> = [
-		{ label: 'Terms', href: 'https://getpad.dev/terms' },
-		{ label: 'Privacy', href: 'https://getpad.dev/privacy' },
-		{ label: 'Sub-processors', href: 'https://getpad.dev/subprocessors' }
-	];
-
-	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);
-
 	// Year is computed once per page render — no auto-refresh, but auth pages
 	// don't sit open across a year boundary in any realistic flow.
 	const year = new Date().getFullYear();
@@ -68,7 +61,7 @@
 				</a>
 			</p>
 			<nav class="auth-footer-links" aria-label="Site navigation">
-				{#each links as link (link.label)}
+				{#each cloudLinks as link (link.label)}
 					<a
 						href={link.href}
 						target="_blank"
@@ -81,20 +74,10 @@
 			</nav>
 		</div>
 	</footer>
-{:else}
-	<!-- Self-hosted footer: legal-essentials only. No copyright line — that
-	     belongs to the operator's own deployment, not to Pad. Kept minimal
-	     by design; an operator-customizable footer is deferred to its own
-	     plan after PLAN-900 ships. -->
-	<nav class="auth-footer-legal" aria-label="Legal">
-		{#each links as link, i (link.label)}
-			<a href={link.href} target="_blank" rel="noopener noreferrer">{link.label}</a>
-			{#if i < links.length - 1}
-				<span aria-hidden="true">·</span>
-			{/if}
-		{/each}
-	</nav>
 {/if}
+<!-- Self-hosted (cloudMode === false) intentionally renders nothing — see
+     the doc-comment in the script block. The operator-customizable footer
+     is a separate, larger plan that will land after PLAN-900 ships. -->
 
 <style>
 	/* Cloud footer — full marketing-style strip. Matches pad-web's footer
@@ -169,35 +152,5 @@
 			justify-content: space-between;
 			text-align: left;
 		}
-	}
-
-	/* Self-hosted legal strip — preserves the look of the prior LegalFooter
-	   so existing self-hosted deployments see no change after this PR. */
-	.auth-footer-legal {
-		margin-top: var(--space-6);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: var(--space-2);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-	}
-
-	.auth-footer-legal a {
-		color: var(--text-muted);
-		text-decoration: underline;
-		text-decoration-thickness: 1px;
-		text-underline-offset: 2px;
-		border-radius: 2px;
-	}
-
-	.auth-footer-legal a:hover {
-		color: var(--text-primary);
-	}
-
-	.auth-footer-legal a:focus-visible {
-		color: var(--text-primary);
-		outline: 2px solid var(--accent-blue);
-		outline-offset: 2px;
 	}
 </style>
