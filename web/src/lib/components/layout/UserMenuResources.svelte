@@ -91,10 +91,36 @@
 {/each}
 
 <style>
-	/* The dropdown-divider and dropdown-item rules live on TopBar.svelte's
-	   .user-dropdown scope. Svelte's scoped CSS would not let us touch them
-	   from a child component; we use :global so callers can keep their
-	   existing rules without forcing a refactor of the dropdown surface. */
+	/* Svelte's scoped CSS hashes class selectors so styles only apply to
+	   DOM produced by the same component. The base .dropdown-divider and
+	   .dropdown-item rules live in TopBar.svelte and would NOT apply to
+	   the elements rendered here without explicit :global() opt-in. We
+	   mirror the parent's rules under `:global(.user-dropdown)` so the
+	   dropdown surface stays the styling boundary — the rules apply to
+	   anything dropped into the menu, but never leak outside it.
+	   Codex review (TASK-905, round 1) caught the missing styling. */
+	:global(.user-dropdown) :global(.dropdown-divider) {
+		height: 1px;
+		background: var(--border);
+	}
+
+	:global(.user-dropdown) :global(.dropdown-item) {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		text-decoration: none;
+		transition: background 0.1s, color 0.1s;
+	}
+
+	:global(.user-dropdown) :global(.dropdown-item):hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+
 	:global(.user-dropdown) .resources-label {
 		padding: var(--space-2) var(--space-4) var(--space-1);
 		color: var(--text-muted);
