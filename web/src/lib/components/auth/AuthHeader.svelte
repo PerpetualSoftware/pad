@@ -12,7 +12,7 @@
 	//
 	// Self-hosted (cloudMode === false) renders nothing — operators ship Pad
 	// under their own brand and must not get getpad.dev chrome imposed on them.
-	// This matches the existing pattern in LegalFooter.svelte / SupportFooter.svelte.
+	// Same pattern as the companion AuthFooter.svelte in this directory.
 
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
