@@ -172,7 +172,41 @@ export const api = {
 			request<void>('/workspaces/reorder', {
 				method: 'PUT',
 				body: JSON.stringify(updates)
-			})
+			}),
+
+		// importBundle uploads a workspace tar.gz bundle to the bundle-import
+		// endpoint. The server dispatches on Content-Type
+		// (application/gzip → bundle path, anything else → legacy JSON path),
+		// so we explicitly set application/gzip and POST the raw File body
+		// rather than going through the JSON-encoding `request` helper.
+		// Mirrors the CLI's `pad workspace import <bundle.tar.gz>` flow.
+		importBundle: async (file: File, name?: string): Promise<Workspace> => {
+			const headers: Record<string, string> = { 'Content-Type': 'application/gzip' };
+			const csrf = getCSRFToken();
+			if (csrf) headers['X-CSRF-Token'] = csrf;
+
+			const url = name
+				? `${BASE}/workspaces/import?name=${encodeURIComponent(name)}`
+				: `${BASE}/workspaces/import`;
+			const resp = await fetch(url, {
+				method: 'POST',
+				headers,
+				credentials: 'same-origin',
+				body: file
+			});
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					window.location.href = '/login';
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			if (!resp.ok) {
+				const body = await resp.json().catch(() => null);
+				if (body?.error) throw new PadApiError(body.error);
+				throw new Error(`API error: ${resp.status}`);
+			}
+			return resp.json();
+		}
 	},
 
 	// ── Collections ───────────────────────────────────────────────────────────

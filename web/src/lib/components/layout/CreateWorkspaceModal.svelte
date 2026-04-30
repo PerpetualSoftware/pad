@@ -61,13 +61,7 @@
 		if (!importFile) return;
 		importing = true;
 		try {
-			const text = await importFile.text();
-			const data = JSON.parse(text);
-			const nameOverride = newName.trim() || '';
-			const url = nameOverride
-				? `/workspaces/import?name=${encodeURIComponent(nameOverride)}`
-				: '/workspaces/import';
-			const ws = await api.raw.post(url, data);
+			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
 			await workspaceStore.loadAll();
 			close();
 			toastStore.show(`Imported workspace "${ws.name}"`, 'success');
@@ -79,11 +73,21 @@
 		}
 	}
 
+	function isAcceptedBundleFile(name: string): boolean {
+		// Web UI is strict tar.gz-only. The new-workspace flow always
+		// POSTs as Content-Type: application/gzip so a dropped .json
+		// would route to the bundle path and fail with a gzip decode
+		// error — confusing UX. Operators with a legacy JSON export
+		// can still curl it against POST /workspaces/import directly;
+		// the server keeps the JSON dispatch for back-compat.
+		return /(\.tar\.gz|\.tgz)$/i.test(name);
+	}
+
 	function setFile(file: File) {
 		importFile = file;
 		mode = 'import';
 		if (!newName.trim()) {
-			newName = file.name.replace(/-export\.json$|\.json$/i, '');
+			newName = file.name.replace(/(-export\.tar\.gz$|\.tar\.gz$|\.tgz$)/i, '');
 		}
 	}
 
@@ -98,7 +102,7 @@
 		dragCounter = 0;
 		dragging = false;
 		const file = e.dataTransfer?.files[0];
-		if (file && file.name.endsWith('.json')) setFile(file);
+		if (file && isAcceptedBundleFile(file.name)) setFile(file);
 	}
 
 	function handleDragOver(e: DragEvent) {
@@ -199,18 +203,18 @@
 						<span class="drop-hint">Click or drop to replace</span>
 					{:else}
 						<span class="drop-icon" class:drop-icon-active={dragging}>↓</span>
-						<span class="drop-text">{dragging ? 'Drop JSON file here' : 'Drop export file here or click to browse'}</span>
+						<span class="drop-text">{dragging ? 'Drop bundle (.tar.gz) here' : 'Drop workspace bundle (.tar.gz) here or click to browse'}</span>
 					{/if}
 					<input
 						bind:this={fileInputEl}
 						type="file"
-						accept=".json"
+						accept=".tar.gz,.tgz,application/gzip,application/x-gzip"
 						oninput={handleFileSelect}
 						style="display:none"
 					/>
 				</div>
 				{#if importFile}
-					<p class="import-hint">Creates a new workspace with regenerated IDs. Original data is unchanged.</p>
+					<p class="import-hint">Creates a new workspace with regenerated IDs (items, comments, attachments, version history all preserved). Original data is unchanged.</p>
 				{/if}
 			{/if}
 		</div>
