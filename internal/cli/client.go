@@ -831,7 +831,7 @@ type AttachmentListParams struct {
 	// the given collection UUID.
 	CollectionID string
 	// Sort accepts: size|size_desc|filename|filename_desc|created_at|created_at_desc.
-	Sort string
+	Sort   string
 	Limit  int
 	Offset int
 }
