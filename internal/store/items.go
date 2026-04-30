@@ -392,6 +392,36 @@ func parseItemRef(s string) (string, int, bool) {
 	return prefix, num, true
 }
 
+// parseItemNumber parses a bare numeric string (e.g. "843") into a positive
+// item number. Returns false for empty strings, non-digit input, zero, or
+// values exceeding a sane upper bound (999999 — items_workspace_number is
+// workspace-global so this comfortably fits any real workspace).
+//
+// Used by Search() to support "type a number, get the item" — a workspace
+// has at most one item with any given item_number (unique index on
+// (workspace_id, item_number)) so this resolves to a single direct hit.
+// See BUG-910.
+func parseItemNumber(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	num := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		num = num*10 + int(c-'0')
+		if num > 999999 {
+			return 0, false
+		}
+	}
+	if num == 0 {
+		return 0, false
+	}
+	return num, true
+}
+
 // GetItemIncludeDeleted finds an item by id including soft-deleted
 // items. Used by code paths that need to act on records the user
 // already owns even though the parent item has been moved to trash —

@@ -1080,6 +1080,260 @@ func TestActivity(t *testing.T) {
 	}
 }
 
+// TestSearch_BareNumericQueryFindsItemByNumber verifies that typing a plain
+// number into the search field (e.g. "843") resolves to the workspace-global
+// item with that item_number. This lets the search palette double as a quick
+// "go to item N" jump. See BUG-910.
+func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID, ideasID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+		}
+		if c.Slug == "ideas" {
+			ideasID = c.ID
+		}
+	}
+
+	// Create a few items so item_numbers are 1, 2, 3 (workspace-global).
+	if _, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "First task"}); err != nil {
+		t.Fatalf("CreateItem 1: %v", err)
+	}
+	target, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Target task"})
+	if err != nil {
+		t.Fatalf("CreateItem 2: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Some idea"}); err != nil {
+		t.Fatalf("CreateItem 3: %v", err)
+	}
+
+	// Sanity: the second item should have item_number = 2.
+	if target.ItemNumber == nil || *target.ItemNumber != 2 {
+		t.Fatalf("expected target.ItemNumber=2, got %v", target.ItemNumber)
+	}
+
+	// Bare numeric query "2" should find the item with item_number=2.
+	resp, err := s.Search(SearchParams{Query: "2", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(resp.Results) == 0 {
+		t.Fatalf("expected at least 1 result for bare numeric query, got 0")
+	}
+	if resp.Results[0].Item.ID != target.ID {
+		gotNum := -1
+		if resp.Results[0].Item.ItemNumber != nil {
+			gotNum = *resp.Results[0].Item.ItemNumber
+		}
+		t.Errorf("expected target item first, got %q (item_number=%d)",
+			resp.Results[0].Item.Title, gotNum)
+	}
+
+	// A non-existent number should not surface as a direct hit.
+	resp, err = s.Search(SearchParams{Query: "9999", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	for _, r := range resp.Results {
+		if r.Item.ItemNumber != nil && *r.Item.ItemNumber == 9999 {
+			t.Errorf("did not expect any item with item_number=9999")
+		}
+	}
+
+	// Whitespace around a bare number should still resolve.
+	resp, err = s.Search(SearchParams{Query: "  2  ", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(resp.Results) == 0 || resp.Results[0].Item.ID != target.ID {
+		t.Errorf("expected whitespace-padded numeric query to resolve to target item")
+	}
+}
+
+// TestSearch_BareNumericQueryDedupsAgainstFTS guards the fix for the Codex
+// review finding on the BUG-864/910 PR: when a bare-numeric query also
+// matches FTS via the item's title/content (because the title literally
+// contains the digit string), the direct hit must not also appear as an
+// FTS row — otherwise pagination shrinks page 0 below `limit` and shifts
+// later pages. With the FTS WHERE-clause exclusion, the item appears
+// exactly once and Total counts it exactly once.
+func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	// First item gets item_number=1 (workspace-global).
+	target, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{
+		Title:   "Reference number 1 in title",
+		Content: "This task talks about the digit 1 a lot. 1 is everywhere.",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem target: %v", err)
+	}
+	if target.ItemNumber == nil || *target.ItemNumber != 1 {
+		t.Fatalf("expected target.ItemNumber=1, got %v", target.ItemNumber)
+	}
+
+	resp, err := s.Search(SearchParams{Query: "1", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+
+	// The target must appear exactly once across results.
+	count := 0
+	for _, r := range resp.Results {
+		if r.Item.ID == target.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected target item to appear exactly once, got %d occurrences", count)
+	}
+
+	// Total must count the target exactly once too — not double-counted as
+	// (1 direct hit) + (1 FTS hit) = 2.
+	if resp.Total != len(resp.Results) {
+		t.Errorf("expected Total=%d (= len(Results)), got Total=%d", len(resp.Results), resp.Total)
+	}
+}
+
+// TestSearch_BareNumericQueryPaginatesAcrossWorkspaces guards the round-2
+// Codex finding: in global search (WorkspaceIDs scoping, no single
+// `Workspace`), a bare numeric query like "1" can match one item per
+// workspace. Direct hits must be paginated together with FTS results so
+// that (limit, offset) honours the full ordered list — not return all
+// direct hits on page 0 ignoring `limit`, and not skip them entirely on
+// page 1.
+func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
+	s := testStore(t)
+	ws1 := createTestWorkspace(t, s, "WS One")
+	ws2 := createTestWorkspace(t, s, "WS Two")
+	ws3 := createTestWorkspace(t, s, "WS Three")
+	for _, ws := range []*models.Workspace{ws1, ws2, ws3} {
+		s.SeedDefaultCollections(ws.ID)
+		colls, _ := s.ListCollections(ws.ID)
+		var tasksID string
+		for _, c := range colls {
+			if c.Slug == "tasks" {
+				tasksID = c.ID
+				break
+			}
+		}
+		// Item #1 in each workspace.
+		if _, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Task one in " + ws.Name}); err != nil {
+			t.Fatalf("CreateItem in %s: %v", ws.Name, err)
+		}
+	}
+
+	allWs := []string{ws1.ID, ws2.ID, ws3.ID}
+
+	// Page 0: limit=1 — must return exactly one direct hit, not all three.
+	resp, err := s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1})
+	if err != nil {
+		t.Fatalf("page 0: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("page 0: expected 1 result, got %d", len(resp.Results))
+	}
+	if resp.Total != 3 {
+		t.Errorf("page 0: expected Total=3 (all three direct hits), got %d", resp.Total)
+	}
+	page0ID := ""
+	if len(resp.Results) > 0 {
+		page0ID = resp.Results[0].Item.ID
+	}
+
+	// Page 1: limit=1, offset=1 — must return the second direct hit, NOT
+	// fall through to FTS rows after dropping all direct hits.
+	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("page 1: expected 1 result, got %d", len(resp.Results))
+	}
+	if resp.Total != 3 {
+		t.Errorf("page 1: expected Total=3, got %d", resp.Total)
+	}
+	if len(resp.Results) > 0 && resp.Results[0].Item.ID == page0ID {
+		t.Errorf("page 1: expected a different direct hit than page 0, got the same item %q", page0ID)
+	}
+
+	// Page 2: limit=1, offset=2 — third direct hit.
+	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 2})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("page 2: expected 1 result, got %d", len(resp.Results))
+	}
+
+	// Single-page (limit=10) — must return all three direct hits, in
+	// deterministic order (by workspace_id then id).
+	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 10})
+	if err != nil {
+		t.Fatalf("single page: %v", err)
+	}
+	if len(resp.Results) != 3 {
+		t.Errorf("single page: expected 3 results, got %d", len(resp.Results))
+	}
+	if resp.Total != 3 {
+		t.Errorf("single page: expected Total=3, got %d", resp.Total)
+	}
+
+	// Stable ordering — same query twice gives the same order.
+	resp2, _ := s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 10})
+	for i := range resp.Results {
+		if i >= len(resp2.Results) {
+			break
+		}
+		if resp.Results[i].Item.ID != resp2.Results[i].Item.ID {
+			t.Errorf("ordering not deterministic at index %d: %q vs %q",
+				i, resp.Results[i].Item.ID, resp2.Results[i].Item.ID)
+		}
+	}
+}
+
+// TestParseItemNumber covers the helper that gates the bare-numeric search path.
+func TestParseItemNumber(t *testing.T) {
+	cases := []struct {
+		in  string
+		num int
+		ok  bool
+	}{
+		{"843", 843, true},
+		{"1", 1, true},
+		{"  42  ", 42, true},
+		{"", 0, false},
+		{"0", 0, false}, // zero is not a valid item number
+		{"abc", 0, false},
+		{"843a", 0, false},
+		{"a843", 0, false},
+		{"TASK-843", 0, false}, // hyphens go through parseItemRef instead
+		{"-5", 0, false},
+		{"12.5", 0, false},
+		{"9999999", 0, false}, // exceeds upper bound
+	}
+	for _, c := range cases {
+		num, ok := parseItemNumber(c.in)
+		if num != c.num || ok != c.ok {
+			t.Errorf("parseItemNumber(%q) = (%d, %v), want (%d, %v)", c.in, num, ok, c.num, c.ok)
+		}
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	tests := []struct {
 		input    string

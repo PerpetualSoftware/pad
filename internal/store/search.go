@@ -168,6 +168,11 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			refArgs = append(refArgs, value)
 		}
 
+		// Stable order for cross-workspace global searches (where the same
+		// PREFIX-N can match in multiple workspaces) so pagination is
+		// deterministic across pages.
+		refQuery += ` ORDER BY i.workspace_id, i.id`
+
 		refRows, err := s.db.Query(s.q(refQuery), refArgs...)
 		if err == nil {
 			defer refRows.Close()
@@ -198,6 +203,134 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			}
 		}
 		// If no ref matches, fall through to FTS below
+	}
+
+	// Bare numeric query (e.g. "843") — resolve to the workspace-global
+	// item with that item_number. Mirrors the parseItemRef block above
+	// but without a collection prefix filter, since item_number is unique
+	// per workspace (idx_items_workspace_number). At most one item matches.
+	// Lets the search palette double as a quick "go to item N" jump. See BUG-910.
+	if number, ok := parseItemNumber(strings.TrimSpace(params.Query)); ok {
+		numQuery := `
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+			       i.created_by, i.last_modified_by, i.source,
+			       i.item_number, i.created_at, i.updated_at,
+			       c.slug, c.name, c.icon, c.prefix,
+			       COALESCE(au.name, ''), COALESCE(au.email, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			LEFT JOIN users au ON au.id = i.assigned_user_id
+			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+			WHERE i.item_number = ? AND i.deleted_at IS NULL
+		`
+		numArgs := []interface{}{number}
+
+		if params.Workspace != "" {
+			numQuery += ` AND i.workspace_id = (SELECT id FROM workspaces WHERE slug = ? AND deleted_at IS NULL)`
+			numArgs = append(numArgs, params.Workspace)
+		} else if len(params.WorkspaceIDs) > 0 {
+			numQuery += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
+			for _, id := range params.WorkspaceIDs {
+				numArgs = append(numArgs, id)
+			}
+		}
+
+		if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+			numQuery += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
+			for _, id := range params.CollectionIDs {
+				numArgs = append(numArgs, id)
+			}
+			for _, id := range params.ItemIDs {
+				numArgs = append(numArgs, id)
+			}
+		} else if len(params.CollectionIDs) > 0 {
+			numQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
+			for _, id := range params.CollectionIDs {
+				numArgs = append(numArgs, id)
+			}
+		} else if len(params.ItemIDs) > 0 {
+			numQuery += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
+			for _, id := range params.ItemIDs {
+				numArgs = append(numArgs, id)
+			}
+		}
+
+		// Apply content filters to numeric lookup too
+		if params.Collection != "" {
+			numQuery += ` AND c.slug = ?`
+			numArgs = append(numArgs, params.Collection)
+		}
+		for key, value := range params.FieldFilters {
+			if !validFieldKey.MatchString(key) {
+				continue
+			}
+			numQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
+			numArgs = append(numArgs, value)
+		}
+
+		// Avoid duplicating an item already added by the parseItemRef path
+		// (can't happen for purely numeric queries, but cheap to be safe).
+		alreadySeen := make(map[string]bool, len(results))
+		for _, r := range results {
+			alreadySeen[r.Item.ID] = true
+		}
+
+		// Stable cross-workspace order for global searches (item_number is
+		// only unique per workspace, so q="1" can match one row per workspace).
+		numQuery += ` ORDER BY i.workspace_id, i.id`
+
+		numRows, err := s.db.Query(s.q(numQuery), numArgs...)
+		if err == nil {
+			defer numRows.Close()
+			for numRows.Next() {
+				var r SearchResult
+				var createdAt, updatedAt string
+				var pinned bool
+				if err := numRows.Scan(
+					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
+					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+					&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
+					&r.Item.CreatedBy, &r.Item.LastModifiedBy,
+					&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
+					&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
+					&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
+					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+				); err != nil {
+					continue
+				}
+				if alreadySeen[r.Item.ID] {
+					continue
+				}
+				r.Item.Pinned = pinned
+				r.Item.CreatedAt = parseTime(createdAt)
+				r.Item.UpdatedAt = parseTime(updatedAt)
+				hydrateItemComputedMetadata(&r.Item)
+				r.Item.Content = ""
+				r.Snippet = r.Item.Title
+				r.Rank = -1000 // Best possible rank so it sorts first
+				results = append(results, r)
+			}
+		}
+		// FTS still runs below — bare numeric tokens may also match titles/content
+	}
+
+	// Snapshot direct hits (ref + numeric) before FTS so we can:
+	//   1) exclude their IDs in the FTS WHERE clause to prevent them from
+	//      consuming pagination slots that would otherwise be deduped after
+	//      LIMIT/OFFSET (which would shrink page 0 below `limit` and skew
+	//      later pages); and
+	//   2) add their count back to the FTS total so SearchResponse.Total
+	//      reflects the true result set size.
+	// See Codex review for BUG-864/910 round 1.
+	refHits := results
+	refCount := len(refHits)
+	refIDs := make(map[string]bool, refCount)
+	directHitIDs := make([]string, 0, refCount)
+	for _, r := range refHits {
+		refIDs[r.Item.ID] = true
+		directHitIDs = append(directHitIDs, r.Item.ID)
 	}
 
 	// Build the FTS query — the approach differs between SQLite (FTS5 virtual table)
@@ -314,6 +447,15 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		args = append(args, value)
 	}
 
+	// Exclude direct hits (ref + numeric) from FTS so duplicates don't consume
+	// pagination slots. See snapshot above and Codex review for BUG-864/910 r1.
+	if len(directHitIDs) > 0 {
+		query += ` AND i.id NOT IN (` + placeholders(len(directHitIDs)) + `)`
+		for _, id := range directHitIDs {
+			args = append(args, id)
+		}
+	}
+
 	// --- Count query (total matching results before pagination) ---
 	// Build the count query by replacing the SELECT columns with COUNT(*).
 	// We reuse the same WHERE/JOIN clauses.
@@ -346,11 +488,23 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// Replay the same filters for the count query
 	countQuery, countArgs = s.appendSearchFilters(countQuery, countArgs, params)
 
+	// Mirror the FTS direct-hit exclusion so the count matches the SELECT.
+	if len(directHitIDs) > 0 {
+		countQuery += ` AND i.id NOT IN (` + placeholders(len(directHitIDs)) + `)`
+		for _, id := range directHitIDs {
+			countArgs = append(countArgs, id)
+		}
+	}
+
 	var total int
 	countErr := s.db.QueryRow(s.q(countQuery), countArgs...).Scan(&total)
 	if countErr != nil {
 		// Count failure is non-fatal — fall back to reporting result count
 		total = -1
+	} else {
+		// FTS count excluded direct hits via NOT IN — add them back so
+		// SearchResponse.Total reflects the full result set the caller sees.
+		total += refCount
 	}
 
 	// --- Faceted counts (full result set, not paginated) ---
@@ -366,44 +520,42 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	query += s.searchOrderClause(params)
 
 	// --- Pagination ---
-	// Direct ref hits (e.g. searching "TASK-5") are prepended to results
-	// and always appear first. They occupy slots on page 0; on subsequent
-	// pages we exclude them and adjust the FTS offset accordingly.
-	refHits := results // save ref results before FTS
-	refCount := len(refHits)
-	refIDs := make(map[string]bool, refCount)
-	for _, r := range refHits {
-		refIDs[r.Item.ID] = true
-	}
+	// Direct hits (ref + numeric) sort first conceptually (rank=-1000); FTS
+	// fills in afterwards. Both halves must be paginated together to honour
+	// (offset, limit). In global searches (no `workspace`), the same
+	// PREFIX-N or bare number can match in multiple workspaces, so refCount
+	// can exceed Limit — we must slice direct hits, not just append them.
+	// See Codex review for BUG-864/910 round 2.
 
 	if total < 0 {
 		total = 0
 	}
 
-	// Adjust FTS pagination to account for ref hit slots on page 0.
-	ftsLimit := params.Limit
-	ftsOffset := params.Offset
-	if refCount > 0 {
-		if params.Offset == 0 {
-			// Page 0: ref hits take first slots, FTS fills the rest.
-			ftsLimit = params.Limit - refCount
-			if ftsLimit < 0 {
-				ftsLimit = 0
-			}
-		} else {
-			// Pages after 0: ref hits were shown on page 0, shift offset.
-			ftsOffset = params.Offset - refCount
-			if ftsOffset < 0 {
-				ftsOffset = 0
-			}
-		}
+	// Slice direct hits according to (offset, limit). After this block,
+	// `results` holds the direct-hit page slice, `directConsumed` is how
+	// many direct-hit slots that consumed, and ftsLimit/ftsOffset are the
+	// FTS-side adjustments to fill the remaining slots / skip past direct
+	// hits we already showed.
+	directStart := params.Offset
+	if directStart > refCount {
+		directStart = refCount
+	}
+	directEnd := params.Offset + params.Limit
+	if directEnd > refCount {
+		directEnd = refCount
+	}
+	results = results[directStart:directEnd]
+	directConsumed := directEnd - directStart
+
+	ftsLimit := params.Limit - directConsumed
+	if ftsLimit < 0 {
+		ftsLimit = 0
+	}
+	ftsOffset := params.Offset - refCount
+	if ftsOffset < 0 {
+		ftsOffset = 0
 	}
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", ftsLimit, ftsOffset)
-
-	// Start building final results: page 0 includes ref hits, later pages don't.
-	if params.Offset > 0 {
-		results = nil
-	}
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {

@@ -26,15 +26,15 @@ const (
 )
 
 type Config struct {
-	Mode     string `toml:"mode"`
-	Host     string `toml:"host"`
-	Port     int    `toml:"port"`
-	URL      string `toml:"url"`        // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
-	PublicURL string `toml:"-"` // Deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Sourced from the PUBLIC_URL env var only — intentionally NOT persisted to ~/.pad/config.toml so a CLI Save() (via `pad init` / `pad configure`) on a host where PUBLIC_URL is set for unrelated reasons cannot contaminate the user's config file with a stale URL that outlives the env var. Operators who want a config-file equivalent should set `url` (the toml `URL` field). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
-	Editor   string `toml:"editor"`
-	LogLevel string `toml:"log_level"`
-	DBPath   string `toml:"-"` // computed, not from config file
-	DataDir  string `toml:"-"` // computed
+	Mode      string `toml:"mode"`
+	Host      string `toml:"host"`
+	Port      int    `toml:"port"`
+	URL       string `toml:"url"` // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	PublicURL string `toml:"-"`   // Deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Sourced from the PUBLIC_URL env var only — intentionally NOT persisted to ~/.pad/config.toml so a CLI Save() (via `pad init` / `pad configure`) on a host where PUBLIC_URL is set for unrelated reasons cannot contaminate the user's config file with a stale URL that outlives the env var. Operators who want a config-file equivalent should set `url` (the toml `URL` field). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
+	Editor    string `toml:"editor"`
+	LogLevel  string `toml:"log_level"`
+	DBPath    string `toml:"-"` // computed, not from config file
+	DataDir   string `toml:"-"` // computed
 
 	ConfigPath      string `toml:"-"`
 	LoadedFromFile  bool   `toml:"-"`
