@@ -29,7 +29,8 @@ type Config struct {
 	Mode     string `toml:"mode"`
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
-	URL      string `toml:"url"` // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	URL      string `toml:"url"`        // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	PublicURL string `toml:"public_url"` // Optional: deployment's public URL used in emailed links (e.g., https://app.getpad.dev). Server-only; does NOT flip CLI to remote mode. Falls back here when URL is empty.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
 	DBPath   string `toml:"-"` // computed, not from config file
@@ -151,6 +152,18 @@ func Load() (*Config, error) {
 		if cfg.Mode == "" {
 			cfg.Mode = ModeRemote
 		}
+	}
+	// PUBLIC_URL is the deployment's public URL, used by the server to build
+	// emailed link targets (password reset, invites, share links). It is
+	// intentionally separate from PAD_URL: PUBLIC_URL is a generic env var
+	// name commonly set in deployment environments (e.g. pad-cloud's
+	// docker-compose passes it to the sidecar), so reading it into cfg.URL
+	// would risk flipping a CLI user's Mode to Remote on any host that
+	// happens to have PUBLIC_URL set for unrelated reasons. Keep it
+	// server-only and consult it from BaseURL() as a fallback.
+	if v := os.Getenv("PUBLIC_URL"); v != "" {
+		cfg.PublicURL = v
+		cfg.LoadedFromEnv = true
 	}
 
 	// Email (Maileroo)
@@ -293,11 +306,27 @@ func (c *Config) Addr() string {
 }
 
 // BaseURL returns the base URL for the API.
-// If URL is set (via config, --url flag, or PAD_URL), it takes precedence.
-// Otherwise, constructs from host and port.
+// Resolution order:
+//  1. URL (set via config "url", --url flag, or PAD_URL env)
+//  2. PublicURL (set via config "public_url" or PUBLIC_URL env) — the
+//     deployment's public URL, used for server-side link generation in
+//     emails (password reset, invites, share links). Distinct from URL
+//     because PUBLIC_URL is a generic env var commonly set in deployment
+//     environments and we don't want it to flip CLI Mode to Remote.
+//  3. Construct from Host and Port.
+//
+// IMPORTANT: when this server runs with Host=0.0.0.0 (Docker, k8s, any
+// bind-all setup) and neither URL nor PublicURL is set, the constructed
+// fallback will be "http://0.0.0.0:port" — a string the recipient of an
+// email cannot resolve. Callers that emit user-facing links should set
+// PublicURL on those deployments. The server logs a startup warning in
+// that scenario; see internal/server/server.go.
 func (c *Config) BaseURL() string {
 	if c.URL != "" {
 		return strings.TrimRight(c.URL, "/")
+	}
+	if c.PublicURL != "" {
+		return strings.TrimRight(c.PublicURL, "/")
 	}
 	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
 }

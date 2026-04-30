@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -273,8 +274,24 @@ func (s *Server) SetVersion(version, commit, buildTime string) {
 }
 
 // SetBaseURL sets the public base URL used for generating shareable links.
-func (s *Server) SetBaseURL(url string) {
-	s.baseURL = strings.TrimRight(url, "/")
+//
+// If the supplied URL has an unspecified bind-all host ("0.0.0.0", "::",
+// "[::]"), this logs a WARN: such a URL is the right thing to *bind* to
+// but the wrong thing to *send* to a recipient (their browser cannot
+// resolve 0.0.0.0 / :: as a connect target). Callers shipping email
+// links from such a deployment should set PAD_URL or PUBLIC_URL to the
+// real public hostname (e.g. https://app.getpad.dev). See BUG-899.
+func (s *Server) SetBaseURL(rawURL string) {
+	s.baseURL = strings.TrimRight(rawURL, "/")
+	if s.baseURL == "" {
+		return
+	}
+	if u, err := url.Parse(s.baseURL); err == nil {
+		switch u.Hostname() {
+		case "", "0.0.0.0", "::":
+			slog.Warn("server base URL has an unspecified host; emailed links (password reset, invites, share links) will not be reachable. Set PAD_URL or PUBLIC_URL to the deployment's public URL (e.g. https://app.getpad.dev).", "base_url", s.baseURL)
+		}
+	}
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
