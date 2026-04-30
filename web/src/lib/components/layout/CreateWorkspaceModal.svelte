@@ -74,14 +74,20 @@
 	}
 
 	function isAcceptedBundleFile(name: string): boolean {
-		return /(\.tar\.gz|\.tgz|\.json)$/i.test(name);
+		// Web UI is strict tar.gz-only. The new-workspace flow always
+		// POSTs as Content-Type: application/gzip so a dropped .json
+		// would route to the bundle path and fail with a gzip decode
+		// error — confusing UX. Operators with a legacy JSON export
+		// can still curl it against POST /workspaces/import directly;
+		// the server keeps the JSON dispatch for back-compat.
+		return /(\.tar\.gz|\.tgz)$/i.test(name);
 	}
 
 	function setFile(file: File) {
 		importFile = file;
 		mode = 'import';
 		if (!newName.trim()) {
-			newName = file.name.replace(/(-export\.tar\.gz$|\.tar\.gz$|\.tgz$|\.json$)/i, '');
+			newName = file.name.replace(/(-export\.tar\.gz$|\.tar\.gz$|\.tgz$)/i, '');
 		}
 	}
 
