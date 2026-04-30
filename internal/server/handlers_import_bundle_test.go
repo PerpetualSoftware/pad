@@ -247,6 +247,392 @@ func TestImportBundle_RejectsBadGzip(t *testing.T) {
 	}
 }
 
+// TestImportBundle_RejectsDuplicateExport pins the duplicate-entry
+// guard added during the PLAN-890 audit (TASK-891). A bundle that
+// contains two pad-export.json entries used to call ImportWorkspace
+// twice — leaving the first workspace as an orphan with no
+// attachments. The handler now rejects the second occurrence with a
+// 400 AND rolls back the partial workspace from the first occurrence
+// so a malformed bundle can't pile up half-imported workspaces in
+// the destination. Codex P1 on PR #308.
+func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
+	// Build a real, valid pad-export.json by exporting an empty
+	// workspace from a live server, then assemble a tar.gz that
+	// includes it twice.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	for i := 0; i < 2; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tw.Write(exportJSON); err != nil {
+			t.Fatalf("write export: %v", err)
+		}
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=DupExport",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("duplicate export: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Errorf("expected duplicate-export error, got body=%s", rr.Body.String())
+	}
+
+	// Verify the partial workspace from the first pad-export.json
+	// occurrence got rolled back. Listing must NOT include "DupExport".
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"name":"DupExport"`) || strings.Contains(rr.Body.String(), `"slug":"DupExport"`) {
+		t.Errorf("partial workspace was NOT rolled back; listing body=%s", rr.Body.String())
+	}
+}
+
+// TestImportBundle_RejectsDuplicateManifest pins the matching guard
+// for attachments/manifest.json. A second occurrence would silently
+// overwrite manifestByPath and any blobs that matched the first
+// manifest's keys would look orphaned — mark as a consumed-skip and
+// be lost.
+func TestImportBundle_RejectsDuplicateManifest(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	// Hand-build the manifest bytes — tiny empty manifest is fine for
+	// this test; we only care that it parses, and a second copy
+	// triggers the guard.
+	manifest := []byte(`{"version":1,"entries":[]}`)
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+		t.Fatalf("write export header: %v", err)
+	}
+	if _, err := tw.Write(exportJSON); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: "attachments/manifest.json", Mode: 0o644, Size: int64(len(manifest))}); err != nil {
+			t.Fatalf("write manifest header: %v", err)
+		}
+		if _, err := tw.Write(manifest); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=DupManifest",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("duplicate manifest: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Errorf("expected duplicate-manifest error, got body=%s", rr.Body.String())
+	}
+
+	// Verify the partial workspace from the first pad-export.json
+	// occurrence got rolled back when the duplicate manifest was
+	// detected. Same rollback contract as TestImportBundle_RejectsDuplicateExport.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"name":"DupManifest"`) || strings.Contains(rr.Body.String(), `"slug":"DupManifest"`) {
+		t.Errorf("partial workspace was NOT rolled back; listing body=%s", rr.Body.String())
+	}
+}
+
+// TestImportBundle_RejectsPathTraversal pins the defense-in-depth
+// reject of tar entries with `..` segments or absolute paths. The
+// storage backend is hash-keyed so a malicious entry name can't
+// actually escape the attachment store, but rejecting up front
+// keeps the audit story unambiguous and means hand-edited bundles
+// fail loudly rather than slipping through the default arm.
+//
+// Cases involving NUL bytes are covered by the unit test on
+// isSafeBundleEntryName below — Go's archive/tar refuses to encode a
+// NUL-bearing header name, so we can't exercise that path through
+// the integration handler.
+func TestImportBundle_RejectsPathTraversal(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   string
+		wantErr string
+	}{
+		{"dot-dot in path", "attachments/../../etc/passwd", "unsafe entry name"},
+		{"absolute unix path", "/etc/passwd", "unsafe entry name"},
+		{"absolute windows path", "\\windows\\system32\\config", "unsafe entry name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			gzw := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gzw)
+			if err := tw.WriteHeader(&tar.Header{Name: tc.entry, Mode: 0o644, Size: 4}); err != nil {
+				t.Fatalf("write header: %v", err)
+			}
+			if _, err := tw.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+				t.Fatalf("write blob: %v", err)
+			}
+			tw.Close()
+			gzw.Close()
+
+			srv, _ := testServerWithAttachments(t)
+			req := httptest.NewRequest("POST", "/api/v1/workspaces/import",
+				bytes.NewReader(buf.Bytes()))
+			req.Header.Set("Content-Type", "application/gzip")
+			req.RemoteAddr = "127.0.0.1:1234"
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("%s: status=%d, want 400; body=%s", tc.name, rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tc.wantErr) {
+				t.Errorf("%s: expected %q in body, got %s", tc.name, tc.wantErr, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestImportBundle_PathTraversalAfterExportRollsBack pins Codex P1
+// round 3 on PR #308: a path-traversal entry that follows a valid
+// pad-export.json must trigger the workspace rollback, not just
+// return a 400 with the workspace left behind. Earlier the
+// path-traversal early-return passed nil instead of ws, so the
+// handler skipped the cleanup cascade.
+func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
+	// Real pad-export.json so the first entry creates a workspace.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+		t.Fatalf("write export header: %v", err)
+	}
+	if _, err := tw.Write(exportJSON); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	// Inject a path-traversal entry AFTER the valid pad-export.json
+	// so workspace creation has already happened by the time the
+	// guard fires.
+	if err := tw.WriteHeader(&tar.Header{Name: "attachments/../../etc/passwd", Mode: 0o644, Size: 4}); err != nil {
+		t.Fatalf("write evil header: %v", err)
+	}
+	if _, err := tw.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+		t.Fatalf("write evil body: %v", err)
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=PostExportTraversal",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("traversal-after-export: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "unsafe entry name") {
+		t.Errorf("expected unsafe-entry error, got body=%s", rr.Body.String())
+	}
+
+	// Workspace must be gone — the partial create from the valid
+	// pad-export.json should have been rolled back.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), `"slug":"PostExportTraversal"`) ||
+		strings.Contains(rr.Body.String(), `"name":"PostExportTraversal"`) {
+		t.Errorf("workspace was NOT rolled back after path-traversal reject; body=%s", rr.Body.String())
+	}
+}
+
+// TestImportBundle_RollbackTombstonesAttachments pins Codex P1
+// round 2 on PR #308: when the duplicate-manifest guard fires AFTER
+// blobs have already been rehydrated, the rollback must tombstone
+// every attachment row in the partial workspace (deleted_at set) so
+// orphan-GC reclaims the blobs and per-user storage usage is
+// correct. Without the cascade, the workspace was soft-deleted but
+// the attachment rows stayed live, pinning blobs from GC.
+//
+// The test builds a real export bundle (so manifest entries match
+// real blob bytes), then surgically appends a duplicate manifest.json
+// at the end. Posting that to a fresh server triggers blob
+// rehydration of the original bundle's entries before the duplicate
+// guard fires.
+func TestImportBundle_RollbackTombstonesAttachments(t *testing.T) {
+	// Source workspace: upload a real PNG so the bundle has a real
+	// blob entry the destination must rehydrate before hitting the
+	// duplicate at the end.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doMultipartUpload(src, srcSlug, "logo.png", realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Real bundle from the source.
+	rr = doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export?format=tar", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rr.Code, rr.Body.String())
+	}
+	realBundle := rr.Body.Bytes()
+
+	// Extract every tar entry from the real bundle, then re-emit them
+	// in order + inject a duplicate attachments/manifest.json AFTER
+	// every original entry. The duplicate fires after blob
+	// rehydration, exercising the cascade path.
+	gz, err := gzip.NewReader(bytes.NewReader(realBundle))
+	if err != nil {
+		t.Fatalf("gzip read: %v", err)
+	}
+	tr := tar.NewReader(gz)
+
+	var out bytes.Buffer
+	outGz := gzip.NewWriter(&out)
+	outTw := tar.NewWriter(outGz)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar next: %v", err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read entry: %v", err)
+		}
+		if err := outTw.WriteHeader(&tar.Header{Name: hdr.Name, Mode: 0o644, Size: int64(len(body))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := outTw.Write(body); err != nil {
+			t.Fatalf("write body: %v", err)
+		}
+	}
+	gz.Close()
+
+	// Inject the duplicate manifest.json after every real entry.
+	dupe := []byte(`{"version":1,"entries":[]}`)
+	if err := outTw.WriteHeader(&tar.Header{Name: "attachments/manifest.json", Mode: 0o644, Size: int64(len(dupe))}); err != nil {
+		t.Fatalf("write dupe header: %v", err)
+	}
+	if _, err := outTw.Write(dupe); err != nil {
+		t.Fatalf("write dupe: %v", err)
+	}
+	outTw.Close()
+	outGz.Close()
+
+	// Post to a fresh server and confirm 400.
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=Tombstoned",
+		bytes.NewReader(out.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("rollback test: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Fatalf("expected duplicate-manifest error, got body=%s", rr.Body.String())
+	}
+
+	// Workspace must be gone from listings.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), `"slug":"Tombstoned"`) || strings.Contains(rr.Body.String(), `"name":"Tombstoned"`) {
+		t.Errorf("workspace was NOT rolled back; listing body=%s", rr.Body.String())
+	}
+
+	// Critically: every attachment row that the partial-import
+	// rehydrated must now have deleted_at set so orphan-GC can
+	// reclaim the blobs. Querying the store directly because the
+	// workspace is gone from the API surface.
+	var live int
+	if err := dest.store.DB().QueryRow(
+		`SELECT COUNT(*) FROM attachments WHERE deleted_at IS NULL`,
+	).Scan(&live); err != nil {
+		t.Fatalf("count live attachments: %v", err)
+	}
+	if live != 0 {
+		t.Errorf("rollback left %d live attachment rows; expected 0 (all should be tombstoned)", live)
+	}
+}
+
+// TestIsSafeBundleEntryName covers isSafeBundleEntryName as a pure
+// helper. Some inputs (NUL bytes, empty strings) can't be exercised
+// through archive/tar — Go's tar.WriteHeader refuses to encode them
+// — so we test the helper directly to keep the defense-in-depth
+// guarantees verifiable.
+func TestIsSafeBundleEntryName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"normal export", "pad-export.json", true},
+		{"normal manifest", "attachments/manifest.json", true},
+		{"normal blob", "attachments/abc123.png", true},
+		{"single dot segment is fine", "./pad-export.json", true},
+		{"empty string", "", false},
+		{"absolute unix", "/etc/passwd", false},
+		{"absolute windows", "\\windows\\system32", false},
+		{"dot-dot prefix", "../etc/passwd", false},
+		{"dot-dot mid", "attachments/../../etc/passwd", false},
+		{"dot-dot only", "..", false},
+		{"NUL byte mid", "attachments/foo\x00.png", false},
+		{"backslash dot-dot", "attachments\\..\\..\\etc", false},
+		{"trailing dot-dot", "attachments/..", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isSafeBundleEntryName(tc.in)
+			if got != tc.want {
+				t.Errorf("isSafeBundleEntryName(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // readBundleAsBytes is a tiny helper for callers that want the raw
 // bundle to feed straight into another POST. Kept separate from
 // readBundle (which extracts a map) so import-side tests don't have

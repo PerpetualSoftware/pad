@@ -63,6 +63,18 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // The handler does the JSON / bundle dispatch; the actual work is
 // done by importBundle which is unit-testable without the http stack.
 //
+// Auth: any authenticated user. The global RequireAuth middleware
+// (server.go:539) gates this endpoint when users exist on the host.
+// There is no per-workspace role check because import CREATES a new
+// workspace — there's nothing pre-existing to authorize against.
+// The importing user becomes the workspace owner via AddWorkspaceMember
+// after a successful import (mirrors handleCreateWorkspace).
+//
+// Quota: per-user storage quotas are NOT enforced on import. The
+// upload handler is also warn-only in Phase 1 (see handlers_attachments.go
+// maybeWarnStorageQuota). When quota enforcement lands the import
+// path needs the same gate. Tracked as a follow-up under PLAN-890.
+//
 // Bundle layout (matches handlers_export_bundle.go):
 //
 //	pad-export.json
@@ -114,7 +126,45 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
 		var statusErr *importStatusError
-		if errors.As(err, &statusErr) {
+		isValidationReject := errors.As(err, &statusErr)
+
+		// If a clean validation-phase reject happens AFTER the
+		// workspace has been created (e.g. a duplicate pad-export.json
+		// or path-traversal entry that follows the first export
+		// header), roll back the partial workspace so a malicious
+		// or malformed bundle can't pile up half-imported workspaces
+		// in the destination instance. Codex P1 on PR #308.
+		//
+		// Cascade: a duplicate manifest.json or duplicate pad-export.json
+		// can fire AFTER blobs have already been rehydrated — those
+		// attachment rows would otherwise stay live (deleted_at IS NULL),
+		// pin their blobs from orphan-GC, and count toward the
+		// importing user's storage usage. Tombstone every attachment
+		// in the partial workspace BEFORE soft-deleting the workspace
+		// itself so orphan-GC reclaims the blobs after the grace
+		// window. Codex P1 round 2 on PR #308.
+		//
+		// Mid-stream errors that are NOT importStatusError (e.g.
+		// manifest decode failure after items inserted) intentionally
+		// keep the partial workspace — the existing comment on the
+		// manifest decode path notes "workspace created but
+		// attachments not restored" and that decision is tracked
+		// separately under TASK-896 (partial-import design).
+		if isValidationReject && ws != nil {
+			if n, attErr := s.store.SoftDeleteWorkspaceAttachments(ws.ID); attErr != nil {
+				slog.Warn("import: failed to tombstone partial-workspace attachments",
+					"workspace_id", ws.ID, "error", attErr)
+			} else if n > 0 {
+				slog.Info("import: rolled back partial-workspace attachments",
+					"workspace_id", ws.ID, "rows", n)
+			}
+			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
+				slog.Warn("import: failed to roll back partial workspace after validation reject",
+					"workspace_slug", ws.Slug, "error", delErr)
+			}
+		}
+
+		if isValidationReject {
 			writeError(w, statusErr.status, statusErr.code, statusErr.message)
 			return
 		}
@@ -172,8 +222,39 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			continue
 		}
 
+		// Defense-in-depth path-traversal rejection. The bundle path
+		// is hash-keyed at the storage layer (see rehydrateAttachment
+		// → store.Put with the locally-computed sha256), so a tar
+		// entry name with `..` or an absolute path can't actually
+		// write outside the attachment store. We still reject these
+		// up front so the audit story is unambiguous and so a bundle
+		// that's been hand-edited to look malicious fails loudly
+		// rather than silently being skipped via the `default` arm.
+		//
+		// Return ws here (not nil) so the handler can roll back any
+		// workspace that was already created by a preceding valid
+		// pad-export.json. Before pad-export.json is seen, ws is nil
+		// so this falls through to the no-workspace cleanup path
+		// anyway. Codex P1 round 3 on PR #308.
+		if !isSafeBundleEntryName(hdr.Name) {
+			return ws, &importStatusError{
+				status: http.StatusBadRequest, code: "bad_bundle",
+				message: "Bundle contains unsafe entry name: " + hdr.Name,
+			}
+		}
+
 		switch {
 		case hdr.Name == "pad-export.json":
+			// Bundles must contain exactly one pad-export.json.
+			// A second occurrence would call ImportWorkspace again,
+			// stranding the first workspace as an orphan with no
+			// attachments. Reject duplicates loudly.
+			if exportSeen {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains duplicate pad-export.json",
+				}
+			}
 			// pad-export.json can grow large for content-heavy
 			// workspaces (items + version history). Use the
 			// metadata-specific cap so deployments that lower
@@ -212,6 +293,17 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 				return nil, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
 					message: "Bundle ordering violation: manifest.json before pad-export.json",
+				}
+			}
+			// Reject duplicate manifest.json — a second occurrence
+			// would silently overwrite manifestByPath, dropping prior
+			// entries and leaving any blobs that referenced them
+			// looking orphaned (manifest lookup miss → consumed and
+			// skipped). Same shape as the duplicate-export guard.
+			if manifestSeen {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains duplicate attachments/manifest.json",
 				}
 			}
 			// Manifest size scales with attachment count, not blob
@@ -441,3 +533,42 @@ type importStatusError struct {
 }
 
 func (e *importStatusError) Error() string { return e.message }
+
+// isSafeBundleEntryName rejects tar entry names that look like a
+// path-traversal attempt. The bundle path is already hash-keyed at
+// the storage layer (see rehydrateAttachment), so a malicious entry
+// name can't actually escape the attachment store — but rejecting
+// up front makes the audit story unambiguous and means hand-edited
+// bundles fail loudly rather than silently slipping through the
+// `default` arm of importBundle's switch.
+//
+// Rules:
+//   - Reject absolute paths ("/etc/passwd", "\\windows\\system32").
+//   - Reject any segment equal to "..". A literal "." segment is
+//     rare but harmless; we only block ".." since that's the
+//     traversal vector.
+//   - Reject embedded NUL bytes (defense against C-style truncation
+//     bugs in any downstream consumer).
+//
+// Returns true when the entry name is safe to consume.
+func isSafeBundleEntryName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.ContainsRune(name, 0) {
+		return false
+	}
+	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "\\") {
+		return false
+	}
+	// Treat both forward- and back-slashes as separators for the
+	// traversal check; tar names are canonically forward-slashed but
+	// a malicious bundle could mix them to bypass a naive split.
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
+}
