@@ -412,9 +412,14 @@
 						</div>
 					{/if}
 					<div class="field-row">
-						<span class="field-label">Export</span>
-						<a href="/api/v1/workspaces/{wsSlug}/export" download="{wsSlug}-export.json" class="btn btn-small">
-							Download JSON
+						<span class="field-label">Export bundle</span>
+						<a
+							href="/api/v1/workspaces/{wsSlug}/export?format=tar"
+							download="{wsSlug}-export.tar.gz"
+							class="btn btn-small"
+							title="Includes items, comments, version history, and attachment blobs. Re-importable via the Create Workspace dialog."
+						>
+							Download .tar.gz
 						</a>
 					</div>
 				</div>
