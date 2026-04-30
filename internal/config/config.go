@@ -30,7 +30,7 @@ type Config struct {
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
 	URL      string `toml:"url"`        // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
-	PublicURL string `toml:"public_url"` // Optional: deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
+	PublicURL string `toml:"-"` // Deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Sourced from the PUBLIC_URL env var only — intentionally NOT persisted to ~/.pad/config.toml so a CLI Save() (via `pad init` / `pad configure`) on a host where PUBLIC_URL is set for unrelated reasons cannot contaminate the user's config file with a stale URL that outlives the env var. Operators who want a config-file equivalent should set `url` (the toml `URL` field). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
 	DBPath   string `toml:"-"` // computed, not from config file
@@ -331,12 +331,13 @@ func (c *Config) BaseURL() string {
 // links (password reset, invites, share links, admin invitations).
 // Resolution order:
 //  1. URL (set via config "url", --url flag, or PAD_URL env)
-//  2. PublicURL (set via config "public_url" or PUBLIC_URL env) — the
-//     deployment's public URL. PUBLIC_URL is a generic env var commonly
-//     set in deployment environments (e.g. pad-cloud's docker-compose
-//     forwards it to the pad service); consulting it here lets the
-//     server pick up the correct public hostname without an extra
-//     pad-namespaced env var.
+//  2. PublicURL (sourced from the PUBLIC_URL env var only — see the
+//     PublicURL field comment for why it isn't persisted to config) —
+//     the deployment's public URL. PUBLIC_URL is a generic env var
+//     commonly set in deployment environments (e.g. pad-cloud's
+//     docker-compose forwards it to the pad service); consulting it
+//     here lets the server pick up the correct public hostname without
+//     an extra pad-namespaced env var.
 //  3. Construct from Host and Port — the historical fallback.
 //
 // IMPORTANT: when this server runs with Host=0.0.0.0 (Docker, k8s, any

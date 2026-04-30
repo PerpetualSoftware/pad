@@ -65,7 +65,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_HOST` | `127.0.0.1` | Listen address (`0.0.0.0` for Docker/production) |
 | `PAD_PORT` | `7777` | Listen port |
 | `PAD_URL` | — | Public-facing base URL (e.g., `https://pad.example.com`). Used for invitation, password-reset, and share-link emails. **Required when `PAD_HOST=0.0.0.0`** — otherwise emailed links point at `http://0.0.0.0:port` and are unreachable to recipients. |
-| `PUBLIC_URL` | — | Alternative to `PAD_URL` using the generic env-var convention. Read server-side only (does not affect CLI mode). Precedence: `PAD_URL` > `PUBLIC_URL` > constructed `http://host:port`. |
+| `PUBLIC_URL` | — | Alternative to `PAD_URL` using the generic env-var convention. Server-side only — does not affect CLI mode, does not influence the CLI's API endpoint, and is not persisted to `config.toml`. Precedence: `PAD_URL` > `PUBLIC_URL` > constructed `http://host:port`. |
 | `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config |
 | `PAD_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `PAD_MODE` | `local` | Mode: `local`, `remote`, `cloud` |

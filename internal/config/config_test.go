@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -393,6 +395,43 @@ func TestPublicURLAloneDoesNotMarkConfigured(t *testing.T) {
 	cfg := &Config{PublicURL: "https://app.example.com"}
 	if cfg.IsConfigured() {
 		t.Fatal("PUBLIC_URL on its own must not make IsConfigured() true — would short-circuit the CLI's not-configured branch on hosts that set the var for unrelated reasons")
+	}
+}
+
+// TestPublicURLNotPersistedToTOML pins the contract that PUBLIC_URL is a
+// runtime/deployment fact only and never gets written to config.toml.
+// Without this, `pad init` or `pad configure` running on a host with a
+// generic PUBLIC_URL set for unrelated reasons would persist that URL
+// into ~/.pad/config.toml — the value would then outlive the env var
+// (the next pad invocation, even with PUBLIC_URL unset, would still
+// pick it up from the file) and contaminate emailed links indefinitely.
+func TestPublicURLNotPersistedToTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_DATA_DIR", home)
+
+	cfg := DefaultConfig()
+	cfg.ConfigPath = filepath.Join(home, "config.toml")
+	cfg.URL = "https://api.example.com"
+	cfg.PublicURL = "https://app.example.com" // simulating value loaded from PUBLIC_URL env
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(cfg.ConfigPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if strings.Contains(string(raw), "https://app.example.com") {
+		t.Fatalf("config.toml must not persist PUBLIC_URL value:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "public_url") {
+		t.Fatalf("config.toml must not contain a public_url key:\n%s", raw)
+	}
+	// The persisted url= key (PAD_URL/--url path) should still be present.
+	if !strings.Contains(string(raw), "https://api.example.com") {
+		t.Fatalf("expected url= to round-trip:\n%s", raw)
 	}
 }
 
