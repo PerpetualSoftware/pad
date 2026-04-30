@@ -276,7 +276,11 @@ func serveCmd() *cobra.Command {
 
 			srv := server.New(s)
 			srv.SetVersion(version, commit, buildTime)
-			srv.SetBaseURL(cfg.BaseURL())
+			// PublicLinkBaseURL — not BaseURL() — so the server picks up
+			// PUBLIC_URL from the deployment env (BUG-899). BaseURL() is
+			// CLI-client-only and would leak the same env var into local
+			// CLI API routing on developer hosts.
+			srv.SetBaseURL(cfg.PublicLinkBaseURL())
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
 			srv.SetTrustedProxies(cfg.TrustedProxies)
@@ -461,7 +465,9 @@ func serveCmd() *cobra.Command {
 				if fromName == "" {
 					fromName = "Pad"
 				}
-				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.BaseURL()), cfg.MailerooAPIKey)
+				// PublicLinkBaseURL — emailed links must use the deployment's
+				// public URL (PUBLIC_URL), not the CLI BaseURL().
+				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.PublicLinkBaseURL()), cfg.MailerooAPIKey)
 				slog.Info("Email sending enabled via Maileroo (env)")
 			}
 			// Platform settings can override or provide email config

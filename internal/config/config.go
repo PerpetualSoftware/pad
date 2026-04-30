@@ -29,7 +29,8 @@ type Config struct {
 	Mode     string `toml:"mode"`
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
-	URL      string `toml:"url"` // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	URL      string `toml:"url"`        // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
+	PublicURL string `toml:"-"` // Deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Sourced from the PUBLIC_URL env var only — intentionally NOT persisted to ~/.pad/config.toml so a CLI Save() (via `pad init` / `pad configure`) on a host where PUBLIC_URL is set for unrelated reasons cannot contaminate the user's config file with a stale URL that outlives the env var. Operators who want a config-file equivalent should set `url` (the toml `URL` field). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
 	DBPath   string `toml:"-"` // computed, not from config file
@@ -151,6 +152,24 @@ func Load() (*Config, error) {
 		if cfg.Mode == "" {
 			cfg.Mode = ModeRemote
 		}
+	}
+	// PUBLIC_URL is the deployment's public URL, used by the server to build
+	// emailed link targets (password reset, invites, share links). It is
+	// intentionally separate from PAD_URL: PUBLIC_URL is a generic env var
+	// name commonly set in deployment environments (e.g. pad-cloud's
+	// docker-compose passes it to the sidecar), so reading it into cfg.URL
+	// would risk flipping a CLI user's Mode to Remote on any host that
+	// happens to have PUBLIC_URL set for unrelated reasons. Keep it
+	// server-only and consult it from BaseURL() as a fallback.
+	//
+	// Crucially, do NOT mark LoadedFromEnv when only PUBLIC_URL is set —
+	// IsConfigured() (which gates CLI setup-flow short-circuits) would
+	// otherwise treat a host that happens to have PUBLIC_URL set as
+	// "configured" and skip the CLI "not configured" branch even though
+	// the user never made any CLI choice. PUBLIC_URL is purely a
+	// server-side fact; LoadedFromEnv is purely a CLI-affordance signal.
+	if v := os.Getenv("PUBLIC_URL"); v != "" {
+		cfg.PublicURL = v
 	}
 
 	// Email (Maileroo)
@@ -295,9 +314,49 @@ func (c *Config) Addr() string {
 // BaseURL returns the base URL for the API.
 // If URL is set (via config, --url flag, or PAD_URL), it takes precedence.
 // Otherwise, constructs from host and port.
+//
+// This is the CLI-client-facing accessor: it controls where the local
+// `pad` CLI sends API requests, so it must NOT be influenced by the
+// generic PUBLIC_URL env var (which a developer's host might have set
+// for unrelated reasons — e.g. some other CI tool or framework). For
+// the server's emailed-link target, see PublicLinkBaseURL().
 func (c *Config) BaseURL() string {
 	if c.URL != "" {
 		return strings.TrimRight(c.URL, "/")
+	}
+	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
+}
+
+// PublicLinkBaseURL returns the URL the server should embed in emailed
+// links (password reset, invites, share links, admin invitations).
+// Resolution order:
+//  1. URL (set via config "url", --url flag, or PAD_URL env)
+//  2. PublicURL (sourced from the PUBLIC_URL env var only — see the
+//     PublicURL field comment for why it isn't persisted to config) —
+//     the deployment's public URL. PUBLIC_URL is a generic env var
+//     commonly set in deployment environments (e.g. pad-cloud's
+//     docker-compose forwards it to the pad service); consulting it
+//     here lets the server pick up the correct public hostname without
+//     an extra pad-namespaced env var.
+//  3. Construct from Host and Port — the historical fallback.
+//
+// IMPORTANT: when this server runs with Host=0.0.0.0 (Docker, k8s, any
+// bind-all setup) and neither URL nor PublicURL is set, the fallback
+// yields "http://0.0.0.0:port" — a string email recipients cannot
+// resolve. Callers should set PUBLIC_URL (or PAD_URL) on those
+// deployments. The server logs a startup warning in that scenario; see
+// (*server.Server).SetBaseURL.
+//
+// This is intentionally distinct from BaseURL() (the CLI client URL):
+// the CLI must never be hijacked by an unrelated PUBLIC_URL set in the
+// developer's shell, but the server SHOULD pick it up to avoid shipping
+// http://0.0.0.0:7777 in user-facing emails (BUG-899).
+func (c *Config) PublicLinkBaseURL() string {
+	if c.URL != "" {
+		return strings.TrimRight(c.URL, "/")
+	}
+	if c.PublicURL != "" {
+		return strings.TrimRight(c.PublicURL, "/")
 	}
 	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
 }

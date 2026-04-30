@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -292,5 +294,171 @@ func TestBrowserURLPrefersExplicitURL(t *testing.T) {
 	want := "https://app.getpad.dev"
 	if got := cfg.BrowserURL(); got != want {
 		t.Fatalf("BrowserURL() = %q, want %q (explicit URL must win and trailing slash trimmed)", got, want)
+	}
+}
+
+// TestBaseURLIgnoresPublicURL pins the CLI-only contract for BaseURL():
+// the function backs the local `pad` CLI's choice of API endpoint and
+// must NOT be influenced by PublicURL, even when PublicURL is set.
+// Otherwise a developer with a host-level PUBLIC_URL set for unrelated
+// reasons would have their CLI silently route requests to that URL
+// instead of their actual local server (Codex review of BUG-899).
+func TestBaseURLIgnoresPublicURL(t *testing.T) {
+	cfg := &Config{
+		Host:      "127.0.0.1",
+		Port:      7777,
+		PublicURL: "https://app.example.com",
+	}
+	const want = "http://127.0.0.1:7777"
+	if got := cfg.BaseURL(); got != want {
+		t.Fatalf("BaseURL() = %q, want %q (PublicURL must not leak into CLI routing)", got, want)
+	}
+}
+
+// TestPublicLinkBaseURLPrecedence pins the resolution order on the
+// server-side accessor used to build emailed link targets: URL >
+// PublicURL > constructed http://host:port. This is what fixes BUG-899
+// — Pad Cloud sets PUBLIC_URL on the pad-cloud sidecar and forwards it
+// to the pad service, so emailed links use the public domain instead
+// of the bind address.
+func TestPublicLinkBaseURLPrecedence(t *testing.T) {
+	cases := []struct {
+		name      string
+		url       string
+		publicURL string
+		host      string
+		port      int
+		want      string
+	}{
+		{"URL wins over PublicURL", "https://api.example.com", "https://app.example.com", "0.0.0.0", 7777, "https://api.example.com"},
+		{"URL wins with trailing slash trimmed", "https://api.example.com/", "", "0.0.0.0", 7777, "https://api.example.com"},
+		{"PublicURL used when URL empty", "", "https://app.example.com", "0.0.0.0", 7777, "https://app.example.com"},
+		{"PublicURL trims trailing slash", "", "https://app.example.com/", "0.0.0.0", 7777, "https://app.example.com"},
+		{"falls through to host:port when both empty", "", "", "127.0.0.1", 7777, "http://127.0.0.1:7777"},
+		{"host:port fallback exposes 0.0.0.0 (BUG-899 repro shape)", "", "", "0.0.0.0", 7777, "http://0.0.0.0:7777"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{URL: tc.url, PublicURL: tc.publicURL, Host: tc.host, Port: tc.port}
+			if got := cfg.PublicLinkBaseURL(); got != tc.want {
+				t.Fatalf("PublicLinkBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadWithPublicURLDoesNotFlipMode is the safety belt against the
+// footgun of treating PUBLIC_URL the same as PAD_URL: PUBLIC_URL is a
+// generic env var name commonly set in unrelated deployment contexts, so
+// reading it must NOT change the CLI's Mode (which would route the local
+// CLI at a remote URL the operator never asked it to use).
+func TestLoadWithPublicURLDoesNotFlipMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_DATA_DIR", home)
+	t.Setenv("PUBLIC_URL", "https://app.example.com")
+	// Explicitly clear PAD_URL in case the runner's environment has it.
+	t.Setenv("PAD_URL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config with PUBLIC_URL: %v", err)
+	}
+	if cfg.PublicURL != "https://app.example.com" {
+		t.Fatalf("expected PUBLIC_URL to populate cfg.PublicURL, got %q", cfg.PublicURL)
+	}
+	if cfg.URL != "" {
+		t.Fatalf("PUBLIC_URL must not populate cfg.URL (would flip CLI to remote mode), got %q", cfg.URL)
+	}
+	if cfg.Mode == ModeRemote {
+		t.Fatal("PUBLIC_URL must not flip Mode to Remote — that's PAD_URL's job")
+	}
+	// Server-side public-link accessor sees PUBLIC_URL...
+	if cfg.PublicLinkBaseURL() != "https://app.example.com" {
+		t.Fatalf("expected PublicLinkBaseURL to use PUBLIC_URL when PAD_URL is unset, got %q", cfg.PublicLinkBaseURL())
+	}
+	// ...but the CLI client accessor does not (would otherwise hijack
+	// CLI routing on hosts with PUBLIC_URL set for unrelated reasons).
+	if cfg.BaseURL() == "https://app.example.com" {
+		t.Fatal("BaseURL() must not be influenced by PUBLIC_URL — CLI routing isolation")
+	}
+}
+
+// TestPublicURLAloneDoesNotMarkConfigured guards against PUBLIC_URL
+// affecting CLI control flow. IsConfigured() gates whether the CLI shows
+// its "not configured / run setup" branch (cmd/pad/configure.go); if a
+// generic PUBLIC_URL on the host marked the config as env-loaded, a
+// developer who's never run `pad init` would get past that gate and the
+// CLI would happily talk to a default-mode endpoint built from PUBLIC_URL.
+// PUBLIC_URL is server-only — it must never participate in IsConfigured().
+func TestPublicURLAloneDoesNotMarkConfigured(t *testing.T) {
+	cfg := &Config{PublicURL: "https://app.example.com"}
+	if cfg.IsConfigured() {
+		t.Fatal("PUBLIC_URL on its own must not make IsConfigured() true — would short-circuit the CLI's not-configured branch on hosts that set the var for unrelated reasons")
+	}
+}
+
+// TestPublicURLNotPersistedToTOML pins the contract that PUBLIC_URL is a
+// runtime/deployment fact only and never gets written to config.toml.
+// Without this, `pad init` or `pad configure` running on a host with a
+// generic PUBLIC_URL set for unrelated reasons would persist that URL
+// into ~/.pad/config.toml — the value would then outlive the env var
+// (the next pad invocation, even with PUBLIC_URL unset, would still
+// pick it up from the file) and contaminate emailed links indefinitely.
+func TestPublicURLNotPersistedToTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_DATA_DIR", home)
+
+	cfg := DefaultConfig()
+	cfg.ConfigPath = filepath.Join(home, "config.toml")
+	cfg.URL = "https://api.example.com"
+	cfg.PublicURL = "https://app.example.com" // simulating value loaded from PUBLIC_URL env
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(cfg.ConfigPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if strings.Contains(string(raw), "https://app.example.com") {
+		t.Fatalf("config.toml must not persist PUBLIC_URL value:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "public_url") {
+		t.Fatalf("config.toml must not contain a public_url key:\n%s", raw)
+	}
+	// The persisted url= key (PAD_URL/--url path) should still be present.
+	if !strings.Contains(string(raw), "https://api.example.com") {
+		t.Fatalf("expected url= to round-trip:\n%s", raw)
+	}
+}
+
+// TestLoadPADURLBeatsPUBLICURL pins the precedence at the env-load layer
+// so an operator running on a host that has PUBLIC_URL set for unrelated
+// reasons can still override it explicitly with PAD_URL.
+func TestLoadPADURLBeatsPUBLICURL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_DATA_DIR", home)
+	t.Setenv("PAD_URL", "https://api.example.com")
+	t.Setenv("PUBLIC_URL", "https://app.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.URL != "https://api.example.com" {
+		t.Fatalf("expected PAD_URL to populate cfg.URL, got %q", cfg.URL)
+	}
+	if cfg.PublicURL != "https://app.example.com" {
+		t.Fatalf("expected PUBLIC_URL to still populate cfg.PublicURL even when PAD_URL set, got %q", cfg.PublicURL)
+	}
+	if cfg.BaseURL() != "https://api.example.com" {
+		t.Fatalf("PAD_URL must win in BaseURL(), got %q", cfg.BaseURL())
+	}
+	if cfg.PublicLinkBaseURL() != "https://api.example.com" {
+		t.Fatalf("PAD_URL must also win in PublicLinkBaseURL(), got %q", cfg.PublicLinkBaseURL())
 	}
 }
