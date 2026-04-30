@@ -1154,6 +1154,61 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 	}
 }
 
+// TestSearch_BareNumericQueryDedupsAgainstFTS guards the fix for the Codex
+// review finding on the BUG-864/910 PR: when a bare-numeric query also
+// matches FTS via the item's title/content (because the title literally
+// contains the digit string), the direct hit must not also appear as an
+// FTS row — otherwise pagination shrinks page 0 below `limit` and shifts
+// later pages. With the FTS WHERE-clause exclusion, the item appears
+// exactly once and Total counts it exactly once.
+func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	// First item gets item_number=1 (workspace-global).
+	target, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{
+		Title:   "Reference number 1 in title",
+		Content: "This task talks about the digit 1 a lot. 1 is everywhere.",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem target: %v", err)
+	}
+	if target.ItemNumber == nil || *target.ItemNumber != 1 {
+		t.Fatalf("expected target.ItemNumber=1, got %v", target.ItemNumber)
+	}
+
+	resp, err := s.Search(SearchParams{Query: "1", Workspace: ws.Slug})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+
+	// The target must appear exactly once across results.
+	count := 0
+	for _, r := range resp.Results {
+		if r.Item.ID == target.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected target item to appear exactly once, got %d occurrences", count)
+	}
+
+	// Total must count the target exactly once too — not double-counted as
+	// (1 direct hit) + (1 FTS hit) = 2.
+	if resp.Total != len(resp.Results) {
+		t.Errorf("expected Total=%d (= len(Results)), got Total=%d", len(resp.Results), resp.Total)
+	}
+}
+
 // TestParseItemNumber covers the helper that gates the bare-numeric search path.
 func TestParseItemNumber(t *testing.T) {
 	cases := []struct {

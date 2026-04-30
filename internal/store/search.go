@@ -307,6 +307,23 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		// FTS still runs below — bare numeric tokens may also match titles/content
 	}
 
+	// Snapshot direct hits (ref + numeric) before FTS so we can:
+	//   1) exclude their IDs in the FTS WHERE clause to prevent them from
+	//      consuming pagination slots that would otherwise be deduped after
+	//      LIMIT/OFFSET (which would shrink page 0 below `limit` and skew
+	//      later pages); and
+	//   2) add their count back to the FTS total so SearchResponse.Total
+	//      reflects the true result set size.
+	// See Codex review for BUG-864/910 round 1.
+	refHits := results
+	refCount := len(refHits)
+	refIDs := make(map[string]bool, refCount)
+	directHitIDs := make([]string, 0, refCount)
+	for _, r := range refHits {
+		refIDs[r.Item.ID] = true
+		directHitIDs = append(directHitIDs, r.Item.ID)
+	}
+
 	// Build the FTS query — the approach differs between SQLite (FTS5 virtual table)
 	// and PostgreSQL (tsvector column on the items table).
 	var query string
@@ -421,6 +438,15 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		args = append(args, value)
 	}
 
+	// Exclude direct hits (ref + numeric) from FTS so duplicates don't consume
+	// pagination slots. See snapshot above and Codex review for BUG-864/910 r1.
+	if len(directHitIDs) > 0 {
+		query += ` AND i.id NOT IN (` + placeholders(len(directHitIDs)) + `)`
+		for _, id := range directHitIDs {
+			args = append(args, id)
+		}
+	}
+
 	// --- Count query (total matching results before pagination) ---
 	// Build the count query by replacing the SELECT columns with COUNT(*).
 	// We reuse the same WHERE/JOIN clauses.
@@ -453,11 +479,23 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// Replay the same filters for the count query
 	countQuery, countArgs = s.appendSearchFilters(countQuery, countArgs, params)
 
+	// Mirror the FTS direct-hit exclusion so the count matches the SELECT.
+	if len(directHitIDs) > 0 {
+		countQuery += ` AND i.id NOT IN (` + placeholders(len(directHitIDs)) + `)`
+		for _, id := range directHitIDs {
+			countArgs = append(countArgs, id)
+		}
+	}
+
 	var total int
 	countErr := s.db.QueryRow(s.q(countQuery), countArgs...).Scan(&total)
 	if countErr != nil {
 		// Count failure is non-fatal — fall back to reporting result count
 		total = -1
+	} else {
+		// FTS count excluded direct hits via NOT IN — add them back so
+		// SearchResponse.Total reflects the full result set the caller sees.
+		total += refCount
 	}
 
 	// --- Faceted counts (full result set, not paginated) ---
@@ -473,15 +511,11 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	query += s.searchOrderClause(params)
 
 	// --- Pagination ---
-	// Direct ref hits (e.g. searching "TASK-5") are prepended to results
-	// and always appear first. They occupy slots on page 0; on subsequent
-	// pages we exclude them and adjust the FTS offset accordingly.
-	refHits := results // save ref results before FTS
-	refCount := len(refHits)
-	refIDs := make(map[string]bool, refCount)
-	for _, r := range refHits {
-		refIDs[r.Item.ID] = true
-	}
+	// Direct hits (ref + numeric) are prepended to results and always appear
+	// first. They occupy slots on page 0; on subsequent pages we exclude them
+	// and adjust the FTS offset accordingly. refCount/refIDs were snapshotted
+	// above (before the FTS query was built) so the FTS WHERE clause could
+	// already exclude their IDs.
 
 	if total < 0 {
 		total = 0
