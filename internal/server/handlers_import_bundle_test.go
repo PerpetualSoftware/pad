@@ -247,6 +247,192 @@ func TestImportBundle_RejectsBadGzip(t *testing.T) {
 	}
 }
 
+// TestImportBundle_RejectsDuplicateExport pins the duplicate-entry
+// guard added during the PLAN-890 audit (TASK-891). A bundle that
+// contains two pad-export.json entries used to call ImportWorkspace
+// twice — leaving the first workspace as an orphan with no
+// attachments. The handler now rejects the second occurrence with a
+// 400 so the failure is loud.
+func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
+	// Build a real, valid pad-export.json by exporting an empty
+	// workspace from a live server, then assemble a tar.gz that
+	// includes it twice.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	for i := 0; i < 2; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tw.Write(exportJSON); err != nil {
+			t.Fatalf("write export: %v", err)
+		}
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=DupExport",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("duplicate export: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Errorf("expected duplicate-export error, got body=%s", rr.Body.String())
+	}
+}
+
+// TestImportBundle_RejectsDuplicateManifest pins the matching guard
+// for attachments/manifest.json. A second occurrence would silently
+// overwrite manifestByPath and any blobs that matched the first
+// manifest's keys would look orphaned — mark as a consumed-skip and
+// be lost.
+func TestImportBundle_RejectsDuplicateManifest(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	// Hand-build the manifest bytes — tiny empty manifest is fine for
+	// this test; we only care that it parses, and a second copy
+	// triggers the guard.
+	manifest := []byte(`{"version":1,"entries":[]}`)
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+		t.Fatalf("write export header: %v", err)
+	}
+	if _, err := tw.Write(exportJSON); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: "attachments/manifest.json", Mode: 0o644, Size: int64(len(manifest))}); err != nil {
+			t.Fatalf("write manifest header: %v", err)
+		}
+		if _, err := tw.Write(manifest); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=DupManifest",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("duplicate manifest: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Errorf("expected duplicate-manifest error, got body=%s", rr.Body.String())
+	}
+}
+
+// TestImportBundle_RejectsPathTraversal pins the defense-in-depth
+// reject of tar entries with `..` segments or absolute paths. The
+// storage backend is hash-keyed so a malicious entry name can't
+// actually escape the attachment store, but rejecting up front
+// keeps the audit story unambiguous and means hand-edited bundles
+// fail loudly rather than slipping through the default arm.
+//
+// Cases involving NUL bytes are covered by the unit test on
+// isSafeBundleEntryName below — Go's archive/tar refuses to encode a
+// NUL-bearing header name, so we can't exercise that path through
+// the integration handler.
+func TestImportBundle_RejectsPathTraversal(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   string
+		wantErr string
+	}{
+		{"dot-dot in path", "attachments/../../etc/passwd", "unsafe entry name"},
+		{"absolute unix path", "/etc/passwd", "unsafe entry name"},
+		{"absolute windows path", "\\windows\\system32\\config", "unsafe entry name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			gzw := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gzw)
+			if err := tw.WriteHeader(&tar.Header{Name: tc.entry, Mode: 0o644, Size: 4}); err != nil {
+				t.Fatalf("write header: %v", err)
+			}
+			if _, err := tw.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+				t.Fatalf("write blob: %v", err)
+			}
+			tw.Close()
+			gzw.Close()
+
+			srv, _ := testServerWithAttachments(t)
+			req := httptest.NewRequest("POST", "/api/v1/workspaces/import",
+				bytes.NewReader(buf.Bytes()))
+			req.Header.Set("Content-Type", "application/gzip")
+			req.RemoteAddr = "127.0.0.1:1234"
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("%s: status=%d, want 400; body=%s", tc.name, rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tc.wantErr) {
+				t.Errorf("%s: expected %q in body, got %s", tc.name, tc.wantErr, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestIsSafeBundleEntryName covers isSafeBundleEntryName as a pure
+// helper. Some inputs (NUL bytes, empty strings) can't be exercised
+// through archive/tar — Go's tar.WriteHeader refuses to encode them
+// — so we test the helper directly to keep the defense-in-depth
+// guarantees verifiable.
+func TestIsSafeBundleEntryName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"normal export", "pad-export.json", true},
+		{"normal manifest", "attachments/manifest.json", true},
+		{"normal blob", "attachments/abc123.png", true},
+		{"single dot segment is fine", "./pad-export.json", true},
+		{"empty string", "", false},
+		{"absolute unix", "/etc/passwd", false},
+		{"absolute windows", "\\windows\\system32", false},
+		{"dot-dot prefix", "../etc/passwd", false},
+		{"dot-dot mid", "attachments/../../etc/passwd", false},
+		{"dot-dot only", "..", false},
+		{"NUL byte mid", "attachments/foo\x00.png", false},
+		{"backslash dot-dot", "attachments\\..\\..\\etc", false},
+		{"trailing dot-dot", "attachments/..", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isSafeBundleEntryName(tc.in)
+			if got != tc.want {
+				t.Errorf("isSafeBundleEntryName(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // readBundleAsBytes is a tiny helper for callers that want the raw
 // bundle to feed straight into another POST. Kept separate from
 // readBundle (which extracts a map) so import-side tests don't have

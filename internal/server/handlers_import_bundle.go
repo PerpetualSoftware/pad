@@ -63,6 +63,18 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // The handler does the JSON / bundle dispatch; the actual work is
 // done by importBundle which is unit-testable without the http stack.
 //
+// Auth: any authenticated user. The global RequireAuth middleware
+// (server.go:539) gates this endpoint when users exist on the host.
+// There is no per-workspace role check because import CREATES a new
+// workspace — there's nothing pre-existing to authorize against.
+// The importing user becomes the workspace owner via AddWorkspaceMember
+// after a successful import (mirrors handleCreateWorkspace).
+//
+// Quota: per-user storage quotas are NOT enforced on import. The
+// upload handler is also warn-only in Phase 1 (see handlers_attachments.go
+// maybeWarnStorageQuota). When quota enforcement lands the import
+// path needs the same gate. Tracked as a follow-up under PLAN-890.
+//
 // Bundle layout (matches handlers_export_bundle.go):
 //
 //	pad-export.json
@@ -172,8 +184,33 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			continue
 		}
 
+		// Defense-in-depth path-traversal rejection. The bundle path
+		// is hash-keyed at the storage layer (see rehydrateAttachment
+		// → store.Put with the locally-computed sha256), so a tar
+		// entry name with `..` or an absolute path can't actually
+		// write outside the attachment store. We still reject these
+		// up front so the audit story is unambiguous and so a bundle
+		// that's been hand-edited to look malicious fails loudly
+		// rather than silently being skipped via the `default` arm.
+		if !isSafeBundleEntryName(hdr.Name) {
+			return nil, &importStatusError{
+				status: http.StatusBadRequest, code: "bad_bundle",
+				message: "Bundle contains unsafe entry name: " + hdr.Name,
+			}
+		}
+
 		switch {
 		case hdr.Name == "pad-export.json":
+			// Bundles must contain exactly one pad-export.json.
+			// A second occurrence would call ImportWorkspace again,
+			// stranding the first workspace as an orphan with no
+			// attachments. Reject duplicates loudly.
+			if exportSeen {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains duplicate pad-export.json",
+				}
+			}
 			// pad-export.json can grow large for content-heavy
 			// workspaces (items + version history). Use the
 			// metadata-specific cap so deployments that lower
@@ -212,6 +249,17 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 				return nil, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
 					message: "Bundle ordering violation: manifest.json before pad-export.json",
+				}
+			}
+			// Reject duplicate manifest.json — a second occurrence
+			// would silently overwrite manifestByPath, dropping prior
+			// entries and leaving any blobs that referenced them
+			// looking orphaned (manifest lookup miss → consumed and
+			// skipped). Same shape as the duplicate-export guard.
+			if manifestSeen {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains duplicate attachments/manifest.json",
 				}
 			}
 			// Manifest size scales with attachment count, not blob
@@ -441,3 +489,42 @@ type importStatusError struct {
 }
 
 func (e *importStatusError) Error() string { return e.message }
+
+// isSafeBundleEntryName rejects tar entry names that look like a
+// path-traversal attempt. The bundle path is already hash-keyed at
+// the storage layer (see rehydrateAttachment), so a malicious entry
+// name can't actually escape the attachment store — but rejecting
+// up front makes the audit story unambiguous and means hand-edited
+// bundles fail loudly rather than silently slipping through the
+// `default` arm of importBundle's switch.
+//
+// Rules:
+//   - Reject absolute paths ("/etc/passwd", "\\windows\\system32").
+//   - Reject any segment equal to "..". A literal "." segment is
+//     rare but harmless; we only block ".." since that's the
+//     traversal vector.
+//   - Reject embedded NUL bytes (defense against C-style truncation
+//     bugs in any downstream consumer).
+//
+// Returns true when the entry name is safe to consume.
+func isSafeBundleEntryName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.ContainsRune(name, 0) {
+		return false
+	}
+	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "\\") {
+		return false
+	}
+	// Treat both forward- and back-slashes as separators for the
+	// traversal check; tar names are canonically forward-slashed but
+	// a malicious bundle could mix them to bypass a naive split.
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
+}
