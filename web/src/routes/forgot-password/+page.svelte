@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
 
@@ -48,9 +49,13 @@
 	}
 </script>
 
-<div class="page">
+<AuthHeader cloudMode={authStore.cloudMode} />
+
+<div class="page" class:cloud-mode={authStore.cloudMode}>
 	<div class="card">
-		<h1 class="logo">Pad</h1>
+		{#if !authStore.cloudMode}
+			<h1 class="logo">Pad</h1>
+		{/if}
 
 		{#if sent}
 			<p class="subtitle">Check your email</p>
@@ -108,6 +113,10 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		padding: var(--space-4);
+	}
+
+	.page.cloud-mode {
+		padding-top: 4rem;
 	}
 
 	.card {

@@ -5,6 +5,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
+	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
 	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
 
@@ -233,9 +234,13 @@
 	}
 </script>
 
-<div class="login-page">
+<AuthHeader {cloudMode} />
+
+<div class="login-page" class:cloud-mode={cloudMode}>
 	<div class="login-card">
-		<h1 class="logo">Pad</h1>
+		{#if !cloudMode}
+			<h1 class="logo">Pad</h1>
+		{/if}
 
 		{#if oauthBanner}
 			<div
@@ -399,6 +404,14 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		padding: var(--space-4);
+	}
+
+	/* On Cloud the AuthHeader is fixed at the top; reserve room so the auth
+	   card does not slide under it. 4rem matches the header's effective
+	   height (text-lg wordmark + py-4 padding ≈ 56–64px depending on line
+	   metrics; we round up to the brand-spec value of pt-16 = 4rem). */
+	.login-page.cloud-mode {
+		padding-top: 4rem;
 	}
 
 	.login-card {
