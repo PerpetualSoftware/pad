@@ -132,6 +132,21 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Best practice:** Always use `--comment` when changing status to explain *why*. This creates an audit trail linking each status change to a reason.
 
+**Working with attachments:**
+
+Items can carry image and file attachments. They appear in item content as `![alt](pad-attachment:<uuid>)` for images or `[label](pad-attachment:<uuid>)` for files. To inspect or read those bytes, **always use the CLI** — never read files directly from `~/.pad/attachments/`.
+
+- "show me the attachments on TASK-5" → `pad attachment list --item TASK-5 --format json`
+- "list all images in this workspace" → `pad attachment list --category image --format json`
+- "what is attachment <uuid>?" → `pad attachment show <uuid> --format json` (HEAD; metadata only)
+- "let me see the screenshot on TASK-5" / encountering `pad-attachment:<uuid>` in content → `pad attachment view <uuid>` then read the printed file path with your image tool
+- "save the design PDF locally" → `pad attachment view <uuid> -o ./design.pdf`
+- "upload this screenshot to TASK-5" → `pad attachment upload TASK-5 ./screenshot.png`
+
+`pad attachment view <uuid>` writes the bytes to a fresh OS temp file and prints just the absolute path on stdout, so it composes cleanly: `IMG=$(pad attachment view <uuid>) && open "$IMG"`. The filename comes from the attachment's stored name so the extension is correct.
+
+**Hard rule for agents:** NEVER read files directly from `~/.pad/attachments/<storage_key>`. That bypasses workspace ACLs, doesn't work on Pad Cloud / remote / Postgres deployments, skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop), and breaks when storage moves to S3. Always go through `pad attachment view|show|list|download` so the request is authenticated and works on every Pad install.
+
 **Planning:**
 - "let's create a plan" → Multi-step planning workflow (see below)
 - "break plan 2 into tasks" → Decompose a plan into task items
@@ -269,6 +284,27 @@ pad item unblock TASK-5 TASK-8        # Remove a dependency
 pad collection list [--format json]   # List collections with counts
 pad collection create "Name" --fields "key:type[:options]; ..." [--icon "X"]
 ```
+
+### Attachments
+```bash
+# List + inspect (HEAD) — no bytes transferred
+pad attachment list [--item REF] [--category image|video|audio|document|text|archive|other]
+pad attachment list [--attached|--unattached] [--limit N] [--offset N] [--format json]
+pad attachment show <id> [--format json]                    # MIME, size, filename, ETag
+
+# View — fetch to a temp file (or -o path) and print the path. Use this
+# when you encounter ![alt](pad-attachment:<uuid>) in item content.
+pad attachment view <id>                                    # → /tmp/.../filename.png
+pad attachment view <id> -o ./screenshot.png                # explicit destination
+pad attachment view <id> --variant thumb-md                 # derived variant
+pad attachment view <id> --format json                      # {path,mime,size}
+
+# Upload + explicit-path download
+pad attachment upload <item-ref-or-dash> <path> [--filename "Name.ext"]
+pad attachment download <id> <out-path> [--variant thumb-sm|thumb-md]
+```
+
+**NEVER** read directly from `~/.pad/attachments/`. Always go through these commands.
 
 ### Webhooks
 ```bash

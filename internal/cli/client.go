@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -761,6 +762,127 @@ func (c *Client) DownloadAttachment(wsSlug, attachmentID, variant string, w io.W
 		return resp.Header.Get("Content-Type"), n, fmt.Errorf("stream download: %w", copyErr)
 	}
 	return resp.Header.Get("Content-Type"), n, nil
+}
+
+// AttachmentMetadata mirrors the response headers of
+// HEAD /api/v1/workspaces/{slug}/attachments/{id}. The server doesn't
+// expose a separate JSON metadata endpoint — HEAD returns the same
+// Content-Type / Content-Length / etc. headers a GET would set, with
+// no body. That's enough for the CLI's `pad attachment show` to
+// surface size + MIME without paying for the bytes.
+type AttachmentMetadata struct {
+	ID                 string `json:"id"`
+	MIME               string `json:"mime"`
+	Size               int64  `json:"size"`
+	ContentDisposition string `json:"content_disposition,omitempty"`
+	ETag               string `json:"etag,omitempty"`
+	LastModified       string `json:"last_modified,omitempty"`
+}
+
+// HeadAttachment issues a HEAD request and returns the headers as
+// structured metadata. Variant is forwarded the same way as
+// DownloadAttachment — empty string for the original blob.
+func (c *Client) HeadAttachment(wsSlug, attachmentID, variant string) (*AttachmentMetadata, error) {
+	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	if variant != "" {
+		path += "?variant=" + url.QueryEscape(variant)
+	}
+	req, err := c.newRequest("HEAD", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("head attachment: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, c.parseError(resp)
+	}
+	meta := &AttachmentMetadata{
+		ID:                 attachmentID,
+		MIME:               resp.Header.Get("Content-Type"),
+		ContentDisposition: resp.Header.Get("Content-Disposition"),
+		ETag:               resp.Header.Get("ETag"),
+		LastModified:       resp.Header.Get("Last-Modified"),
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			meta.Size = n
+		}
+	}
+	return meta, nil
+}
+
+// AttachmentListParams encodes the query-string filters the
+// `GET /api/v1/workspaces/{slug}/attachments` endpoint accepts. Zero
+// values are skipped — the server falls back to its built-in defaults.
+type AttachmentListParams struct {
+	// ItemID restricts to attachments parented by this item UUID.
+	// The CLI resolves a TASK-5-style ref to a UUID via GetItem
+	// before calling this method.
+	ItemID string
+	// Item is the legacy attached/unattached enum exposed by the
+	// list endpoint. Ignored when empty.
+	Item string
+	// Category filters by MIME bucket: image|video|audio|document|text|archive|other.
+	Category string
+	// CollectionID restricts to attachments parented by items in
+	// the given collection UUID.
+	CollectionID string
+	// Sort accepts: size|size_desc|filename|filename_desc|created_at|created_at_desc.
+	Sort string
+	Limit  int
+	Offset int
+}
+
+// AttachmentListResponse mirrors the JSON returned by
+// GET /api/v1/workspaces/{slug}/attachments. Rows are typed as
+// json.RawMessage so the CLI can surface the full shape (including
+// joined item title / slug / collection slug) without re-declaring the
+// store.AttachmentListItem struct here.
+type AttachmentListResponse struct {
+	Attachments []json.RawMessage `json:"attachments"`
+	Total       int               `json:"total"`
+	Limit       int               `json:"limit"`
+	Offset      int               `json:"offset"`
+}
+
+// ListAttachments returns a page of attachments in the workspace,
+// applying any filters set on params. Empty fields are omitted from
+// the query string so the server's defaults take over.
+func (c *Client) ListAttachments(wsSlug string, params AttachmentListParams) (*AttachmentListResponse, error) {
+	q := url.Values{}
+	if params.ItemID != "" {
+		q.Set("item_id", params.ItemID)
+	}
+	if params.Item != "" {
+		q.Set("item", params.Item)
+	}
+	if params.Category != "" {
+		q.Set("category", params.Category)
+	}
+	if params.CollectionID != "" {
+		q.Set("collection", params.CollectionID)
+	}
+	if params.Sort != "" {
+		q.Set("sort", params.Sort)
+	}
+	if params.Limit > 0 {
+		q.Set("limit", strconv.Itoa(params.Limit))
+	}
+	if params.Offset > 0 {
+		q.Set("offset", strconv.Itoa(params.Offset))
+	}
+	path := "/workspaces/" + wsSlug + "/attachments"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var result AttachmentListResponse
+	if err := c.get(path, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // newRequest creates an http.Request with auth and agent headers set.

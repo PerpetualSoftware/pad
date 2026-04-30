@@ -143,6 +143,7 @@ func (s *Server) handleGetWorkspaceStorageUsage(w http.ResponseWriter, r *http.R
 //	GET /api/v1/workspaces/{ws}/attachments
 //	    ?category=image|video|audio|document|text|archive|other
 //	    &item=attached|unattached
+//	    &item_id=<uuid>
 //	    &collection=<collection_id>
 //	    &sort=size|size_desc|filename|filename_desc|created_at|created_at_desc
 //	    &limit=<1..200>
@@ -150,6 +151,11 @@ func (s *Server) handleGetWorkspaceStorageUsage(w http.ResponseWriter, r *http.R
 //
 // Unknown values are silently ignored — the server defaults
 // (`created_at_desc`, limit 50, offset 0, no filters) take over.
+//
+// `item_id` (UUID of a specific parent item) is mutually exclusive
+// with `item=unattached`; combining the two yields an empty result
+// set. The CLI's `pad attachment list --item REF` resolves the ref
+// to a UUID client-side and passes it here.
 //
 // Auth: viewer+. Same gate as storage/usage — workspace-wide
 // attachment metadata leaks the same surface area.
@@ -168,6 +174,7 @@ func (s *Server) handleListWorkspaceAttachments(w http.ResponseWriter, r *http.R
 	filters := store.AttachmentListFilters{
 		MimeCategory: strings.ToLower(strings.TrimSpace(q.Get("category"))),
 		CollectionID: strings.TrimSpace(q.Get("collection")),
+		ItemID:       strings.TrimSpace(q.Get("item_id")),
 		Sort:         strings.ToLower(strings.TrimSpace(q.Get("sort"))),
 	}
 	switch strings.ToLower(strings.TrimSpace(q.Get("item"))) {
