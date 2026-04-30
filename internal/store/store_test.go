@@ -1309,22 +1309,22 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 // TestParseItemNumber covers the helper that gates the bare-numeric search path.
 func TestParseItemNumber(t *testing.T) {
 	cases := []struct {
-		in     string
-		num    int
-		ok     bool
+		in  string
+		num int
+		ok  bool
 	}{
 		{"843", 843, true},
 		{"1", 1, true},
 		{"  42  ", 42, true},
 		{"", 0, false},
-		{"0", 0, false},        // zero is not a valid item number
+		{"0", 0, false}, // zero is not a valid item number
 		{"abc", 0, false},
 		{"843a", 0, false},
 		{"a843", 0, false},
 		{"TASK-843", 0, false}, // hyphens go through parseItemRef instead
 		{"-5", 0, false},
 		{"12.5", 0, false},
-		{"9999999", 0, false},  // exceeds upper bound
+		{"9999999", 0, false}, // exceeds upper bound
 	}
 	for _, c := range cases {
 		num, ok := parseItemNumber(c.in)
