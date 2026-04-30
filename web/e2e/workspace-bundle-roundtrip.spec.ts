@@ -177,6 +177,17 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
 	await page.waitForLoadState('domcontentloaded');
 
+	// Wait for the workspace shell to actually hydrate before probing for
+	// the topbar trigger. The shell is fully client-rendered (adapter-static
+	// has no SSR for app routes), and `domcontentloaded` fires before the
+	// SvelteKit app has rehydrated the workspace store. A naked sync
+	// `isVisible()` check below would race that hydration on slower CI
+	// runners and fall through to the mobile branch on a desktop project,
+	// which then times out waiting for an element that doesn't exist on
+	// desktop. Anchor the wait on the workspace heading instead — it's
+	// rendered by the dashboard route the moment hydration completes.
+	await expect(page.getByRole('heading', { name: /E2E Workspace/i })).toBeVisible();
+
 	const topbarTrigger = page.getByTitle('New workspace');
 	if (await topbarTrigger.first().isVisible().catch(() => false)) {
 		await topbarTrigger.first().click();
