@@ -34,6 +34,16 @@
 	let isPro = $derived(plan === 'pro');
 	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
 
+	// Gate for Stripe-backed upgrade affordances. Stripe isn't wired up on
+	// this deployment yet, so the Free → Pro CTAs would dead-end at a 404
+	// from /billing/checkout. Flip this to `true` (or thread it through a
+	// server flag like `authStore.session?.billing_enabled`) once the
+	// pad-cloud sidecar's Stripe integration is live so the "Upgrade to Pro"
+	// buttons return. The "Confirming your upgrade…" / "Upgrade confirmed"
+	// banners below stay wired — they only fire when ?checkout=success is
+	// present in the URL, which can only happen after a real Stripe redirect.
+	const STRIPE_AVAILABLE = false;
+
 	// Upgrade-confirmation state. After Stripe Checkout redirects back with
 	// ?checkout=success, pad-cloud's webhook handler needs a moment to land
 	// at pad's /admin/plan endpoint before the user's plan flips to "pro".
@@ -240,7 +250,7 @@
 
 			{#if isPro}
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
-			{:else}
+			{:else if STRIPE_AVAILABLE}
 				<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
 			{/if}
 		</div>
@@ -278,9 +288,18 @@
 				</tbody>
 			</table>
 			{#if !isPro}
-				<div class="compare-cta">
-					<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
-				</div>
+				{#if STRIPE_AVAILABLE}
+					<div class="compare-cta">
+						<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
+					</div>
+				{:else}
+					<div class="compare-cta coming-soon">
+						<span class="coming-soon-label">Pro — coming soon</span>
+						<span class="coming-soon-note">
+							Interested? Email <a href="mailto:info@getpad.dev?subject=Pad%20Pro%20interest">info@getpad.dev</a> and we'll let you know when it's ready.
+						</span>
+					</div>
+				{/if}
 			{/if}
 		</div>
 	</section>
@@ -489,6 +508,30 @@
 		border-top: 1px solid var(--border);
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	.compare-cta.coming-soon {
+		flex-direction: column;
+		align-items: flex-start;
+		justify-content: flex-start;
+		gap: var(--space-1);
+	}
+
+	.coming-soon-label {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.coming-soon-note {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
+	}
+
+	.coming-soon-note a {
+		color: var(--accent-blue);
+		text-decoration: underline;
 	}
 
 	@media (max-width: 480px) {
