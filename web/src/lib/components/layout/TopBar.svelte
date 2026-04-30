@@ -10,6 +10,7 @@
 	import { goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
+	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 
@@ -855,32 +856,22 @@
 							<button class="dropdown-item" onclick={toggleTheme}>
 								{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
 							</button>
-							{#if authStore.cloudMode}
-								<div class="dropdown-divider"></div>
-								<a
-									href="mailto:support@getpad.dev"
-									class="dropdown-item"
-									onclick={closeUserMenu}
-								>
-									Support
-								</a>
-								<a
-									href="https://status.getpad.dev"
-									target="_blank"
-									rel="noopener noreferrer"
-									class="dropdown-item"
-									onclick={closeUserMenu}
-								>
-									Status
-								</a>
-							{/if}
+
 							<!--
-								"Connect a project…" sits after the cloud-mode Support/Status
-								block (when present) and just above the Sign-out divider —
-								it's a CLI-onboarding action, semantically closer to
-								Settings/Support than to account actions, but visually we
-								want it adjacent to the divider so it reads as a discrete
-								action rather than another link.
+								Resources block (TASK-905). Replaces the prior inline Cloud
+								Support/Status pair — that block became a special case of
+								the unified Resources component, which adds Docs, Changelog,
+								and GitHub on Cloud and a trimmed Docs/GitHub list on
+								self-hosted. Closes the product → marketing handoff seam.
+							-->
+							<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
+
+							<!--
+								"Connect a project…" sits after the Resources block and just
+								above the Sign-out divider — it's a CLI-onboarding action,
+								semantically closer to Settings/Resources than to account
+								actions, but visually we want it adjacent to the divider so
+								it reads as a discrete action rather than another link.
 							-->
 							{#if workspaceStore.current?.slug}
 								<button
@@ -976,25 +967,10 @@
 						<button class="dropdown-item" onclick={toggleTheme}>
 							{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
 						</button>
-						{#if authStore.cloudMode}
-							<div class="dropdown-divider"></div>
-							<a
-								href="mailto:support@getpad.dev"
-								class="dropdown-item"
-								onclick={closeUserMenu}
-							>
-								Support
-							</a>
-							<a
-								href="https://status.getpad.dev"
-								target="_blank"
-								rel="noopener noreferrer"
-								class="dropdown-item"
-								onclick={closeUserMenu}
-							>
-								Status
-							</a>
-						{/if}
+
+						<!-- Resources — see desktop branch for placement rationale. -->
+						<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
+
 						<!-- Connect a project — see desktop branch for placement rationale. -->
 						{#if workspaceStore.current?.slug}
 							<button
