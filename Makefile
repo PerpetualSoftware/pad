@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install
+.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -9,6 +9,11 @@ VERSION   ?= dev
 COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS   := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME)
+
+# Pin to the same golangci-lint version CI runs (see
+# .github/workflows/ci.yml). Bump both places together when upgrading.
+GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 
 build: web
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
@@ -71,5 +76,24 @@ clean:
 	rm -rf web/build
 	go clean ./...
 
-lint:
-	go vet ./...
+# Run the same golangci-lint suite CI runs (see .golangci.yml). Auto-
+# installs the pinned binary on first run so contributors don't have to
+# remember a separate setup step. The lint suite already includes
+# go vet via the govet linter, so we don't double-run it here.
+lint: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run --timeout=5m ./...
+
+# Bootstrap rule: install golangci-lint into $(go env GOPATH)/bin if it's
+# missing or doesn't match the pinned version. `go install` is idempotent
+# and respects GOBIN; piping through `command -v` keeps the no-op fast.
+$(GOLANGCI_LINT):
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+# Pre-flight target that mirrors the Go and Web jobs in CI. Run this
+# before pushing — if it passes, the corresponding CI checks should pass
+# too. Keeps `make install` lightweight (build + restart only) so the
+# inner dev loop stays fast; opt into `check` when you're done.
+check: lint
+	go test ./...
+	cd web && npm run build
