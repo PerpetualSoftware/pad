@@ -27,8 +27,12 @@ func TestBuildHTMLShellSelfHostedNeutral(t *testing.T) {
 		"github.com/PerpetualSoftware/pad",
 		"getpad.dev/docs",
 		"getpad.dev/changelog",
+		"getpad.dev/contribute",
+		"getpad.dev/faq",
+		"getpad.dev/security",
 		"getpad.dev/privacy",
 		"getpad.dev/terms",
+		"getpad.dev/subprocessors",
 		"Perpetual Software",
 	}
 	for _, marker := range cloudOnly {
@@ -40,10 +44,10 @@ func TestBuildHTMLShellSelfHostedNeutral(t *testing.T) {
 
 // TestBuildHTMLShellCloudIncludesMarketingFooter pins the Cloud-mode
 // marketing-footer link order from docs/brand.md §7 and the copyright
-// line. The link order is GitHub → Docs → Changelog → Privacy → Terms,
-// matching the auth-page AuthFooter component (also derived from the
-// brand spec). Tests check raw substring order rather than using a
-// regex so a future code review can read the assertion at a glance.
+// line. Full canonical order: GitHub → Docs → Changelog → Contribute
+// → FAQ → Security → Privacy → Terms → Sub-processors. Tests check
+// pairwise substring positions rather than using a regex so a future
+// code review can read the assertion at a glance.
 func TestBuildHTMLShellCloudIncludesMarketingFooter(t *testing.T) {
 	out := buildHTMLShell("<p>body</p>", "footer note", true)
 
@@ -51,8 +55,12 @@ func TestBuildHTMLShellCloudIncludesMarketingFooter(t *testing.T) {
 		"github.com/PerpetualSoftware/pad",
 		"getpad.dev/docs",
 		"getpad.dev/changelog",
+		"getpad.dev/contribute",
+		"getpad.dev/faq",
+		"getpad.dev/security",
 		"getpad.dev/privacy",
 		"getpad.dev/terms",
+		"getpad.dev/subprocessors",
 		"Pad &middot; Perpetual Software",
 	} {
 		if !strings.Contains(out, marker) {
@@ -60,15 +68,18 @@ func TestBuildHTMLShellCloudIncludesMarketingFooter(t *testing.T) {
 		}
 	}
 
-	// Order matters per docs/brand.md §7: GitHub before Docs before
-	// Changelog before Privacy before Terms. We pin pairwise positions
-	// so a future reorder forces the test author to revisit the brand
-	// spec contract intentionally.
+	// Order matters per docs/brand.md §7. Pinning pairwise positions
+	// across the full canonical list so a future reorder forces the
+	// test author to revisit the brand spec contract intentionally.
 	pairs := [][2]string{
 		{"github.com/PerpetualSoftware/pad", "getpad.dev/docs"},
 		{"getpad.dev/docs", "getpad.dev/changelog"},
-		{"getpad.dev/changelog", "getpad.dev/privacy"},
+		{"getpad.dev/changelog", "getpad.dev/contribute"},
+		{"getpad.dev/contribute", "getpad.dev/faq"},
+		{"getpad.dev/faq", "getpad.dev/security"},
+		{"getpad.dev/security", "getpad.dev/privacy"},
 		{"getpad.dev/privacy", "getpad.dev/terms"},
+		{"getpad.dev/terms", "getpad.dev/subprocessors"},
 	}
 	for _, pair := range pairs {
 		if strings.Index(out, pair[0]) > strings.Index(out, pair[1]) {

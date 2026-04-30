@@ -48,12 +48,13 @@ func buildHTMLShell(bodyHTML, footerNoteHTML string, cloudMode bool) string {
 `)
 	}
 	if cloudMode {
-		// Marketing footer block — the same getpad.dev link set the auth-page
-		// AuthFooter component carries (docs/brand.md §7), trimmed to the
-		// links most relevant from an inbox: Docs / Changelog / GitHub /
-		// Privacy / Terms. Sub-processors / Security / FAQ / Contribute are
-		// omitted to keep the email small; users can reach them via the docs
-		// site once they click in.
+		// Marketing footer block — full canonical link list from docs/brand.md
+		// §7, in the order the brand spec mandates: GitHub, Docs, Changelog,
+		// Contribute, FAQ, Security, Privacy, Terms, Sub-processors. The
+		// auth-page AuthFooter component carries the same nine links; emails
+		// get the same set so the brand spec's "Full parity" promise for
+		// transactional mail (§1) is honored. Codex caught a trimmed subset
+		// on first review (TASK-907 round 1).
 		year := time.Now().UTC().Year()
 		b.WriteString(fmt.Sprintf(`  <p style="font-size: 11px; color: #999; line-height: 1.5; margin-top: 16px;">
     <a href="https://github.com/PerpetualSoftware/pad" style="color: #999; text-decoration: underline;">GitHub</a>
@@ -62,9 +63,17 @@ func buildHTMLShell(bodyHTML, footerNoteHTML string, cloudMode bool) string {
     &nbsp;·&nbsp;
     <a href="https://getpad.dev/changelog" style="color: #999; text-decoration: underline;">Changelog</a>
     &nbsp;·&nbsp;
+    <a href="https://getpad.dev/contribute" style="color: #999; text-decoration: underline;">Contribute</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/faq" style="color: #999; text-decoration: underline;">FAQ</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/security" style="color: #999; text-decoration: underline;">Security</a>
+    &nbsp;·&nbsp;
     <a href="https://getpad.dev/privacy" style="color: #999; text-decoration: underline;">Privacy</a>
     &nbsp;·&nbsp;
     <a href="https://getpad.dev/terms" style="color: #999; text-decoration: underline;">Terms</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/subprocessors" style="color: #999; text-decoration: underline;">Sub-processors</a>
   </p>
   <p style="font-size: 11px; color: #aaa; margin-top: 8px;">
     &copy; %d Pad &middot; Perpetual Software
@@ -89,14 +98,22 @@ func buildPlainShell(bodyText, footerNoteText string, cloudMode bool) string {
 		b.WriteString(footerNoteText)
 	}
 	if cloudMode {
+		// Same nine canonical links as the HTML branch (docs/brand.md §7).
+		// Plain text uses fixed-width labels for legibility in monospaced
+		// mail clients; URL alignment doesn't matter visually but reads
+		// cleanly when piped through a screen reader.
 		year := time.Now().UTC().Year()
 		b.WriteString(fmt.Sprintf(`
 
-GitHub:    https://github.com/PerpetualSoftware/pad
-Docs:      https://getpad.dev/docs
-Changelog: https://getpad.dev/changelog
-Privacy:   https://getpad.dev/privacy
-Terms:     https://getpad.dev/terms
+GitHub:         https://github.com/PerpetualSoftware/pad
+Docs:           https://getpad.dev/docs
+Changelog:      https://getpad.dev/changelog
+Contribute:     https://getpad.dev/contribute
+FAQ:            https://getpad.dev/faq
+Security:       https://getpad.dev/security
+Privacy:        https://getpad.dev/privacy
+Terms:          https://getpad.dev/terms
+Sub-processors: https://getpad.dev/subprocessors
 
 (c) %d Pad — Perpetual Software`, year))
 	}
