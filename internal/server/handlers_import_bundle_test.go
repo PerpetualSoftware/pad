@@ -632,16 +632,3 @@ func TestIsSafeBundleEntryName(t *testing.T) {
 		})
 	}
 }
-
-// readBundleAsBytes is a tiny helper for callers that want the raw
-// bundle to feed straight into another POST. Kept separate from
-// readBundle (which extracts a map) so import-side tests don't have
-// to re-encode the bundle.
-func readBundleAsBytes(t *testing.T, body io.Reader) []byte {
-	t.Helper()
-	out, err := io.ReadAll(body)
-	if err != nil {
-		t.Fatalf("read bundle: %v", err)
-	}
-	return out
-}
