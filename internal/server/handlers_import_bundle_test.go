@@ -421,6 +421,68 @@ func TestImportBundle_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// TestImportBundle_PathTraversalAfterExportRollsBack pins Codex P1
+// round 3 on PR #308: a path-traversal entry that follows a valid
+// pad-export.json must trigger the workspace rollback, not just
+// return a 400 with the workspace left behind. Earlier the
+// path-traversal early-return passed nil instead of ws, so the
+// handler skipped the cleanup cascade.
+func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
+	// Real pad-export.json so the first entry creates a workspace.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+		t.Fatalf("write export header: %v", err)
+	}
+	if _, err := tw.Write(exportJSON); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	// Inject a path-traversal entry AFTER the valid pad-export.json
+	// so workspace creation has already happened by the time the
+	// guard fires.
+	if err := tw.WriteHeader(&tar.Header{Name: "attachments/../../etc/passwd", Mode: 0o644, Size: 4}); err != nil {
+		t.Fatalf("write evil header: %v", err)
+	}
+	if _, err := tw.Write([]byte{0xde, 0xad, 0xbe, 0xef}); err != nil {
+		t.Fatalf("write evil body: %v", err)
+	}
+	tw.Close()
+	gzw.Close()
+
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=PostExportTraversal",
+		bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("traversal-after-export: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "unsafe entry name") {
+		t.Errorf("expected unsafe-entry error, got body=%s", rr.Body.String())
+	}
+
+	// Workspace must be gone — the partial create from the valid
+	// pad-export.json should have been rolled back.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), `"slug":"PostExportTraversal"`) ||
+		strings.Contains(rr.Body.String(), `"name":"PostExportTraversal"`) {
+		t.Errorf("workspace was NOT rolled back after path-traversal reject; body=%s", rr.Body.String())
+	}
+}
+
 // TestImportBundle_RollbackTombstonesAttachments pins Codex P1
 // round 2 on PR #308: when the duplicate-manifest guard fires AFTER
 // blobs have already been rehydrated, the rollback must tombstone

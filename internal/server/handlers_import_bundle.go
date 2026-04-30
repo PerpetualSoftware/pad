@@ -230,8 +230,14 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 		// up front so the audit story is unambiguous and so a bundle
 		// that's been hand-edited to look malicious fails loudly
 		// rather than silently being skipped via the `default` arm.
+		//
+		// Return ws here (not nil) so the handler can roll back any
+		// workspace that was already created by a preceding valid
+		// pad-export.json. Before pad-export.json is seen, ws is nil
+		// so this falls through to the no-workspace cleanup path
+		// anyway. Codex P1 round 3 on PR #308.
 		if !isSafeBundleEntryName(hdr.Name) {
-			return nil, &importStatusError{
+			return ws, &importStatusError{
 				status: http.StatusBadRequest, code: "bad_bundle",
 				message: "Bundle contains unsafe entry name: " + hdr.Name,
 			}
