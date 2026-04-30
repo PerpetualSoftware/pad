@@ -643,6 +643,39 @@ func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (b
 	return n > 0, nil
 }
 
+// SoftDeleteWorkspaceAttachments tombstones every live attachment
+// row (originals AND thumbnail variants) under a workspace in a
+// single bulk UPDATE. Used by the bundle import handler to roll back
+// a partial workspace when a validation reject fires AFTER blobs
+// have already been rehydrated — without this cascade the
+// attachment rows stay live (deleted_at IS NULL), pin their blobs
+// from orphan-GC reclamation, and continue counting toward the
+// importing user's storage usage. Codex P1 on PR #308.
+//
+// Both originals and thumbnails carry the same workspace_id, so a
+// single WHERE workspace_id = ? clause covers both. Returns the
+// number of rows tombstoned.
+//
+// The blob bytes on disk are NOT touched — content-addressed dedupe
+// means another live row may still reference the same hash, so
+// reclamation is the orphan-GC's job after the grace period.
+func (s *Store) SoftDeleteWorkspaceAttachments(workspaceID string) (int64, error) {
+	ts := now()
+	res, err := s.db.Exec(s.q(`
+		UPDATE attachments
+		SET deleted_at = ?
+		WHERE workspace_id = ? AND deleted_at IS NULL
+	`), ts, workspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("soft delete workspace attachments: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("soft delete workspace attachments rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // SoftDeleteAttachment marks the given attachment row deleted (and
 // every variant whose parent_id points at it) so the orphan GC will
 // reclaim the bytes after the grace period. Returns sql.ErrNoRows if

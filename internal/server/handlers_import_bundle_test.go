@@ -421,6 +421,121 @@ func TestImportBundle_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// TestImportBundle_RollbackTombstonesAttachments pins Codex P1
+// round 2 on PR #308: when the duplicate-manifest guard fires AFTER
+// blobs have already been rehydrated, the rollback must tombstone
+// every attachment row in the partial workspace (deleted_at set) so
+// orphan-GC reclaims the blobs and per-user storage usage is
+// correct. Without the cascade, the workspace was soft-deleted but
+// the attachment rows stayed live, pinning blobs from GC.
+//
+// The test builds a real export bundle (so manifest entries match
+// real blob bytes), then surgically appends a duplicate manifest.json
+// at the end. Posting that to a fresh server triggers blob
+// rehydration of the original bundle's entries before the duplicate
+// guard fires.
+func TestImportBundle_RollbackTombstonesAttachments(t *testing.T) {
+	// Source workspace: upload a real PNG so the bundle has a real
+	// blob entry the destination must rehydrate before hitting the
+	// duplicate at the end.
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doMultipartUpload(src, srcSlug, "logo.png", realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Real bundle from the source.
+	rr = doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export?format=tar", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rr.Code, rr.Body.String())
+	}
+	realBundle := rr.Body.Bytes()
+
+	// Extract every tar entry from the real bundle, then re-emit them
+	// in order + inject a duplicate attachments/manifest.json AFTER
+	// every original entry. The duplicate fires after blob
+	// rehydration, exercising the cascade path.
+	gz, err := gzip.NewReader(bytes.NewReader(realBundle))
+	if err != nil {
+		t.Fatalf("gzip read: %v", err)
+	}
+	tr := tar.NewReader(gz)
+
+	var out bytes.Buffer
+	outGz := gzip.NewWriter(&out)
+	outTw := tar.NewWriter(outGz)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar next: %v", err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read entry: %v", err)
+		}
+		if err := outTw.WriteHeader(&tar.Header{Name: hdr.Name, Mode: 0o644, Size: int64(len(body))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := outTw.Write(body); err != nil {
+			t.Fatalf("write body: %v", err)
+		}
+	}
+	gz.Close()
+
+	// Inject the duplicate manifest.json after every real entry.
+	dupe := []byte(`{"version":1,"entries":[]}`)
+	if err := outTw.WriteHeader(&tar.Header{Name: "attachments/manifest.json", Mode: 0o644, Size: int64(len(dupe))}); err != nil {
+		t.Fatalf("write dupe header: %v", err)
+	}
+	if _, err := outTw.Write(dupe); err != nil {
+		t.Fatalf("write dupe: %v", err)
+	}
+	outTw.Close()
+	outGz.Close()
+
+	// Post to a fresh server and confirm 400.
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=Tombstoned",
+		bytes.NewReader(out.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr = httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("rollback test: status=%d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicate") {
+		t.Fatalf("expected duplicate-manifest error, got body=%s", rr.Body.String())
+	}
+
+	// Workspace must be gone from listings.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), `"slug":"Tombstoned"`) || strings.Contains(rr.Body.String(), `"name":"Tombstoned"`) {
+		t.Errorf("workspace was NOT rolled back; listing body=%s", rr.Body.String())
+	}
+
+	// Critically: every attachment row that the partial-import
+	// rehydrated must now have deleted_at set so orphan-GC can
+	// reclaim the blobs. Querying the store directly because the
+	// workspace is gone from the API surface.
+	var live int
+	if err := dest.store.DB().QueryRow(
+		`SELECT COUNT(*) FROM attachments WHERE deleted_at IS NULL`,
+	).Scan(&live); err != nil {
+		t.Fatalf("count live attachments: %v", err)
+	}
+	if live != 0 {
+		t.Errorf("rollback left %d live attachment rows; expected 0 (all should be tombstoned)", live)
+	}
+}
+
 // TestIsSafeBundleEntryName covers isSafeBundleEntryName as a pure
 // helper. Some inputs (NUL bytes, empty strings) can't be exercised
 // through archive/tar — Go's tar.WriteHeader refuses to encode them

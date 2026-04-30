@@ -135,6 +135,15 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// or malformed bundle can't pile up half-imported workspaces
 		// in the destination instance. Codex P1 on PR #308.
 		//
+		// Cascade: a duplicate manifest.json or duplicate pad-export.json
+		// can fire AFTER blobs have already been rehydrated — those
+		// attachment rows would otherwise stay live (deleted_at IS NULL),
+		// pin their blobs from orphan-GC, and count toward the
+		// importing user's storage usage. Tombstone every attachment
+		// in the partial workspace BEFORE soft-deleting the workspace
+		// itself so orphan-GC reclaims the blobs after the grace
+		// window. Codex P1 round 2 on PR #308.
+		//
 		// Mid-stream errors that are NOT importStatusError (e.g.
 		// manifest decode failure after items inserted) intentionally
 		// keep the partial workspace — the existing comment on the
@@ -142,6 +151,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// attachments not restored" and that decision is tracked
 		// separately under TASK-896 (partial-import design).
 		if isValidationReject && ws != nil {
+			if n, attErr := s.store.SoftDeleteWorkspaceAttachments(ws.ID); attErr != nil {
+				slog.Warn("import: failed to tombstone partial-workspace attachments",
+					"workspace_id", ws.ID, "error", attErr)
+			} else if n > 0 {
+				slog.Info("import: rolled back partial-workspace attachments",
+					"workspace_id", ws.ID, "rows", n)
+			}
 			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
 				slog.Warn("import: failed to roll back partial workspace after validation reject",
 					"workspace_slug", ws.Slug, "error", delErr)
