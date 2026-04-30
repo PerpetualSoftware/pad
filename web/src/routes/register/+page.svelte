@@ -6,6 +6,7 @@
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { recordAuthMethod } from '$lib/auth/lastMethod';
 
 	let name = $state('');
 	let username = $state('');
@@ -112,6 +113,7 @@
 		loading = true;
 		try {
 			await api.auth.register(email, name, password, username || undefined);
+			recordAuthMethod('password');
 			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
