@@ -352,11 +352,22 @@ func TestLoadWithPublicURLDoesNotFlipMode(t *testing.T) {
 	if cfg.Mode == ModeRemote {
 		t.Fatal("PUBLIC_URL must not flip Mode to Remote — that's PAD_URL's job")
 	}
-	if !cfg.LoadedFromEnv {
-		t.Fatal("expected PUBLIC_URL to mark config as env-loaded")
-	}
 	if cfg.BaseURL() != "https://app.example.com" {
 		t.Fatalf("expected BaseURL to use PUBLIC_URL when PAD_URL is unset, got %q", cfg.BaseURL())
+	}
+}
+
+// TestPublicURLAloneDoesNotMarkConfigured guards against PUBLIC_URL
+// affecting CLI control flow. IsConfigured() gates whether the CLI shows
+// its "not configured / run setup" branch (cmd/pad/configure.go); if a
+// generic PUBLIC_URL on the host marked the config as env-loaded, a
+// developer who's never run `pad init` would get past that gate and the
+// CLI would happily talk to a default-mode endpoint built from PUBLIC_URL.
+// PUBLIC_URL is server-only — it must never participate in IsConfigured().
+func TestPublicURLAloneDoesNotMarkConfigured(t *testing.T) {
+	cfg := &Config{PublicURL: "https://app.example.com"}
+	if cfg.IsConfigured() {
+		t.Fatal("PUBLIC_URL on its own must not make IsConfigured() true — would short-circuit the CLI's not-configured branch on hosts that set the var for unrelated reasons")
 	}
 }
 

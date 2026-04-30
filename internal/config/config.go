@@ -161,9 +161,15 @@ func Load() (*Config, error) {
 	// would risk flipping a CLI user's Mode to Remote on any host that
 	// happens to have PUBLIC_URL set for unrelated reasons. Keep it
 	// server-only and consult it from BaseURL() as a fallback.
+	//
+	// Crucially, do NOT mark LoadedFromEnv when only PUBLIC_URL is set —
+	// IsConfigured() (which gates CLI setup-flow short-circuits) would
+	// otherwise treat a host that happens to have PUBLIC_URL set as
+	// "configured" and skip the CLI "not configured" branch even though
+	// the user never made any CLI choice. PUBLIC_URL is purely a
+	// server-side fact; LoadedFromEnv is purely a CLI-affordance signal.
 	if v := os.Getenv("PUBLIC_URL"); v != "" {
 		cfg.PublicURL = v
-		cfg.LoadedFromEnv = true
 	}
 
 	// Email (Maileroo)
