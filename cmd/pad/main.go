@@ -698,6 +698,20 @@ func loginCmd() *cobra.Command {
 	return cmd
 }
 
+// cliAuthBrowserURL builds the auth-approval URL we print to the user during
+// `pad auth login`. We construct it on the CLI side rather than trusting the
+// server-issued auth_url field: the server builds its URL from r.Host, which
+// echoes back whatever Host header the CLI sent. If the CLI's own config
+// points at a bind-all address (e.g. the user started the server with
+// --host 0.0.0.0), that address would end up in the printed URL and is not
+// a usable browser destination. cfg.BrowserURL() already handles the
+// "rewrite unspecified host to 127.0.0.1" rule for the local-server case
+// and returns the explicit URL verbatim for Remote/Cloud, so it's the
+// right source of truth.
+func cliAuthBrowserURL(cfg *config.Config, sessionCode string) string {
+	return fmt.Sprintf("%s/auth/cli/%s", cfg.BrowserURL(), sessionCode)
+}
+
 // doBrowserLogin implements the browser-based CLI auth flow.
 // It creates a pending session, prints the auth URL, and polls until approved.
 func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
@@ -707,11 +721,13 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 		return fmt.Errorf("failed to start login session: %w", err)
 	}
 
+	authURL := cliAuthBrowserURL(cfg, sess.SessionCode)
+
 	fmt.Println()
 	fmt.Println("  Open this URL in your browser to authenticate:")
 	fmt.Println()
 	bold := color.New(color.Bold).SprintFunc()
-	fmt.Printf("  %s\n", bold(sess.AuthURL))
+	fmt.Printf("  %s\n", bold(authURL))
 	fmt.Println()
 	fmt.Println("  Waiting for authentication...")
 
