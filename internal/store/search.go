@@ -168,6 +168,11 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			refArgs = append(refArgs, value)
 		}
 
+		// Stable order for cross-workspace global searches (where the same
+		// PREFIX-N can match in multiple workspaces) so pagination is
+		// deterministic across pages.
+		refQuery += ` ORDER BY i.workspace_id, i.id`
+
 		refRows, err := s.db.Query(s.q(refQuery), refArgs...)
 		if err == nil {
 			defer refRows.Close()
@@ -271,6 +276,10 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		for _, r := range results {
 			alreadySeen[r.Item.ID] = true
 		}
+
+		// Stable cross-workspace order for global searches (item_number is
+		// only unique per workspace, so q="1" can match one row per workspace).
+		numQuery += ` ORDER BY i.workspace_id, i.id`
 
 		numRows, err := s.db.Query(s.q(numQuery), numArgs...)
 		if err == nil {
@@ -511,40 +520,42 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	query += s.searchOrderClause(params)
 
 	// --- Pagination ---
-	// Direct hits (ref + numeric) are prepended to results and always appear
-	// first. They occupy slots on page 0; on subsequent pages we exclude them
-	// and adjust the FTS offset accordingly. refCount/refIDs were snapshotted
-	// above (before the FTS query was built) so the FTS WHERE clause could
-	// already exclude their IDs.
+	// Direct hits (ref + numeric) sort first conceptually (rank=-1000); FTS
+	// fills in afterwards. Both halves must be paginated together to honour
+	// (offset, limit). In global searches (no `workspace`), the same
+	// PREFIX-N or bare number can match in multiple workspaces, so refCount
+	// can exceed Limit — we must slice direct hits, not just append them.
+	// See Codex review for BUG-864/910 round 2.
 
 	if total < 0 {
 		total = 0
 	}
 
-	// Adjust FTS pagination to account for ref hit slots on page 0.
-	ftsLimit := params.Limit
-	ftsOffset := params.Offset
-	if refCount > 0 {
-		if params.Offset == 0 {
-			// Page 0: ref hits take first slots, FTS fills the rest.
-			ftsLimit = params.Limit - refCount
-			if ftsLimit < 0 {
-				ftsLimit = 0
-			}
-		} else {
-			// Pages after 0: ref hits were shown on page 0, shift offset.
-			ftsOffset = params.Offset - refCount
-			if ftsOffset < 0 {
-				ftsOffset = 0
-			}
-		}
+	// Slice direct hits according to (offset, limit). After this block,
+	// `results` holds the direct-hit page slice, `directConsumed` is how
+	// many direct-hit slots that consumed, and ftsLimit/ftsOffset are the
+	// FTS-side adjustments to fill the remaining slots / skip past direct
+	// hits we already showed.
+	directStart := params.Offset
+	if directStart > refCount {
+		directStart = refCount
+	}
+	directEnd := params.Offset + params.Limit
+	if directEnd > refCount {
+		directEnd = refCount
+	}
+	results = results[directStart:directEnd]
+	directConsumed := directEnd - directStart
+
+	ftsLimit := params.Limit - directConsumed
+	if ftsLimit < 0 {
+		ftsLimit = 0
+	}
+	ftsOffset := params.Offset - refCount
+	if ftsOffset < 0 {
+		ftsOffset = 0
 	}
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", ftsLimit, ftsOffset)
-
-	// Start building final results: page 0 includes ref hits, later pages don't.
-	if params.Offset > 0 {
-		results = nil
-	}
 
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
