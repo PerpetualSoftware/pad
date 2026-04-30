@@ -295,12 +295,31 @@ func TestBrowserURLPrefersExplicitURL(t *testing.T) {
 	}
 }
 
-// TestBaseURLPrecedence pins the resolution order documented on
-// (*Config).BaseURL: URL > PublicURL > constructed http://host:port. This is
-// what fixes BUG-899 — Pad Cloud sets PUBLIC_URL on the pad-cloud sidecar
-// and forwards it to the pad service, so emailed links use the public
-// domain instead of the bind address.
-func TestBaseURLPrecedence(t *testing.T) {
+// TestBaseURLIgnoresPublicURL pins the CLI-only contract for BaseURL():
+// the function backs the local `pad` CLI's choice of API endpoint and
+// must NOT be influenced by PublicURL, even when PublicURL is set.
+// Otherwise a developer with a host-level PUBLIC_URL set for unrelated
+// reasons would have their CLI silently route requests to that URL
+// instead of their actual local server (Codex review of BUG-899).
+func TestBaseURLIgnoresPublicURL(t *testing.T) {
+	cfg := &Config{
+		Host:      "127.0.0.1",
+		Port:      7777,
+		PublicURL: "https://app.example.com",
+	}
+	const want = "http://127.0.0.1:7777"
+	if got := cfg.BaseURL(); got != want {
+		t.Fatalf("BaseURL() = %q, want %q (PublicURL must not leak into CLI routing)", got, want)
+	}
+}
+
+// TestPublicLinkBaseURLPrecedence pins the resolution order on the
+// server-side accessor used to build emailed link targets: URL >
+// PublicURL > constructed http://host:port. This is what fixes BUG-899
+// — Pad Cloud sets PUBLIC_URL on the pad-cloud sidecar and forwards it
+// to the pad service, so emailed links use the public domain instead
+// of the bind address.
+func TestPublicLinkBaseURLPrecedence(t *testing.T) {
 	cases := []struct {
 		name      string
 		url       string
@@ -319,8 +338,8 @@ func TestBaseURLPrecedence(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{URL: tc.url, PublicURL: tc.publicURL, Host: tc.host, Port: tc.port}
-			if got := cfg.BaseURL(); got != tc.want {
-				t.Fatalf("BaseURL() = %q, want %q", got, tc.want)
+			if got := cfg.PublicLinkBaseURL(); got != tc.want {
+				t.Fatalf("PublicLinkBaseURL() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -352,8 +371,14 @@ func TestLoadWithPublicURLDoesNotFlipMode(t *testing.T) {
 	if cfg.Mode == ModeRemote {
 		t.Fatal("PUBLIC_URL must not flip Mode to Remote — that's PAD_URL's job")
 	}
-	if cfg.BaseURL() != "https://app.example.com" {
-		t.Fatalf("expected BaseURL to use PUBLIC_URL when PAD_URL is unset, got %q", cfg.BaseURL())
+	// Server-side public-link accessor sees PUBLIC_URL...
+	if cfg.PublicLinkBaseURL() != "https://app.example.com" {
+		t.Fatalf("expected PublicLinkBaseURL to use PUBLIC_URL when PAD_URL is unset, got %q", cfg.PublicLinkBaseURL())
+	}
+	// ...but the CLI client accessor does not (would otherwise hijack
+	// CLI routing on hosts with PUBLIC_URL set for unrelated reasons).
+	if cfg.BaseURL() == "https://app.example.com" {
+		t.Fatal("BaseURL() must not be influenced by PUBLIC_URL — CLI routing isolation")
 	}
 }
 
@@ -393,5 +418,8 @@ func TestLoadPADURLBeatsPUBLICURL(t *testing.T) {
 	}
 	if cfg.BaseURL() != "https://api.example.com" {
 		t.Fatalf("PAD_URL must win in BaseURL(), got %q", cfg.BaseURL())
+	}
+	if cfg.PublicLinkBaseURL() != "https://api.example.com" {
+		t.Fatalf("PAD_URL must also win in PublicLinkBaseURL(), got %q", cfg.PublicLinkBaseURL())
 	}
 }

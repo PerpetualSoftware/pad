@@ -30,7 +30,7 @@ type Config struct {
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
 	URL      string `toml:"url"`        // Optional: full base URL (e.g., https://api.getpad.dev). Overrides host/port for CLI.
-	PublicURL string `toml:"public_url"` // Optional: deployment's public URL used in emailed links (e.g., https://app.getpad.dev). Server-only; does NOT flip CLI to remote mode. Falls back here when URL is empty.
+	PublicURL string `toml:"public_url"` // Optional: deployment's public URL used by the server in emailed links (e.g., https://app.getpad.dev). Consulted by PublicLinkBaseURL() only; does NOT influence the CLI's BaseURL() and does NOT flip Mode to remote.
 	Editor   string `toml:"editor"`
 	LogLevel string `toml:"log_level"`
 	DBPath   string `toml:"-"` // computed, not from config file
@@ -312,22 +312,45 @@ func (c *Config) Addr() string {
 }
 
 // BaseURL returns the base URL for the API.
+// If URL is set (via config, --url flag, or PAD_URL), it takes precedence.
+// Otherwise, constructs from host and port.
+//
+// This is the CLI-client-facing accessor: it controls where the local
+// `pad` CLI sends API requests, so it must NOT be influenced by the
+// generic PUBLIC_URL env var (which a developer's host might have set
+// for unrelated reasons — e.g. some other CI tool or framework). For
+// the server's emailed-link target, see PublicLinkBaseURL().
+func (c *Config) BaseURL() string {
+	if c.URL != "" {
+		return strings.TrimRight(c.URL, "/")
+	}
+	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
+}
+
+// PublicLinkBaseURL returns the URL the server should embed in emailed
+// links (password reset, invites, share links, admin invitations).
 // Resolution order:
 //  1. URL (set via config "url", --url flag, or PAD_URL env)
 //  2. PublicURL (set via config "public_url" or PUBLIC_URL env) — the
-//     deployment's public URL, used for server-side link generation in
-//     emails (password reset, invites, share links). Distinct from URL
-//     because PUBLIC_URL is a generic env var commonly set in deployment
-//     environments and we don't want it to flip CLI Mode to Remote.
-//  3. Construct from Host and Port.
+//     deployment's public URL. PUBLIC_URL is a generic env var commonly
+//     set in deployment environments (e.g. pad-cloud's docker-compose
+//     forwards it to the pad service); consulting it here lets the
+//     server pick up the correct public hostname without an extra
+//     pad-namespaced env var.
+//  3. Construct from Host and Port — the historical fallback.
 //
 // IMPORTANT: when this server runs with Host=0.0.0.0 (Docker, k8s, any
-// bind-all setup) and neither URL nor PublicURL is set, the constructed
-// fallback will be "http://0.0.0.0:port" — a string the recipient of an
-// email cannot resolve. Callers that emit user-facing links should set
-// PublicURL on those deployments. The server logs a startup warning in
-// that scenario; see internal/server/server.go.
-func (c *Config) BaseURL() string {
+// bind-all setup) and neither URL nor PublicURL is set, the fallback
+// yields "http://0.0.0.0:port" — a string email recipients cannot
+// resolve. Callers should set PUBLIC_URL (or PAD_URL) on those
+// deployments. The server logs a startup warning in that scenario; see
+// (*server.Server).SetBaseURL.
+//
+// This is intentionally distinct from BaseURL() (the CLI client URL):
+// the CLI must never be hijacked by an unrelated PUBLIC_URL set in the
+// developer's shell, but the server SHOULD pick it up to avoid shipping
+// http://0.0.0.0:7777 in user-facing emails (BUG-899).
+func (c *Config) PublicLinkBaseURL() string {
 	if c.URL != "" {
 		return strings.TrimRight(c.URL, "/")
 	}
