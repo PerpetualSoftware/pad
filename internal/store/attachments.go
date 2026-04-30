@@ -148,6 +148,13 @@ type AttachmentListFilters struct {
 	// Mutually exclusive with Attached — handler validates upstream.
 	Unattached bool
 
+	// ItemID restricts to attachments whose parent item has this
+	// UUID. Empty = no per-item filter. Mutually exclusive with
+	// Unattached (an orphan can't match a specific item) — handler
+	// validates upstream. Used by `pad attachment list --item REF`
+	// after the CLI resolves a TASK-5-style ref to its UUID.
+	ItemID string
+
 	// CollectionID restricts to attachments belonging to items in
 	// this collection. Empty = no collection filter.
 	CollectionID string
@@ -350,6 +357,10 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	}
 	if filters.Unattached {
 		conds = append(conds, "a.item_id IS NULL")
+	}
+	if filters.ItemID != "" {
+		conds = append(conds, "a.item_id = ?")
+		args = append(args, filters.ItemID)
 	}
 	if frag, mimeArgs, ok := mimePredicateForCategory(filters.MimeCategory); ok {
 		conds = append(conds, frag)
