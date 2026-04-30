@@ -43,17 +43,27 @@
 		// and to surface the action as "off-property".
 	};
 
+	// Order follows the canonical link order from docs/brand.md §7: GitHub,
+	// Docs, Changelog, then anything else. Status and Support are user-menu-
+	// specific additions (the brand-spec footer doesn't carry them) so they
+	// land at the end. Keeping the same relative order as the marketing
+	// footer means a user visiting both surfaces sees the same linear pattern
+	// — small cohesion win that Codex flagged on first review.
 	const cloudLinks: ResourceLink[] = [
+		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
 		{ label: 'Docs', href: 'https://getpad.dev/docs' },
 		{ label: 'Changelog', href: 'https://getpad.dev/changelog' },
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
 		{ label: 'Status', href: 'https://status.getpad.dev' },
 		{ label: 'Support', href: 'mailto:support@getpad.dev' }
 	];
 
+	// Self-hosted is a subset that preserves the relative canonical order —
+	// GitHub before Docs. Changelog/Status/Support are Cloud-only surfaces
+	// (operators have their own changelog/status if any; getpad.dev's
+	// support@ mailbox is not theirs to direct people to).
 	const selfHostedLinks: ResourceLink[] = [
-		{ label: 'Docs', href: 'https://getpad.dev/docs' },
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' }
+		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
+		{ label: 'Docs', href: 'https://getpad.dev/docs' }
 	];
 
 	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);
