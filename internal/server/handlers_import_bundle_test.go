@@ -252,7 +252,9 @@ func TestImportBundle_RejectsBadGzip(t *testing.T) {
 // contains two pad-export.json entries used to call ImportWorkspace
 // twice — leaving the first workspace as an orphan with no
 // attachments. The handler now rejects the second occurrence with a
-// 400 so the failure is loud.
+// 400 AND rolls back the partial workspace from the first occurrence
+// so a malformed bundle can't pile up half-imported workspaces in
+// the destination. Codex P1 on PR #308.
 func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
 	// Build a real, valid pad-export.json by exporting an empty
 	// workspace from a live server, then assemble a tar.gz that
@@ -290,6 +292,16 @@ func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "duplicate") {
 		t.Errorf("expected duplicate-export error, got body=%s", rr.Body.String())
+	}
+
+	// Verify the partial workspace from the first pad-export.json
+	// occurrence got rolled back. Listing must NOT include "DupExport".
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"name":"DupExport"`) || strings.Contains(rr.Body.String(), `"slug":"DupExport"`) {
+		t.Errorf("partial workspace was NOT rolled back; listing body=%s", rr.Body.String())
 	}
 }
 
@@ -343,6 +355,17 @@ func TestImportBundle_RejectsDuplicateManifest(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "duplicate") {
 		t.Errorf("expected duplicate-manifest error, got body=%s", rr.Body.String())
+	}
+
+	// Verify the partial workspace from the first pad-export.json
+	// occurrence got rolled back when the duplicate manifest was
+	// detected. Same rollback contract as TestImportBundle_RejectsDuplicateExport.
+	rr = doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"name":"DupManifest"`) || strings.Contains(rr.Body.String(), `"slug":"DupManifest"`) {
+		t.Errorf("partial workspace was NOT rolled back; listing body=%s", rr.Body.String())
 	}
 }
 

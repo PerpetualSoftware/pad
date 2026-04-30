@@ -126,7 +126,29 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
 		var statusErr *importStatusError
-		if errors.As(err, &statusErr) {
+		isValidationReject := errors.As(err, &statusErr)
+
+		// If a clean validation-phase reject happens AFTER the
+		// workspace has been created (e.g. a duplicate pad-export.json
+		// or path-traversal entry that follows the first export
+		// header), roll back the partial workspace so a malicious
+		// or malformed bundle can't pile up half-imported workspaces
+		// in the destination instance. Codex P1 on PR #308.
+		//
+		// Mid-stream errors that are NOT importStatusError (e.g.
+		// manifest decode failure after items inserted) intentionally
+		// keep the partial workspace — the existing comment on the
+		// manifest decode path notes "workspace created but
+		// attachments not restored" and that decision is tracked
+		// separately under TASK-896 (partial-import design).
+		if isValidationReject && ws != nil {
+			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
+				slog.Warn("import: failed to roll back partial workspace after validation reject",
+					"workspace_slug", ws.Slug, "error", delErr)
+			}
+		}
+
+		if isValidationReject {
 			writeError(w, statusErr.status, statusErr.code, statusErr.message)
 			return
 		}
