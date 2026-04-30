@@ -3,8 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
-	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
-	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
+	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 
 	let email = $state('');
 	let error = $state('');
@@ -100,8 +99,7 @@
 		{/if}
 	</div>
 
-	<LegalFooter cloudMode={authStore.cloudMode} />
-	<SupportFooter cloudMode={authStore.cloudMode} />
+	<AuthFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>

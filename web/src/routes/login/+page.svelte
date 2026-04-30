@@ -6,8 +6,7 @@
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
-	import LegalFooter from '$lib/components/auth/LegalFooter.svelte';
-	import SupportFooter from '$lib/components/auth/SupportFooter.svelte';
+	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 
 	let email = $state('');
 	let password = $state('');
@@ -391,8 +390,7 @@
 		{/if}
 	</div>
 
-	<LegalFooter {cloudMode} />
-	<SupportFooter {cloudMode} />
+	<AuthFooter {cloudMode} />
 </div>
 
 <style>

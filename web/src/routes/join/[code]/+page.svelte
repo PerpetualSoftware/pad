@@ -6,6 +6,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
+	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 
 	let code = $derived(page.params.code ?? '');
 	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
@@ -339,6 +340,8 @@
 			</p>
 		{/if}
 	</div>
+
+	<AuthFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>

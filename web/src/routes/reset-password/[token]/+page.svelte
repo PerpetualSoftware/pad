@@ -5,6 +5,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
+	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 
 	let token = $derived(page.params.token ?? '');
 
@@ -101,6 +102,8 @@
 			<a href="/login">Back to sign in</a>
 		</p>
 	</div>
+
+	<AuthFooter cloudMode={authStore.cloudMode} />
 </div>
 
 <style>
