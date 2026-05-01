@@ -256,8 +256,17 @@ func actorFromRequest(r *http.Request) (actor, source string) {
 		actor = "agent"
 	}
 
-	// Determine source from auth method
+	// Determine source from auth method. Two signals — both mean
+	// "non-cookie authenticated", which we attribute as source="cli"
+	// regardless of whether the request rode the wire with an
+	// Authorization header or was synthesized in-process by the MCP
+	// HTTPHandlerDispatcher (server.WithAPITokenAuth in
+	// internal/mcp/dispatch_http.go). Without honoring the context
+	// flag, dispatcher-driven calls would persist source="web",
+	// regressing dashboard/source attribution vs. ExecDispatcher.
 	if auth := r.Header.Get("Authorization"); auth != "" {
+		source = "cli"
+	} else if isAPITokenAuth(r) {
 		source = "cli"
 	}
 

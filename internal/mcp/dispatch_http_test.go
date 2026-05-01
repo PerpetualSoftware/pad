@@ -430,16 +430,15 @@ func TestHTTPHandlerDispatcher_Integration(t *testing.T) {
 		t.Fatalf("item not created in DB; saw %d items", len(items))
 	}
 
-	// CreatedBy attribution: the handler's CreateItem path stamps the
-	// authenticated user (TASK-965's whole point — that the user
-	// arrives intact through the in-process call). If the model
-	// surfaces it, assert.
-	if found.CreatedBy != "" && found.CreatedBy != "user" && found.CreatedBy != user.ID {
-		// Some pad versions store "user" as a literal source marker
-		// alongside an ID elsewhere; tolerate both shapes so this
-		// test isn't brittle against minor schema drift, but flag if
-		// neither path matches.
-		t.Logf("created_by = %q (user.ID = %q) — informational", found.CreatedBy, user.ID)
+	// Source attribution: HTTPHandlerDispatcher must persist source="cli"
+	// (matching ExecDispatcher) so dashboard/standup/audit views
+	// attribute the change correctly. Codex review caught this one in
+	// round 2 — the synthesized request has no Authorization header,
+	// so actorFromRequest now honors the ctxIsAPIToken context flag
+	// to derive source.
+	if found.Source != "cli" {
+		t.Errorf("Source = %q, want %q (HTTPHandlerDispatcher should mirror CLI attribution)",
+			found.Source, "cli")
 	}
 }
 
