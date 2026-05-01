@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -130,32 +131,54 @@ func TestHelpCmd_FormatJSONEmits(t *testing.T) {
 	}
 }
 
-func TestHelpCmd_FormatMarkdownStubError(t *testing.T) {
+func TestHelpCmd_FormatMarkdownEmits(t *testing.T) {
+	// TASK-935 replaced the stub with a real emitter. Assert structural
+	// markers — YAML frontmatter, H1, command block — are present.
 	for _, format := range []string{"md", "llm"} {
 		t.Run(format, func(t *testing.T) {
-			_, _, err := runHelp(t, "--format", format)
-			if err == nil {
-				t.Fatalf("expected --format %s to return a stub error (TASK-935 unimplemented)", format)
+			out, _, err := runHelp(t, "--format", format)
+			if err != nil {
+				t.Fatalf("--format %s: unexpected error: %v\n%s", format, err, out)
 			}
-			msg := err.Error()
-			if !strings.Contains(msg, "TASK-935") {
-				t.Errorf("expected --format %s stub error to reference TASK-935, got: %s", format, msg)
+			if !strings.HasPrefix(out, "---\n") {
+				t.Errorf("--format %s: must start with YAML frontmatter, got first line: %q", format, firstLine(out))
+			}
+			for _, want := range []string{
+				`cmdhelp_version: "0.1"`,
+				"binary: padtest",
+				"# padtest",
+				"## `padtest item create`",
+				"### Synopsis",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("--format %s missing %q in output", format, want)
+				}
 			}
 		})
 	}
 }
 
-func TestHelpCmd_FormatLLMAliasRoutesToMarkdown(t *testing.T) {
-	// Both md and llm should produce the same error message body (modulo
-	// "TASK-935") since llm is a renderer-level alias for md.
-	_, _, mdErr := runHelp(t, "--format", "md")
-	_, _, llmErr := runHelp(t, "--format", "llm")
-	if mdErr == nil || llmErr == nil {
-		t.Fatalf("expected both --format md and --format llm to return stub errors")
+func TestHelpCmd_FormatLLMIsAliasForMD(t *testing.T) {
+	// llm and md routes share an emitter; the only legitimate difference
+	// between two consecutive runs is the wall-clock timestamp in the
+	// frontmatter `generated:` field. Normalize that, then expect
+	// byte-identical output.
+	mdOut, _, mdErr := runHelp(t, "--format", "md")
+	llmOut, _, llmErr := runHelp(t, "--format", "llm")
+	if mdErr != nil || llmErr != nil {
+		t.Fatalf("expected both formats to succeed; mdErr=%v llmErr=%v", mdErr, llmErr)
 	}
-	if mdErr.Error() != llmErr.Error() {
-		t.Errorf("expected --format llm to alias --format md (same stub error)\nmd:  %s\nllm: %s", mdErr.Error(), llmErr.Error())
+	tsRE := regexp.MustCompile(`generated: .*`)
+	if tsRE.ReplaceAllString(mdOut, "TS") != tsRE.ReplaceAllString(llmOut, "TS") {
+		t.Errorf("--format md and --format llm should produce identical output (modulo timestamp)")
 	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func TestHelpCmd_FormatUnknownRejected(t *testing.T) {
