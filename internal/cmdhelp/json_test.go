@@ -55,7 +55,29 @@ func buildSyntheticTree() *cobra.Command {
 		Short: "Update an item",
 	}
 
-	item.AddCommand(create, update)
+	// Variadic + embedded flag-like fragments — exercised by bulk:
+	//   `bulk-update [--status X] <ref>...`
+	bulk := &cobra.Command{
+		Use:   "bulk-update [--status X] <ref>...",
+		Short: "Update multiple items",
+	}
+
+	// Alternation in Use string + ValidArgs on the cobra struct —
+	// exercised by `completion [bash|zsh|fish|powershell]`.
+	completion := &cobra.Command{
+		Use:       "completion [bash|zsh|fish|powershell]",
+		Short:     "Generate shell completion",
+		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+	}
+
+	// ValidArgs without alternation — exercised by `Use: completion2 [shell]`.
+	completion2 := &cobra.Command{
+		Use:       "completion2 [shell]",
+		Short:     "Generate shell completion (named arg)",
+		ValidArgs: []string{"bash", "zsh"},
+	}
+
+	item.AddCommand(create, update, bulk, completion, completion2)
 
 	deep := &cobra.Command{Use: "deep", Short: "deep group"}
 	nest := &cobra.Command{Use: "nest", Short: "nest group"}
@@ -130,6 +152,81 @@ func TestBuild_HiddenCommandsAndFlagsExcluded(t *testing.T) {
 	}
 	if _, present := create.Flags["help"]; present {
 		t.Errorf("cobra-installed --help flag must not appear in emitted flags")
+	}
+}
+
+func TestBuild_VariadicArgsRepeatable(t *testing.T) {
+	root := buildSyntheticTree()
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+
+	bulk := doc.Commands["item bulk-update"]
+	if len(bulk.Args) != 1 {
+		t.Fatalf("item bulk-update: expected 1 positional arg (embedded --status filtered), got %d: %+v", len(bulk.Args), bulk.Args)
+	}
+	if bulk.Args[0].Name != "ref" {
+		t.Errorf("expected arg name 'ref', got %q", bulk.Args[0].Name)
+	}
+	if !bulk.Args[0].Required {
+		t.Errorf("expected <ref>... to be required")
+	}
+	if !bulk.Args[0].Repeatable {
+		t.Errorf("expected <ref>... to be marked repeatable (variadic)")
+	}
+}
+
+func TestBuild_AlternationProducesEnum(t *testing.T) {
+	root := buildSyntheticTree()
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+
+	completion := doc.Commands["item completion"]
+	if len(completion.Args) != 1 {
+		t.Fatalf("item completion: expected 1 positional arg, got %d: %+v", len(completion.Args), completion.Args)
+	}
+	a := completion.Args[0]
+	if a.Type != "enum" {
+		t.Errorf("expected alternation to produce type=enum, got %q", a.Type)
+	}
+	if len(a.Enum) != 4 {
+		t.Errorf("expected 4 enum values, got %d: %v", len(a.Enum), a.Enum)
+	}
+	// Values should be in source order.
+	wantValues := []string{"bash", "zsh", "fish", "powershell"}
+	for i, w := range wantValues {
+		if i >= len(a.Enum) || a.Enum[i] != w {
+			t.Errorf("enum[%d] = %v, want %s", i, a.Enum[i], w)
+		}
+	}
+}
+
+func TestBuild_ValidArgsFillsEnumOnNamedArg(t *testing.T) {
+	root := buildSyntheticTree()
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+
+	c2 := doc.Commands["item completion2"]
+	if len(c2.Args) != 1 {
+		t.Fatalf("item completion2: expected 1 positional, got %d: %+v", len(c2.Args), c2.Args)
+	}
+	a := c2.Args[0]
+	if a.Name != "shell" {
+		t.Errorf("expected arg name from Use string ('shell'), got %q", a.Name)
+	}
+	if a.Type != "enum" {
+		t.Errorf("expected ValidArgs to upgrade type from string to enum, got %q", a.Type)
+	}
+	if len(a.Enum) != 2 || a.Enum[0] != "bash" || a.Enum[1] != "zsh" {
+		t.Errorf("expected enum from ValidArgs [bash zsh], got %v", a.Enum)
+	}
+}
+
+func TestBuild_EmbeddedFlagFragmentsFiltered(t *testing.T) {
+	root := buildSyntheticTree()
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+
+	bulk := doc.Commands["item bulk-update"]
+	for _, a := range bulk.Args {
+		if strings.HasPrefix(a.Name, "-") {
+			t.Errorf("flag-like fragment leaked as positional arg: %+v", a)
+		}
 	}
 }
 

@@ -126,7 +126,7 @@ func buildCommand(cmd *cobra.Command) Command {
 		out.Description = longTrimmed
 	}
 
-	out.Args = parseArgs(cmd.Use)
+	out.Args = parseArgs(cmd)
 	if flags := collectFlags(cmd.LocalFlags()); len(flags) > 0 {
 		out.Flags = flags
 	}
@@ -137,43 +137,129 @@ func buildCommand(cmd *cobra.Command) Command {
 
 // argRE matches positional arg placeholders in a cobra Use string:
 //
-//	<name>  → required
-//	[name]  → optional
+//	<name>      → required
+//	[name]      → optional
+//	<name>...   → required + repeatable (variadic)
+//	[name]...   → optional + repeatable (variadic)
+//	[a|b|c]     → optional alternation (cobra ValidArgs convention) — enum-typed
+//	<a|b|c>     → required alternation — enum-typed
 //
-// The conventional `[flags]` placeholder cobra appends is filtered in
-// parseArgs.
-var argRE = regexp.MustCompile(`<([a-zA-Z0-9_-]+)>|\[([a-zA-Z0-9_./-]+)\]`)
+// Cobra-conventional placeholders ([flags], [options], [command]) and
+// embedded flag-like fragments ([--status X]) are filtered downstream
+// in parseArgs.
+var argRE = regexp.MustCompile(`<([^<>]+)>(\.\.\.)?|\[([^\[\]]+)\](\.\.\.)?`)
 
-func parseArgs(use string) []Arg {
-	matches := argRE.FindAllStringSubmatch(use, -1)
-	if len(matches) == 0 {
-		return nil
-	}
+func parseArgs(cmd *cobra.Command) []Arg {
+	matches := argRE.FindAllStringSubmatch(cmd.Use, -1)
 	args := make([]Arg, 0, len(matches))
 	for _, m := range matches {
-		var name string
+		var inner, ellipsis string
 		var required bool
 		switch {
 		case m[1] != "":
-			name = m[1]
+			inner = m[1]
+			ellipsis = m[2]
 			required = true
-		case m[2] != "":
-			name = m[2]
+		case m[3] != "":
+			inner = m[3]
+			ellipsis = m[4]
 			required = false
-			// Filter cobra-conventional placeholders that are not real args.
-			lower := strings.ToLower(name)
-			if lower == "flags" || lower == "options" || lower == "command" {
-				continue
-			}
 		default:
 			continue
 		}
-		args = append(args, Arg{Name: name, Type: "string", Required: required})
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			continue
+		}
+
+		// Filter cobra-conventional placeholders that are not real args.
+		lower := strings.ToLower(inner)
+		if !required && (lower == "flags" || lower == "options" || lower == "command") {
+			continue
+		}
+		// Filter embedded flag-like fragments such as `[--status X]`.
+		if strings.HasPrefix(inner, "-") {
+			continue
+		}
+
+		// Alternation: <a|b|c> or [a|b|c] → enum-typed positional.
+		if strings.Contains(inner, "|") {
+			parts := strings.Split(inner, "|")
+			values := make([]interface{}, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					values = append(values, p)
+				}
+			}
+			if len(values) > 0 {
+				args = append(args, Arg{
+					Name:       "value", // synthesized; cobra Use doesn't carry a name here
+					Type:       "enum",
+					Required:   required,
+					Enum:       values,
+					Repeatable: ellipsis != "",
+				})
+				continue
+			}
+		}
+
+		// Plain <name> / [name]. Reject anything that looks like prose
+		// (spaces, punctuation that wouldn't be in an arg identifier).
+		if !validArgName(inner) {
+			continue
+		}
+		args = append(args, Arg{
+			Name:       inner,
+			Type:       "string",
+			Required:   required,
+			Repeatable: ellipsis != "",
+		})
 	}
+
+	// If cobra's ValidArgs is set and we have at least one positional,
+	// attach those values as the first arg's enum. ValidArgs is the
+	// authoritative machine-readable form (Use is for humans), so this
+	// covers the case where Use says `[shell]` but the allowed values
+	// only live on the cobra struct.
+	if len(cmd.ValidArgs) > 0 && len(args) > 0 && args[0].Type == "string" {
+		values := make([]interface{}, len(cmd.ValidArgs))
+		for i, v := range cmd.ValidArgs {
+			// cobra ValidArgs entries can carry shell-completion descriptions
+			// after a tab; strip them so the enum carries just the values.
+			if tab := strings.IndexByte(v, '\t'); tab >= 0 {
+				v = v[:tab]
+			}
+			values[i] = v
+		}
+		args[0].Type = "enum"
+		args[0].Enum = values
+	}
+
 	if len(args) == 0 {
 		return nil
 	}
 	return args
+}
+
+// validArgName returns true if s looks like an ordinary identifier-style
+// arg name. Used to reject embedded flag fragments and prose that the
+// regex would otherwise capture from idiosyncratic Use strings.
+func validArgName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r == '-' || r == '_' || r == '.' || r == '/':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func collectFlags(fs *pflag.FlagSet) map[string]Flag {
