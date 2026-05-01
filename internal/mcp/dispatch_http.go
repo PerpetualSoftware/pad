@@ -353,7 +353,7 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
-	return packageHTTPResponse(cmdKey, rec.Result())
+	return packageHTTPResponse(ctx, cmdKey, rec.Result())
 }
 
 // buildAuthedRequest constructs an in-process HTTP request against
@@ -415,9 +415,12 @@ func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, 
 
 // packageHTTPResponse turns the recorded handler response into an MCP
 // CallToolResult, mirroring ExecDispatcher's "JSON → structured + text
-// fallback" behaviour. 4xx/5xx surface as IsError-flagged results so
-// MCP clients distinguish protocol vs. tool failures.
-func packageHTTPResponse(cmdKey string, resp *http.Response) (*mcp.CallToolResult, error) {
+// fallback" behaviour. 4xx/5xx surface as structured ErrorEnvelopes
+// (TASK-973) so MCP clients see the same closed-set error codes
+// regardless of transport. TASK-977 (PLAN-943) extends this with
+// privacy-preserving available_workspaces filtering once the OAuth
+// allow-list is in place.
+func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response) (*mcp.CallToolResult, error) {
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -426,14 +429,14 @@ func packageHTTPResponse(cmdKey string, resp *http.Response) (*mcp.CallToolResul
 	body := string(bodyBytes)
 
 	if resp.StatusCode >= 400 {
-		// Match the CLI's `pad <cmd>` error format from ExecDispatcher
-		// so MCP clients see a consistent shape regardless of
-		// transport.
-		msg := strings.TrimSpace(body)
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
-		}
-		return mcp.NewToolResultErrorf("pad %s failed: %s", cmdKey, msg), nil
+		// classifyHTTPStatus does the status → ErrorCode mapping. The
+		// `lookup` parameter is nil here because TASK-977 owns the
+		// remote-side workspace listing (it must filter by OAuth
+		// allow-list to avoid leaking workspaces the agent didn't
+		// consent to). For now, available_workspaces stays empty on
+		// the HTTP transport; the rest of the envelope still gives
+		// the agent enough to branch on `code`.
+		return classifyHTTPStatus(ctx, cmdKey, resp.StatusCode, bodyBytes, nil), nil
 	}
 
 	if trimmed := strings.TrimSpace(body); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {

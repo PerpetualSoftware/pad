@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -102,11 +103,23 @@ func mergeDispatchInput(input map[string]any, sessionWorkspace string, rootFlags
 // ExecDispatcher shells out to the pad binary at Binary. stdout is
 // returned as Text content; if it parses as JSON the result is also
 // surfaced via StructuredContent so MCP clients can consume it
-// natively. Non-zero exit returns an IsError-flagged result with
-// stderr as the message.
+// natively. Non-zero exit returns an IsError-flagged result with a
+// structured ErrorEnvelope (TASK-973) — stderr is classified into a
+// closed-set ErrorCode so agents can branch on the code rather than
+// parsing free-form text.
 type ExecDispatcher struct {
 	// Binary is the path to the pad executable. Required.
 	Binary string
+
+	// RootArgs are pre-formatted root-flag tokens (e.g. ["--url", X])
+	// to forward to every spawned subprocess. Same data as the
+	// rootFlags map carried by RegistryOptions but pre-flattened so
+	// the dispatcher doesn't re-iterate it on every Dispatch call.
+	// Used by the WorkspaceLister side-channel — when classifyExecError
+	// needs to populate available_workspaces, it spawns
+	// `pad workspace list` with these flags so it hits the same
+	// endpoint as the original failed call.
+	RootArgs []string
 }
 
 // Dispatch runs `<Binary> <cmdPath...> <cliArgs...>` and packages the
@@ -121,13 +134,11 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return mcp.NewToolResultErrorf(
-			"pad %s failed: %s", strings.Join(cmdPath, " "), msg,
-		), nil
+		// Classify into the structured envelope. WorkspaceLister
+		// uses the same dispatcher (recursive in spirit but a fresh
+		// subprocess) to enrich no_workspace / unknown_workspace
+		// errors with available_workspaces.
+		return classifyExecError(ctx, cmdPath, err, stderr.String(), d), nil
 	}
 	out := stdout.String()
 	// If stdout is JSON, surface it as structured content alongside
@@ -141,6 +152,58 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 		}
 	}
 	return mcp.NewToolResultText(out), nil
+}
+
+// ListWorkspaces satisfies WorkspaceLister so error helpers can
+// populate available_workspaces hints. Best-effort: if listing fails
+// (no auth, network down, etc.) the caller treats an error as "no
+// listing available" and surfaces the bare error envelope.
+//
+// Implementation note: spawns a fresh `pad workspace list --format
+// json` subprocess. Adds one extra exec per error path that needs the
+// hint — acceptable cost given how rare these errors are. Honors
+// RootArgs so the listing hits the same server endpoint as the
+// originally-failed call (e.g. --url for non-default servers).
+func (d *ExecDispatcher) ListWorkspaces(ctx context.Context) ([]WorkspaceHint, error) {
+	if d.Binary == "" {
+		return nil, errors.New("dispatcher: binary path not configured")
+	}
+	args := []string{"workspace", "list", "--format", "json"}
+	args = append(args, d.RootArgs...)
+	cmd := exec.CommandContext(ctx, d.Binary, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("workspace list: %s", strings.TrimSpace(stderr.String()))
+	}
+	return parseWorkspaceListJSON(stdout.String())
+}
+
+// parseWorkspaceListJSON decodes the JSON shape `pad workspace list
+// --format json` emits into the WorkspaceHint slice. Lenient about
+// optional fields — only `slug` is required; everything else gets
+// zero values when absent.
+func parseWorkspaceListJSON(body string) ([]WorkspaceHint, error) {
+	body = strings.TrimSpace(body)
+	if body == "" || body == "null" {
+		return nil, nil
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		return nil, fmt.Errorf("decode workspace list: %w", err)
+	}
+	out := make([]WorkspaceHint, 0, len(raw))
+	for _, w := range raw {
+		slug, _ := w["slug"].(string)
+		if slug == "" {
+			continue
+		}
+		name, _ := w["name"].(string)
+		isDefault, _ := w["default"].(bool)
+		out = append(out, WorkspaceHint{Slug: slug, Name: name, Default: isDefault})
+	}
+	return out, nil
 }
 
 // BuildCLIArgs translates an MCP tool call's JSON arguments into the

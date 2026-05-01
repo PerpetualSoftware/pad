@@ -279,7 +279,19 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 			// still consumed at dispatch time (BuildCLIArgs reads
 			// individual command schemas) but no longer drives the tool
 			// surface shape.
-			dispatcher := &mcpserver.ExecDispatcher{Binary: bin}
+			// Pre-flatten rootFlags into the token list ExecDispatcher
+			// reuses for its WorkspaceLister side channel — when
+			// classifyExecError needs to populate available_workspaces,
+			// it spawns `pad workspace list` and must hit the same
+			// server endpoint (e.g. --url for non-default servers).
+			rootArgs := []string{}
+			for k, v := range rootFlags {
+				if v == "" {
+					continue
+				}
+				rootArgs = append(rootArgs, "--"+k, v)
+			}
+			dispatcher := &mcpserver.ExecDispatcher{Binary: bin, RootArgs: rootArgs}
 			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
 				Doc:        doc,
 				Workspace:  state,
