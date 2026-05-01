@@ -12,9 +12,11 @@ import (
 
 // mcpCmd is the parent of `pad mcp ...` subcommands.
 //
-// v1 ships `pad mcp serve` (stdio transport). Future tasks add:
-//   - TASK-948 — `pad mcp install <agent>` to write client configs
-//     for Claude Desktop / Cursor / Windsurf in one shot.
+//   - `pad mcp serve` — run the stdio MCP server.
+//   - `pad mcp install [agent]` — write a "pad" entry into a client's
+//     MCP config (Claude Desktop / Cursor / Windsurf).
+//   - `pad mcp uninstall <agent>` — remove the entry.
+//   - `pad mcp status` — show install state across all supported clients.
 func mcpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
@@ -22,11 +24,185 @@ func mcpCmd() *cobra.Command {
 		Long: `Run pad as an MCP server so AI agents (Claude Desktop, Cursor, Windsurf, etc.)
 can call pad commands as tools and read pad data as resources.
 
-Use ` + "`pad mcp serve`" + ` to start the server over stdio. See
-https://getpad.dev/mcp/local for client configuration.`,
+Use ` + "`pad mcp serve`" + ` to start the server over stdio.
+Use ` + "`pad mcp install`" + ` to register pad with a client app.
+See https://getpad.dev/mcp/local for client configuration.`,
 	}
-	cmd.AddCommand(mcpServeCmd())
+	cmd.AddCommand(
+		mcpServeCmd(),
+		mcpInstallCmd(),
+		mcpUninstallCmd(),
+		mcpStatusCmd(),
+	)
 	return cmd
+}
+
+// mcpInstallCmd implements `pad mcp install [agent]`.
+//
+// With no arguments, prints the install status across supported
+// agents (so the user picks one). With an agent name, writes a
+// `pad` entry into that agent's MCP config. With --all, installs
+// for every supported agent (creating config dirs as needed).
+func mcpInstallCmd() *cobra.Command {
+	var allFlag bool
+	cmd := &cobra.Command{
+		Use:   "install [agent]",
+		Short: "Install pad as an MCP server for a client app",
+		Long: `Write a "pad" entry into the named agent's MCP server config.
+
+Supported agents:
+  claude-desktop   Claude Desktop
+  cursor           Cursor
+  windsurf         Windsurf
+
+With no arguments, lists current install status across supported
+agents (run ` + "`pad mcp status`" + ` for the same view). With
+--all, installs for every supported agent, creating config files
+on demand.
+
+Existing MCP server entries (other servers configured by the user)
+are preserved — only the "pad" entry is touched.`,
+		ValidArgs: agentValidArgs(),
+		// Cobra defaults to ArbitraryArgs for cmds without Args set —
+		// silently accepts extras, which Codex caught as a UX bug
+		// (`pad mcp install cursor windsurf` would only install Cursor).
+		Args:         cobra.MaximumNArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// --all is mutually exclusive with an agent name. Without
+			// this guard `pad mcp install --all cursor` would install
+			// every agent and silently drop the cursor argument,
+			// which Codex round 1 flagged as confusing.
+			if allFlag && len(args) > 0 {
+				return fmt.Errorf("--all cannot be combined with an agent name")
+			}
+			binary, err := os.Executable()
+			if err != nil || binary == "" {
+				binary = os.Args[0]
+			}
+			inst := &mcpserver.Installer{Binary: binary}
+			switch {
+			case allFlag:
+				return runMCPInstallAll(cmd, inst)
+			case len(args) == 0:
+				return runMCPStatus(cmd, inst)
+			default:
+				return runMCPInstallOne(cmd, inst, args[0])
+			}
+		},
+	}
+	cmd.Flags().BoolVar(&allFlag, "all", false, "install for every supported agent")
+	return cmd
+}
+
+// mcpUninstallCmd implements `pad mcp uninstall <agent>`.
+func mcpUninstallCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "uninstall <agent>",
+		Short: "Remove the pad MCP entry from a client's config",
+		Long: `Remove the "pad" entry from the named agent's MCP server
+config. Other server entries are preserved. Idempotent: removing a
+non-existent entry is not an error.`,
+		ValidArgs:    agentValidArgs(),
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inst := &mcpserver.Installer{}
+			path, removed, err := inst.Uninstall(args[0])
+			if err != nil {
+				return err
+			}
+			if removed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Removed pad MCP entry from %s\n  config: %s\n", args[0], path)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: pad entry not present (nothing to remove)\n  config: %s\n", args[0], path)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+// mcpStatusCmd implements `pad mcp status` — same as
+// `pad mcp install` with no args, but exposed as a dedicated command
+// for shell scripts.
+func mcpStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show pad MCP install status across supported clients",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			binary, err := os.Executable()
+			if err != nil || binary == "" {
+				binary = os.Args[0]
+			}
+			inst := &mcpserver.Installer{Binary: binary}
+			return runMCPStatus(cmd, inst)
+		},
+	}
+}
+
+func agentValidArgs() []string {
+	out := make([]string, 0, len(mcpserver.SupportedAgents))
+	for _, a := range mcpserver.SupportedAgents {
+		out = append(out, a.Name)
+	}
+	return out
+}
+
+func runMCPStatus(cmd *cobra.Command, inst *mcpserver.Installer) error {
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, "Pad MCP install status:")
+	fmt.Fprintln(w)
+	for _, row := range inst.Status() {
+		marker := "[ ]"
+		if row.Installed {
+			marker = "[x]"
+		}
+		fmt.Fprintf(w, "  %s %-20s %s\n", marker, row.Label, row.ConfigPath)
+		if row.Error != "" {
+			fmt.Fprintf(w, "      error: %s\n", row.Error)
+		}
+		if row.Installed && row.Command != "" {
+			fmt.Fprintf(w, "      command: %s\n", row.Command)
+		}
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Install: pad mcp install <agent>   (or --all for every supported)")
+	return nil
+}
+
+func runMCPInstallOne(cmd *cobra.Command, inst *mcpserver.Installer, agent string) error {
+	path, modified, err := inst.Install(agent)
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if modified {
+		fmt.Fprintf(w, "Installed pad MCP entry for %s\n  config: %s\n  command: %s mcp serve\n", agent, path, inst.Binary)
+		fmt.Fprintln(w, "  → Restart the client to pick up the new server entry.")
+	} else {
+		fmt.Fprintf(w, "%s already up to date\n  config: %s\n", agent, path)
+	}
+	return nil
+}
+
+func runMCPInstallAll(cmd *cobra.Command, inst *mcpserver.Installer) error {
+	w := cmd.OutOrStdout()
+	for _, a := range mcpserver.SupportedAgents {
+		path, modified, err := inst.Install(a.Name)
+		if err != nil {
+			fmt.Fprintf(w, "  ✗ %s — skipped: %v\n", a.Label, err)
+			continue
+		}
+		if modified {
+			fmt.Fprintf(w, "  ✓ %s installed (%s)\n", a.Label, path)
+		} else {
+			fmt.Fprintf(w, "  ✓ %s already up to date (%s)\n", a.Label, path)
+		}
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Restart each client to pick up the new server entry.")
+	return nil
 }
 
 // mcpServeCmd implements the stdio MCP server. The cobra command is a
