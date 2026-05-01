@@ -175,7 +175,9 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 ## MCP server
 
-Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. The surface is auto-generated from the cmdhelp Document (`pad help --format json`), so any new pad command that isn't on `internal/mcp.DefaultExcludes` lands as an MCP tool for free — no hand-mapping.
+Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. The surface is derived from the cmdhelp Document (`pad help --format json`) and filtered against `internal/mcp.DefaultExcludes` (which strips interactive / destructive commands — `auth setup/login`, `db backup/restore`, `init`, `item edit`, `project watch`, `workspace export/import`, `mcp serve/install`, `completion`, etc.).
+
+**When adding a new `pad` command, decide whether it belongs on the MCP surface.** If it's interactive (prompts the user), destructive (mutates auth / filesystem state), long-running (streaming watcher), or recursive (would spawn another MCP server), add it to `DefaultExcludes` in `internal/mcp/registry.go`. Otherwise it's safe to expose, and the registry picks it up automatically.
 
 ```bash
 pad mcp serve                 # JSON-RPC over stdio (called by clients)
@@ -185,7 +187,7 @@ pad mcp status                # Install state across supported clients
 ```
 
 Surface:
-- **Tools:** every leaf `pad` command (minus a curated allow-list of unsafe / interactive ones — `auth setup/login`, `db backup/restore`, `init`, `item edit`, `project watch`, `workspace export/import`, etc.). Plus `pad_set_workspace` to set the session default.
+- **Tools:** leaf `pad` commands not in `DefaultExcludes` (the per-PR review gate above). Plus `pad_set_workspace` for the session default.
 - **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
 
