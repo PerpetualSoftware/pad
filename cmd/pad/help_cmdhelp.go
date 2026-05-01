@@ -6,11 +6,21 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
 // CmdhelpVersion is the cmdhelp wire-format version this binary advertises.
 // MAJOR.MINOR only — never includes a PATCH component (cmdhelp v0.1 §9).
-const CmdhelpVersion = "0.1"
+//
+// Re-exported from internal/cmdhelp so the CLI layer can reference the
+// constant without importing the emitter package in places that only
+// need the version string.
+const CmdhelpVersion = cmdhelp.Version
+
+// padHomepage is the canonical project URL emitted in the cmdhelp
+// document's `homepage` field.
+const padHomepage = "https://getpad.dev"
 
 // helpCmd returns a custom `pad help` subcommand that replaces cobra's
 // built-in help. It implements the cmdhelp v0.1 mandatory surface
@@ -91,15 +101,22 @@ Scope:
 	return cmd
 }
 
-// emitCmdhelpJSON is a stub for the cmdhelp v0.1 JSON emitter. The real
-// implementation walks the cobra command tree and writes a document
-// matching schema/cmdhelp.schema.json. Lands in TASK-934.
+// emitCmdhelpJSON walks the cobra command tree below `target` and emits
+// a cmdhelp v0.1 JSON document matching schema/cmdhelp.schema.json.
+//
+// `--all` is a convenience alias for unlimited depth (spec §4); when
+// passed it overrides any explicit `--depth=N`.
 func emitCmdhelpJSON(target *cobra.Command, depth int, all bool, w io.Writer) error {
-	_ = target
-	_ = depth
-	_ = all
-	_ = w
-	return fmt.Errorf("--format json not yet implemented (cmdhelp v%s JSON emitter — TASK-934)", CmdhelpVersion)
+	maxDepth := depth
+	if all {
+		maxDepth = -1
+	}
+	return cmdhelp.EmitJSON(target, target.Root(), cmdhelp.Options{
+		Binary:   target.Root().Name(),
+		Version:  fullVersion(),
+		Homepage: padHomepage,
+		MaxDepth: maxDepth,
+	}, w)
 }
 
 // emitCmdhelpMarkdown is a stub for the cmdhelp v0.1 markdown emitter
