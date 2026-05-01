@@ -235,8 +235,10 @@ pad library list --type playbooks    # Pre-built multi-step workflows
 ### 4. Optional — connect a desktop AI app via MCP
 
 Pad ships an MCP (Model Context Protocol) server so Claude Desktop, Cursor, or
-Windsurf can call every `pad` command as a tool, read items by URL, and load
-multi-step workflows as prompts.
+Windsurf can call non-interactive `pad` commands as tools (item CRUD, project
+intelligence, search, etc. — not destructive / lifecycle ones like `auth setup`,
+`db restore`, `init`, `item edit`), read items and the dashboard by URL, and
+load multi-step workflows as prompts.
 
 ```bash
 pad mcp install claude-desktop   # or: cursor, windsurf, --all
