@@ -297,7 +297,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// Mirror the CLI's "not found" UX — the handler's 404 body
 		// already contains a clear message; package it the same way
 		// any other tool error would be packaged.
-		return packageHTTPResponse(cmdKey, prefetchRec.Result())
+		return packageHTTPResponse(ctx, cmdKey, prefetchRec.Result())
 	}
 	var existing struct {
 		Fields string `json:"fields"`

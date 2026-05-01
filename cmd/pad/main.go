@@ -2086,13 +2086,38 @@ func workspacesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			current, _ := cli.DetectWorkspace(workspaceFlag)
+
+			// JSON output: machine-readable shape consumed by the MCP
+			// server's structured-error side channel (TASK-973's
+			// classifyExecError populates available_workspaces from
+			// this output). Each entry includes `default: true` for the
+			// CWD-linked workspace so agents can prefer it without a
+			// separate lookup.
+			if formatFlag == "json" {
+				type entry struct {
+					Slug      string `json:"slug"`
+					Name      string `json:"name"`
+					UpdatedAt string `json:"updated_at,omitempty"`
+					Default   bool   `json:"default,omitempty"`
+				}
+				out := make([]entry, 0, len(workspaces))
+				for _, ws := range workspaces {
+					out = append(out, entry{
+						Slug:      ws.Slug,
+						Name:      ws.Name,
+						UpdatedAt: ws.UpdatedAt.Format(time.RFC3339),
+						Default:   ws.Slug == current,
+					})
+				}
+				return cli.PrintJSON(out)
+			}
+
 			if len(workspaces) == 0 {
 				fmt.Println("No workspaces. Run 'pad workspace init' to create one.")
 				return nil
 			}
-
-			current, _ := cli.DetectWorkspace(workspaceFlag)
-
 			for _, ws := range workspaces {
 				marker := "  "
 				if ws.Slug == current {
