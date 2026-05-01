@@ -192,6 +192,97 @@ func TestPadItemLink_MissingRefOrTarget(t *testing.T) {
 	}
 }
 
+// TestPadItemBulkUpdate_TranslatesRefsArray verifies the catalog's
+// `refs: array<string>` param becomes the CLI's repeatable positional
+// `ref` (one positional per refs entry). Regression test for the
+// scalar/array mismatch Codex flagged on PR #354.
+func TestPadItemBulkUpdate_TranslatesRefsArray(t *testing.T) {
+	t.Run("array of strings", func(t *testing.T) {
+		disp := &fakeDispatcher{}
+		env := ActionEnv{
+			Doc:        liveCmdhelpDoc(t),
+			Workspace:  NewWorkspaceState("docapp"),
+			Dispatcher: disp,
+		}
+		_, err := actionItemBulkUpdate(context.Background(), map[string]any{
+			"refs":   []any{"TASK-5", "TASK-8"},
+			"status": "done",
+		}, env)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if !equalStrings(disp.gotPath, []string{"item", "bulk-update"}) {
+			t.Errorf("cmdPath = %v, want [item bulk-update]", disp.gotPath)
+		}
+		// Both refs become positionals (BuildCLIArgs expands repeatable
+		// args). The `--status done` flag follows.
+		joined := strings.Join(disp.gotArgs, " ")
+		if !strings.HasPrefix(joined, "TASK-5 TASK-8") {
+			t.Errorf("cliArgs %q should begin with both refs as positionals", joined)
+		}
+		if !strings.Contains(joined, "--status done") {
+			t.Errorf("cliArgs %q should contain --status done", joined)
+		}
+	})
+
+	t.Run("single string lenient fallback", func(t *testing.T) {
+		disp := &fakeDispatcher{}
+		env := ActionEnv{
+			Doc:        liveCmdhelpDoc(t),
+			Workspace:  NewWorkspaceState("docapp"),
+			Dispatcher: disp,
+		}
+		_, err := actionItemBulkUpdate(context.Background(), map[string]any{
+			"refs":   "TASK-5", // unwrapped — still acceptable
+			"status": "done",
+		}, env)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if disp.gotArgs[0] != "TASK-5" {
+			t.Errorf("first positional = %q, want TASK-5", disp.gotArgs[0])
+		}
+	})
+
+	t.Run("missing refs", func(t *testing.T) {
+		env := ActionEnv{
+			Doc:        liveCmdhelpDoc(t),
+			Workspace:  NewWorkspaceState("docapp"),
+			Dispatcher: &fakeDispatcher{},
+		}
+		res, err := actionItemBulkUpdate(context.Background(), map[string]any{
+			"status": "done",
+		}, env)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("expected IsError, got %s", textOf(res))
+		}
+		if !strings.Contains(textOf(res), "refs is required") {
+			t.Errorf("error %q should mention refs requirement", textOf(res))
+		}
+	})
+
+	t.Run("empty refs array", func(t *testing.T) {
+		env := ActionEnv{
+			Doc:        liveCmdhelpDoc(t),
+			Workspace:  NewWorkspaceState("docapp"),
+			Dispatcher: &fakeDispatcher{},
+		}
+		res, err := actionItemBulkUpdate(context.Background(), map[string]any{
+			"refs":   []any{},
+			"status": "done",
+		}, env)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("expected IsError, got %s", textOf(res))
+		}
+	})
+}
+
 // TestPadItemLink_ForwardsAuxFields confirms that non-link fields
 // (workspace, format) flow through to the dispatcher unchanged. The
 // rename should ONLY touch ref/target/link_type.

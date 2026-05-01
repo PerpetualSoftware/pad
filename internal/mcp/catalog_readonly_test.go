@@ -236,6 +236,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"slug":              "test-slug",
 		"query":             "test-query",
 		"ref":               "TASK-1",
+		"refs":              []any{"TASK-1", "TASK-2"}, // bulk-update only
 		"collection":        "tasks",
 		"title":             "test title",
 		"target_collection": "ideas",

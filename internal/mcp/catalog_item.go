@@ -64,7 +64,12 @@ var padItemTool = ToolDef{
 		"list-comments": passThrough([]string{"item", "comments"}),
 
 		// Bulk + notes + decisions
-		"bulk-update": passThrough([]string{"item", "bulk-update"}),
+		// bulk-update is custom because the CLI takes repeatable
+		// positional refs (one or more); our uniform schema exposes
+		// scalar `ref` everywhere else, so the action accepts a
+		// dedicated `refs: array<string>` and translates to the
+		// repeatable form BuildCLIArgs expects.
+		"bulk-update": actionItemBulkUpdate,
 		"note":        passThrough([]string{"item", "note"}),
 		"decide":      passThrough([]string{"item", "decide"}),
 	},
@@ -81,7 +86,8 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12). Required for: update, delete, get, move, link, unlink, deps, star, unstar, comment, list-comments, bulk-update, note, decide."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12). Required for: update, delete, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide. NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
 
@@ -161,7 +167,8 @@ Actions:
   list-comments — List comments on an item.
                   Required: ref.
   bulk-update   — Update status/priority across multiple items.
-                  Required: ref (repeatable), status or priority.
+                  Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
+                  AND at least one of status / priority.
   note          — Append an implementation note to an item.
                   Required: ref, summary.
                   Optional: details.
@@ -377,4 +384,88 @@ func joinSorted(ss []string) string {
 // every caller.
 func errStructured(prefix string, err error) *mcp.CallToolResult {
 	return mcp.NewToolResultErrorf("%s: %s", prefix, err.Error())
+}
+
+// actionItemBulkUpdate translates the catalog's `refs: array<string>`
+// param into the repeatable positional `ref` that BuildCLIArgs feeds
+// to `pad item bulk-update REF [REF ...]`. The CLI's cmdhelp entry
+// declares ref as Repeatable=true, so passing a []string under the
+// `ref` key produces multiple positionals.
+//
+// We expose `refs` (plural) on the catalog rather than overloading
+// `ref` (which is scalar across every other action) so the schema
+// stays consistent — agents see a single shape per param name. The
+// rename happens here at dispatch time.
+func actionItemBulkUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	rawRefs, ok := input["refs"]
+	if !ok || rawRefs == nil {
+		return errStructured("pad_item.bulk-update",
+			fmt.Errorf("refs is required (array of item references)")), nil
+	}
+	refs, err := normalizeBulkUpdateRefs(rawRefs)
+	if err != nil {
+		return errStructured("pad_item.bulk-update", err), nil
+	}
+	if len(refs) == 0 {
+		return errStructured("pad_item.bulk-update",
+			fmt.Errorf("refs cannot be empty")), nil
+	}
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		if k == "refs" {
+			continue
+		}
+		out[k] = v
+	}
+	// BuildCLIArgs expects []string under the cmd's positional name
+	// (`ref`) when arg.Repeatable=true.
+	out["ref"] = refs
+	return env.Dispatch(ctx, []string{"item", "bulk-update"}, out)
+}
+
+// normalizeBulkUpdateRefs accepts the JSON shapes the MCP transport
+// can deliver for an array<string> param: []string (canonical),
+// []any (mcp-go's typical decoded form), or a single string (lenient
+// fallback so an agent that passes one ref unwrapped still works).
+func normalizeBulkUpdateRefs(raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			if s = trimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for i, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("refs[%d] is %T, want string", i, e)
+			}
+			if s = trimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out, nil
+	case string:
+		// Lenient fallback: a single ref passed unwrapped. Logically
+		// equivalent to a 1-element array.
+		if s := trimSpace(v); s != "" {
+			return []string{s}, nil
+		}
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("refs is %T, want array of strings", raw)
+	}
+}
+
+// trimSpace is strings.TrimSpace inlined to avoid pulling strings
+// through this file just for one call. catalog_item.go already
+// imports strings for joinSorted, so the inline isn't strictly
+// necessary — kept anyway because the call site is in a hot path
+// (every bulk-update entry).
+func trimSpace(s string) string {
+	return strings.TrimSpace(s)
 }
