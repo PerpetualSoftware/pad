@@ -4395,21 +4395,12 @@ func printAvailableCollections() {
 	fmt.Println()
 }
 
-// normalizeCollectionSlug maps common singular/short forms to actual collection slugs.
+// normalizeCollectionSlug maps common singular/short forms to actual
+// collection slugs. Thin wrapper around the shared
+// collections.NormalizeSlug so the CLI and the MCP HTTPHandlerDispatcher
+// stay in lockstep — see internal/collections/prefix.go.
 func normalizeCollectionSlug(input string) string {
-	aliases := map[string]string{
-		"task": "tasks", "t": "tasks",
-		"idea": "ideas", "i": "ideas",
-		"plan": "plans", "p": "plans", "phase": "plans", "phases": "plans",
-		"doc": "docs", "d": "docs",
-		"bug":        "bugs",
-		"convention": "conventions",
-		"playbook":   "playbooks",
-	}
-	if mapped, ok := aliases[input]; ok {
-		return mapped
-	}
-	return input
+	return collections.NormalizeSlug(input)
 }
 
 // --- library ---

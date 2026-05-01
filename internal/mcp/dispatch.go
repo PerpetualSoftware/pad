@@ -17,8 +17,53 @@ import (
 // always returns a *mcp.CallToolResult — error paths set IsError on
 // the result so MCP clients see structured stderr without having to
 // distinguish protocol errors from tool errors.
+//
+// Two implementations ship:
+//
+//   - ExecDispatcher (this file) — shells out to the pad binary with
+//     cliArgs. Used by `pad mcp serve` for local stdio MCP, where the
+//     subprocess inherits the user's credentials from `~/.pad/credentials.json`.
+//   - HTTPHandlerDispatcher (dispatch_http.go) — calls pad-cloud's
+//     HTTP handlers in-process with the requesting user attached to
+//     the request context. Used by the future `/mcp` endpoint
+//     (PLAN-943 TASK-950) where the dispatcher serves multiple OAuth
+//     users from a single process and can't safely shell out.
+//
+// Both consume the same cliArgs (built by BuildCLIArgs) so the
+// registry stays transport-agnostic. The HTTP dispatcher additionally
+// reads the original JSON input map via DispatchInputFromContext so it
+// doesn't have to reverse-parse cliArgs back to typed values; the
+// registry attaches that input via WithDispatchInput before calling
+// Dispatch.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*mcp.CallToolResult, error)
+}
+
+// dispatchInputKey is the unexported context-key type used to forward
+// the original MCP tool-call JSON arguments from the registry to a
+// dispatcher implementation. Unexported so callers can only set/read
+// it via WithDispatchInput / DispatchInputFromContext, which keeps the
+// type discipline obvious.
+type dispatchInputKey struct{}
+
+// WithDispatchInput returns ctx decorated with the original MCP tool-
+// call JSON input map. Called from the registry's tool handler before
+// invoking Dispatch. ExecDispatcher ignores it (it dispatches via
+// cliArgs); HTTPHandlerDispatcher reads it to build a structured HTTP
+// body without reverse-parsing CLI flags.
+func WithDispatchInput(ctx context.Context, input map[string]any) context.Context {
+	if input == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dispatchInputKey{}, input)
+}
+
+// DispatchInputFromContext returns the original MCP tool-call JSON
+// input attached by WithDispatchInput, or nil if none. Safe to call
+// on any context.
+func DispatchInputFromContext(ctx context.Context) map[string]any {
+	v, _ := ctx.Value(dispatchInputKey{}).(map[string]any)
+	return v
 }
 
 // ExecDispatcher shells out to the pad binary at Binary. stdout is

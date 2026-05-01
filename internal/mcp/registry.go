@@ -302,8 +302,44 @@ func makeDispatchHandler(
 		if err != nil {
 			return mcp.NewToolResultErrorf("%s: %s", ToolNameFromPath(path), err.Error()), nil
 		}
+		// Forward the original JSON input so HTTPHandlerDispatcher can
+		// build a structured request body without reverse-parsing
+		// cliArgs. ExecDispatcher ignores this; see Dispatcher godoc.
+		// Note: input may be missing values that BuildCLIArgs injected
+		// (session workspace, root flags, default --format) — pass the
+		// computed-superset map by merging them in here so HTTP
+		// dispatch and exec dispatch see the same effective values.
+		ctx = WithDispatchInput(ctx, mergeDispatchInput(input, state.Get(), rootFlags))
 		return dispatcher.Dispatch(ctx, cmdPath, args)
 	}
+}
+
+// mergeDispatchInput returns a copy of the user-supplied MCP input
+// augmented with the same default injections BuildCLIArgs applies —
+// session workspace, root flags — so the dispatcher receives the
+// effective input rather than a partial map. Pure function (no
+// mutation of `input`); safe to call with a nil input map.
+func mergeDispatchInput(input map[string]any, sessionWorkspace string, rootFlags map[string]string) map[string]any {
+	out := make(map[string]any, len(input)+len(rootFlags)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	if _, ok := out["workspace"]; !ok && sessionWorkspace != "" {
+		out["workspace"] = sessionWorkspace
+	}
+	for k, v := range rootFlags {
+		if v == "" {
+			continue
+		}
+		// MCP property names are snake_case (TASK-964) — translate
+		// rootFlags' kebab-case keys before checking collision.
+		propName := MCPPropertyName(k)
+		if _, ok := out[propName]; ok {
+			continue
+		}
+		out[propName] = v
+	}
+	return out
 }
 
 // flagsHiddenFromMCP are flag names whose semantics depend on the
