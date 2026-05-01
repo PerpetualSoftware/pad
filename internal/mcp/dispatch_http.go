@@ -413,18 +413,29 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
 		payload["assigned_user_id"] = v
 	}
-	// `--role` still needs a name → ID prefetch we haven't built yet
-	// (the role-list endpoint is wired in routeTable, but
-	// translation from slug-or-name happens at the dispatcher level
-	// for assignees only). Reject loudly so agents don't silently
-	// lose the role assignment. Captured in the TASK-967 follow-up
-	// alongside the rest of the route-table expansion.
+	// `agent_role_id` (UUID) passes through directly to the
+	// ItemCreate column. Agents that know the role's UUID (e.g.
+	// from a prior `role list` call) can set it without round-
+	// tripping through `--role` slug resolution.
+	if v, ok := input["agent_role_id"].(string); ok && v != "" {
+		payload["agent_role_id"] = v
+	}
+	// `--role` slug → role-ID resolution belongs in the next
+	// route-table expansion alongside the other prefetch-based
+	// resolutions. For now, reject loudly so agents don't silently
+	// lose the role assignment. The workaround the error message
+	// points at — passing `agent_role_id=<uuid>` directly in the
+	// tool input — is genuinely supported (see the pass-through
+	// above); `--field agent_role_id=...` is NOT a workaround
+	// because that writes into the fields JSON blob, not the
+	// agent_role_id column. (Codex review #345 round 2.)
 	if v, ok := input["role"]; ok {
 		if s, ok := v.(string); ok && s != "" {
 			return "", "", nil, fmt.Errorf(
 				"--role is not yet supported by HTTPHandlerDispatcher; " +
 					"slug → role-ID resolution lands in the next route-table " +
-					"expansion. For now, pass `--field agent_role_id=<uuid>`")
+					"expansion. For now, pass `agent_role_id=<uuid>` directly " +
+					"in the tool input (use `role list` to find the UUID).")
 		}
 	}
 

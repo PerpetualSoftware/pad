@@ -482,6 +482,48 @@ func TestHTTPHandlerDispatcher_Integration_ItemUpdateAndAssignResolution(t *test
 	}
 }
 
+func TestDispatchItemUpdate_PassesThroughAgentRoleID(t *testing.T) {
+	// Parity with mapItemCreate: agent_role_id (UUID) writes to the
+	// ItemUpdate column. The --role rejection points agents at this
+	// path, so it must actually work end-to-end (Codex review #345
+	// round 2 caught the misleading error pointing at --field, which
+	// would have put the value in the fields JSON instead).
+	captured := newRequestCapture()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
+		case http.MethodPatch:
+			captured.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		}
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace":     "docapp",
+		"ref":           "TASK-5",
+		"agent_role_id": "role-uuid-789",
+	})
+	if _, err := d.Dispatch(ctx, []string{"item", "update"}, nil); err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["agent_role_id"] != "role-uuid-789" {
+		t.Errorf("agent_role_id not in PATCH body: %v", body)
+	}
+	// And NOT inside the fields JSON (the misleading workaround
+	// would have put it there).
+	if fields, _ := body["fields"].(string); fields != "" {
+		t.Errorf("agent_role_id should not be in fields blob: %v", fields)
+	}
+}
+
 func TestDispatchItemUpdate_RejectsUnsupportedRole(t *testing.T) {
 	// Parity with mapItemCreate's role rejection — until the next
 	// route-table expansion adds slug → ID resolution, agents must

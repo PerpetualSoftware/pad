@@ -165,11 +165,19 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// expansion adds slug → ID resolution, reject loudly so agents
 	// don't get a successful update response while their requested
 	// role assignment is silently dropped (Codex review #345 round 1).
+	// The workaround pointed at — passing `agent_role_id=<uuid>`
+	// directly in the input — is the genuinely-supported path; we
+	// pass it through to ItemUpdate.AgentRoleID below. (Codex
+	// review #345 round 2 caught the original message pointing at
+	// `--field agent_role_id=...` which writes to the fields JSON
+	// blob, not the column, and would have silently no-op'd the
+	// role assignment.)
 	if v, ok := input["role"].(string); ok && v != "" {
 		return mcp.NewToolResultErrorf(
 			"%s: --role is not yet supported by HTTPHandlerDispatcher; "+
 				"slug → role-ID resolution lands in the next route-table "+
-				"expansion. For now, pass `--field agent_role_id=<uuid>`",
+				"expansion. For now, pass `agent_role_id=<uuid>` directly "+
+				"in the tool input (use `role list` to find the UUID).",
 			cmdKey,
 		), nil
 	}
@@ -209,6 +217,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	}
 	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
 		payload["assigned_user_id"] = v
+	}
+	if v, ok := input["agent_role_id"].(string); ok && v != "" {
+		payload["agent_role_id"] = v
 	}
 	if b, ok := input["pinned"].(bool); ok {
 		payload["pinned"] = b

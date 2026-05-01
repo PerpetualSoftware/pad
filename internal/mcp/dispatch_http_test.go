@@ -245,6 +245,37 @@ func TestMapItemCreate_RejectsUnsupportedRole(t *testing.T) {
 	}
 }
 
+func TestMapItemCreate_PassesThroughAgentRoleID(t *testing.T) {
+	// agent_role_id (UUID) is the ItemCreate column the handler
+	// writes to. Agents that know the UUID (e.g. from a prior
+	// `role list` call) can set it without --role slug resolution.
+	// Codex review #345 round 2 caught the misleading error message
+	// pointing at `--field agent_role_id=<uuid>` — that goes into
+	// the fields JSON blob, NOT the column. The fix is to pass the
+	// top-level `agent_role_id` through directly; this test pins
+	// that path so the workaround the error message points at
+	// actually works.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"agent_role_id": "role-uuid-789",
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["agent_role_id"] != "role-uuid-789" {
+		t.Errorf("agent_role_id not passed through: %v", payload)
+	}
+	// And specifically not in the fields blob (where the misleading
+	// `--field agent_role_id=...` workaround would have put it).
+	if fields, _ := payload["fields"].(string); fields != "" {
+		t.Errorf("agent_role_id leaked into fields blob: %v", fields)
+	}
+}
+
 func TestMapItemCreate_PassesThroughResolvedAssignedUserID(t *testing.T) {
 	// TASK-967: --assign is preprocessed at the dispatcher level
 	// (resolveAssignName) before the mapper runs. By the time
