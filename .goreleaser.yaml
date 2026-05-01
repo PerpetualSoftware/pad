@@ -138,7 +138,7 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: "https://getpad.dev"
-    description: "Collaborate with your AI agents"
+    description: "Project Management for the agent era"
     license: "Apache-2.0"
 
 # dockers_v2 replaces the legacy `dockers:` + `docker_manifests:` blocks.

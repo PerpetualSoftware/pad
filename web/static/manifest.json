@@ -1,7 +1,7 @@
 {
   "name": "Pad",
   "short_name": "Pad",
-  "description": "Collaborate with your AI agents",
+  "description": "Project Management for the agent era",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1a1a1a",

@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Pad</h1>
-  <p align="center"><strong>Collaborate with your AI agents.</strong></p>
+  <p align="center"><strong>Project Management for the agent era.</strong></p>
   <p align="center">
     <a href="https://github.com/PerpetualSoftware/pad/actions/workflows/ci.yml"><img src="https://github.com/PerpetualSoftware/pad/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://github.com/PerpetualSoftware/pad/releases"><img src="https://img.shields.io/github/v/release/PerpetualSoftware/pad" alt="Release"></a>
