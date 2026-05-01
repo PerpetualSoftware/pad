@@ -39,8 +39,8 @@ func TestNewServer_Construction(t *testing.T) {
 // TestServer_InitializeHandshake is the contract test: a real
 // initialize round-trip through the stdio pipeline must return
 // serverInfo with our canonical name + the version we passed in,
-// AND must advertise the cmdhelp tool-surface tier under
-// serverCapabilities.experimental.padCmdhelp.
+// AND must advertise the cmdhelp tool-surface tier at
+// capabilities.experimental.padCmdhelp in the initialize result.
 //
 // This is what every MCP client (Claude Desktop, Cursor, Windsurf,
 // mcp-inspector) sees on connect — if it regresses, downstream
@@ -64,7 +64,7 @@ func TestServer_InitializeHandshake(t *testing.T) {
 	// directly from the handshake.
 	exp := res.Capabilities.Experimental
 	if exp == nil {
-		t.Fatalf("serverCapabilities.experimental missing — cmdhelp tier not advertised")
+		t.Fatalf("capabilities.experimental missing — cmdhelp tier not advertised")
 	}
 	rawNS, ok := exp[experimentalCapabilityKey]
 	if !ok {
