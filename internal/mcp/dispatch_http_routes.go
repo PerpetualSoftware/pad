@@ -233,7 +233,224 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/members",
 		}.toRouteMapper(),
+
+		// --- Stars (TASK-968 follow-up) ---
+		// `item star`/`unstar` use the item's slug-or-ref directly in
+		// the URL — handleStarItem calls store.ResolveItem which
+		// accepts UUIDs, slugs, AND issue refs (TASK-5), so no prefetch
+		// is needed. Same shape as `item show`/`item delete`.
+		"item star": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/star",
+		}.toRouteMapper(),
+		"item unstar": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/star",
+		}.toRouteMapper(),
+		// `--all` becomes `?include_terminal=true` on the listing
+		// endpoint to surface starred items even when they're in a
+		// terminal status. Without --all, the handler hides them.
+		"item starred": mapItemStarred,
+
+		// --- Roles (admin) ---
+		"role create": mapRoleCreate,
+		"role delete": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles/{slug}",
+		}.toRouteMapper(),
+
+		// --- Webhooks (admin) ---
+		"webhook list": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/webhooks",
+		}.toRouteMapper(),
+		"webhook create": mapWebhookCreate,
+		"webhook delete": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: "/api/v1/workspaces/{workspace}/webhooks/{id}",
+		}.toRouteMapper(),
+		"webhook test": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/webhooks/{id}/test",
+		}.toRouteMapper(),
+
+		// --- Auth ---
+		// `auth whoami` is global (not workspace-scoped) — the
+		// /api/v1/auth/me endpoint returns the requesting user's
+		// profile. Useful as an early sanity check for an MCP client
+		// that's just authenticated.
+		"auth whoami": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/auth/me",
+		}.toRouteMapper(),
+
+		// --- Workspace surfaces ---
+		// `workspace list` lists workspaces visible to the requesting
+		// user (admins see all; everyone else sees their memberships).
+		"workspace list": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces",
+		}.toRouteMapper(),
+		"workspace storage": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/storage/usage",
+		}.toRouteMapper(),
+		// `workspace audit-log` hits the GLOBAL /api/v1/audit-log
+		// endpoint (admin-only) — the CLI command's "workspace" prefix
+		// is naming convention, not URL scoping. The handler accepts a
+		// `?workspace=<id>` query param to scope when desired; the CLI
+		// doesn't pass it by default, so we don't either (the
+		// dispatcher's `workspace` input remains injected for
+		// session-default purposes but isn't auto-forwarded — agents
+		// can pass an explicit `workspace` param to scope if they want).
+		"workspace audit-log": mapWorkspaceAuditLog,
+		"workspace invite":    mapWorkspaceInvite,
 	}
+}
+
+// mapItemStarred dispatches `pad item starred [--all]`.
+//
+// GET /api/v1/workspaces/{ws}/starred?include_terminal=true when
+// --all is set. Without --all the default behaviour hides terminal-
+// status items (done/completed/etc.) — matches handleListStarredItems'
+// query-param treatment.
+func mapItemStarred(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/starred"
+	if all, _ := input["all"].(bool); all {
+		urlPath += "?include_terminal=true"
+	}
+	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapRoleCreate dispatches `pad role create <name> [--description ...]
+// [--icon ...] [--tools ...]`.
+//
+// POST /api/v1/workspaces/{ws}/agent-roles with body matching
+// models.AgentRoleCreate. The handler requires `name` and validates
+// against the workspace template; everything else is optional.
+//
+// `--tools` is a comma-separated string in the CLI (cmdhelp string
+// flag, not a repeatable). Pass through verbatim — the handler
+// stores it as the `tools` JSON field on the role.
+func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	name, _ := input["name"].(string)
+	if name == "" {
+		return "", "", nil, fmt.Errorf("name is required")
+	}
+	payload := map[string]any{"name": name}
+	for _, key := range []string{"description", "icon", "tools"} {
+		if v, _ := input[key].(string); v != "" {
+			payload[key] = v
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles"
+	return http.MethodPost, urlPath, body, nil
+}
+
+// mapWebhookCreate dispatches `pad webhook create <url> [--events ...]
+// [--secret ...]`.
+//
+// POST /api/v1/workspaces/{ws}/webhooks with body matching
+// models.WebhookCreate. `--events` is comma-separated in the CLI
+// (cmdhelp string flag); the handler accepts a slice or comma-separated
+// string per the underlying schema. We pass verbatim and let the
+// handler split.
+func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	urlVal, _ := input["url"].(string)
+	if urlVal == "" {
+		return "", "", nil, fmt.Errorf("url is required")
+	}
+	payload := map[string]any{"url": urlVal}
+	for _, key := range []string{"events", "secret"} {
+		if v, _ := input[key].(string); v != "" {
+			payload[key] = v
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/webhooks"
+	return http.MethodPost, urlPath, body, nil
+}
+
+// mapWorkspaceAuditLog dispatches `pad workspace audit-log [--days N]
+// [--actor X] [--action X] [--limit N]`.
+//
+// GET /api/v1/audit-log (NOT workspace-scoped — the URL is global,
+// admin-only). All filters become query params. Mirrors
+// internal/cli/client.go's GetAuditLog wire shape so behaviour matches
+// the CLI exactly: omit empty filters, pass numerics as decimal strings.
+//
+// Forwards an explicit `workspace` input as `?workspace=<id>` so an
+// admin agent can scope without needing to know the CLI's
+// session-default convention. The handler accepts a workspace UUID;
+// pass-through preserves whatever shape the agent sent.
+func mapWorkspaceAuditLog(input map[string]any) (string, string, []byte, error) {
+	q := url.Values{}
+	if s, _ := input["action"].(string); s != "" {
+		q.Set("action", s)
+	}
+	if s, _ := input["actor"].(string); s != "" {
+		q.Set("actor", s)
+	}
+	if s, _ := input["workspace"].(string); s != "" {
+		q.Set("workspace", s)
+	}
+	if n, ok := numericInput(input["days"]); ok && n > 0 {
+		q.Set("days", strconv.FormatInt(n, 10))
+	}
+	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+		q.Set("limit", strconv.FormatInt(n, 10))
+	}
+	urlPath := "/api/v1/audit-log"
+	if encoded := q.Encode(); encoded != "" {
+		urlPath += "?" + encoded
+	}
+	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapWorkspaceInvite dispatches `pad workspace invite <email>
+// [--role X]`.
+//
+// POST /api/v1/workspaces/{ws}/members/invite with body
+// {email, role?}. Default role on the handler side is "editor" so
+// we don't forward an empty value.
+func mapWorkspaceInvite(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	email, _ := input["email"].(string)
+	if email == "" {
+		return "", "", nil, fmt.Errorf("email is required")
+	}
+	payload := map[string]any{"email": email}
+	if role, _ := input["role"].(string); role != "" {
+		payload["role"] = role
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/members/invite"
+	return http.MethodPost, urlPath, body, nil
 }
 
 // defaultActiveStatusFilter mirrors the broad inclusion list the

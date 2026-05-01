@@ -134,8 +134,9 @@ var commandsAcceptingRoleBySlug = map[string]struct{}{
 // noRemoteEquivalent enumerates leaf commands that have no useful
 // HTTP-transport mapping because they mutate or inspect local state
 // only — config files, MCP-client mcp.json entries, the local server
-// process. Distinct from "not yet implemented over HTTP transport"
-// because those will eventually land; these never will.
+// process, the local git checkout. Distinct from "not yet implemented
+// over HTTP transport" because those will eventually land; these never
+// will.
 //
 // Surfacing the distinction lets agents recognize-and-skip rather
 // than retrying or escalating. The error message is stable so
@@ -149,6 +150,16 @@ var noRemoteEquivalent = map[string]struct{}{
 	"workspace link":    {}, // local .pad.toml mutation
 	"workspace switch":  {}, // local .pad.toml mutation
 	"workspace context": {}, // local .pad.toml inspection
+	// `github` commands chain `git rev-parse` + `gh` CLI for the
+	// branch/PR data they write to the linked item — that data
+	// inherently lives in the agent's local checkout, not on
+	// pad-cloud. A remote MCP would have no way to query it. Agents
+	// that want this functionality should use their own GitHub /
+	// shell tools to fetch PR data and then pass it through `item
+	// update --field github_pr=...`.
+	"github link":   {},
+	"github status": {},
+	"github unlink": {},
 }
 
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
