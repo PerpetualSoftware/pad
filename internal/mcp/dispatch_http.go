@@ -134,38 +134,48 @@ var commandsAcceptingRoleBySlug = map[string]struct{}{
 // noRemoteEquivalent enumerates leaf commands that have no useful
 // HTTP-transport mapping because they mutate or inspect local state
 // only — config files, MCP-client mcp.json entries, the local server
-// process, the local git checkout. Distinct from "not yet implemented
-// over HTTP transport" because those will eventually land; these never
+// process, the local git checkout, the local filesystem path
+// arguments (attachments). Distinct from "not yet implemented over
+// HTTP transport" because those will eventually land; these never
 // will.
 //
+// The map value is a rationale clause appended to the error message,
+// giving agents a hint about why the command is local-only AND what
+// the alternative path is (when there is one — e.g. attachments
+// suggest fetching bytes via the URL directly + using `attachment
+// show` for metadata).
+//
 // Surfacing the distinction lets agents recognize-and-skip rather
-// than retrying or escalating. The error message is stable so
-// downstream tooling can match on it if needed.
-var noRemoteEquivalent = map[string]struct{}{
-	"agent status":      {}, // local skill-detection (~/.claude/, etc.)
-	"mcp status":        {}, // local mcp.json across MCP clients
-	"mcp uninstall":     {}, // local mcp.json mutation
-	"server info":       {}, // local pad-server process state
-	"server open":       {}, // local browser launch
-	"workspace link":    {}, // local .pad.toml mutation
-	"workspace switch":  {}, // local .pad.toml mutation
-	"workspace context": {}, // local .pad.toml inspection
+// than retrying or escalating. The "no remote equivalent" prefix is
+// stable so downstream tooling can match on it if needed.
+var noRemoteEquivalent = map[string]string{
+	"agent status":      "operates on local skill-detection state (~/.claude/, etc.), not the workspace",
+	"mcp status":        "inspects local mcp.json across MCP clients, not the workspace",
+	"mcp uninstall":     "mutates local mcp.json, not the workspace",
+	"server info":       "reports local pad-server process state, not workspace data",
+	"server open":       "launches a local browser, not a workspace operation",
+	"workspace link":    "mutates local .pad.toml, not workspace state",
+	"workspace switch":  "mutates local .pad.toml, not workspace state",
+	"workspace context": "inspects local .pad.toml, not workspace state",
 	// `github` commands chain `git rev-parse` + `gh` CLI for the
 	// branch/PR data they write to the linked item — that data
 	// inherently lives in the agent's local checkout, not on
-	// pad-cloud. A remote MCP would have no way to query it. Agents
-	// that want this functionality should use their own GitHub /
-	// shell tools to fetch PR data and then pass it through `item
-	// update --field github_pr=...`.
-	"github link":   {},
-	"github status": {},
-	"github unlink": {},
+	// pad-cloud. Agents with their own GitHub tools can update items
+	// via `item update --field github_pr=...` once they have the data.
+	"github link":   "needs the agent's local git branch + `gh` CLI; agents pass PR data via `item update --field github_pr=...`",
+	"github status": "needs the agent's local git branch + `gh` CLI; query GitHub directly via the agent's tools",
+	"github unlink": "needs the agent's local git branch + `gh` CLI; clear PR data via `item update --field github_pr=null`",
 	// `project reconcile` shells out to `gh` CLI to compare stored
-	// PR metadata against live GitHub state — same locality argument
-	// as the github commands. Agents that want this functionality
-	// have their own GitHub tools and can update items via
-	// `item update --field github_pr=...`.
-	"project reconcile": {},
+	// PR metadata against live GitHub state — same locality argument.
+	"project reconcile": "shells out to `gh` CLI to compare stored PR metadata against live GitHub state; agents reconcile via their own GitHub tools + `item update`",
+	// Attachment commands that take a local filesystem `<path>` /
+	// `<out-path>` argument — agents on a remote MCP server have no
+	// shared filesystem. Metadata commands (list, show) are wired;
+	// upload/download/view are not because the path argument is
+	// fundamentally local.
+	"attachment upload":   "needs a local filesystem `<path>` arg; agents fetch raw bytes via the attachment URL directly (see `attachment show` for metadata)",
+	"attachment download": "writes to a local filesystem `<out-path>`; agents read raw bytes via the attachment URL directly (see `attachment show` for metadata)",
+	"attachment view":     "writes to a local filesystem path and prints it; agents read raw bytes via the attachment URL directly (see `attachment show` for metadata)",
 }
 
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
@@ -202,12 +212,13 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	// message. These never get an HTTP mapping — the action is
 	// inherently local-state-only — so failing fast saves agents the
 	// retry-or-escalate cycle they'd run on a "not yet implemented"
-	// reply.
-	if _, local := noRemoteEquivalent[cmdKey]; local {
+	// reply. The rationale clause from noRemoteEquivalent gives the
+	// agent a hint about WHY (and, for the github / attachment
+	// commands, the alternative path).
+	if rationale, local := noRemoteEquivalent[cmdKey]; local {
 		return mcp.NewToolResultErrorf(
-			"%s: no remote equivalent — CLI-only command "+
-				"(operates on local pad client / config state, not the workspace)",
-			cmdKey,
+			"%s: no remote equivalent — CLI-only command (%s)",
+			cmdKey, rationale,
 		), nil
 	}
 
@@ -280,6 +291,10 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		return d.dispatchLibraryList(ctx, input, user)
 	case "library activate":
 		return d.dispatchLibraryActivate(ctx, input, user)
+	case "attachment list":
+		return d.dispatchAttachmentList(ctx, input, user)
+	case "attachment show":
+		return d.dispatchAttachmentShow(ctx, input, user)
 	}
 
 	// Item link create/delete commands. The asymmetry between which
