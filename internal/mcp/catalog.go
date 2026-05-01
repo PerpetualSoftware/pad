@@ -272,8 +272,11 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 		opts = append(opts,
 			mcp.WithString("workspace",
 				mcp.Description(
-					"Workspace slug. Defaults to the session workspace set via "+
-						"pad_set_workspace, then to the CWD-linked workspace from .pad.toml.",
+					"Workspace slug to target for this call. Resolution order: "+
+						"(1) explicit value here wins, (2) else session default set via "+
+						"pad_set_workspace, (3) else the CWD-linked workspace from .pad.toml. "+
+						"Pass explicitly to switch workspaces mid-session without affecting "+
+						"the session default.",
 				),
 			),
 		)
