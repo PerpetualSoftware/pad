@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 )
 
@@ -29,7 +31,8 @@ https://getpad.dev/mcp/local for client configuration.`,
 
 // mcpServeCmd implements the stdio MCP server. The cobra command is a
 // thin wrapper around internal/mcp.Server — all transport / handshake
-// behaviour lives in the package so tests can drive it directly.
+// behaviour and tool registration live in the package so tests can
+// drive them directly.
 func mcpServeCmd() *cobra.Command {
 	var debug bool
 	cmd := &cobra.Command{
@@ -43,6 +46,12 @@ etc.) per its mcp.json configuration. Direct human invocation is rare;
 when running interactively you'll see an idle process waiting for the
 client's initialize message.
 
+The tool surface is generated automatically from this binary's
+command tree (cmdhelp v0.1) — every leaf command becomes an MCP
+tool, except the curated allow-list exclusions (db ops, auth setup,
+init, etc.). Use ` + "`pad_set_workspace`" + ` to set the default
+workspace for the session.
+
 Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 		// Errors here are connection-level rather than arg-validation,
 		// so suppress cobra's auto-printed usage block — it would
@@ -53,6 +62,50 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				Version: fullVersion(),
 				Debug:   debug,
 			})
+
+			// Build cmdhelp Document from the live cobra tree. Same
+			// emitter that powers `pad help --format json`, so the MCP
+			// surface and the agent-facing docs stay in lockstep.
+			root := cmd.Root()
+			doc := cmdhelp.Build(root, root, cmdhelp.Options{
+				Binary:   "pad",
+				Version:  fullVersion(),
+				Homepage: padHomepage,
+				MaxDepth: -1,
+			})
+
+			// Resolve the running pad binary so the dispatcher can
+			// re-invoke us as a subprocess. Falls back to argv[0] if
+			// os.Executable fails (rare; mostly happens on exotic
+			// /proc-less platforms).
+			bin, err := os.Executable()
+			if err != nil || bin == "" {
+				bin = os.Args[0]
+			}
+
+			// Seed the session workspace from --workspace if the user
+			// passed it. After that, agents can update the default via
+			// the pad_set_workspace tool.
+			state := mcpserver.NewWorkspaceState(workspaceFlag)
+
+			// Forward root persistent flags captured at startup (e.g.
+			// --url) to every dispatched subprocess. Empty values are
+			// skipped by BuildCLIArgs so this is safe when the user
+			// didn't pass them. --workspace is excluded — it lives in
+			// WorkspaceState and is mutable via pad_set_workspace.
+			rootFlags := map[string]string{
+				"url": urlFlag,
+			}
+
+			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
+				Doc:        doc,
+				Workspace:  state,
+				Dispatcher: &mcpserver.ExecDispatcher{Binary: bin},
+				RootFlags:  rootFlags,
+			}); err != nil {
+				return fmt.Errorf("pad mcp serve: register tools: %w", err)
+			}
+
 			if err := srv.Run(cmd.Context()); err != nil {
 				return fmt.Errorf("pad mcp serve: %w", err)
 			}
