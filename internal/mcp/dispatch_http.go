@@ -116,6 +116,41 @@ var commandsAcceptingAssignByName = map[string]struct{}{
 	"item list":   {},
 }
 
+// commandsAcceptingRoleBySlug is the allowlist of cmdPaths whose
+// `--role <slug>` input should be resolved to an agent_role_id UUID
+// via the agent-roles endpoint before the mapper sees it. Symmetric
+// to commandsAcceptingAssignByName.
+//
+// `item list` is intentionally NOT in this set: the LIST handler
+// accepts both UUID and slug at the query-param level (the store's
+// list path forks on UUID-vs-slug), so resolving slugs there would
+// add an unnecessary hop without any behavioural change. Only
+// commands whose handlers require the canonical UUID are listed.
+var commandsAcceptingRoleBySlug = map[string]struct{}{
+	"item create": {},
+	"item update": {},
+}
+
+// noRemoteEquivalent enumerates leaf commands that have no useful
+// HTTP-transport mapping because they mutate or inspect local state
+// only — config files, MCP-client mcp.json entries, the local server
+// process. Distinct from "not yet implemented over HTTP transport"
+// because those will eventually land; these never will.
+//
+// Surfacing the distinction lets agents recognize-and-skip rather
+// than retrying or escalating. The error message is stable so
+// downstream tooling can match on it if needed.
+var noRemoteEquivalent = map[string]struct{}{
+	"agent status":      {}, // local skill-detection (~/.claude/, etc.)
+	"mcp status":        {}, // local mcp.json across MCP clients
+	"mcp uninstall":     {}, // local mcp.json mutation
+	"server info":       {}, // local pad-server process state
+	"server open":       {}, // local browser launch
+	"workspace link":    {}, // local .pad.toml mutation
+	"workspace switch":  {}, // local .pad.toml mutation
+	"workspace context": {}, // local .pad.toml inspection
+}
+
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
 // for interface compatibility but ignored — HTTPHandlerDispatcher
 // reads the structured input attached by the registry via
@@ -145,6 +180,20 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	}
 
 	cmdKey := strings.Join(cmdPath, " ")
+
+	// Reject CLI-only commands up front with a stable, agent-recognizable
+	// message. These never get an HTTP mapping — the action is
+	// inherently local-state-only — so failing fast saves agents the
+	// retry-or-escalate cycle they'd run on a "not yet implemented"
+	// reply.
+	if _, local := noRemoteEquivalent[cmdKey]; local {
+		return mcp.NewToolResultErrorf(
+			"%s: no remote equivalent — CLI-only command "+
+				"(operates on local pad client / config state, not the workspace)",
+			cmdKey,
+		), nil
+	}
+
 	user := d.UserResolver(ctx)
 	if user == nil {
 		return mcp.NewToolResultErrorf("%s: no authenticated user in context", cmdKey), nil
@@ -169,6 +218,20 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		}
 	}
 
+	// Preprocess input: resolve --role slug → agent_role_id for
+	// commands that accept the shorthand. Symmetric to the --assign
+	// preprocess above. Failure here surfaces as IsError so agents
+	// see the resolution error instead of a silently dropped role
+	// assignment (the regression the older mapper-level rejection was
+	// guarding against — Codex review #345 round 1).
+	if _, ok := commandsAcceptingRoleBySlug[cmdKey]; ok {
+		var err error
+		input, err = d.resolveRoleSlug(ctx, user, input)
+		if err != nil {
+			return mcp.NewToolResultErrorf("%s: resolve --role: %s", cmdKey, err.Error()), nil
+		}
+	}
+
 	// Special-case routes that need read-modify-write or other
 	// in-handler prefetches. These live as methods on the dispatcher
 	// because they need the Handler reference; the simple route
@@ -176,6 +239,22 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	switch cmdKey {
 	case "item update":
 		return d.dispatchItemUpdate(ctx, input, user)
+	case "item deps", "item related", "item implemented-by":
+		return d.dispatchGetItemLinks(ctx, input, user, cmdKey)
+	}
+
+	// Item link create/delete commands. The asymmetry between which
+	// arg drives the URL slug and which drives the body's target_id
+	// (block: source→URL, target→body; blocked-by: blocker→URL,
+	// source→body) lives in itemLinkSpecs; the dispatcher just looks
+	// up the spec and forwards.
+	if spec, ok := itemLinkSpecs[cmdKey]; ok {
+		switch cmdKey {
+		case "item unblock", "item unimplements", "item unsupersede", "item unsplit":
+			return d.dispatchDeleteItemLink(ctx, input, user, spec)
+		default:
+			return d.dispatchCreateItemLink(ctx, input, user, spec)
+		}
 	}
 
 	routes := d.Routes
@@ -430,26 +509,22 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	if v, ok := input["agent_role_id"].(string); ok && v != "" {
 		payload["agent_role_id"] = v
 	}
-	// `--role` slug → role-ID resolution belongs in the next
-	// route-table expansion alongside the other prefetch-based
-	// resolutions. For now, reject loudly so agents don't silently
-	// lose the role assignment. The workaround the error message
-	// points at — passing `agent_role_id=<uuid>` directly in the
-	// tool input — is genuinely supported (see the pass-through
-	// above); `--field agent_role_id=...` is NOT a workaround
-	// because that writes into the fields JSON blob, not the
-	// agent_role_id column. (Codex review #345 round 2.)
-	if v, ok := input["role"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			return "", "", nil, fmt.Errorf(
-				"--role is not yet supported by HTTPHandlerDispatcher; " +
-					"slug → role-ID resolution lands in the next route-table " +
-					"expansion. For now, pass `--field agent_role_id=<uuid>` — " +
-					"the dispatcher recognizes column keys from --field and " +
-					"writes them to the column rather than the fields blob. " +
-					"Use `role list` to find the UUID.")
-		}
-	}
+	// `--role` is now resolved at the dispatcher level (TASK-968):
+	// Dispatch's preprocess step rewrites the slug to the canonical
+	// `agent_role_id` UUID via the agent-roles endpoint before the
+	// mapper runs. By the time we get here either:
+	//
+	//   - input had no `role` key — pass-through above already
+	//     handled an explicit `agent_role_id`.
+	//   - input had `role: <slug>` and resolution succeeded — the
+	//     preprocess set agent_role_id and removed `role`, again
+	//     handled by the pass-through above.
+	//   - resolution failed — Dispatch returned IsError before
+	//     calling the mapper, so we don't reach this point.
+	//
+	// The mapper just trusts the resolved input. The pass-through
+	// for explicit `agent_role_id` (above) is the only role-related
+	// branch that needs to live in the mapper itself.
 
 	body, err = json.Marshal(payload)
 	if err != nil {

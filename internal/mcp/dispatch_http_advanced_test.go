@@ -570,34 +570,92 @@ func TestDispatchItemUpdate_PassesThroughAgentRoleID(t *testing.T) {
 	}
 }
 
-func TestDispatchItemUpdate_RejectsUnsupportedRole(t *testing.T) {
-	// Parity with mapItemCreate's role rejection — until the next
-	// route-table expansion adds slug → ID resolution, agents must
-	// not get a "success" response while their role assignment was
-	// silently dropped (Codex review #345 round 1).
-	prefetchCount := 0
+func TestDispatchItemUpdate_ResolvesRoleSlugToAgentRoleID(t *testing.T) {
+	// TASK-968 replaced the older --role rejection with a Dispatch-
+	// level preprocess that resolves slug → agent_role_id via the
+	// /agent-roles/{slug} endpoint. The PATCH body should carry the
+	// resolved UUID in `agent_role_id` and not in `fields`, AND the
+	// `role` key should be gone from the input by the time the
+	// handler sees it.
+	captured := newRequestCapture()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(_ http.ResponseWriter, _ *http.Request) {
-		prefetchCount++
+	mux.HandleFunc("/api/v1/workspaces/docapp/agent-roles/implementer", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"role-uuid-imp","slug":"implementer","name":"Implementer"}`))
 	})
-	d := &HTTPHandlerDispatcher{
-		Handler:      mux,
-		UserResolver: fixedUserResolver(&models.User{ID: "caller"}),
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{\"status\":\"open\"}"}`))
+		case http.MethodPatch:
+			captured.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp",
+		"ref":       "TASK-5",
+		"role":      "implementer",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
 	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["agent_role_id"] != "role-uuid-imp" {
+		t.Errorf("expected agent_role_id from slug resolution; got %v", body)
+	}
+	// And NOT inside fields blob.
+	fields := map[string]any{}
+	if s, _ := body["fields"].(string); s != "" {
+		_ = json.Unmarshal([]byte(s), &fields)
+	}
+	if _, present := fields["agent_role_id"]; present {
+		t.Errorf("agent_role_id should not be in fields blob: %v", fields)
+	}
+	if _, present := body["role"]; present {
+		t.Errorf("`role` key should be removed after resolution: %v", body)
+	}
+}
+
+func TestDispatchItemUpdate_RoleResolutionFailureSurfacesAsToolError(t *testing.T) {
+	// Slug-not-found at the agent-roles endpoint must abort the
+	// dispatch — the older rejection guarded against silent drops
+	// of the role assignment, and the new preprocess preserves that
+	// guarantee on a different code path.
+	patchCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/agent-roles/ghost", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	})
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(_ http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patchCount++
+		}
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
 	ctx := WithDispatchInput(context.Background(), map[string]any{
 		"workspace": "docapp", "ref": "TASK-5",
-		"role": "implementer",
+		"role": "ghost",
 	})
 	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
 	if err != nil {
 		t.Fatalf("Dispatch err: %v", err)
 	}
 	if !res.IsError {
-		t.Errorf("expected IsError when --role passed; got %#v", res)
+		t.Errorf("expected IsError when role resolution fails; got %#v", res)
 	}
-	// And: no handler call AT ALL — neither prefetch nor PATCH.
-	if prefetchCount != 0 {
-		t.Errorf("handler must not run when --role rejection trips; ran %d times", prefetchCount)
+	if patchCount != 0 {
+		t.Errorf("PATCH must not run after role resolution failure; ran %d times", patchCount)
 	}
 }
 

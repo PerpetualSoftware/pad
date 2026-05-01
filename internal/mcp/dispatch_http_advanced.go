@@ -67,6 +67,116 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 	return out, nil
 }
 
+// resolveRoleSlug rewrites a `--role <slug>` input into
+// `agent_role_id <uuid>` by hitting the agent-roles endpoint and
+// finding a matching role. Mirrors the CLI's behaviour in
+// itemCreateCmd / itemUpdateCmd which treats `--role` as a slug or
+// ID and resolves to the column UUID before sending the create/
+// update — without resolution, agents passing slugs would silently
+// get empty results (the store filters by `i.agent_role_id = ?`
+// UUID, with slug accepted only on the LIST endpoint, not the
+// item-mutation handlers).
+//
+// Symmetric to resolveAssignName: returns the input map with `role`
+// replaced by `agent_role_id` when a match is found, or unchanged
+// when `role` is missing / empty. Mismatches return a clear error.
+//
+// The handleGetAgentRole endpoint at /agent-roles/{roleID} accepts
+// either a UUID or a slug as roleID, so this single GET resolves
+// both. If the caller passed an explicit `agent_role_id` alongside
+// `--role`, the explicit ID wins (matches the --assign precedence
+// in resolveAssignName).
+//
+// The returned map is always a fresh copy — the caller's reference
+// isn't mutated.
+func (d *HTTPHandlerDispatcher) resolveRoleSlug(
+	ctx context.Context,
+	user *models.User,
+	input map[string]any,
+) (map[string]any, error) {
+	rawRole, present := input["role"]
+	if !present {
+		return input, nil
+	}
+	role, _ := rawRole.(string)
+	if role == "" {
+		return input, nil
+	}
+	out := cloneStringMap(input)
+	if existingID, _ := out["agent_role_id"].(string); existingID != "" {
+		// Explicit ID wins over slug; drop the role key to avoid the
+		// resolution lookup below.
+		delete(out, "role")
+		return out, nil
+	}
+
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return nil, fmt.Errorf("workspace is required to resolve --role")
+	}
+
+	roleID, err := d.lookupRoleID(ctx, user, workspace, role)
+	if err != nil {
+		return nil, err
+	}
+	out["agent_role_id"] = roleID
+	delete(out, "role")
+	return out, nil
+}
+
+// lookupRoleID issues an in-handler GET against
+// /api/v1/workspaces/{ws}/agent-roles/{slug} and returns the role's
+// canonical id. The handler accepts either UUID or slug for roleID
+// (see handleGetAgentRole), so callers can pass a slug like
+// "implementer" or a pre-resolved UUID interchangeably.
+//
+// Goes through buildAuthedRequest so d.Apply (the OAuth-scope hook)
+// sees this prefetch the same as a top-level dispatch — no scope
+// bypass during role resolution.
+//
+// Errors:
+//
+//   - underlying handler returns 404 → "no agent role matches --role %q"
+//     (clearer than the raw 404 body for agents).
+//   - other non-2xx → wrapped error with body.
+//   - response shape doesn't include id → error.
+func (d *HTTPHandlerDispatcher) lookupRoleID(
+	ctx context.Context,
+	user *models.User,
+	workspace string,
+	role string,
+) (string, error) {
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) +
+		"/agent-roles/" + url.PathEscape(role)
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
+	if err != nil {
+		return "", fmt.Errorf("build agent-role request: %w", err)
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		return "", fmt.Errorf("no agent role matches --role %q", role)
+	}
+	if rec.Code >= 400 {
+		body := strings.TrimSpace(rec.Body.String())
+		if body == "" {
+			body = http.StatusText(rec.Code)
+		}
+		return "", fmt.Errorf("look up agent role: %d %s", rec.Code, body)
+	}
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		return "", fmt.Errorf("parse agent-role response: %w", err)
+	}
+	if resp.ID == "" {
+		return "", fmt.Errorf("agent-role response missing id for %q", role)
+	}
+	return resp.ID, nil
+}
+
 // lookupAssigneeID issues an in-handler GET against
 // /api/v1/workspaces/{ws}/members and returns the user_id whose
 // name OR email matches `assign`. Case-insensitive on both fields.
@@ -161,31 +271,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
 
-	// `--role` parity with mapItemCreate: until the next route-table
-	// expansion adds slug → ID resolution, reject loudly so agents
-	// don't get a successful update response while their requested
-	// role assignment is silently dropped (Codex review #345 round 1).
-	// The workaround pointed at — `--field agent_role_id=<uuid>` —
-	// is the genuinely-reachable path: --field IS in the auto-
-	// generated tool schema, and the dispatcher's
-	// liftFieldsToColumns helper recognizes column keys and moves
-	// them out of the fields JSON onto the top-level payload before
-	// PATCHing. (Codex review #345 rounds 2+3 walked through both
-	// the original "agent_role_id at top level" suggestion that
-	// agents couldn't reach via the schema, and the original
-	// "--field agent_role_id" suggestion that would have stuffed
-	// the value inert into the fields blob.)
-	if v, ok := input["role"].(string); ok && v != "" {
-		return mcp.NewToolResultErrorf(
-			"%s: --role is not yet supported by HTTPHandlerDispatcher; "+
-				"slug → role-ID resolution lands in the next route-table "+
-				"expansion. For now, pass `--field agent_role_id=<uuid>` — "+
-				"the dispatcher recognizes column keys from --field and "+
-				"writes them to the column rather than the fields blob. "+
-				"Use `role list` to find the UUID.",
-			cmdKey,
-		), nil
-	}
+	// `--role` is now resolved at the dispatcher level (TASK-968):
+	// Dispatch's preprocess step rewrites it to `agent_role_id`
+	// before reaching this method, so by the time we get here a slug
+	// has already been resolved to a UUID. The `--field
+	// agent_role_id=<uuid>` workaround that the older rejection
+	// pointed at still works (lifted via liftFieldsToColumns below)
+	// and is preserved as the explicit-ID escape hatch when an agent
+	// already knows the UUID and wants to skip the slug lookup.
 
 	// Step 1: GET the existing item so we can read fields for the
 	// read-modify-write merge. If the GET fails (item not found,
