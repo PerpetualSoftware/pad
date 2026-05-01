@@ -106,6 +106,16 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}
 
+			// Resource templates (TASK-946): four read-only views over
+			// pad://workspace/{ws}/* URIs. Independent of the tool
+			// dispatcher because resource handlers return raw bytes
+			// rather than CallToolResult.
+			mcpserver.RegisterResources(
+				srv.MCP(),
+				&mcpserver.ExecResourceFetcher{Binary: bin},
+				rootFlags,
+			)
+
 			if err := srv.Run(cmd.Context()); err != nil {
 				return fmt.Errorf("pad mcp serve: %w", err)
 			}
