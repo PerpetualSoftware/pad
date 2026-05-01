@@ -101,7 +101,11 @@ func BuildCLIArgs(
 
 	var positionals []string
 	for _, arg := range cmdInfo.Args {
-		v, ok := input[arg.Name]
+		// MCP property names are snake_case (TASK-964) — look up the
+		// translated form so kebab-case CLI args (rare for positionals
+		// but possible in custom commands) round-trip correctly.
+		propName := MCPPropertyName(arg.Name)
+		v, ok := input[propName]
 		if !ok {
 			if arg.Required {
 				return nil, fmt.Errorf("missing required argument %q", arg.Name)
@@ -137,7 +141,12 @@ func BuildCLIArgs(
 			continue
 		}
 		flag := cmdInfo.Flags[name]
-		val, ok := input[name]
+		// Input map keys are MCP property names (snake_case per TASK-964),
+		// while `name` is the CLI flag name (kebab-case for compound
+		// flags like --due-date). Translate when reading the input;
+		// continue to emit the kebab-case form on the CLI.
+		propName := MCPPropertyName(name)
+		val, ok := input[propName]
 		if !ok {
 			continue
 		}
@@ -175,6 +184,10 @@ func BuildCLIArgs(
 
 	// Inject root-level flags (e.g. --url) when the input didn't
 	// already supply them. Sorted for deterministic test output.
+	// rootFlags keys are CLI form (kebab-case if compound); input keys
+	// are MCP form (snake_case per TASK-964) — translate before the
+	// collision check so we don't double-emit a flag the agent already
+	// passed.
 	if len(rootFlags) > 0 {
 		rootNames := make([]string, 0, len(rootFlags))
 		for name := range rootFlags {
@@ -186,7 +199,7 @@ func BuildCLIArgs(
 			if val == "" {
 				continue
 			}
-			if _, alreadyInInput := input[name]; alreadyInInput {
+			if _, alreadyInInput := input[MCPPropertyName(name)]; alreadyInInput {
 				continue
 			}
 			out = append(out, "--"+name, val)
