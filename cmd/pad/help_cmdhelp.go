@@ -24,6 +24,13 @@ const CmdhelpVersion = cmdhelp.Version
 // document's `homepage` field.
 const padHomepage = "https://getpad.dev"
 
+// padCmdhelpFormats is the list this binary advertises in response to
+// `pad help --capabilities`. Order is not significant (spec §8) but
+// pad lists `text` first to keep the line readable for humans grepping
+// shell output. `llm` is included because pad supports it as an alias
+// for `md`.
+var padCmdhelpFormats = []string{"text", "md", "json", "llm"}
+
 // helpCmd returns a custom `pad help` subcommand that replaces cobra's
 // built-in help. It implements the cmdhelp v0.1 mandatory surface
 // (https://getpad.dev/cmdhelp; IDEA-927):
@@ -39,6 +46,7 @@ func helpCmd() *cobra.Command {
 	var format string
 	var depth int
 	var all bool
+	var capabilities bool
 
 	cmd := &cobra.Command{
 		Use:   "help [command path…]",
@@ -76,6 +84,13 @@ Scope:
 			return names, cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(c *cobra.Command, args []string) error {
+			// --capabilities short-circuits everything else (spec §8).
+			// MUST be side-effect-free, single-line, exit 0.
+			if capabilities {
+				fmt.Fprintln(c.OutOrStdout(), cmdhelp.CapabilityLine(padCmdhelpFormats))
+				return nil
+			}
+
 			target, _, err := c.Root().Find(args)
 			if err != nil || target == nil {
 				return fmt.Errorf("unknown help topic %q", strings.Join(args, " "))
@@ -99,6 +114,7 @@ Scope:
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, md, json, llm (alias for md) — per cmdhelp v0.1")
 	cmd.Flags().IntVar(&depth, "depth", -1, "truncate the command tree to N levels (-1 = unlimited; --depth=0 is summary)")
 	cmd.Flags().BoolVar(&all, "all", false, "include every leaf with full detail (convenience alias for unlimited depth)")
+	cmd.Flags().BoolVar(&capabilities, "capabilities", false, "print cmdhelp capability bit (e.g. cmdhelp/0.1: text, md, json, llm) and exit")
 
 	return cmd
 }

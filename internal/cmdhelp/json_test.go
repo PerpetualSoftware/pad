@@ -427,6 +427,24 @@ func TestEmitJSON_ProducesValidJSON(t *testing.T) {
 	}
 }
 
+func TestCapabilityLine_FormatExact(t *testing.T) {
+	got := CapabilityLine([]string{"text", "md", "json", "llm"})
+	want := "cmdhelp/0.1: text, md, json, llm"
+	if got != want {
+		t.Errorf("CapabilityLine = %q, want %q", got, want)
+	}
+}
+
+func TestCapabilityLine_HonorsCallerOrderAndSet(t *testing.T) {
+	// Order is not significant per spec — the helper preserves caller
+	// order so different binaries can list formats however reads best.
+	got := CapabilityLine([]string{"json", "text", "md"})
+	want := "cmdhelp/0.1: json, text, md"
+	if got != want {
+		t.Errorf("CapabilityLine should preserve caller order: got %q want %q", got, want)
+	}
+}
+
 func TestEmitJSON_VersionPatternMatchesSpec(t *testing.T) {
 	// Spec §9: cmdhelp_version is MAJOR.MINOR — never includes a PATCH.
 	versionRE := regexp.MustCompile(`^[0-9]+\.[0-9]+$`)

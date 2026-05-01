@@ -29,6 +29,7 @@ import (
 	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"regexp"
@@ -72,6 +73,23 @@ func fullVersion() string {
 }
 
 func main() {
+	// `--cmdhelp-capabilities` is the spec §8 fallback form for the
+	// capability bit, designed for CLIs whose `help` subcommand is
+	// already overloaded. Pad's `help --capabilities` is the preferred
+	// form (and is wired in helpCmd()), but we honor the fallback here
+	// so wrappers and harnesses that prefer it work uniformly across
+	// every conforming CLI.
+	//
+	// Handled before cobra parsing so it's truly side-effect-free
+	// (no flag-parse errors on unrelated args, no config load, no
+	// server reach-out, no auth challenge) per spec §8 requirements.
+	for _, a := range os.Args[1:] {
+		if a == "--cmdhelp-capabilities" {
+			fmt.Println(cmdhelp.CapabilityLine(padCmdhelpFormats))
+			return
+		}
+	}
+
 	rootCmd := &cobra.Command{
 		Use:     "pad",
 		Short:   "Pad — project management for developers and AI agents",
