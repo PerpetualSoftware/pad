@@ -288,11 +288,10 @@ func TestMapWorkspaceAuditLog_OmitsEmptyFilters(t *testing.T) {
 
 func TestMapWorkspaceAuditLog_PassesFiltersThrough(t *testing.T) {
 	_, p, _, err := mapWorkspaceAuditLog(map[string]any{
-		"action":    "item.created",
-		"actor":     "user-uuid-1",
-		"workspace": "docapp",
-		"days":      float64(7),
-		"limit":     float64(25),
+		"action": "item.created",
+		"actor":  "user-uuid-1",
+		"days":   float64(7),
+		"limit":  float64(25),
 	})
 	if err != nil {
 		t.Fatalf("mapWorkspaceAuditLog: %v", err)
@@ -306,16 +305,39 @@ func TestMapWorkspaceAuditLog_PassesFiltersThrough(t *testing.T) {
 		t.Fatalf("parse query: %v", parseErr)
 	}
 	want := map[string]string{
-		"action":    "item.created",
-		"actor":     "user-uuid-1",
-		"workspace": "docapp",
-		"days":      "7",
-		"limit":     "25",
+		"action": "item.created",
+		"actor":  "user-uuid-1",
+		"days":   "7",
+		"limit":  "25",
 	}
 	for k, v := range want {
 		if got := values.Get(k); got != v {
 			t.Errorf("query[%q] = %q, want %q", k, got, v)
 		}
+	}
+}
+
+func TestMapWorkspaceAuditLog_DoesNotForwardSessionWorkspace(t *testing.T) {
+	// The MCP session-default mechanism (mergeDispatchInput) auto-
+	// injects `workspace` into every input map. The CLI's
+	// `pad workspace audit-log` deliberately doesn't pass workspace
+	// as a filter — it returns the GLOBAL audit log. The dispatcher
+	// must match: forwarding the implicit session workspace as
+	// `?workspace=<id>` would silently hide audit entries from other
+	// workspaces for an admin who queried "give me everything"
+	// (Codex review on PR #347, finding 1).
+	_, p, _, err := mapWorkspaceAuditLog(map[string]any{
+		"workspace": "docapp", // session-default; should NOT scope
+		"action":    "item.created",
+	})
+	if err != nil {
+		t.Fatalf("mapWorkspaceAuditLog: %v", err)
+	}
+	if strings.Contains(p, "workspace=") {
+		t.Errorf("workspace input must NOT be forwarded as ?workspace=; got %q", p)
+	}
+	if !strings.Contains(p, "action=item.created") {
+		t.Errorf("explicit filters must still be forwarded; got %q", p)
 	}
 }
 

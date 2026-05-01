@@ -398,10 +398,18 @@ func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
 // internal/cli/client.go's GetAuditLog wire shape so behaviour matches
 // the CLI exactly: omit empty filters, pass numerics as decimal strings.
 //
-// Forwards an explicit `workspace` input as `?workspace=<id>` so an
-// admin agent can scope without needing to know the CLI's
-// session-default convention. The handler accepts a workspace UUID;
-// pass-through preserves whatever shape the agent sent.
+// Crucially, the `workspace` input is NOT forwarded as
+// `?workspace=<id>`. The CLI's auditLogCmd never passes WorkspaceID
+// to GetAuditLog, so `pad workspace audit-log` returns the GLOBAL
+// audit log filtered by other params. The MCP dispatcher's
+// session-default mechanism (mergeDispatchInput) auto-injects
+// `workspace` into every input — if we forwarded it here, an admin
+// listing audit entries through MCP would silently miss every entry
+// outside the session workspace. Codex review on PR #347 caught this
+// divergence; matching the CLI's "no workspace filter" behaviour
+// keeps parity. Workspace-scoping admin audit logs needs its own
+// CLI flag (and would surface as a separate input via cmdhelp) —
+// not folding-in the implicit session value.
 func mapWorkspaceAuditLog(input map[string]any) (string, string, []byte, error) {
 	q := url.Values{}
 	if s, _ := input["action"].(string); s != "" {
@@ -409,9 +417,6 @@ func mapWorkspaceAuditLog(input map[string]any) (string, string, []byte, error) 
 	}
 	if s, _ := input["actor"].(string); s != "" {
 		q.Set("actor", s)
-	}
-	if s, _ := input["workspace"].(string); s != "" {
-		q.Set("workspace", s)
 	}
 	if n, ok := numericInput(input["days"]); ok && n > 0 {
 		q.Set("days", strconv.FormatInt(n, 10))
