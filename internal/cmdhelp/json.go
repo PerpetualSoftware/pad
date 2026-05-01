@@ -39,6 +39,12 @@ type Options struct {
 	// `generated:` field. Useful for snapshot tests that need a stable
 	// timestamp. Leave nil to use the real wall clock (UTC).
 	Now func() time.Time
+
+	// Resolver, when non-nil, splices live workspace facts into the
+	// emitted Document after the static walk completes (spec §7). Pass
+	// nil to emit a purely static document — useful when no workspace
+	// is detected, when running outside a pad install, or in tests.
+	Resolver *Resolver
 }
 
 // EmitJSON walks the command tree below `target`, builds a cmdhelp v0.1
@@ -77,6 +83,10 @@ func Build(target, root *cobra.Command, opts Options) *Document {
 	}
 
 	walk(target, root, doc, 0, opts.MaxDepth)
+
+	// Splice dynamic workspace facts after the static walk so callers
+	// can inspect Build's output as either pre- or post-resolution.
+	opts.Resolver.Apply(doc)
 
 	return doc
 }

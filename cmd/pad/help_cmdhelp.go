@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // CmdhelpVersion is the cmdhelp wire-format version this binary advertises.
@@ -101,22 +103,34 @@ Scope:
 	return cmd
 }
 
+// cmdhelpOptions builds the Options struct shared by JSON and markdown
+// emitters. Centralized so both formats see the same dynamic resolver,
+// version metadata, and homepage.
+//
+// Binary is derived from the root command's name rather than hardcoded
+// so tests constructing a synthetic root (e.g. "padtest") get a
+// document keyed to that name.
+func cmdhelpOptions(target *cobra.Command, depth int, all bool) cmdhelp.Options {
+	maxDepth := depth
+	if all {
+		maxDepth = -1
+	}
+	return cmdhelp.Options{
+		Binary:   target.Root().Name(),
+		Version:  fullVersion(),
+		Homepage: padHomepage,
+		MaxDepth: maxDepth,
+		Resolver: newDynamicResolver(),
+	}
+}
+
 // emitCmdhelpJSON walks the cobra command tree below `target` and emits
 // a cmdhelp v0.1 JSON document matching schema/cmdhelp.schema.json.
 //
 // `--all` is a convenience alias for unlimited depth (spec §4); when
 // passed it overrides any explicit `--depth=N`.
 func emitCmdhelpJSON(target *cobra.Command, depth int, all bool, w io.Writer) error {
-	maxDepth := depth
-	if all {
-		maxDepth = -1
-	}
-	return cmdhelp.EmitJSON(target, target.Root(), cmdhelp.Options{
-		Binary:   target.Root().Name(),
-		Version:  fullVersion(),
-		Homepage: padHomepage,
-		MaxDepth: maxDepth,
-	}, w)
+	return cmdhelp.EmitJSON(target, target.Root(), cmdhelpOptions(target, depth, all), w)
 }
 
 // emitCmdhelpMarkdown walks the cobra command tree below `target` and
@@ -127,14 +141,113 @@ func emitCmdhelpJSON(target *cobra.Command, depth int, all bool, w io.Writer) er
 // `--all` is a convenience alias for unlimited depth (spec §4); when
 // passed it overrides any explicit `--depth=N`.
 func emitCmdhelpMarkdown(target *cobra.Command, depth int, all bool, w io.Writer) error {
-	maxDepth := depth
-	if all {
-		maxDepth = -1
+	return cmdhelp.EmitMarkdown(target, target.Root(), cmdhelpOptions(target, depth, all), w)
+}
+
+// newDynamicResolver constructs a cmdhelp.Resolver bound to the current
+// pad runtime: workspace, configured server URL, and credentials.
+//
+// Returns nil whenever the runtime is unavailable — no config, no
+// workspace detected, or any error during detection. nil disables
+// dynamic resolution entirely; the help command emits a purely static
+// document. This is the right behavior because `pad help` MUST work
+// even when pad isn't authenticated, the server isn't running, or the
+// invocation happens outside any workspace.
+//
+// Per-source failures (server unreachable, auth missing) are handled
+// inside the resolver itself: enum_source is announced on the binding
+// arg/flag but Enum is left empty.
+func newDynamicResolver() *cmdhelp.Resolver {
+	cfg, err := config.Load()
+	if err != nil || !cfg.IsConfigured() {
+		return nil
 	}
-	return cmdhelp.EmitMarkdown(target, target.Root(), cmdhelp.Options{
-		Binary:   target.Root().Name(),
-		Version:  fullVersion(),
-		Homepage: padHomepage,
-		MaxDepth: maxDepth,
-	}, w)
+	if urlFlag != "" {
+		cfg.URL = urlFlag
+		cfg.LoadedFromFlags = true
+	}
+
+	ws, err := cli.DetectWorkspace(workspaceFlag)
+	if err != nil || ws == "" {
+		return nil
+	}
+
+	client := cli.NewClientFromURL(cfg.BaseURL())
+
+	// Per-command bindings: --role and --assign only resolve to agent
+	// roles / workspace members on commands where that's their actual
+	// semantic. They MUST NOT bind globally because:
+	//
+	//   pad workspace invite --role         # workspace role: owner|editor|viewer
+	//   pad item create      --role <slug>  # agent role slug
+	//   pad item update      --role <slug>  # agent role slug
+	//   pad item list        --role <slug>  # agent role filter
+	//   pad item create      --assign <u>   # workspace member
+	//   pad item update      --assign <u>   # workspace member
+	//   pad item list        --assign <u>   # workspace member (filter)
+	//
+	// `--role` on `workspace invite` is intentionally left without a
+	// dynamic binding so help correctly reflects the static workspace-
+	// role enum (owner/editor/viewer) rather than agent role slugs.
+	//
+	// To find new sites if this comment goes stale:
+	//   grep -nE 'Flags\(\)\.StringVar\([^,]+,\s*"(role|assign)"' cmd/pad/main.go
+	itemRoleAssign := map[string]string{
+		"role":   cmdhelp.EnumSourceRoles,
+		"assign": cmdhelp.EnumSourceMembers,
+	}
+	return &cmdhelp.Resolver{
+		Workspace: ws,
+		// `<collection>` is unambiguous across the entire CLI — every
+		// instance refers to a pad collection. Safe to bind globally.
+		ArgEnumSources: map[string]string{
+			"collection": cmdhelp.EnumSourceCollections,
+		},
+		CommandFlagBindings: map[string]map[string]string{
+			"item create": itemRoleAssign,
+			"item update": itemRoleAssign,
+			"item list":   itemRoleAssign,
+		},
+		Sources: map[string]cmdhelp.DynamicEnum{
+			cmdhelp.EnumSourceCollections: func() ([]interface{}, error) {
+				cols, err := client.ListCollections(ws)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]interface{}, 0, len(cols))
+				for _, c := range cols {
+					out = append(out, c.Slug)
+				}
+				return out, nil
+			},
+			cmdhelp.EnumSourceRoles: func() ([]interface{}, error) {
+				roles, err := client.ListAgentRoles(ws)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]interface{}, 0, len(roles))
+				for _, r := range roles {
+					out = append(out, r.Slug)
+				}
+				return out, nil
+			},
+			cmdhelp.EnumSourceMembers: func() ([]interface{}, error) {
+				members, err := client.ListWorkspaceMembers(ws)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]interface{}, 0, len(members))
+				for _, m := range members {
+					if m.UserUsername != "" {
+						out = append(out, m.UserUsername)
+					} else if m.UserName != "" {
+						out = append(out, m.UserName)
+					} else if m.UserEmail != "" {
+						out = append(out, m.UserEmail)
+					}
+				}
+				return out, nil
+			},
+		},
+	}
 }
