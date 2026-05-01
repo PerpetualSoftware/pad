@@ -13,6 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
@@ -325,6 +326,15 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	if err != nil {
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
 	}
+
+	// Normalize singular/shorthand forms ("task" → "tasks", "doc" →
+	// "docs", etc.) the same way the CLI does. Without this, an MCP
+	// caller that mirrors a documented CLI command shape like
+	// `item.create(collection: "task", ...)` would 404 against the
+	// REST handler even though the same call works through
+	// ExecDispatcher (which goes through normalizeCollectionSlug in
+	// cmd/pad/main.go).
+	collection = collections.NormalizeSlug(collection)
 
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/collections/%s/items",
 		url.PathEscape(workspace), url.PathEscape(collection))

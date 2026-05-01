@@ -195,6 +195,38 @@ func TestMapItemCreate_ExplicitFieldOverridesNamedFlag(t *testing.T) {
 	}
 }
 
+func TestMapItemCreate_NormalizesCollectionAliases(t *testing.T) {
+	// MCP callers may mirror documented CLI shapes ("item create task X")
+	// using singular/short collection names. The CLI normalizes via
+	// collections.NormalizeSlug; the dispatcher does the same so the
+	// HTTP transport doesn't 404 on a call that works through
+	// ExecDispatcher. Locked into a test so the parity doesn't drift.
+	cases := map[string]string{
+		"task":       "tasks",
+		"idea":       "ideas",
+		"doc":        "docs",
+		"plan":       "plans",
+		"bug":        "bugs",
+		"convention": "conventions",
+		"tasks":      "tasks", // already-canonical: no change
+		"my-custom":  "my-custom",
+	}
+	for in, wantSlug := range cases {
+		t.Run(in, func(t *testing.T) {
+			_, path, _, err := mapItemCreate(map[string]any{
+				"workspace": "ws", "collection": in, "title": "x",
+			})
+			if err != nil {
+				t.Fatalf("mapItemCreate: %v", err)
+			}
+			wantPath := "/api/v1/workspaces/ws/collections/" + wantSlug + "/items"
+			if path != wantPath {
+				t.Errorf("path = %q, want %q", path, wantPath)
+			}
+		})
+	}
+}
+
 func TestMapItemCreate_RejectsUnsupportedAssignRole(t *testing.T) {
 	for _, key := range []string{"assign", "role"} {
 		t.Run(key, func(t *testing.T) {
