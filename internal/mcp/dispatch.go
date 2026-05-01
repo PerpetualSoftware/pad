@@ -66,6 +66,39 @@ func DispatchInputFromContext(ctx context.Context) map[string]any {
 	return v
 }
 
+// mergeDispatchInput returns a copy of the user-supplied MCP input
+// augmented with the same default injections BuildCLIArgs applies —
+// session workspace, root flags — so the dispatcher receives the
+// effective input rather than a partial map. Pure function (no
+// mutation of `input`); safe to call with a nil input map.
+//
+// HTTPHandlerDispatcher reads the merged map via
+// DispatchInputFromContext to build a structured request body without
+// reverse-parsing CLI flags. ExecDispatcher ignores it (it dispatches
+// via cliArgs).
+func mergeDispatchInput(input map[string]any, sessionWorkspace string, rootFlags map[string]string) map[string]any {
+	out := make(map[string]any, len(input)+len(rootFlags)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	if _, ok := out["workspace"]; !ok && sessionWorkspace != "" {
+		out["workspace"] = sessionWorkspace
+	}
+	for k, v := range rootFlags {
+		if v == "" {
+			continue
+		}
+		// MCP property names are snake_case (TASK-964) — translate
+		// rootFlags' kebab-case keys before checking collision.
+		propName := MCPPropertyName(k)
+		if _, ok := out[propName]; ok {
+			continue
+		}
+		out[propName] = v
+	}
+	return out
+}
+
 // ExecDispatcher shells out to the pad binary at Binary. stdout is
 // returned as Text content; if it parses as JSON the result is also
 // surfaced via StructuredContent so MCP clients can consume it

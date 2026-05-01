@@ -1,27 +1,36 @@
 package mcp
 
 import (
-	"context"
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
 // RegistryOptions configures Register.
+//
+// As of TASK-981 the v0.1 cmdhelp leaf walker is retired — Register
+// registers pad_set_workspace plus the v0.2 catalog (catalog.go).
+// cmdhelp is still required (the source of truth for individual CLI
+// command schemas consumed by BuildCLIArgs at dispatch time), but no
+// longer drives tool naming or count.
 type RegistryOptions struct {
-	// Doc is the cmdhelp Document describing the command tree. Required.
+	// Doc is the cmdhelp Document describing the command tree.
+	// Required — used by env.Dispatch to look up cmdInfo for
+	// BuildCLIArgs. The tool surface itself is hand-curated in
+	// catalog.go and per-resource catalog_<name>.go files.
 	Doc *cmdhelp.Document
+
 	// Workspace holds the session workspace mutated by pad_set_workspace.
 	// Required.
 	Workspace *WorkspaceState
+
 	// Dispatcher executes tool calls. Required (use ExecDispatcher in
 	// production; fakes in tests).
 	Dispatcher Dispatcher
+
 	// RootFlags lists root-level CLI flags to inject into every
 	// dispatched call when the input doesn't already provide them.
 	// Captured at server startup — runtime-mutable state belongs in
@@ -32,66 +41,22 @@ type RegistryOptions struct {
 	// `map[string]string{"url": urlFlag}` is safe even when the user
 	// didn't pass --url to `pad mcp serve`.
 	RootFlags map[string]string
-	// ExcludeCommands lists command paths to skip (space-separated, e.g.
-	// "db backup"). A path that matches a registered group prefix
-	// suppresses every leaf under it — excluding "completion" suppresses
-	// "completion bash", "completion zsh", etc.
-	//
-	// nil = use DefaultExcludes. An empty slice = exclude nothing.
-	ExcludeCommands []string
+
+	// PadVersion is the runtime pad binary version. Forwarded to the
+	// catalog's ActionEnv so pad_meta.action: server-info / version
+	// can report it. Empty falls back to FallbackVersion.
+	PadVersion string
 }
 
-// DefaultExcludes is the curated allow-list scope: read + item-CRUD +
-// project intelligence. Excluded commands are unsafe (mutate auth or
-// filesystem state outside the workspace), interactive (prompt the
-// user), recursive (start another MCP server), or long-running
-// (streaming watchers).
+// Register installs pad's MCP tools on srv: the built-in
+// pad_set_workspace plus every v0.2 catalog tool. Returns the count of
+// registered tools (including pad_set_workspace).
 //
-// Operators who want a tighter or looser surface override via
-// RegistryOptions.ExcludeCommands.
-var DefaultExcludes = []string{
-	// Recursive — would spawn another MCP server inside this one.
-	"mcp serve",
-	"mcp install",
-	// Lifecycle — server start/stop and DB ops are operator-only.
-	"server start",
-	"server stop",
-	"db backup",
-	"db restore",
-	"db migrate-to-pg",
-	// Auth — interactive password prompts, mutate credentials file.
-	"auth setup",
-	"auth login",
-	"auth logout",
-	"auth configure",
-	"auth reset-password",
-	// Workspace lifecycle — interactive or filesystem-mutating.
-	"init",
-	"workspace init",
-	"workspace import",
-	"workspace export",
-	"workspace onboard",
-	"workspace join",
-	// Editor — opens $EDITOR (subprocess never returns).
-	"item edit",
-	// Streaming — long-running watchers tie up an MCP slot.
-	"project watch",
-	// Filesystem mutations outside the workspace.
-	"agent install",
-	"agent update",
-	// Shell completion — not useful as an MCP tool surface.
-	"completion",
-}
-
-// Register walks opts.Doc, registers every leaf command (no
-// children in the document) as an MCP tool on srv, and installs the
-// built-in pad_set_workspace tool. Returns the count of tools
-// registered (including pad_set_workspace).
-//
-// Tool names use snake_case: "item create" → "item_create". Inputs
-// follow the cmdhelp Arg/Flag types. Dispatch goes through
-// opts.Dispatcher with the workspace flag injected from
-// opts.Workspace if not explicitly provided.
+// As of TASK-981 (PLAN-969), this is the single tool-registration
+// entry point. The legacy cmdhelp leaf walker has been retired —
+// Register no longer iterates opts.Doc.Commands. Doc is still required
+// because the catalog's action handlers use it via ActionEnv.Dispatch
+// to look up CLI flag/arg schemas at dispatch time.
 func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 	if opts.Doc == nil {
 		return 0, fmt.Errorf("RegistryOptions.Doc is required")
@@ -103,57 +68,24 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 		return 0, fmt.Errorf("RegistryOptions.Dispatcher is required")
 	}
 
-	excludes := opts.ExcludeCommands
-	if excludes == nil {
-		excludes = DefaultExcludes
-	}
-	excludeSet := make(map[string]struct{}, len(excludes))
-	for _, e := range excludes {
-		excludeSet[e] = struct{}{}
-	}
-
 	registerSetWorkspaceTool(srv, opts.Workspace)
 	count := 1 // pad_set_workspace
 
-	rootFlags := opts.RootFlags // closed-over by every handler below
-
-	paths := make([]string, 0, len(opts.Doc.Commands))
-	for p := range opts.Doc.Commands {
-		paths = append(paths, p)
+	catalogCount, err := RegisterCatalog(srv, CatalogOptions{
+		Doc:        opts.Doc,
+		Workspace:  opts.Workspace,
+		Dispatcher: opts.Dispatcher,
+		RootFlags:  opts.RootFlags,
+		PadVersion: opts.PadVersion,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("register catalog: %w", err)
 	}
-	sort.Strings(paths)
-
-	leaves := identifyLeaves(paths)
-
-	for _, path := range paths {
-		if !leaves[path] {
-			continue
-		}
-		if _, blocked := excludeSet[path]; blocked {
-			continue
-		}
-		if hasExcludedAncestor(path, excludeSet) {
-			continue
-		}
-		cmdInfo := opts.Doc.Commands[path]
-		tool := buildTool(path, cmdInfo)
-		handler := makeDispatchHandler(path, cmdInfo, opts.Dispatcher, opts.Workspace, rootFlags)
-		srv.AddTool(tool, handler)
-		count++
-	}
-	return count, nil
-}
-
-// ToolNameFromPath converts a cmdhelp command path ("item create") to
-// the canonical MCP tool-name form ("item_create"). Exported so the
-// dispatch helpers and tests can compute names without re-implementing
-// the rule.
-func ToolNameFromPath(path string) string {
-	return strings.ReplaceAll(path, " ", "_")
+	return count + catalogCount, nil
 }
 
 // MCPPropertyName converts a CLI flag or argument name to the
-// snake_case form advertised on the MCP tool surface. Hyphens become
+// snake_case form used inside the dispatch input map. Hyphens become
 // underscores; everything else passes through.
 //
 // Why translate (TASK-964): Cobra's flag names are kebab-case
@@ -161,185 +93,14 @@ func ToolNameFromPath(path string) string {
 // but Anthropic's tool-use convention — and most LLMs' training data
 // — is snake_case (`due_date`). Hyphenated property names trip up
 // agents that auto-normalize to snake_case before emitting JSON, and
-// silently lose every flag with a hyphen. We expose snake_case on the
-// MCP surface and translate back to kebab-case at dispatch.
+// silently lose every flag with a hyphen. The catalog's parameter
+// names are snake_case; BuildCLIArgs translates them back to kebab-
+// case at dispatch.
 //
 // Single-word names (workspace, format, content, stdin) round-trip
 // unchanged.
 func MCPPropertyName(cliName string) string {
 	return strings.ReplaceAll(cliName, "-", "_")
-}
-
-// identifyLeaves returns a map of path → true for every command path
-// that is NOT a strict prefix of another path (and is therefore a leaf).
-func identifyLeaves(paths []string) map[string]bool {
-	leaf := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		leaf[p] = true
-	}
-	for _, p := range paths {
-		for _, q := range paths {
-			if p != q && strings.HasPrefix(q, p+" ") {
-				leaf[p] = false
-				break
-			}
-		}
-	}
-	return leaf
-}
-
-// hasExcludedAncestor returns true when any space-delimited prefix of
-// path appears in excludes. Used so excluding "completion" suppresses
-// "completion bash", "completion zsh", etc.
-func hasExcludedAncestor(path string, excludes map[string]struct{}) bool {
-	parts := strings.Split(path, " ")
-	for i := 1; i < len(parts); i++ {
-		prefix := strings.Join(parts[:i], " ")
-		if _, ok := excludes[prefix]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func buildTool(path string, cmdInfo cmdhelp.Command) mcp.Tool {
-	desc := cmdInfo.Summary
-	if cmdInfo.Description != "" {
-		if desc != "" {
-			desc += "\n\n"
-		}
-		desc += cmdInfo.Description
-	}
-	opts := []mcp.ToolOption{mcp.WithDescription(desc)}
-
-	for _, arg := range cmdInfo.Args {
-		opts = append(opts, propertyForArg(arg))
-	}
-
-	flagNames := make([]string, 0, len(cmdInfo.Flags))
-	for name := range cmdInfo.Flags {
-		if _, hidden := flagsHiddenFromMCP[name]; hidden {
-			continue
-		}
-		flagNames = append(flagNames, name)
-	}
-	sort.Strings(flagNames)
-	for _, name := range flagNames {
-		opts = append(opts, propertyForFlag(name, cmdInfo.Flags[name]))
-	}
-	return mcp.NewTool(ToolNameFromPath(path), opts...)
-}
-
-func propertyForArg(arg cmdhelp.Arg) mcp.ToolOption {
-	propOpts := propertyOptionsCommon(arg.Description, arg.Required, arg.Enum)
-	propName := MCPPropertyName(arg.Name)
-	if arg.Repeatable {
-		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
-	}
-	switch arg.Type {
-	case "int", "number", "float", "float64", "int64":
-		return mcp.WithNumber(propName, propOpts...)
-	case "bool":
-		return mcp.WithBoolean(propName, propOpts...)
-	default:
-		return mcp.WithString(propName, propOpts...)
-	}
-}
-
-func propertyForFlag(name string, flag cmdhelp.Flag) mcp.ToolOption {
-	propOpts := propertyOptionsCommon(flag.Description, flag.Required, flag.Enum)
-	propName := MCPPropertyName(name)
-	if flag.Repeatable {
-		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
-	}
-	switch flag.Type {
-	case "bool":
-		return mcp.WithBoolean(propName, propOpts...)
-	case "int", "number", "int64", "uint", "uint64", "float", "float64":
-		return mcp.WithNumber(propName, propOpts...)
-	case "[]string", "stringSlice", "[]int", "intSlice", "stringArray":
-		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
-	default:
-		return mcp.WithString(propName, propOpts...)
-	}
-}
-
-func propertyOptionsCommon(description string, required bool, enum []interface{}) []mcp.PropertyOption {
-	out := make([]mcp.PropertyOption, 0, 3)
-	if description != "" {
-		out = append(out, mcp.Description(description))
-	}
-	if required {
-		out = append(out, mcp.Required())
-	}
-	if len(enum) > 0 {
-		out = append(out, mcp.Enum(stringifyEnum(enum)...))
-	}
-	return out
-}
-
-func stringifyEnum(values []interface{}) []string {
-	out := make([]string, len(values))
-	for i, v := range values {
-		out[i] = fmt.Sprint(v)
-	}
-	return out
-}
-
-// makeDispatchHandler closes over the command path + dispatcher so
-// each registered tool routes to the right CLI invocation.
-func makeDispatchHandler(
-	path string,
-	cmdInfo cmdhelp.Command,
-	dispatcher Dispatcher,
-	state *WorkspaceState,
-	rootFlags map[string]string,
-) server.ToolHandlerFunc {
-	cmdPath := strings.Split(path, " ")
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		input := req.GetArguments()
-		args, err := BuildCLIArgs(cmdInfo, input, state.Get(), rootFlags)
-		if err != nil {
-			return mcp.NewToolResultErrorf("%s: %s", ToolNameFromPath(path), err.Error()), nil
-		}
-		// Forward the original JSON input so HTTPHandlerDispatcher can
-		// build a structured request body without reverse-parsing
-		// cliArgs. ExecDispatcher ignores this; see Dispatcher godoc.
-		// Note: input may be missing values that BuildCLIArgs injected
-		// (session workspace, root flags, default --format) — pass the
-		// computed-superset map by merging them in here so HTTP
-		// dispatch and exec dispatch see the same effective values.
-		ctx = WithDispatchInput(ctx, mergeDispatchInput(input, state.Get(), rootFlags))
-		return dispatcher.Dispatch(ctx, cmdPath, args)
-	}
-}
-
-// mergeDispatchInput returns a copy of the user-supplied MCP input
-// augmented with the same default injections BuildCLIArgs applies —
-// session workspace, root flags — so the dispatcher receives the
-// effective input rather than a partial map. Pure function (no
-// mutation of `input`); safe to call with a nil input map.
-func mergeDispatchInput(input map[string]any, sessionWorkspace string, rootFlags map[string]string) map[string]any {
-	out := make(map[string]any, len(input)+len(rootFlags)+1)
-	for k, v := range input {
-		out[k] = v
-	}
-	if _, ok := out["workspace"]; !ok && sessionWorkspace != "" {
-		out["workspace"] = sessionWorkspace
-	}
-	for k, v := range rootFlags {
-		if v == "" {
-			continue
-		}
-		// MCP property names are snake_case (TASK-964) — translate
-		// rootFlags' kebab-case keys before checking collision.
-		propName := MCPPropertyName(k)
-		if _, ok := out[propName]; ok {
-			continue
-		}
-		out[propName] = v
-	}
-	return out
 }
 
 // flagsHiddenFromMCP are flag names whose semantics depend on the
@@ -348,10 +109,10 @@ func mergeDispatchInput(input map[string]any, sessionWorkspace string, rootFlags
 // content should use the corresponding --content flag, which is wired
 // through the JSON args path.
 //
-// Listed here so registry generation AND defensive dispatch agree:
-// even if an agent passes `stdin: true` (perhaps from a stale schema
-// cache), BuildCLIArgs drops it rather than running a subprocess
-// that blocks on EOF and creates an empty item.
+// Even though catalog.go declares parameters explicitly (so stdin is
+// never advertised), BuildCLIArgs still defends against an agent
+// passing `stdin: true` from a stale schema cache — the subprocess
+// would then block on EOF and create an empty item.
 var flagsHiddenFromMCP = map[string]struct{}{
 	"stdin": {},
 }
