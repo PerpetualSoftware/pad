@@ -174,14 +174,35 @@ func newDynamicResolver() *cmdhelp.Resolver {
 
 	client := cli.NewClientFromURL(cfg.BaseURL())
 
+	// Per-command bindings: --role and --assign only resolve to agent
+	// roles / workspace members on commands where that's their actual
+	// semantic. They MUST NOT bind globally because:
+	//
+	//   pad workspace invite --role         # workspace role: owner|editor|viewer
+	//   pad item create     --role <slug>   # agent role slug
+	//   pad item update     --role <slug>   # agent role slug
+	//   pad item create     --assign <user> # workspace member
+	//   pad item update     --assign <user> # workspace member
+	//   pad item list       --assign <user> # workspace member (filter)
+	//
+	// `--role` on `workspace invite` is intentionally left without a
+	// dynamic binding so help correctly reflects the static workspace-
+	// role enum (owner/editor/viewer) rather than agent role slugs.
+	itemRoleAssign := map[string]string{
+		"role":   cmdhelp.EnumSourceRoles,
+		"assign": cmdhelp.EnumSourceMembers,
+	}
 	return &cmdhelp.Resolver{
 		Workspace: ws,
+		// `<collection>` is unambiguous across the entire CLI — every
+		// instance refers to a pad collection. Safe to bind globally.
 		ArgEnumSources: map[string]string{
 			"collection": cmdhelp.EnumSourceCollections,
 		},
-		FlagEnumSources: map[string]string{
-			"role":   cmdhelp.EnumSourceRoles,
-			"assign": cmdhelp.EnumSourceMembers,
+		CommandFlagBindings: map[string]map[string]string{
+			"item create": itemRoleAssign,
+			"item update": itemRoleAssign,
+			"item list":   {"assign": cmdhelp.EnumSourceMembers},
 		},
 		Sources: map[string]cmdhelp.DynamicEnum{
 			cmdhelp.EnumSourceCollections: func() ([]interface{}, error) {

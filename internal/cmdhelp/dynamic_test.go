@@ -219,6 +219,104 @@ func TestResolver_Apply_PreservesExistingEnum(t *testing.T) {
 	}
 }
 
+func TestResolver_Apply_PerCommandBindingScoped(t *testing.T) {
+	// Codex round 1 caught: a global `--role` binding is wrong because
+	// `pad workspace invite --role` accepts workspace roles while
+	// `pad item create --role` accepts agent role slugs. CommandFlagBindings
+	// fixes this by scoping bindings to a specific command path.
+	doc := &Document{
+		CmdhelpVersion: Version,
+		Binary:         "pad",
+		Commands: map[string]Command{
+			"item create":      {Summary: "create item", Flags: map[string]Flag{"role": {Type: "string"}}},
+			"workspace invite": {Summary: "invite user", Flags: map[string]Flag{"role": {Type: "string"}}},
+		},
+	}
+	r := &Resolver{
+		// No global FlagEnumSources for "role" — must be per-command.
+		CommandFlagBindings: map[string]map[string]string{
+			"item create": {"role": EnumSourceRoles},
+		},
+		Sources: map[string]DynamicEnum{
+			EnumSourceRoles: func() ([]interface{}, error) {
+				return []interface{}{"planner", "implementer"}, nil
+			},
+		},
+	}
+	r.Apply(doc)
+
+	// Bound: `item create --role` resolved to agent roles.
+	if got := doc.Commands["item create"].Flags["role"]; got.EnumSource != EnumSourceRoles {
+		t.Errorf("item create --role: enum_source = %q, want %q", got.EnumSource, EnumSourceRoles)
+	}
+	// Unbound: `workspace invite --role` left as plain string. This is
+	// the regression-protection assertion.
+	if got := doc.Commands["workspace invite"].Flags["role"]; got.EnumSource != "" || got.Type != "string" {
+		t.Errorf("workspace invite --role MUST be untouched without a binding; got %+v", got)
+	}
+}
+
+func TestResolver_Apply_PerCommandWinsOverWildcard(t *testing.T) {
+	// When both wildcard and per-command bindings match, per-command wins.
+	// Useful when a name has a common meaning AND a special-case override.
+	doc := &Document{
+		CmdhelpVersion: Version,
+		Binary:         "pad",
+		Commands: map[string]Command{
+			"foo": {Flags: map[string]Flag{"x": {Type: "string"}}, Summary: "foo"},
+			"bar": {Flags: map[string]Flag{"x": {Type: "string"}}, Summary: "bar"},
+		},
+	}
+	r := &Resolver{
+		FlagEnumSources: map[string]string{
+			"x": "dynamic:wildcard",
+		},
+		CommandFlagBindings: map[string]map[string]string{
+			"bar": {"x": "dynamic:specific"},
+		},
+		Sources: map[string]DynamicEnum{
+			"dynamic:wildcard": func() ([]interface{}, error) { return []interface{}{"w"}, nil },
+			"dynamic:specific": func() ([]interface{}, error) { return []interface{}{"s"}, nil },
+		},
+	}
+	r.Apply(doc)
+
+	if got := doc.Commands["foo"].Flags["x"]; got.EnumSource != "dynamic:wildcard" {
+		t.Errorf("foo.x should have wildcard binding, got %q", got.EnumSource)
+	}
+	if got := doc.Commands["bar"].Flags["x"]; got.EnumSource != "dynamic:specific" {
+		t.Errorf("bar.x should have per-command binding, got %q (wildcard leaked through)", got.EnumSource)
+	}
+}
+
+func TestResolver_Apply_PerCommandArgBindings(t *testing.T) {
+	// Same precedence rule applies to positional args.
+	doc := &Document{
+		CmdhelpVersion: Version,
+		Binary:         "pad",
+		Commands: map[string]Command{
+			"a": {Args: []Arg{{Name: "id", Type: "string", Required: true}}, Summary: "a"},
+			"b": {Args: []Arg{{Name: "id", Type: "string", Required: true}}, Summary: "b"},
+		},
+	}
+	r := &Resolver{
+		CommandArgBindings: map[string]map[string]string{
+			"a": {"id": "dynamic:a-ids"},
+		},
+		Sources: map[string]DynamicEnum{
+			"dynamic:a-ids": func() ([]interface{}, error) { return []interface{}{"a1", "a2"}, nil },
+		},
+	}
+	r.Apply(doc)
+
+	if got := doc.Commands["a"].Args[0]; got.EnumSource != "dynamic:a-ids" {
+		t.Errorf("a.id should have per-command binding, got %q", got.EnumSource)
+	}
+	if got := doc.Commands["b"].Args[0]; got.EnumSource != "" {
+		t.Errorf("b.id MUST be untouched without a binding, got %q", got.EnumSource)
+	}
+}
+
 func TestResolver_Apply_GlobalFlags(t *testing.T) {
 	// Global flags participate in resolution the same way per-command flags do.
 	fake := &fakeResolver{roles: []interface{}{"planner"}}

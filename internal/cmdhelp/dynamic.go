@@ -31,22 +31,76 @@ type DynamicEnum func() ([]interface{}, error)
 // document is constructed.
 //
 // All maps use lowercase keys; lookups are case-insensitive.
+//
+// Two binding scopes are supported:
+//
+//  1. **Wildcard** (ArgEnumSources / FlagEnumSources) — applied to
+//     every command. Use only when the arg/flag name has a unique
+//     semantic across the entire CLI (e.g. an `<collection>` arg
+//     always refers to a pad collection regardless of which command
+//     declares it).
+//
+//  2. **Per-command** (CommandArgBindings / CommandFlagBindings) —
+//     scoped to a specific command path. Use whenever the same name
+//     can mean different things in different places — for example
+//     `--role` accepts agent-role slugs on item commands but accepts
+//     workspace roles (owner / editor / viewer) on `workspace invite`.
+//
+// Per-command bindings win over wildcards when both match.
 type Resolver struct {
 	// Workspace, when non-empty, populates doc.Context.Workspace so
 	// markdown's `## Workspace context` section has something to render.
 	Workspace string
 
-	// ArgEnumSources binds positional arg names to enum_source.
+	// ArgEnumSources binds positional arg names to enum_source globally.
 	// Example: {"collection": EnumSourceCollections}.
 	ArgEnumSources map[string]string
 
-	// FlagEnumSources binds flag names to enum_source.
-	// Example: {"role": EnumSourceRoles, "assign": EnumSourceMembers}.
+	// FlagEnumSources binds flag names to enum_source globally.
+	// Use cautiously: a single name often means different things on
+	// different commands. Prefer CommandFlagBindings unless you've
+	// verified the name is unambiguous across the entire CLI.
 	FlagEnumSources map[string]string
+
+	// CommandArgBindings: per-command-path overrides for positional args.
+	// Outer key is the command path (e.g. "item create"); inner key is
+	// arg name. Wins over ArgEnumSources when both match.
+	CommandArgBindings map[string]map[string]string
+
+	// CommandFlagBindings: per-command-path overrides for flags.
+	// Outer key is the command path (e.g. "item create"); inner key is
+	// flag name. Wins over FlagEnumSources when both match.
+	CommandFlagBindings map[string]map[string]string
 
 	// Sources maps enum_source string → resolver function. Functions
 	// are called at most once per Apply call (results cached internally).
 	Sources map[string]DynamicEnum
+}
+
+// argSource looks up the enum_source for a positional arg on the
+// given command path. Returns ("", false) when no binding applies.
+func (r *Resolver) argSource(path, name string) (string, bool) {
+	name = strings.ToLower(name)
+	if specific, ok := r.CommandArgBindings[path][name]; ok {
+		return specific, true
+	}
+	if global, ok := r.ArgEnumSources[name]; ok {
+		return global, true
+	}
+	return "", false
+}
+
+// flagSource looks up the enum_source for a flag on the given command
+// path. Returns ("", false) when no binding applies.
+func (r *Resolver) flagSource(path, name string) (string, bool) {
+	name = strings.ToLower(name)
+	if specific, ok := r.CommandFlagBindings[path][name]; ok {
+		return specific, true
+	}
+	if global, ok := r.FlagEnumSources[name]; ok {
+		return global, true
+	}
+	return "", false
 }
 
 // Apply walks doc and stamps EnumSource + resolved Enum values on
@@ -82,7 +136,8 @@ func (r *Resolver) Apply(doc *Document) {
 		return values
 	}
 
-	// Global flags first — same lookup rules as per-command flags.
+	// Global flags: only the wildcard FlagEnumSources applies — there's
+	// no command path to scope a per-command binding against.
 	for name, f := range doc.GlobalFlags {
 		src, ok := r.FlagEnumSources[strings.ToLower(name)]
 		if !ok {
@@ -103,7 +158,7 @@ func (r *Resolver) Apply(doc *Document) {
 		// Args: in-place via index since cmd.Args is a slice value
 		// inside the map's struct value.
 		for i := range cmd.Args {
-			src, ok := r.ArgEnumSources[strings.ToLower(cmd.Args[i].Name)]
+			src, ok := r.argSource(path, cmd.Args[i].Name)
 			if !ok {
 				continue
 			}
@@ -124,7 +179,7 @@ func (r *Resolver) Apply(doc *Document) {
 		// Flags: map values must be re-stored after mutation (Go map
 		// values are not addressable).
 		for name, f := range cmd.Flags {
-			src, ok := r.FlagEnumSources[strings.ToLower(name)]
+			src, ok := r.flagSource(path, name)
 			if !ok {
 				continue
 			}
