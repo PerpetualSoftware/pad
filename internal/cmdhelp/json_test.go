@@ -483,6 +483,156 @@ func TestExitCode_RichMarshalsAsObject(t *testing.T) {
 	}
 }
 
+func TestParseExamplesFromLong_BasicBlock(t *testing.T) {
+	long := `Create a new item.
+
+Examples:
+  pad item create task "fix bug" --priority high
+  pad item create idea "feature x"
+
+Run with --help-collections to see available collections.`
+
+	got := parseExamplesFromLong(long)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 examples, got %d: %+v", len(got), got)
+	}
+	if got[0].Cmd != `pad item create task "fix bug" --priority high` {
+		t.Errorf("example[0] = %q", got[0].Cmd)
+	}
+	if got[1].Cmd != `pad item create idea "feature x"` {
+		t.Errorf("example[1] = %q", got[1].Cmd)
+	}
+}
+
+func TestParseExamplesFromLong_NoHeader(t *testing.T) {
+	long := `Generate shell completion scripts.
+
+Usage:
+  source <(pad completion bash)
+  pad completion zsh > "${fpath[1]}/_pad"`
+
+	got := parseExamplesFromLong(long)
+	if got != nil {
+		// A "Usage:" section is NOT examples. The fallback must not
+		// trigger here — completion should rely on its dedicated
+		// Example field instead.
+		t.Errorf("expected nil (Usage: != Examples:), got %v", got)
+	}
+}
+
+func TestParseExamplesFromLong_VariantHeaders(t *testing.T) {
+	cases := map[string]string{
+		"Examples:":   "Examples:\n  pad x",
+		"Example:":    "Example:\n  pad x",
+		"  Examples:": "  Examples:\n  pad x",
+	}
+	for name, long := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := parseExamplesFromLong(long)
+			if len(got) != 1 || got[0].Cmd != "pad x" {
+				t.Errorf("%s header: expected 1 example 'pad x', got %+v", name, got)
+			}
+		})
+	}
+}
+
+func TestParseExamplesFromLong_EmptyOrMalformed(t *testing.T) {
+	cases := []string{
+		"",                 // empty
+		"no examples here", // no header
+		"Examples:",        // header only, no body
+		"Examples:\n\n",    // header + blank line(s)
+	}
+	for _, in := range cases {
+		if got := parseExamplesFromLong(in); got != nil {
+			t.Errorf("expected nil for %q, got %v", in, got)
+		}
+	}
+}
+
+func TestParseExamplesFromLong_StopsAtUnindentedProse(t *testing.T) {
+	// Common cobra Long pattern: "Examples:" block followed by a
+	// trailing prose paragraph. The paragraph is unindented; the
+	// parser stops there.
+	long := `Description here.
+
+Examples:
+  pad foo
+  pad bar
+
+Note: see related command for more.`
+
+	got := parseExamplesFromLong(long)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 examples (Note: line stops the block), got %d: %+v", len(got), got)
+	}
+	for _, ex := range got {
+		if strings.HasPrefix(ex.Cmd, "Note:") {
+			t.Errorf("trailing prose leaked as example: %q", ex.Cmd)
+		}
+	}
+}
+
+func TestParseExamplesFromLong_DropsCommentLines(t *testing.T) {
+	long := `Examples:
+  # this is a section comment
+  pad foo --bar
+  # another comment
+  pad baz`
+
+	got := parseExamplesFromLong(long)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 examples (comments dropped), got %d: %+v", len(got), got)
+	}
+}
+
+func TestBuild_FallsBackToLongWhenExampleEmpty(t *testing.T) {
+	// End-to-end via Build(): a command with no Example field but an
+	// Examples: section in Long should produce the same Examples
+	// structurally as if Example were set.
+	root := &cobra.Command{Use: "padtest"}
+	leaf := &cobra.Command{
+		Use:   "leaf",
+		Short: "leaf cmd",
+		Long: `Do the thing.
+
+Examples:
+  padtest leaf --opt one
+  padtest leaf --opt two`,
+		// Example: ""  (intentionally empty)
+	}
+	root.AddCommand(leaf)
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	got := doc.Commands["leaf"].Examples
+	if len(got) != 2 {
+		t.Errorf("expected 2 examples extracted from Long, got %d: %+v", len(got), got)
+	}
+}
+
+func TestBuild_PrefersExampleFieldOverLong(t *testing.T) {
+	// When both Example and Long-Examples are present, the dedicated
+	// Example field wins (it's the canonical structured source).
+	root := &cobra.Command{Use: "padtest"}
+	leaf := &cobra.Command{
+		Use:     "leaf",
+		Short:   "leaf cmd",
+		Example: `  padtest leaf --winner`,
+		Long: `Do the thing.
+
+Examples:
+  padtest leaf --loser`,
+	}
+	root.AddCommand(leaf)
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	got := doc.Commands["leaf"].Examples
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 example (Example field wins), got %d", len(got))
+	}
+	if got[0].Cmd != "padtest leaf --winner" {
+		t.Errorf("Example field should take precedence, got %q", got[0].Cmd)
+	}
+}
+
 func TestParseExamples_FiltersBlankAndComments(t *testing.T) {
 	in := "  \n  cmd one\n# a comment\n\n  cmd two\n  # also a comment\n"
 	got := parseExamples(in)

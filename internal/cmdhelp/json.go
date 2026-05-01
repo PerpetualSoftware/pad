@@ -163,9 +163,86 @@ func buildCommand(cmd *cobra.Command) Command {
 	if flags := collectFlags(cmd.LocalFlags()); len(flags) > 0 {
 		out.Flags = flags
 	}
+
+	// Examples come from cobra's dedicated Example field when set.
+	// Many CLIs (pad included, historically) embed an "Examples:"
+	// section in Long instead. Fall back to parsing that block so
+	// existing commands populate examples in cmdhelp output without a
+	// Long → Example migration. Long stays the canonical Long; the
+	// extracted examples become the Examples field, leaving room for
+	// commands to migrate to cobra's structured field on their own
+	// schedule.
 	out.Examples = parseExamples(cmd.Example)
+	if len(out.Examples) == 0 {
+		out.Examples = parseExamplesFromLong(cmd.Long)
+	}
 
 	return out
+}
+
+// examplesHeaderRE matches a stand-alone "Examples:" or "Example:"
+// section header in a cobra Long string. Anchored to a line on its own
+// (not anything that just contains the word "Examples"), so prose like
+// "See the Examples section below" doesn't trigger the fallback.
+var examplesHeaderRE = regexp.MustCompile(`^\s*Examples?:\s*$`)
+
+// parseExamplesFromLong extracts the indented invocation lines that
+// follow an "Examples:" header in a cobra Long string. Returns nil
+// when no such section exists or no example lines are found.
+//
+// The block ends at:
+//   - a blank line after at least one example was collected, OR
+//   - an unindented line after at least one example was collected, OR
+//   - the end of Long.
+//
+// Comment lines (starting with `#`) inside the block are dropped.
+// Used as a fallback in buildCommand when cmd.Example is empty.
+func parseExamplesFromLong(long string) []Example {
+	if long == "" {
+		return nil
+	}
+	lines := strings.Split(long, "\n")
+
+	startIdx := -1
+	for i, line := range lines {
+		if examplesHeaderRE.MatchString(line) {
+			startIdx = i + 1
+			break
+		}
+	}
+	if startIdx < 0 {
+		return nil
+	}
+
+	var examples []Example
+	for i := startIdx; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Blank line: end of block if we already collected something.
+		// Skip otherwise (the section may start with a blank line).
+		if trimmed == "" {
+			if len(examples) > 0 {
+				break
+			}
+			continue
+		}
+		// Comment lines are dropped from the example set.
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Unindented line after we started collecting → end of block.
+		// Detected as: the trimmed text equals the original (no leading
+		// whitespace was stripped).
+		if line == trimmed && len(examples) > 0 {
+			break
+		}
+		examples = append(examples, Example{Cmd: trimmed})
+	}
+	if len(examples) == 0 {
+		return nil
+	}
+	return examples
 }
 
 // argRE matches positional arg placeholders in a cobra Use string:
