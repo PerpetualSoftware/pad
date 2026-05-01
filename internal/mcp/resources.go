@@ -24,6 +24,12 @@ const (
 	resourceKindCollect = "collections"
 )
 
+// WorkspacesURI is the canonical URI of the top-level workspace list
+// resource. Like pad://_meta/version, it lives outside the
+// pad://workspace/{ws}/... namespace because it's server-wide rather
+// than scoped to a specific workspace.
+const WorkspacesURI = "pad://workspaces"
+
 // ResourceFetcher executes a pad CLI invocation and returns its
 // stdout. Used by the resource layer where the contract is "fetch raw
 // output"; shape conversion to MCP ResourceContents happens in the
@@ -129,6 +135,28 @@ func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags
 			mcp.WithTemplateMIMEType(jsonMIMEType),
 		),
 		r.readCollections,
+	)
+
+	// Top-level workspace list (TASK-974). Static resource — no
+	// parameters in the URI, so it lives in resources/list rather
+	// than resources/templates/list. Lets MCP hosts prefetch the
+	// workspace catalog at session start so subsequent tool calls
+	// can pass `workspace=<slug>` without an extra round-trip.
+	srv.AddResource(
+		mcp.NewResource(
+			WorkspacesURI,
+			"pad workspaces",
+			mcp.WithResourceDescription(
+				"List of workspaces visible to the current user. "+
+					"Each entry: {slug, name, updated_at, default}. "+
+					"`default: true` flags the CWD-linked workspace "+
+					"(local stdio only) so agents can prefer it. "+
+					"Cheaper than pad_workspace.action: list when the "+
+					"host can prefetch.",
+			),
+			mcp.WithMIMEType(jsonMIMEType),
+		),
+		r.readWorkspaces,
 	)
 }
 
@@ -255,6 +283,19 @@ func (r *resources) readDashboard(ctx context.Context, req mcp.ReadResourceReque
 	}
 	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
 		[]string{"project", "dashboard", "--workspace", ws, "--format", "json"})
+}
+
+// readWorkspaces handles pad://workspaces — the top-level workspace
+// list (TASK-974). Shells out to `pad workspace list --format json`
+// so the resource shape stays in lockstep with the CLI's JSON output
+// (and with classifyExecError's available_workspaces enrichment,
+// which uses the same path).
+func (r *resources) readWorkspaces(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	if req.Params.URI != WorkspacesURI {
+		return nil, fmt.Errorf("resource %q is not the workspaces URI", req.Params.URI)
+	}
+	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
+		[]string{"workspace", "list", "--format", "json"})
 }
 
 // readCollections handles pad://workspace/{ws}/collections.
