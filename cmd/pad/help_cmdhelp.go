@@ -179,15 +179,19 @@ func newDynamicResolver() *cmdhelp.Resolver {
 	// semantic. They MUST NOT bind globally because:
 	//
 	//   pad workspace invite --role         # workspace role: owner|editor|viewer
-	//   pad item create     --role <slug>   # agent role slug
-	//   pad item update     --role <slug>   # agent role slug
-	//   pad item create     --assign <user> # workspace member
-	//   pad item update     --assign <user> # workspace member
-	//   pad item list       --assign <user> # workspace member (filter)
+	//   pad item create      --role <slug>  # agent role slug
+	//   pad item update      --role <slug>  # agent role slug
+	//   pad item list        --role <slug>  # agent role filter
+	//   pad item create      --assign <u>   # workspace member
+	//   pad item update      --assign <u>   # workspace member
+	//   pad item list        --assign <u>   # workspace member (filter)
 	//
 	// `--role` on `workspace invite` is intentionally left without a
 	// dynamic binding so help correctly reflects the static workspace-
 	// role enum (owner/editor/viewer) rather than agent role slugs.
+	//
+	// To find new sites if this comment goes stale:
+	//   grep -nE 'Flags\(\)\.StringVar\([^,]+,\s*"(role|assign)"' cmd/pad/main.go
 	itemRoleAssign := map[string]string{
 		"role":   cmdhelp.EnumSourceRoles,
 		"assign": cmdhelp.EnumSourceMembers,
@@ -202,7 +206,7 @@ func newDynamicResolver() *cmdhelp.Resolver {
 		CommandFlagBindings: map[string]map[string]string{
 			"item create": itemRoleAssign,
 			"item update": itemRoleAssign,
-			"item list":   {"assign": cmdhelp.EnumSourceMembers},
+			"item list":   itemRoleAssign,
 		},
 		Sources: map[string]cmdhelp.DynamicEnum{
 			cmdhelp.EnumSourceCollections: func() ([]interface{}, error) {
