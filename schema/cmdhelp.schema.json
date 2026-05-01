@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://getpad.dev/cmdhelp.schema.json",
+  "title": "cmdhelp v0.1",
+  "description": "JSON Schema for output of `<cmd> help --format json` per the cmdhelp v0.1 spec. Tools advertising cmdhelp/0.1 via their capability bit emit documents matching this schema. Consumers (LLM harnesses, MCP servers, IDE plugins, wrappers) validate against this schema before parsing. See IDEA-927 for the full spec.",
+  "type": "object",
+  "required": ["cmdhelp_version", "binary", "commands"],
+  "additionalProperties": true,
+  "properties": {
+    "cmdhelp_version": {
+      "description": "Wire format version. MAJOR.MINOR only — never includes a PATCH component. See spec §9.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "binary": {
+      "description": "The CLI's binary name as invoked on the command line (e.g. \"pad\", \"git\", \"kubectl\").",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "description": "The implementation's own software version (independent from cmdhelp_version). Free-form; semver recommended.",
+      "type": "string"
+    },
+    "summary": {
+      "description": "One-line description of the binary, suitable for an LLM context blurb.",
+      "type": "string"
+    },
+    "homepage": {
+      "description": "Optional canonical URL for the project.",
+      "type": "string",
+      "format": "uri"
+    },
+    "global_flags": {
+      "description": "Flags that apply to every command in the tree (e.g. --workspace, --format). Same shape as a per-command `flags` object.",
+      "$ref": "#/$defs/flagMap"
+    },
+    "commands": {
+      "description": "Map of command paths (space-joined, e.g. \"item create\") to their definitions.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/command" },
+      "minProperties": 0
+    },
+    "schemas": {
+      "description": "Reusable JSON Schema fragments referenced by per-command stdout definitions via `json_schema_ref` (e.g. \"#/schemas/Item\").",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "context": {
+      "description": "Optional dynamic context spliced into help output by CLIs with session state. See spec §7.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "workspace": { "type": "string" },
+        "profile":   { "type": "string" },
+        "auth":      { "type": "string" }
+      }
+    }
+  },
+
+  "$defs": {
+
+    "command": {
+      "description": "Definition of a single command in the CLI.",
+      "type": "object",
+      "required": ["summary"],
+      "additionalProperties": true,
+      "properties": {
+        "summary": {
+          "description": "One-line description of the command.",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "Optional longer prose explanation, may include markdown.",
+          "type": "string"
+        },
+        "args": {
+          "description": "Positional arguments in order.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/arg" }
+        },
+        "flags": {
+          "description": "Map of flag names (without leading dashes) to flag definitions.",
+          "$ref": "#/$defs/flagMap"
+        },
+        "stdin": {
+          "description": "Whether the command accepts stdin and the expected format.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "accepted": { "type": "boolean" },
+            "format":   { "type": "string", "description": "MIME-style hint such as text/markdown or application/json." }
+          },
+          "required": ["accepted"]
+        },
+        "stdout": {
+          "description": "What the command writes to stdout on success.",
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "text_template":    { "type": "string", "description": "Template string for the human-readable line; may use {placeholder} substitutions." },
+            "json_schema_ref":  { "type": "string", "description": "JSON Pointer (typically into the top-level `schemas` map, e.g. \"#/schemas/Item\") describing the JSON shape printed under --format json." }
+          }
+        },
+        "exit_codes": {
+          "description": "Map of exit codes (as decimal strings) to their meaning. Each entry MAY be a terse string OR a rich object — consumers MUST handle both forms (spec §5.2).",
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "oneOf": [
+                { "type": "string", "minLength": 1 },
+                { "$ref": "#/$defs/exitCodeRich" }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "examples": {
+          "description": "Canonical examples — single source of truth, rendered to both --format json and --format md (spec §6).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/example" }
+        },
+        "see_also": {
+          "description": "Other command paths a reader might find relevant (e.g. [\"item update\", \"item delete\"]).",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "since": {
+          "description": "Implementation version in which the command first appeared (independent of cmdhelp_version).",
+          "type": "string"
+        },
+        "stability": {
+          "description": "Stability promise. Free-form; common values: experimental, beta, stable, deprecated.",
+          "type": "string"
+        }
+      }
+    },
+
+    "arg": {
+      "description": "A positional argument.",
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "name":         { "type": "string", "minLength": 1 },
+        "type":         { "$ref": "#/$defs/typeName" },
+        "required":     { "type": "boolean" },
+        "description":  { "type": "string" },
+        "default":      { "description": "Default value if argument is omitted (when not required)." },
+        "format":       { "type": "string", "description": "Free-form sub-type hint (e.g. \"key=value\")." },
+        "repeatable":   { "type": "boolean" },
+        "enum":         { "$ref": "#/$defs/enumValues" },
+        "enum_source":  { "$ref": "#/$defs/enumSource" }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/enumConsistency" }
+      ]
+    },
+
+    "flagMap": {
+      "description": "Map of flag names (without leading --) to flag definitions. Keys MUST match the flag-name pattern: start with a letter, followed by letters, digits, hyphens, or underscores. Long-form (e.g. `format`) and short-form (e.g. `h`) names are both valid; consumers add the leading `-` or `--` themselves at invocation time.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/flag" }
+    },
+
+    "flag": {
+      "description": "A flag (option) on a command.",
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type":         { "$ref": "#/$defs/typeName" },
+        "required":     { "type": "boolean" },
+        "description":  { "type": "string" },
+        "default":      { "description": "Default value if flag is omitted." },
+        "format":       { "type": "string", "description": "Free-form sub-type hint (e.g. \"key=value\")." },
+        "repeatable":   { "type": "boolean", "description": "True if the flag may appear more than once on a single invocation." },
+        "enum":         { "$ref": "#/$defs/enumValues" },
+        "enum_source":  { "$ref": "#/$defs/enumSource" },
+        "negate_flag":  {
+          "description": "Optional negation form for a bool flag (e.g. \"--no-cache\"). Only meaningful when type=bool. See spec §5.3.",
+          "type": "string",
+          "pattern": "^--[a-zA-Z0-9][a-zA-Z0-9-]*$"
+        }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/enumConsistency" },
+        {
+          "description": "negate_flag only applies to bool-typed flags.",
+          "if":   { "required": ["negate_flag"] },
+          "then": { "properties": { "type": { "const": "bool" } } }
+        }
+      ]
+    },
+
+    "typeName": {
+      "description": "Argument/flag type. Closed set per spec §5.1, plus x-* extension namespace for tool-specific types.",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string", "int", "float", "bool", "enum",
+            "path", "url", "duration", "date", "datetime", "json", "ref"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^x-[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+          "description": "Tool-specific extension type. Wrappers MAY treat unknown x-* types as `string`."
+        }
+      ]
+    },
+
+    "enumValues": {
+      "description": "Concrete list of allowed values when type=enum (or as a snapshot for dynamic enums).",
+      "type": "array",
+      "items": {
+        "type": ["string", "number", "boolean"]
+      },
+      "minItems": 0
+    },
+
+    "enumSource": {
+      "description": "Reference to a command that resolves the enum dynamically at help-emission time (e.g. \"dynamic:pad collection list\"). The literal `enum` array, when present alongside, is a snapshot.",
+      "type": "string",
+      "pattern": "^dynamic:.+$"
+    },
+
+    "enumConsistency": {
+      "description": "If `enum` or `enum_source` is set, the type SHOULD be `enum`. Encoded as a soft constraint via if/then so this remains permissive for tools that prefer to type the slot more specifically.",
+      "if": {
+        "anyOf": [
+          { "required": ["enum"] },
+          { "required": ["enum_source"] }
+        ]
+      },
+      "then": {
+        "properties": {
+          "type": { "type": "string" }
+        }
+      }
+    },
+
+    "exitCodeRich": {
+      "description": "Rich object form of an exit-code entry. The string form is also valid (see exit_codes patternProperties).",
+      "type": "object",
+      "required": ["when"],
+      "additionalProperties": true,
+      "properties": {
+        "when":             { "type": "string", "minLength": 1, "description": "Concise description of the condition that produces this exit code." },
+        "recovery":         { "type": "string", "description": "Suggested user/agent action to recover from this exit code." },
+        "message_template": { "type": "string", "description": "Template for the stderr message printed alongside the exit; may use {placeholder} substitutions." }
+      }
+    },
+
+    "example": {
+      "description": "A canonical example invocation. Same source for --format json and --format md (spec §6).",
+      "type": "object",
+      "required": ["cmd"],
+      "additionalProperties": true,
+      "properties": {
+        "cmd":  { "type": "string", "minLength": 1, "description": "The runnable invocation. MUST resolve against the live command tree (validated in test suite per spec §6)." },
+        "note": { "type": "string", "description": "Short prose accompanying the invocation." }
+      }
+    }
+
+  }
+}
