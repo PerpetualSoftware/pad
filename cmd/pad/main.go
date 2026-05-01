@@ -140,6 +140,7 @@ func newRootCmd() *cobra.Command {
 		attachmentCmd(),
 		dbCmd(),
 		completionCmd(),
+		mcpCmd(),
 	)
 
 	rootCmd.SetHelpCommand(helpCmd())
