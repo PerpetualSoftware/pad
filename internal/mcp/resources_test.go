@@ -77,8 +77,18 @@ func TestRegisterResources_AdvertisesAllFourTemplates(t *testing.T) {
 	// might require WithResourceCapabilities up-front.
 }
 
-func TestReadItem_DispatchesAndReturnsMarkdown(t *testing.T) {
-	f := &fakeFetcher{stdout: "# TASK-5\n\nbody"}
+func TestReadItem_DispatchesJSONAndComposesMarkdown(t *testing.T) {
+	// Codex review (round 1) caught: `pad item show --format markdown`
+	// emits only item.Content (no ref/title/fields). The MCP resource
+	// promises full markdown, so we fetch JSON and compose the
+	// document here. Test guards both contracts: dispatch uses
+	// --format json, output contains heading + fields + body.
+	f := &fakeFetcher{stdout: `{
+		"ref": "TASK-5",
+		"title": "Fix OAuth",
+		"fields": "{\"priority\":\"high\",\"status\":\"in-progress\"}",
+		"content": "Detailed plan goes here."
+	}`}
 	r := &resources{fetcher: f}
 	req := mcp.ReadResourceRequest{}
 	req.Params.URI = "pad://workspace/docapp/items/TASK-5"
@@ -97,15 +107,71 @@ func TestReadItem_DispatchesAndReturnsMarkdown(t *testing.T) {
 	if tc.MIMEType != itemMIMEType {
 		t.Errorf("MIMEType = %q, want %q", tc.MIMEType, itemMIMEType)
 	}
-	if tc.URI != req.Params.URI {
-		t.Errorf("URI = %q, want %q", tc.URI, req.Params.URI)
+	wantParts := []string{
+		"# TASK-5: Fix OAuth",
+		"- **priority:** high",
+		"- **status:** in-progress",
+		"Detailed plan goes here.",
 	}
-	if tc.Text != "# TASK-5\n\nbody" {
-		t.Errorf("body wasn't passed through verbatim, got: %q", tc.Text)
+	for _, p := range wantParts {
+		if !strings.Contains(tc.Text, p) {
+			t.Errorf("composed markdown missing %q; got:\n%s", p, tc.Text)
+		}
 	}
-	wantArgs := []string{"item", "show", "TASK-5", "--workspace", "docapp", "--format", "markdown"}
+	wantArgs := []string{"item", "show", "TASK-5", "--workspace", "docapp", "--format", "json"}
 	if !equalSlice(f.gotArgs, wantArgs) {
 		t.Errorf("dispatched args = %v, want %v", f.gotArgs, wantArgs)
+	}
+}
+
+func TestFormatItemAsMarkdown_FullShape(t *testing.T) {
+	got, err := formatItemAsMarkdown(`{
+		"ref": "TASK-9",
+		"title": "Add MCP",
+		"parent_ref": "PLAN-942",
+		"parent_title": "Local MCP server",
+		"fields": "{\"priority\":\"high\"}",
+		"content": "body"
+	}`)
+	if err != nil {
+		t.Fatalf("formatItemAsMarkdown: %v", err)
+	}
+	want := "# TASK-9: Add MCP\n\n**Parent:** PLAN-942 — Local MCP server\n\n- **priority:** high\n\nbody\n"
+	if got != want {
+		t.Errorf("formatItemAsMarkdown output drift\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestFormatItemAsMarkdown_HandlesMissingFields(t *testing.T) {
+	// Resilience: items with no parent_ref / no fields / no content
+	// should still produce a valid heading-only document, not a panic.
+	got, err := formatItemAsMarkdown(`{"ref":"DOC-1","title":"Onboarding"}`)
+	if err != nil {
+		t.Fatalf("formatItemAsMarkdown: %v", err)
+	}
+	if got != "# DOC-1: Onboarding\n\n" {
+		t.Errorf("got %q, want heading-only doc", got)
+	}
+}
+
+func TestFormatItemAsMarkdown_HandlesEmptyFields(t *testing.T) {
+	// fields is `{}` (no keys) — should NOT emit a stray blank
+	// "fields:" section.
+	got, err := formatItemAsMarkdown(`{"ref":"X","title":"y","fields":"{}","content":"z"}`)
+	if err != nil {
+		t.Fatalf("formatItemAsMarkdown: %v", err)
+	}
+	if strings.Contains(got, "**") {
+		t.Errorf("empty fields object should not produce list items; got: %q", got)
+	}
+	if !strings.Contains(got, "z") {
+		t.Errorf("body missing: %q", got)
+	}
+}
+
+func TestFormatItemAsMarkdown_RejectsInvalidJSON(t *testing.T) {
+	if _, err := formatItemAsMarkdown(`not json`); err == nil {
+		t.Errorf("expected error on invalid JSON")
 	}
 }
 

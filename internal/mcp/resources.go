@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -131,6 +133,13 @@ func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags
 }
 
 // readItem handles pad://workspace/{ws}/items/{ref}.
+//
+// Why JSON-then-format instead of `--format markdown`: pad's CLI
+// `--format markdown` for `item show` prints only the body content
+// (item.Content), losing ref/title/fields/parent-link. The resource
+// is advertised as "Full markdown content … includes title, fields,
+// body, and links," so the resource layer composes the full markdown
+// from the JSON response. (Codex review on TASK-946 caught this gap.)
 func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	ws, kind, ref, err := parsePadURI(req.Params.URI)
 	if err != nil {
@@ -139,8 +148,87 @@ func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) (
 	if kind != resourceKindItem || ref == "" {
 		return nil, fmt.Errorf("resource %q is not an item URI", req.Params.URI)
 	}
-	return r.fetchAsResource(ctx, req.Params.URI, itemMIMEType,
-		[]string{"item", "show", ref, "--workspace", ws, "--format", "markdown"})
+	padArgs := []string{"item", "show", ref, "--workspace", ws, "--format", "json"}
+	full := append(append([]string{}, padArgs...), r.rootArgs...)
+	out, err := r.fetcher.Fetch(ctx, full)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", req.Params.URI, err)
+	}
+	md, err := formatItemAsMarkdown(out)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", req.Params.URI, err)
+	}
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: itemMIMEType,
+			Text:     md,
+		},
+	}, nil
+}
+
+// formatItemAsMarkdown turns the JSON body returned by
+// `pad item show --format json` into a self-contained markdown
+// document: heading with ref + title, sorted metadata fields,
+// optional parent link, then the item's body content.
+//
+// Map-key iteration is sorted so the output is stable for tests.
+func formatItemAsMarkdown(jsonBlob string) (string, error) {
+	var item map[string]any
+	if err := json.Unmarshal([]byte(jsonBlob), &item); err != nil {
+		return "", fmt.Errorf("parse item JSON: %w", err)
+	}
+	var b strings.Builder
+
+	// Heading: `# REF: Title`
+	ref, _ := item["ref"].(string)
+	title, _ := item["title"].(string)
+	switch {
+	case ref != "" && title != "":
+		fmt.Fprintf(&b, "# %s: %s\n\n", ref, title)
+	case title != "":
+		fmt.Fprintf(&b, "# %s\n\n", title)
+	case ref != "":
+		fmt.Fprintf(&b, "# %s\n\n", ref)
+	}
+
+	// Parent link (optional). Useful for agents to traverse the tree.
+	if parentRef, _ := item["parent_ref"].(string); parentRef != "" {
+		parentTitle, _ := item["parent_title"].(string)
+		if parentTitle != "" {
+			fmt.Fprintf(&b, "**Parent:** %s — %s\n\n", parentRef, parentTitle)
+		} else {
+			fmt.Fprintf(&b, "**Parent:** %s\n\n", parentRef)
+		}
+	}
+
+	// Structured metadata fields. The `fields` payload is a JSON
+	// string-encoded object on the wire — unmarshal a second time.
+	if fieldsStr, ok := item["fields"].(string); ok && fieldsStr != "" && fieldsStr != "{}" {
+		var fields map[string]any
+		if json.Unmarshal([]byte(fieldsStr), &fields) == nil && len(fields) > 0 {
+			keys := make([]string, 0, len(fields))
+			for k := range fields {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(&b, "- **%s:** %v\n", k, fields[k])
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// Body. Pad items often have rich markdown here already; pass
+	// through verbatim.
+	if content, _ := item["content"].(string); content != "" {
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String(), nil
 }
 
 // readItems handles pad://workspace/{ws}/items.
