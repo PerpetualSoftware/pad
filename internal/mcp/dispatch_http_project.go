@@ -32,10 +32,11 @@ func (d *HTTPHandlerDispatcher) dispatchProjectReady(
 	user *models.User,
 ) (*mcp.CallToolResult, error) {
 	const cmdKey = "project ready"
-	suggestions, errRes := d.fetchDashboardSuggestedNext(ctx, input, user, cmdKey)
+	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
 	if errRes != nil {
 		return errRes, nil
 	}
+	suggestions := dashboardArrayField(dash, "suggested_next")
 	return packageStructuredResponse(cmdKey, map[string]any{
 		"count":   len(suggestions),
 		"results": suggestions,
@@ -47,6 +48,12 @@ func (d *HTTPHandlerDispatcher) dispatchProjectReady(
 // (stalled / blocked / overdue / orphaned_task) before returning
 // `{count, results}`. Sorting matches cmd/pad/query.go's
 // filterAgentAttention: type, ItemRef, ItemTitle.
+//
+// Operates on the raw map[string]any decoded from the dashboard JSON
+// so any field server.DashboardAttention adds in future versions
+// (collection, plus anything not yet wired) flows through unchanged.
+// Codex review on PR #348 round 1 caught the previous typed-struct
+// approach dropping `collection` from the response.
 func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 	ctx context.Context,
 	input map[string]any,
@@ -57,7 +64,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 	if errRes != nil {
 		return errRes, nil
 	}
-	attention := filterAgentAttention(dash.Attention)
+	attention := filterAgentAttention(dashboardArrayField(dash, "attention"))
 	return packageStructuredResponse(cmdKey, map[string]any{
 		"count":   len(attention),
 		"results": attention,
@@ -65,14 +72,19 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 }
 
 // fetchDashboardJSON hits the workspace dashboard endpoint and decodes
-// the response into the typed shape the CLI uses. Shared by the
-// project-intelligence dispatchers that wrap dashboard data.
+// the response into a generic map[string]any so the dispatcher
+// preserves every field the server emits — no maintenance burden when
+// new fields land on DashboardAttention / DashboardSuggestion.
+//
+// Returns the raw object so callers can pull specific fields
+// (suggested_next, attention) via dashboardArrayField without the
+// typed-struct round-trip.
 func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
 	cmdKey string,
-) (*projectDashboard, *mcp.CallToolResult) {
+) (map[string]any, *mcp.CallToolResult) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return nil, mcp.NewToolResultErrorf("%s: workspace is required", cmdKey)
@@ -91,83 +103,71 @@ func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 		}
 		return nil, mcp.NewToolResultErrorf("%s: %d %s", cmdKey, rec.Code, body)
 	}
-	var dash projectDashboard
+	var dash map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &dash); err != nil {
 		return nil, mcp.NewToolResultErrorf("%s: parse dashboard: %s", cmdKey, err.Error())
 	}
-	return &dash, nil
+	return dash, nil
 }
 
-// fetchDashboardSuggestedNext returns the dashboard's
-// suggested_next slice, used by both `project next` (which currently
-// aliases to /dashboard verbatim) and `project ready`'s
-// `{count, results}` wrapper.
-func (d *HTTPHandlerDispatcher) fetchDashboardSuggestedNext(
-	ctx context.Context,
-	input map[string]any,
-	user *models.User,
-	cmdKey string,
-) ([]projectSuggestion, *mcp.CallToolResult) {
-	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
-	if errRes != nil {
-		return nil, errRes
+// dashboardArrayField pulls a named array out of a decoded dashboard
+// payload, returning a typed []map[string]any so the callers can
+// filter / sort by string fields without the json.Number / interface{}
+// dance per element. Missing/empty/non-array values normalize to an
+// empty slice so the {count, results} responses always emit a usable
+// shape.
+func dashboardArrayField(dash map[string]any, key string) []map[string]any {
+	raw, ok := dash[key].([]any)
+	if !ok {
+		return []map[string]any{}
 	}
-	if dash.SuggestedNext == nil {
-		return []projectSuggestion{}, nil
+	out := make([]map[string]any, 0, len(raw))
+	for _, e := range raw {
+		if m, ok := e.(map[string]any); ok {
+			out = append(out, m)
+		}
 	}
-	return dash.SuggestedNext, nil
-}
-
-// projectDashboard mirrors the subset of server.DashboardResponse the
-// project-intelligence dispatchers need. Reproduced here so the
-// dispatcher can stay free of an internal/server import — the response
-// contract is the wire-stable JSON, not the in-process struct.
-type projectDashboard struct {
-	Attention     []projectAttention  `json:"attention"`
-	SuggestedNext []projectSuggestion `json:"suggested_next"`
-}
-
-type projectAttention struct {
-	Type      string `json:"type"`
-	ItemSlug  string `json:"item_slug,omitempty"`
-	ItemRef   string `json:"item_ref,omitempty"`
-	ItemTitle string `json:"item_title"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-type projectSuggestion struct {
-	ItemSlug   string `json:"item_slug,omitempty"`
-	ItemRef    string `json:"item_ref,omitempty"`
-	ItemTitle  string `json:"item_title"`
-	Collection string `json:"collection,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	return out
 }
 
 // filterAgentAttention mirrors cmd/pad/query.go's helper of the same
 // name — keeps only the attention types agents care about (stalled,
-// blocked, overdue, orphaned_task) and sorts deterministically. Same
-// stable ordering as the CLI so `--format json` outputs match.
-func filterAgentAttention(attention []projectAttention) []projectAttention {
+// blocked, overdue, orphaned_task) and sorts deterministically by
+// (type, item_ref, item_title). Same stable ordering as the CLI so
+// `--format json` outputs match between transports.
+//
+// Operates on map[string]any (not a typed struct) so attention
+// entries pass through to the response with EVERY field the server
+// emitted, not just the ones we knew to declare. Codex review on PR
+// #348 caught the previous typed approach dropping `collection`.
+func filterAgentAttention(attention []map[string]any) []map[string]any {
 	interesting := map[string]bool{
 		"stalled":       true,
 		"blocked":       true,
 		"overdue":       true,
 		"orphaned_task": true,
 	}
-	results := make([]projectAttention, 0, len(attention))
+	results := make([]map[string]any, 0, len(attention))
 	for _, item := range attention {
-		if interesting[item.Type] {
+		typ, _ := item["type"].(string)
+		if interesting[typ] {
 			results = append(results, item)
 		}
 	}
 	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Type != results[j].Type {
-			return results[i].Type < results[j].Type
+		ti, _ := results[i]["type"].(string)
+		tj, _ := results[j]["type"].(string)
+		if ti != tj {
+			return ti < tj
 		}
-		if results[i].ItemRef != results[j].ItemRef {
-			return results[i].ItemRef < results[j].ItemRef
+		ri, _ := results[i]["item_ref"].(string)
+		rj, _ := results[j]["item_ref"].(string)
+		if ri != rj {
+			return ri < rj
 		}
-		return results[i].ItemTitle < results[j].ItemTitle
+		titI, _ := results[i]["item_title"].(string)
+		titJ, _ := results[j]["item_title"].(string)
+		return titI < titJ
 	})
 	return results
 }

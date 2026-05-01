@@ -71,10 +71,10 @@ func TestDispatch_ProjectStale_FiltersInterestingTypes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"attention":[
-				{"type":"stalled","item_ref":"TASK-1","item_title":"Stalled item","reason":"no activity"},
+				{"type":"stalled","item_ref":"TASK-1","item_title":"Stalled item","reason":"no activity","collection":"tasks","item_slug":"slug-1"},
 				{"type":"info","item_ref":"TASK-2","item_title":"Just FYI","reason":"new"},
-				{"type":"blocked","item_ref":"TASK-3","item_title":"Blocked","reason":"dep"},
-				{"type":"orphaned_task","item_ref":"TASK-4","item_title":"Orphan","reason":"no parent"}
+				{"type":"blocked","item_ref":"TASK-3","item_title":"Blocked","reason":"dep","collection":"tasks","item_slug":"slug-3"},
+				{"type":"orphaned_task","item_ref":"TASK-4","item_title":"Orphan","reason":"no parent","collection":"tasks","item_slug":"slug-4"}
 			]
 		}`))
 	})
@@ -101,6 +101,60 @@ func TestDispatch_ProjectStale_FiltersInterestingTypes(t *testing.T) {
 		entry, _ := results[i].(map[string]any)
 		if entry["type"] != w {
 			t.Errorf("results[%d].type = %v, want %v", i, entry["type"], w)
+		}
+	}
+}
+
+func TestDispatch_ProjectStale_PreservesAllFields(t *testing.T) {
+	// Codex review on PR #348 round 1 caught the previous
+	// typed-struct approach dropping `collection` (and would have
+	// dropped any future server-side field addition). Pin that
+	// every field on each attention entry survives the filter +
+	// sort path. Treat the dispatcher's attention slice as a
+	// transparent wire-shape forwarder.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"attention":[
+				{
+					"type":"stalled",
+					"item_slug":"slug-stale",
+					"item_ref":"TASK-9",
+					"item_title":"Stale Task",
+					"collection":"tasks",
+					"reason":"no activity 7d",
+					"future_field":"forward-compat"
+				}
+			]
+		}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{"workspace": "docapp"}),
+		[]string{"project", "stale"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	payload, _ := res.StructuredContent.(map[string]any)
+	results, _ := payload["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result; got %d", len(results))
+	}
+	entry, _ := results[0].(map[string]any)
+	wantFields := map[string]string{
+		"type":         "stalled",
+		"item_slug":    "slug-stale",
+		"item_ref":     "TASK-9",
+		"item_title":   "Stale Task",
+		"collection":   "tasks",
+		"reason":       "no activity 7d",
+		"future_field": "forward-compat",
+	}
+	for k, v := range wantFields {
+		if got, _ := entry[k].(string); got != v {
+			t.Errorf("entry[%q] = %q, want %q", k, got, v)
 		}
 	}
 }
