@@ -232,6 +232,20 @@ pad library list --type conventions  # Pre-built conventions you can adopt
 pad library list --type playbooks    # Pre-built multi-step workflows
 ```
 
+### 4. Optional — connect a desktop AI app via MCP
+
+Pad ships an MCP (Model Context Protocol) server so Claude Desktop, Cursor, or
+Windsurf can call every `pad` command as a tool, read items by URL, and load
+multi-step workflows as prompts.
+
+```bash
+pad mcp install claude-desktop   # or: cursor, windsurf, --all
+# Restart the client; pad shows up as the "pad" MCP server.
+```
+
+Full guide at [getpad.dev/mcp/local](https://getpad.dev/mcp/local) — install
+paths, available tools/resources/prompts, troubleshooting.
+
 ## CLI Reference
 
 ```
