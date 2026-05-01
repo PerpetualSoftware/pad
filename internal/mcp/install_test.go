@@ -363,6 +363,37 @@ func TestAddPadEntry_HandlesEmptyAndWhitespaceFile(t *testing.T) {
 	}
 }
 
+func TestAddPadEntry_TightensPermsOnIdempotentNoop(t *testing.T) {
+	// Codex round 2 (TASK-948): the idempotent path returns BEFORE
+	// writeJSONConfig, so an already-up-to-date 0644 config kept
+	// loose perms. Tighten on the no-op path too.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	desired := map[string]any{
+		"mcpServers": map[string]any{
+			"pad": map[string]any{
+				"command": "/p",
+				"args":    []any{"mcp", "serve"},
+			},
+		},
+	}
+	b, _ := json.MarshalIndent(desired, "", "  ")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified, err := AddPadEntry(path, "/p")
+	if err != nil {
+		t.Fatalf("AddPadEntry: %v", err)
+	}
+	if modified {
+		t.Errorf("expected modified=false on identical content")
+	}
+	info, _ := os.Stat(path)
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("expected 0600 even on no-op path, got %#o", mode)
+	}
+}
+
 func TestAddPadEntry_TightensExistingFilePerms(t *testing.T) {
 	// Codex round 1 (TASK-948): os.WriteFile only honors the mode
 	// when CREATING the file. If the user had a pre-existing 0644

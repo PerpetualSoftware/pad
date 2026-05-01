@@ -147,6 +147,12 @@ func AddPadEntry(path, binary string) (bool, error) {
 	}
 	current, hadPad := servers[MCPServerKey].(map[string]any)
 	if hadPad && jsonEqual(current, wantedEntry) {
+		// Idempotent path: content already correct, no rewrite.
+		// Still tighten perms — a previous tool / manual edit may
+		// have left the file 0644, and the security-tightening
+		// guarantee should not depend on whether content changed.
+		// Codex round 2 (TASK-948) caught this gap.
+		tightenPerms(path)
 		return false, nil
 	}
 	servers[MCPServerKey] = wantedEntry
@@ -155,6 +161,20 @@ func AddPadEntry(path, binary string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// tightenPerms sets path to 0600 if it exists. Best-effort: errors
+// only emit a warning to stderr (the user's primary intent — install /
+// no-op — already succeeded). Used by both the write-modified and
+// idempotent code paths so the security claim ("config is 0600 after
+// install") holds regardless of whether content changed.
+func tightenPerms(path string) {
+	if _, err := os.Stat(path); err != nil {
+		return // nothing to tighten
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to chmod 0600 %s: %v\n", path, err)
+	}
 }
 
 // RemovePadEntry deletes mcpServers.pad while leaving other servers +
@@ -271,11 +291,7 @@ func writeJSONConfig(path string, cfg map[string]any) error {
 	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		// Log-only: the install succeeded; perms hardening is a
-		// best-effort defense-in-depth. Don't fail the user's flow.
-		fmt.Fprintf(os.Stderr, "warning: failed to chmod 0600 %s: %v\n", path, err)
-	}
+	tightenPerms(path)
 	return nil
 }
 
