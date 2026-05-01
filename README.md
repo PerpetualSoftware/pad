@@ -235,23 +235,46 @@ pad library list --type playbooks    # Pre-built multi-step workflows
 ### 4. Optional — connect a desktop AI app via MCP
 
 Pad ships an MCP (Model Context Protocol) server so Claude Desktop, Cursor, or
-Windsurf can call non-interactive `pad` commands as tools (item CRUD, project
-intelligence, search, etc. — not destructive / lifecycle ones like `auth setup`,
-`db restore`, `init`, `item edit`), read items and the dashboard by URL, and
-load multi-step workflows as prompts.
+Windsurf can manage items, plans, ideas, and dependencies as native tools, read
+workspace state by URL, and load multi-step workflows as prompts.
 
 ```bash
 pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-The server advertises a tool-surface stability tier (`cmdhelp_version`)
-in the initialize handshake at `capabilities.experimental.padCmdhelp`,
-and as a queryable JSON document at `pad://_meta/version`. External agents
-can pin against this so a future tool rename doesn't break them silently.
+**Tool catalog (v0.2)** — eight resource × action tools, no flat verb explosion:
+
+| Tool | Actions |
+|---|---|
+| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `bulk-update`, `note`, `decide` |
+| `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log` |
+| `pad_collection` | `list`, `create` |
+| `pad_project` | `dashboard`, `next`, `standup`, `changelog` |
+| `pad_role` | `list`, `create`, `delete` |
+| `pad_search` | `query` |
+| `pad_meta` | `server-info`, `version`, `tool-surface` |
+| `pad_set_workspace` | session-default workspace pinning |
+
+Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
+`pad://workspace/{ws}/items`, `pad://workspace/{ws}/items/{ref}`,
+`pad://workspace/{ws}/collections`, and `pad://_meta/version`.
+
+**Stability contract** — two version constants, both advertised in the
+initialize handshake under `capabilities.experimental.padCmdhelp` and
+`capabilities.experimental.padToolSurface` (and queryable at
+`pad://_meta/version`):
+
+- `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
+- `tool_surface_version: "0.2"` — MCP tool catalog contract
+
+External agents pin against these so a future rename doesn't break them
+silently. Errors come back as structured envelopes (`{error: {code,
+message, hint, available_workspaces, ...}}`) with a closed eight-code
+taxonomy.
 
 Full guide at [getpad.dev/mcp/local](https://getpad.dev/mcp/local) — install
-paths, available tools/resources/prompts, troubleshooting.
+paths, action enums per tool, error taxonomy, troubleshooting.
 
 ## CLI Reference
 
