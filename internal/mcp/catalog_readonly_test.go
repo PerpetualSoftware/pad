@@ -9,9 +9,9 @@ import (
 )
 
 // TestReadOnlyCatalog_AllToolsRegistered locks the v0.2 read-only
-// surface. If a future commit accidentally drops a tool from
-// appendToCatalog (or adds one without intent), this test forces a
-// deliberate update to the expected list.
+// surface. Catches drift in BOTH directions — drops (expected tool
+// missing) and unexpected adds (a new tool registered without
+// updating this test).
 func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 	want := map[string]bool{
 		// pad_meta is from TASK-979; the rest are TASK-980.
@@ -25,30 +25,47 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 	for _, def := range Catalog {
 		if _, ok := want[def.Name]; ok {
 			want[def.Name] = true
+			continue
 		}
+		// Unexpected tool — surface it loudly. If the addition is
+		// intentional (TASK-981 will add pad_item), bump this test's
+		// `want` map in the same commit.
+		t.Errorf("unexpected catalog entry %q — update want{} in this test if intentional",
+			def.Name)
 	}
 	for name, found := range want {
 		if !found {
 			t.Errorf("expected catalog entry %q not registered", name)
 		}
 	}
+	if len(Catalog) != len(want) {
+		t.Errorf("Catalog has %d tools, expected exactly %d", len(Catalog), len(want))
+	}
 }
 
 // TestReadOnlyCatalog_ActionsMatchCmdhelp guards against cmdhelp drift.
-// Every passThrough action's cmdPath must resolve in cmdhelp; if it
-// doesn't, env.Dispatch returns a "registry bug" error at runtime —
-// this test catches it at compile-time-of-test rather than waiting for
-// a user to hit the action.
+// Three-way validation:
 //
-// Custom (non-passThrough) actions are skipped because they may
-// reshape the input or compose multiple cmdPaths internally.
+//  1. Every entry in `expected` must point at a cmdPath that exists in
+//     cmdhelp (catches typos in our own table).
+//  2. Every action in every catalog tool (except pad_meta, which
+//     handles inline) must have an entry in `expected` (catches new
+//     actions added without test coverage).
+//  3. Every entry in `expected` must correspond to an actual catalog
+//     action (catches table entries that outlive the action they
+//     describe).
+//
+// pad_meta is excluded because its actions are inline server-info /
+// version / tool-surface — they don't dispatch to a CLI cmdPath.
+//
+// pad_item is excluded for now — TASK-981 adds it; the same test
+// gets extended there with the expected entries.
 func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 	doc := liveCmdhelpDoc(t)
 
-	// Hand-curated map of (toolName, action) → expected cmdPath, used
-	// to catch silent renames in catalog_*.go. Custom handlers
-	// (workspace audit-log) appear here too — they dispatch to the
-	// listed cmdPath even though the input shape differs.
+	// Hand-curated map of (toolName, action) → expected cmdPath. Custom
+	// handlers (workspace audit-log) appear here too — they dispatch
+	// to the listed cmdPath even though the input shape differs.
 	expected := map[[2]string][]string{
 		{"pad_workspace", "list"}:      {"workspace", "list"},
 		{"pad_workspace", "members"}:   {"workspace", "members"},
@@ -70,11 +87,44 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 
 		{"pad_search", "query"}: {"item", "search"},
 	}
+
+	// Direction 1: every expected cmdPath resolves in cmdhelp.
 	for key, cmdPath := range expected {
 		joined := strings.Join(cmdPath, " ")
 		if _, ok := doc.Commands[joined]; !ok {
-			t.Errorf("%s.action=%s maps to cmdPath %q which is not in cmdhelp",
+			t.Errorf("expected[%s.%s] = %q is not in cmdhelp",
 				key[0], key[1], joined)
+		}
+	}
+
+	// Tools that handle their actions inline (no CLI dispatch) are
+	// skipped — they're correct as-is and don't need expected entries.
+	skipTools := map[string]bool{
+		"pad_meta": true,
+	}
+
+	// Direction 2 + 3: catalog ⇄ expected bijection (modulo skipTools).
+	// Every catalog action (in non-skipped tools) needs a cmdPath
+	// entry; every entry needs a corresponding catalog action.
+	catalogActions := map[[2]string]bool{}
+	for _, def := range Catalog {
+		if skipTools[def.Name] {
+			continue
+		}
+		for actionName := range def.Actions {
+			catalogActions[[2]string{def.Name, actionName}] = true
+		}
+	}
+	for key := range catalogActions {
+		if _, ok := expected[key]; !ok {
+			t.Errorf("catalog has %s.%s but no expected cmdPath entry — add one to expected{}",
+				key[0], key[1])
+		}
+	}
+	for key := range expected {
+		if !catalogActions[key] {
+			t.Errorf("expected entry for %s.%s but no such action in catalog",
+				key[0], key[1])
 		}
 	}
 }
