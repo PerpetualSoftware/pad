@@ -2,6 +2,7 @@ package cmdhelp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -10,6 +11,22 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
+
+// CapabilityLine returns the single-line capability bit a conforming
+// CLI emits in response to `<cmd> help --capabilities` (or the
+// `--cmdhelp-capabilities` fallback form). Per spec §8:
+//
+//   - Format: `cmdhelp/<MAJOR>.<MINOR>: <comma-separated formats>`
+//   - Single-line, parseable, stable across releases.
+//   - The format list MUST include every supported format, including
+//     the mandatory `text`. Order is not significant.
+//
+// Pass the formats this binary actually supports. The helper does not
+// imply any default set so different binaries can advertise different
+// surfaces (e.g. a future cmdhelp v0.2 might add formats).
+func CapabilityLine(formats []string) string {
+	return fmt.Sprintf("cmdhelp/%s: %s", Version, strings.Join(formats, ", "))
+}
 
 // Options configure a Build/EmitJSON call. All fields are optional except
 // Binary, which is used as the document's `binary` key.

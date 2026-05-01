@@ -202,6 +202,33 @@ func TestHelpCmd_UnknownTopicRejected(t *testing.T) {
 	}
 }
 
+func TestHelpCmd_CapabilitiesExactString(t *testing.T) {
+	out, _, err := runHelp(t, "--capabilities")
+	if err != nil {
+		t.Fatalf("--capabilities: unexpected error: %v", err)
+	}
+	// Per spec §8: single line, exact format. The trailing newline
+	// comes from fmt.Fprintln. Anything else (extra whitespace,
+	// stray prose, multiple lines) breaks the contract.
+	want := "cmdhelp/0.1: text, md, json, llm\n"
+	if out != want {
+		t.Errorf("--capabilities output mismatch:\n got: %q\nwant: %q", out, want)
+	}
+}
+
+func TestHelpCmd_CapabilitiesShortCircuits(t *testing.T) {
+	// --capabilities MUST take precedence over --format / --depth /
+	// scope args (spec §8 makes the bit side-effect-free).
+	out, _, err := runHelp(t, "item", "--capabilities", "--format", "json", "--depth", "0")
+	if err != nil {
+		t.Fatalf("--capabilities + extra flags: unexpected error: %v", err)
+	}
+	want := "cmdhelp/0.1: text, md, json, llm\n"
+	if out != want {
+		t.Errorf("expected --capabilities to short-circuit other flags; got: %q", out)
+	}
+}
+
 func TestHelpCmd_DepthAndAllAccepted(t *testing.T) {
 	// --depth and --all are part of the cmdhelp v0.1 surface but their
 	// effect lives in the JSON/MD emitters (TASK-934/935). At this layer
