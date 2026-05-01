@@ -8,19 +8,26 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
-// TestReadOnlyCatalog_AllToolsRegistered locks the v0.2 read-only
+// TestReadOnlyCatalog_AllToolsRegistered locks the v0.2 catalog
 // surface. Catches drift in BOTH directions — drops (expected tool
 // missing) and unexpected adds (a new tool registered without
 // updating this test).
+//
+// Naming retains "ReadOnly" for git-blame continuity even though the
+// catalog now includes pad_item (write surface). Renaming would
+// scatter blame across the test file's history; cosmetic refactor
+// can come later.
 func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 	want := map[string]bool{
-		// pad_meta is from TASK-979; the rest are TASK-980.
+		// pad_meta is from TASK-979; the read-only tools are TASK-980;
+		// pad_item is TASK-981.
 		"pad_meta":       false,
 		"pad_workspace":  false,
 		"pad_collection": false,
 		"pad_project":    false,
 		"pad_role":       false,
 		"pad_search":     false,
+		"pad_item":       false,
 	}
 	for _, def := range Catalog {
 		if _, ok := want[def.Name]; ok {
@@ -86,6 +93,33 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_role", "delete"}: {"role", "delete"},
 
 		{"pad_search", "query"}: {"item", "search"},
+
+		// pad_item passThrough actions. link/unlink are excluded —
+		// they fan out to per-link_type cmdPaths and are tested in
+		// catalog_item_test.go instead.
+		{"pad_item", "create"}:        {"item", "create"},
+		{"pad_item", "update"}:        {"item", "update"},
+		{"pad_item", "delete"}:        {"item", "delete"},
+		{"pad_item", "get"}:           {"item", "show"},
+		{"pad_item", "list"}:          {"item", "list"},
+		{"pad_item", "move"}:          {"item", "move"},
+		{"pad_item", "deps"}:          {"item", "deps"},
+		{"pad_item", "star"}:          {"item", "star"},
+		{"pad_item", "unstar"}:        {"item", "unstar"},
+		{"pad_item", "starred"}:       {"item", "starred"},
+		{"pad_item", "comment"}:       {"item", "comment"},
+		{"pad_item", "list-comments"}: {"item", "comments"},
+		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
+		{"pad_item", "note"}:          {"item", "note"},
+		{"pad_item", "decide"}:        {"item", "decide"},
+	}
+
+	// Actions whose dispatch is too custom for the cmdPath bijection —
+	// they fan out to multiple cmdPaths based on a parameter. Tested
+	// separately in their own files.
+	skipActions := map[[2]string]bool{
+		{"pad_item", "link"}:   true,
+		{"pad_item", "unlink"}: true,
 	}
 
 	// Direction 1: every expected cmdPath resolves in cmdhelp.
@@ -103,16 +137,21 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		"pad_meta": true,
 	}
 
-	// Direction 2 + 3: catalog ⇄ expected bijection (modulo skipTools).
-	// Every catalog action (in non-skipped tools) needs a cmdPath
-	// entry; every entry needs a corresponding catalog action.
+	// Direction 2 + 3: catalog ⇄ expected bijection (modulo skipTools
+	// and skipActions). Every catalog action (in non-skipped tools)
+	// needs a cmdPath entry; every entry needs a corresponding catalog
+	// action.
 	catalogActions := map[[2]string]bool{}
 	for _, def := range Catalog {
 		if skipTools[def.Name] {
 			continue
 		}
 		for actionName := range def.Actions {
-			catalogActions[[2]string{def.Name, actionName}] = true
+			key := [2]string{def.Name, actionName}
+			if skipActions[key] {
+				continue
+			}
+			catalogActions[key] = true
 		}
 	}
 	for key := range catalogActions {
@@ -168,16 +207,41 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_role", "delete"}: {"role", "delete"},
 
 		{"pad_search", "query"}: {"item", "search"},
+
+		// pad_item passThrough actions. link/unlink excluded — see
+		// catalog_item_test.go for their dispatch test.
+		{"pad_item", "create"}:        {"item", "create"},
+		{"pad_item", "update"}:        {"item", "update"},
+		{"pad_item", "delete"}:        {"item", "delete"},
+		{"pad_item", "get"}:           {"item", "show"},
+		{"pad_item", "list"}:          {"item", "list"},
+		{"pad_item", "move"}:          {"item", "move"},
+		{"pad_item", "deps"}:          {"item", "deps"},
+		{"pad_item", "star"}:          {"item", "star"},
+		{"pad_item", "unstar"}:        {"item", "unstar"},
+		{"pad_item", "starred"}:       {"item", "starred"},
+		{"pad_item", "comment"}:       {"item", "comment"},
+		{"pad_item", "list-comments"}: {"item", "comments"},
+		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
+		{"pad_item", "note"}:          {"item", "note"},
+		{"pad_item", "decide"}:        {"item", "decide"},
 	}
 
-	// Required-positional fixture: every CLI command in the read-only
+	// Required-positional fixture: every CLI command in the v0.2
 	// surface gets its required args satisfied so BuildCLIArgs reaches
 	// dispatcher.Dispatch instead of returning a missing-arg error.
 	fixtureInput := map[string]any{
-		"email": "test@example.com",
-		"name":  "test-name",
-		"slug":  "test-slug",
-		"query": "test-query",
+		"email":             "test@example.com",
+		"name":              "test-name",
+		"slug":              "test-slug",
+		"query":             "test-query",
+		"ref":               "TASK-1",
+		"collection":        "tasks",
+		"title":             "test title",
+		"target_collection": "ideas",
+		"message":           "test message",
+		"summary":           "test summary",
+		"decision":          "test decision",
 	}
 
 	for _, def := range Catalog {
@@ -188,9 +252,9 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 			key := [2]string{def.Name, actionName}
 			wantCmdPath, ok := expected[key]
 			if !ok {
-				// Already covered by TestReadOnlyCatalog_ActionsMatchCmdhelp's
-				// bijection check; skip silently here to keep this test
-				// focused on dispatch correctness.
+				// link/unlink and other custom-dispatch actions skipped —
+				// they have dedicated tests; the bijection check covers
+				// the catalog/expected pair.
 				continue
 			}
 			t.Run(def.Name+"."+actionName, func(t *testing.T) {
@@ -373,6 +437,154 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					"workspace", "collection", "status", "priority",
 					"sort", "limit", "offset",
 				),
+			},
+			// pad_item surface (TASK-981)
+			"item create": {
+				Summary: "create item",
+				Args:    mkArgs("collection", "title"),
+				Flags: mkFlags(
+					"workspace", "assign", "category", "content", "field",
+					"parent", "priority", "role", "status", "tags",
+				),
+			},
+			"item update": {
+				Summary: "update item",
+				Args:    mkArgs("ref"),
+				Flags: mkFlags(
+					"workspace", "assign", "category", "comment", "content",
+					"field", "parent", "priority", "role", "status",
+					"tags", "title",
+				),
+			},
+			"item delete": {
+				Summary: "delete item",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item show": {
+				Summary: "show item",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item list": {
+				Summary: "list items",
+				Args:    []cmdhelp.Arg{{Name: "collection"}}, // optional
+				Flags: map[string]cmdhelp.Flag{
+					"workspace": {Type: "string"},
+					"all":       {Type: "bool"},
+					"assign":    {Type: "string"},
+					"field":     {Type: "[]string", Repeatable: true},
+					"group-by":  {Type: "string"},
+					"limit":     {Type: "int"},
+					"parent":    {Type: "string"},
+					"priority":  {Type: "string"},
+					"role":      {Type: "string"},
+					"sort":      {Type: "string"},
+					"status":    {Type: "string"},
+				},
+			},
+			"item move": {
+				Summary: "move item",
+				Args:    mkArgs("ref", "target-collection"),
+				Flags: map[string]cmdhelp.Flag{
+					"workspace": {Type: "string"},
+					"field":     {Type: "[]string", Repeatable: true},
+				},
+			},
+			"item deps": {
+				Summary: "show deps",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item star": {
+				Summary: "star item",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item unstar": {
+				Summary: "unstar item",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item starred": {
+				Summary: "list starred",
+				Flags: map[string]cmdhelp.Flag{
+					"workspace": {Type: "string"},
+					"all":       {Type: "bool"},
+				},
+			},
+			"item comment": {
+				Summary: "add comment",
+				Args:    mkArgs("ref", "message"),
+				Flags:   mkFlags("workspace", "reply-to"),
+			},
+			"item comments": {
+				Summary: "list comments",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item bulk-update": {
+				Summary: "bulk update",
+				Args:    []cmdhelp.Arg{{Name: "ref", Required: true, Repeatable: true}},
+				Flags:   mkFlags("workspace", "priority", "status"),
+			},
+			"item note": {
+				Summary: "add note",
+				Args:    mkArgs("ref", "summary"),
+				Flags:   mkFlags("workspace", "details"),
+			},
+			"item decide": {
+				Summary: "record decision",
+				Args:    mkArgs("ref", "decision"),
+				Flags:   mkFlags("workspace", "rationale"),
+			},
+			// Link family — used by catalog_item_test.go for the
+			// link/unlink dispatch tests. Args mirror the real CLI's
+			// inconsistent positional names.
+			"item block": {
+				Summary: "block item",
+				Args:    mkArgs("source-ref", "target-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item unblock": {
+				Summary: "unblock item",
+				Args:    mkArgs("source-ref", "target-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item blocked-by": {
+				Summary: "blocked-by item",
+				Args:    mkArgs("source-ref", "blocker-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item supersedes": {
+				Summary: "supersedes",
+				Args:    mkArgs("new-ref", "old-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item unsupersede": {
+				Summary: "unsupersede",
+				Args:    mkArgs("new-ref", "old-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item implements": {
+				Summary: "implements",
+				Args:    mkArgs("implementer-ref", "target-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item unimplements": {
+				Summary: "unimplements",
+				Args:    mkArgs("implementer-ref", "target-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item split-from": {
+				Summary: "split-from",
+				Args:    mkArgs("child-ref", "parent-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item unsplit": {
+				Summary: "unsplit",
+				Args:    mkArgs("child-ref", "parent-ref"),
+				Flags:   mkFlags("workspace"),
 			},
 		},
 	}

@@ -175,9 +175,11 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 ## MCP server
 
-Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. The surface is derived from the cmdhelp Document (`pad help --format json`) and filtered against `internal/mcp.DefaultExcludes` (which strips interactive / destructive commands — `auth setup/login`, `db backup/restore`, `init`, `item edit`, `project watch`, `workspace export/import`, `mcp serve/install`, `completion`, etc.).
+Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. As of PLAN-969 (TASK-981) the tool surface is a **hand-curated v0.2 catalog** in `internal/mcp/catalog_*.go` — one ToolDef per resource (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`) with an `action` enum dispatching to underlying CLI commands. The previous v0.1 cmdhelp leaf walker is retired.
 
-**When adding a new `pad` command, decide whether it belongs on the MCP surface.** If it's interactive (prompts the user), destructive (mutates auth / filesystem state), long-running (streaming watcher), or recursive (would spawn another MCP server), add it to `DefaultExcludes` in `internal/mcp/registry.go`. Otherwise it's safe to expose, and the registry picks it up automatically.
+cmdhelp is still consumed at dispatch time — `BuildCLIArgs` reads individual command schemas to translate the catalog's snake_case input map into CLI args. cmdhelp no longer drives tool naming or count.
+
+**When adding a new `pad` command, decide whether it belongs on the MCP surface.** If yes, add an action to the appropriate `pad_<resource>` ToolDef in `internal/mcp/catalog_<resource>.go`. The action's handler — usually `passThrough([]string{"resource", "subcommand"})` — wires it through to dispatch. Don't expose interactive (prompts the user), destructive (mutates auth / filesystem state), long-running (streaming watcher), or recursive (would spawn another MCP server) commands.
 
 ```bash
 pad mcp serve                 # JSON-RPC over stdio (called by clients)
@@ -187,11 +189,15 @@ pad mcp status                # Install state across supported clients
 ```
 
 Surface:
-- **Tools:** leaf `pad` commands not in `DefaultExcludes` (the per-PR review gate above). Plus `pad_set_workspace` for the session default.
+- **Tools:** the v0.2 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does.
 - **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, plus the server-wide `pad://_meta/version`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
 
-**Stability contract.** The cmdhelp tool surface is versioned via `internal/mcp.CmdhelpVersion` (currently `"0.1"`). Bump the major when tool names, argument shapes, or resource URIs change incompatibly — external agents (Cursor, Claude Desktop, the future Pad Cloud remote MCP) pin against it. The version is advertised on the wire two ways: at `capabilities.experimental.padCmdhelp` in the initialize handshake, and as a JSON document at `pad://_meta/version`.
+**Stability contract.** Two version constants live in `internal/mcp/version.go`, advertised in the handshake under `capabilities.experimental.padCmdhelp` and `capabilities.experimental.padToolSurface`:
+- `CmdhelpVersion` (currently `"0.1"`) — the cmdhelp CLI help-tree contract. Bump when CLI flag/arg schemas change incompatibly.
+- `ToolSurfaceVersion` (currently `"0.2"`) — the MCP tool catalog contract. Bump when tool names, action enums, or parameter shapes change incompatibly.
+
+Both are also returned by `pad://_meta/version` and `pad_meta.action: version`.
 
 **Dispatchers.** Two ship in `internal/mcp/`:
 

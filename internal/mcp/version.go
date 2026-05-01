@@ -47,26 +47,21 @@ const CmdhelpVersion = "0.1"
 // silently break consumers. Bump the major when the catalog shape
 // changes incompatibly:
 //
-//   - "0.1" — current. cmdhelp-derived ~85 flat verb tools (PLAN-942).
-//     During PLAN-969's 3-stage rollout, the v0.2 catalog
-//     scaffold + pad_meta tool also ride this version because
-//     the user-visible surface is still predominantly v0.1
-//     (the cmdhelp walker is still active alongside). Bumping
-//     before the catalog is complete would mislead consumers
-//     into believing the resource/action shape is available
-//     for every tool, when only pad_meta + the walker output
-//     show up in tools/list.
-//   - "0.2" — planned. Hand-curated resource × action catalog
-//     (PLAN-969). Version bumped in TASK-981, the commit that
-//     retires the cmdhelp walker and delivers the complete
-//     v0.2 catalog.
+//   - "0.1" — historical. cmdhelp-derived ~85 flat verb tools
+//     (PLAN-942). Lived from PLAN-942 through TASK-980 of PLAN-969's
+//     3-stage rollout; never bumped during rollout because the
+//     user-visible surface was a transitional mix of v0.1 walker
+//     output + the partial v0.2 catalog.
+//   - "0.2" — current. Hand-curated resource × action catalog (PLAN-969,
+//     TASK-981). The cmdhelp leaf walker is retired; tools/list
+//     advertises only the catalog (~7 tools + pad_set_workspace).
 //
 // Discovery surfaces:
 //
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.1"
+const ToolSurfaceVersion = "0.2"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

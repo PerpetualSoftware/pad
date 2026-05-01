@@ -273,30 +273,21 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				"url": urlFlag,
 			}
 
+			// As of TASK-981 (PLAN-969) Register registers pad_set_workspace
+			// + every v0.2 catalog tool in one call. The cmdhelp leaf
+			// walker that powered v0.1 has been retired; cmdhelp is
+			// still consumed at dispatch time (BuildCLIArgs reads
+			// individual command schemas) but no longer drives the tool
+			// surface shape.
 			dispatcher := &mcpserver.ExecDispatcher{Binary: bin}
 			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
 				Doc:        doc,
 				Workspace:  state,
 				Dispatcher: dispatcher,
 				RootFlags:  rootFlags,
-			}); err != nil {
-				return fmt.Errorf("pad mcp serve: register tools: %w", err)
-			}
-
-			// v0.2 catalog (PLAN-969 TASK-970) — runs alongside the
-			// cmdhelp-walk path while the catalog is being filled in.
-			// First commit (TASK-979) ships pad_meta only; subsequent
-			// commits add the read-only tools and pad_item, then flip
-			// the v0.1 surface off. Same Doc + Dispatcher so dispatch
-			// behaviour is identical between the two surfaces.
-			if _, err := mcpserver.RegisterCatalog(srv.MCP(), mcpserver.CatalogOptions{
-				Doc:        doc,
-				Workspace:  state,
-				Dispatcher: dispatcher,
-				RootFlags:  rootFlags,
 				PadVersion: fullVersion(),
 			}); err != nil {
-				return fmt.Errorf("pad mcp serve: register catalog: %w", err)
+				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}
 
 			// Resource templates (TASK-946): four read-only views over
