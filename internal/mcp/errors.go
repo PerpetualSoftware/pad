@@ -169,12 +169,18 @@ func noWorkspaceResult(ctx context.Context, lookup WorkspaceLister) *mcp.CallToo
 }
 
 // unknownWorkspaceResult wraps a "workspace X doesn't exist" failure.
-// Same available_workspaces enrichment as no_workspace.
+// Same available_workspaces enrichment as no_workspace. Empty slug
+// emits a generic message rather than a misleading `Workspace ""`
+// — happens when the source error doesn't explicitly name the slug.
 func unknownWorkspaceResult(ctx context.Context, slug string, lookup WorkspaceLister) *mcp.CallToolResult {
 	hints := bestEffortWorkspaceHints(ctx, lookup)
+	message := "Workspace not visible to this session."
+	if slug != "" {
+		message = fmt.Sprintf("Workspace %q is not visible to this session.", slug)
+	}
 	return NewErrorResult(ErrorPayload{
 		Code:                ErrUnknownWorkspace,
-		Message:             fmt.Sprintf("Workspace %q is not visible to this session.", slug),
+		Message:             message,
 		Hint:                workspaceHintLine(hints),
 		AvailableWorkspaces: hints,
 	})
@@ -303,14 +309,21 @@ func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stde
 // classification. Patterns are case-insensitive against `lower`
 // (the caller pre-lowercases for performance).
 var (
-	reNoWorkspace        = regexp.MustCompile(`no workspace.*(linked|configured)`)
-	reUnknownWorkspaceA  = regexp.MustCompile(`workspace .* (does not exist|not found)`)
-	reUnknownWorkspaceB  = regexp.MustCompile(`unknown workspace`)
-	reAuthRequired       = regexp.MustCompile(`(not authenticated|authentication required|please log in|run pad auth login|invalid token|expired token)`)
-	rePermissionDenied   = regexp.MustCompile(`(permission denied|forbidden|insufficient (permissions|role))`)
-	reItemNotFound       = regexp.MustCompile(`(item.*not found|no such item|unknown ref)`)
-	reValidationFailed   = regexp.MustCompile(`(invalid|missing required|must be one of|validation)`)
-	reUnknownWorkspaceID = regexp.MustCompile(`workspace ['"]?([a-z0-9][a-z0-9-]*)['"]?`)
+	reNoWorkspace       = regexp.MustCompile(`no workspace.*(linked|configured)`)
+	reUnknownWorkspaceA = regexp.MustCompile(`workspace .* (does not exist|not found)`)
+	reUnknownWorkspaceB = regexp.MustCompile(`unknown workspace`)
+	reAuthRequired      = regexp.MustCompile(`(not authenticated|authentication required|please log in|run pad auth login|invalid token|expired token)`)
+	rePermissionDenied  = regexp.MustCompile(`(permission denied|forbidden|insufficient (permissions|role))`)
+	reItemNotFound      = regexp.MustCompile(`(item.*not found|no such item|unknown ref)`)
+	reValidationFailed  = regexp.MustCompile(`(invalid|missing required|must be one of|validation)`)
+	// Only match QUOTED slugs to avoid capturing stop-words like "not"
+	// in generic "Workspace not found" / "workspace not visible"
+	// messages. Quoted forms come from CLI stderr ("workspace 'foo'
+	// does not exist") and from JSON error bodies that explicitly name
+	// the slug. Unquoted phrasings yield an empty slug — the
+	// unknownWorkspaceResult message handles that gracefully without
+	// emitting a misleading `Workspace "not"` line.
+	reUnknownWorkspaceID = regexp.MustCompile(`workspace ['"]([a-z0-9][a-z0-9-]*)['"]`)
 )
 
 func execStderrMatchesNoWorkspace(lower string) bool { return reNoWorkspace.MatchString(lower) }

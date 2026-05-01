@@ -253,15 +253,24 @@ func TestParseWorkspaceListJSON(t *testing.T) {
 
 // TestExtractUnknownWorkspaceSlug covers the small regex helper used
 // to pull a slug name out of CLI stderr like "workspace 'foo' does
-// not exist". Stable enough to absorb minor format variations.
+// not exist". Only QUOTED slugs match — Codex review on PR #357
+// caught that bare-word matching captured stop-words like "not" out
+// of generic "Workspace not found" responses, which would push agents
+// toward retrying with a bogus slug. The regex now requires single or
+// double quotes around the slug; bare-word phrasings yield empty
+// (the caller's message handles that gracefully).
 func TestExtractUnknownWorkspaceSlug(t *testing.T) {
 	cases := map[string]string{
 		"Error: workspace 'foo' does not exist": "foo",
 		"Error: workspace \"bar\" not found":    "bar",
-		"unknown workspace baz":                 "baz",
-		"workspace docapp not visible":          "docapp",
-		"completely unrelated message":          "",
-		"":                                      "",
+		"workspace 'docapp' is gone":            "docapp",
+		// Bare-word phrasings — slug NOT extractable; empty result.
+		"unknown workspace baz":        "",
+		"workspace docapp not visible": "",
+		"Workspace not found":          "",
+		// Unrelated input.
+		"completely unrelated message": "",
+		"":                             "",
 	}
 	for stderr, want := range cases {
 		t.Run(stderr, func(t *testing.T) {
