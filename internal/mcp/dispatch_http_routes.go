@@ -305,7 +305,180 @@ func init() {
 		// can pass an explicit `workspace` param to scope if they want).
 		"workspace audit-log": mapWorkspaceAuditLog,
 		"workspace invite":    mapWorkspaceInvite,
+
+		// --- TASK-968 follow-up: project intelligence + admin extras ---
+		// `project next` returns the full dashboard JSON — same shape the
+		// CLI's `--format json` output emits (cmd/pad/main.go nextCmd
+		// returns dashJSON verbatim). `ready` and `stale` get custom
+		// dispatchers because their CLI JSON output is `{count, results}`
+		// post-filter, not the raw dashboard.
+		"project next": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/dashboard",
+		}.toRouteMapper(),
+
+		// --- Admin: collections ---
+		"collection create": mapCollectionCreate,
+
+		// --- Admin: library ---
+		// `library list` is global (no workspace) — composes the
+		// /convention-library and /playbook-library endpoints based on
+		// --type. Custom dispatcher because the response is composed
+		// from multiple endpoints when --type is unset.
 	}
+}
+
+// mapCollectionCreate dispatches `pad collection create <name>
+// [--fields key:type[:opts]; ...] [--icon ...] [--description ...]
+// [--layout ...] [--default-view ...] [--board-group-by ...]`.
+//
+// POST /api/v1/workspaces/{ws}/collections with body matching
+// models.CollectionCreate. Mirrors the CLI's DSL parsing in
+// cmd/pad/main.go's collectionsCreateCmd:
+//
+//   - Split --fields on `;`, then each on `:` (max 3 parts):
+//     `key:type[:opts]` where opts are comma-separated.
+//   - Auto-fill Label as title-cased(key with `_` → ` `).
+//   - First select-typed `status` field is marked required + default
+//     (matches CLI; the handler also enforces this on its side).
+//   - Layout defaults to "fields-primary"; default_view to "list";
+//     board_group_by to "status" (matches CLI's flag defaults).
+//
+// Schema and Settings are JSON-encoded into strings before the POST
+// because CollectionCreate.Schema and .Settings are `string`-typed
+// columns the handler decodes downstream.
+func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	name, _ := input["name"].(string)
+	if name == "" {
+		return "", "", nil, fmt.Errorf("name is required")
+	}
+
+	dsl, _ := input["fields"].(string)
+	schema, err := parseCollectionFieldsDSL(dsl)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("parse --fields: %w", err)
+	}
+	schemaJSON, err := json.Marshal(schema)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode schema: %w", err)
+	}
+
+	layout, _ := input["layout"].(string)
+	if layout == "" {
+		layout = "fields-primary"
+	}
+	defaultView, _ := input["default_view"].(string)
+	if defaultView == "" {
+		defaultView = "list"
+	}
+	boardGroupBy, _ := input["board_group_by"].(string)
+	if boardGroupBy == "" {
+		boardGroupBy = "status"
+	}
+	settings := map[string]any{
+		"layout":         layout,
+		"default_view":   defaultView,
+		"board_group_by": boardGroupBy,
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode settings: %w", err)
+	}
+
+	payload := map[string]any{
+		"name":     name,
+		"schema":   string(schemaJSON),
+		"settings": string(settingsJSON),
+	}
+	if v, _ := input["icon"].(string); v != "" {
+		payload["icon"] = v
+	}
+	if v, _ := input["description"].(string); v != "" {
+		payload["description"] = v
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/collections"
+	return http.MethodPost, urlPath, body, nil
+}
+
+// parseCollectionFieldsDSL parses the CLI's --fields DSL into a
+// {fields: [...]} map ready for json.Marshal. Empty input returns an
+// empty Fields slice (the handler accepts that — collections without
+// custom fields are valid).
+//
+// Matches cmd/pad/main.go's collectionsCreateCmd parsing exactly:
+//
+//   - Splits on `;`. Whitespace and empty entries between are skipped.
+//   - Each entry splits on `:` (max 3 parts).
+//   - Fewer than 2 parts → error (caller wraps as "parse --fields").
+//   - Third part splits on `,` for select options.
+//   - status select gets required:true + default := first option.
+//
+// Lives here so the MCP collection.create surface stays in lockstep
+// with the CLI without an internal/cli or cmd/pad import.
+func parseCollectionFieldsDSL(dsl string) (map[string]any, error) {
+	type fieldDef struct {
+		Key      string   `json:"key"`
+		Label    string   `json:"label"`
+		Type     string   `json:"type"`
+		Options  []string `json:"options,omitempty"`
+		Required bool     `json:"required,omitempty"`
+		Default  string   `json:"default,omitempty"`
+	}
+	out := map[string]any{"fields": []fieldDef{}}
+	if dsl == "" {
+		return out, nil
+	}
+
+	fields := []fieldDef{}
+	for _, raw := range strings.Split(dsl, ";") {
+		f := strings.TrimSpace(raw)
+		if f == "" {
+			continue
+		}
+		parts := strings.SplitN(f, ":", 3)
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid field definition %q (expected key:type[:options])", f)
+		}
+		fd := fieldDef{
+			Key:   parts[0],
+			Label: titleCaseLabel(parts[0]),
+			Type:  parts[1],
+		}
+		if len(parts) == 3 && parts[2] != "" {
+			fd.Options = strings.Split(parts[2], ",")
+		}
+		if fd.Type == "select" && fd.Key == "status" {
+			fd.Required = true
+			if len(fd.Options) > 0 {
+				fd.Default = fd.Options[0]
+			}
+		}
+		fields = append(fields, fd)
+	}
+	out["fields"] = fields
+	return out, nil
+}
+
+// titleCaseLabel converts a snake_case key into a Title Case label
+// the same way the CLI does ("due_date" → "Due Date"). Avoids
+// pulling in golang.org/x/text/cases for a one-line transformation.
+func titleCaseLabel(key string) string {
+	parts := strings.Split(strings.ReplaceAll(key, "_", " "), " ")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 // mapItemStarred dispatches `pad item starred [--all]`.

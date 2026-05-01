@@ -160,6 +160,12 @@ var noRemoteEquivalent = map[string]struct{}{
 	"github link":   {},
 	"github status": {},
 	"github unlink": {},
+	// `project reconcile` shells out to `gh` CLI to compare stored
+	// PR metadata against live GitHub state — same locality argument
+	// as the github commands. Agents that want this functionality
+	// have their own GitHub tools and can update items via
+	// `item update --field github_pr=...`.
+	"project reconcile": {},
 }
 
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
@@ -256,6 +262,18 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		return d.dispatchItemRelated(ctx, input, user)
 	case "item implemented-by":
 		return d.dispatchItemImplementedBy(ctx, input, user)
+	case "item bulk-update":
+		return d.dispatchItemBulkUpdate(ctx, input, user)
+	case "item note":
+		return d.dispatchItemNote(ctx, input, user)
+	case "item decide":
+		return d.dispatchItemDecide(ctx, input, user)
+	case "project ready":
+		return d.dispatchProjectReady(ctx, input, user)
+	case "project stale":
+		return d.dispatchProjectStale(ctx, input, user)
+	case "library list":
+		return d.dispatchLibraryList(ctx, input, user)
 	}
 
 	// Item link create/delete commands. The asymmetry between which
