@@ -1,0 +1,213 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+)
+
+// Dispatcher executes a pad CLI command on behalf of a tool call. It
+// always returns a *mcp.CallToolResult — error paths set IsError on
+// the result so MCP clients see structured stderr without having to
+// distinguish protocol errors from tool errors.
+type Dispatcher interface {
+	Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*mcp.CallToolResult, error)
+}
+
+// ExecDispatcher shells out to the pad binary at Binary. stdout is
+// returned as Text content; if it parses as JSON the result is also
+// surfaced via StructuredContent so MCP clients can consume it
+// natively. Non-zero exit returns an IsError-flagged result with
+// stderr as the message.
+type ExecDispatcher struct {
+	// Binary is the path to the pad executable. Required.
+	Binary string
+}
+
+// Dispatch runs `<Binary> <cmdPath...> <cliArgs...>` and packages the
+// output for an MCP client.
+func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*mcp.CallToolResult, error) {
+	if d.Binary == "" {
+		return mcp.NewToolResultError("dispatcher: binary path not configured"), nil
+	}
+	full := append(append([]string{}, cmdPath...), cliArgs...)
+	cmd := exec.CommandContext(ctx, d.Binary, full...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return mcp.NewToolResultErrorf(
+			"pad %s failed: %s", strings.Join(cmdPath, " "), msg,
+		), nil
+	}
+	out := stdout.String()
+	// If stdout is JSON, surface it as structured content alongside
+	// the text fallback. This is what `--format json` emits for most
+	// pad commands; clients that parse structured content (Claude
+	// Desktop, Cursor) get richer rendering.
+	if trimmed := strings.TrimSpace(out); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var parsed any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			return mcp.NewToolResultStructured(parsed, out), nil
+		}
+	}
+	return mcp.NewToolResultText(out), nil
+}
+
+// BuildCLIArgs translates an MCP tool call's JSON arguments into the
+// CLI argument list that should be appended after the command path.
+// Pure function — no side effects, no subprocess — so it tests cleanly.
+//
+// Behaviour:
+//   - cmdInfo.Args are emitted as positional arguments in their
+//     declared order. Required args missing from input return an error.
+//   - Repeatable args expand each element into a separate positional.
+//   - cmdInfo.Flags are emitted as `--flag value` pairs in
+//     alphabetical order (deterministic for tests). Bool flags are
+//     presence-only (`--flag`, never `--flag=true`).
+//   - Repeatable / slice-typed flags expand to repeated `--flag value`
+//     pairs.
+//   - sessionWorkspace is appended as `--workspace <ws>` if the
+//     command does NOT already define a `workspace` flag in the
+//     input map AND sessionWorkspace is non-empty.
+//   - `--format json` is appended unless the input explicitly sets a
+//     format flag (e.g. an agent specifically requests markdown).
+func BuildCLIArgs(cmdInfo cmdhelp.Command, input map[string]any, sessionWorkspace string) ([]string, error) {
+	if input == nil {
+		input = map[string]any{}
+	}
+
+	var positionals []string
+	for _, arg := range cmdInfo.Args {
+		v, ok := input[arg.Name]
+		if !ok {
+			if arg.Required {
+				return nil, fmt.Errorf("missing required argument %q", arg.Name)
+			}
+			continue
+		}
+		if arg.Repeatable {
+			items, err := toStringSlice(v)
+			if err != nil {
+				return nil, fmt.Errorf("argument %q: %w", arg.Name, err)
+			}
+			positionals = append(positionals, items...)
+		} else {
+			positionals = append(positionals, fmt.Sprint(v))
+		}
+	}
+
+	// Sorted flag order makes test assertions stable.
+	flagNames := make([]string, 0, len(cmdInfo.Flags))
+	for name := range cmdInfo.Flags {
+		flagNames = append(flagNames, name)
+	}
+	sort.Strings(flagNames)
+
+	formatProvided := false
+	workspaceProvided := false
+	var flagArgs []string
+	for _, name := range flagNames {
+		flag := cmdInfo.Flags[name]
+		val, ok := input[name]
+		if !ok {
+			continue
+		}
+		if name == "format" {
+			formatProvided = true
+		}
+		if name == "workspace" {
+			workspaceProvided = true
+		}
+		switch flag.Type {
+		case "bool":
+			b, err := toBool(val)
+			if err != nil {
+				return nil, fmt.Errorf("flag %q: %w", name, err)
+			}
+			if b {
+				flagArgs = append(flagArgs, "--"+name)
+			}
+		default:
+			if isSliceFlag(flag) {
+				items, err := toStringSlice(val)
+				if err != nil {
+					return nil, fmt.Errorf("flag %q: %w", name, err)
+				}
+				for _, item := range items {
+					flagArgs = append(flagArgs, "--"+name, item)
+				}
+				continue
+			}
+			flagArgs = append(flagArgs, "--"+name, fmt.Sprint(val))
+		}
+	}
+
+	out := append(positionals, flagArgs...)
+	if !workspaceProvided && sessionWorkspace != "" {
+		out = append(out, "--workspace", sessionWorkspace)
+	}
+	if !formatProvided {
+		out = append(out, "--format", "json")
+	}
+	return out, nil
+}
+
+// isSliceFlag is true when a flag should be emitted as repeated
+// `--flag value` pairs rather than a single `--flag value`. Covers
+// both pflag's slice types and cmdhelp's `repeatable` annotation.
+func isSliceFlag(f cmdhelp.Flag) bool {
+	if f.Repeatable {
+		return true
+	}
+	switch f.Type {
+	case "[]string", "stringSlice", "[]int", "intSlice", "stringArray":
+		return true
+	}
+	return false
+}
+
+func toStringSlice(v any) ([]string, error) {
+	switch t := v.(type) {
+	case []string:
+		return t, nil
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			out = append(out, fmt.Sprint(e))
+		}
+		return out, nil
+	case string:
+		return []string{t}, nil
+	}
+	return nil, fmt.Errorf("expected array or string, got %T", v)
+}
+
+func toBool(v any) (bool, error) {
+	switch t := v.(type) {
+	case bool:
+		return t, nil
+	case string:
+		switch t {
+		case "true", "1", "yes":
+			return true, nil
+		case "false", "0", "no", "":
+			return false, nil
+		}
+	case json.Number:
+		s := t.String()
+		return s != "" && s != "0", nil
+	}
+	return false, fmt.Errorf("expected bool, got %T", v)
+}
