@@ -38,7 +38,9 @@ func TestNewServer_Construction(t *testing.T) {
 
 // TestServer_InitializeHandshake is the contract test: a real
 // initialize round-trip through the stdio pipeline must return
-// serverInfo with our canonical name + the version we passed in.
+// serverInfo with our canonical name + the version we passed in,
+// AND must advertise the cmdhelp tool-surface tier under
+// serverCapabilities.experimental.padCmdhelp.
 //
 // This is what every MCP client (Claude Desktop, Cursor, Windsurf,
 // mcp-inspector) sees on connect — if it regresses, downstream
@@ -55,6 +57,28 @@ func TestServer_InitializeHandshake(t *testing.T) {
 	}
 	if res.ServerInfo.Version != wantVersion {
 		t.Errorf("serverInfo.version = %q, want %q", res.ServerInfo.Version, wantVersion)
+	}
+
+	// TASK-963: verify the experimental cmdhelp capability is on the
+	// wire so external agents can pin against the stability tier
+	// directly from the handshake.
+	exp := res.Capabilities.Experimental
+	if exp == nil {
+		t.Fatalf("serverCapabilities.experimental missing — cmdhelp tier not advertised")
+	}
+	rawNS, ok := exp[experimentalCapabilityKey]
+	if !ok {
+		t.Fatalf("experimental[%q] missing; got %#v", experimentalCapabilityKey, exp)
+	}
+	ns, ok := rawNS.(map[string]any)
+	if !ok {
+		t.Fatalf("experimental[%q] is %T, want map[string]any", experimentalCapabilityKey, rawNS)
+	}
+	if got := ns["version"]; got != CmdhelpVersion {
+		t.Errorf("experimental[%q].version = %v, want %q", experimentalCapabilityKey, got, CmdhelpVersion)
+	}
+	if got := ns["tool_surface_stable"]; got != true {
+		t.Errorf("experimental[%q].tool_surface_stable = %v, want true", experimentalCapabilityKey, got)
 	}
 }
 

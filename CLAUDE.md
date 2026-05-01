@@ -188,8 +188,10 @@ pad mcp status                # Install state across supported clients
 
 Surface:
 - **Tools:** leaf `pad` commands not in `DefaultExcludes` (the per-PR review gate above). Plus `pad_set_workspace` for the session default.
-- **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`.
+- **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, plus the server-wide `pad://_meta/version`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
+
+**Stability contract.** The cmdhelp tool surface is versioned via `internal/mcp.CmdhelpVersion` (currently `"0.1"`). Bump the major when tool names, argument shapes, or resource URIs change incompatibly — external agents (Cursor, Claude Desktop, the future Pad Cloud remote MCP) pin against it. The version is advertised on the wire two ways: under `serverCapabilities.experimental.padCmdhelp` in the initialize handshake, and as a JSON document at `pad://_meta/version`.
 
 Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public docs at `getpad.dev/mcp/local`.
 

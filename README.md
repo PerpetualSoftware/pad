@@ -245,6 +245,11 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
+The server advertises a tool-surface stability tier (`cmdhelp_version`)
+in the initialize handshake under `serverCapabilities.experimental.padCmdhelp`,
+and as a queryable JSON document at `pad://_meta/version`. External agents
+can pin against this so a future tool rename doesn't break them silently.
+
 Full guide at [getpad.dev/mcp/local](https://getpad.dev/mcp/local) — install
 paths, available tools/resources/prompts, troubleshooting.
 
