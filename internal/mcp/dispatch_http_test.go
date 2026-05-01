@@ -227,21 +227,42 @@ func TestMapItemCreate_NormalizesCollectionAliases(t *testing.T) {
 	}
 }
 
-func TestMapItemCreate_RejectsUnsupportedAssignRole(t *testing.T) {
-	for _, key := range []string{"assign", "role"} {
-		t.Run(key, func(t *testing.T) {
-			_, _, _, err := mapItemCreate(map[string]any{
-				"workspace": "ws", "collection": "tasks", "title": "x",
-				key: "Dave",
-			})
-			if err == nil {
-				t.Errorf("expected error rejecting --%s; got nil", key)
-				return
-			}
-			if !strings.Contains(err.Error(), key) {
-				t.Errorf("error should mention --%s; got %v", key, err)
-			}
-		})
+func TestMapItemCreate_RejectsUnsupportedRole(t *testing.T) {
+	// --role still requires slug → role-ID resolution we haven't
+	// built yet (item.update lands first; --role rolls in with the
+	// next route-table expansion). Reject loudly so agents don't
+	// silently lose role assignments.
+	_, _, _, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"role": "implementer",
+	})
+	if err == nil {
+		t.Errorf("expected error rejecting --role; got nil")
+		return
+	}
+	if !strings.Contains(err.Error(), "role") {
+		t.Errorf("error should mention --role; got %v", err)
+	}
+}
+
+func TestMapItemCreate_PassesThroughResolvedAssignedUserID(t *testing.T) {
+	// TASK-967: --assign is preprocessed at the dispatcher level
+	// (resolveAssignName) before the mapper runs. By the time
+	// mapItemCreate sees the input, only `assigned_user_id` should
+	// be present; the mapper passes it through to the body.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"assigned_user_id": "user-uuid-123",
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["assigned_user_id"] != "user-uuid-123" {
+		t.Errorf("assigned_user_id not passed through: %v", payload)
 	}
 }
 

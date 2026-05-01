@@ -356,21 +356,44 @@ func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
 	}
 }
 
-func TestRoute_ItemList_RejectsAssignByName(t *testing.T) {
-	// CLI parity: --assign Dave resolves name→UUID via workspace
-	// members lookup. Replicating that prefetch in the dispatcher
-	// belongs in the same follow-up that handles --assign on
-	// item.create / update. For now, reject loudly so agents don't
-	// silently get empty results (Codex review #344 finding 3).
-	_, _, _, err := routeTable["item list"](map[string]any{
+func TestRoute_ItemList_PassesThroughAssignedUserID(t *testing.T) {
+	// TASK-967: --assign is preprocessed at the dispatcher level
+	// (resolveAssignName) before the mapper runs. By the time
+	// mapItemList sees the input, only `assigned_user_id` should be
+	// present; the mapper adds it to the query string for the
+	// store filter to pick up.
+	_, p, _, err := routeTable["item list"](map[string]any{
+		"workspace":        "docapp",
+		"assigned_user_id": "user-uuid-456",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	values := mustParseQueryFromPath(t, p)
+	if values.Get("assigned_user_id") != "user-uuid-456" {
+		t.Errorf("assigned_user_id missing from query: %v (path: %q)", values, p)
+	}
+}
+
+func TestRoute_ItemList_RawAssignKeyIsIgnoredByMapper(t *testing.T) {
+	// Belt-and-braces: if a test or upstream caller bypasses
+	// Dispatch's preprocess and passes raw `assign` directly to the
+	// mapper, it should be silently dropped (matching the existing
+	// "unknown input keys are ignored" behaviour) rather than
+	// erroring. The dispatcher-level preprocess is what runs the
+	// resolution in production.
+	_, p, _, err := routeTable["item list"](map[string]any{
 		"workspace": "docapp", "assign": "Dave",
 	})
-	if err == nil {
-		t.Errorf("expected error for --assign by name; got nil")
-		return
+	if err != nil {
+		t.Fatalf("expected raw assign to pass through silently; got err: %v", err)
 	}
-	if !strings.Contains(err.Error(), "assigned_user_id") {
-		t.Errorf("error should point users at the explicit-ID alternative; got %v", err)
+	values := mustParseQueryFromPath(t, p)
+	if values.Has("assigned_user_id") {
+		t.Errorf("raw assign incorrectly synthesized assigned_user_id: %v", values)
+	}
+	if values.Has("assign") {
+		t.Errorf("raw assign leaked into query: %v", values)
 	}
 }
 

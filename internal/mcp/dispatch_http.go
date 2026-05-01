@@ -105,10 +105,37 @@ type RouteMapper func(input map[string]any) (method, path string, body []byte, e
 // error from Dispatch.
 var routeTable map[string]RouteMapper
 
+// commandsAcceptingAssignByName is the allowlist of cmdPaths whose
+// `--assign <name|email>` input should be resolved to a user ID via
+// the workspace-members endpoint before the mapper sees it. Other
+// commands using an `assign` input pass through unchanged so we
+// don't accidentally rewrite a non-assignment use of the same key.
+var commandsAcceptingAssignByName = map[string]struct{}{
+	"item create": {},
+	"item update": {},
+	"item list":   {},
+}
+
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
 // for interface compatibility but ignored — HTTPHandlerDispatcher
 // reads the structured input attached by the registry via
 // WithDispatchInput.
+//
+// Flow:
+//
+//  1. Validate dispatcher config (Handler + UserResolver wired).
+//  2. Resolve the requesting user from the MCP context.
+//  3. Pull the structured input from context.
+//  4. Preprocess the input — resolve `--assign <name|email>` to
+//     `assigned_user_id <uuid>` for the commands that accept it
+//     (TASK-967). Failures here surface as IsError tool results so
+//     agents see the resolution error message.
+//  5. Special-case routes that need read-modify-write semantics
+//     (item.update merges existing fields with the update payload —
+//     the handler treats fields as a complete replacement, so the
+//     dispatcher does the merge).
+//  6. Otherwise, look up a RouteMapper in routeTable, build the
+//     synthesized request, and execute through the handler chain.
 func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []string) (*mcp.CallToolResult, error) {
 	if d.Handler == nil {
 		return mcp.NewToolResultError("HTTPHandlerDispatcher: Handler not configured"), nil
@@ -118,6 +145,39 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	}
 
 	cmdKey := strings.Join(cmdPath, " ")
+	user := d.UserResolver(ctx)
+	if user == nil {
+		return mcp.NewToolResultErrorf("%s: no authenticated user in context", cmdKey), nil
+	}
+
+	input := DispatchInputFromContext(ctx)
+	if input == nil {
+		// Defensive: registry always attaches input. Empty map keeps
+		// the mapper from panicking on nil.
+		input = map[string]any{}
+	}
+
+	// Preprocess input: resolve --assign name → assigned_user_id for
+	// commands that accept the shorthand. Mappers downstream see only
+	// the resolved UUID; agents that already pass an ID via
+	// `--field assigned_user_id=<uuid>` are unaffected.
+	if _, ok := commandsAcceptingAssignByName[cmdKey]; ok {
+		var err error
+		input, err = d.resolveAssignName(ctx, user, input)
+		if err != nil {
+			return mcp.NewToolResultErrorf("%s: resolve --assign: %s", cmdKey, err.Error()), nil
+		}
+	}
+
+	// Special-case routes that need read-modify-write or other
+	// in-handler prefetches. These live as methods on the dispatcher
+	// because they need the Handler reference; the simple route
+	// table only carries pure mappers.
+	switch cmdKey {
+	case "item update":
+		return d.dispatchItemUpdate(ctx, input, user)
+	}
+
 	routes := d.Routes
 	if routes == nil {
 		routes = routeTable
@@ -134,23 +194,25 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		), nil
 	}
 
-	input := DispatchInputFromContext(ctx)
-	if input == nil {
-		// Defensive: registry always attaches input. Empty map keeps
-		// the mapper from panicking on nil.
-		input = map[string]any{}
-	}
-
 	method, urlPath, body, err := mapper(input)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
 	}
 
-	user := d.UserResolver(ctx)
-	if user == nil {
-		return mcp.NewToolResultErrorf("%s: no authenticated user in context", cmdKey), nil
-	}
+	return d.executeRequest(ctx, cmdKey, user, method, urlPath, body)
+}
 
+// executeRequest builds + serves + packages a single HTTP request
+// against the wrapped handler. Pulled out of Dispatch so the
+// special-case methods (dispatchItemUpdate, future RMW commands) can
+// reuse the same auth-context + recorder + response-shaping path.
+func (d *HTTPHandlerDispatcher) executeRequest(
+	ctx context.Context,
+	cmdKey string,
+	user *models.User,
+	method, urlPath string,
+	body []byte,
+) (*mcp.CallToolResult, error) {
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
@@ -318,18 +380,26 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 		payload["tags"] = v
 	}
 
-	// Reject role/assign with a clear error rather than silently
-	// dropping them — full support requires resolving names → IDs
-	// and is being tracked as a follow-up to TASK-965.
-	for _, unsupported := range []string{"assign", "role"} {
-		if v, ok := input[unsupported]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				return "", "", nil, fmt.Errorf(
-					"--%s is not yet supported by HTTPHandlerDispatcher; "+
-						"resolution from name to ID lands in a follow-up to TASK-965",
-					unsupported,
-				)
-			}
+	// `--assign` resolution lives at the dispatcher level (TASK-967):
+	// Dispatch's preprocess step rewrites it to `assigned_user_id`
+	// before the mapper runs, so by the time we get here a name has
+	// already been resolved to a UUID. If the resolved ID is set,
+	// pass it through to the handler.
+	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
+		payload["assigned_user_id"] = v
+	}
+	// `--role` still needs a name → ID prefetch we haven't built yet
+	// (the role-list endpoint is wired in routeTable, but
+	// translation from slug-or-name happens at the dispatcher level
+	// for assignees only). Reject loudly so agents don't silently
+	// lose the role assignment. Captured in the TASK-967 follow-up
+	// alongside the rest of the route-table expansion.
+	if v, ok := input["role"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			return "", "", nil, fmt.Errorf(
+				"--role is not yet supported by HTTPHandlerDispatcher; " +
+					"slug → role-ID resolution lands in the next route-table " +
+					"expansion. For now, pass `--field agent_role_id=<uuid>`")
 		}
 	}
 
