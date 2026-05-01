@@ -363,10 +363,26 @@ func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
 // [--secret ...]`.
 //
 // POST /api/v1/workspaces/{ws}/webhooks with body matching
-// models.WebhookCreate. `--events` is comma-separated in the CLI
-// (cmdhelp string flag); the handler accepts a slice or comma-separated
-// string per the underlying schema. We pass verbatim and let the
-// handler split.
+// models.WebhookCreate. The store persists `events` verbatim into a
+// column read back by webhooks.matchesEvent, which requires the value
+// be a JSON-array string (e.g. `["item.created","item.updated"]`) —
+// any other shape unmarshals to nil and matches no events at all.
+//
+// Codex review on PR #347 caught that the CLI's `--events
+// "item.created,item.updated"` example produces a literal comma-
+// separated string in the column, which matchesEvent then can't
+// parse. The CLI is independently bugged — fixing it is its own
+// task — but the MCP path should produce a working webhook the
+// first time. So we normalize:
+//
+//   - Empty / missing → omit, let the store default to `["*"]`.
+//   - Already a JSON array (starts with `[`, ends with `]`) →
+//     pass through.
+//   - Anything else → split on commas, trim, JSON-encode as
+//     []string. A bare wildcard `*` becomes `["*"]`.
+//
+// Same shape semantics for the schema-permissive case where the
+// agent passes an []any/[]string directly via the MCP property.
 func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -377,10 +393,11 @@ func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
 		return "", "", nil, fmt.Errorf("url is required")
 	}
 	payload := map[string]any{"url": urlVal}
-	for _, key := range []string{"events", "secret"} {
-		if v, _ := input[key].(string); v != "" {
-			payload[key] = v
-		}
+	if events, ok := normalizeWebhookEvents(input["events"]); ok {
+		payload["events"] = events
+	}
+	if v, _ := input["secret"].(string); v != "" {
+		payload["secret"] = v
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -388,6 +405,70 @@ func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/webhooks"
 	return http.MethodPost, urlPath, body, nil
+}
+
+// normalizeWebhookEvents canonicalizes a webhook's event filter to
+// the JSON-array string the store + dispatcher expect.
+//
+// Returns (value, true) when a non-empty filter should be sent;
+// (_, false) when the input is missing/empty so the caller should
+// omit the field and let the store apply its `["*"]` default.
+func normalizeWebhookEvents(raw any) (string, bool) {
+	// Already-typed list — encode directly.
+	encodeList := func(items []string) (string, bool) {
+		clean := make([]string, 0, len(items))
+		for _, e := range items {
+			e = strings.TrimSpace(e)
+			if e != "" {
+				clean = append(clean, e)
+			}
+		}
+		if len(clean) == 0 {
+			return "", false
+		}
+		out, err := json.Marshal(clean)
+		if err != nil {
+			return "", false
+		}
+		return string(out), true
+	}
+
+	switch v := raw.(type) {
+	case nil:
+		return "", false
+	case []string:
+		return encodeList(v)
+	case []any:
+		items := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return "", false
+			}
+			items = append(items, s)
+		}
+		return encodeList(items)
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return "", false
+		}
+		// Already JSON? Pass through.
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			var probe []string
+			if err := json.Unmarshal([]byte(s), &probe); err == nil {
+				return s, true
+			}
+			// Looked like JSON but wasn't a string array — fall
+			// through to comma-split treatment so a malformed
+			// `[oops]` becomes `["oops"]` rather than going on
+			// the wire and silently breaking matchesEvent.
+		}
+		parts := strings.Split(s, ",")
+		return encodeList(parts)
+	default:
+		return "", false
+	}
 }
 
 // mapWorkspaceAuditLog dispatches `pad workspace audit-log [--days N]

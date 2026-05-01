@@ -193,11 +193,17 @@ func TestRouteTable_WebhookListAndDelete(t *testing.T) {
 	}
 }
 
-func TestMapWebhookCreate_BuildsCanonicalBody(t *testing.T) {
+func TestMapWebhookCreate_NormalizesCommaSeparatedEventsToJSONArray(t *testing.T) {
+	// The store persists `events` verbatim into a column that the
+	// dispatcher's matchesEvent later parses as a JSON array. A
+	// comma-separated string never matches anything once stored.
+	// Codex review on PR #347 caught this divergence; the dispatcher
+	// must normalize CLI-style commas into the JSON-array shape so
+	// MCP-created webhooks actually fire.
 	_, p, body, err := mapWebhookCreate(map[string]any{
 		"workspace": "docapp",
 		"url":       "https://example.com/hook",
-		"events":    "item.created,item.updated",
+		"events":    "item.created, item.updated",
 		"secret":    "shhh",
 	})
 	if err != nil {
@@ -213,11 +219,84 @@ func TestMapWebhookCreate_BuildsCanonicalBody(t *testing.T) {
 	if got["url"] != "https://example.com/hook" {
 		t.Errorf("url not preserved: %v", got)
 	}
-	if got["events"] != "item.created,item.updated" {
-		t.Errorf("events not preserved: %v", got)
-	}
 	if got["secret"] != "shhh" {
 		t.Errorf("secret not preserved: %v", got)
+	}
+	eventsStr, _ := got["events"].(string)
+	// Must be valid JSON array so matchesEvent can parse it.
+	var events []string
+	if err := json.Unmarshal([]byte(eventsStr), &events); err != nil {
+		t.Fatalf("events should be valid JSON array; got %q: %v", eventsStr, err)
+	}
+	want := []string{"item.created", "item.updated"}
+	if len(events) != len(want) {
+		t.Fatalf("events length = %d, want %d (got %v)", len(events), len(want), events)
+	}
+	for i, e := range want {
+		if events[i] != e {
+			t.Errorf("events[%d] = %q, want %q", i, events[i], e)
+		}
+	}
+}
+
+func TestNormalizeWebhookEvents_PassesThroughValidJSONArray(t *testing.T) {
+	// An agent that passes the canonical JSON-array form should get
+	// it back unchanged — round-trip identity, no double-encoding.
+	got, ok := normalizeWebhookEvents(`["item.created","item.updated"]`)
+	if !ok {
+		t.Fatalf("expected valid JSON array to be accepted")
+	}
+	if got != `["item.created","item.updated"]` {
+		t.Errorf("expected pass-through; got %q", got)
+	}
+}
+
+func TestNormalizeWebhookEvents_HandlesArrayInput(t *testing.T) {
+	// Schema-permissive case where the agent passes an []any (e.g.
+	// from a YAML-loaded spec). Trim and encode without dropping
+	// signal.
+	got, ok := normalizeWebhookEvents([]any{"item.created", " item.updated "})
+	if !ok {
+		t.Fatalf("expected []any input to be accepted")
+	}
+	var events []string
+	if err := json.Unmarshal([]byte(got), &events); err != nil {
+		t.Fatalf("not valid JSON array: %q", got)
+	}
+	if events[0] != "item.created" || events[1] != "item.updated" {
+		t.Errorf("entries not trimmed/preserved: %v", events)
+	}
+}
+
+func TestNormalizeWebhookEvents_OmitsEmpty(t *testing.T) {
+	// Empty / missing → return false so caller omits the field
+	// and lets the store apply its `["*"]` default.
+	cases := []any{nil, "", "   ", []any{}, []string{}}
+	for _, c := range cases {
+		if _, ok := normalizeWebhookEvents(c); ok {
+			t.Errorf("expected empty input %#v to be omitted", c)
+		}
+	}
+}
+
+func TestMapWebhookCreate_OmitsEventsWhenMissing(t *testing.T) {
+	// No events flag → field absent in body → store applies
+	// its default `["*"]`. The CLI's `--events` flag can be omitted
+	// for this exact behaviour, so MCP must not silently send a
+	// different default.
+	_, _, body, err := mapWebhookCreate(map[string]any{
+		"workspace": "docapp",
+		"url":       "https://example.com/hook",
+	})
+	if err != nil {
+		t.Fatalf("mapWebhookCreate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if _, present := got["events"]; present {
+		t.Errorf("events should be omitted when not set; got %v", got)
 	}
 }
 
