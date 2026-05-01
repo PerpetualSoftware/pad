@@ -273,13 +273,30 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				"url": urlFlag,
 			}
 
+			dispatcher := &mcpserver.ExecDispatcher{Binary: bin}
 			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
 				Doc:        doc,
 				Workspace:  state,
-				Dispatcher: &mcpserver.ExecDispatcher{Binary: bin},
+				Dispatcher: dispatcher,
 				RootFlags:  rootFlags,
 			}); err != nil {
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
+			}
+
+			// v0.2 catalog (PLAN-969 TASK-970) — runs alongside the
+			// cmdhelp-walk path while the catalog is being filled in.
+			// First commit (TASK-979) ships pad_meta only; subsequent
+			// commits add the read-only tools and pad_item, then flip
+			// the v0.1 surface off. Same Doc + Dispatcher so dispatch
+			// behaviour is identical between the two surfaces.
+			if _, err := mcpserver.RegisterCatalog(srv.MCP(), mcpserver.CatalogOptions{
+				Doc:        doc,
+				Workspace:  state,
+				Dispatcher: dispatcher,
+				RootFlags:  rootFlags,
+				PadVersion: fullVersion(),
+			}); err != nil {
+				return fmt.Errorf("pad mcp serve: register catalog: %w", err)
 			}
 
 			// Resource templates (TASK-946): four read-only views over
