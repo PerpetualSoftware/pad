@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -75,6 +76,74 @@ func TestRegisterResources_AdvertisesAllFourTemplates(t *testing.T) {
 	// Here just assert RegisterResources returns without panic on a
 	// vanilla MCPServer — guards against future option changes that
 	// might require WithResourceCapabilities up-front.
+}
+
+// TestReadWorkspaces_DispatchesWorkspaceListJSON exercises the new
+// pad://workspaces resource (TASK-974). It must shell out to the
+// JSON output added to `pad workspace list` in PR #357 so the
+// resource shape stays in lockstep with classifyExecError's
+// available_workspaces enrichment (both consume the same JSON).
+func TestReadWorkspaces_DispatchesWorkspaceListJSON(t *testing.T) {
+	body := `[{"slug":"docapp","name":"Pad","default":true},{"slug":"pad-web","name":"Marketing"}]`
+	fetcher := &fakeFetcher{stdout: body}
+	srv := server.NewMCPServer("t", "1", server.WithResourceCapabilities(false, false))
+	RegisterResources(srv, fetcher, nil)
+
+	got := readResourceJSON(t, srv, WorkspacesURI)
+	if got != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+	wantArgs := []string{"workspace", "list", "--format", "json"}
+	if !equalSlice(fetcher.gotArgs, wantArgs) {
+		t.Errorf("fetched args = %v, want %v", fetcher.gotArgs, wantArgs)
+	}
+}
+
+// TestReadWorkspaces_RejectsWrongURI confirms the handler validates
+// the URI it was bound to. Without this guard a future refactor that
+// reuses readWorkspaces under a different URI registration would
+// silently succeed.
+func TestReadWorkspaces_RejectsWrongURI(t *testing.T) {
+	r := &resources{fetcher: &fakeFetcher{stdout: `[]`}}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://wrong/uri"
+	_, err := r.readWorkspaces(context.Background(), req)
+	if err == nil {
+		t.Errorf("expected error for non-WorkspacesURI request")
+	}
+}
+
+// TestReadWorkspaces_PropagatesFetcherError ensures the handler
+// surfaces fetcher failures (e.g. CLI exit non-zero, no auth) as
+// proper resource-read errors rather than swallowing them. MCP
+// clients display these directly.
+func TestReadWorkspaces_PropagatesFetcherError(t *testing.T) {
+	fetcher := &fakeFetcher{err: errors.New("not authenticated")}
+	srv := server.NewMCPServer("t", "1", server.WithResourceCapabilities(false, false))
+	RegisterResources(srv, fetcher, nil)
+
+	// Drive resources/read directly via HandleMessage; assert error
+	// surfaces, not stdout.
+	reqJSON := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 1,
+		"method": "resources/read",
+		"params": { "uri": "` + WorkspacesURI + `" }
+	}`)
+	resp := srv.HandleMessage(context.Background(), reqJSON)
+	if resp == nil {
+		t.Fatalf("HandleMessage returned nil")
+	}
+	// The mcp-go server packages the handler's error into a JSON-RPC
+	// error response. We just need to ensure the call wasn't a
+	// success — a string-search on the JSON output is sufficient.
+	enc, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(enc), "not authenticated") {
+		t.Errorf("expected fetcher error to surface; got %s", enc)
+	}
 }
 
 func TestReadItem_DispatchesJSONAndComposesMarkdown(t *testing.T) {
