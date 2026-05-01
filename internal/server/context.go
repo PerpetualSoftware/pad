@@ -38,15 +38,17 @@ func WithAPITokenAuth(ctx context.Context) context.Context {
 
 // WithTokenWorkspaceID returns ctx decorated with a workspace-scope
 // hint, mirroring TokenAuth's behaviour for workspace-scoped API
-// tokens. Pass an empty string to clear.
+// tokens. Pass an empty string to clear (overrides any previous
+// scope-binding to ""; downstream readers via tokenWorkspaceID(r)
+// see the same "no scope" they would for a never-set context).
 //
 // The MCP dispatcher uses this to forward the OAuth-token's allowed
 // workspace to the handler tree where existing access-control logic
 // reads it via tokenWorkspaceID(r).
 func WithTokenWorkspaceID(ctx context.Context, workspaceID string) context.Context {
-	if workspaceID == "" {
-		return ctx
-	}
+	// Always overwrite — passing "" must clear a stale scope set
+	// further up the context chain. Returning ctx unchanged on the
+	// empty path was a bug Codex caught in PR #343 review round 4.
 	return context.WithValue(ctx, ctxTokenWorkspaceID, workspaceID)
 }
 
