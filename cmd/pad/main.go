@@ -2123,6 +2123,10 @@ Usage:
   source <(pad completion bash)
   pad completion zsh > "${fpath[1]}/_pad"
   pad completion fish | source`,
+		Example: `  pad completion bash
+  pad completion zsh
+  pad completion fish
+  pad completion powershell`,
 		DisableFlagsInUseLine: true,
 		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
