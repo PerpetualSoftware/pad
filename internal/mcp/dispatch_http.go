@@ -272,8 +272,14 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		return d.dispatchProjectReady(ctx, input, user)
 	case "project stale":
 		return d.dispatchProjectStale(ctx, input, user)
+	case "project standup":
+		return d.dispatchProjectStandup(ctx, input, user)
+	case "project changelog":
+		return d.dispatchProjectChangelog(ctx, input, user)
 	case "library list":
 		return d.dispatchLibraryList(ctx, input, user)
+	case "library activate":
+		return d.dispatchLibraryActivate(ctx, input, user)
 	}
 
 	// Item link create/delete commands. The asymmetry between which
