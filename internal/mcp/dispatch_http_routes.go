@@ -232,6 +232,18 @@ func init() {
 	}
 }
 
+// defaultActiveStatusFilter mirrors the broad inclusion list the
+// CLI sets when neither --status nor --all is provided. Hides
+// terminal statuses (done / completed / archived / etc.) by default
+// without making the dispatcher have to fetch+filter, which would be
+// a behaviour divergence from `pad item list` if we simply omitted
+// the filter (Codex review on PR #344, finding 1).
+//
+// Kept as a constant — pad's status vocabulary is template-driven
+// and changes rarely; the CLI's literal list at cmd/pad/main.go
+// itemListCmd is the source of truth, mirrored here.
+const defaultActiveStatusFilter = "open,in_progress,in-progress,active,draft,raw,exploring,decided,new,triaged,fixing,planned,published,paused,proposed,researching,building,ready,in_sprint,reviewed,planning"
+
 // mapItemList dispatches `pad item list [collection] [filters...]`.
 //
 // The path varies on whether `collection` was supplied:
@@ -239,15 +251,43 @@ func init() {
 //   - With collection:   GET /api/v1/workspaces/{ws}/collections/{coll}/items
 //   - Without:           GET /api/v1/workspaces/{ws}/items
 //
-// All other inputs (status / priority / parent / role / assign /
-// sort / limit / offset / search / etc.) become query params, with
-// `parseItemListParams` on the server-side treating unknown keys as
-// field filters automatically. The CLI flag names match what the
-// handler expects, so it's mostly 1:1 passthrough.
+// Filter parity with the CLI:
+//
+//   - `--status X` → `?status=X` directly.
+//   - Neither `--status` nor `--all` → broad active-status filter
+//     (matches the CLI's hardcoded list so done items don't leak by
+//     default — see defaultActiveStatusFilter).
+//   - `--all` → `?include_archived=true`, and the default-status
+//     filter is dropped so all statuses pass.
+//   - `--parent <ref>` → `?parent=<ref>`. The handler's
+//     resolveParentFilter resolves the ref via the field-filter path.
+//     (Going via `parent_id` would skip ref-resolution and fail for
+//     human-friendly inputs like "PLAN-3"; Codex review caught this.)
+//   - `--role <slug>` → `?agent_role_id=<slug>`. The store accepts
+//     both ID and slug here.
+//   - `--assign <name>` → rejected. The CLI resolves name→ID
+//     server-side via a workspace-members lookup; replicating that
+//     prefetch in the dispatcher belongs in the same follow-up that
+//     handles `assign` on item.create / update. Pass
+//     `--field assigned_user_id=<uuid>` for explicit-ID filtering.
+//   - `--field key=value` (repeatable) → flat query params, picked
+//     up by parseItemListParams' unknown-key → field-filter path.
 func mapItemList(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+
+	if v, ok := input["assign"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			return "", "", nil, fmt.Errorf(
+				"--assign %q is not yet supported by HTTPHandlerDispatcher; "+
+					"the CLI resolves names → user IDs via workspace-members "+
+					"lookup, which we'll add in a follow-up. For now, pass "+
+					"`--field assigned_user_id=<uuid>` for explicit-ID filtering.",
+				s,
+			)
+		}
 	}
 
 	pathBase := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items"
@@ -256,29 +296,56 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 			"/collections/" + url.PathEscape(collections.NormalizeSlug(coll)) + "/items"
 	}
 
-	q := buildQuery(input, map[string]string{
-		"status":           "status",
-		"priority":         "priority",
-		"sort":             "sort",
-		"limit":            "limit",
-		"offset":           "offset",
-		"group_by":         "group_by",
-		"search":           "search",
-		"tag":              "tag",
-		"parent_id":        "parent",
-		"assigned_user_id": "assign",
-		"agent_role_id":    "role",
-	})
-	// `--all` flag → include_archived=true on the wire.
-	if v, ok := input["all"]; ok {
-		if b, ok := v.(bool); ok && b {
-			if q == "" {
-				q = "include_archived=true"
-			} else {
-				q += "&include_archived=true"
-			}
+	values := url.Values{}
+	add := func(name, value string) {
+		if value != "" {
+			values.Set(name, value)
 		}
 	}
+
+	// Pass-through string filters.
+	if s, _ := input["status"].(string); s != "" {
+		add("status", s)
+	} else if b, _ := input["all"].(bool); !b {
+		// CLI parity: hide terminal statuses by default. --all overrides.
+		add("status", defaultActiveStatusFilter)
+	}
+	if s, _ := input["priority"].(string); s != "" {
+		add("priority", s)
+	}
+	if s, _ := input["sort"].(string); s != "" {
+		add("sort", s)
+	}
+	if s, _ := input["group_by"].(string); s != "" {
+		add("group_by", s)
+	}
+	if s, _ := input["search"].(string); s != "" {
+		add("search", s)
+	}
+	if s, _ := input["tag"].(string); s != "" {
+		add("tag", s)
+	}
+	// Parent filter goes via the unknown-key field-filter path so
+	// resolveParentFilter handles ref→UUID resolution server-side.
+	if s, _ := input["parent"].(string); s != "" {
+		add("parent", s)
+	}
+	if s, _ := input["role"].(string); s != "" {
+		add("agent_role_id", s)
+	}
+
+	// Numeric filters.
+	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+		values.Set("limit", strconv.FormatInt(n, 10))
+	}
+	if n, ok := numericInput(input["offset"]); ok && n > 0 {
+		values.Set("offset", strconv.FormatInt(n, 10))
+	}
+
+	if b, _ := input["all"].(bool); b {
+		values.Set("include_archived", "true")
+	}
+
 	// Repeatable --field key=value pairs become arbitrary query params
 	// (parseItemListParams treats unknown keys as field filters).
 	if rawFields, ok := input["field"]; ok {
@@ -286,23 +353,39 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 		if err != nil {
 			return "", "", nil, fmt.Errorf("parse --field: %w", err)
 		}
-		if len(extra) > 0 {
-			values := url.Values{}
-			for k, v := range extra {
-				values.Set(k, fmt.Sprint(v))
-			}
-			if q == "" {
-				q = values.Encode()
-			} else {
-				q += "&" + values.Encode()
-			}
+		for k, v := range extra {
+			values.Set(k, fmt.Sprint(v))
 		}
 	}
 
-	if q != "" {
-		pathBase += "?" + q
+	if encoded := values.Encode(); encoded != "" {
+		pathBase += "?" + encoded
 	}
 	return http.MethodGet, pathBase, nil, nil
+}
+
+// numericInput pulls an int64 out of a JSON-typed input value. JSON
+// decoders deliver numbers as float64 (or json.Number when
+// UseNumber()); we accept both. Returns (0, false) for nil or
+// non-numeric inputs so callers can short-circuit.
+func numericInput(v any) (int64, bool) {
+	switch x := v.(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	case int64:
+		return x, true
+	case json.Number:
+		n, err := x.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 // mapItemMove dispatches `pad item move <ref> <target-collection>`.

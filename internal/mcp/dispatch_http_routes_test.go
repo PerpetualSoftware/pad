@@ -238,7 +238,11 @@ func TestRoute_ItemDelete(t *testing.T) {
 	}
 }
 
-func TestRoute_ItemList_AllItemsPath(t *testing.T) {
+func TestRoute_ItemList_AllItemsPath_AppliesDefaultActiveStatusFilter(t *testing.T) {
+	// CLI parity: bare `pad item list` hides terminal statuses by
+	// default. The HTTP mapper must apply the same broad inclusion
+	// list — Codex caught a regression where it returned no status
+	// filter and would have leaked done items to agents.
 	m, p, _, err := routeTable["item list"](map[string]any{"workspace": "docapp"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -246,8 +250,60 @@ func TestRoute_ItemList_AllItemsPath(t *testing.T) {
 	if m != http.MethodGet {
 		t.Errorf("method = %q", m)
 	}
-	if p != "/api/v1/workspaces/docapp/items" {
-		t.Errorf("expected cross-collection path, got %q", p)
+	if !strings.HasPrefix(p, "/api/v1/workspaces/docapp/items?") {
+		t.Errorf("expected cross-collection path with query, got %q", p)
+	}
+	values := mustParseQueryFromPath(t, p)
+	got := values.Get("status")
+	if got == "" {
+		t.Errorf("default status filter missing; got query %v", values)
+	}
+	// Spot-check a few well-known active statuses.
+	for _, want := range []string{"open", "in_progress", "draft", "exploring"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default status filter missing %q; got %q", want, got)
+		}
+	}
+	// And confirm terminal statuses are NOT included.
+	for _, blocked := range []string{"done", "completed", "archived"} {
+		if strings.Contains(got, blocked) {
+			t.Errorf("default status filter incorrectly includes %q; got %q", blocked, got)
+		}
+	}
+}
+
+func TestRoute_ItemList_AllFlagDropsDefaultStatus(t *testing.T) {
+	// `--all` overrides the active-status default. Both
+	// include_archived=true must be set AND the default status
+	// inclusion list must NOT be present (otherwise --all wouldn't
+	// actually let through done items).
+	_, p, _, err := routeTable["item list"](map[string]any{
+		"workspace": "docapp", "all": true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	values := mustParseQueryFromPath(t, p)
+	if values.Get("include_archived") != "true" {
+		t.Errorf("include_archived not set under --all; got %v", values)
+	}
+	if values.Has("status") {
+		t.Errorf("status filter must be dropped under --all; got %v", values)
+	}
+}
+
+func TestRoute_ItemList_ExplicitStatusOverridesDefault(t *testing.T) {
+	// An explicit --status pin replaces the active-status default —
+	// not appended to it.
+	_, p, _, err := routeTable["item list"](map[string]any{
+		"workspace": "docapp", "status": "done",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	values := mustParseQueryFromPath(t, p)
+	if values.Get("status") != "done" {
+		t.Errorf("explicit --status not honored; got %q", values.Get("status"))
 	}
 }
 
@@ -258,7 +314,9 @@ func TestRoute_ItemList_CollectionScopedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if p != "/api/v1/workspaces/docapp/collections/tasks/items" {
+	// Path may carry the default-active-status query string from the
+	// no-explicit-status branch — we only assert the path prefix here.
+	if !strings.HasPrefix(p, "/api/v1/workspaces/docapp/collections/tasks/items") {
 		t.Errorf("expected collection-scoped + normalized path, got %q", p)
 	}
 }
@@ -282,12 +340,56 @@ func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
 		"priority":         "high",
 		"limit":            "20",
 		"include_archived": "true",
-		"parent_id":        "PLAN-3",
-		"agent_role_id":    "implementer",
+		// parent goes through the field-filter path (parseItemListParams
+		// treats unknown keys as fields → resolveParentFilter resolves
+		// "PLAN-3" → UUID). Sending parent_id would skip ref-resolution
+		// and break refs (Codex review #344 finding 2).
+		"parent":        "PLAN-3",
+		"agent_role_id": "implementer",
 	} {
 		if got := values.Get(k); got != want {
 			t.Errorf("query %q = %q, want %q (full path: %s)", k, got, want, p)
 		}
+	}
+	if values.Has("parent_id") {
+		t.Errorf("parent_id incorrectly sent; should use parent (full path: %s)", p)
+	}
+}
+
+func TestRoute_ItemList_RejectsAssignByName(t *testing.T) {
+	// CLI parity: --assign Dave resolves name→UUID via workspace
+	// members lookup. Replicating that prefetch in the dispatcher
+	// belongs in the same follow-up that handles --assign on
+	// item.create / update. For now, reject loudly so agents don't
+	// silently get empty results (Codex review #344 finding 3).
+	_, _, _, err := routeTable["item list"](map[string]any{
+		"workspace": "docapp", "assign": "Dave",
+	})
+	if err == nil {
+		t.Errorf("expected error for --assign by name; got nil")
+		return
+	}
+	if !strings.Contains(err.Error(), "assigned_user_id") {
+		t.Errorf("error should point users at the explicit-ID alternative; got %v", err)
+	}
+}
+
+func TestRoute_ItemList_NumericLimitFromJSONNumber(t *testing.T) {
+	// JSON decoders configured with UseNumber() produce json.Number
+	// instead of float64. The mapper's numeric helper must handle both.
+	dec := json.NewDecoder(strings.NewReader(`{"workspace":"docapp","limit":50}`))
+	dec.UseNumber()
+	var input map[string]any
+	if err := dec.Decode(&input); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_, p, _, err := routeTable["item list"](input)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	values := mustParseQueryFromPath(t, p)
+	if values.Get("limit") != "50" {
+		t.Errorf("limit lost from json.Number input; got %q (path %q)", values.Get("limit"), p)
 	}
 }
 
