@@ -88,10 +88,20 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 			// the pad_set_workspace tool.
 			state := mcpserver.NewWorkspaceState(workspaceFlag)
 
+			// Forward root persistent flags captured at startup (e.g.
+			// --url) to every dispatched subprocess. Empty values are
+			// skipped by BuildCLIArgs so this is safe when the user
+			// didn't pass them. --workspace is excluded — it lives in
+			// WorkspaceState and is mutable via pad_set_workspace.
+			rootFlags := map[string]string{
+				"url": urlFlag,
+			}
+
 			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
 				Doc:        doc,
 				Workspace:  state,
 				Dispatcher: &mcpserver.ExecDispatcher{Binary: bin},
+				RootFlags:  rootFlags,
 			}); err != nil {
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}

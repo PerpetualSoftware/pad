@@ -173,7 +173,7 @@ func TestRegister_DispatchHandler_RoutesAndInjectsWorkspace(t *testing.T) {
 
 	// Drive the handler by computing it the same way Register does
 	// — this isolates the routing logic from server internals.
-	handler := makeDispatchHandler("item create", doc.Commands["item create"], disp, state)
+	handler := makeDispatchHandler("item create", doc.Commands["item create"], disp, state, nil)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"collection": "tasks",
@@ -204,7 +204,7 @@ func TestRegister_DispatchHandler_ReportsValidationErrors(t *testing.T) {
 	cmdInfo := cmdhelp.Command{
 		Args: []cmdhelp.Arg{{Name: "ref", Type: "string", Required: true}},
 	}
-	handler := makeDispatchHandler("item show", cmdInfo, disp, state)
+	handler := makeDispatchHandler("item show", cmdInfo, disp, state, nil)
 
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{}
@@ -217,6 +217,56 @@ func TestRegister_DispatchHandler_ReportsValidationErrors(t *testing.T) {
 	}
 	if disp.gotPath != nil {
 		t.Errorf("dispatcher should NOT be called on validation failure; got path=%v", disp.gotPath)
+	}
+}
+
+func TestBuildTool_OmitsStdinFromInputSchema(t *testing.T) {
+	// `--stdin` instructs pad to read content from os.Stdin. The MCP
+	// transport doesn't pipe agent stdin to the subprocess, so the
+	// flag has no usable semantics over MCP — agents should use
+	// --content instead. Hide it from the tool schema so agents
+	// don't get tempted, and keep the defensive drop in
+	// BuildCLIArgs as a belt-and-braces guard.
+	cmd := cmdhelp.Command{
+		Summary: "Create item",
+		Flags: map[string]cmdhelp.Flag{
+			"stdin":   {Type: "bool"},
+			"content": {Type: "string"},
+		},
+	}
+	tool := buildTool("item create", cmd)
+	if _, ok := tool.InputSchema.Properties["stdin"]; ok {
+		t.Errorf("stdin flag should NOT be in tool input schema; properties: %v",
+			tool.InputSchema.Properties)
+	}
+	if _, ok := tool.InputSchema.Properties["content"]; !ok {
+		t.Errorf("content flag should be in tool input schema; properties: %v",
+			tool.InputSchema.Properties)
+	}
+}
+
+func TestRegister_DispatchHandler_ForwardsRootFlags(t *testing.T) {
+	// Per Codex review: --url is a root persistent flag; if pad mcp
+	// serve is invoked as `pad --url X mcp serve`, X must reach
+	// every dispatched subprocess. Otherwise tool calls run against
+	// the wrong server endpoint.
+	disp := &fakeDispatcher{}
+	state := NewWorkspaceState("")
+	cmdInfo := cmdhelp.Command{
+		Summary: "show item",
+		Args:    []cmdhelp.Arg{{Name: "ref", Type: "string", Required: true}},
+	}
+	handler := makeDispatchHandler("item show", cmdInfo, disp, state,
+		map[string]string{"url": "https://api.example.com"})
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"ref": "TASK-5"}
+	if _, err := handler(context.Background(), req); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	wantArgs := []string{"TASK-5", "--url", "https://api.example.com", "--format", "json"}
+	if !equalSlice(disp.gotArgs, wantArgs) {
+		t.Errorf("dispatch args = %v, want %v", disp.gotArgs, wantArgs)
 	}
 }
 

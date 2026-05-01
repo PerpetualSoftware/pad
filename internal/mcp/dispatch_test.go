@@ -23,7 +23,7 @@ func TestBuildCLIArgs_PositionalsAndScalarFlags(t *testing.T) {
 		"title":      "Fix OAuth",
 		"priority":   "high",
 		"stdin":      false, // false bool should be omitted
-	}, "")
+	}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -39,17 +39,105 @@ func TestBuildCLIArgs_PositionalsAndScalarFlags(t *testing.T) {
 
 func TestBuildCLIArgs_BoolPresenceForm(t *testing.T) {
 	// Spec §5.3: bool flags MUST be presence-only (no =true).
-	// Here `stdin: true` should emit just `--stdin`, no value.
+	// `dry-run: true` should emit just `--dry-run`, no value.
 	cmd := cmdhelp.Command{
-		Flags: map[string]cmdhelp.Flag{"stdin": {Type: "bool"}},
+		Flags: map[string]cmdhelp.Flag{"dry-run": {Type: "bool"}},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"stdin": true}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{"dry-run": true}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
-	want := []string{"--stdin", "--format", "json"}
+	want := []string{"--dry-run", "--format", "json"}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_StdinFlagDroppedDefensively(t *testing.T) {
+	// Even if an agent sends stdin: true (perhaps from a stale
+	// schema cache), BuildCLIArgs MUST drop it — the dispatcher
+	// can't pipe agent stdin to the subprocess, so passing
+	// --stdin would block on EOF and create empty content.
+	// `--content` is the agent-friendly equivalent.
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{
+			"stdin":   {Type: "bool"},
+			"content": {Type: "string"},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"stdin":   true,
+		"content": "hello world",
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	for _, a := range got {
+		if a == "--stdin" {
+			t.Errorf("stdin flag should be dropped, got: %v", got)
+		}
+	}
+	want := []string{"--content", "hello world", "--format", "json"}
+	if !equalSlice(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_RootFlagsInjected(t *testing.T) {
+	// --url at the root level should be forwarded to every dispatched
+	// subprocess. Without this, MCP clients configured as
+	// `pad --url X mcp serve` lose the URL on every tool call.
+	got, err := BuildCLIArgs(cmdhelp.Command{}, map[string]any{}, "",
+		map[string]string{"url": "https://api.example.com"})
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	want := []string{"--url", "https://api.example.com", "--format", "json"}
+	if !equalSlice(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_RootFlagsEmptyValueSkipped(t *testing.T) {
+	// Server startup passes `map[string]string{"url": urlFlag}`
+	// unconditionally — when the user didn't pass --url at startup,
+	// urlFlag is empty and we must NOT inject `--url ""`.
+	got, err := BuildCLIArgs(cmdhelp.Command{}, map[string]any{}, "",
+		map[string]string{"url": ""})
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	for _, a := range got {
+		if a == "--url" {
+			t.Errorf("empty root-flag value should be skipped, got: %v", got)
+		}
+	}
+}
+
+func TestBuildCLIArgs_RootFlagsDoNotOverrideExplicitInput(t *testing.T) {
+	// If the agent explicitly passes `url` in the tool args, the
+	// agent's value wins — startup-captured root flag is NOT
+	// appended (would produce two --url flags; pflag picks last,
+	// behaviour gets surprising).
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{"url": {Type: "string"}},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{"url": "agent-url"}, "",
+		map[string]string{"url": "startup-url"})
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	count := 0
+	for i, a := range got {
+		if a == "--url" && i+1 < len(got) {
+			count++
+			if got[i+1] != "agent-url" {
+				t.Errorf("agent value should win; got %q", got[i+1])
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 --url, got %d in %v", count, got)
 	}
 }
 
@@ -57,7 +145,7 @@ func TestBuildCLIArgs_RequiredArgMissingErrors(t *testing.T) {
 	cmd := cmdhelp.Command{
 		Args: []cmdhelp.Arg{{Name: "collection", Type: "string", Required: true}},
 	}
-	_, err := BuildCLIArgs(cmd, map[string]any{}, "")
+	_, err := BuildCLIArgs(cmd, map[string]any{}, "", nil)
 	if err == nil {
 		t.Errorf("expected error when required arg missing")
 	}
@@ -70,7 +158,7 @@ func TestBuildCLIArgs_OptionalArgMissingOK(t *testing.T) {
 	cmd := cmdhelp.Command{
 		Args: []cmdhelp.Arg{{Name: "filter", Type: "string"}}, // not required
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -82,7 +170,7 @@ func TestBuildCLIArgs_OptionalArgMissingOK(t *testing.T) {
 }
 
 func TestBuildCLIArgs_InjectsSessionWorkspace(t *testing.T) {
-	got, err := BuildCLIArgs(cmdhelp.Command{}, map[string]any{}, "docapp")
+	got, err := BuildCLIArgs(cmdhelp.Command{}, map[string]any{}, "docapp", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -100,7 +188,7 @@ func TestBuildCLIArgs_ExplicitWorkspaceOverridesSession(t *testing.T) {
 	cmd := cmdhelp.Command{
 		Flags: map[string]cmdhelp.Flag{"workspace": {Type: "string"}},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"workspace": "client-ws"}, "session-ws")
+	got, err := BuildCLIArgs(cmd, map[string]any{"workspace": "client-ws"}, "session-ws", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -124,7 +212,7 @@ func TestBuildCLIArgs_RepeatableArgExpands(t *testing.T) {
 	cmd := cmdhelp.Command{
 		Args: []cmdhelp.Arg{{Name: "ref", Type: "string", Repeatable: true, Required: true}},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"ref": []any{"TASK-5", "TASK-8"}}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{"ref": []any{"TASK-5", "TASK-8"}}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -143,7 +231,7 @@ func TestBuildCLIArgs_RepeatableFlag(t *testing.T) {
 			"field": {Type: "string", Repeatable: true},
 		},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"field": []any{"a=1", "b=2"}}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{"field": []any{"a=1", "b=2"}}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -159,7 +247,7 @@ func TestBuildCLIArgs_StringSliceTypeAlsoRepeats(t *testing.T) {
 			"tag": {Type: "[]string"}, // pflag-style slice type
 		},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"tag": []any{"x", "y"}}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{"tag": []any{"x", "y"}}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
@@ -175,7 +263,7 @@ func TestBuildCLIArgs_ExplicitFormatOverridesDefault(t *testing.T) {
 	cmd := cmdhelp.Command{
 		Flags: map[string]cmdhelp.Flag{"format": {Type: "string"}},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"format": "markdown"}, "")
+	got, err := BuildCLIArgs(cmd, map[string]any{"format": "markdown"}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}

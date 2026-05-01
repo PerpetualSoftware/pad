@@ -78,12 +78,23 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 //     presence-only (`--flag`, never `--flag=true`).
 //   - Repeatable / slice-typed flags expand to repeated `--flag value`
 //     pairs.
+//   - Flags listed in flagsHiddenFromMCP (e.g. `stdin`) are dropped
+//     defensively — they reference subprocess stdin which the MCP
+//     transport doesn't pipe through.
 //   - sessionWorkspace is appended as `--workspace <ws>` if the
 //     command does NOT already define a `workspace` flag in the
 //     input map AND sessionWorkspace is non-empty.
+//   - rootFlags (e.g. `--url` captured at server startup) are
+//     appended when the input doesn't already supply them. Empty
+//     values in rootFlags are skipped.
 //   - `--format json` is appended unless the input explicitly sets a
 //     format flag (e.g. an agent specifically requests markdown).
-func BuildCLIArgs(cmdInfo cmdhelp.Command, input map[string]any, sessionWorkspace string) ([]string, error) {
+func BuildCLIArgs(
+	cmdInfo cmdhelp.Command,
+	input map[string]any,
+	sessionWorkspace string,
+	rootFlags map[string]string,
+) ([]string, error) {
 	if input == nil {
 		input = map[string]any{}
 	}
@@ -119,6 +130,12 @@ func BuildCLIArgs(cmdInfo cmdhelp.Command, input map[string]any, sessionWorkspac
 	workspaceProvided := false
 	var flagArgs []string
 	for _, name := range flagNames {
+		// Defensive: even if an agent's stale schema cache passes
+		// stdin=true, drop it here — buildTool already hides it from
+		// new schemas, and the running subprocess can't read agent stdin.
+		if _, hidden := flagsHiddenFromMCP[name]; hidden {
+			continue
+		}
 		flag := cmdInfo.Flags[name]
 		val, ok := input[name]
 		if !ok {
@@ -155,6 +172,27 @@ func BuildCLIArgs(cmdInfo cmdhelp.Command, input map[string]any, sessionWorkspac
 	}
 
 	out := append(positionals, flagArgs...)
+
+	// Inject root-level flags (e.g. --url) when the input didn't
+	// already supply them. Sorted for deterministic test output.
+	if len(rootFlags) > 0 {
+		rootNames := make([]string, 0, len(rootFlags))
+		for name := range rootFlags {
+			rootNames = append(rootNames, name)
+		}
+		sort.Strings(rootNames)
+		for _, name := range rootNames {
+			val := rootFlags[name]
+			if val == "" {
+				continue
+			}
+			if _, alreadyInInput := input[name]; alreadyInInput {
+				continue
+			}
+			out = append(out, "--"+name, val)
+		}
+	}
+
 	if !workspaceProvided && sessionWorkspace != "" {
 		out = append(out, "--workspace", sessionWorkspace)
 	}

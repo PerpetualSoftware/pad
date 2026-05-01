@@ -22,6 +22,16 @@ type RegistryOptions struct {
 	// Dispatcher executes tool calls. Required (use ExecDispatcher in
 	// production; fakes in tests).
 	Dispatcher Dispatcher
+	// RootFlags lists root-level CLI flags to inject into every
+	// dispatched call when the input doesn't already provide them.
+	// Captured at server startup — runtime-mutable state belongs in
+	// WorkspaceState, not here. Common case: --url for non-default
+	// server endpoints (root persistent flag in cmd/pad/main.go).
+	//
+	// Empty values are skipped, so passing
+	// `map[string]string{"url": urlFlag}` is safe even when the user
+	// didn't pass --url to `pad mcp serve`.
+	RootFlags map[string]string
 	// ExcludeCommands lists command paths to skip (space-separated, e.g.
 	// "db backup"). A path that matches a registered group prefix
 	// suppresses every leaf under it — excluding "completion" suppresses
@@ -105,6 +115,8 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 	registerSetWorkspaceTool(srv, opts.Workspace)
 	count := 1 // pad_set_workspace
 
+	rootFlags := opts.RootFlags // closed-over by every handler below
+
 	paths := make([]string, 0, len(opts.Doc.Commands))
 	for p := range opts.Doc.Commands {
 		paths = append(paths, p)
@@ -125,7 +137,7 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 		}
 		cmdInfo := opts.Doc.Commands[path]
 		tool := buildTool(path, cmdInfo)
-		handler := makeDispatchHandler(path, cmdInfo, opts.Dispatcher, opts.Workspace)
+		handler := makeDispatchHandler(path, cmdInfo, opts.Dispatcher, opts.Workspace, rootFlags)
 		srv.AddTool(tool, handler)
 		count++
 	}
@@ -188,6 +200,9 @@ func buildTool(path string, cmdInfo cmdhelp.Command) mcp.Tool {
 
 	flagNames := make([]string, 0, len(cmdInfo.Flags))
 	for name := range cmdInfo.Flags {
+		if _, hidden := flagsHiddenFromMCP[name]; hidden {
+			continue
+		}
 		flagNames = append(flagNames, name)
 	}
 	sort.Strings(flagNames)
@@ -258,14 +273,29 @@ func makeDispatchHandler(
 	cmdInfo cmdhelp.Command,
 	dispatcher Dispatcher,
 	state *WorkspaceState,
+	rootFlags map[string]string,
 ) server.ToolHandlerFunc {
 	cmdPath := strings.Split(path, " ")
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		input := req.GetArguments()
-		args, err := BuildCLIArgs(cmdInfo, input, state.Get())
+		args, err := BuildCLIArgs(cmdInfo, input, state.Get(), rootFlags)
 		if err != nil {
 			return mcp.NewToolResultErrorf("%s: %s", ToolNameFromPath(path), err.Error()), nil
 		}
 		return dispatcher.Dispatch(ctx, cmdPath, args)
 	}
+}
+
+// flagsHiddenFromMCP are flag names whose semantics depend on the
+// subprocess's stdin (or other transport-only ergonomics) and so
+// should NOT appear on the MCP tool surface. Agents wanting to set
+// content should use the corresponding --content flag, which is wired
+// through the JSON args path.
+//
+// Listed here so registry generation AND defensive dispatch agree:
+// even if an agent passes `stdin: true` (perhaps from a stale schema
+// cache), BuildCLIArgs drops it rather than running a subprocess
+// that blocks on EOF and creates an empty item.
+var flagsHiddenFromMCP = map[string]struct{}{
+	"stdin": {},
 }
