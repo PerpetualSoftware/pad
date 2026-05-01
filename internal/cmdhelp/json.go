@@ -237,6 +237,16 @@ func parseExamplesFromLong(long string) []Example {
 		if line == trimmed && len(examples) > 0 {
 			break
 		}
+		// Strip a trailing same-line comment ("  # blah") so it doesn't
+		// pollute the recorded example. Pad's existing Long blocks use
+		// this idiom occasionally, e.g.
+		//   pad attachment list --item TASK-5    # one item's attachments
+		if hashIdx := stripCommentIndex(trimmed); hashIdx >= 0 {
+			trimmed = strings.TrimRight(trimmed[:hashIdx], " \t")
+		}
+		if trimmed == "" {
+			continue
+		}
 		examples = append(examples, Example{Cmd: trimmed})
 	}
 	if len(examples) == 0 {
@@ -496,4 +506,37 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// stripCommentIndex returns the position of an unquoted `#` that begins
+// a same-line comment in s, or -1 if no such comment exists. Comments
+// preceded by an unquoted `#` and at least one whitespace separator are
+// considered comments; `#abc` glued to a token is left alone (could be
+// a literal). Quote handling matches shell semantics: `#` inside double
+// or single quotes is a literal character, not a comment.
+func stripCommentIndex(s string) int {
+	var inDQuote, inSQuote, escape bool
+	for i, r := range s {
+		switch {
+		case escape:
+			escape = false
+		case r == '\\' && !inSQuote:
+			escape = true
+		case r == '"' && !inSQuote:
+			inDQuote = !inDQuote
+		case r == '\'' && !inDQuote:
+			inSQuote = !inSQuote
+		case r == '#' && !inDQuote && !inSQuote:
+			// Require whitespace before # (or # at start) to avoid eating
+			// literal #s glued to a token.
+			if i == 0 {
+				return i
+			}
+			prev := s[i-1]
+			if prev == ' ' || prev == '\t' {
+				return i
+			}
+		}
+	}
+	return -1
 }
