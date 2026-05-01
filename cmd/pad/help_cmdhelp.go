@@ -119,14 +119,22 @@ func emitCmdhelpJSON(target *cobra.Command, depth int, all bool, w io.Writer) er
 	}, w)
 }
 
-// emitCmdhelpMarkdown is a stub for the cmdhelp v0.1 markdown emitter
-// (also serves --format llm as an alias). The real implementation walks
-// the cobra command tree and writes a document matching the predictable
-// section order in cmdhelp v0.1 §6. Lands in TASK-935.
+// emitCmdhelpMarkdown walks the cobra command tree below `target` and
+// emits a cmdhelp v0.1 markdown document with the predictable section
+// order from spec §6. Also serves `--format llm` as an alias today
+// (reserved for future "best for LLMs" default).
+//
+// `--all` is a convenience alias for unlimited depth (spec §4); when
+// passed it overrides any explicit `--depth=N`.
 func emitCmdhelpMarkdown(target *cobra.Command, depth int, all bool, w io.Writer) error {
-	_ = target
-	_ = depth
-	_ = all
-	_ = w
-	return fmt.Errorf("--format md/llm not yet implemented (cmdhelp v%s markdown emitter — TASK-935)", CmdhelpVersion)
+	maxDepth := depth
+	if all {
+		maxDepth = -1
+	}
+	return cmdhelp.EmitMarkdown(target, target.Root(), cmdhelp.Options{
+		Binary:   target.Root().Name(),
+		Version:  fullVersion(),
+		Homepage: padHomepage,
+		MaxDepth: maxDepth,
+	}, w)
 }

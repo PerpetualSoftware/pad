@@ -5,6 +5,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -33,6 +34,11 @@ type Options struct {
 	// want the unlimited default MUST pass -1 (or any negative value)
 	// explicitly — see cmd/pad/help_cmdhelp.go for the canonical wiring.
 	MaxDepth int
+
+	// Now overrides time.Now for the markdown emitter's YAML frontmatter
+	// `generated:` field. Useful for snapshot tests that need a stable
+	// timestamp. Leave nil to use the real wall clock (UTC).
+	Now func() time.Time
 }
 
 // EmitJSON walks the command tree below `target`, builds a cmdhelp v0.1
