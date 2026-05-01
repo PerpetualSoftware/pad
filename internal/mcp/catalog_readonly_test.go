@@ -129,6 +129,98 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 	}
 }
 
+// TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath actually invokes
+// every catalog action through a fake dispatcher and asserts the
+// captured cmdPath matches the expected table from
+// TestReadOnlyCatalog_ActionsMatchCmdhelp. Closes the catalog → dispatch
+// drift hole — without this, a typo like
+// passThrough([]string{"some", "other"}) on pad_search.query would
+// pass the bijection check (the action name still matches) but
+// silently dispatch to the wrong command.
+//
+// The fixtureInput map covers every required positional arg across
+// the read-only surface so the action handlers all reach Dispatch
+// rather than erroring on missing input. Extra keys are harmless —
+// BuildCLIArgs ignores anything that isn't in cmdInfo.Flags or
+// cmdInfo.Args.
+func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
+	doc := liveCmdhelpDoc(t)
+	// Mirror of expected{} in the bijection test, kept literal so a
+	// renamed cmdPath fails THIS test loudly with the actual
+	// dispatched path printed in the error message.
+	expected := map[[2]string][]string{
+		{"pad_workspace", "list"}:      {"workspace", "list"},
+		{"pad_workspace", "members"}:   {"workspace", "members"},
+		{"pad_workspace", "invite"}:    {"workspace", "invite"},
+		{"pad_workspace", "storage"}:   {"workspace", "storage"},
+		{"pad_workspace", "audit-log"}: {"workspace", "audit-log"},
+
+		{"pad_collection", "list"}:   {"collection", "list"},
+		{"pad_collection", "create"}: {"collection", "create"},
+
+		{"pad_project", "dashboard"}: {"project", "dashboard"},
+		{"pad_project", "next"}:      {"project", "next"},
+		{"pad_project", "standup"}:   {"project", "standup"},
+		{"pad_project", "changelog"}: {"project", "changelog"},
+
+		{"pad_role", "list"}:   {"role", "list"},
+		{"pad_role", "create"}: {"role", "create"},
+		{"pad_role", "delete"}: {"role", "delete"},
+
+		{"pad_search", "query"}: {"item", "search"},
+	}
+
+	// Required-positional fixture: every CLI command in the read-only
+	// surface gets its required args satisfied so BuildCLIArgs reaches
+	// dispatcher.Dispatch instead of returning a missing-arg error.
+	fixtureInput := map[string]any{
+		"email": "test@example.com",
+		"name":  "test-name",
+		"slug":  "test-slug",
+		"query": "test-query",
+	}
+
+	for _, def := range Catalog {
+		if def.Name == "pad_meta" {
+			continue // inline-handled, doesn't dispatch
+		}
+		for actionName, handler := range def.Actions {
+			key := [2]string{def.Name, actionName}
+			wantCmdPath, ok := expected[key]
+			if !ok {
+				// Already covered by TestReadOnlyCatalog_ActionsMatchCmdhelp's
+				// bijection check; skip silently here to keep this test
+				// focused on dispatch correctness.
+				continue
+			}
+			t.Run(def.Name+"."+actionName, func(t *testing.T) {
+				disp := &fakeDispatcher{}
+				env := ActionEnv{
+					Doc:        doc,
+					Workspace:  NewWorkspaceState("docapp"),
+					Dispatcher: disp,
+				}
+				// Per-test copy so cross-test ordering doesn't matter.
+				input := make(map[string]any, len(fixtureInput))
+				for k, v := range fixtureInput {
+					input[k] = v
+				}
+				res, err := handler(context.Background(), input, env)
+				if err != nil {
+					t.Fatalf("handler returned protocol error: %v", err)
+				}
+				if res != nil && res.IsError {
+					t.Fatalf("handler returned error result (BuildCLIArgs likely missing input): %s",
+						textOf(res))
+				}
+				if !equalStrings(disp.gotPath, wantCmdPath) {
+					t.Errorf("dispatched cmdPath = %v, want %v", disp.gotPath, wantCmdPath)
+				}
+			})
+		}
+	}
+}
+
 // TestPadWorkspaceAuditLog_RenamesActionFilter is the regression test
 // for the action-flag-shadow bug: the catalog's `action_filter` input
 // must arrive at the dispatcher as `--action <value>`. If the rename
