@@ -444,13 +444,30 @@ func TestDispatch_ItemDeps_ReturnsRawLinksArray(t *testing.T) {
 	if gotPath != "/api/v1/workspaces/docapp/items/TASK-5/links" {
 		t.Errorf("path = %q", gotPath)
 	}
-	links, ok := res.StructuredContent.([]any)
-	if !ok {
-		t.Fatalf("deps result not a JSON array: %#v", res.StructuredContent)
-	}
+	// Top-level arrays are wrapped as {items: [...]} for MCP host
+	// validators (BUG-985 fix). Unwrap to assert the underlying links.
+	links := unwrapItems(t, res.StructuredContent)
 	if len(links) != 1 {
 		t.Errorf("expected 1 link in deps result; got %d", len(links))
 	}
+}
+
+// unwrapItems extracts the array from a `{items: [...]}` envelope —
+// the post-BUG-985 shape ExecDispatcher and packageHTTPResponse use
+// for top-level array responses. Tests that previously asserted the
+// raw-array shape go through this helper to read the underlying
+// items without duplicating the cast logic.
+func unwrapItems(t *testing.T, sc any) []any {
+	t.Helper()
+	m, ok := sc.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent is %T, want map[string]any (post-BUG-985 wrap shape)", sc)
+	}
+	items, ok := m["items"].([]any)
+	if !ok {
+		t.Fatalf("structuredContent has no 'items' array; got keys %v", mapKeys(m))
+	}
+	return items
 }
 
 func TestDispatch_ItemRelated_ReturnsGroupedShape(t *testing.T) {
@@ -853,10 +870,7 @@ func TestHTTPHandlerDispatcher_Integration_ItemLinkLifecycle(t *testing.T) {
 	if err != nil || depsRes.IsError {
 		t.Fatalf("deps: err=%v IsError=%v: %#v", err, depsRes != nil && depsRes.IsError, depsRes)
 	}
-	links, ok := depsRes.StructuredContent.([]any)
-	if !ok {
-		t.Fatalf("deps result not a JSON array: %#v", depsRes.StructuredContent)
-	}
+	links := unwrapItems(t, depsRes.StructuredContent)
 	if len(links) != 1 {
 		t.Fatalf("expected 1 link, got %d: %#v", len(links), links)
 	}
@@ -882,8 +896,8 @@ func TestHTTPHandlerDispatcher_Integration_ItemLinkLifecycle(t *testing.T) {
 	if err != nil || depsAfterRes.IsError {
 		t.Fatalf("deps after unblock: err=%v IsError=%v: %#v", err, depsAfterRes != nil && depsAfterRes.IsError, depsAfterRes)
 	}
-	if linksAfter, ok := depsAfterRes.StructuredContent.([]any); !ok || len(linksAfter) != 0 {
-		t.Errorf("expected empty links after unblock, got %#v", depsAfterRes.StructuredContent)
+	if linksAfter := unwrapItems(t, depsAfterRes.StructuredContent); len(linksAfter) != 0 {
+		t.Errorf("expected empty links after unblock, got %#v", linksAfter)
 	}
 
 	// `item supersedes new old` exercises the lineage path against

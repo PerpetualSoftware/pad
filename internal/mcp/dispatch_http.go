@@ -439,13 +439,10 @@ func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response
 		return classifyHTTPStatus(ctx, cmdKey, resp.StatusCode, bodyBytes, nil), nil
 	}
 
-	if trimmed := strings.TrimSpace(body); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-		var parsed any
-		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
-			return mcp.NewToolResultStructured(parsed, body), nil
-		}
-	}
-	return mcp.NewToolResultText(body), nil
+	// Use the shared packager so both transports produce the same
+	// structured-vs-text shape. In particular, top-level arrays get
+	// wrapped in `{items: [...]}` for MCP host validators (BUG-985).
+	return packageJSONResult(body), nil
 }
 
 // mapItemCreate translates an `item create` MCP call into a POST to
