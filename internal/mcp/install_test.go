@@ -363,6 +363,30 @@ func TestAddPadEntry_HandlesEmptyAndWhitespaceFile(t *testing.T) {
 	}
 }
 
+func TestAddPadEntry_TightensExistingFilePerms(t *testing.T) {
+	// Codex round 1 (TASK-948): os.WriteFile only honors the mode
+	// when CREATING the file. If the user had a pre-existing 0644
+	// config (the system default), the install must still leave it
+	// 0600 so the credentials in OTHER MCP server entries don't leak.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// Pre-create with loose perms.
+	if err := os.WriteFile(path, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddPadEntry(path, "/p"); err != nil {
+		t.Fatalf("AddPadEntry: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0o600 {
+		t.Errorf("expected 0600 after install, got %#o", mode)
+	}
+}
+
 func TestAddPadEntry_RejectsCorruptJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "broken.json")

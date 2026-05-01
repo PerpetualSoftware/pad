@@ -62,9 +62,20 @@ on demand.
 
 Existing MCP server entries (other servers configured by the user)
 are preserved — only the "pad" entry is touched.`,
-		ValidArgs:    agentValidArgs(),
+		ValidArgs: agentValidArgs(),
+		// Cobra defaults to ArbitraryArgs for cmds without Args set —
+		// silently accepts extras, which Codex caught as a UX bug
+		// (`pad mcp install cursor windsurf` would only install Cursor).
+		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --all is mutually exclusive with an agent name. Without
+			// this guard `pad mcp install --all cursor` would install
+			// every agent and silently drop the cursor argument,
+			// which Codex round 1 flagged as confusing.
+			if allFlag && len(args) > 0 {
+				return fmt.Errorf("--all cannot be combined with an agent name")
+			}
 			binary, err := os.Executable()
 			if err != nil || binary == "" {
 				binary = os.Args[0]

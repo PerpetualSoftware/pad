@@ -260,9 +260,21 @@ func writeJSONConfig(path string, cfg map[string]any) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	// 0o600 — config files often hold credentials for OTHER MCP
-	// servers; tighten perms even though pad's own entry has none.
+	// servers (postgres URIs, OpenAI keys, etc.); tighten perms even
+	// though pad's own entry has no secrets.
+	//
+	// os.WriteFile only honors the mode when CREATING the file — an
+	// existing 0644 config keeps 0644 after the write. Codex caught
+	// this on TASK-948 round 1, so we Chmod after writing. Best-effort:
+	// chmod failures don't fail the install (the data write
+	// succeeded; the user can re-tighten manually).
 	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		// Log-only: the install succeeded; perms hardening is a
+		// best-effort defense-in-depth. Don't fail the user's flow.
+		fmt.Fprintf(os.Stderr, "warning: failed to chmod 0600 %s: %v\n", path, err)
 	}
 	return nil
 }
