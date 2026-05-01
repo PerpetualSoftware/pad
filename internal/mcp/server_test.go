@@ -97,6 +97,45 @@ func assertExperimentalNamespace(t *testing.T, exp map[string]any, key, wantVers
 	}
 }
 
+// TestServer_InitializeAdvertisesInstructions locks the wire-level
+// invariant that the initialize response carries the server-level
+// instructions string TASK-971 introduced. Empty / missing
+// instructions would put pad back in the "model has to guess when to
+// reach for it" state that triggered PLAN-969.
+//
+// Asserts the response embeds the constant defined in instructions.go
+// rather than a hardcoded literal — keeps the test stable as the
+// instructions text evolves.
+func TestServer_InitializeAdvertisesInstructions(t *testing.T) {
+	srv := NewServer(Options{Version: "instr-test"})
+	res, cleanup := runHandshake(t, srv)
+	defer cleanup()
+
+	if res.Instructions == "" {
+		t.Fatalf("initialize response has empty instructions; want non-empty")
+	}
+	if res.Instructions != Instructions {
+		t.Errorf("initialize response instructions diverge from embedded source")
+	}
+	// Sanity check on the embedded content — confirms instructions.md
+	// shipped with the build (otherwise the file might be empty after
+	// a botched embed).
+	if !strings.Contains(Instructions, "Pad is a project tracker") {
+		t.Errorf("embedded instructions look truncated or wrong; first 80 chars: %q",
+			truncate(Instructions, 80))
+	}
+}
+
+// truncate is a small helper for failure messages — keeps long
+// instructions text from spilling into terminal output when an
+// assertion fires.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 // TestServer_FallbackVersion locks the wire-level invariant that
 // serverInfo.version is NEVER empty, even when the caller built the
 // server with Options{}. Empty values would confuse some clients that
