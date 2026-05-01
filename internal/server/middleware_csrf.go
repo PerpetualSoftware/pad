@@ -58,8 +58,23 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		// Bearer token requests are not vulnerable to CSRF — skip
+		// Bearer token requests are not vulnerable to CSRF — skip.
+		// Two signals, both mean "non-cookie-authenticated":
+		//   1. Authorization: Bearer header on the live request (the
+		//      normal CLI / connector path through TokenAuth).
+		//   2. ctxIsAPIToken set on the request context — TokenAuth
+		//      sets this after a successful Bearer validation, AND
+		//      in-process callers (the MCP HTTPHandlerDispatcher in
+		//      internal/mcp/dispatch_http.go) set it via the
+		//      server.WithAPITokenAuth helper to mark a synthesized
+		//      request as having been authenticated out-of-band.
+		// Either signal lets the request through; cookie-only
+		// requests still require the double-submit token below.
 		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if isAPITokenAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -193,6 +193,11 @@ Surface:
 
 **Stability contract.** The cmdhelp tool surface is versioned via `internal/mcp.CmdhelpVersion` (currently `"0.1"`). Bump the major when tool names, argument shapes, or resource URIs change incompatibly — external agents (Cursor, Claude Desktop, the future Pad Cloud remote MCP) pin against it. The version is advertised on the wire two ways: at `capabilities.experimental.padCmdhelp` in the initialize handshake, and as a JSON document at `pad://_meta/version`.
 
+**Dispatchers.** Two ship in `internal/mcp/`:
+
+- `ExecDispatcher` — shells out to the `pad` binary; subprocess inherits credentials from `~/.pad/credentials.json`. Used by `pad mcp serve` for local stdio MCP.
+- `HTTPHandlerDispatcher` — calls pad-cloud's HTTP handlers in-process with the requesting user attached via `server.WithCurrentUser`. Used by the future `/mcp` endpoint (PLAN-943) where the dispatcher serves multiple OAuth users from a single process. Tools are wired into the route table at `internal/mcp/dispatch_http.go` (`routeTable`); add a `RouteMapper` per command — `mapItemCreate` is the seed entry from TASK-965.
+
 Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public docs at `getpad.dev/mcp/local`.
 
 ## Data Model

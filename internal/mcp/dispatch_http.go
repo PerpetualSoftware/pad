@@ -1,0 +1,325 @@
+package mcp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
+)
+
+// HTTPHandlerDispatcher executes a pad CLI command by translating it
+// into an in-process HTTP request against pad-cloud's existing handler
+// chain — no subprocess, no shell-out, no PAT-credential inheritance.
+//
+// Why not shell out (TASK-965 / PLAN-943 architecture decision):
+//
+// The subprocess-based ExecDispatcher works for local stdio MCP
+// because the user IS the subprocess owner — `pad mcp serve` inherits
+// the credentials in `~/.pad/credentials.json`. For remote MCP at
+// `api.getpad.dev/mcp`, multiple OAuth users share one process; the
+// dispatcher can't shell out to `pad item create` because the
+// subprocess would have no credentials for the requesting user, and
+// minting an ephemeral PAT per call adds DB churn we'd rather avoid.
+//
+// HTTPHandlerDispatcher instead:
+//
+//  1. Resolves the requesting user from the MCP request context (via
+//     UserResolver, supplied by the OAuth-auth middleware that
+//     handles /mcp).
+//  2. Looks up cmdPath in routeTable to find an HTTP method, URL
+//     template, and JSON body shape.
+//  3. Builds an in-process http.Request with the user attached via
+//     server.WithCurrentUser so the existing handler chain sees it
+//     the same way it would for a normal Bearer-token request.
+//  4. Calls Handler.ServeHTTP with an httptest.ResponseRecorder and
+//     packages the response as an MCP CallToolResult — JSON bodies
+//     surface as structured content, matching ExecDispatcher's
+//     `--format json` parsing behaviour.
+//
+// Behavioural divergence from ExecDispatcher is zero: the same
+// handler chain runs (auth, audit, event-bus, webhooks, FTS index),
+// just without forking a subprocess.
+//
+// Scope (TASK-965): this PR ships the framework and one wired
+// command, `item create`, as the proof-of-concept. The remaining ~70
+// MCP-exposed commands are wired in a follow-up before TASK-950 ships
+// the /mcp endpoint to real users — see internal/mcp.routeTable.
+type HTTPHandlerDispatcher struct {
+	// Handler is the pad-cloud API router. *server.Server already
+	// satisfies http.Handler via its ServeHTTP method.
+	Handler http.Handler
+
+	// UserResolver returns the requesting user from the MCP request
+	// context. Required. Returning nil → 401-equivalent error to the
+	// MCP client.
+	//
+	// In production the OAuth auth middleware (TASK-953) sets the
+	// user on context before invoking the dispatcher; UserResolver is
+	// just `(ctx) → user from ctx`. In tests it's a constant returning
+	// a pre-built test user.
+	UserResolver func(ctx context.Context) *models.User
+
+	// Apply, if non-nil, is invoked on the synthesized request just
+	// before ServeHTTP. Useful for tests + future TASK-953 work to
+	// attach token-scope context (workspace allow-list, capability
+	// tier) without changing the dispatcher's public surface.
+	Apply func(r *http.Request) *http.Request
+
+	// Routes overrides the built-in routeTable for tests. nil → use
+	// routeTable. The builtin map is the source of truth for
+	// production wiring.
+	Routes map[string]RouteMapper
+}
+
+// RouteMapper translates a tool's JSON input into a concrete HTTP
+// method + path + body. nil body is fine (e.g. for GET requests).
+type RouteMapper func(input map[string]any) (method, path string, body []byte, err error)
+
+// routeTable wires cmdPaths (joined with " ") to RouteMappers.
+// TASK-965 seeds the table with `item create` as the proof-of-concept;
+// follow-up tasks before TASK-950 fill in the rest of the MCP-exposed
+// command surface.
+var routeTable = map[string]RouteMapper{
+	"item create": mapItemCreate,
+}
+
+// Dispatch satisfies the Dispatcher interface. cliArgs are accepted
+// for interface compatibility but ignored — HTTPHandlerDispatcher
+// reads the structured input attached by the registry via
+// WithDispatchInput.
+func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []string) (*mcp.CallToolResult, error) {
+	if d.Handler == nil {
+		return mcp.NewToolResultError("HTTPHandlerDispatcher: Handler not configured"), nil
+	}
+	if d.UserResolver == nil {
+		return mcp.NewToolResultError("HTTPHandlerDispatcher: UserResolver not configured"), nil
+	}
+
+	cmdKey := strings.Join(cmdPath, " ")
+	routes := d.Routes
+	if routes == nil {
+		routes = routeTable
+	}
+	mapper, ok := routes[cmdKey]
+	if !ok {
+		// Tool exists in the cmdhelp-derived registry but isn't yet
+		// wired into the HTTP route table. The registry intentionally
+		// advertises every safe leaf command from PLAN-942's tool
+		// surface; the route table grows incrementally.
+		return mcp.NewToolResultErrorf(
+			"%s: not yet implemented over HTTP transport "+
+				"(see internal/mcp/dispatch_http.go routeTable)", cmdKey,
+		), nil
+	}
+
+	input := DispatchInputFromContext(ctx)
+	if input == nil {
+		// Defensive: registry always attaches input. Empty map keeps
+		// the mapper from panicking on nil.
+		input = map[string]any{}
+	}
+
+	method, urlPath, body, err := mapper(input)
+	if err != nil {
+		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+	}
+
+	user := d.UserResolver(ctx)
+	if user == nil {
+		return mcp.NewToolResultErrorf("%s: no authenticated user in context", cmdKey), nil
+	}
+
+	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
+	if err != nil {
+		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
+	}
+	if d.Apply != nil {
+		req = d.Apply(req)
+	}
+
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	return packageHTTPResponse(cmdKey, rec.Result())
+}
+
+// buildHTTPRequest constructs the in-process request, attaching the
+// user via the exported server.WithCurrentUser helper so the handler
+// chain treats the call as authenticated. Pulled out so tests can
+// inspect / decorate it cheaply.
+func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, user *models.User) (*http.Request, error) {
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, urlPath, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	// Loopback-equivalent — handlers gating on RemoteAddr (e.g. the
+	// localhost-bootstrap path) treat this as in-process. The auth
+	// chain sees us as already-authenticated via WithCurrentUser, so
+	// localhost gating doesn't matter for the per-tool calls; this is
+	// just to keep the request shape sane for any handler that reads
+	// it.
+	req.RemoteAddr = "127.0.0.1:0"
+	authCtx := server.WithCurrentUser(req.Context(), user)
+	authCtx = server.WithAPITokenAuth(authCtx)
+	req = req.WithContext(authCtx)
+	return req, nil
+}
+
+// packageHTTPResponse turns the recorded handler response into an MCP
+// CallToolResult, mirroring ExecDispatcher's "JSON → structured + text
+// fallback" behaviour. 4xx/5xx surface as IsError-flagged results so
+// MCP clients distinguish protocol vs. tool failures.
+func packageHTTPResponse(cmdKey string, resp *http.Response) (*mcp.CallToolResult, error) {
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return mcp.NewToolResultErrorf("%s: read response: %s", cmdKey, err.Error()), nil
+	}
+	body := string(bodyBytes)
+
+	if resp.StatusCode >= 400 {
+		// Match the CLI's `pad <cmd>` error format from ExecDispatcher
+		// so MCP clients see a consistent shape regardless of
+		// transport.
+		msg := strings.TrimSpace(body)
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return mcp.NewToolResultErrorf("pad %s failed: %s", cmdKey, msg), nil
+	}
+
+	if trimmed := strings.TrimSpace(body); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var parsed any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			return mcp.NewToolResultStructured(parsed, body), nil
+		}
+	}
+	return mcp.NewToolResultText(body), nil
+}
+
+// mapItemCreate translates an `item create` MCP call into a POST to
+// /api/v1/workspaces/{ws}/collections/{coll}/items.
+//
+// The MCP tool schema (auto-generated by registry.go from cmdhelp)
+// surfaces:
+//
+//   - workspace (string, injected from session)
+//   - collection (string, positional arg)
+//   - title (string, positional arg)
+//   - content / status / priority / category / parent / role / assign
+//     (string flags)
+//   - field (repeatable kvp flag, --field key=value)
+//
+// The handler at handleCreateItem in internal/server expects a JSON
+// body shaped like models.ItemCreate — title + content + slug +
+// status + priority + fields (JSON-encoded). We pass through the
+// flat-string fields and JSON-encode --field entries into Fields so
+// the handler's existing schema-validation path runs unchanged.
+func mapItemCreate(input map[string]any) (method, path string, body []byte, err error) {
+	workspace, _ := input["workspace"].(string)
+	collection, _ := input["collection"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required (set --workspace or pad_set_workspace)")
+	}
+	if collection == "" {
+		return "", "", nil, fmt.Errorf("collection is required")
+	}
+
+	payload := map[string]any{}
+	for _, key := range []string{"title", "content", "slug", "status", "priority", "category"} {
+		if v, ok := input[key]; ok {
+			payload[key] = v
+		}
+	}
+	// Parent is part of the item-link flow on the server side and
+	// piggy-backs through the fields object on the CLI; the handler
+	// extracts it during create. Pass through.
+	if v, ok := input["parent"]; ok {
+		payload["parent"] = v
+	}
+
+	// Repeatable --field key=value flags arrive as []any, []string,
+	// or a single string. Normalize and roll into a fields JSON object
+	// matching the CLI's behaviour.
+	if rawFields, ok := input["field"]; ok {
+		fields, err := parseFieldKVP(rawFields)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse --field: %w", err)
+		}
+		if len(fields) > 0 {
+			fb, mErr := json.Marshal(fields)
+			if mErr != nil {
+				return "", "", nil, fmt.Errorf("encode fields: %w", mErr)
+			}
+			payload["fields"] = string(fb)
+		}
+	}
+
+	body, err = json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+
+	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/collections/%s/items",
+		url.PathEscape(workspace), url.PathEscape(collection))
+	return http.MethodPost, urlPath, body, nil
+}
+
+// parseFieldKVP normalizes the --field flag's various wire shapes
+// (single string, []string, []any) into a `key→value` map. Empty /
+// invalid entries are skipped silently to match the CLI's permissive
+// behaviour.
+func parseFieldKVP(raw any) (map[string]any, error) {
+	out := map[string]any{}
+	switch v := raw.(type) {
+	case []any:
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected string entries, got %T", e)
+			}
+			ingestFieldKVP(s, out)
+		}
+	case []string:
+		for _, s := range v {
+			ingestFieldKVP(s, out)
+		}
+	case string:
+		ingestFieldKVP(v, out)
+	default:
+		return nil, fmt.Errorf("expected array or string, got %T", raw)
+	}
+	return out, nil
+}
+
+func ingestFieldKVP(s string, dst map[string]any) {
+	if s == "" {
+		return
+	}
+	parts := strings.SplitN(s, "=", 2)
+	if len(parts) != 2 {
+		return
+	}
+	key := strings.TrimSpace(parts[0])
+	val := strings.TrimSpace(parts[1])
+	if key == "" {
+		return
+	}
+	dst[key] = val
+}
