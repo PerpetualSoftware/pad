@@ -51,10 +51,20 @@ import (
 // handler chain runs (auth, audit, event-bus, webhooks, FTS index),
 // just without forking a subprocess.
 //
-// Scope (TASK-965): this PR ships the framework and one wired
-// command, `item create`, as the proof-of-concept. The remaining ~70
-// MCP-exposed commands are wired in a follow-up before TASK-950 ships
-// the /mcp endpoint to real users — see internal/mcp.routeTable.
+// Scope:
+//
+//   - TASK-965 shipped the framework + `item create` as the
+//     proof-of-concept.
+//   - TASK-966 (this expansion) wires the high-value reads + writes:
+//     item show / list / delete / move / search / comment / comments,
+//     project dashboard, collection list, role list. Commands with
+//     non-trivial shape (item.list's path-varies-on-arg, item.move's
+//     nested overrides) live as standalone RouteMapper functions in
+//     dispatch_http_routes.go; the rest use the declarative routeSpec.
+//
+// Tools the cmdhelp registry advertises but the route table doesn't
+// yet wire produce a clear "not yet implemented over HTTP transport"
+// error rather than failing silently — see Dispatch below.
 type HTTPHandlerDispatcher struct {
 	// Handler is the pad-cloud API router. *server.Server already
 	// satisfies http.Handler via its ServeHTTP method.
@@ -87,12 +97,13 @@ type HTTPHandlerDispatcher struct {
 type RouteMapper func(input map[string]any) (method, path string, body []byte, err error)
 
 // routeTable wires cmdPaths (joined with " ") to RouteMappers.
-// TASK-965 seeds the table with `item create` as the proof-of-concept;
-// follow-up tasks before TASK-950 fill in the rest of the MCP-exposed
-// command surface.
-var routeTable = map[string]RouteMapper{
-	"item create": mapItemCreate,
-}
+//
+// Populated by init() in dispatch_http_routes.go — that file owns the
+// declarative spec for every wired command. Commands not in the
+// table reach Dispatch only when an MCP client invokes them directly
+// and produce a clear "not yet implemented over HTTP transport"
+// error from Dispatch.
+var routeTable map[string]RouteMapper
 
 // Dispatch satisfies the Dispatcher interface. cliArgs are accepted
 // for interface compatibility but ignored — HTTPHandlerDispatcher
