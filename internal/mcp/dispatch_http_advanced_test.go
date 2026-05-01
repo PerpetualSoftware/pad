@@ -482,6 +482,104 @@ func TestHTTPHandlerDispatcher_Integration_ItemUpdateAndAssignResolution(t *test
 	}
 }
 
+func TestDispatchItemUpdate_RejectsUnsupportedRole(t *testing.T) {
+	// Parity with mapItemCreate's role rejection — until the next
+	// route-table expansion adds slug → ID resolution, agents must
+	// not get a "success" response while their role assignment was
+	// silently dropped (Codex review #345 round 1).
+	prefetchCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(_ http.ResponseWriter, _ *http.Request) {
+		prefetchCount++
+	})
+	d := &HTTPHandlerDispatcher{
+		Handler:      mux,
+		UserResolver: fixedUserResolver(&models.User{ID: "caller"}),
+	}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+		"role": "implementer",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError when --role passed; got %#v", res)
+	}
+	// And: no handler call AT ALL — neither prefetch nor PATCH.
+	if prefetchCount != 0 {
+		t.Errorf("handler must not run when --role rejection trips; ran %d times", prefetchCount)
+	}
+}
+
+func TestDispatch_PrefetchesGoThroughApplyHook(t *testing.T) {
+	// Codex review #345 round 1: in-handler prefetches (members
+	// lookup for --assign, item.update's GET) used to bypass d.Apply,
+	// which would have meant any OAuth scope-context attached at
+	// dispatch time wouldn't apply to those side-channel reads —
+	// possible scope bypass when the future TASK-953 middleware
+	// wires Apply to attach token-allow-list context.
+	//
+	// This test asserts EVERY synthesized request (preprocess
+	// members lookup + item.update prefetch + main PATCH) flows
+	// through the Apply callback.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/members", membersHandler(t, []memberRow{
+		{UserID: "u-dave", UserName: "Dave"},
+	}).ServeHTTP)
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{\"status\":\"open\"}"}`))
+		case http.MethodPatch:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		}
+	})
+
+	const marker = "X-Test-Apply-Marker"
+	applyCalls := []string{}
+	d := &HTTPHandlerDispatcher{
+		Handler:      mux,
+		UserResolver: fixedUserResolver(&models.User{ID: "caller"}),
+		Apply: func(r *http.Request) *http.Request {
+			applyCalls = append(applyCalls, r.Method+" "+r.URL.Path)
+			r.Header.Set(marker, "yes")
+			return r
+		},
+	}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+		"status": "in-progress",
+		"assign": "Dave",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+
+	// Three requests synthesized: members lookup (preprocess) +
+	// item GET (prefetch) + item PATCH (main). All must have flowed
+	// through Apply.
+	wantPaths := map[string]bool{
+		"GET /api/v1/workspaces/docapp/members":        false,
+		"GET /api/v1/workspaces/docapp/items/TASK-5":   false,
+		"PATCH /api/v1/workspaces/docapp/items/TASK-5": false,
+	}
+	for _, call := range applyCalls {
+		if _, expected := wantPaths[call]; expected {
+			wantPaths[call] = true
+		}
+	}
+	for path, seen := range wantPaths {
+		if !seen {
+			t.Errorf("Apply did not see %q (saw %v)", path, applyCalls)
+		}
+	}
+}
+
 func TestRouteTable_ContainsWorkspaceMembers(t *testing.T) {
 	if _, ok := routeTable["workspace members"]; !ok {
 		t.Errorf("routeTable should include `workspace members` after TASK-967")

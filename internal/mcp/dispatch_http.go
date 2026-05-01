@@ -213,17 +213,42 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	method, urlPath string,
 	body []byte,
 ) (*mcp.CallToolResult, error) {
-	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
+	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
-	}
-	if d.Apply != nil {
-		req = d.Apply(req)
 	}
 
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
 	return packageHTTPResponse(cmdKey, rec.Result())
+}
+
+// buildAuthedRequest constructs an in-process HTTP request against
+// the wrapped handler with the user attached via WithCurrentUser AND
+// any caller-supplied decoration (d.Apply) applied. Used by both
+// the main dispatch path and the in-handler prefetches
+// (dispatchItemUpdate's GET, lookupAssigneeID's members fetch) so
+// token-scope context attached via Apply applies uniformly to every
+// synthesized request — no scope bypass on the prefetches.
+//
+// Codex review #345 round 1 caught the inconsistency: if an OAuth
+// middleware attached workspace-allow-list context via Apply, the
+// prefetches were bypassing that and could read members / items
+// outside the allowed set during resolution.
+func (d *HTTPHandlerDispatcher) buildAuthedRequest(
+	ctx context.Context,
+	method, urlPath string,
+	body []byte,
+	user *models.User,
+) (*http.Request, error) {
+	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
+	if err != nil {
+		return nil, err
+	}
+	if d.Apply != nil {
+		req = d.Apply(req)
+	}
+	return req, nil
 }
 
 // buildHTTPRequest constructs the in-process request, attaching the

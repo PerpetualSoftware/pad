@@ -83,7 +83,10 @@ func (d *HTTPHandlerDispatcher) lookupAssigneeID(
 	assign string,
 ) (string, error) {
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/members"
-	req, err := buildHTTPRequest(ctx, http.MethodGet, path, nil, user)
+	// Goes through buildAuthedRequest so d.Apply (the OAuth-scope
+	// hook) sees this prefetch the same as a top-level dispatch —
+	// no scope bypass during assignee resolution.
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
 	if err != nil {
 		return "", fmt.Errorf("build members request: %w", err)
 	}
@@ -158,11 +161,27 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
 
+	// `--role` parity with mapItemCreate: until the next route-table
+	// expansion adds slug → ID resolution, reject loudly so agents
+	// don't get a successful update response while their requested
+	// role assignment is silently dropped (Codex review #345 round 1).
+	if v, ok := input["role"].(string); ok && v != "" {
+		return mcp.NewToolResultErrorf(
+			"%s: --role is not yet supported by HTTPHandlerDispatcher; "+
+				"slug → role-ID resolution lands in the next route-table "+
+				"expansion. For now, pass `--field agent_role_id=<uuid>`",
+			cmdKey,
+		), nil
+	}
+
 	// Step 1: GET the existing item so we can read fields for the
 	// read-modify-write merge. If the GET fails (item not found,
 	// permission error, …), surface that to the caller — there's no
 	// point trying to PATCH an item we can't read.
-	prefetchReq, err := buildHTTPRequest(ctx, http.MethodGet, itemPath, nil, user)
+	//
+	// Goes through buildAuthedRequest so d.Apply (the OAuth-scope
+	// hook) sees this prefetch the same as a top-level dispatch.
+	prefetchReq, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: build prefetch request: %s", cmdKey, err.Error()), nil
 	}
