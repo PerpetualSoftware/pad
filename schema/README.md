@@ -42,9 +42,9 @@ print('OK')
 " < <(pad help --format json)
 ```
 
-### Validating in Go (used by Pad's own test suite)
+### Validating in Go (planned for Pad's own test suite)
 
-The test suite in `internal/cmdhelp/` validates the live `pad help --format json` output against this schema as part of `go test ./...`. A drift between emitter and schema fails CI. (See `TASK-938` for the test-side contract.)
+Once the JSON emitter ships (`TASK-934`), the test suite in `internal/cmdhelp/` will validate the live `pad help --format json` output against this schema as part of `go test ./...`, so a drift between emitter and schema fails CI. The test-side contract is owned by `TASK-938`. The schema is committed first because `TASK-934` and `TASK-938` are both downstream of (and validated against) it.
 
 ## v0.1 highlights
 

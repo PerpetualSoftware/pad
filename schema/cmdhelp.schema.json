@@ -158,8 +158,11 @@
     },
 
     "flagMap": {
-      "description": "Map of flag names (without leading --) to flag definitions.",
+      "description": "Map of flag names (without leading --) to flag definitions. Keys MUST match the flag-name pattern: start with a letter, followed by letters, digits, hyphens, or underscores. Long-form (e.g. `format`) and short-form (e.g. `h`) names are both valid; consumers add the leading `-` or `--` themselves at invocation time.",
       "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+      },
       "additionalProperties": { "$ref": "#/$defs/flag" }
     },
 
