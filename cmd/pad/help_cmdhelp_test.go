@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -101,17 +102,31 @@ func TestHelpCmd_FormatTextEquivalent(t *testing.T) {
 	}
 }
 
-func TestHelpCmd_FormatJSONStubError(t *testing.T) {
-	_, _, err := runHelp(t, "--format", "json")
-	if err == nil {
-		t.Fatalf("expected --format json to return a stub error (TASK-934 unimplemented)")
+func TestHelpCmd_FormatJSONEmits(t *testing.T) {
+	// TASK-934 replaced the stub with a real emitter. Verify --format json
+	// produces a parseable cmdhelp document with the expected envelope.
+	out, _, err := runHelp(t, "--format", "json")
+	if err != nil {
+		t.Fatalf("--format json: unexpected error: %v\nstdout:\n%s", err, out)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "TASK-934") {
-		t.Errorf("expected JSON stub error to reference TASK-934, got: %s", msg)
+	var doc map[string]interface{}
+	if uerr := json.Unmarshal([]byte(out), &doc); uerr != nil {
+		t.Fatalf("--format json output is not valid JSON: %v\n%s", uerr, out)
 	}
-	if !strings.Contains(msg, "not yet implemented") {
-		t.Errorf("expected JSON stub error to say 'not yet implemented', got: %s", msg)
+	if doc["cmdhelp_version"] != "0.1" {
+		t.Errorf("cmdhelp_version = %v, want 0.1", doc["cmdhelp_version"])
+	}
+	if _, ok := doc["binary"]; !ok {
+		t.Errorf("emitted JSON missing required key 'binary'")
+	}
+	cmds, ok := doc["commands"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("emitted JSON missing required key 'commands' or wrong type: %T", doc["commands"])
+	}
+	for _, want := range []string{"item", "item create", "project", "project dashboard"} {
+		if _, ok := cmds[want]; !ok {
+			t.Errorf("expected command %q in emitted commands map", want)
+		}
 	}
 }
 
