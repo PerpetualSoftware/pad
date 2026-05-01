@@ -116,6 +116,12 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				rootFlags,
 			)
 
+			// Static prompts (TASK-947): four multi-step workflows
+			// lifted from skills/pad/SKILL.md (plan, ideate, retro,
+			// onboard). No subprocess / runtime dependencies — just
+			// embedded text returned as user-role messages.
+			mcpserver.RegisterPrompts(srv.MCP())
+
 			if err := srv.Run(cmd.Context()); err != nil {
 				return fmt.Errorf("pad mcp serve: %w", err)
 			}
