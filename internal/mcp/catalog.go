@@ -313,6 +313,18 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 // when the tool is called. Reads `action` from the input, looks up the
 // handler, and forwards. Unknown / missing action returns a structured
 // error result so the agent sees the valid options and can recover.
+//
+// The catalog's `action` key is stripped from the input before the
+// action handler runs. It's the fan-out routing field — its value
+// names the handler we just dispatched to, so the handler doesn't
+// need it. More importantly, leaving it in would shadow any CLI flag
+// named `--action` when the handler eventually dispatches: e.g.
+// `pad workspace audit-log --action item.created` reuses the same
+// flag name as our routing key, and BuildCLIArgs would emit
+// `--action audit-log` (the catalog action name) instead of the
+// user's filter. Stripping at the boundary keeps action handlers
+// free to talk to the dispatcher in CLI-flag terms without watching
+// for that collision.
 func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		input := req.GetArguments()
@@ -327,7 +339,17 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 		if !ok {
 			return errUnknownAction(def, action), nil
 		}
-		return handler(ctx, input, env)
+		// Clone before stripping so we don't mutate req.Params.Arguments
+		// — defensive against any future mcp-go change that re-reads the
+		// request map after dispatch.
+		stripped := make(map[string]any, len(input))
+		for k, v := range input {
+			if k == "action" {
+				continue
+			}
+			stripped[k] = v
+		}
+		return handler(ctx, stripped, env)
 	}
 }
 

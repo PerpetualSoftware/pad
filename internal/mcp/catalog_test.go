@@ -180,6 +180,43 @@ func TestMakeFanOutHandler_MissingAction(t *testing.T) {
 	}
 }
 
+// TestMakeFanOutHandler_StripsActionFromInput proves the routing
+// `action` key never reaches the action handler — important because
+// some downstream CLI commands (workspace audit-log) declare their
+// own `--action` flag, which would collide with the catalog's
+// routing key and silently emit the catalog action name as the flag
+// value. Strip-at-the-boundary keeps action handlers ergonomic.
+func TestMakeFanOutHandler_StripsActionFromInput(t *testing.T) {
+	var seen map[string]any
+	def := ToolDef{
+		Name: "pad_test",
+		Actions: map[string]ActionFn{
+			"audit-log": func(_ context.Context, input map[string]any, _ ActionEnv) (*mcp.CallToolResult, error) {
+				seen = input
+				return mcp.NewToolResultText("ok"), nil
+			},
+		},
+	}
+	handler := makeFanOutHandler(def, ActionEnv{Workspace: NewWorkspaceState("")})
+	_, err := handler(context.Background(), callToolRequest(map[string]any{
+		"action":     "audit-log",
+		"days":       float64(7),
+		"actor_name": "dave",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if _, has := seen["action"]; has {
+		t.Errorf("action key leaked into action handler input: %v", seen)
+	}
+	if seen["days"] != float64(7) {
+		t.Errorf("days lost: got %v", seen["days"])
+	}
+	if seen["actor_name"] != "dave" {
+		t.Errorf("actor_name lost: got %v", seen["actor_name"])
+	}
+}
+
 // TestMakeFanOutHandler_UnknownAction is the symmetric case: action is
 // set but not in the handler table. Same recovery pattern — list the
 // valid actions so the agent can retry.
