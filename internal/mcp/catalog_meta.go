@@ -45,15 +45,18 @@ var padMetaTool = ToolDef{
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, and the full tool catalog.
+const padMetaToolDescription = `Server introspection — version, capabilities, and the v0.2 tool catalog.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — Full catalog dump: every tool, its actions, and its input schema.
-                  Useful for agents that want to enumerate the surface programmatically
-                  rather than parsing tools/list.
+  tool-surface  — v0.2 catalog dump: every tool managed by the hand-curated catalog,
+                  its actions, and its input schema. During PLAN-969's rollout the
+                  cmdhelp walker also contributes to tools/list; tool-surface
+                  intentionally only enumerates the catalog (the source it can
+                  introspect cleanly). For the complete advertised surface, read
+                  tools/list directly.
 
 Use pad_meta when an agent needs to discover server capabilities or generate
 documentation. For runtime task work, use pad_item / pad_workspace / etc.`
@@ -90,10 +93,22 @@ func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*mcp
 	return mcp.NewToolResultStructured(payload, string(body)), nil
 }
 
-// actionMetaToolSurface returns the full catalog as JSON. Pairs with
+// actionMetaToolSurface returns the v0.2 catalog as JSON. Pairs with
 // PLAN-943 TASK-957 (getpad.dev/docs/mcp) — that page can generate
 // docs from this single canonical source instead of re-introspecting
 // tools/list and reverse-engineering action enums.
+//
+// Scope: the v0.2 catalog only. Until TASK-981 retires the cmdhelp
+// walker, tools/list contains both the catalog (currently pad_meta)
+// AND the walker-derived ~85 verb tools — but tool-surface
+// deliberately does not enumerate the walker output. The walker
+// surface is opaque to the catalog (no shared ToolDef shape), and
+// hand-mapping it would cost duplication for value that's about to
+// disappear in TASK-981.
+//
+// During rollout the response includes a `rollout_status` field so
+// consumers can detect "catalog is partial" and fall back to
+// tools/list when they need the complete advertised surface.
 //
 // Schema is intentionally simple — name + description per tool, plus
 // per-action name + presence. Full per-action parameter schemas live
@@ -122,8 +137,18 @@ func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (
 			Actions:     actions,
 		})
 	}
+	// rollout_status is "complete" only after TASK-981 retires the
+	// cmdhelp walker and the catalog is the sole tools/list source.
+	// Before then, "in-progress" signals to consumers that the catalog
+	// is a strict subset of the advertised surface and they should
+	// read tools/list directly if they need everything.
+	rolloutStatus := "in-progress"
+	if ToolSurfaceVersion != "0.1" {
+		rolloutStatus = "complete"
+	}
 	payload := map[string]any{
 		"tool_surface_version": ToolSurfaceVersion,
+		"rollout_status":       rolloutStatus,
 		"tools":                tools,
 	}
 	body, err := json.Marshal(payload)

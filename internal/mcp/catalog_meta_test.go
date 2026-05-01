@@ -115,6 +115,18 @@ func TestActionMetaToolSurface_DumpsCatalog(t *testing.T) {
 	if got["tool_surface_version"] != ToolSurfaceVersion {
 		t.Errorf("tool_surface_version = %v, want %q", got["tool_surface_version"], ToolSurfaceVersion)
 	}
+	// rollout_status signals to consumers that the catalog is a strict
+	// subset of tools/list during PLAN-969's parallel-rollout phase.
+	// "in-progress" while ToolSurfaceVersion stays at 0.1; flips to
+	// "complete" when TASK-981 bumps the constant.
+	wantStatus := "in-progress"
+	if ToolSurfaceVersion != "0.1" {
+		wantStatus = "complete"
+	}
+	if got["rollout_status"] != wantStatus {
+		t.Errorf("rollout_status = %v, want %q (ToolSurfaceVersion=%q)",
+			got["rollout_status"], wantStatus, ToolSurfaceVersion)
+	}
 	tools, ok := got["tools"].([]any)
 	if !ok {
 		t.Fatalf("tools is %T, want []any", got["tools"])
