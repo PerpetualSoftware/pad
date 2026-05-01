@@ -222,15 +222,31 @@ func packageHTTPResponse(cmdKey string, resp *http.Response) (*mcp.CallToolResul
 //   - workspace (string, injected from session)
 //   - collection (string, positional arg)
 //   - title (string, positional arg)
-//   - content / status / priority / category / parent / role / assign
-//     (string flags)
+//   - content (string flag)
+//   - status / priority / category / parent (string flags — ROLLED
+//     into the fields JSON object below to mirror the CLI; the
+//     handler reads them out of fields, not the top level)
 //   - field (repeatable kvp flag, --field key=value)
 //
 // The handler at handleCreateItem in internal/server expects a JSON
-// body shaped like models.ItemCreate — title + content + slug +
-// status + priority + fields (JSON-encoded). We pass through the
-// flat-string fields and JSON-encode --field entries into Fields so
-// the handler's existing schema-validation path runs unchanged.
+// body shaped like models.ItemCreate. The CLI's `pad item create`
+// path (cmd/pad/main.go ~L2200) builds a `fields` map from
+// --status / --priority / --parent / --category and the repeatable
+// --field key=value entries, then JSON-encodes the whole thing into
+// ItemCreate.Fields. The handler then unmarshals that string and
+// extracts parent / status / priority / etc. We mirror the CLI's
+// shape exactly so behavior is identical for both transports.
+//
+// `parent` is left as a free-form ref string — the handler resolves
+// non-UUID refs via store.ResolveItem during create (handlers_items.go
+// ~L220), so callers can pass "PLAN-3" or a UUID interchangeably.
+//
+// `assign` and `role` are intentionally NOT wired here for v1: the
+// CLI translates user-name/email → user-ID and role-slug → role-ID
+// via additional API calls before posting. Replicating that pre-
+// resolution belongs in a follow-up that expands the route table for
+// production use; flagging unsupported avoids a partial implementation
+// that silently drops them.
 func mapItemCreate(input map[string]any) (method, path string, body []byte, err error) {
 	workspace, _ := input["workspace"].(string)
 	collection, _ := input["collection"].(string)
@@ -241,33 +257,67 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 		return "", "", nil, fmt.Errorf("collection is required")
 	}
 
+	// Build the fields object the CLI would build, then JSON-encode
+	// it into ItemCreate.Fields. Order doesn't matter — the handler
+	// re-decodes and validates against the collection schema.
+	fields := map[string]any{}
+	for _, key := range []string{"status", "priority", "category", "parent"} {
+		if v, ok := input[key]; ok && v != nil {
+			if s, ok := v.(string); ok && s != "" {
+				fields[key] = s
+			} else if !isStringType(v) {
+				// Non-string types (e.g. number from a typed flag) —
+				// pass through verbatim and let the handler validate.
+				fields[key] = v
+			}
+		}
+	}
+	// Repeatable --field key=value flags overlay onto the fields map.
+	// Ordering matches the CLI: explicit --field entries CAN
+	// override the named flags above (last-write-wins per key) so an
+	// agent can set custom fields the schema declares without us
+	// having to teach the route mapper about every collection.
+	if rawFields, ok := input["field"]; ok {
+		extra, err := parseFieldKVP(rawFields)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse --field: %w", err)
+		}
+		for k, v := range extra {
+			fields[k] = v
+		}
+	}
+
 	payload := map[string]any{}
-	for _, key := range []string{"title", "content", "slug", "status", "priority", "category"} {
+	for _, key := range []string{"title", "content", "slug"} {
 		if v, ok := input[key]; ok {
 			payload[key] = v
 		}
 	}
-	// Parent is part of the item-link flow on the server side and
-	// piggy-backs through the fields object on the CLI; the handler
-	// extracts it during create. Pass through.
-	if v, ok := input["parent"]; ok {
-		payload["parent"] = v
+	if len(fields) > 0 {
+		fb, mErr := json.Marshal(fields)
+		if mErr != nil {
+			return "", "", nil, fmt.Errorf("encode fields: %w", mErr)
+		}
+		payload["fields"] = string(fb)
+	}
+	// Tags are a top-level []string on ItemCreate, separate from
+	// the fields JSON. Pass through verbatim if provided.
+	if v, ok := input["tags"]; ok {
+		payload["tags"] = v
 	}
 
-	// Repeatable --field key=value flags arrive as []any, []string,
-	// or a single string. Normalize and roll into a fields JSON object
-	// matching the CLI's behaviour.
-	if rawFields, ok := input["field"]; ok {
-		fields, err := parseFieldKVP(rawFields)
-		if err != nil {
-			return "", "", nil, fmt.Errorf("parse --field: %w", err)
-		}
-		if len(fields) > 0 {
-			fb, mErr := json.Marshal(fields)
-			if mErr != nil {
-				return "", "", nil, fmt.Errorf("encode fields: %w", mErr)
+	// Reject role/assign with a clear error rather than silently
+	// dropping them — full support requires resolving names → IDs
+	// and is being tracked as a follow-up to TASK-965.
+	for _, unsupported := range []string{"assign", "role"} {
+		if v, ok := input[unsupported]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return "", "", nil, fmt.Errorf(
+					"--%s is not yet supported by HTTPHandlerDispatcher; "+
+						"resolution from name to ID lands in a follow-up to TASK-965",
+					unsupported,
+				)
 			}
-			payload["fields"] = string(fb)
 		}
 	}
 
@@ -279,6 +329,14 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/collections/%s/items",
 		url.PathEscape(workspace), url.PathEscape(collection))
 	return http.MethodPost, urlPath, body, nil
+}
+
+// isStringType returns true when v is a Go string. Used by the
+// fields-builder to distinguish "real value to pass through" from
+// "empty/missing".
+func isStringType(v any) bool {
+	_, ok := v.(string)
+	return ok
 }
 
 // parseFieldKVP normalizes the --field flag's various wire shapes

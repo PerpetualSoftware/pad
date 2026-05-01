@@ -100,7 +100,10 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 		"collection": "tasks",
 		"title":      "Fix OAuth",
 		"priority":   "high",
-		"field":      []any{"status=in-progress", "due_date=2026-06-01"},
+		"status":     "in-progress",
+		"category":   "infrastructure",
+		"parent":     "PLAN-3",
+		"field":      []any{"due_date=2026-06-01"},
 	})
 
 	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
@@ -129,10 +132,14 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 	if body["title"] != "Fix OAuth" {
 		t.Errorf("body.title = %v, want %q", body["title"], "Fix OAuth")
 	}
-	if body["priority"] != "high" {
-		t.Errorf("body.priority = %v, want %q", body["priority"], "high")
+	// status/priority/category/parent must NOT live at the top level
+	// (the handler ignores them there); they belong in fields. This
+	// guards against the regression Codex caught in PR review round 1.
+	for _, leaked := range []string{"status", "priority", "category", "parent"} {
+		if _, present := body[leaked]; present {
+			t.Errorf("body.%s leaked to top level; should be inside body.fields", leaked)
+		}
 	}
-	// `field` should have rolled up into a fields JSON string.
 	fieldsRaw, ok := body["fields"].(string)
 	if !ok {
 		t.Fatalf("body.fields missing or wrong type; body=%v", body)
@@ -141,11 +148,17 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 	if err := json.Unmarshal([]byte(fieldsRaw), &fields); err != nil {
 		t.Fatalf("fields JSON parse: %v", err)
 	}
-	if fields["status"] != "in-progress" {
-		t.Errorf("fields.status = %v, want in-progress", fields["status"])
+	wantFields := map[string]any{
+		"status":   "in-progress",
+		"priority": "high",
+		"category": "infrastructure",
+		"parent":   "PLAN-3",
+		"due_date": "2026-06-01",
 	}
-	if fields["due_date"] != "2026-06-01" {
-		t.Errorf("fields.due_date = %v, want 2026-06-01", fields["due_date"])
+	for k, want := range wantFields {
+		if got := fields[k]; got != want {
+			t.Errorf("fields.%s = %v, want %v", k, got, want)
+		}
 	}
 
 	if rec.gotUser == nil || rec.gotUser.ID != user.ID {
@@ -153,6 +166,50 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 	}
 	if !rec.gotIsAPITok {
 		t.Errorf("isAPIToken not set; auth context missing")
+	}
+}
+
+func TestMapItemCreate_ExplicitFieldOverridesNamedFlag(t *testing.T) {
+	// Last-write-wins: an explicit --field status=blocked should
+	// override a separate --status=in-progress on the same call.
+	// This matches the CLI's behaviour and lets agents reach custom
+	// schema-defined fields without us teaching the mapper about each.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"status": "in-progress",
+		"field":  []any{"status=blocked"},
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(payload["fields"].(string)), &fields); err != nil {
+		t.Fatalf("decode fields: %v", err)
+	}
+	if fields["status"] != "blocked" {
+		t.Errorf("fields.status = %v, want %q (--field overrides --status)", fields["status"], "blocked")
+	}
+}
+
+func TestMapItemCreate_RejectsUnsupportedAssignRole(t *testing.T) {
+	for _, key := range []string{"assign", "role"} {
+		t.Run(key, func(t *testing.T) {
+			_, _, _, err := mapItemCreate(map[string]any{
+				"workspace": "ws", "collection": "tasks", "title": "x",
+				key: "Dave",
+			})
+			if err == nil {
+				t.Errorf("expected error rejecting --%s; got nil", key)
+				return
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error should mention --%s; got %v", key, err)
+			}
+		})
 	}
 }
 
