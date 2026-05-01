@@ -66,19 +66,34 @@ func TestServer_InitializeHandshake(t *testing.T) {
 	if exp == nil {
 		t.Fatalf("capabilities.experimental missing — cmdhelp tier not advertised")
 	}
-	rawNS, ok := exp[experimentalCapabilityKey]
+	assertExperimentalNamespace(t, exp, experimentalCapabilityKey, CmdhelpVersion)
+
+	// TASK-979 (PLAN-969): verify the v0.2 tool-surface tier is also on
+	// the wire. cmdhelp + tool-surface are independent contracts — both
+	// must be discoverable in the handshake so consumers don't have to
+	// fetch the meta resource to learn the catalog version.
+	assertExperimentalNamespace(t, exp, experimentalToolSurfaceKey, ToolSurfaceVersion)
+}
+
+// assertExperimentalNamespace fails the test if exp[key] doesn't carry
+// the expected version + a tool_surface_stable=true flag. Shared by the
+// padCmdhelp and padToolSurface assertions to keep the wire-level
+// contract uniform across both namespaces.
+func assertExperimentalNamespace(t *testing.T, exp map[string]any, key, wantVersion string) {
+	t.Helper()
+	rawNS, ok := exp[key]
 	if !ok {
-		t.Fatalf("experimental[%q] missing; got %#v", experimentalCapabilityKey, exp)
+		t.Fatalf("experimental[%q] missing; got keys %v", key, mapKeys(exp))
 	}
 	ns, ok := rawNS.(map[string]any)
 	if !ok {
-		t.Fatalf("experimental[%q] is %T, want map[string]any", experimentalCapabilityKey, rawNS)
+		t.Fatalf("experimental[%q] is %T, want map[string]any", key, rawNS)
 	}
-	if got := ns["version"]; got != CmdhelpVersion {
-		t.Errorf("experimental[%q].version = %v, want %q", experimentalCapabilityKey, got, CmdhelpVersion)
+	if got := ns["version"]; got != wantVersion {
+		t.Errorf("experimental[%q].version = %v, want %q", key, got, wantVersion)
 	}
 	if got := ns["tool_surface_stable"]; got != true {
-		t.Errorf("experimental[%q].tool_surface_stable = %v, want true", experimentalCapabilityKey, got)
+		t.Errorf("experimental[%q].tool_surface_stable = %v, want true", key, got)
 	}
 }
 

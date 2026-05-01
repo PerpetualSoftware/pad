@@ -19,11 +19,16 @@ type MetaPayload struct {
 	// PadVersion is the runtime version of the pad binary (e.g. "0.1.5").
 	PadVersion string `json:"pad_version"`
 
-	// CmdhelpVersion is the tool-surface stability tier. See the
+	// CmdhelpVersion is the CLI help-tree stability tier. See the
 	// CmdhelpVersion constant for the bump policy.
 	CmdhelpVersion string `json:"cmdhelp_version"`
 
-	// ToolSurfaceStable signals that the cmdhelp surface has shipped its
+	// ToolSurfaceVersion is the MCP tool catalog stability tier. See
+	// the ToolSurfaceVersion constant for the bump policy. Independent
+	// of CmdhelpVersion: the catalog can rev without changing the CLI.
+	ToolSurfaceVersion string `json:"tool_surface_version"`
+
+	// ToolSurfaceStable signals that the tool surface has shipped its
 	// stability contract. False during pre-release iteration.
 	ToolSurfaceStable bool `json:"tool_surface_stable"`
 
@@ -53,6 +58,7 @@ func BuildMetaPayload(padVersion string) MetaPayload {
 	return MetaPayload{
 		PadVersion:         padVersion,
 		CmdhelpVersion:     CmdhelpVersion,
+		ToolSurfaceVersion: ToolSurfaceVersion,
 		ToolSurfaceStable:  true,
 		MCPProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 	}
@@ -97,8 +103,8 @@ func RegisterMeta(srv *server.MCPServer, padVersion string) {
 
 // experimentalCapabilities returns the map advertised at
 // capabilities.experimental in the initialize handshake's result
-// envelope. Lets clients discover the cmdhelp tier in one round-trip
-// without reading the meta resource.
+// envelope. Lets clients discover the cmdhelp + tool-surface tiers in
+// one round-trip without reading the meta resource.
 //
 // Wire shape:
 //
@@ -108,16 +114,28 @@ func RegisterMeta(srv *server.MCPServer, padVersion string) {
 //	      "padCmdhelp": {
 //	        "version":             "0.1",
 //	        "tool_surface_stable": true
+//	      },
+//	      "padToolSurface": {
+//	        "version":             "0.2",
+//	        "tool_surface_stable": true
 //	      }
 //	    },
 //	    ...
 //	  },
 //	  ...
 //	}
+//
+// Two independent contracts: padCmdhelp tracks CLI help-tree shape,
+// padToolSurface tracks the MCP tool catalog. They version separately
+// so a catalog reshape doesn't force a cmdhelp bump and vice versa.
 func experimentalCapabilities() map[string]any {
 	return map[string]any{
 		experimentalCapabilityKey: map[string]any{
 			"version":             CmdhelpVersion,
+			"tool_surface_stable": true,
+		},
+		experimentalToolSurfaceKey: map[string]any{
+			"version":             ToolSurfaceVersion,
 			"tool_surface_stable": true,
 		},
 	}

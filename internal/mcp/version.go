@@ -22,19 +22,51 @@ const ServerName = "pad-mcp"
 // builds where the version string is empty.
 const FallbackVersion = "0.0.0-dev"
 
-// CmdhelpVersion is the tool-surface stability contract this MCP server
-// advertises. External agents (Claude Desktop, Cursor, ChatGPT
-// connectors, future Pad Cloud remote MCP) depend on tool names,
-// argument shapes, and resource URIs being stable across pad releases.
-// Bump the major when those change incompatibly:
+// CmdhelpVersion is the cmdhelp CLI-help-tree stability contract this
+// MCP server advertises. cmdhelp is the source of truth for individual
+// CLI command schemas (args, flags, types) consumed at MCP dispatch
+// time by BuildCLIArgs. Bump the major when those CLI-side schemas
+// change incompatibly:
 //
-//   - "0.1" — initial cmdhelp-derived surface from PLAN-942.
+//   - "0.1" — initial cmdhelp surface from PLAN-942.
+//
+// This is independent of ToolSurfaceVersion below — cmdhelp owns the
+// CLI's help-tree contract; ToolSurfaceVersion owns the MCP tool
+// catalog's contract. Two contracts, two version constants.
 //
 // Discovery surfaces (paths into the JSON-RPC envelope):
 //
 //   - result.capabilities.experimental.padCmdhelp.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 const CmdhelpVersion = "0.1"
+
+// ToolSurfaceVersion is the MCP tool catalog stability contract this
+// server advertises. External agents (Claude Desktop, Cursor, ChatGPT
+// connectors, future Pad Cloud remote MCP) pin against it so a future
+// tool rename, action enum change, or parameter reshape doesn't
+// silently break consumers. Bump the major when the catalog shape
+// changes incompatibly:
+//
+//   - "0.1" — current. cmdhelp-derived ~85 flat verb tools (PLAN-942).
+//     During PLAN-969's 3-stage rollout, the v0.2 catalog
+//     scaffold + pad_meta tool also ride this version because
+//     the user-visible surface is still predominantly v0.1
+//     (the cmdhelp walker is still active alongside). Bumping
+//     before the catalog is complete would mislead consumers
+//     into believing the resource/action shape is available
+//     for every tool, when only pad_meta + the walker output
+//     show up in tools/list.
+//   - "0.2" — planned. Hand-curated resource × action catalog
+//     (PLAN-969). Version bumped in TASK-981, the commit that
+//     retires the cmdhelp walker and delivers the complete
+//     v0.2 catalog.
+//
+// Discovery surfaces:
+//
+//   - result.capabilities.experimental.padToolSurface.version (handshake).
+//   - pad://_meta/version resource (queryable JSON document).
+//   - pad_meta.action: tool-surface (full catalog introspection).
+const ToolSurfaceVersion = "0.1"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
@@ -53,3 +85,9 @@ const MetaVersionURI = "pad://_meta/version"
 // initialize handshake. Namespaced so other servers' experimental
 // capabilities don't collide.
 const experimentalCapabilityKey = "padCmdhelp"
+
+// experimentalToolSurfaceKey is the JSON object key under
+// capabilities.experimental that carries the MCP tool-catalog tier in
+// the initialize handshake. Distinct from experimentalCapabilityKey so
+// the cmdhelp and tool-surface contracts can version independently.
+const experimentalToolSurfaceKey = "padToolSurface"

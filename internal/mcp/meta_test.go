@@ -21,6 +21,9 @@ func TestBuildMetaPayload_FallbackVersion(t *testing.T) {
 	if got.CmdhelpVersion != CmdhelpVersion {
 		t.Errorf("CmdhelpVersion = %q, want %q", got.CmdhelpVersion, CmdhelpVersion)
 	}
+	if got.ToolSurfaceVersion != ToolSurfaceVersion {
+		t.Errorf("ToolSurfaceVersion = %q, want %q", got.ToolSurfaceVersion, ToolSurfaceVersion)
+	}
 	if !got.ToolSurfaceStable {
 		t.Errorf("ToolSurfaceStable = false, want true")
 	}
@@ -56,7 +59,7 @@ func TestBuildMetaPayload_JSONFieldNames(t *testing.T) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	want := []string{"pad_version", "cmdhelp_version", "tool_surface_stable", "mcp_protocol_version"}
+	want := []string{"pad_version", "cmdhelp_version", "tool_surface_version", "tool_surface_stable", "mcp_protocol_version"}
 	for _, k := range want {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("field %q missing from JSON; got keys %v", k, mapKeys(raw))
