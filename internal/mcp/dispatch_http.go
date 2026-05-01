@@ -239,8 +239,12 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	switch cmdKey {
 	case "item update":
 		return d.dispatchItemUpdate(ctx, input, user)
-	case "item deps", "item related", "item implemented-by":
-		return d.dispatchGetItemLinks(ctx, input, user, cmdKey)
+	case "item deps":
+		return d.dispatchItemDeps(ctx, input, user)
+	case "item related":
+		return d.dispatchItemRelated(ctx, input, user)
+	case "item implemented-by":
+		return d.dispatchItemImplementedBy(ctx, input, user)
 	}
 
 	// Item link create/delete commands. The asymmetry between which

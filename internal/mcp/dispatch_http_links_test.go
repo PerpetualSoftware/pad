@@ -339,6 +339,45 @@ func TestDispatch_ItemUnblock_FindsAndDeletesMatchingLink(t *testing.T) {
 	}
 }
 
+func TestDispatch_ItemUnblock_WrapsDelete204AsStatusRemoved(t *testing.T) {
+	// Handler returns 204 No Content on DELETE. The CLI's
+	// `--format json` for `unblock` (and the lineage delete-link
+	// commands) prints `{"status":"removed"}`. The dispatcher must
+	// match — Codex review caught the empty-text packaging as a
+	// divergence.
+	items := map[string]itemPrefetch{
+		"TASK-5": {ID: "id-5", Slug: "task-5"},
+		"TASK-8": {ID: "id-8", Slug: "task-8"},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/task-5/links", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]models.ItemLink{
+			{ID: "the-link", SourceID: "id-5", TargetID: "id-8", LinkType: "blocks"},
+		})
+	})
+	mux.HandleFunc("/api/v1/workspaces/docapp/links/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/", itemPrefetchHandler(t, items))
+
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "source_ref": "TASK-5", "target_ref": "TASK-8",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "unblock"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured map[string]any (JSON-decoded shape); got %#v", res.StructuredContent)
+	}
+	if payload["status"] != "removed" {
+		t.Errorf("status = %v, want removed", payload["status"])
+	}
+}
+
 func TestDispatch_ItemUnblock_MissingLinkSurfacesError(t *testing.T) {
 	// Empty links list → the dispatcher must NOT fall back to
 	// deleting something else; it returns an IsError tool result.
@@ -377,7 +416,11 @@ func TestDispatch_ItemUnblock_MissingLinkSurfacesError(t *testing.T) {
 
 // --- Read-only link queries ---
 
-func TestDispatch_ItemDeps_GetsLinks(t *testing.T) {
+func TestDispatch_ItemDeps_ReturnsRawLinksArray(t *testing.T) {
+	// `deps --format json` returns the raw `/links` array. The
+	// dispatcher's parity contract says we match — any post-
+	// processing belongs in agent-side code or in `related`/
+	// `implemented-by` (which DO post-process per the CLI).
 	gotPath := ""
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5/links", func(w http.ResponseWriter, r *http.Request) {
@@ -391,19 +434,151 @@ func TestDispatch_ItemDeps_GetsLinks(t *testing.T) {
 	})
 
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
-	for _, cmd := range []string{"item deps", "item related", "item implemented-by"} {
-		t.Run(cmd, func(t *testing.T) {
-			ctx := WithDispatchInput(context.Background(), map[string]any{
-				"workspace": "docapp", "ref": "TASK-5",
-			})
-			res, err := d.Dispatch(ctx, strings.Split(cmd, " "), nil)
-			if err != nil || res.IsError {
-				t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
-			}
-			if gotPath != "/api/v1/workspaces/docapp/items/TASK-5/links" {
-				t.Errorf("path = %q", gotPath)
-			}
-		})
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "deps"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if gotPath != "/api/v1/workspaces/docapp/items/TASK-5/links" {
+		t.Errorf("path = %q", gotPath)
+	}
+	links, ok := res.StructuredContent.([]any)
+	if !ok {
+		t.Fatalf("deps result not a JSON array: %#v", res.StructuredContent)
+	}
+	if len(links) != 1 {
+		t.Errorf("expected 1 link in deps result; got %d", len(links))
+	}
+}
+
+func TestDispatch_ItemRelated_ReturnsGroupedShape(t *testing.T) {
+	// CLI `--format json` for `related` returns
+	// {item_ref, item_title, collection, group_count, groups}.
+	// The dispatcher must mirror that — Codex review caught the
+	// raw-links shape as a divergence.
+	itemSlug := "task-5"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"id-task-5",
+			"slug":"task-5",
+			"title":"Fix OAuth",
+			"collection_slug":"tasks",
+			"collection_prefix":"TASK",
+			"item_number":5
+		}`))
+	})
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/"+itemSlug+"/links", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Mix: outgoing blocks (TASK-5 blocks something) + incoming
+		// implements (something implements TASK-5).
+		_, _ = w.Write([]byte(`[
+			{"id":"l1","link_type":"blocks","source_id":"id-task-5","target_id":"id-other","target_ref":"TASK-9","target_title":"Other","target_collection_slug":"tasks","target_status":"open"},
+			{"id":"l2","link_type":"implements","source_id":"id-impl","target_id":"id-task-5","source_ref":"TASK-7","source_title":"Implementer","source_collection_slug":"tasks","source_status":"in-progress"}
+		]`))
+	})
+
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "related"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("related result not structured: %#v", res.StructuredContent)
+	}
+	if payload["item_ref"] != "TASK-5" {
+		t.Errorf("item_ref = %v, want TASK-5", payload["item_ref"])
+	}
+	if payload["item_title"] != "Fix OAuth" {
+		t.Errorf("item_title = %v", payload["item_title"])
+	}
+	if payload["collection"] != "tasks" {
+		t.Errorf("collection = %v", payload["collection"])
+	}
+	groups, ok := payload["groups"].([]any)
+	if !ok {
+		t.Fatalf("groups not an array: %#v", payload["groups"])
+	}
+	// Two groups expected: blocks (outgoing) + implemented_by (incoming).
+	gotKeys := map[string]bool{}
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		if k, _ := gm["key"].(string); k != "" {
+			gotKeys[k] = true
+		}
+	}
+	if !gotKeys["blocks"] || !gotKeys["implemented_by"] {
+		t.Errorf("expected blocks + implemented_by groups; got %v", gotKeys)
+	}
+}
+
+func TestDispatch_ItemImplementedBy_FiltersIncomingOnly(t *testing.T) {
+	// `implemented-by` returns ONLY incoming `implements` links —
+	// outgoing implements describe what THIS item implements (not
+	// what implements it). Filtering at the dispatcher matches the
+	// CLI's incomingImplementedBy helper.
+	itemSlug := "idea-12"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/IDEA-12", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"id-idea-12",
+			"slug":"idea-12",
+			"title":"Real-time collab",
+			"collection_slug":"ideas",
+			"collection_prefix":"IDEA",
+			"item_number":12
+		}`))
+	})
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/"+itemSlug+"/links", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id":"l1","link_type":"implements","source_id":"id-task-7","target_id":"id-idea-12","source_ref":"TASK-7","source_title":"Build it"},
+			{"id":"l2","link_type":"implements","source_id":"id-task-8","target_id":"id-idea-12","source_ref":"TASK-8","source_title":"Build it more"},
+			{"id":"l3","link_type":"implements","source_id":"id-idea-12","target_id":"id-other","target_ref":"OTHER-1","target_title":"Outgoing"},
+			{"id":"l4","link_type":"blocks","source_id":"id-idea-12","target_id":"id-task-9","target_ref":"TASK-9"}
+		]`))
+	})
+
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "ref": "IDEA-12",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "implemented-by"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("result not structured: %#v", res.StructuredContent)
+	}
+	if payload["item_ref"] != "IDEA-12" {
+		t.Errorf("item_ref = %v", payload["item_ref"])
+	}
+	count, _ := payload["count"].(float64)
+	if count != 2 {
+		t.Errorf("count = %v, want 2 (outgoing implements + non-implements links filtered out)", count)
+	}
+	results, ok := payload["results"].([]any)
+	if !ok || len(results) != 2 {
+		t.Fatalf("results not a 2-entry array: %#v", payload["results"])
+	}
+	gotRefs := map[string]bool{}
+	for _, r := range results {
+		rm, _ := r.(map[string]any)
+		if ref, _ := rm["ref"].(string); ref != "" {
+			gotRefs[ref] = true
+		}
+	}
+	if !gotRefs["TASK-7"] || !gotRefs["TASK-8"] {
+		t.Errorf("expected TASK-7 + TASK-8 as incoming implementers; got %v", gotRefs)
 	}
 }
 
