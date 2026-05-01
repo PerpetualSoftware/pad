@@ -63,6 +63,13 @@ func NewServer(opts Options) *Server {
 		// capabilities.experimental.padCmdhelp, so external agents can
 		// detect compatibility without reading pad://_meta/version first.
 		server.WithExperimental(experimentalCapabilities()),
+		// Server-level instructions (TASK-971). Tells agents WHEN to
+		// reach for pad and orients them to the tool surface +
+		// resources before they make their first call. Embedded at
+		// build time from instructions.md so the source of truth is
+		// versioned with the binary; HTTPHandlerDispatcher (PLAN-943)
+		// advertises the same string.
+		server.WithInstructions(Instructions),
 	)
 	return &Server{mcp: mcp, debug: opts.Debug}
 }
