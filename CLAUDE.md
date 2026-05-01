@@ -173,6 +173,26 @@ pad workspace join <code>     # Accept workspace invitation
 
 Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc`→`docs`.
 
+## MCP server
+
+Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. The surface is derived from the cmdhelp Document (`pad help --format json`) and filtered against `internal/mcp.DefaultExcludes` (which strips interactive / destructive commands — `auth setup/login`, `db backup/restore`, `init`, `item edit`, `project watch`, `workspace export/import`, `mcp serve/install`, `completion`, etc.).
+
+**When adding a new `pad` command, decide whether it belongs on the MCP surface.** If it's interactive (prompts the user), destructive (mutates auth / filesystem state), long-running (streaming watcher), or recursive (would spawn another MCP server), add it to `DefaultExcludes` in `internal/mcp/registry.go`. Otherwise it's safe to expose, and the registry picks it up automatically.
+
+```bash
+pad mcp serve                 # JSON-RPC over stdio (called by clients)
+pad mcp install <client>      # Write the client's mcp.json entry
+pad mcp uninstall <client>    # Remove the entry
+pad mcp status                # Install state across supported clients
+```
+
+Surface:
+- **Tools:** leaf `pad` commands not in `DefaultExcludes` (the per-PR review gate above). Plus `pad_set_workspace` for the session default.
+- **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`.
+- **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
+
+Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public docs at `getpad.dev/mcp/local`.
+
 ## Data Model
 
 - **Collections** have JSON schemas defining typed fields (select, text, date, number, etc.)
