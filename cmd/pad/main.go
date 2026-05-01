@@ -100,6 +100,12 @@ func main() {
 		completionCmd(),
 	)
 
+	// Replace cobra's built-in `help` with our cmdhelp v0.1 routing layer.
+	// Default --format=text delegates back to cobra's text renderer so the
+	// existing UX is unchanged; --format json|md|llm calls into the
+	// structured emitters (currently stubbed — see TASK-934/935).
+	rootCmd.SetHelpCommand(helpCmd())
+
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		cfg, err := config.Load()
 		if err != nil || !cfg.IsConfigured() {
