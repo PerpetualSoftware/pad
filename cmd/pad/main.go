@@ -73,23 +73,47 @@ func fullVersion() string {
 }
 
 func main() {
-	// `--cmdhelp-capabilities` is the spec §8 fallback form for the
-	// capability bit, designed for CLIs whose `help` subcommand is
-	// already overloaded. Pad's `help --capabilities` is the preferred
-	// form (and is wired in helpCmd()), but we honor the fallback here
-	// so wrappers and harnesses that prefer it work uniformly across
-	// every conforming CLI.
-	//
-	// Handled before cobra parsing so it's truly side-effect-free
-	// (no flag-parse errors on unrelated args, no config load, no
-	// server reach-out, no auth challenge) per spec §8 requirements.
-	for _, a := range os.Args[1:] {
-		if a == "--cmdhelp-capabilities" {
-			fmt.Println(cmdhelp.CapabilityLine(padCmdhelpFormats))
-			return
-		}
+	// Spec §8 fallback form: --cmdhelp-capabilities. Handled before
+	// cobra parsing so the discovery bit is truly side-effect-free
+	// (no flag-parse errors, no config load, no server reach-out, no
+	// auth challenge) per spec requirements.
+	if handleCmdhelpCapabilitiesFallback(os.Args[1:], os.Stdout) {
+		return
 	}
 
+	if err := newRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// handleCmdhelpCapabilitiesFallback scans args for the --cmdhelp-capabilities
+// flag (cmdhelp v0.1 §8 fallback form). If found, it writes the
+// capability bit to w and returns true so callers can short-circuit.
+// Returns false (no output) when the flag isn't present.
+//
+// Extracted from main() so the side-effect-free guarantee can be
+// asserted in tests without spawning a subprocess.
+func handleCmdhelpCapabilitiesFallback(args []string, w io.Writer) bool {
+	for _, a := range args {
+		if a == "--cmdhelp-capabilities" {
+			fmt.Fprintln(w, cmdhelp.CapabilityLine(padCmdhelpFormats))
+			return true
+		}
+	}
+	return false
+}
+
+// newRootCmd constructs the pad CLI's root cobra command tree.
+//
+// Extracted from main() so tests can use the real tree (golden
+// snapshots, schema validation, example-vs-flag-tree drift detection)
+// without running it. Build it, inspect it, never call Execute() in
+// tests.
+//
+// Each call returns a fresh tree. The persistent flags bind to the
+// package-level vars (workspaceFlag, formatFlag, urlFlag) — fine for
+// tests as long as they don't run concurrently with the real CLI flow.
+func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:     "pad",
 		Short:   "Pad — project management for developers and AI agents",
@@ -118,10 +142,6 @@ func main() {
 		completionCmd(),
 	)
 
-	// Replace cobra's built-in `help` with our cmdhelp v0.1 routing layer.
-	// Default --format=text delegates back to cobra's text renderer so the
-	// existing UX is unchanged; --format json|md|llm calls into the
-	// structured emitters (currently stubbed — see TASK-934/935).
 	rootCmd.SetHelpCommand(helpCmd())
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -141,9 +161,7 @@ func main() {
 		return slugs, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return rootCmd
 }
 
 // --- helpers ---
@@ -5412,11 +5430,11 @@ func githubCmd() *cobra.Command {
 Requires the GitHub CLI (gh) to be installed: https://cli.github.com/
 
 Examples:
-  pad github link TASK-5          Link current branch's PR to TASK-5
-  pad github link                 Auto-detect item ref from branch name
-  pad github status               Show PR status for all linked items
-  pad github status TASK-5        Show PR status for a specific item
-  pad github unlink TASK-5        Remove PR link from an item`,
+  pad github link TASK-5          # Link current branch's PR to TASK-5
+  pad github link                 # Auto-detect item ref from branch name
+  pad github status               # Show PR status for all linked items
+  pad github status TASK-5        # Show PR status for a specific item
+  pad github unlink TASK-5        # Remove PR link from an item`,
 	}
 
 	cmd.AddCommand(
