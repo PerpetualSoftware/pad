@@ -60,16 +60,12 @@ func validateExample(path string, idx int, ex Example, doc *Document, root *cobr
 		return nil
 	}
 
-	// Walk non-flag tokens through the cobra tree to find the target.
-	// flag-form tokens: "--name", "--name=value", "-n", "-n=value".
-	var nonFlags []string
-	for _, t := range tokens[1:] {
-		if strings.HasPrefix(t, "-") {
-			break
-		}
-		nonFlags = append(nonFlags, t)
-	}
-	target, _, ferr := root.Find(nonFlags)
+	// Pass the full post-binary token stream to cobra's Find. Cobra
+	// knows each command's flag set and skips flag/value pairs while
+	// matching subcommand names — so examples that interleave flags
+	// with subcommands (e.g. `pad --workspace foo item create task`)
+	// resolve to `item create`, not the root.
+	target, _, ferr := root.Find(tokens[1:])
 	if ferr != nil || target == nil {
 		return []string{fmt.Sprintf("%s example[%d]: command path doesn't resolve: %s", path, idx, ex.Cmd)}
 	}

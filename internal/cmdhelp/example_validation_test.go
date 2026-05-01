@@ -131,6 +131,32 @@ func TestValidateExamples_AcceptsNegateFlag(t *testing.T) {
 	}
 }
 
+func TestValidateExamples_FlagBeforeSubcommandResolvesToCorrectTarget(t *testing.T) {
+	// Cobra accepts flags interleaved with the command path — e.g.
+	// `pad --workspace foo item create task --priority high`.
+	// The validator MUST resolve to `item create` (not root) so leaf
+	// flags like --priority are checked against the leaf, not just
+	// against root's flag set. (Caught by Codex round 1.)
+	root := &cobra.Command{Use: "padtest"}
+	root.PersistentFlags().String("workspace", "", "workspace override")
+
+	create := &cobra.Command{
+		Use:     "create <coll>",
+		Short:   "create",
+		Example: `  padtest --workspace foo item create task --priority high`,
+	}
+	create.Flags().String("priority", "", "priority")
+
+	item := &cobra.Command{Use: "item", Short: "item group"}
+	item.AddCommand(create)
+	root.AddCommand(item)
+
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	if findings := ValidateExamples(doc, root); len(findings) != 0 {
+		t.Errorf("flag-before-subcommand example should resolve cleanly; got: %v", findings)
+	}
+}
+
 func TestValidateExamples_AcceptsPersistentFlagFromAncestor(t *testing.T) {
 	// `--workspace` is a persistent root flag; it must be accepted on
 	// any subcommand example.
