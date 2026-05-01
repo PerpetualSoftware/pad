@@ -39,17 +39,93 @@ func TestBuildCLIArgs_PositionalsAndScalarFlags(t *testing.T) {
 
 func TestBuildCLIArgs_BoolPresenceForm(t *testing.T) {
 	// Spec §5.3: bool flags MUST be presence-only (no =true).
-	// `dry-run: true` should emit just `--dry-run`, no value.
+	// MCP delivers the snake_case `dry_run: true` (TASK-964); the
+	// dispatcher translates back to the kebab-case `--dry-run` CLI flag.
 	cmd := cmdhelp.Command{
 		Flags: map[string]cmdhelp.Flag{"dry-run": {Type: "bool"}},
 	}
-	got, err := BuildCLIArgs(cmd, map[string]any{"dry-run": true}, "", nil)
+	got, err := BuildCLIArgs(cmd, map[string]any{"dry_run": true}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
 	want := []string{"--dry-run", "--format", "json"}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_HyphenatedFlagAcceptedAsSnakeCase(t *testing.T) {
+	// TASK-964: the round-trip contract. MCP property names are
+	// snake_case; CLI flag names stay kebab-case. A scalar
+	// hyphenated flag like `--due-date` must surface to agents as
+	// `due_date` and round-trip back to `--due-date value` on dispatch.
+	cmd := cmdhelp.Command{
+		Args: []cmdhelp.Arg{{Name: "ref", Type: "string", Required: true}},
+		Flags: map[string]cmdhelp.Flag{
+			"due-date":   {Type: "string"},
+			"blocked-by": {Type: "string"},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"ref":        "TASK-5",
+		"due_date":   "2026-06-01",
+		"blocked_by": "TASK-3",
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	// Sorted-flag order: blocked-by < due-date.
+	want := []string{
+		"TASK-5",
+		"--blocked-by", "TASK-3",
+		"--due-date", "2026-06-01",
+		"--format", "json",
+	}
+	if !equalSlice(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_HyphenatedRepeatableFlagRoundTrips(t *testing.T) {
+	// TASK-964: Repeatable / slice flags also need the translation.
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{
+			"add-tag": {Type: "stringSlice", Repeatable: true},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"add_tag": []any{"urgent", "ux"},
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	want := []string{"--add-tag", "urgent", "--add-tag", "ux", "--format", "json"}
+	if !equalSlice(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildCLIArgs_KebabInputKeyIsIgnored(t *testing.T) {
+	// TASK-964: agents that bypass the schema and send the kebab-case
+	// form (`due-date`) shouldn't accidentally provide a value — they
+	// passed an unknown property as far as the schema is concerned.
+	// We don't error, we just skip it (consistent with how unknown
+	// optional flags are handled today).
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{
+			"due-date": {Type: "string"},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"due-date": "2026-06-01", // wrong: should be `due_date`
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	for _, a := range got {
+		if strings.Contains(a, "2026-06-01") {
+			t.Errorf("kebab-case input key should not pass through; got %v", got)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -217,6 +218,62 @@ func TestRegister_DispatchHandler_ReportsValidationErrors(t *testing.T) {
 	}
 	if disp.gotPath != nil {
 		t.Errorf("dispatcher should NOT be called on validation failure; got path=%v", disp.gotPath)
+	}
+}
+
+func TestBuildTool_HyphenatedFlagsSurfaceAsSnakeCase(t *testing.T) {
+	// TASK-964: kebab-case flag names (`--due-date`) become snake_case
+	// schema properties (`due_date`) so agents can emit standard
+	// JSON without having to special-case hyphenated keys.
+	cmd := cmdhelp.Command{
+		Summary: "Update item",
+		Args: []cmdhelp.Arg{
+			{Name: "ref", Type: "string", Required: true}, // already underscore-free
+		},
+		Flags: map[string]cmdhelp.Flag{
+			"due-date":   {Type: "string"},
+			"blocked-by": {Type: "string"},
+			"workspace":  {Type: "string"}, // single-word: round-trip unchanged
+		},
+	}
+	tool := buildTool("item update", cmd)
+
+	// Hyphens must NOT appear as schema property names.
+	for prop := range tool.InputSchema.Properties {
+		if strings.Contains(prop, "-") {
+			t.Errorf("schema property %q contains hyphen — agents see kebab-case where they expect snake_case", prop)
+		}
+	}
+	// The translated forms must be present.
+	wantPresent := []string{"ref", "due_date", "blocked_by", "workspace"}
+	for _, want := range wantPresent {
+		if _, ok := tool.InputSchema.Properties[want]; !ok {
+			t.Errorf("schema missing %q; got %v", want, tool.InputSchema.Properties)
+		}
+	}
+	// And the kebab forms must NOT be present (no double-publishing).
+	wantAbsent := []string{"due-date", "blocked-by"}
+	for _, gone := range wantAbsent {
+		if _, ok := tool.InputSchema.Properties[gone]; ok {
+			t.Errorf("schema still contains kebab-case %q alongside snake_case form", gone)
+		}
+	}
+}
+
+func TestMCPPropertyName_RoundTrip(t *testing.T) {
+	// Lock the translation rule so changes to it stay obvious.
+	cases := map[string]string{
+		"workspace":     "workspace",     // single-word
+		"due-date":      "due_date",      // single hyphen
+		"blocked-by":    "blocked_by",    // single hyphen
+		"x-y-z":         "x_y_z",         // multiple hyphens
+		"already_snake": "already_snake", // pre-snaked (idempotent)
+		"":              "",              // empty
+	}
+	for in, want := range cases {
+		if got := MCPPropertyName(in); got != want {
+			t.Errorf("MCPPropertyName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

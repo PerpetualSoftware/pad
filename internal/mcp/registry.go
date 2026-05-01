@@ -152,6 +152,24 @@ func ToolNameFromPath(path string) string {
 	return strings.ReplaceAll(path, " ", "_")
 }
 
+// MCPPropertyName converts a CLI flag or argument name to the
+// snake_case form advertised on the MCP tool surface. Hyphens become
+// underscores; everything else passes through.
+//
+// Why translate (TASK-964): Cobra's flag names are kebab-case
+// (`--due-date`), and JSON Schema property names accept any string,
+// but Anthropic's tool-use convention — and most LLMs' training data
+// — is snake_case (`due_date`). Hyphenated property names trip up
+// agents that auto-normalize to snake_case before emitting JSON, and
+// silently lose every flag with a hyphen. We expose snake_case on the
+// MCP surface and translate back to kebab-case at dispatch.
+//
+// Single-word names (workspace, format, content, stdin) round-trip
+// unchanged.
+func MCPPropertyName(cliName string) string {
+	return strings.ReplaceAll(cliName, "-", "_")
+}
+
 // identifyLeaves returns a map of path → true for every command path
 // that is NOT a strict prefix of another path (and is therefore a leaf).
 func identifyLeaves(paths []string) map[string]bool {
@@ -214,33 +232,35 @@ func buildTool(path string, cmdInfo cmdhelp.Command) mcp.Tool {
 
 func propertyForArg(arg cmdhelp.Arg) mcp.ToolOption {
 	propOpts := propertyOptionsCommon(arg.Description, arg.Required, arg.Enum)
+	propName := MCPPropertyName(arg.Name)
 	if arg.Repeatable {
-		return mcp.WithArray(arg.Name, append(propOpts, mcp.WithStringItems())...)
+		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
 	}
 	switch arg.Type {
 	case "int", "number", "float", "float64", "int64":
-		return mcp.WithNumber(arg.Name, propOpts...)
+		return mcp.WithNumber(propName, propOpts...)
 	case "bool":
-		return mcp.WithBoolean(arg.Name, propOpts...)
+		return mcp.WithBoolean(propName, propOpts...)
 	default:
-		return mcp.WithString(arg.Name, propOpts...)
+		return mcp.WithString(propName, propOpts...)
 	}
 }
 
 func propertyForFlag(name string, flag cmdhelp.Flag) mcp.ToolOption {
 	propOpts := propertyOptionsCommon(flag.Description, flag.Required, flag.Enum)
+	propName := MCPPropertyName(name)
 	if flag.Repeatable {
-		return mcp.WithArray(name, append(propOpts, mcp.WithStringItems())...)
+		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
 	}
 	switch flag.Type {
 	case "bool":
-		return mcp.WithBoolean(name, propOpts...)
+		return mcp.WithBoolean(propName, propOpts...)
 	case "int", "number", "int64", "uint", "uint64", "float", "float64":
-		return mcp.WithNumber(name, propOpts...)
+		return mcp.WithNumber(propName, propOpts...)
 	case "[]string", "stringSlice", "[]int", "intSlice", "stringArray":
-		return mcp.WithArray(name, append(propOpts, mcp.WithStringItems())...)
+		return mcp.WithArray(propName, append(propOpts, mcp.WithStringItems())...)
 	default:
-		return mcp.WithString(name, propOpts...)
+		return mcp.WithString(propName, propOpts...)
 	}
 }
 
