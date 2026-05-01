@@ -245,6 +245,91 @@ func TestMapItemCreate_RejectsUnsupportedRole(t *testing.T) {
 	}
 }
 
+func TestMapItemCreate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
+	// Codex review #345 round 3: the MCP tool schema only exposes
+	// `--role` (and the `--field` escape hatch), not a top-level
+	// `agent_role_id`. The error message tells agents to use
+	// `--field agent_role_id=<uuid>`; the lift logic below makes
+	// that workaround reachable by recognizing column keys in the
+	// fields blob and moving them to the top-level payload before
+	// PATCH/POST.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"field": []any{"agent_role_id=role-uuid-789", "effort=l"},
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["agent_role_id"] != "role-uuid-789" {
+		t.Errorf("agent_role_id not lifted to top level; got %v", payload)
+	}
+	// And not in the fields blob.
+	fields := map[string]any{}
+	if s, _ := payload["fields"].(string); s != "" {
+		_ = json.Unmarshal([]byte(s), &fields)
+	}
+	if _, present := fields["agent_role_id"]; present {
+		t.Errorf("agent_role_id should be lifted out of fields blob: %v", fields)
+	}
+	// Other --field entries (effort=l) stay in the blob.
+	if fields["effort"] != "l" {
+		t.Errorf("non-column --field key should remain in fields blob: %v", fields)
+	}
+}
+
+func TestMapItemCreate_LiftsAssignedUserIDFromFieldKVP(t *testing.T) {
+	// Companion to the agent_role_id lift — assigned_user_id is the
+	// other column key columnFieldKeys recognizes.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"field": []any{"assigned_user_id=user-uuid-12"},
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["assigned_user_id"] != "user-uuid-12" {
+		t.Errorf("assigned_user_id not lifted: %v", payload)
+	}
+}
+
+func TestMapItemCreate_TopLevelAgentRoleIDWinsOverFieldKVP(t *testing.T) {
+	// Belt-and-braces: if both a top-level agent_role_id and a
+	// --field agent_role_id are set, the top-level wins. Avoids
+	// surprising callers who mix paths.
+	_, _, body, err := mapItemCreate(map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"agent_role_id": "explicit-uuid",
+		"field":         []any{"agent_role_id=lift-uuid"},
+	})
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["agent_role_id"] != "explicit-uuid" {
+		t.Errorf("explicit top-level agent_role_id should win; got %v", payload["agent_role_id"])
+	}
+	// Lift still removes the duplicate from fields so the value
+	// doesn't appear in two places.
+	fields := map[string]any{}
+	if s, _ := payload["fields"].(string); s != "" {
+		_ = json.Unmarshal([]byte(s), &fields)
+	}
+	if _, present := fields["agent_role_id"]; present {
+		t.Errorf("agent_role_id should be removed from fields blob even when ignored: %v", fields)
+	}
+}
+
 func TestMapItemCreate_PassesThroughAgentRoleID(t *testing.T) {
 	// agent_role_id (UUID) is the ItemCreate column the handler
 	// writes to. Agents that know the UUID (e.g. from a prior

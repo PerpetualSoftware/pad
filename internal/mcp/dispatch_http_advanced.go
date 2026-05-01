@@ -165,19 +165,24 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// expansion adds slug → ID resolution, reject loudly so agents
 	// don't get a successful update response while their requested
 	// role assignment is silently dropped (Codex review #345 round 1).
-	// The workaround pointed at — passing `agent_role_id=<uuid>`
-	// directly in the input — is the genuinely-supported path; we
-	// pass it through to ItemUpdate.AgentRoleID below. (Codex
-	// review #345 round 2 caught the original message pointing at
-	// `--field agent_role_id=...` which writes to the fields JSON
-	// blob, not the column, and would have silently no-op'd the
-	// role assignment.)
+	// The workaround pointed at — `--field agent_role_id=<uuid>` —
+	// is the genuinely-reachable path: --field IS in the auto-
+	// generated tool schema, and the dispatcher's
+	// liftFieldsToColumns helper recognizes column keys and moves
+	// them out of the fields JSON onto the top-level payload before
+	// PATCHing. (Codex review #345 rounds 2+3 walked through both
+	// the original "agent_role_id at top level" suggestion that
+	// agents couldn't reach via the schema, and the original
+	// "--field agent_role_id" suggestion that would have stuffed
+	// the value inert into the fields blob.)
 	if v, ok := input["role"].(string); ok && v != "" {
 		return mcp.NewToolResultErrorf(
 			"%s: --role is not yet supported by HTTPHandlerDispatcher; "+
 				"slug → role-ID resolution lands in the next route-table "+
-				"expansion. For now, pass `agent_role_id=<uuid>` directly "+
-				"in the tool input (use `role list` to find the UUID).",
+				"expansion. For now, pass `--field agent_role_id=<uuid>` — "+
+				"the dispatcher recognizes column keys from --field and "+
+				"writes them to the column rather than the fields blob. "+
+				"Use `role list` to find the UUID.",
 			cmdKey,
 		), nil
 	}
@@ -251,6 +256,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 				merged[k] = v
 			}
 		}
+		// Lift recognized column keys (agent_role_id, assigned_user_id)
+		// out of the merged fields blob onto the top-level payload so
+		// the handler writes the column instead of stuffing the value
+		// inert in the JSON. Same shape mapItemCreate uses; matches
+		// the workaround the --role rejection points at.
+		liftFieldsToColumns(merged, payload)
 		fieldsJSON, err := json.Marshal(merged)
 		if err != nil {
 			return mcp.NewToolResultErrorf("%s: encode merged fields: %s", cmdKey, err.Error()), nil

@@ -482,6 +482,52 @@ func TestHTTPHandlerDispatcher_Integration_ItemUpdateAndAssignResolution(t *test
 	}
 }
 
+func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
+	// Same reachability fix as mapItemCreate: agents passing
+	// `--field agent_role_id=<uuid>` (the only schema-visible path
+	// for setting the column today) get the value lifted onto
+	// the PATCH body's top-level. Otherwise the value would sit
+	// inert inside the merged fields JSON and the role assignment
+	// would no-op (Codex review #345 round 3).
+	captured := newRequestCapture()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{\"status\":\"open\"}"}`))
+		case http.MethodPatch:
+			captured.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		}
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp",
+		"ref":       "TASK-5",
+		"field":     []any{"agent_role_id=role-uuid-from-field"},
+	})
+	if _, err := d.Dispatch(ctx, []string{"item", "update"}, nil); err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["agent_role_id"] != "role-uuid-from-field" {
+		t.Errorf("agent_role_id not lifted onto PATCH body: %v", body)
+	}
+	// And not in the fields blob.
+	fields := map[string]any{}
+	if s, _ := body["fields"].(string); s != "" {
+		_ = json.Unmarshal([]byte(s), &fields)
+	}
+	if _, present := fields["agent_role_id"]; present {
+		t.Errorf("agent_role_id should be removed from fields blob: %v", fields)
+	}
+}
+
 func TestDispatchItemUpdate_PassesThroughAgentRoleID(t *testing.T) {
 	// Parity with mapItemCreate: agent_role_id (UUID) writes to the
 	// ItemUpdate column. The --role rejection points agents at this

@@ -392,6 +392,16 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 			payload[key] = v
 		}
 	}
+	// Lift recognized column keys out of the fields blob into the
+	// top-level payload. The MCP tool schema (auto-generated from
+	// cmdhelp) doesn't expose `agent_role_id` or `assigned_user_id`
+	// as top-level inputs — only `--role` and `--assign` — so
+	// agents reaching for these column writes via the schema-
+	// visible escape hatch (`--field agent_role_id=<uuid>`) would
+	// otherwise have the value sit inert inside the fields JSON
+	// instead of going to the column the handler writes to.
+	// (Codex review #345 round 3.)
+	liftFieldsToColumns(fields, payload)
 	if len(fields) > 0 {
 		fb, mErr := json.Marshal(fields)
 		if mErr != nil {
@@ -434,8 +444,10 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 			return "", "", nil, fmt.Errorf(
 				"--role is not yet supported by HTTPHandlerDispatcher; " +
 					"slug → role-ID resolution lands in the next route-table " +
-					"expansion. For now, pass `agent_role_id=<uuid>` directly " +
-					"in the tool input (use `role list` to find the UUID).")
+					"expansion. For now, pass `--field agent_role_id=<uuid>` — " +
+					"the dispatcher recognizes column keys from --field and " +
+					"writes them to the column rather than the fields blob. " +
+					"Use `role list` to find the UUID.")
 		}
 	}
 
@@ -464,6 +476,50 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 func isStringType(v any) bool {
 	_, ok := v.(string)
 	return ok
+}
+
+// columnFieldKeys is the set of fields-blob keys the dispatcher
+// recognizes as actually being column writes on the underlying
+// item record. When agents pass these via `--field key=value` (the
+// only schema-visible path until cmdhelp surfaces them as their own
+// flags), the dispatcher lifts them out of the fields JSON into the
+// top-level payload so the handler writes the column rather than
+// stuffing the value inside the JSON blob.
+//
+// Adding a key here is a behavioural extension — agents now get
+// column writes via --field instead of the inert fields-blob
+// no-op. Keep the list short; a real flag in cmdhelp is preferable
+// long-term (the eventual TASK-968 follow-up should add named
+// inputs for these).
+var columnFieldKeys = []string{
+	"agent_role_id",
+	"assigned_user_id",
+}
+
+// liftFieldsToColumns scans fields for keys that map 1:1 to columns
+// on the item record and moves them into payload at the top level.
+// Mutates both maps. Caller-supplied top-level values win — so an
+// agent that already passed `agent_role_id` directly (e.g. via a
+// future named flag) doesn't get clobbered by a stray --field entry.
+func liftFieldsToColumns(fields, payload map[string]any) {
+	for _, key := range columnFieldKeys {
+		v, ok := fields[key]
+		if !ok {
+			continue
+		}
+		// Always remove from the fields blob — even if payload
+		// already has it. The fields blob is the wrong home and
+		// leaving the duplicate would invite divergence between the
+		// JSON value and the column.
+		delete(fields, key)
+		if _, alreadyTopLevel := payload[key]; alreadyTopLevel {
+			continue
+		}
+		if s, ok := v.(string); ok && s == "" {
+			continue
+		}
+		payload[key] = v
+	}
 }
 
 // parseFieldKVP normalizes the --field flag's various wire shapes
