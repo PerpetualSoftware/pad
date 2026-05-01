@@ -298,6 +298,12 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 			// embedded text returned as user-role messages.
 			mcpserver.RegisterPrompts(srv.MCP())
 
+			// Tool-surface stability metadata (TASK-963). Static
+			// resource at pad://_meta/version. Complements the
+			// handshake's serverCapabilities.experimental.padCmdhelp
+			// for clients that prefer reading a JSON document.
+			mcpserver.RegisterMeta(srv.MCP(), fullVersion())
+
 			if err := srv.Run(cmd.Context()); err != nil {
 				return fmt.Errorf("pad mcp serve: %w", err)
 			}
