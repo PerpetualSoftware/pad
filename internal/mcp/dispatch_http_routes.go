@@ -229,6 +229,10 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles",
 		}.toRouteMapper(),
+		"workspace members": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/members",
+		}.toRouteMapper(),
 	}
 }
 
@@ -278,18 +282,12 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 		return "", "", nil, fmt.Errorf("workspace is required")
 	}
 
-	if v, ok := input["assign"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			return "", "", nil, fmt.Errorf(
-				"--assign %q is not yet supported by HTTPHandlerDispatcher; "+
-					"the CLI resolves names → user IDs via workspace-members "+
-					"lookup, which we'll add in a follow-up. For now, pass "+
-					"`--field assigned_user_id=<uuid>` for explicit-ID filtering.",
-				s,
-			)
-		}
-	}
-
+	// `--assign` is preprocessed at the dispatcher level (TASK-967) —
+	// by the time we get here the name has been resolved to
+	// `assigned_user_id`. Old test fixtures that pass an explicit
+	// `assign` key directly to the mapper (bypassing Dispatch) just
+	// see the value silently dropped, matching the existing
+	// "unknown input keys are ignored" behaviour.
 	pathBase := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items"
 	if coll, _ := input["collection"].(string); coll != "" {
 		pathBase = "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -332,6 +330,13 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 	}
 	if s, _ := input["role"].(string); s != "" {
 		add("agent_role_id", s)
+	}
+	// assigned_user_id arrives here only via Dispatch's preprocess
+	// (which resolves --assign name → UUID via workspace.members).
+	// Agents that pass `--field assigned_user_id=<uuid>` get the
+	// same treatment via the field-filter path further down.
+	if s, _ := input["assigned_user_id"].(string); s != "" {
+		add("assigned_user_id", s)
 	}
 
 	// Numeric filters.
