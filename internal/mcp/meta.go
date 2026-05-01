@@ -27,9 +27,12 @@ type MetaPayload struct {
 	// stability contract. False during pre-release iteration.
 	ToolSurfaceStable bool `json:"tool_surface_stable"`
 
-	// MCPProtocolVersion is the MCP wire protocol revision this server
-	// targets. Surfaced so consumers can detect feature support
-	// (e.g. RFC 8707 Resource Indicators land in the 2025-11-25 revision).
+	// MCPProtocolVersion is the latest MCP wire protocol revision this
+	// server can negotiate. Sourced from the underlying mcp-go library's
+	// LATEST_PROTOCOL_VERSION constant so the value never drifts from
+	// what NewMCPServer actually advertises in the handshake. Surfaced
+	// so consumers can detect feature support (e.g. RFC 8707 Resource
+	// Indicators land in the 2025-11-25 revision).
 	MCPProtocolVersion string `json:"mcp_protocol_version"`
 }
 
@@ -37,6 +40,12 @@ type MetaPayload struct {
 // version. An empty padVersion falls back to FallbackVersion for the
 // same reason serverInfo.version does — empty values confuse some
 // clients that display them in their UI.
+//
+// MCPProtocolVersion is sourced from mcp.LATEST_PROTOCOL_VERSION, which
+// is the maximum protocol revision the server can negotiate. If a
+// client downgrades during initialize, the per-session negotiated
+// version may be lower; the meta document reports the server's
+// upper bound, not any specific session.
 func BuildMetaPayload(padVersion string) MetaPayload {
 	if padVersion == "" {
 		padVersion = FallbackVersion
@@ -45,7 +54,7 @@ func BuildMetaPayload(padVersion string) MetaPayload {
 		PadVersion:         padVersion,
 		CmdhelpVersion:     CmdhelpVersion,
 		ToolSurfaceStable:  true,
-		MCPProtocolVersion: MCPProtocolVersion,
+		MCPProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 	}
 }
 

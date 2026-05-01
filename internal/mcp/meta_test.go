@@ -24,8 +24,13 @@ func TestBuildMetaPayload_FallbackVersion(t *testing.T) {
 	if !got.ToolSurfaceStable {
 		t.Errorf("ToolSurfaceStable = false, want true")
 	}
-	if got.MCPProtocolVersion != MCPProtocolVersion {
-		t.Errorf("MCPProtocolVersion = %q, want %q", got.MCPProtocolVersion, MCPProtocolVersion)
+	if got.MCPProtocolVersion != mcp.LATEST_PROTOCOL_VERSION {
+		t.Errorf("MCPProtocolVersion = %q, want library LATEST %q",
+			got.MCPProtocolVersion, mcp.LATEST_PROTOCOL_VERSION)
+	}
+	// Belt-and-braces: never empty, regardless of library state.
+	if got.MCPProtocolVersion == "" {
+		t.Errorf("MCPProtocolVersion is empty — library constant unset?")
 	}
 }
 

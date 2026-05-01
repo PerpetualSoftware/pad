@@ -41,11 +41,12 @@ const CmdhelpVersion = "0.1"
 // server-wide attribute, not a workspace-scoped resource.
 const MetaVersionURI = "pad://_meta/version"
 
-// MCPProtocolVersion is the MCP wire protocol revision this server is
-// pinned against. Surfaced in the meta resource so consumers can tell
-// at a glance whether a feature they need (e.g. RFC 8707 Resource
-// Indicators) is part of the spec we implement.
-const MCPProtocolVersion = "2024-11-05"
+// The MCP wire protocol revision this server speaks isn't a constant
+// owned by pad — it's whatever mcp-go's `LATEST_PROTOCOL_VERSION`
+// resolves to at build time, since that's what NewMCPServer will
+// negotiate with clients that request the latest. The meta resource
+// reads it dynamically (see meta.go) so the value never drifts from
+// what the library actually advertises.
 
 // experimentalCapabilityKey is the namespace under
 // serverCapabilities.experimental that carries the cmdhelp tier.
