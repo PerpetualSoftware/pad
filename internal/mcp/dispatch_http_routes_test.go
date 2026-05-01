@@ -704,9 +704,9 @@ func TestHTTPHandlerDispatcher_Integration_ReadPaths(t *testing.T) {
 	if err != nil || listRes.IsError {
 		t.Fatalf("item list: err=%v IsError=%v %#v", err, listRes != nil && listRes.IsError, listRes)
 	}
-	listed, ok := listRes.StructuredContent.([]any)
-	if !ok || len(listed) == 0 {
-		t.Fatalf("item list returned unexpected shape: %#v", listRes.StructuredContent)
+	listed := unwrapItems(t, listRes.StructuredContent)
+	if len(listed) == 0 {
+		t.Fatalf("item list returned empty items array: %#v", listRes.StructuredContent)
 	}
 	first, _ := listed[0].(map[string]any)
 	ref, _ := first["ref"].(string)

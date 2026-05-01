@@ -145,13 +145,37 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	// the text fallback. This is what `--format json` emits for most
 	// pad commands; clients that parse structured content (Claude
 	// Desktop, Cursor) get richer rendering.
-	if trimmed := strings.TrimSpace(out); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-		var parsed any
-		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
-			return mcp.NewToolResultStructured(parsed, out), nil
-		}
+	return packageJSONResult(out), nil
+}
+
+// packageJSONResult converts a CLI stdout string into an MCP tool
+// result. JSON bodies surface as structuredContent; non-JSON falls
+// back to text. Top-level arrays are wrapped in `{items: [...]}` so
+// MCP host validators (Claude Desktop) accept the structured shape —
+// without the wrap they reject the tool call with "expected: record"
+// (BUG-985 bug 3).
+//
+// Shared between ExecDispatcher and HTTPHandlerDispatcher's
+// packageHTTPResponse so both transports produce the same wire
+// shape.
+func packageJSONResult(out string) *mcp.CallToolResult {
+	trimmed := strings.TrimSpace(out)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return mcp.NewToolResultText(out)
 	}
-	return mcp.NewToolResultText(out), nil
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return mcp.NewToolResultText(out)
+	}
+	if arr, ok := parsed.([]any); ok {
+		// Wrap top-level arrays. MCP host validators (Claude Desktop)
+		// require `structuredContent` to be an object/record, not an
+		// array. The original JSON text is still returned as the text
+		// fallback so clients that don't parse structured content keep
+		// seeing the raw shape they used to.
+		return mcp.NewToolResultStructured(map[string]any{"items": arr}, out)
+	}
+	return mcp.NewToolResultStructured(parsed, out)
 }
 
 // ListWorkspaces satisfies WorkspaceLister so error helpers can
@@ -347,8 +371,23 @@ func BuildCLIArgs(
 		}
 	}
 
-	if !workspaceProvided && sessionWorkspace != "" {
-		out = append(out, "--workspace", sessionWorkspace)
+	// `--workspace` is a persistent root flag on cobra (registered
+	// globally via rootCmd, not on individual leaf commands), so it
+	// never appears in cmdInfo.Flags and the per-flag iteration above
+	// can't see it. Honor it here directly: prefer explicit
+	// input["workspace"], fall back to sessionWorkspace.
+	//
+	// Without this branch, BUG-985 reproduced: agents passing
+	// `workspace=docapp` explicitly got no_workspace errors because
+	// the flag was silently dropped — only the session-default
+	// fallback below ever ran, which itself only fires when no
+	// explicit value is set.
+	if !workspaceProvided {
+		if explicit, _ := input["workspace"].(string); explicit != "" {
+			out = append(out, "--workspace", explicit)
+		} else if sessionWorkspace != "" {
+			out = append(out, "--workspace", sessionWorkspace)
+		}
 	}
 	if !formatProvided {
 		out = append(out, "--format", "json")

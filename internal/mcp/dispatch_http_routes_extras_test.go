@@ -557,9 +557,9 @@ func TestHTTPHandlerDispatcher_Integration_StarsRolesWebhooksWhoami(t *testing.T
 	if err != nil || wsListRes.IsError {
 		t.Fatalf("workspace list: err=%v IsError=%v: %#v", err, wsListRes != nil && wsListRes.IsError, wsListRes)
 	}
-	wsList, ok := wsListRes.StructuredContent.([]any)
-	if !ok || len(wsList) == 0 {
-		t.Fatalf("workspace list result not array or empty: %#v", wsListRes.StructuredContent)
+	wsList := unwrapItems(t, wsListRes.StructuredContent)
+	if len(wsList) == 0 {
+		t.Fatalf("workspace list result empty: %#v", wsListRes.StructuredContent)
 	}
 
 	// Create an item, then star it.
@@ -595,8 +595,8 @@ func TestHTTPHandlerDispatcher_Integration_StarsRolesWebhooksWhoami(t *testing.T
 	if err != nil || starredRes.IsError {
 		t.Fatalf("item starred: err=%v IsError=%v: %#v", err, starredRes != nil && starredRes.IsError, starredRes)
 	}
-	starred, ok := starredRes.StructuredContent.([]any)
-	if !ok || len(starred) != 1 {
+	starred := unwrapItems(t, starredRes.StructuredContent)
+	if len(starred) != 1 {
 		t.Fatalf("expected 1 starred item; got %#v", starredRes.StructuredContent)
 	}
 
@@ -637,7 +637,7 @@ func TestHTTPHandlerDispatcher_Integration_StarsRolesWebhooksWhoami(t *testing.T
 	if err != nil || listRes.IsError {
 		t.Fatalf("webhook list (empty): err=%v IsError=%v: %#v", err, listRes != nil && listRes.IsError, listRes)
 	}
-	if hooks, _ := listRes.StructuredContent.([]any); len(hooks) != 0 {
+	if hooks := unwrapItems(t, listRes.StructuredContent); len(hooks) != 0 {
 		t.Errorf("expected no webhooks initially; got %v", hooks)
 	}
 
