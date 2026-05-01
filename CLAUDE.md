@@ -175,7 +175,7 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 ## MCP server
 
-Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call every `pad` command as a tool. The surface is auto-generated from the cmdhelp Document (`pad help --format json`), so any new pad command lands as an MCP tool for free — no hand-mapping.
+Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. The surface is auto-generated from the cmdhelp Document (`pad help --format json`), so any new pad command that isn't on `internal/mcp.DefaultExcludes` lands as an MCP tool for free — no hand-mapping.
 
 ```bash
 pad mcp serve                 # JSON-RPC over stdio (called by clients)
