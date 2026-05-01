@@ -485,6 +485,41 @@ func TestRoute_ItemSearch(t *testing.T) {
 	}
 }
 
+func TestRoute_ItemSearch_NormalizesCollectionAlias(t *testing.T) {
+	// CLI parity: `pad item search foo --collection task` normalizes
+	// to "tasks" before calling /search. The store's search filter
+	// matches exact c.slug = ?, so the alias would 0-match without
+	// normalization (Codex review #344 round 2 finding).
+	_, p, _, err := routeTable["item search"](map[string]any{
+		"workspace":  "docapp",
+		"query":      "OAuth",
+		"collection": "task",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	values := mustParseQueryFromPath(t, p)
+	if values.Get("collection") != "tasks" {
+		t.Errorf("collection alias not normalized; got %q", values.Get("collection"))
+	}
+}
+
+func TestRoute_ItemSearch_DoesNotMutateInput(t *testing.T) {
+	// The mapper clones the input before mutating to avoid
+	// surprising the caller (the registry attaches the same input
+	// map via WithDispatchInput; downstream code reads it).
+	input := map[string]any{
+		"workspace": "ws", "query": "x", "collection": "task",
+	}
+	_, _, _, err := routeTable["item search"](input)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if input["collection"] != "task" {
+		t.Errorf("input was mutated; got collection=%v", input["collection"])
+	}
+}
+
 func TestRoute_ItemSearch_RequiresQuery(t *testing.T) {
 	_, _, _, err := routeTable["item search"](map[string]any{"workspace": "ws"})
 	if err == nil {

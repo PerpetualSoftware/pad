@@ -436,10 +436,23 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 // GET /api/v1/search?q=...&workspace=...&[filters]. Workspace lives
 // in the query string here (not the path) — the search handler is
 // cross-workspace by design.
+//
+// `collection` is normalized via collections.NormalizeSlug before
+// going on the wire. The search store filters with `c.slug = ?` and
+// would 0-match shorthand inputs ("task" instead of "tasks") without
+// this — Codex review #344 round 2 finding.
 func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 	query, _ := input["query"].(string)
 	if query == "" {
 		return "", "", nil, fmt.Errorf("query is required")
+	}
+	// Normalize the collection input in-place before buildQuery reads
+	// it. We only mutate the local map so the caller's input isn't
+	// affected — but BuildCLIArgs builds a fresh map per call so this
+	// is also safe in production.
+	if coll, ok := input["collection"].(string); ok && coll != "" {
+		input = cloneStringMap(input)
+		input["collection"] = collections.NormalizeSlug(coll)
 	}
 	q := buildQuery(input, map[string]string{
 		"q":          "query",
@@ -456,6 +469,17 @@ func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 		urlPath += "?" + q
 	}
 	return http.MethodGet, urlPath, nil, nil
+}
+
+// cloneStringMap returns a shallow copy of m. Used by mappers that
+// need to normalize a single value before handing the map to a
+// downstream helper, without mutating the caller's reference.
+func cloneStringMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // mapItemComment dispatches `pad item comment <ref> <message>`.
