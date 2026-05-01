@@ -59,10 +59,9 @@ func NewServer(opts Options) *Server {
 		// subprocesses with arbitrary client-supplied args.
 		server.WithRecovery(),
 		// Tool-surface stability tier (TASK-963). Surfaces the cmdhelp
-		// contract directly in the handshake under
-		// serverCapabilities.experimental.padCmdhelp, so external
-		// agents can detect compatibility without reading
-		// pad://_meta/version first.
+		// contract directly in the handshake at
+		// capabilities.experimental.padCmdhelp, so external agents can
+		// detect compatibility without reading pad://_meta/version first.
 		server.WithExperimental(experimentalCapabilities()),
 	)
 	return &Server{mcp: mcp, debug: opts.Debug}

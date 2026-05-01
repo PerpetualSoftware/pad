@@ -246,7 +246,7 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 ```
 
 The server advertises a tool-surface stability tier (`cmdhelp_version`)
-in the initialize handshake under `serverCapabilities.experimental.padCmdhelp`,
+in the initialize handshake at `capabilities.experimental.padCmdhelp`,
 and as a queryable JSON document at `pad://_meta/version`. External agents
 can pin against this so a future tool rename doesn't break them silently.
 

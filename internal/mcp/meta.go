@@ -95,19 +95,22 @@ func RegisterMeta(srv *server.MCPServer, padVersion string) {
 	})
 }
 
-// experimentalCapabilities returns the map advertised in the
-// initialize handshake's serverCapabilities.experimental field. Lets
-// clients discover the cmdhelp tier in one round-trip without reading
-// the meta resource.
+// experimentalCapabilities returns the map advertised at
+// capabilities.experimental in the initialize handshake's result
+// envelope. Lets clients discover the cmdhelp tier in one round-trip
+// without reading the meta resource.
 //
 // Wire shape:
 //
-//	"capabilities": {
-//	  "experimental": {
-//	    "padCmdhelp": {
-//	      "version":             "0.1",
-//	      "tool_surface_stable": true
-//	    }
+//	"result": {
+//	  "capabilities": {
+//	    "experimental": {
+//	      "padCmdhelp": {
+//	        "version":             "0.1",
+//	        "tool_surface_stable": true
+//	      }
+//	    },
+//	    ...
 //	  },
 //	  ...
 //	}

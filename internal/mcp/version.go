@@ -30,9 +30,9 @@ const FallbackVersion = "0.0.0-dev"
 //
 //   - "0.1" — initial cmdhelp-derived surface from PLAN-942.
 //
-// Discovery surfaces:
+// Discovery surfaces (paths into the JSON-RPC envelope):
 //
-//   - serverCapabilities.experimental.padCmdhelp.version (handshake).
+//   - result.capabilities.experimental.padCmdhelp.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 const CmdhelpVersion = "0.1"
 
@@ -48,7 +48,8 @@ const MetaVersionURI = "pad://_meta/version"
 // reads it dynamically (see meta.go) so the value never drifts from
 // what the library actually advertises.
 
-// experimentalCapabilityKey is the namespace under
-// serverCapabilities.experimental that carries the cmdhelp tier.
-// Namespaced so other servers' experimental capabilities don't collide.
+// experimentalCapabilityKey is the JSON object key under
+// capabilities.experimental that carries the cmdhelp tier in the
+// initialize handshake. Namespaced so other servers' experimental
+// capabilities don't collide.
 const experimentalCapabilityKey = "padCmdhelp"
