@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	goMime "mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -169,37 +171,32 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 
 // parseAttachmentFilename extracts the filename from a
 // Content-Disposition header. Mirrors the CLI's helper of the same
-// name (cmd/pad/main.go) — handles both the bare `filename=value` and
-// the URL-encoded `filename*=UTF-8”value` forms.
+// name (cmd/pad/main.go parseAttachmentFilename): defers to
+// mime.ParseMediaType so quoted filenames containing semicolons —
+// like `attachment; filename="a;b.png"` — round-trip correctly.
+// A naive `strings.Split(";")` here would chop the filename at the
+// first internal `;` and silently corrupt the result (Codex review
+// on PR #350 caught this).
 //
-// Reproduced here rather than imported because the CLI's helper is
-// in package main and not callable from internal/mcp.
+// Returns filepath.Base(name) so a server-emitted path-like value
+// can't escape into a directory traversal — same defensive base
+// the CLI applies even though the server is supposed to sanitize
+// before emitting the header.
+//
+// mime.ParseMediaType handles BOTH the bare `filename="value"` and
+// the RFC 5987 `filename*=UTF-8”<urlencoded>` forms automatically;
+// we don't need to special-case either.
 func parseAttachmentFilename(header string) string {
 	if header == "" {
 		return ""
 	}
-	// Prefer the RFC 5987 `filename*=UTF-8''<urlencoded>` form when
-	// present — it's the spec-compliant carrier for non-ASCII names.
-	const filenameStarPrefix = "filename*=UTF-8''"
-	for _, part := range strings.Split(header, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, filenameStarPrefix) {
-			raw := part[len(filenameStarPrefix):]
-			decoded, err := url.QueryUnescape(raw)
-			if err == nil {
-				return decoded
-			}
-		}
+	_, params, err := goMime.ParseMediaType(header)
+	if err != nil {
+		return ""
 	}
-	for _, part := range strings.Split(header, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "filename=") {
-			value := part[len("filename="):]
-			value = strings.TrimSpace(value)
-			value = strings.TrimPrefix(value, `"`)
-			value = strings.TrimSuffix(value, `"`)
-			return value
-		}
+	name := params["filename"]
+	if name == "" {
+		return ""
 	}
-	return ""
+	return filepath.Base(name)
 }

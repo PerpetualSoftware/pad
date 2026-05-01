@@ -357,6 +357,7 @@ func TestParseAttachmentFilename_StandardForm(t *testing.T) {
 func TestParseAttachmentFilename_PrefersFilenameStarOverFilename(t *testing.T) {
 	// RFC 5987 says filename* takes precedence — it's the
 	// spec-compliant carrier for non-ASCII names.
+	// mime.ParseMediaType prefers the encoded form automatically.
 	got := parseAttachmentFilename(`attachment; filename="ascii.txt"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`)
 	if got != "résumé.pdf" {
 		t.Errorf("got %q, want résumé.pdf", got)
@@ -378,6 +379,28 @@ func TestParseAttachmentFilename_HandlesQuotedAndUnquoted(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("parse(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestParseAttachmentFilename_PreservesSemicolonsInQuotedFilename(t *testing.T) {
+	// Codex review on PR #350 caught the previous Split(";") approach
+	// chopping `attachment; filename="a;b.png"` at the internal
+	// semicolon. mime.ParseMediaType respects the quote boundaries
+	// so the inner ; survives.
+	got := parseAttachmentFilename(`attachment; filename="a;b.png"`)
+	if got != "a;b.png" {
+		t.Errorf("got %q, want a;b.png (semicolons inside quotes must round-trip)", got)
+	}
+}
+
+func TestParseAttachmentFilename_AppliesBasenameDefense(t *testing.T) {
+	// Match the CLI's filepath.Base fallback — even if a server
+	// emitted a path-like filename we strip the directory portion
+	// so callers can't accidentally hand a traversal-y path to a
+	// downstream tool.
+	got := parseAttachmentFilename(`attachment; filename="../../etc/passwd"`)
+	if got != "passwd" {
+		t.Errorf("got %q, want passwd (directory portion must be stripped)", got)
 	}
 }
 
