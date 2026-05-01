@@ -161,7 +161,46 @@ func TestActionMetaToolSurface_DumpsCatalog(t *testing.T) {
 		if len(actions) != len(def.Actions) {
 			t.Errorf("%s.actions length = %d, want %d", def.Name, len(actions), len(def.Actions))
 		}
+
+		// params must always include an `action` entry (synthesized) so
+		// the dump is self-contained for docs generation. workspace is
+		// added when def.Schema.Workspace=true.
+		params, ok := entry["params"].([]any)
+		if !ok {
+			t.Errorf("%s.params is %T, want []any", def.Name, entry["params"])
+			continue
+		}
+		wantLen := 1 + len(def.Schema.Params)
+		if def.Schema.Workspace {
+			wantLen++
+		}
+		if len(params) != wantLen {
+			t.Errorf("%s.params length = %d, want %d (1 action + %d schema + %d workspace)",
+				def.Name, len(params), wantLen, len(def.Schema.Params), boolToInt(def.Schema.Workspace))
+		}
+		// First param is always `action` with full enum.
+		if len(params) > 0 {
+			first, _ := params[0].(map[string]any)
+			if first["name"] != "action" {
+				t.Errorf("%s.params[0].name = %v, want \"action\"", def.Name, first["name"])
+			}
+			enum, _ := first["enum"].([]any)
+			if len(enum) != len(def.Actions) {
+				t.Errorf("%s.params[0].enum length = %d, want %d (one per action)",
+					def.Name, len(enum), len(def.Actions))
+			}
+		}
 	}
+}
+
+// boolToInt is the trivial converter used in test failure messages
+// where formatting "n params + 0 workspace" reads cleaner than a
+// branching message.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // TestPadMetaTool_RoundTripThroughFanOut exercises the full path:

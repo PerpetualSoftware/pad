@@ -110,19 +110,29 @@ func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*mcp
 // consumers can detect "catalog is partial" and fall back to
 // tools/list when they need the complete advertised surface.
 //
-// Schema is intentionally simple — name + description per tool, plus
-// per-action name + presence. Full per-action parameter schemas live
-// in tools/list (the JSON Schema mcp-go emits for each tool); the
-// catalog summary is a higher-level "what can this server do" view.
+// Schema: per-tool entries carry name + description + workspace flag +
+// actions[] + params[]. The params list is synthesized to mirror what
+// consumers see in tools/list — `action` (always required, enum of
+// declared actions), `workspace` (when ToolDef.Schema.Workspace=true),
+// and the per-tool ParamDefs. This makes the dump self-contained for
+// docs generators: they don't have to reproduce buildToolFromDef's
+// implicit-param logic separately.
 func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
 	type actionSummary struct {
 		Name string `json:"name"`
+	}
+	type paramSummary struct {
+		Name        string   `json:"name"`
+		Type        string   `json:"type"`
+		Description string   `json:"description,omitempty"`
+		Enum        []string `json:"enum,omitempty"`
 	}
 	type toolSummary struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Workspace   bool            `json:"workspace"`
 		Actions     []actionSummary `json:"actions"`
+		Params      []paramSummary  `json:"params"`
 	}
 	tools := make([]toolSummary, 0, len(env.Catalog))
 	for _, def := range env.Catalog {
@@ -130,11 +140,39 @@ func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (
 		for _, name := range sortedActionNames(def) {
 			actions = append(actions, actionSummary{Name: name})
 		}
+		// `action` is always present and always required — buildToolFromDef
+		// injects it into the schema. Synthesize it here so consumers
+		// reading tool-surface get the full param picture without having
+		// to know about that injection. Enum mirrors sortedActionNames.
+		params := []paramSummary{{
+			Name:        "action",
+			Type:        "string",
+			Description: "The action to perform. Required.",
+			Enum:        sortedActionNames(def),
+		}}
+		if def.Schema.Workspace {
+			params = append(params, paramSummary{
+				Name: "workspace",
+				Type: "string",
+				Description: "Workspace slug. Defaults to the session workspace " +
+					"set via pad_set_workspace, then to the CWD-linked workspace " +
+					"from .pad.toml.",
+			})
+		}
+		for _, p := range def.Schema.Params {
+			params = append(params, paramSummary{
+				Name:        p.Name,
+				Type:        p.Type,
+				Description: p.Description,
+				Enum:        p.Enum,
+			})
+		}
 		tools = append(tools, toolSummary{
 			Name:        def.Name,
 			Description: def.Description,
 			Workspace:   def.Schema.Workspace,
 			Actions:     actions,
+			Params:      params,
 		})
 	}
 	// rollout_status is "complete" only after TASK-981 retires the
