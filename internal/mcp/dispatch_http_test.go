@@ -227,21 +227,28 @@ func TestMapItemCreate_NormalizesCollectionAliases(t *testing.T) {
 	}
 }
 
-func TestMapItemCreate_RejectsUnsupportedRole(t *testing.T) {
-	// --role still requires slug → role-ID resolution we haven't
-	// built yet (item.update lands first; --role rolls in with the
-	// next route-table expansion). Reject loudly so agents don't
-	// silently lose role assignments.
-	_, _, _, err := mapItemCreate(map[string]any{
+func TestMapItemCreate_PassesThroughResolvedAgentRoleID(t *testing.T) {
+	// Slug → ID resolution moved up to Dispatch in TASK-968 (the
+	// preprocess step rewrites `role: <slug>` to `agent_role_id:
+	// <uuid>` via the agent-roles endpoint). The mapper itself just
+	// trusts the resolved input. This test asserts that the
+	// pass-through for `agent_role_id` keeps working — the Dispatch-
+	// level preprocess can't actually run without a Handler, so the
+	// route table contract is "agent_role_id flows through to the
+	// payload."
+	_, _, body, err := mapItemCreate(map[string]any{
 		"workspace": "ws", "collection": "tasks", "title": "x",
-		"role": "implementer",
+		"agent_role_id": "role-uuid-101",
 	})
-	if err == nil {
-		t.Errorf("expected error rejecting --role; got nil")
-		return
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "role") {
-		t.Errorf("error should mention --role; got %v", err)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["agent_role_id"] != "role-uuid-101" {
+		t.Errorf("agent_role_id should pass through to payload; got %v", payload)
 	}
 }
 
