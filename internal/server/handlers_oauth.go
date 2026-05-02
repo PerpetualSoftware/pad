@@ -638,18 +638,29 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 // — in one shot. Matches OAuth 2.1 BCP §4.14's "revoke the family"
 // rule.
 //
-// fosite's WriteRevocationResponse normalizes the wire shape:
+// Wire shape:
 //
 //   - 200 OK on success or unknown token (RFC 7009 §2.2: "invalid
 //     tokens do not cause an error response since the client cannot
 //     handle such an error in a reasonable way"; revocation is
 //     idempotent from the client's POV).
-//   - 400 invalid_request on malformed input.
+//   - 400 invalid_request on malformed input (missing token, wrong
+//     HTTP method, unparseable body).
 //   - 401 invalid_client on client-auth failure.
 //
 // Response body is empty for the 200 success path; the OAuth error
-// envelope for the others. fosite sets Cache-Control: no-store so
-// intermediaries don't cache the answer.
+// envelope for the others. Cache-Control: no-store so intermediaries
+// don't cache the answer.
+//
+// Caveat: fosite v0.49 returns ErrInvalidRequest (which would
+// surface as 400 via WriteRevocationResponse) for the unknown-token
+// case, contradicting RFC 7009 §2.2's idempotency requirement. We
+// detect that case by inspecting the RFC6749Error's HintField — bare
+// ErrInvalidRequest from the !found branch has no hint, while the
+// genuine "malformed request" branches (wrong method, unparseable
+// body, empty form) all set a hint via WithHint(). When we recognize
+// the unknown-token case, we write 200 directly and skip
+// WriteRevocationResponse. Codex review #373 round 2.
 func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
@@ -658,7 +669,40 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	err := s.oauthServer.Provider().NewRevocationRequest(ctx, r)
+	if err != nil && isRevocationUnknownToken(err) {
+		// RFC 7009 §2.2 idempotency: unknown / already-revoked token
+		// is a no-op success. Match fosite's WriteRevocationResponse
+		// success-path headers for consistency.
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	s.oauthServer.Provider().WriteRevocationResponse(ctx, w, err)
+}
+
+// isRevocationUnknownToken reports whether err is the bare
+// fosite.ErrInvalidRequest fosite emits when no revocation handler
+// recognizes the supplied token (revoke_handler.go:69-71). The
+// other ErrInvalidRequest paths from NewRevocationRequest all set
+// HintField via WithHint*(), so an empty HintField uniquely
+// identifies the unknown-token case.
+//
+// We also require the ErrorField to be invalid_request and the
+// CodeField to be 400 — defense-in-depth so a future fosite version
+// that repurposes the bare error sentinel doesn't accidentally
+// match.
+func isRevocationUnknownToken(err error) bool {
+	if !errors.Is(err, fosite.ErrInvalidRequest) {
+		return false
+	}
+	rfcErr := fosite.ErrorToRFC6749Error(err)
+	if rfcErr == nil {
+		return false
+	}
+	return rfcErr.HintField == "" &&
+		rfcErr.CodeField == http.StatusBadRequest &&
+		rfcErr.ErrorField == fosite.ErrInvalidRequest.ErrorField
 }
 
 // =====================================================================

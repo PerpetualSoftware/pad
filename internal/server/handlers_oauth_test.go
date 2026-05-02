@@ -765,6 +765,64 @@ func TestOAuth_Revoke_AccessToken_MarksInactive(t *testing.T) {
 	}
 }
 
+// TestOAuth_Revoke_UnknownToken_Returns200 pins Codex review #373
+// round 2: RFC 7009 §2.2 mandates that revocation is idempotent —
+// "the authorization server responds with HTTP status code 200 if
+// the token has been revoked successfully OR if the client submitted
+// an invalid token." fosite v0.49 returns ErrInvalidRequest for the
+// !found branch (revoke_handler.go:69-71), which WriteRevocationResponse
+// would turn into 400 — a spec-visible failure for the entirely
+// normal "client retried after a previous revoke succeeded" or
+// "operator typo'd the token" cases.
+//
+// handleOAuthRevoke detects this case via isRevocationUnknownToken
+// and writes 200 directly. This test locks the override in.
+func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// Token value is well-formed enough to pass the form parser
+	// but doesn't exist in our storage (no /authorize/decide ever
+	// minted it).
+	rr := postOAuthForm(srv, "/oauth/revoke", url.Values{
+		"token":     {"definitely-not-a-real-revoke-token"},
+		"client_id": {clientID},
+	})
+	if rr.Code != http.StatusOK {
+		t.Errorf("RFC 7009 §2.2: unknown token must return 200 (idempotent revoke); got %d (body: %s)",
+			rr.Code, rr.Body.String())
+	}
+	// Response body should be empty (matches the success path).
+	if rr.Body.Len() > 0 {
+		t.Errorf("unknown-token revoke response body should be empty; got %q", rr.Body.String())
+	}
+}
+
+// TestOAuth_Revoke_MalformedRequest_Returns400 pins the COUNTERPART
+// to TestOAuth_Revoke_UnknownToken_Returns200: the spec-correct
+// 200-on-unknown override must NOT swallow genuine "client sent a
+// broken request" errors. fosite distinguishes the two via HintField
+// (set on malformed cases via WithHint*, absent on the !found path);
+// isRevocationUnknownToken only matches the latter.
+func TestOAuth_Revoke_MalformedRequest_Returns400(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+
+	// Empty form body — fosite rejects with ErrInvalidRequest
+	// hinted "POST body can not be empty." The hint distinguishes
+	// from the !found path; isRevocationUnknownToken returns false
+	// and WriteRevocationResponse emits 400.
+	req := httptest.NewRequest("POST", "/oauth/revoke", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("malformed revoke request must return 400 (not silently 200); got %d (body: %s)",
+			rr.Code, rr.Body.String())
+	}
+}
+
 // TestOAuth_Revoke_RefreshToken_RevokesFamily covers the security
 // invariant established in sub-PR A round 2: revoking a refresh
 // token must revoke the *entire grant family* (every access AND
