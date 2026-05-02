@@ -1049,6 +1049,60 @@ func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
 	}
 }
 
+// TestMCPRateLimit_OAuthRefreshTokenNotCounted pins Codex review
+// #378 round 2: the OAuth-path rate limit must run AFTER all
+// validation gates (refresh-vs-access, audience match, user lookup)
+// so an active-but-not-authorized bearer (e.g. refresh token used
+// against /mcp) doesn't create a limiter bucket. Without this guard
+// an attacker holding a valid refresh token could spam /mcp 429
+// times to fill a bucket and then stop receiving the intended 401
+// invalid_token error.
+//
+// Strategy: mint a real refresh token via the full OAuth flow,
+// hammer /mcp with it 50 times, assert every response is 401 (not
+// 429) AND the limiter map size is unchanged.
+func TestMCPRateLimit_OAuthRefreshTokenNotCounted(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-rl-refresh-quick-brown-fox-jumps-over-the-l")
+	refresh, _ := tokens["refresh_token"].(string)
+	if refresh == "" {
+		t.Fatalf("missing refresh token: %v", tokens)
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	beforeCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+refresh)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("refresh-token bearer must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("refresh-token bearer: expected 401, got %d (body: %s)", rr.Code, rr.Body.String())
+		}
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	afterCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	if afterCount != beforeCount {
+		t.Errorf("limiter map grew under refresh-token spam: before=%d, after=%d (must be equal — rate-limiter must run AFTER refresh-token rejection)",
+			beforeCount, afterCount)
+	}
+}
+
 // TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly is the
 // memory-DoS regression test for Codex review #378 round 1. After
 // 100 distinct invalid bearers, the per-token limiter map MUST

@@ -229,14 +229,6 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		return
 	}
 
-	// Per-token rate limit (TASK-959). Runs AFTER fosite validates
-	// the token — same reasoning as the PAT path: limiter map only
-	// fills with valid-token hashes, bounding memory under bearer-
-	// string spam (Codex review #378 round 1).
-	if !s.checkMCPRateLimit(w, r, token) {
-		return
-	}
-
 	// Refresh tokens are NOT valid bearers for resource calls. RFC
 	// 6749 §1.5: "refresh tokens are credentials used to obtain
 	// access tokens." A client misconfigured to send the refresh
@@ -292,6 +284,20 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		// layer is failing. Either way, the bearer can't represent
 		// a valid identity — reject.
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
+		return
+	}
+
+	// Per-token rate limit (TASK-959). Runs AFTER ALL OAuth
+	// validation gates pass: introspection, refresh-vs-access
+	// check, RFC 8707 audience match, subject presence, user
+	// lookup. Codex review #378 round 2 caught the gap where
+	// rate-limiting between IntrospectToken and these later gates
+	// would create limiter buckets for active-but-not-authorized
+	// tokens (refresh tokens used as bearers, wrong-audience
+	// tokens, deleted users). Moving the check to the very end
+	// of the OAuth happy path ensures the limiter map only
+	// contains tokens that would otherwise reach next.ServeHTTP.
+	if !s.checkMCPRateLimit(w, r, token) {
 		return
 	}
 
