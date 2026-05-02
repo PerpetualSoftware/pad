@@ -217,6 +217,109 @@ func TestAudienceStrategy_AcceptsCanonicalOnly(t *testing.T) {
 	}
 }
 
+// TestAudienceStrategy_TrailingSlashEquivalence pins the fix for the
+// real-world bug Claude Desktop hit against pad: the connector parses
+// the URL the user pasted (e.g. "https://mcp.getpad.dev"), URL-parses
+// it (which canonicalizes empty path → "/"), and emits the resource
+// indicator as "https://mcp.getpad.dev/" — with a trailing slash that
+// pad's canonical "https://mcp.getpad.dev" doesn't have. Per RFC 3986
+// §6.2.3 those forms are equivalent for the HTTP scheme; without
+// trailing-slash normalization the strict string compare rejects
+// every real-client request and the connector loops on
+// "Requested audience X is not the canonical audience Y."
+//
+// Matrix locks in all four (canonical-with-or-without-slash) ×
+// (needle-with-or-without-slash) combinations so a future refactor
+// that drops the normalization regresses the test, not production.
+func TestAudienceStrategy_TrailingSlashEquivalence(t *testing.T) {
+	cases := []struct {
+		name      string
+		canonical string
+		needle    string
+	}{
+		{"both bare", "https://mcp.test.example", "https://mcp.test.example"},
+		{"canonical bare, needle slashed", "https://mcp.test.example", "https://mcp.test.example/"},
+		{"canonical slashed, needle bare", "https://mcp.test.example/", "https://mcp.test.example"},
+		{"both slashed", "https://mcp.test.example/", "https://mcp.test.example/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			strat := audienceMatchingStrategy(tc.canonical)
+			if err := strat([]string{tc.canonical}, []string{tc.needle}); err != nil {
+				t.Errorf("canonical=%q needle=%q must compare equal; got %v", tc.canonical, tc.needle, err)
+			}
+		})
+	}
+}
+
+// TestNormalizeAudience pins the boundaries of the slash-trim helper.
+// Codex review #386 round 1 caught an over-broad earlier version that
+// trimmed every trailing "/", which would have made
+// "https://host/mcp" and "https://host/mcp/" compare equal — distinct
+// HTTP resources collapsing to one audience is a real confusion-attack
+// surface. The fixed version trims ONLY when the URI's path component
+// is the root.
+func TestNormalizeAudience(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Root-case equivalence (the whole reason the helper exists).
+		{"https://host", "https://host"},
+		{"https://host/", "https://host"},
+		{"http://host:8080", "http://host:8080"},
+		{"http://host:8080/", "http://host:8080"},
+
+		// Non-root paths are NOT equivalent — `/foo` and `/foo/` are
+		// distinct HTTP resources. MUST stay byte-exact.
+		{"https://host/mcp", "https://host/mcp"},
+		{"https://host/mcp/", "https://host/mcp/"},
+		{"https://host/foo/bar", "https://host/foo/bar"},
+		{"https://host/foo/bar/", "https://host/foo/bar/"},
+
+		// Edge cases that must not change semantics:
+		//   - hostless strings (parse but no host) stay as-is
+		//   - empty stays empty
+		//   - URLs with query or fragment stay as-is even on root
+		{"", ""},
+		{"/", "/"},
+		{"https://host/?q=x", "https://host/?q=x"},
+		{"https://host/#frag", "https://host/#frag"},
+
+		// Unparseable inputs return as-is (defensive — matching
+		// continues to fail string-equally rather than throwing).
+		{"::not-a-url::", "::not-a-url::"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := NormalizeAudience(tc.in); got != tc.want {
+				t.Errorf("NormalizeAudience(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAudienceStrategy_PathSlashIsNotEquivalent guards Codex #386
+// round 1 directly at the strategy layer: even with normalization
+// active, a token requested for a path-slashed audience must NOT
+// pass when the canonical is the unslashed path form (and vice
+// versa). The strict reject is what stops the audience-confusion
+// attack the round-1 review flagged.
+func TestAudienceStrategy_PathSlashIsNotEquivalent(t *testing.T) {
+	cases := []struct{ canonical, needle string }{
+		{"https://host/mcp", "https://host/mcp/"},
+		{"https://host/mcp/", "https://host/mcp"},
+		{"https://host/foo/bar", "https://host/foo/bar/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.canonical+"_vs_"+tc.needle, func(t *testing.T) {
+			strat := audienceMatchingStrategy(tc.canonical)
+			if err := strat([]string{tc.canonical}, []string{tc.needle}); err == nil {
+				t.Errorf("canonical=%q needle=%q must NOT compare equal (path-slash distinction)", tc.canonical, tc.needle)
+			}
+		})
+	}
+}
+
 func TestAudienceStrategy_RejectsMultipleAudiences(t *testing.T) {
 	// Even if one of the requested audiences is canonical, having
 	// extras is rejected — RFC 8707 audience-restriction means

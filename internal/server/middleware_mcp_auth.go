@@ -335,12 +335,21 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
-// audienceContains reports whether haystack contains needle. Tiny
-// helper avoiding the slices package import for one call site (and
-// keeping the test surface for "audience match" in one place).
+// audienceContains reports whether haystack contains needle, treating
+// scheme-equivalent forms as equal via oauth.NormalizeAudience.
+//
+// Why normalize: real OAuth clients reconstruct the resource indicator
+// from the URL the user pasted, and URL parsing canonicalizes empty
+// path → "/" — so a client given `https://mcp.example` may emit
+// `https://mcp.example/` as the audience. RFC 3986 §6.2.3 declares
+// these equivalent for HTTP scheme; pad's AS-side audienceMatchingStrategy
+// applies the same trim. Mirroring the rule here keeps the AS and RS
+// in lockstep — without it, tokens the AS minted (with the requested
+// audience stored verbatim) would fail validation at /mcp.
 func audienceContains(haystack []string, needle string) bool {
+	needleNorm := oauth.NormalizeAudience(needle)
 	for _, a := range haystack {
-		if a == needle {
+		if oauth.NormalizeAudience(a) == needleNorm {
 			return true
 		}
 	}
