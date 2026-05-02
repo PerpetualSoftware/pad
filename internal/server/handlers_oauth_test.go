@@ -189,10 +189,10 @@ func TestOAuth_Register_RejectsMissingRedirectURIs(t *testing.T) {
 func TestOAuth_Register_RejectsBadRedirectURIShapes(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 	cases := map[string]string{
-		"relative":              "/oauth/cb",
-		"http+non-loopback":     "http://attacker.example/cb",
-		"fragment":              "https://app.test/cb#x",
-		"javascript scheme":     "javascript:alert(1)",
+		"relative":          "/oauth/cb",
+		"http+non-loopback": "http://attacker.example/cb",
+		"fragment":          "https://app.test/cb#x",
+		"javascript scheme": "javascript:alert(1)",
 	}
 	for name, badURI := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -326,10 +326,10 @@ func TestOAuth_Authorize_RejectsAudienceMismatch(t *testing.T) {
 	challenge := s256Challenge(verifier)
 
 	q := url.Values{
-		"client_id":             {clientID},
-		"response_type":         {"code"},
-		"redirect_uri":          {"https://app.test/cb"},
-		"scope":                 {"pad:read"},
+		"client_id":     {clientID},
+		"response_type": {"code"},
+		"redirect_uri":  {"https://app.test/cb"},
+		"scope":         {"pad:read"},
 		// Wrong audience — neither matches canonical. fosite's
 		// AudienceMatchingStrategy from sub-PR B rejects.
 		"audience":              {"https://other.example/mcp"},

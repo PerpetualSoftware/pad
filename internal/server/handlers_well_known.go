@@ -157,16 +157,16 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 	// revocation_endpoint + introspection_endpoint here" as a
 	// follow-up.
 	doc := authServerMetadata{
-		Issuer:                                     issuer,
-		AuthorizationEndpoint:                      issuer + "/oauth/authorize",
-		TokenEndpoint:                              issuer + "/oauth/token",
-		RegistrationEndpoint:                       issuer + "/oauth/register",
-		ResponseTypesSupported:                     []string{"code"},
-		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
-		CodeChallengeMethodsSupported:              []string{"S256"},
-		TokenEndpointAuthMethodsSupported:          []string{"none"},
-		ScopesSupported:             []string{"pad:read", "pad:write", "pad:admin"},
-		ResourceIndicatorsSupported: true,
+		Issuer:                            issuer,
+		AuthorizationEndpoint:             issuer + "/oauth/authorize",
+		TokenEndpoint:                     issuer + "/oauth/token",
+		RegistrationEndpoint:              issuer + "/oauth/register",
+		ResponseTypesSupported:            []string{"code"},
+		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:     []string{"S256"},
+		TokenEndpointAuthMethodsSupported: []string{"none"},
+		ScopesSupported:                   []string{"pad:read", "pad:write", "pad:admin"},
+		ResourceIndicatorsSupported:       true,
 		// authorization_response_iss_parameter_supported (RFC 9207)
 		// is intentionally OMITTED. Advertising it would imply that
 		// /authorize redirects carry iss=<issuer> in the response
