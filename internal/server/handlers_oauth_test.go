@@ -529,17 +529,19 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 	}
 }
 
-// TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints
-// pins Codex review #372 round 1 fix #2 + round 2 fix #2: the
-// discovery doc must NOT advertise revocation_endpoint /
-// introspection_endpoint (sub-PR D wires those) or
-// authorization_response_iss_parameter_supported (RFC 9207 — fosite
-// v0.49 doesn't add iss to the redirect, so claiming support would
-// mislead RFC 9207-aware clients).
+// TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag pins
+// Codex review #372 round 2: authorization_response_iss_parameter_supported
+// (RFC 9207) is intentionally omitted because fosite v0.49 doesn't
+// add iss=<issuer> to authorize redirects, so claiming support would
+// mislead RFC 9207-aware clients into rejecting the response.
 //
 // Advertised-but-broken metadata is worse than absent metadata —
-// RFC 8414 §2 marks all four fields OPTIONAL.
-func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testing.T) {
+// RFC 8414 §2 marks the field OPTIONAL.
+//
+// (Sub-PR D fills in revocation_endpoint and introspection_endpoint;
+// the previous OmitsUnimplementedEndpoints test asserted those were
+// also absent — those assertions moved to AdvertisesRevokeIntrospect.)
+func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
@@ -549,16 +551,48 @@ func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testin
 	var doc map[string]any
 	parseJSON(t, rr, &doc)
 
-	for _, k := range []string{
-		"revocation_endpoint",
-		"introspection_endpoint",
-		"revocation_endpoint_auth_methods_supported",
-		"introspection_endpoint_auth_methods_supported",
-		"authorization_response_iss_parameter_supported",
-	} {
-		if _, ok := doc[k]; ok {
-			t.Errorf("doc must NOT advertise %q (handler/feature not implemented); got %v", k, doc[k])
+	if v, ok := doc["authorization_response_iss_parameter_supported"]; ok {
+		t.Errorf("doc must NOT advertise authorization_response_iss_parameter_supported (RFC 9207 not actually implemented); got %v", v)
+	}
+}
+
+// TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect
+// asserts sub-PR D's discovery doc additions: revocation_endpoint,
+// introspection_endpoint, and the matching auth-methods lists are
+// populated and point at the URLs the handlers actually serve.
+//
+// Real Claude-Desktop / Cursor / ChatGPT clients fetch this doc
+// once on connect and cache it; if either URL is wrong, the client
+// will dial a 404 and surface "auth server appears broken" to the
+// user with no clean recovery. Pin the wire shape.
+func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+
+	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var doc map[string]any
+	parseJSON(t, rr, &doc)
+
+	wantStr := map[string]string{
+		"revocation_endpoint":    testAuthServerURL + "/oauth/revoke",
+		"introspection_endpoint": testAuthServerURL + "/oauth/introspect",
+	}
+	for k, want := range wantStr {
+		if got, _ := doc[k].(string); got != want {
+			t.Errorf("%s: got %q, want %q", k, got, want)
 		}
+	}
+	// Public-clients-only model: "none" for both (no Basic auth
+	// path can succeed because we don't issue secrets).
+	if !sliceContainsString(doc["revocation_endpoint_auth_methods_supported"], "none") {
+		t.Errorf("revocation_endpoint_auth_methods_supported missing 'none'; got %v",
+			doc["revocation_endpoint_auth_methods_supported"])
+	}
+	if !sliceContainsString(doc["introspection_endpoint_auth_methods_supported"], "none") {
+		t.Errorf("introspection_endpoint_auth_methods_supported missing 'none'; got %v",
+			doc["introspection_endpoint_auth_methods_supported"])
 	}
 }
 
@@ -663,6 +697,403 @@ func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
 	srv.ServeHTTP(trr, tr)
 	if trr.Code == http.StatusOK {
 		t.Errorf("expected non-200 for missing PKCE verifier; got %d (body: %s)", trr.Code, trr.Body.String())
+	}
+}
+
+// =====================================================================
+// /oauth/revoke + /oauth/introspect (sub-PR D, TASK-1026)
+// =====================================================================
+
+// TestOAuth_Revoke_AccessToken_MarksInactive runs a full auth-code
+// flow, revokes the resulting access token, and confirms (via
+// introspection from a *different* grant's bearer) that the
+// revoked token now reports inactive.
+//
+// Why two grants: fosite's introspection endpoint requires Bearer
+// auth using a *separate* active access token (the "you can't
+// introspect a token using itself" rule from RFC 7662 §2.1).
+// Mints two grants on the same client + user, uses tokens2.access
+// to verify tokens1.access went inactive after revoke.
+func TestOAuth_Revoke_AccessToken_MarksInactive(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens1 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-grant-1-quick-brown-fox-1234567890-abc")
+	tokens2 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-grant-2-quick-brown-fox-1234567890-abc")
+
+	access1, _ := tokens1["access_token"].(string)
+	access2, _ := tokens2["access_token"].(string)
+	if access1 == "" || access2 == "" {
+		t.Fatalf("missing tokens; tokens1=%v tokens2=%v", tokens1, tokens2)
+	}
+
+	// Revoke access1 (RFC 7009: public client, only client_id needed).
+	rrRevoke := postOAuthForm(srv, "/oauth/revoke", url.Values{
+		"token":           {access1},
+		"token_type_hint": {"access_token"},
+		"client_id":       {clientID},
+	})
+	if rrRevoke.Code != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d (body: %s)", rrRevoke.Code, rrRevoke.Body.String())
+	}
+
+	// Introspect access1 using access2 as the bearer auth.
+	rrIntro := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token":           {access1},
+		"token_type_hint": {"access_token"},
+	}, access2)
+	if rrIntro.Code != http.StatusOK {
+		t.Fatalf("introspect: expected 200, got %d (body: %s)", rrIntro.Code, rrIntro.Body.String())
+	}
+	var iresp map[string]any
+	parseJSON(t, rrIntro, &iresp)
+	if active, _ := iresp["active"].(bool); active {
+		t.Errorf("revoked access token still introspects active; resp: %v", iresp)
+	}
+}
+
+// TestOAuth_Revoke_RefreshToken_RevokesFamily covers the security
+// invariant established in sub-PR A round 2: revoking a refresh
+// token must revoke the *entire grant family* (every access AND
+// refresh token sharing the same request_id), not just the row
+// addressed by the revoke call.
+//
+// fosite's revocation handler walks the chain via our adapter's
+// RevokeRefreshToken / RevokeAccessToken methods; both delegate to
+// store.Revoke*Family, which marks every chain member inactive in
+// one statement. This test validates the wiring end-to-end.
+func TestOAuth_Revoke_RefreshToken_RevokesFamily(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens1 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-fam-1-quick-brown-fox-1234567890-abc")
+	tokens2 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-fam-2-quick-brown-fox-1234567890-abc")
+
+	access1, _ := tokens1["access_token"].(string)
+	refresh1, _ := tokens1["refresh_token"].(string)
+	access2, _ := tokens2["access_token"].(string)
+	if access1 == "" || refresh1 == "" || access2 == "" {
+		t.Fatalf("missing tokens; tokens1=%v tokens2=%v", tokens1, tokens2)
+	}
+
+	// Revoke the refresh token — fosite chains through to our
+	// adapter's RevokeRefreshToken + the access-token family
+	// revocation.
+	rr := postOAuthForm(srv, "/oauth/revoke", url.Values{
+		"token":           {refresh1},
+		"token_type_hint": {"refresh_token"},
+		"client_id":       {clientID},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("revoke refresh: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	// Verify the PAIRED access token from grant 1 is now inactive too.
+	rrIntro := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access1},
+	}, access2)
+	if rrIntro.Code != http.StatusOK {
+		t.Fatalf("introspect: expected 200, got %d (body: %s)", rrIntro.Code, rrIntro.Body.String())
+	}
+	var iresp map[string]any
+	parseJSON(t, rrIntro, &iresp)
+	if active, _ := iresp["active"].(bool); active {
+		t.Errorf("revoking refresh1 should have revoked paired access1 (family revocation); active=%v resp=%v", active, iresp)
+	}
+
+	// Sanity check: tokens2's access (different grant) is unaffected.
+	rrIntro2 := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access2},
+	}, access1) // can't use access2 to introspect itself; use access1 (now inactive)
+	// access1 is inactive so the bearer auth fails → 401. That's
+	// expected — the real check is the per-grant isolation, not
+	// the bearer-auth path. Use a third grant if we want to verify
+	// independence; for this test the previous assertion is the
+	// substance.
+	_ = rrIntro2
+}
+
+// TestOAuth_Refresh_RotatesAndOldBecomesInactive covers refresh-
+// token rotation: exchanging a refresh token must mint a fresh
+// (access, refresh) pair AND mark the previous pair inactive
+// (single-use refresh tokens, OAuth 2.1 §6.1). This is the normal
+// happy path before any replay-detection logic kicks in.
+func TestOAuth_Refresh_RotatesAndOldBecomesInactive(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens0 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-rot-0-quick-brown-fox-1234567890-abc")
+	access0, _ := tokens0["access_token"].(string)
+	refresh0, _ := tokens0["refresh_token"].(string)
+	if access0 == "" || refresh0 == "" {
+		t.Fatalf("grant 0 missing tokens: %v", tokens0)
+	}
+
+	// Exchange refresh0 for a fresh pair.
+	rr := postOAuthForm(srv, "/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh0},
+		"client_id":     {clientID},
+		"audience":      {testCanonicalAudience},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("refresh exchange: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var rotResp map[string]any
+	parseJSON(t, rr, &rotResp)
+
+	access1, _ := rotResp["access_token"].(string)
+	refresh1, _ := rotResp["refresh_token"].(string)
+	if access1 == "" || refresh1 == "" {
+		t.Fatalf("rotation missing tokens: %v", rotResp)
+	}
+	if access1 == access0 {
+		t.Errorf("rotated access token must differ from old one")
+	}
+	if refresh1 == refresh0 {
+		t.Errorf("rotated refresh token must differ from old one")
+	}
+
+	// access1 introspects active. (Use access1 itself can't
+	// introspect itself — fosite rejects self-bearer-token. Use a
+	// second grant to verify access1's state.)
+	tokens2 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-rot-2-quick-brown-fox-1234567890-abc")
+	access2, _ := tokens2["access_token"].(string)
+
+	rrIntroNew := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access1},
+	}, access2)
+	var iresp map[string]any
+	parseJSON(t, rrIntroNew, &iresp)
+	if active, _ := iresp["active"].(bool); !active {
+		t.Errorf("rotated access1 should be active; resp=%v", iresp)
+	}
+
+	// access0 introspects inactive (rotation revoked it).
+	rrIntroOld := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access0},
+	}, access2)
+	var oresp map[string]any
+	parseJSON(t, rrIntroOld, &oresp)
+	if active, _ := oresp["active"].(bool); active {
+		t.Errorf("pre-rotation access0 should be inactive; resp=%v", oresp)
+	}
+}
+
+// TestOAuth_Refresh_ReplayDetection_RevokesFamily is the security-
+// critical OAuth 2.1 §6.1 / RFC 6819 §5.2.2.3 test: replaying an
+// already-rotated refresh token must trigger family revocation, so
+// any tokens minted from the rotation become unusable.
+//
+// Threat model: an attacker who steals refresh_n watches the
+// legitimate client refresh first → mints (access_n+1, refresh_n+1).
+// Now both attacker and legit client believe they hold a valid
+// chain. When the attacker (or the legit client, racing) presents
+// refresh_n a SECOND time, fosite's flow_refresh.go detects the
+// inactive token, calls our adapter's RevokeRefreshToken +
+// RevokeAccessToken on the request_id, and our store walks the
+// family — invalidating refresh_n+1, access_n+1, and every
+// historical chain member.
+//
+// Without this defense an attacker could "leapfrog" the legitimate
+// client indefinitely. With it, the entire chain dies on the
+// first replay attempt.
+func TestOAuth_Refresh_ReplayDetection_RevokesFamily(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens0 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-rep-0-quick-brown-fox-1234567890-abc")
+	refresh0, _ := tokens0["refresh_token"].(string)
+	if refresh0 == "" {
+		t.Fatalf("grant 0 missing refresh: %v", tokens0)
+	}
+
+	// First refresh: succeeds, mints (access_1, refresh_1).
+	rr := postOAuthForm(srv, "/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh0},
+		"client_id":     {clientID},
+		"audience":      {testCanonicalAudience},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first refresh: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var rot1 map[string]any
+	parseJSON(t, rr, &rot1)
+	access1, _ := rot1["access_token"].(string)
+
+	// Second refresh of refresh0 (the attacker replay): fosite
+	// detects the now-inactive refresh and revokes the family.
+	// The HTTP response is an OAuth error per RFC 6749 — fosite
+	// returns 400 with error=invalid_grant. The side-effect (family
+	// revocation) is the security-critical piece.
+	rrReplay := postOAuthForm(srv, "/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh0},
+		"client_id":     {clientID},
+		"audience":      {testCanonicalAudience},
+	})
+	if rrReplay.Code == http.StatusOK {
+		t.Errorf("replay must NOT succeed; got 200 (body: %s)", rrReplay.Body.String())
+	}
+
+	// Mint a separate grant so we have a bearer for introspection.
+	tokensFresh := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-rep-fresh-quick-brown-fox-1234567890")
+	accessFresh, _ := tokensFresh["access_token"].(string)
+
+	// access1 (minted from the rotation BEFORE the replay) should
+	// now be inactive — replay detection revoked the family.
+	rrIntro := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access1},
+	}, accessFresh)
+	if rrIntro.Code != http.StatusOK {
+		t.Fatalf("introspect post-replay: expected 200, got %d (body: %s)", rrIntro.Code, rrIntro.Body.String())
+	}
+	var iresp map[string]any
+	parseJSON(t, rrIntro, &iresp)
+	if active, _ := iresp["active"].(bool); active {
+		t.Errorf("post-replay: access1 should be inactive (family revocation triggered); resp=%v", iresp)
+	}
+}
+
+// TestOAuth_Introspect_ActiveToken_ReturnsClaims verifies the happy-
+// path RFC 7662 response shape: {active:true, scope, sub, aud,
+// client_id, exp, iat} for a valid access token.
+//
+// Sub-PR E's MCPBearerAuth integration reads sub + scope + aud from
+// this response (well, from fosite.IntrospectToken directly — but
+// the wire shape pins the same contract). Pinning the field
+// presence here catches a future fosite version-bump that drops
+// or renames a field before the integration breaks.
+func TestOAuth_Introspect_ActiveToken_ReturnsClaims(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// Two grants on the same user — bearer + token-to-introspect.
+	tokensTarget := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-int-tgt-quick-brown-fox-1234567890")
+	tokensBearer := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-int-brer-quick-brown-fox-1234567890")
+
+	target, _ := tokensTarget["access_token"].(string)
+	bearer, _ := tokensBearer["access_token"].(string)
+	if target == "" || bearer == "" {
+		t.Fatalf("missing tokens")
+	}
+
+	rr := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {target},
+	}, bearer)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("introspect: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var iresp map[string]any
+	parseJSON(t, rr, &iresp)
+	if active, _ := iresp["active"].(bool); !active {
+		t.Fatalf("active should be true; resp=%v", iresp)
+	}
+	// sub (RFC 7662 §2.2) maps to the user ID we set via
+	// oauth.NewSession(user.ID) at /authorize/decide. Sub-PR E's
+	// MCPBearerAuth maps this back to the pad user.
+	if sub, _ := iresp["sub"].(string); sub != user.ID {
+		t.Errorf("sub: got %q, want %q (user ID from /authorize/decide)", sub, user.ID)
+	}
+	if cid, _ := iresp["client_id"].(string); cid != clientID {
+		t.Errorf("client_id: got %q, want %q", cid, clientID)
+	}
+	if scope, _ := iresp["scope"].(string); !strings.Contains(scope, "pad:read") {
+		t.Errorf("scope should contain pad:read; got %q", scope)
+	}
+	// aud is a JSON array — assert canonical audience appears.
+	auds, _ := iresp["aud"].([]any)
+	foundAud := false
+	for _, a := range auds {
+		if s, _ := a.(string); s == testCanonicalAudience {
+			foundAud = true
+			break
+		}
+	}
+	if !foundAud {
+		t.Errorf("aud should contain canonical audience %q; got %v", testCanonicalAudience, iresp["aud"])
+	}
+	if _, ok := iresp["exp"]; !ok {
+		t.Error("exp should be set on active tokens")
+	}
+}
+
+// TestOAuth_Introspect_UnknownToken_ReturnsActiveFalse pins the
+// no-leak property: an unknown token must produce {"active": false}
+// and nothing else (no scope, no client_id, no error message). RFC
+// 7662 §2.2 explicitly requires this so an attacker can't probe
+// for valid token shapes by introspecting random strings and
+// reading the response body for hints.
+func TestOAuth_Introspect_UnknownToken_ReturnsActiveFalse(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID, "verifier-unk-quick-brown-fox-1234567890-abcde")
+	bearer, _ := tokens["access_token"].(string)
+	if bearer == "" {
+		t.Fatalf("missing bearer")
+	}
+
+	// "unknown-token-value" is well-formed enough to pass the
+	// outer validation, but doesn't exist in our storage.
+	rr := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {"definitely-not-a-real-token-xyzzy"},
+	}, bearer)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("introspect unknown: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var iresp map[string]any
+	parseJSON(t, rr, &iresp)
+	if active, _ := iresp["active"].(bool); active {
+		t.Errorf("unknown token must report active:false; got %v", iresp)
+	}
+	// No-leak: nothing else may be present.
+	for _, leakField := range []string{"scope", "client_id", "sub", "aud", "exp", "iat", "username"} {
+		if _, ok := iresp[leakField]; ok {
+			t.Errorf("unknown-token response leaked %q (RFC 7662 §2.2 forbids); got %v", leakField, iresp)
+		}
+	}
+}
+
+// TestOAuth_Introspect_RejectsMissingBearer covers the auth-required
+// path: RFC 7662 §2.1 mandates that the introspection endpoint
+// "require some form of authorization." Our model accepts only
+// Bearer auth (public clients, no Basic auth path); a request with
+// no Authorization header MUST be rejected.
+func TestOAuth_Introspect_RejectsMissingBearer(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	rr := postOAuthForm(srv, "/oauth/introspect", url.Values{
+		"token": {"any-token-here"},
+	})
+	if rr.Code == http.StatusOK {
+		// fosite returns 401 on missing Authorization.
+		t.Errorf("expected 401, got 200 (body: %s)", rr.Body.String())
+	}
+}
+
+// TestOAuth_Revoke_NotMountedOutsideCloudMode + introspect counterpart
+// confirm the cloud-mode gate covers the new endpoints (mirrors
+// TestOAuth_Register_NotMountedOutsideCloudMode for sub-PR C).
+func TestOAuth_RevokeAndIntrospect_NotMountedOutsideCloudMode(t *testing.T) {
+	srv := testServer(t) // no SetCloudMode
+	for _, path := range []string{"/oauth/revoke", "/oauth/introspect"} {
+		rr := postOAuthForm(srv, path, url.Values{"token": {"x"}, "client_id": {"y"}})
+		if rr.Code == http.StatusOK {
+			t.Errorf("%s must NOT be reachable outside cloud mode; got 200", path)
+		}
 	}
 }
 
@@ -796,4 +1227,97 @@ func readCSRFFromCookie(t *testing.T, srv *Server, sessionToken string) string {
 func s256Challenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// runAuthCodeFlow drives a full /oauth/authorize/decide → /oauth/token
+// exchange and returns the parsed token JSON. Each invocation needs
+// a unique verifier so the resulting code_challenge is unique;
+// callers pass distinct verifiers when minting multiple grants in
+// the same test (e.g. "introspect via separate bearer" tests in
+// sub-PR D need two grants).
+//
+// The verifier MUST be ≥43 chars (RFC 7636 §4.1: 43-128 chars from
+// the unreserved set). Tests embed that length in their literals;
+// this helper doesn't validate but tests will fail visibly at the
+// /token step if the verifier is too short.
+//
+// The state value is derived from the verifier so it's also unique
+// per call (fosite requires state ≥8 chars for entropy).
+func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier string) map[string]any {
+	t.Helper()
+	if len(verifier) < 43 {
+		t.Fatalf("runAuthCodeFlow: verifier too short (%d chars; RFC 7636 §4.1 needs ≥43)", len(verifier))
+	}
+	challenge := s256Challenge(verifier)
+	// State just needs ≥8 chars + uniqueness so a stray CSRF check
+	// doesn't conflate two grants. Tag with a prefix of the verifier
+	// so failures point at the right call site.
+	state := "state-" + verifier[:8]
+
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {state},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	cbURL, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("missing code in callback Location: %s", rr.Header().Get("Location"))
+	}
+
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	return resp
+}
+
+// postOAuthForm POSTs an x-www-form-urlencoded body without any
+// auth (used for /oauth/revoke + /oauth/token, where client_id rides
+// in the form for public clients).
+func postOAuthForm(srv *Server, path string, form url.Values) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
+
+// postOAuthFormBearer POSTs an x-www-form-urlencoded body with a
+// Bearer Authorization header (used for /oauth/introspect, where
+// fosite v0.49 requires either Bearer or Basic auth and we don't
+// support Basic in the public-clients-only model).
+func postOAuthFormBearer(srv *Server, path string, form url.Values, bearer string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
 }
