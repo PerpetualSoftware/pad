@@ -150,6 +150,89 @@ func TestValidationFailedFromBuildErr(t *testing.T) {
 	})
 }
 
+// TestClassifyExecError_CannotPhrasingClassifiesAsValidation pins
+// the round-2 fix: server-side rejections phrased "cannot link an
+// item to itself" / "cannot modify archived item" / etc. were
+// falling through to ErrServerError. They're validation-shaped and
+// should classify as ErrValidationFailed so agents can branch on
+// the right code (BUG-987 bug 11 round 2).
+func TestClassifyExecError_CannotPhrasingClassifiesAsValidation(t *testing.T) {
+	cases := []string{
+		"Error: cannot link an item to itself",
+		"Error: cannot modify archived item",
+		"cannot supersede an item that is already superseded",
+	}
+	for _, stderr := range cases {
+		t.Run(stderr, func(t *testing.T) {
+			res := classifyExecError(context.Background(),
+				[]string{"item", "block"},
+				errors.New("exit 1"),
+				stderr,
+				nil,
+			)
+			env := decodeEnvelope(t, res)
+			if env.Error.Code != ErrValidationFailed {
+				t.Errorf("Code = %q, want %q (stderr=%q)",
+					env.Error.Code, ErrValidationFailed, stderr)
+			}
+		})
+	}
+}
+
+// TestClassifyExecError_NoLegacyVerbPrefixInMessage pins the round-2
+// fix that drops the "pad <cmd> failed: " prefix from server_error
+// fallback messages. The prefix referenced OLD CLI verb names which
+// don't match the v0.2 MCP catalog action names agents see, and was
+// noise on top of the cmdPath that's already implicit from the
+// invoked tool (BUG-987 bug 11 round 2).
+func TestClassifyExecError_NoLegacyVerbPrefixInMessage(t *testing.T) {
+	// Use a stderr that won't hit any classifier matcher so we
+	// definitely fall through to the server_error fallback path.
+	stderr := "Error: completely novel runtime issue"
+	res := classifyExecError(context.Background(),
+		[]string{"item", "block"},
+		errors.New("exit 1"),
+		stderr,
+		nil,
+	)
+	env := decodeEnvelope(t, res)
+	if env.Error.Code != ErrServerError {
+		t.Fatalf("Code = %q, want %q", env.Error.Code, ErrServerError)
+	}
+	if strings.Contains(env.Error.Message, "pad item block failed") {
+		t.Errorf("server_error message should not carry legacy verb prefix; got %q",
+			env.Error.Message)
+	}
+	if strings.Contains(env.Error.Message, "Error:") {
+		t.Errorf("server_error message should strip leading Error: prefix; got %q",
+			env.Error.Message)
+	}
+	if !strings.Contains(env.Error.Message, "completely novel runtime issue") {
+		t.Errorf("server_error message dropped the underlying detail; got %q",
+			env.Error.Message)
+	}
+}
+
+// TestStripErrorPrefix locks the prefix-strip rules so they don't
+// accidentally over- or under-trim.
+func TestStripErrorPrefix(t *testing.T) {
+	cases := map[string]string{
+		"Error: bad input":          "bad input",
+		"  Error:  spaced  input  ": "spaced  input",
+		"error: lowercase":          "lowercase",
+		"ERROR: shouty":             "shouty",
+		"no prefix":                 "no prefix",
+		"":                          "",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := stripErrorPrefix(in); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestEnvDispatch_ValidationErrorIsStructured drives env.Dispatch
 // with a missing-arg input and confirms the resulting error result is
 // a structured validation_failed envelope, not a bare-text result.

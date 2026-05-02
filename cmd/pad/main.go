@@ -3720,14 +3720,21 @@ func standupCmd() *cobra.Command {
 					Status   string `json:"status"`
 					ItemRef  string `json:"item_ref"`
 				} `json:"active_items"`
+				// BUG-987 bug 8: previously omitted ItemRef from
+				// Attention + SuggestedNext, leaving the JSON output's
+				// blockers / suggested_next entries with empty refs.
+				// The dashboard handler populates item_ref on both
+				// arrays already; we just weren't reading the field.
 				Attention []struct {
 					Type      string `json:"type"`
 					ItemSlug  string `json:"item_slug"`
+					ItemRef   string `json:"item_ref"`
 					ItemTitle string `json:"item_title"`
 					Reason    string `json:"reason"`
 				} `json:"attention"`
 				SuggestedNext []struct {
 					ItemSlug  string `json:"item_slug"`
+					ItemRef   string `json:"item_ref"`
 					ItemTitle string `json:"item_title"`
 					Reason    string `json:"reason"`
 				} `json:"suggested_next"`
@@ -3810,12 +3817,14 @@ func standupCmd() *cobra.Command {
 				}
 				for _, a := range dash.Attention {
 					output.Blockers = append(output.Blockers, standupItem{
+						Ref:    a.ItemRef,
 						Title:  a.ItemTitle,
 						Reason: a.Reason,
 					})
 				}
 				for _, s := range dash.SuggestedNext {
 					output.SuggestedNext = append(output.SuggestedNext, standupItem{
+						Ref:    s.ItemRef,
 						Title:  s.ItemTitle,
 						Reason: s.Reason,
 					})
