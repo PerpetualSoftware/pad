@@ -342,21 +342,11 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 // special-case methods (dispatchItemUpdate, future RMW commands) can
 // reuse the same auth-context + recorder + response-shaping path.
 //
-// Scope enforcement:
-//
-// MCPBearerAuth stashes the API token's scopes string in context via
-// server.WithTokenScopes. Synthesizing the in-process request via
-// server.WithCurrentUser bypasses TokenAuth's chain-level
-// tokenScopeAllows check (TokenAuth short-circuits when currentUser
-// is already set), so we re-check scope here per synthesized request.
-// Without this, a PAT with scope `["read"]` could drive write tools
-// (POST/PATCH/DELETE) because the in-process request looks
-// pre-authenticated to the handler tree. Codex review #369 round 1.
-//
-// The scope check uses the request's actual HTTP method, not the
-// MCP cmdKey, so a `read`-scoped token can still drive read-only
-// tools (project dashboard, item show, search) while writes are
-// rejected with a structured permission_denied error envelope.
+// Scope enforcement lives in buildAuthedRequest (called below) so it
+// applies uniformly to every synthesized request — including
+// bulk-update's per-item PATCH and the RMW prefetches that don't go
+// through this method. Codex review #369 round 2 caught the leak that
+// motivated centralizing the check.
 func (d *HTTPHandlerDispatcher) executeRequest(
 	ctx context.Context,
 	cmdKey string,
@@ -364,13 +354,6 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	method, urlPath string,
 	body []byte,
 ) (*mcp.CallToolResult, error) {
-	if scopes := server.TokenScopesFromContext(ctx); !server.TokenScopeAllows(scopes, method, urlPath) {
-		return mcp.NewToolResultErrorf(
-			"%s: permission_denied — token scope does not permit %s on this resource",
-			cmdKey, method,
-		), nil
-	}
-
 	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
@@ -393,12 +376,32 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 // middleware attached workspace-allow-list context via Apply, the
 // prefetches were bypassing that and could read members / items
 // outside the allowed set during resolution.
+//
+// Scope enforcement (Codex review #369 rounds 1+2):
+//
+// Every synthesized request — main writes, RMW prefetches,
+// bulk-update per-item PATCHes, link-create POSTs — passes through
+// here, so this is the single place to enforce the API token's
+// scope. The MCP middleware (MCPBearerAuth) stashes
+// apiToken.Scopes in context via server.WithTokenScopes; we read
+// them here and call server.TokenScopeAllows. Reads
+// (GET/HEAD/OPTIONS) under a `["read"]` scope still pass; writes
+// fail with a "permission_denied" error that flows up through
+// each caller's existing build-error handling.
+//
+// Centralizing here closes the gap Codex round 2 found in
+// dispatch_http_project.go's bulk-update path (PATCH issued
+// directly via buildAuthedRequest + ServeHTTP, bypassing
+// executeRequest's previous scope check).
 func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 	ctx context.Context,
 	method, urlPath string,
 	body []byte,
 	user *models.User,
 ) (*http.Request, error) {
+	if scopes := server.TokenScopesFromContext(ctx); !server.TokenScopeAllows(scopes, method, urlPath) {
+		return nil, fmt.Errorf("permission_denied: token scope does not permit %s on this resource", method)
+	}
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return nil, err

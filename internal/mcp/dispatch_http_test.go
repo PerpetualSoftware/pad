@@ -257,6 +257,77 @@ func TestHTTPHandlerDispatcher_ScopeEnforcement_AllowsReadScopeOnReads(t *testin
 	}
 }
 
+// TestHTTPHandlerDispatcher_ScopeEnforcement_BulkUpdateBlockedOnReadScope
+// pins the round-2 fix Codex caught: bulk-update used to call
+// buildAuthedRequest + d.Handler.ServeHTTP directly for the per-item
+// PATCH, bypassing the executeRequest scope check that round 1
+// added. Centralizing the check inside buildAuthedRequest closes the
+// gap — every synthesized request, no matter the caller, is gated.
+//
+// The expected behavior with `["read"]` scope: each ref's GET
+// prefetch succeeds (read scope allows GET), but the subsequent
+// PATCH fails at request-build time with permission_denied. The
+// per-item error envelope carries the message; the bulk operation
+// returns successfully with all-errors recorded (the "no abort on
+// per-item failure" contract is unchanged).
+func TestHTTPHandlerDispatcher_ScopeEnforcement_BulkUpdateBlockedOnReadScope(t *testing.T) {
+	user := &models.User{ID: "user-1"}
+
+	// Test handler: respond 200 with a minimal item JSON to GET (so
+	// the prefetch parses), 200 to anything else. We only care that
+	// PATCH never reaches the handler — the scope gate must reject
+	// before ServeHTTP runs.
+	patchSeen := false
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patchSeen = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"fields":"{\"status\":\"open\"}"}`))
+	})
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      h,
+		UserResolver: fixedUserResolver(user),
+	}
+
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+
+	res, err := d.dispatchItemBulkUpdate(ctx, map[string]any{
+		"workspace": "docapp",
+		"ref":       []any{"TASK-1", "TASK-2"},
+		"status":    "done",
+	}, user)
+	if err != nil {
+		t.Fatalf("dispatchItemBulkUpdate: %v", err)
+	}
+	if patchSeen {
+		t.Fatal("PATCH must not reach the handler when scope check fails (regression: round-2 fix removed the gap)")
+	}
+	if res.IsError {
+		t.Fatalf("bulk-update returns success with per-item errors recorded; got top-level IsError: %#v", res)
+	}
+
+	// Pull the structured result out and confirm both refs carry a
+	// permission_denied error in their per-item entry. We accept any
+	// reasonable wrapping of "permission_denied" in the message string.
+	var content string
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(mcp.TextContent); ok {
+			content = tc.Text
+		}
+	}
+	for _, ref := range []string{"TASK-1", "TASK-2"} {
+		if !strings.Contains(content, ref) {
+			t.Errorf("expected per-item entry for %s in result; got %q", ref, content)
+		}
+	}
+	if !strings.Contains(content, "permission_denied") {
+		t.Errorf("expected permission_denied in per-item errors; got %q", content)
+	}
+}
+
 // TestHTTPHandlerDispatcher_ScopeEnforcement_NoScopeContextAllows
 // pins the legacy/empty-context behaviour: when no scope is stashed
 // (e.g. the dispatcher is used outside the MCP middleware path, or
