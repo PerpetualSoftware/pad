@@ -1,12 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
+	import AuthOAuthButtons from '$lib/components/auth/AuthOAuthButtons.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { recordAuthMethod } from '$lib/auth/lastMethod';
+	import {
+		recordAuthMethod,
+		getLastAuthMethod,
+		type AuthMethod
+	} from '$lib/auth/lastMethod';
+	import { validateRedirect, redirectQueryFragment } from '$lib/auth/redirect';
 
 	let name = $state('');
 	let username = $state('');
@@ -24,7 +31,29 @@
 	let usernameError = $state('');
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
+	// Last-used auth method (TASK-923 / TASK-1000) — populated on mount,
+	// drives the "Last used" pill on whichever SSO button matches. Same
+	// behavior as /login for cross-page consistency.
+	let lastMethod = $state<AuthMethod | null>(null);
+
+	// Validated redirect target. /register supports `?redirect=` for the
+	// register-during-OAuth flow: agent clients send unauth users to
+	// /register?redirect=/oauth/authorize?... and we hand the param off
+	// to /auth/<provider> so pad-cloud's callback (TASK-998) can return
+	// the user to /oauth/authorize after SSO. Falls back to /console for
+	// missing or invalid values.
+	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	// Forward redirect= onto the "Sign in" cross-link so a user mid-OAuth flow
+	// can hop /register ↔ /login without dropping their original destination.
+	const loginRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
+
 	onMount(async () => {
+		// Read the last-used method on mount so the "Last used" pill on the
+		// SSO buttons paints with the form. Fails silent in SSR / private mode
+		// (the helper returns null).
+		const last = getLastAuthMethod();
+		if (last) lastMethod = last.method;
+
 		try {
 			// Route session fetch through authStore so authStore.cloudMode is
 			// populated after a logout → /register navigation (the root layout's
@@ -38,11 +67,21 @@
 				return;
 			}
 			if (session?.authenticated) {
-				goto('/console', { replaceState: true });
+				goto(redirectTarget, { replaceState: true });
 				return;
 			}
 		} catch {}
 	});
+
+	// OAuth completion happens entirely outside the SPA (provider → pad-cloud
+	// callback → server-set session cookie → server-driven redirect). There's
+	// no JS callback to hang the localStorage write on, so record speculatively
+	// on click. Same approach as /login. If the user bails at the provider's
+	// consent screen, the value still reflects "what the user tried last",
+	// which is the right answer for the next-visit banner.
+	function handleOAuthClick(provider: AuthMethod) {
+		recordAuthMethod(provider);
+	}
 
 	function generateUsername(name: string): string {
 		let u = name.toLowerCase().trim();
@@ -114,7 +153,7 @@
 		try {
 			await api.auth.register(email, name, password, username || undefined);
 			recordAuthMethod('password');
-			await goto('/console', { replaceState: true });
+			await goto(redirectTarget, { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Registration failed.';
@@ -229,8 +268,15 @@
 				{/if}
 			</div>
 
+			<AuthOAuthButtons
+				cloudMode={authStore.cloudMode}
+				{redirectTarget}
+				{lastMethod}
+				onProviderClick={handleOAuthClick}
+			/>
+
 			<p class="login-link">
-				Already have an account? <a href="/login">Sign in</a>
+				Already have an account? <a href="/login{loginRedirectQuery}">Sign in</a>
 			</p>
 		{/if}
 	</div>
