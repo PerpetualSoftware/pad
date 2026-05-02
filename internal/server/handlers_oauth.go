@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -343,44 +344,129 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 // /oauth/authorize — start auth-code flow
 // =====================================================================
 
-// translateResourceToAudience copies any RFC 8707 `resource` form
-// parameters into fosite's non-standard `audience` parameter slot,
-// so the request fosite parses sees the audience it expects.
+// translateResourceToAudience reconciles the RFC 8707 `resource` form
+// parameter with fosite's non-standard `audience` parameter so that
+// the request fosite parses always sees a populated audience matching
+// the server's canonical resource URL.
 //
 // The two are semantically equivalent: RFC 8707 §2 calls them
 // "resource indicators" and labels them "audience hints"; fosite
-// (v0.49.0) reads `audience` only. Without translation, real RFC
+// (v0.49.0) reads `audience` only. Without reconciliation, real RFC
 // 8707 clients (Claude Desktop, Cursor, ChatGPT) sending only
 // `resource=https://mcp.getpad.dev/mcp` would hit our custom
 // audienceMatchingStrategy with an empty needle and fail every
 // authorize / token request. Codex review #372 round 1.
 //
-// Mutates r.Form in place. Idempotent — if `audience` is already
-// set we leave it (the test suite uses both keys as belt-and-
-// suspenders; production clients would send only one). r MUST
-// have ParseForm called before this; the OAuth handlers below
-// parse before invoking fosite.
+// Three cases the helper handles, in priority order:
 //
-// Both keys land in the form because fosite preserves r.Form into
-// the AuthorizeRequester, and the storage layer round-trips the
-// form on token exchange — so the translated audience is what
+//  1. `audience=` already present — leave both keys untouched. The
+//     test suite uses both as belt-and-suspenders; production clients
+//     would send only one.
+//  2. `resource=` present, `audience=` not — copy resource→audience
+//     so fosite's parser sees what it expects. Standard RFC 8707
+//     translation path.
+//  3. Neither key present — inject canonical into both. Some MCP
+//     clients (Claude Desktop's connector flow as of 2026-05) don't
+//     send `resource=` at all, relying on the auth server to know its
+//     single canonical audience. RFC 8707 §2 marks the parameter
+//     OPTIONAL; servers with one canonical resource SHOULD default to
+//     it. Without this branch the audienceMatchingStrategy below sees
+//     an empty needle, fosite redirects to the client's redirect_uri
+//     with `?error=invalid_request&error_description=resource
+//     parameter is required (RFC 8707).`, and the client's callback
+//     barfs with a missing-`code`-field error.
+//
+// Both keys land in the form (cases 2 + 3) because fosite preserves
+// r.Form into the AuthorizeRequester and the storage layer round-trips
+// the form on token exchange — so the reconciled audience is what
 // gets persisted + compared on the /token side too.
-func translateResourceToAudience(r *http.Request) {
+//
+// `canonical` is the server's AllowedAudience (cfg.MCPPublicURL +
+// "/mcp"). When empty (a configuration bug — main.go won't construct
+// the OAuth server without it), case 3 becomes a no-op so the
+// audienceMatchingStrategy's strict empty-needle reject still fires.
+//
+// # Security trade-off (case 3)
+//
+// Defaulting to canonical weakens the cross-server replay defense
+// RFC 8707 was designed to provide. Threat: an attacker convinces a
+// user to add a malicious MCP server (e.g. `https://evil.example/mcp`)
+// to their MCP client; evil's discovery doc lies that pad's auth
+// server is its AS; the client (which doesn't send `resource=`)
+// drives a flow against pad's AS; pad mints a token bound to its own
+// canonical audience because the AS never learned the client's real
+// intended target; the client returns the token to evil; evil replays
+// it at `https://mcp.getpad.dev/mcp`. The token's audience claim
+// passes pad's RS-side check because it IS canonical.
+//
+// Why we accept this:
+//
+//   - Real-world MCP clients (Claude Desktop, Cursor, ChatGPT as of
+//     2026-05) don't send `resource=`. Without case 3, no MCP client
+//     can authenticate at all and the product doesn't ship.
+//   - The mitigation is the consent screen (TASK-952): every grant
+//     requires the user to actively click through a screen that
+//     identifies the resource as "your Pad workspaces" and lists
+//     their actual workspace names. A user attempting to connect to
+//     a non-pad MCP server who lands on pad's consent screen sees the
+//     mismatch immediately ("why is this asking for my pad workspaces
+//     when I'm trying to connect to <other-thing>?").
+//   - This matches industry practice: GitHub, Google, Atlassian, etc.
+//     all rely on consent-as-trust-anchor since RFC 8707 is barely
+//     deployed in the wild. We're not weakening the bar below the
+//     ecosystem's median.
+//   - audienceMatchingStrategy's strict empty-needle reject stays as
+//     defense in depth: it catches any future code path that bypasses
+//     this helper, and the fail-closed branch when canonical is
+//     unset.
+//   - Audit log on every default-fire (slog.Warn below) gives ops a
+//     signal to detect anomalous patterns — e.g. a sudden spike in
+//     defaulted requests from a previously-unseen client_id.
+//
+// Codex review #383 caught the trade-off; we're shipping with the
+// mitigations above rather than reverting because the alternative is
+// "remote MCP doesn't work for any client until the entire ecosystem
+// adopts RFC 8707." A future task tracks restoring the strict reject
+// once Claude / Cursor / ChatGPT all send `resource=`.
+//
+// Mutates r.Form in place. r MUST have ParseForm called before this;
+// the OAuth handlers below parse before invoking fosite.
+func translateResourceToAudience(r *http.Request, canonical string) {
 	if r == nil || r.Form == nil {
 		return
 	}
-	resources := r.Form["resource"]
-	if len(resources) == 0 {
-		return
-	}
 	if existing := r.Form["audience"]; len(existing) > 0 {
-		// Caller passed both — defer to audience as canonical and
-		// leave it untouched. Audit-log noise about ambiguity isn't
-		// worth the complexity for the v1 stub; if this becomes a
-		// real source of confusion we can warn here later.
+		// Caller passed audience= — defer to it as canonical and
+		// leave both keys untouched. Audit-log noise about ambiguity
+		// (when both audience= AND resource= are sent and disagree)
+		// isn't worth the complexity for the v1 stub; if this becomes
+		// a real source of confusion we can warn here later.
 		return
 	}
-	r.Form["audience"] = append([]string(nil), resources...)
+	if resources := r.Form["resource"]; len(resources) > 0 {
+		r.Form["audience"] = append([]string(nil), resources...)
+		return
+	}
+	// Neither key sent — inject canonical so fosite + the audience
+	// strategy see the one we'd have rejected the request for not
+	// having. Empty canonical means the server is misconfigured;
+	// fall through and let audienceMatchingStrategy fail loudly.
+	if canonical != "" {
+		r.Form["audience"] = []string{canonical}
+		r.Form["resource"] = []string{canonical}
+		// Audit signal so ops can track how often this fallback
+		// fires + which clients trigger it. A spike from a new
+		// client_id is the earliest detectable shape of a confused-
+		// deputy attempt (per the security note above). client_id
+		// is intentionally pulled directly from the form rather than
+		// from a parsed AuthorizeRequest, because translation runs
+		// BEFORE fosite parses; an empty value just means the client
+		// also omitted client_id (fosite will reject downstream).
+		slog.Warn("oauth/authorize: client omitted RFC 8707 resource= param, defaulting to canonical audience",
+			"client_id", r.Form.Get("client_id"),
+			"audience", canonical,
+		)
+	}
 }
 
 // handleOAuthAuthorize is the entry point for the authorization-code
@@ -414,7 +500,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query string", http.StatusBadRequest)
 		return
 	}
-	translateResourceToAudience(r)
+	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
@@ -517,7 +603,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
-	translateResourceToAudience(r)
+	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 
 	ctx := r.Context()
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
@@ -695,7 +781,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
 	}
-	translateResourceToAudience(r)
+	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 
 	// Empty session for fosite to populate from storage. The auth
 	// code's stored session_data carries the user's Subject; fosite

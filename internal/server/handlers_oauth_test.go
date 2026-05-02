@@ -550,6 +550,55 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 	}
 }
 
+// TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical pins the
+// fix for the "code: Field required" error Claude Desktop's MCP
+// connector flow surfaces against pad: real MCP clients (Claude
+// Desktop, Cursor as of 2026-05) don't send the RFC 8707 resource=
+// parameter at all on /oauth/authorize. Before this fix,
+// translateResourceToAudience only translated resource→audience when
+// resource was present, so empty-resource requests reached fosite's
+// audienceMatchingStrategy with an empty needle and got rejected
+// with "resource parameter is required (RFC 8707)". fosite then
+// redirected to the client's redirect_uri with ?error=invalid_request,
+// and Claude's callback failed with a missing-`code`-field error
+// (Anthropic's pydantic-style "code: Field required" envelope).
+//
+// RFC 8707 §2 marks the resource parameter OPTIONAL; servers with
+// a single canonical audience are expected to default to it. This
+// test sends NEITHER resource= NOR audience= and asserts the
+// authorize request reaches the consent stub — proof that the
+// translation injected the canonical audience instead of erroring.
+//
+// Pairs with TestOAuth_Authorize_AcceptsResourceOnly above (the
+// resource-only path) and the existing TestOAuth_Authorize_*
+// audience-mismatch tests (the wrong-audience path) to lock in the
+// full matrix of what /authorize accepts for the audience parameter.
+func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	_, sessionToken := loginTestUser(t, srv)
+
+	verifier := "verifier-the-quick-brown-fox-1234567890-abcdef"
+	challenge := s256Challenge(verifier)
+
+	// Note: NO resource= AND NO audience= — exactly Claude Desktop's
+	// real-world authorize-request shape.
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"no-resource-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (consent stub) for no-resource request; got %d (Location: %s, Body: %s)",
+			rr.Code, rr.Header().Get("Location"), rr.Body.String())
+	}
+}
+
 // TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag pins
 // Codex review #372 round 2: authorization_response_iss_parameter_supported
 // (RFC 9207) is intentionally omitted because fosite v0.49 doesn't
