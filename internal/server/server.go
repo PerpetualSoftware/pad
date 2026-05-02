@@ -73,6 +73,15 @@ type Server struct {
 	// other endpoint and stores originals untouched.
 	imageProcessor attachments.Processor
 
+	// MCP Streamable HTTP transport (PLAN-943 TASK-950). Wired via
+	// SetMCPTransport at startup when the deployment is in cloud mode.
+	// nil on self-hosted deployments and on any cloud build that hasn't
+	// constructed the MCP server yet — registerMCPRoutes nil-checks so
+	// the routes don't mount in either case. See handlers_mcp.go.
+	mcpTransport     http.Handler
+	mcpPublicURL     string // canonical public URL of the MCP vhost (e.g. https://mcp.getpad.dev)
+	mcpAuthServerURL string // canonical URL of the OAuth auth server (e.g. https://app.getpad.dev), TASK-951
+
 	// storageInfoCache memoizes per-workspace storage usage summaries
 	// behind a short TTL (storageInfoTTL). Reduces DB load on the
 	// Settings → Storage page and quota-aware UI surfaces. Initialized
@@ -537,6 +546,23 @@ func (s *Server) setupRouter() {
 	if s.secureCookies {
 		r.Use(StrictTransportSecurity)
 	}
+
+	// MCP Streamable HTTP transport + OAuth discovery endpoints
+	// (PLAN-943 TASK-950). Mounted outside the standard /api/v1
+	// auth-required group because:
+	//
+	//   - /mcp uses Bearer auth via its own MCPBearerAuth middleware,
+	//     producing the spec-shape 401 + WWW-Authenticate that MCP
+	//     clients expect (the API-stack 401 envelope is JSON-only and
+	//     would fail Claude Desktop's discovery handshake).
+	//   - /.well-known/oauth-protected-resource and
+	//     /.well-known/oauth-authorization-server are public discovery
+	//     documents (RFC 9728 / RFC 8414); routing them through
+	//     TokenAuth+SessionAuth+RequireAuth would 401 unauth probes.
+	//
+	// No-op when SetMCPTransport hasn't been called or cloud mode is
+	// off — see registerMCPRoutes for the gating.
+	s.registerMCPRoutes(r)
 
 	// Prometheus scrape endpoint — exempt from the standard auth/CSRF stack
 	// (Prometheus can't present a session cookie or pass a CSRF header), but

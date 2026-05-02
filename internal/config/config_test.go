@@ -426,8 +426,16 @@ func TestPublicURLNotPersistedToTOML(t *testing.T) {
 	if strings.Contains(string(raw), "https://app.example.com") {
 		t.Fatalf("config.toml must not persist PUBLIC_URL value:\n%s", raw)
 	}
-	if strings.Contains(string(raw), "public_url") {
-		t.Fatalf("config.toml must not contain a public_url key:\n%s", raw)
+	// Anchor on the TOML key form (key + " =") so adjacent keys with
+	// "public_url" as a substring (e.g. mcp_public_url) don't trip the
+	// assertion. This test is specifically guarding the PUBLIC_URL env
+	// → cfg.PublicURL → file regression — the substring check would
+	// otherwise produce false positives as the schema grows.
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "public_url ") || strings.HasPrefix(trimmed, "public_url=") {
+			t.Fatalf("config.toml must not contain a public_url key:\n%s", raw)
+		}
 	}
 	// The persisted url= key (PAD_URL/--url path) should still be present.
 	if !strings.Contains(string(raw), "https://api.example.com") {

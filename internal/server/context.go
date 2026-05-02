@@ -72,3 +72,52 @@ func IsAPITokenFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxIsAPIToken).(bool)
 	return v
 }
+
+// WithTokenScopes returns ctx decorated with the API token's
+// JSON-encoded scopes string (e.g. `["read"]`, `["*"]`). Stashed by
+// the MCP Bearer middleware so the in-process dispatcher
+// (internal/mcp/dispatch_http.go) can enforce per-tool scope checks
+// — the dispatcher bypasses the standard TokenAuth chain by setting
+// WithCurrentUser directly, so the chain-level scope check at
+// middleware_auth.go:TokenAuth doesn't run for synthesized requests.
+//
+// Without this, a PAT with scope `["read"]` could drive write MCP
+// tools because the in-process request looks pre-authenticated to
+// the handler tree. Codex review #369 round 1 flagged the gap.
+//
+// Empty string clears any previously set scope.
+func WithTokenScopes(ctx context.Context, scopes string) context.Context {
+	return context.WithValue(ctx, ctxTokenScopes, scopes)
+}
+
+// TokenScopesFromContext returns the JSON-encoded scopes attached by
+// WithTokenScopes, or "" if none. Empty maps to "unrestricted" in
+// TokenScopeAllows (the legacy behaviour) — callers wanting
+// strict-deny on the unset path must check the empty-string branch
+// before passing it on.
+func TokenScopesFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxTokenScopes).(string)
+	return v
+}
+
+// TokenScopeAllows is the exported wrapper around the package-private
+// tokenScopeAllows: returns true iff the scopes JSON permits the given
+// HTTP method against path. Public so internal/mcp/dispatch_http.go
+// can re-check scopes on each synthesized tool call without
+// reimplementing the policy.
+//
+// Policy summary (see tokenScopeAllows for the full doc):
+//
+//   - "" or `["*"]`        → allow all methods (legacy / explicit wildcard).
+//   - `["read"]`           → allow GET / HEAD / OPTIONS only.
+//   - `["write"]`          → allow all methods.
+//   - explicit `[]`        → allow all methods (legacy unrestricted form).
+//   - unparseable / null   → deny.
+//   - unknown scope only   → deny (policy-relevant unknowns are logged).
+//
+// Caller is expected to be the in-process MCP dispatcher; the
+// chain-level enforcement on /api/v1/* still runs through tokenScopeAllows
+// directly.
+func TokenScopeAllows(scopesJSON, method, path string) bool {
+	return tokenScopeAllows(scopesJSON, method, path)
+}
