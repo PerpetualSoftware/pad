@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"math"
 	"net"
@@ -144,6 +147,20 @@ type RateLimiters struct {
 	// valid challenge_token can grind through the small recovery-code
 	// space before the 5-minute challenge expires.
 	RecoveryCode *ipRateLimiter
+	// MCPPerToken caps requests per individual bearer token on /mcp.
+	// PLAN-943 / TASK-959: per-token (not per-IP) buckets so that
+	// office-NAT-shared users don't share a quota, and a runaway
+	// agent on one token can't burn through a user's entire quota
+	// for other tokens. Keyed by SHA-256(bearer) so the raw token
+	// never lives in the limiter map.
+	//
+	// 60 requests / minute / token, burst 20. Sized for chatty
+	// usage (Claude Desktop sends `tools/list` + a handful of tool
+	// calls per session) without leaving headroom for sustained
+	// abuse. Retention 5 minutes — long enough to remember a quiet
+	// token between calls, short enough that the limiter doesn't
+	// hold dead tokens forever after revocation.
+	MCPPerToken *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -210,13 +227,32 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(6.0 / 3600.0),
 			Burst: 6,
 		}),
+		// MCP per-token: 60 req/min sustained, burst 20. PLAN-943
+		// TASK-959. 60/60 = 1 req/sec — written with explicit math
+		// rather than `rate.Limit(1)` so adjacent limiters' "X /
+		// 60" idiom stays consistent at a glance, but staticcheck
+		// SA4000 flags identical-numerator-denominator division —
+		// hence the explicit literal.
+		// The 5-minute retention lets the limiter forget dead
+		// tokens reasonably quickly after revocation while still
+		// surviving idle periods between tool calls.
+		MCPPerToken: newIPRateLimiter(rateLimitConfig{
+			Rate:      rate.Limit(1.0), // 60 req/min = 1 req/sec
+			Burst:     20,
+			Retention: 5 * time.Minute,
+		}),
 	}
 }
 
 // Stop drains the cleanup goroutine of every limiter in the bundle. Called
 // from Server.Stop() so test cleanup (and graceful shutdown) doesn't leak
-// the 9 forever-sleeping goroutines NewRateLimiters spawns. Safe to call
+// the forever-sleeping goroutines NewRateLimiters spawns. Safe to call
 // on a nil receiver and idempotent per-limiter via stopOnce. See BUG-851.
+//
+// New limiters added to RateLimiters MUST be added to this list too —
+// otherwise their cleanup goroutine leaks across Server lifetimes,
+// reproducing BUG-851 the first time a test runner exhausts its
+// goroutine quota.
 func (rls *RateLimiters) Stop() {
 	if rls == nil {
 		return
@@ -231,6 +267,7 @@ func (rls *RateLimiters) Stop() {
 		rls.API,
 		rls.Search,
 		rls.RecoveryCode,
+		rls.MCPPerToken,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}
@@ -376,6 +413,87 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// checkMCPRateLimit applies the per-token bucket on /mcp requests
+// (PLAN-943 TASK-959). Returns true if the request is allowed
+// through; false if rate-limited (in which case the 429 response
+// has already been written and the caller MUST return immediately).
+//
+// bearer is the raw Authorization Bearer value extracted by
+// extractBearer. We hash it with SHA-256 before using it as a
+// limiter map key so the raw token never lives in the limiter's
+// memory across requests.
+//
+// Behaviour:
+//
+//   - Empty bearer (caller bug; the auth path should have rejected
+//     before reaching here) → allow through to keep the limiter
+//     from masking a real bug.
+//   - Limiters not initialized (testServer with no NewRateLimiters
+//     call) → allow through.
+//   - Bucket exhausted → 429 with Retry-After + MCP error envelope.
+//
+// Per-token (not per-IP / per-user) keying matches the task spec:
+// office-NAT'd users don't share a quota, and a runaway agent on
+// one token can't burn the user's quota for other tokens.
+func (s *Server) checkMCPRateLimit(w http.ResponseWriter, r *http.Request, bearer string) bool {
+	if s.rateLimiters == nil || s.rateLimiters.MCPPerToken == nil || bearer == "" {
+		return true
+	}
+	key := hashTokenForLimiter(bearer)
+	l := s.rateLimiters.MCPPerToken.getLimiter(key)
+	if !l.Allow() {
+		slog.Warn("mcp rate limited", "path", r.URL.Path, "limiter", "mcp_per_token")
+		writeMCPRateLimit(w, r, s.rateLimiters.MCPPerToken.config)
+		return false
+	}
+	return true
+}
+
+// hashTokenForLimiter returns a SHA-256 hex digest of the bearer
+// token, suitable for use as a rate-limiter map key. The hash means
+// the limiter's in-memory map never holds the raw token even though
+// it persists for the bucket's retention window. Hex (not base64)
+// because the limiter's other keys are IP strings and a uniform
+// hex encoding makes log scrapers' life easier.
+func hashTokenForLimiter(bearer string) string {
+	sum := sha256.Sum256([]byte(bearer))
+	return hex.EncodeToString(sum[:])
+}
+
+// writeMCPRateLimit emits a 429 response with the MCP-shaped JSON
+// envelope plus the standard rate-limit headers. Mirrors
+// writeRateLimitResponse's headers but uses the MCP error envelope
+// instead of the API one — MCP clients (Claude Desktop, Cursor, …)
+// expect `{error: {code, message}}` and the standard envelope's
+// `{error: {...}}` happens to match, but emitting via the MCP path
+// keeps the contract clearer if either side ever diverges.
+//
+// Retry-After is computed from the limiter's refill rate (the same
+// math writeRateLimitResponse uses) so a client doing exponential
+// backoff hits a sane window.
+func writeMCPRateLimit(w http.ResponseWriter, _ *http.Request, cfg rateLimitConfig) {
+	retryAfter := int(math.Ceil(1.0 / float64(cfg.Rate)))
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	if retryAfter > 3600 {
+		retryAfter = 3600
+	}
+	limitPerMinute := int(math.Ceil(float64(cfg.Rate) * 60))
+
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limitPerMinute))
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{
+			"code":    "rate_limited",
+			"message": "Too many requests. Please try again later.",
+		},
+	})
 }
 
 // writeRateLimitResponse sends a 429 response with Retry-After and X-RateLimit-* headers.

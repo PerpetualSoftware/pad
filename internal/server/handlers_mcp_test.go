@@ -935,6 +935,340 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 }
 
 // =====================================================================
+// Per-token rate limit on /mcp (TASK-959)
+// =====================================================================
+
+// TestMCPRateLimit_PerToken_BucketEnforced verifies the basic rate
+// limit: a single token gets ~burst requests through immediately,
+// then 429s once the bucket is empty.
+//
+// Uses a real PAT so the rate-limit check fires (the limiter runs
+// AFTER ValidateToken — Codex review #378 round 1 — to bound the
+// limiter map to valid-token hashes only).
+func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+	pat := mustCreatePATForTest(t, srv, "rate-limit-bucket")
+
+	got429 := false
+	for i := 0; i < 30; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+pat)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			got429 = true
+			// Verify Retry-After is set on the rate-limited response.
+			if ra := rr.Header().Get("Retry-After"); ra == "" || ra == "0" {
+				t.Errorf("429 must include Retry-After; got %q", ra)
+			}
+			break
+		}
+	}
+	if !got429 {
+		t.Errorf("expected 429 within 30 requests on a single token bucket (60/min, burst 20); never saw it")
+	}
+}
+
+// TestMCPRateLimit_PerToken_TwoTokensIndependent pins the per-token
+// isolation property: two different bearers MUST have independent
+// buckets, even if the user is the same. Otherwise a runaway agent
+// on one token would burn through the user's quota for every other
+// token.
+//
+// Strategy: drain token1 to 429, then verify token2 still gets
+// through. Two real PATs so the rate-limit check fires for both.
+func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+	pat1 := mustCreatePATForTest(t, srv, "rate-limit-pat-1")
+	pat2 := mustCreatePATForTest(t, srv, "rate-limit-pat-2")
+
+	hammer := func(bearer string) (rrs []*httptest.ResponseRecorder) {
+		for i := 0; i < 30; i++ {
+			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer "+bearer)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			rrs = append(rrs, rr)
+			if rr.Code == http.StatusTooManyRequests {
+				break
+			}
+		}
+		return
+	}
+
+	// Drain token1 until 429.
+	rr1s := hammer(pat1)
+	if last := rr1s[len(rr1s)-1]; last.Code != http.StatusTooManyRequests {
+		t.Fatalf("token1: expected to hit 429; final status %d", last.Code)
+	}
+
+	// Token2 must still be fresh — zero 429s in its first burst-
+	// worth of requests.
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+pat2)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("token2 hit 429 at request %d — buckets must be independent per-token", i+1)
+			break
+		}
+	}
+}
+
+// TestMCPRateLimit_InvalidBearerNotRateLimited pins the post-auth-
+// validation property (Codex review #378 round 1): a bearer that
+// fails token validation must NOT consume a per-token bucket. The
+// limiter map only fills with valid-token hashes, bounding memory
+// under random-bearer spam.
+//
+// 50 invalid bearers in a row — each one should 401 cleanly, none
+// should 429 (because validation rejected before the limiter runs).
+func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	// Shape-valid but unknown PAT — passes the prefix+length check,
+	// then fails store.ValidateToken (no row).
+	bearer := "Bearer pad_" + strings.Repeat("a", 64)
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("invalid bearer must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("invalid bearer: expected 401, got %d (body: %s)", rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// TestMCPRateLimit_OAuthRefreshTokenNotCounted pins Codex review
+// #378 round 2: the OAuth-path rate limit must run AFTER all
+// validation gates (refresh-vs-access, audience match, user lookup)
+// so an active-but-not-authorized bearer (e.g. refresh token used
+// against /mcp) doesn't create a limiter bucket. Without this guard
+// an attacker holding a valid refresh token could spam /mcp 429
+// times to fill a bucket and then stop receiving the intended 401
+// invalid_token error.
+//
+// Strategy: mint a real refresh token via the full OAuth flow,
+// hammer /mcp with it 50 times, assert every response is 401 (not
+// 429) AND the limiter map size is unchanged.
+func TestMCPRateLimit_OAuthRefreshTokenNotCounted(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-rl-refresh-quick-brown-fox-jumps-over-the-l")
+	refresh, _ := tokens["refresh_token"].(string)
+	if refresh == "" {
+		t.Fatalf("missing refresh token: %v", tokens)
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	beforeCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+refresh)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("refresh-token bearer must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("refresh-token bearer: expected 401, got %d (body: %s)", rr.Code, rr.Body.String())
+		}
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	afterCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	if afterCount != beforeCount {
+		t.Errorf("limiter map grew under refresh-token spam: before=%d, after=%d (must be equal — rate-limiter must run AFTER refresh-token rejection)",
+			beforeCount, afterCount)
+	}
+}
+
+// TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly is the
+// memory-DoS regression test for Codex review #378 round 1. After
+// 100 distinct invalid bearers, the per-token limiter map MUST
+// contain zero entries (or only ours from setup). Without the
+// post-auth-validation guard, every distinct bearer would create
+// a new entry in the map, growing it unbounded under random-bearer
+// spam.
+func TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	if srv.rateLimiters == nil || srv.rateLimiters.MCPPerToken == nil {
+		t.Fatal("rate limiters not configured")
+	}
+
+	// Snapshot map size before.
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	beforeCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	// Spam 100 distinct invalid bearers.
+	for i := 0; i < 100; i++ {
+		bearer := "Bearer pad_" + strings.Repeat(string(rune('a'+(i%26))), 64)
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	afterCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	if afterCount != beforeCount {
+		t.Errorf("limiter map grew under invalid-bearer spam: before=%d, after=%d (must be equal — invalid bearers MUST NOT create entries)",
+			beforeCount, afterCount)
+	}
+}
+
+// TestMCPRateLimit_DiscoveryDocsExempt verifies the per-token
+// limiter is NOT applied to /.well-known/oauth-* paths. Discovery
+// docs are polled by MCP clients before any token exists; they
+// shouldn't share a bucket and they shouldn't even attempt to look
+// for a Bearer header. The rate limiter sits inside MCPBearerAuth,
+// which only runs on /mcp — so by construction the discovery
+// routes never hit it. This test pins that wiring.
+func TestMCPRateLimit_DiscoveryDocsExempt(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	// Hammer the protected-resource discovery doc 50 times; expect
+	// zero 429s.
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("discovery doc must NOT be rate-limited; got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusOK {
+			t.Fatalf("discovery doc: expected 200, got %d", rr.Code)
+		}
+	}
+}
+
+// TestMCPRateLimit_NoBearer_NotCounted verifies that a request
+// without a Bearer header fails with 401 BEFORE the rate-limit
+// check (because the limiter key would be empty otherwise, and
+// every no-bearer request would share a bucket — defeating the
+// per-token model).
+//
+// Concretely: 50 no-bearer requests should all 401, never 429.
+func TestMCPRateLimit_NoBearer_NotCounted(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("no-bearer request must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+	}
+}
+
+// TestMCPRateLimit_429EnvelopeShape pins the wire shape of the 429
+// response: MCP-style `{error: {code, message}}` JSON envelope plus
+// the standard rate-limit headers (Retry-After, X-RateLimit-Limit,
+// X-RateLimit-Remaining).
+//
+// MCP clients (Claude Desktop, Cursor) parse this body to surface
+// the message; without the envelope they'd render a raw 429 with
+// no actionable text.
+func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+	pat := mustCreatePATForTest(t, srv, "rate-limit-envelope")
+
+	var limited *httptest.ResponseRecorder
+	for i := 0; i < 30; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+pat)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			limited = rr
+			break
+		}
+	}
+	if limited == nil {
+		t.Fatal("never hit 429")
+	}
+
+	if ra := limited.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing")
+	}
+	if l := limited.Header().Get("X-RateLimit-Limit"); l == "" {
+		t.Error("X-RateLimit-Limit header missing")
+	}
+	if r := limited.Header().Get("X-RateLimit-Remaining"); r != "0" {
+		t.Errorf("X-RateLimit-Remaining: got %q, want 0", r)
+	}
+	if ct := limited.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+
+	var body map[string]any
+	parseJSON(t, limited, &body)
+	errObj, _ := body["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("body missing error object: %v", body)
+	}
+	if code, _ := errObj["code"].(string); code != "rate_limited" {
+		t.Errorf("error.code: got %q, want %q", code, "rate_limited")
+	}
+}
+
+// TestHashTokenForLimiter pins the helper's deterministic, length-
+// stable, non-collision-by-prefix output: same input → same hash;
+// different inputs → different hashes; empty input → empty-input
+// hash (caller is expected to skip empty bearers, but the helper
+// itself must not panic).
+func TestHashTokenForLimiter(t *testing.T) {
+	a := hashTokenForLimiter("token-a")
+	b := hashTokenForLimiter("token-b")
+	a2 := hashTokenForLimiter("token-a")
+
+	if len(a) != 64 {
+		t.Errorf("hash length: got %d, want 64 (sha256 hex)", len(a))
+	}
+	if a != a2 {
+		t.Error("hash not deterministic across calls")
+	}
+	if a == b {
+		t.Error("different inputs should produce different hashes")
+	}
+	// Empty bearer: helper still produces a hash (caller skips empty
+	// before calling, but defense-in-depth — no panic).
+	if got := hashTokenForLimiter(""); len(got) != 64 {
+		t.Errorf("empty bearer hash length: got %d, want 64", len(got))
+	}
+}
+
+// =====================================================================
 // Workspace allow-list gate (TASK-953)
 // =====================================================================
 
@@ -1328,6 +1662,41 @@ func callWorkspaceViaOAuth(t *testing.T, srv *Server, access, workspaceSlug stri
 	rr := httptest.NewRecorder()
 	srv.MCPBearerAuth(inner).ServeHTTP(rr, req)
 	return rr
+}
+
+// mustCreatePATForTest creates a real PAT against a fresh user +
+// workspace. Returns the raw token string suitable for the
+// Authorization: Bearer header.
+//
+// Used by the TASK-959 rate-limit tests, which need real (validation-
+// passing) tokens because the post-auth-validation guard means
+// invalid bearers don't fill the limiter map. The label arg lets
+// tests use distinct emails so multiple PATs in one test file don't
+// collide on the unique email constraint.
+func mustCreatePATForTest(t *testing.T, srv *Server, label string) string {
+	t.Helper()
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email:    label + "@example.com",
+		Name:     "Rate Limit Tester " + label,
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(%q): %v", label, err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "Rate WS " + label,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(%q): %v", label, err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name:        "rate-test-" + label,
+		WorkspaceID: ws.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken(%q): %v", label, err)
+	}
+	return tok.Token
 }
 
 // mustCreateUserForTest creates a user for tests that need a user
