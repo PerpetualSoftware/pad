@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -604,6 +606,97 @@ func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
 		t.Fatalf("expected 200 (consent stub) for no-resource request; got %d (Location: %s, Body: %s)",
 			rr.Code, rr.Header().Get("Location"), rr.Body.String())
 	}
+}
+
+// TestOAuth_ConsentScreen_NonceCSPLetsInlineScriptRun pins the fix
+// for the bug where the consent screen rendered with the Allow
+// button stuck disabled. The button starts disabled and is enabled
+// by an inline <script> when the user picks workspaces; pad serves
+// every response with strict CSP (script-src 'self' — no
+// 'unsafe-inline'), so without a per-request nonce the browser
+// blocked the script and disabled=true persisted from initial render.
+//
+// The fix generates a nonce per consent render, sets a
+// CSP override on the response that authorizes that nonce
+// (script-src 'self' 'nonce-X' 'strict-dynamic'), and threads the
+// same nonce into the <script> tag's nonce attribute. This test
+// pins:
+//
+//  1. A CSP header is set with a nonce-* token in script-src (proof
+//     the strict baseline didn't pass through unmodified).
+//  2. The body's <script ...> tag carries a nonce attribute matching
+//     the value in the CSP header (proof the two are linked — drift
+//     would re-introduce the bug).
+//
+// Without (1), the browser blocks. Without (2), the browser blocks
+// even WITH the CSP override. Both are necessary.
+func TestOAuth_ConsentScreen_NonceCSPLetsInlineScriptRun(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	_, sessionToken := loginTestUser(t, srv)
+
+	verifier := "verifier-the-quick-brown-fox-1234567890-abcdef"
+	challenge := s256Challenge(verifier)
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"nonce-csp-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (consent stub); got %d", rr.Code)
+	}
+
+	csp := rr.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("consent response must set Content-Security-Policy")
+	}
+	// Extract the nonce from the script-src directive. Format is
+	// `'nonce-<base64>'`; the base64 alphabet includes +, /, and =.
+	cspRe := regexp.MustCompile(`'nonce-([A-Za-z0-9+/=]+)'`)
+	cspMatches := cspRe.FindStringSubmatch(csp)
+	if len(cspMatches) != 2 {
+		t.Fatalf("CSP must include a 'nonce-...' token in script-src; got: %s", csp)
+	}
+	cspNonce := cspMatches[1]
+
+	// Extract the nonce from the rendered <script> tag. html/template
+	// HTML-escapes attribute values (e.g. base64 '+' renders as
+	// '&#43;'), so we extract the on-the-wire form, unescape it, and
+	// compare against the raw CSP nonce. Fail-loud if the two don't
+	// match — drift would re-introduce the original bug (nonce in
+	// header but not in tag = browser blocks).
+	body := rr.Body.String()
+	bodyRe := regexp.MustCompile(`<script nonce="([^"]+)">`)
+	bodyMatches := bodyRe.FindStringSubmatch(body)
+	if len(bodyMatches) != 2 {
+		t.Fatalf("body must contain a <script nonce=\"...\"> tag; CSP=%s\nbody snippet: %s",
+			csp, snippetAround(body, "<script", 200))
+	}
+	bodyNonce := html.UnescapeString(bodyMatches[1])
+	if bodyNonce != cspNonce {
+		t.Errorf("script tag nonce %q (escaped %q) must match CSP nonce %q",
+			bodyNonce, bodyMatches[1], cspNonce)
+	}
+}
+
+// snippetAround returns up to N bytes of body around the first
+// occurrence of marker, or "(marker not found)". Used by the nonce
+// test for diagnostic output without dumping the entire HTML page.
+func snippetAround(body, marker string, n int) string {
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return "(marker not found)"
+	}
+	end := i + n
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[i:end]
 }
 
 // TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag pins

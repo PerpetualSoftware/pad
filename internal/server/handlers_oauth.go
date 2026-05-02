@@ -1157,7 +1157,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
   </div>
 </form>
 
-<script>
+<script nonce="{{.Nonce}}">
 (function(){
   var wildcard = document.getElementById('ws-wildcard');
   var wsBoxes = document.querySelectorAll('input.ws-checkbox');
@@ -1206,6 +1206,18 @@ type consentData struct {
 	DefaultTier   string // "read" / "write" / "admin" — initially-checked radio
 	CSRF          string
 	HiddenFields  url.Values
+
+	// Nonce authorizes the inline UI-state <script> in the consent
+	// template under the strict CSP pad serves on every response
+	// (script-src 'self' — no 'unsafe-inline'). Without this, the
+	// browser blocks the script and the Allow button stays disabled
+	// from its initial render even when the user picks workspaces,
+	// because nothing flips disabled=false. renderConsent generates
+	// the nonce per request, sets a matching CSP header before
+	// writing the body, and passes the value here. Same pattern the
+	// SvelteKit bootstrap path uses — see server.go's nonce CSP
+	// override in the SPA route.
+	Nonce string
 }
 
 // consentWorkspaceRow renders one workspace checkbox row with the
@@ -1308,6 +1320,21 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	// round 1 caught the gap.
 	hidden := allowlistedAuthorizeParams(r.URL.Query())
 
+	// Per-request nonce so the consent template's inline UI-state
+	// <script> can run under pad's strict CSP (script-src 'self', no
+	// 'unsafe-inline'). Without overriding the default header here,
+	// the SecurityHeaders middleware leaves CSP at its strict baseline,
+	// the browser blocks the inline script, and the Allow button stays
+	// disabled from its initial render even after the user picks
+	// workspaces (nothing flips disabled=false). Same shape the
+	// SvelteKit bootstrap path in server.go uses — strict-dynamic lets
+	// the trusted script dynamically import additional code without
+	// listing every path in the host-list.
+	nonce := generateCSPNonce()
+	w.Header().Set("Content-Security-Policy", fmt.Sprintf(
+		"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+		nonce))
+
 	data := consentData{
 		ClientName:    clientName,
 		ClientLogoURL: logo,
@@ -1319,6 +1346,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 		DefaultTier:   defaultTier,
 		CSRF:          csrf,
 		HiddenFields:  hidden,
+		Nonce:         nonce,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Cache-Control: no-store — the page carries a CSRF token tied
