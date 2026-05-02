@@ -282,7 +282,7 @@ func TestSession_NilSafeAccessors(t *testing.T) {
 
 func TestStorage_AuthCodeRoundTrip(t *testing.T) {
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 
 	// Seed a client (the FK target).
 	client, err := st.CreateOAuthClient(models.OAuthClientCreate{
@@ -329,7 +329,7 @@ func TestStorage_AuthCodeRoundTrip(t *testing.T) {
 
 func TestStorage_AuthCodeInvalidatedReturnsCorrectError(t *testing.T) {
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
 	req := buildFositeRequest(client.ID, "u", nil, nil)
 	const sig = "sig-2"
@@ -352,9 +352,73 @@ func TestStorage_AuthCodeInvalidatedReturnsCorrectError(t *testing.T) {
 	}
 }
 
+// TestStorage_GetClient_InjectsCanonicalAudience pins Codex review
+// #371 round 1: the adapter MUST inject the canonical audience into
+// the hydrated fosite.Client.Audience field. Without this,
+// audienceMatchingStrategy's haystack check (client.GetAudience()
+// must contain canonical) rejects every request — every authorize
+// + token + refresh flow fails with invalid_request.
+//
+// The audience isn't persisted (single-resource AS for v1; storing
+// what we'd always set to the same value would be write
+// amplification). It's injected at hydration from
+// Storage.canonicalAudience.
+func TestStorage_GetClient_InjectsCanonicalAudience(t *testing.T) {
+	st := testStoreOAuth(t)
+	canonical := "https://mcp.test.example/mcp"
+	storage := NewStorage(st, canonical)
+
+	// Seed a client with NO audience (the storage layer doesn't
+	// expose it as a field).
+	created, err := st.CreateOAuthClient(models.OAuthClientCreate{
+		Name:         "Test Client",
+		RedirectURIs: []string{"https://app.test/cb"},
+		Public:       true,
+	})
+	if err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+
+	// Hydrate via the adapter and assert the audience is populated.
+	got, err := storage.GetClient(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetClient: %v", err)
+	}
+	aud := got.GetAudience()
+	if len(aud) != 1 || aud[0] != canonical {
+		t.Errorf("hydrated client.Audience = %v, want [%q]", aud, canonical)
+	}
+}
+
+// TestStorage_NewStorage_EmptyCanonicalLeavesAudienceNil documents
+// the "fail-loud" branch: a misconfigured Storage (empty
+// canonicalAudience — should never happen in production because
+// NewServer rejects it earlier) returns clients with Audience=nil,
+// which makes audienceMatchingStrategy reject every request. Better
+// than silently issuing wide-open tokens.
+func TestStorage_NewStorage_EmptyCanonicalLeavesAudienceNil(t *testing.T) {
+	st := testStoreOAuth(t)
+	storage := NewStorage(st, "")
+
+	created, err := st.CreateOAuthClient(models.OAuthClientCreate{
+		Name:   "Test Client",
+		Public: true,
+	})
+	if err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+	got, err := storage.GetClient(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetClient: %v", err)
+	}
+	if got.GetAudience() != nil && len(got.GetAudience()) != 0 {
+		t.Errorf("empty canonical must produce nil/empty Audience to fail loud; got %v", got.GetAudience())
+	}
+}
+
 func TestStorage_GetClient_NotFoundMappedCorrectly(t *testing.T) {
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	_, err := storage.GetClient(context.Background(), "nonexistent")
 	if !errors.Is(err, fosite.ErrNotFound) {
 		t.Errorf("expected fosite.ErrNotFound, got %v", err)
@@ -363,7 +427,7 @@ func TestStorage_GetClient_NotFoundMappedCorrectly(t *testing.T) {
 
 func TestStorage_AccessToken_InactiveMappedToFositeError(t *testing.T) {
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
 
 	req := buildFositeRequest(client.ID, "u", nil, nil)
@@ -389,7 +453,7 @@ func TestStorage_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 	// token are inactive (matches fosite's reference MemoryStore
 	// behaviour, locked in by sub-PR A's round-2 fix).
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
 
 	// Build a refresh + access pair under the same request_id.
@@ -418,7 +482,7 @@ func TestStorage_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 
 func TestStorage_PKCERoundTrip(t *testing.T) {
 	st := testStoreOAuth(t)
-	storage := NewStorage(st)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
 	req := buildFositeRequest(client.ID, "u", nil, nil)
 	// PKCE request carries the code_challenge in its form.

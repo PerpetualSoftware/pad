@@ -49,15 +49,32 @@ import (
 //     correctly (esp. ErrInvalidatedAuthorizeCode → triggers grant-
 //     family revocation in handler/oauth2/flow_authorize_code_token.go).
 type Storage struct {
-	store *store.Store
+	store             *store.Store
+	canonicalAudience string
 }
 
 // NewStorage wraps a *store.Store as a fosite-compatible adapter.
 // The store must be a fully-initialized pad store (migrations applied);
 // no validation here because misuse would surface as a runtime panic
 // the moment fosite touches an unmigrated table — fast and obvious.
-func NewStorage(s *store.Store) *Storage {
-	return &Storage{store: s}
+//
+// canonicalAudience is the RFC 8707 audience every client implicitly
+// allows (PLAN-943: every client in this server is registered to one
+// resource — the MCP transport URL). The adapter injects it into the
+// fosite.Client.Audience field on hydration so audienceMatchingStrategy's
+// haystack-side check passes for every persisted client.
+//
+// Why inject vs persist: pad's authorization-server is single-resource
+// for v1. Storing an audience column per client would always hold the
+// same value — purely write amplification — and a future move to a
+// multi-resource AS will need explicit per-client policy anyway. Codex
+// review #371 round 1 caught the gap where the adapter returned
+// Audience=nil and every flow failed validation.
+func NewStorage(s *store.Store, canonicalAudience string) *Storage {
+	return &Storage{
+		store:             s,
+		canonicalAudience: canonicalAudience,
+	}
 }
 
 // =====================================================================
@@ -75,7 +92,7 @@ func (s *Storage) GetClient(_ context.Context, id string) (fosite.Client, error)
 		}
 		return nil, fmt.Errorf("oauth: get client: %w", err)
 	}
-	return modelClientToFosite(c), nil
+	return s.modelClientToFosite(c), nil
 }
 
 // ClientAssertionJWTValid is a no-op because pad doesn't accept JWT
@@ -398,7 +415,7 @@ func (s *Storage) oauthRequestToFositeRequest(stored *models.OAuthRequest, sessi
 	return &fosite.Request{
 		ID:                stored.RequestID,
 		RequestedAt:       stored.RequestedAt,
-		Client:            modelClientToFosite(client),
+		Client:            s.modelClientToFosite(client),
 		RequestedScope:    splitSpaceSeparated(stored.Scopes),
 		GrantedScope:      splitSpaceSeparated(stored.GrantedScopes),
 		Form:              form,
@@ -412,13 +429,24 @@ func (s *Storage) oauthRequestToFositeRequest(stored *models.OAuthRequest, sessi
 // fosite.DefaultClient fosite expects. Public clients only — Secret
 // stays empty; PKCE is the only auth path.
 //
-// Audience deserves a note: each client carries its own allowed
-// audience list. Sub-PR C populates this at /oauth/register time
-// with [cfg.AllowedAudience], so the AudienceMatchingStrategy in
-// audience.go has a haystack to validate against. Until that lands,
-// the field is empty and the strategy will reject any audience-
-// requesting flow — which is exactly what we want pre-deploy.
-func modelClientToFosite(c *models.OAuthClient) fosite.Client {
+// Audience: every client in this server is implicitly authorized
+// for the canonical audience (PLAN-943: single-resource AS). The
+// adapter injects Storage.canonicalAudience into the hydrated
+// client's Audience field so audienceMatchingStrategy's haystack
+// check (client.GetAudience() must contain canonical) passes for
+// every persisted client. Codex review #371 round 1 caught the bug
+// where this returned Audience=nil and every flow failed validation.
+//
+// If canonicalAudience is empty (a misconfigured Storage — should
+// never happen in production because NewServer rejects empty
+// AllowedAudience), Audience stays nil and the strategy will reject
+// every request with ServerError, surfacing the misconfiguration
+// fast.
+func (s *Storage) modelClientToFosite(c *models.OAuthClient) fosite.Client {
+	var audience []string
+	if s.canonicalAudience != "" {
+		audience = []string{s.canonicalAudience}
+	}
 	return &fosite.DefaultClient{
 		ID:            c.ID,
 		Secret:        nil, // public client
@@ -426,7 +454,7 @@ func modelClientToFosite(c *models.OAuthClient) fosite.Client {
 		GrantTypes:    append([]string(nil), c.GrantTypes...),
 		ResponseTypes: append([]string(nil), c.ResponseTypes...),
 		Scopes:        append([]string(nil), c.Scopes...),
-		Audience:      nil, // sub-PR C populates at DCR time; see audience.go
+		Audience:      audience,
 		Public:        true,
 	}
 }

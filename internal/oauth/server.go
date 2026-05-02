@@ -151,7 +151,11 @@ func NewServer(cfg Config) (*Server, error) {
 		// (no extra config — defaults handle these)
 	}
 
-	storage := NewStorage(cfg.Store)
+	// Storage carries the canonical audience so hydrated clients
+	// pass audienceMatchingStrategy's haystack-side check. Single-
+	// resource AS for v1 — every client implicitly allowed for the
+	// configured audience. See storage.go modelClientToFosite.
+	storage := NewStorage(cfg.Store, cfg.AllowedAudience)
 	strategy := compose.NewOAuth2HMACStrategy(fcfg)
 
 	provider := compose.Compose(
