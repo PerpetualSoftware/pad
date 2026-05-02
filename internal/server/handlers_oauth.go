@@ -649,18 +649,19 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 //   - 401 invalid_client on client-auth failure.
 //
 // Response body is empty for the 200 success path; the OAuth error
-// envelope for the others. Cache-Control: no-store so intermediaries
-// don't cache the answer.
+// envelope for the others.
 //
-// Caveat: fosite v0.49 returns ErrInvalidRequest (which would
-// surface as 400 via WriteRevocationResponse) for the unknown-token
-// case, contradicting RFC 7009 §2.2's idempotency requirement. We
-// detect that case by inspecting the RFC6749Error's HintField — bare
-// ErrInvalidRequest from the !found branch has no hint, while the
-// genuine "malformed request" branches (wrong method, unparseable
-// body, empty form) all set a hint via WithHint(). When we recognize
-// the unknown-token case, we write 200 directly and skip
-// WriteRevocationResponse. Codex review #373 round 2.
+// fosite v0.49 already handles RFC 7009 §2.2 idempotency natively:
+// handler/oauth2/revocation.go's RevokeToken returns nil for
+// unknown / already-revoked tokens via storeErrorsToRevocationError
+// (which collapses ErrNotFound + ErrInactiveToken to nil). So
+// NewRevocationRequest returns nil and WriteRevocationResponse
+// writes 200. The only spec gap we patch is missing-token: RFC
+// 7009 §2.1 marks `token` REQUIRED, but fosite doesn't enforce that
+// — it passes the empty string into the revocation handlers and
+// returns nil (because both signatures look up empty and miss).
+// Without the pre-check below, "client_id but no token" would
+// silently 200 instead of 400. Codex review #373 round 3.
 func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
@@ -668,41 +669,22 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	err := s.oauthServer.Provider().NewRevocationRequest(ctx, r)
-	if err != nil && isRevocationUnknownToken(err) {
-		// RFC 7009 §2.2 idempotency: unknown / already-revoked token
-		// is a no-op success. Match fosite's WriteRevocationResponse
-		// success-path headers for consistency.
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Pragma", "no-cache")
-		w.WriteHeader(http.StatusOK)
+	// Pre-check: RFC 7009 §2.1 marks `token` REQUIRED. Parse the
+	// form ourselves (fosite would do it inside NewRevocationRequest
+	// anyway) so we can fail-fast with a clean 400 + spec-shaped
+	// error envelope instead of fosite's silent 200-on-empty-token
+	// behavior. ParseForm on a x-www-form-urlencoded body populates
+	// r.PostForm; multipart bodies are extremely rare for OAuth
+	// endpoints, and ParseForm refuses to handle them — for those
+	// we let fosite handle the rejection downstream.
+	if err := r.ParseForm(); err == nil && r.PostForm.Get("token") == "" {
+		s.oauthServer.Provider().WriteRevocationResponse(ctx, w,
+			fosite.ErrInvalidRequest.WithHint("The `token` parameter is required (RFC 7009 §2.1)."))
 		return
 	}
-	s.oauthServer.Provider().WriteRevocationResponse(ctx, w, err)
-}
 
-// isRevocationUnknownToken reports whether err is the bare
-// fosite.ErrInvalidRequest fosite emits when no revocation handler
-// recognizes the supplied token (revoke_handler.go:69-71). The
-// other ErrInvalidRequest paths from NewRevocationRequest all set
-// HintField via WithHint*(), so an empty HintField uniquely
-// identifies the unknown-token case.
-//
-// We also require the ErrorField to be invalid_request and the
-// CodeField to be 400 — defense-in-depth so a future fosite version
-// that repurposes the bare error sentinel doesn't accidentally
-// match.
-func isRevocationUnknownToken(err error) bool {
-	if !errors.Is(err, fosite.ErrInvalidRequest) {
-		return false
-	}
-	rfcErr := fosite.ErrorToRFC6749Error(err)
-	if rfcErr == nil {
-		return false
-	}
-	return rfcErr.HintField == "" &&
-		rfcErr.CodeField == http.StatusBadRequest &&
-		rfcErr.ErrorField == fosite.ErrInvalidRequest.ErrorField
+	err := s.oauthServer.Provider().NewRevocationRequest(ctx, r)
+	s.oauthServer.Provider().WriteRevocationResponse(ctx, w, err)
 }
 
 // =====================================================================

@@ -765,18 +765,19 @@ func TestOAuth_Revoke_AccessToken_MarksInactive(t *testing.T) {
 	}
 }
 
-// TestOAuth_Revoke_UnknownToken_Returns200 pins Codex review #373
-// round 2: RFC 7009 §2.2 mandates that revocation is idempotent —
-// "the authorization server responds with HTTP status code 200 if
-// the token has been revoked successfully OR if the client submitted
-// an invalid token." fosite v0.49 returns ErrInvalidRequest for the
-// !found branch (revoke_handler.go:69-71), which WriteRevocationResponse
-// would turn into 400 — a spec-visible failure for the entirely
-// normal "client retried after a previous revoke succeeded" or
-// "operator typo'd the token" cases.
+// TestOAuth_Revoke_UnknownToken_Returns200 pins RFC 7009 §2.2
+// idempotency: "the authorization server responds with HTTP status
+// code 200 if the token has been revoked successfully OR if the
+// client submitted an invalid token."
 //
-// handleOAuthRevoke detects this case via isRevocationUnknownToken
-// and writes 200 directly. This test locks the override in.
+// fosite v0.49 implements this natively: handler/oauth2/revocation.go's
+// RevokeToken returns nil when both refresh-token and access-token
+// lookups miss (storeErrorsToRevocationError collapses ErrNotFound +
+// ErrInactiveToken to nil), so NewRevocationRequest returns nil and
+// WriteRevocationResponse writes 200. We pin this behavior so a
+// future fosite version-bump that breaks idempotency (e.g. by
+// returning ErrInvalidRequest for unknown tokens) gets caught here
+// instead of in production with a confused-client report.
 func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -795,6 +796,30 @@ func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
 	// Response body should be empty (matches the success path).
 	if rr.Body.Len() > 0 {
 		t.Errorf("unknown-token revoke response body should be empty; got %q", rr.Body.String())
+	}
+}
+
+// TestOAuth_Revoke_MissingToken_Returns400 pins Codex review #373
+// round 3: RFC 7009 §2.1 marks `token` REQUIRED, but fosite v0.49
+// doesn't enforce that — it passes the empty string into the
+// revocation handlers and emits the same bare ErrInvalidRequest
+// the unknown-token path produces. Without the explicit
+// r.PostForm.Get("token") check in handleOAuthRevoke, the
+// idempotency override would silently turn "missing required
+// parameter" into 200.
+//
+// Sending client_id but no token must remain 400 invalid_request.
+func TestOAuth_Revoke_MissingToken_Returns400(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	rr := postOAuthForm(srv, "/oauth/revoke", url.Values{
+		"client_id": {clientID},
+		// Deliberately no `token` field.
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("RFC 7009 §2.1: missing required `token` parameter MUST return 400 (not silently 200); got %d (body: %s)",
+			rr.Code, rr.Body.String())
 	}
 }
 
