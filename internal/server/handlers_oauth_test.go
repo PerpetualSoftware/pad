@@ -558,8 +558,16 @@ func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
 
 // TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect
 // asserts sub-PR D's discovery doc additions: revocation_endpoint,
-// introspection_endpoint, and the matching auth-methods lists are
+// introspection_endpoint, and the revocation auth-methods list are
 // populated and point at the URLs the handlers actually serve.
+//
+// introspection_endpoint_auth_methods_supported is intentionally
+// OMITTED — see Codex review #373 round 1 + the comment in
+// handleOAuthAuthorizationServer. The introspection endpoint only
+// accepts Bearer auth (a separate active access token), which has
+// no registered registry value, so listing "none" would be
+// misleading and listing nothing matches RFC 8414 §2's OPTIONAL
+// status.
 //
 // Real Claude-Desktop / Cursor / ChatGPT clients fetch this doc
 // once on connect and cache it; if either URL is wrong, the client
@@ -584,15 +592,18 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing
 			t.Errorf("%s: got %q, want %q", k, got, want)
 		}
 	}
-	// Public-clients-only model: "none" for both (no Basic auth
-	// path can succeed because we don't issue secrets).
+	// Revoke really does accept "none" — public client posts
+	// client_id form field, no secret. Honest advertisement.
 	if !sliceContainsString(doc["revocation_endpoint_auth_methods_supported"], "none") {
 		t.Errorf("revocation_endpoint_auth_methods_supported missing 'none'; got %v",
 			doc["revocation_endpoint_auth_methods_supported"])
 	}
-	if !sliceContainsString(doc["introspection_endpoint_auth_methods_supported"], "none") {
-		t.Errorf("introspection_endpoint_auth_methods_supported missing 'none'; got %v",
-			doc["introspection_endpoint_auth_methods_supported"])
+	// introspection_endpoint_auth_methods_supported MUST NOT be
+	// present (Codex review #373 round 1): the endpoint requires
+	// Bearer auth which isn't a registered auth-methods value.
+	// Listing anything here would mislead clients.
+	if v, ok := doc["introspection_endpoint_auth_methods_supported"]; ok {
+		t.Errorf("introspection_endpoint_auth_methods_supported must NOT be advertised (Bearer-only is unregistered); got %v", v)
 	}
 }
 

@@ -148,36 +148,41 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Sub-PR D (TASK-1026) wires /oauth/revoke + /oauth/introspect
-	// and the discovery doc populates them here. Auth methods listed
-	// for both endpoints are "none" — pad is public-clients-only,
-	// so Basic-auth client authentication can't succeed (no
-	// secrets). For introspection that means callers MUST present a
-	// Bearer access token in the Authorization header per RFC 6750;
-	// fosite's NewIntrospectionRequest enforces that internally.
-	// "bearer" isn't a registered value in the OAuth Token Endpoint
-	// Authentication Methods registry, so we list "none" (the
-	// closest registered value for "no client credentials"). RFC
-	// 8414 §2 says omitted means default "client_secret_basic" —
-	// listing "none" is the right correction.
+	// Sub-PR D (TASK-1026) wires /oauth/revoke + /oauth/introspect.
+	//
+	// revocation_endpoint_auth_methods_supported = ["none"] is honest:
+	// fosite's NewRevocationRequest accepts a public client that
+	// posts only `client_id` (no secret, no Bearer header), which
+	// matches the "none" value from the OAuth Token Endpoint
+	// Authentication Methods registry.
+	//
+	// introspection_endpoint_auth_methods_supported is intentionally
+	// OMITTED. fosite's NewIntrospectionRequest insists on either
+	// Bearer auth (a separate active access token, RFC 7662 §2.1's
+	// "bearer token" branch) or HTTP Basic — and our public-clients-
+	// only model has no Basic-auth path. "bearer" isn't a registered
+	// value in the auth-methods registry, so listing "none" would
+	// mislead clients into thinking they can post bare token+client_id
+	// and have it accepted (the test in this PR locks in that a
+	// missing Authorization header is rejected). RFC 8414 §2 marks
+	// the field OPTIONAL; omitting it tells discovery clients
+	// "negotiate auth out-of-band," which for our case is documented
+	// in the public docs at getpad.dev/mcp/local. Codex review #373
+	// round 1 caught the mismatch.
 	doc := authServerMetadata{
-		Issuer:                            issuer,
-		AuthorizationEndpoint:             issuer + "/oauth/authorize",
-		TokenEndpoint:                     issuer + "/oauth/token",
-		RegistrationEndpoint:              issuer + "/oauth/register",
-		RevocationEndpoint:                issuer + "/oauth/revoke",
-		IntrospectionEndpoint:             issuer + "/oauth/introspect",
-		ResponseTypesSupported:            []string{"code"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
-		CodeChallengeMethodsSupported:     []string{"S256"},
-		TokenEndpointAuthMethodsSupported: []string{"none"},
-		// Public-client model: no client secret, no Basic auth path.
-		// "none" is the closest registry value; matches the token
-		// endpoint's listing.
-		RevocationEndpointAuthMethodsSupported:    []string{"none"},
-		IntrospectionEndpointAuthMethodsSupported: []string{"none"},
-		ScopesSupported:             []string{"pad:read", "pad:write", "pad:admin"},
-		ResourceIndicatorsSupported: true,
+		Issuer:                                 issuer,
+		AuthorizationEndpoint:                  issuer + "/oauth/authorize",
+		TokenEndpoint:                          issuer + "/oauth/token",
+		RegistrationEndpoint:                   issuer + "/oauth/register",
+		RevocationEndpoint:                     issuer + "/oauth/revoke",
+		IntrospectionEndpoint:                  issuer + "/oauth/introspect",
+		ResponseTypesSupported:                 []string{"code"},
+		GrantTypesSupported:                    []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:          []string{"S256"},
+		TokenEndpointAuthMethodsSupported:      []string{"none"},
+		RevocationEndpointAuthMethodsSupported: []string{"none"},
+		ScopesSupported:                        []string{"pad:read", "pad:write", "pad:admin"},
+		ResourceIndicatorsSupported:            true,
 		// authorization_response_iss_parameter_supported (RFC 9207)
 		// is intentionally OMITTED. Advertising it would imply that
 		// /authorize redirects carry iss=<issuer> in the response
@@ -205,21 +210,26 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 // revocation_endpoint + introspection_endpoint were added in sub-PR D
 // (TASK-1026) when the handlers shipped; keeping their JSON tags
 // stable lets clients rely on them.
+//
+// introspection_endpoint_auth_methods_supported is deliberately not a
+// field here. The introspection endpoint only accepts Bearer auth in
+// our public-clients-only model, and "bearer" isn't a registered
+// auth-methods value — see the comment in handleOAuthAuthorizationServer
+// for the full reasoning. RFC 8414 §2 marks it OPTIONAL.
 type authServerMetadata struct {
-	Issuer                                    string   `json:"issuer"`
-	AuthorizationEndpoint                     string   `json:"authorization_endpoint"`
-	TokenEndpoint                             string   `json:"token_endpoint"`
-	RegistrationEndpoint                      string   `json:"registration_endpoint"`
-	RevocationEndpoint                        string   `json:"revocation_endpoint"`
-	IntrospectionEndpoint                     string   `json:"introspection_endpoint"`
-	ResponseTypesSupported                    []string `json:"response_types_supported"`
-	GrantTypesSupported                       []string `json:"grant_types_supported"`
-	CodeChallengeMethodsSupported             []string `json:"code_challenge_methods_supported"`
-	TokenEndpointAuthMethodsSupported         []string `json:"token_endpoint_auth_methods_supported"`
-	RevocationEndpointAuthMethodsSupported    []string `json:"revocation_endpoint_auth_methods_supported"`
-	IntrospectionEndpointAuthMethodsSupported []string `json:"introspection_endpoint_auth_methods_supported"`
-	ScopesSupported                           []string `json:"scopes_supported"`
-	ResourceIndicatorsSupported               bool     `json:"resource_indicators_supported"`
+	Issuer                                 string   `json:"issuer"`
+	AuthorizationEndpoint                  string   `json:"authorization_endpoint"`
+	TokenEndpoint                          string   `json:"token_endpoint"`
+	RegistrationEndpoint                   string   `json:"registration_endpoint"`
+	RevocationEndpoint                     string   `json:"revocation_endpoint"`
+	IntrospectionEndpoint                  string   `json:"introspection_endpoint"`
+	ResponseTypesSupported                 []string `json:"response_types_supported"`
+	GrantTypesSupported                    []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported          []string `json:"code_challenge_methods_supported"`
+	TokenEndpointAuthMethodsSupported      []string `json:"token_endpoint_auth_methods_supported"`
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported"`
+	ScopesSupported                        []string `json:"scopes_supported"`
+	ResourceIndicatorsSupported            bool     `json:"resource_indicators_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names
