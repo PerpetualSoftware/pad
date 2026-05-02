@@ -84,31 +84,96 @@ func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
-// handleOAuthAuthorizationServerStub is the placeholder for RFC 8414
-// "OAuth 2.0 Authorization Server Metadata" on the auth-server vhost.
-// TASK-951 will fill this in with the real /oauth/{authorize, token,
-// register, revoke, introspect} endpoint URLs + supported response
-// types, grant types, PKCE methods, etc.
+// handleOAuthAuthorizationServer serves RFC 8414 "OAuth 2.0
+// Authorization Server Metadata" at /.well-known/oauth-authorization-server.
 //
-// We mount the stub now so the discovery chain is complete from the
-// MCP client's perspective: they hit /.well-known/oauth-protected-
-// resource (this PR), follow authorization_servers[0] to /.well-known/
-// oauth-authorization-server, and get a 501 with a clear message
-// rather than a 404 that would suggest misconfiguration.
+// Replaces the 501 stub from TASK-950 with the real document
+// describing pad's auth-code + refresh + PKCE-S256 flow. Claude
+// Desktop and other MCP clients fetch this after following the
+// authorization_servers[] pointer in the protected-resource doc;
+// the document tells them which endpoint URLs to use, which grant
+// types are accepted, what scopes the server understands, etc.
 //
-// Once TASK-951 ships, replace the body with the real metadata
-// document.
-func (s *Server) handleOAuthAuthorizationServerStub(w http.ResponseWriter, _ *http.Request) {
+// What's enabled:
+//
+//   - response_types: ["code"]                — auth-code flow only
+//   - grant_types:    ["authorization_code", "refresh_token"]
+//   - PKCE:           required (S256 only — Config.EnablePKCEPlainChallengeMethod=false)
+//   - client auth:    none (public clients only — PKCE-authenticated)
+//   - resource indicators (RFC 8707): supported, mandatory per audienceMatchingStrategy
+//   - registration:   open DCR (RFC 7591)
+//
+// Excluded:
+//
+//   - id_token / OpenID — not declared in scopes_supported
+//   - implicit grant — deprecated in OAuth 2.1
+//   - client credentials — public-clients-only model
+//   - device-code grant — not relevant for MCP-over-HTTPS
+//
+// URLs are derived from cfg.AuthServerURL (PAD_AUTH_SERVER_URL) at
+// startup; falls back to the request scheme + host so local-dev
+// works without env vars.
+//
+// This handler is mounted under the cloud-mode gate (same group as
+// /.well-known/oauth-protected-resource). It's intentionally
+// unauthenticated — RFC 8414 §3 explicitly says metadata MUST be
+// available without authentication.
+func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.Request) {
+	issuer := s.authServerIssuerURL(r)
+	if issuer == "" {
+		// Same fail-loud branch as the protected-resource doc:
+		// without an issuer the document would mislead clients
+		// about the canonical URL. 503 lets ops detect the
+		// misconfiguration faster than a 200 with stub URLs would.
+		writeError(w, http.StatusServiceUnavailable, "config_error",
+			"OAuth authorization server URL is not configured")
+		return
+	}
+
+	doc := authServerMetadata{
+		Issuer:                                     issuer,
+		AuthorizationEndpoint:                      issuer + "/oauth/authorize",
+		TokenEndpoint:                              issuer + "/oauth/token",
+		RegistrationEndpoint:                       issuer + "/oauth/register",
+		RevocationEndpoint:                         issuer + "/oauth/revoke",     // sub-PR D wires the handler
+		IntrospectionEndpoint:                      issuer + "/oauth/introspect", // sub-PR D wires the handler
+		ResponseTypesSupported:                     []string{"code"},
+		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:              []string{"S256"},
+		TokenEndpointAuthMethodsSupported:          []string{"none"},
+		RevocationEndpointAuthMethodsSupported:     []string{"none"},
+		IntrospectionEndpointAuthMethodsSupported:  []string{"none"},
+		ScopesSupported:                            []string{"pad:read", "pad:write", "pad:admin"},
+		ResourceIndicatorsSupported:                true,
+		AuthorizationResponseIssParameterSupported: true,
+	}
 	w.Header().Set("Content-Type", "application/json")
-	// Retry-After helps well-behaved clients back off rather than
-	// hammering us until TASK-951 lands. 3600 seconds is generous
-	// enough to absorb a deploy window without being annoyingly long.
-	w.Header().Set("Retry-After", "3600")
-	w.WriteHeader(http.StatusNotImplemented)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error":             "not_implemented",
-		"error_description": "OAuth authorization server is not yet enabled on this deployment. Tracked under PLAN-943 TASK-951.",
-	})
+	// Same 1-hour cache as the protected-resource doc.
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+// authServerMetadata is the RFC 8414 wire shape. Only the fields
+// pad populates are declared. RFC 8414 §2 lists many more
+// (jwks_uri, ui_locales_supported, op_policy_uri, …) but they're
+// optional and not relevant to opaque-token deployments.
+type authServerMetadata struct {
+	Issuer                                     string   `json:"issuer"`
+	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
+	TokenEndpoint                              string   `json:"token_endpoint"`
+	RegistrationEndpoint                       string   `json:"registration_endpoint"`
+	RevocationEndpoint                         string   `json:"revocation_endpoint"`
+	IntrospectionEndpoint                      string   `json:"introspection_endpoint"`
+	ResponseTypesSupported                     []string `json:"response_types_supported"`
+	GrantTypesSupported                        []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
+	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
+	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported"`
+	IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported"`
+	ScopesSupported                            []string `json:"scopes_supported"`
+	ResourceIndicatorsSupported                bool     `json:"resource_indicators_supported"`
+	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names

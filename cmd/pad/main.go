@@ -41,6 +41,7 @@ import (
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	oauthpkg "github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
@@ -413,6 +414,36 @@ func serveCmd() *cobra.Command {
 					"auth_server", cfg.AuthServerURL,
 					"resources_wired", false,
 				)
+
+				// OAuth 2.1 authorization server (PLAN-943 TASK-1024
+				// constructor + TASK-1025 HTTP handlers). Wired only
+				// when the cloud deployment has a configured MCP
+				// public URL — the OAuth server's audience strategy
+				// rejects every request unless tokens are bound to
+				// cfg.MCPPublicURL + "/mcp" (the canonical resource).
+				//
+				// HMAC secret reuses cfg.EncryptionKey, the same
+				// 32-byte hex key cloud deployments already require
+				// (validated above). fosite uses it to sign the
+				// opaque token signature half; rotation arrives
+				// alongside the operator runbook for TASK-953/954.
+				if cfg.MCPPublicURL != "" {
+					oauthSrv, oauthErr := oauthpkg.NewServer(oauthpkg.Config{
+						Store:           s,
+						HMACSecret:      keyBytes,
+						AllowedAudience: strings.TrimRight(cfg.MCPPublicURL, "/") + "/mcp",
+					})
+					if oauthErr != nil {
+						return fmt.Errorf("init OAuth server: %w", oauthErr)
+					}
+					srv.SetOAuthServer(oauthSrv)
+					slog.Info("OAuth server mounted",
+						"endpoints", "/oauth/{register,authorize,token}",
+						"audience", oauthSrv.AllowedAudience(),
+					)
+				} else {
+					slog.Warn("PAD_MCP_PUBLIC_URL not set — OAuth server NOT mounted (no canonical audience to bind tokens to)")
+				}
 
 				// Reverse pad → pad-cloud client (TASK-690). Used by
 				// handleDeleteAccount to cancel Stripe subscriptions + delete

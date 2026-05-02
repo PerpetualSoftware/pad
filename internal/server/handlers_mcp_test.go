@@ -85,19 +85,25 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 	}
 }
 
-// TestMCP_AuthServerStub_Returns501 confirms the RFC 8414 stub mounts
-// alongside the protected-resource doc. Once TASK-951 lands and fills
-// in real metadata, this test will be replaced with a positive doc-
-// shape assertion.
-func TestMCP_AuthServerStub_Returns501(t *testing.T) {
+// TestMCP_AuthServerMetadata_Mounted confirms the RFC 8414
+// authorization-server discovery doc is mounted by the cloud-mode
+// route group.
+//
+// The stub-501 contract from TASK-950 was replaced by sub-PR C
+// (TASK-1025) when /oauth/{authorize,token,register} actually
+// exist. The full document-shape assertions live in
+// TestOAuth_AuthorizationServerMetadata_PopulatedShape; here we
+// just confirm the endpoint mounts + serves a 200 (or a 503 when
+// the auth-server URL is not configured, the fail-loud branch).
+func TestMCP_AuthServerMetadata_Mounted(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
-	if rr.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501 stub, got %d", rr.Code)
-	}
-	if ra := rr.Header().Get("Retry-After"); ra == "" {
-		t.Errorf("expected Retry-After header on 501 stub, got empty")
+	// mcpEnabledTestServer passes a non-empty mcpAuthServerURL
+	// ("https://app.test.example"), so the doc serves 200 with
+	// the populated metadata. 501 is now extinct.
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 with populated RFC 8414 metadata, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
 

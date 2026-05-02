@@ -27,6 +27,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
@@ -81,6 +82,14 @@ type Server struct {
 	mcpTransport     http.Handler
 	mcpPublicURL     string // canonical public URL of the MCP vhost (e.g. https://mcp.getpad.dev)
 	mcpAuthServerURL string // canonical URL of the OAuth auth server (e.g. https://app.getpad.dev), TASK-951
+
+	// OAuth 2.1 authorization server (PLAN-943 TASK-1024 sub-PR B,
+	// HTTP handlers in TASK-1025 sub-PR C). Wired via SetOAuthServer
+	// at startup when the deployment is in cloud mode + has the
+	// fosite-backed server constructed. nil disables the OAuth
+	// surface — registerOAuthRoutes nil-checks so the routes don't
+	// mount on self-hosted deployments. See handlers_oauth.go.
+	oauthServer *oauth.Server
 
 	// storageInfoCache memoizes per-workspace storage usage summaries
 	// behind a short TTL (storageInfoTTL). Reduces DB load on the
@@ -563,6 +572,28 @@ func (s *Server) setupRouter() {
 	// No-op when SetMCPTransport hasn't been called or cloud mode is
 	// off — see registerMCPRoutes for the gating.
 	s.registerMCPRoutes(r)
+
+	// OAuth 2.1 authorization-server flow endpoints (PLAN-943
+	// TASK-1025 sub-PR C). /oauth/{register,authorize,token,
+	// authorize/decide} mounted alongside /mcp + /.well-known/*,
+	// outside /api/v1's auth-required group. CSRF middleware runs
+	// only on /api/* paths so /oauth/* is naturally exempt; the
+	// consent-decision endpoint adds its own form-token check
+	// using the existing __Host-pad_csrf cookie.
+	//
+	// SessionAuth runs in this group so /oauth/authorize can detect
+	// whether the user is logged in via the __Host-pad_session
+	// cookie. SessionAuth falls through gracefully when no cookie
+	// is present (handlers see currentUser(r)==nil and redirect to
+	// /login). RequireAuth is intentionally NOT used — /oauth/authorize
+	// must be reachable anonymously to trigger the login redirect.
+	//
+	// No-op when SetOAuthServer hasn't been called or cloud mode is off.
+	r.Group(func(r chi.Router) {
+		r.Use(s.requireCloudMode)
+		r.Use(s.SessionAuth)
+		s.registerOAuthRoutes(r)
+	})
 
 	// Prometheus scrape endpoint — exempt from the standard auth/CSRF stack
 	// (Prometheus can't present a session cookie or pass a CSRF header), but
