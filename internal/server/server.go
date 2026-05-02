@@ -768,6 +768,20 @@ func (s *Server) setupRouter() {
 			// Invitations (outside workspace scope)
 			r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
 
+			// OAuth client public-info (PLAN-943 TASK-1027 sub-PR E).
+			// Read-only consent-screen support for OAuth clients
+			// registered via /oauth/register. Auth-required (inherits
+			// RequireAuth from the parent group); cloud-mode-gated so
+			// self-hosted deployments without an OAuth server don't
+			// expose a hollow endpoint. Returns four non-sensitive
+			// fields (client_id, client_name, logo_uri, redirect_uris)
+			// — see handlers_oauth_clients.go for the full leak-surface
+			// rationale.
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireCloudMode)
+				r.Get("/oauth/clients/{id}/public-info", s.handleOAuthClientPublicInfo)
+			})
+
 			// Share link resolution (outside workspace scope, no auth required)
 			r.Get("/s/{token}", s.handleResolveShareLink)
 

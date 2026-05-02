@@ -3,10 +3,12 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
 // TestMCP_CloudModeOff_RoutesAbsent verifies the negative case:
@@ -375,6 +377,576 @@ func mcpEnabledTestServer(t *testing.T) *Server {
 	})
 	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
 	return srv
+}
+
+// =====================================================================
+// /mcp ↔ OAuth integration (sub-PR E, TASK-1027)
+// =====================================================================
+
+// mcpAndOAuthEnabledTestServer builds a server with BOTH the MCP
+// transport stub AND the fosite-backed OAuth server wired. The two
+// surfaces share the same canonical audience (testCanonicalAudience
+// from handlers_oauth_test.go), so a token issued by the OAuth flow
+// is valid against the MCP gate.
+//
+// Stub captures the user attached to the request context so tests
+// can assert "the OAuth bearer routed the right user through" in
+// addition to "the auth gate accepted the bearer."
+func mcpAndOAuthEnabledTestServer(t *testing.T) (srv *Server, transport *mcpStubTransport) {
+	t.Helper()
+	srv = testServer(t)
+	srv.SetCloudMode("test-secret")
+
+	transport = &mcpStubTransport{}
+	srv.SetMCPTransport(http.HandlerFunc(transport.serve),
+		strings.TrimSuffix(testCanonicalAudience, "/mcp"),
+		testAuthServerURL)
+
+	o, err := newTestOAuthServer(t, srv)
+	if err != nil {
+		t.Fatalf("oauth.NewServer: %v", err)
+	}
+	srv.SetOAuthServer(o)
+	return srv, transport
+}
+
+// mcpStubTransport is a recording stub for the /mcp Streamable-HTTP
+// surface. Captures the user attached to context so tests can
+// distinguish "auth gate let the request through" from "auth gate
+// attached the right identity." A misrouted request shows up as
+// SeenUserID == "" (stub never reached / no user in context).
+type mcpStubTransport struct {
+	Called      bool
+	SeenUserID  string
+	SeenScopes  string
+	SeenIsToken bool
+}
+
+func (t *mcpStubTransport) serve(w http.ResponseWriter, r *http.Request) {
+	t.Called = true
+	if u, ok := CurrentUserFromContext(r.Context()); ok && u != nil {
+		t.SeenUserID = u.ID
+	}
+	t.SeenScopes = TokenScopesFromContext(r.Context())
+	t.SeenIsToken = IsAPITokenFromContext(r.Context())
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+}
+
+// TestMCP_OAuthAccessToken_Authenticates is the primary happy-path
+// test for sub-PR E: a token minted by the full /authorize → /token
+// flow authenticates against /mcp, attaches the right user to
+// context, and stashes scopes via WithTokenScopes so the in-process
+// dispatcher can enforce per-tool checks.
+func TestMCP_OAuthAccessToken_Authenticates(t *testing.T) {
+	srv, transport := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-mcp-quick-brown-fox-jumps-over-lazy-dog-1234")
+	access, _ := tokens["access_token"].(string)
+	if access == "" {
+		t.Fatalf("missing access token: %v", tokens)
+	}
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1}`))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 from OAuth-authed /mcp, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if !transport.Called {
+		t.Fatal("transport stub never called — auth or routing failed silently")
+	}
+	if transport.SeenUserID != user.ID {
+		t.Errorf("user not attached: got %q, want %q", transport.SeenUserID, user.ID)
+	}
+	if !transport.SeenIsToken {
+		t.Error("ctxIsAPIToken should be true for OAuth-authed requests (mirrors PAT path)")
+	}
+	// Scopes must be the JSON-array form tokenScopeAllows expects.
+	// runAuthCodeFlow grants pad:read, so that's what we should see.
+	if !strings.Contains(transport.SeenScopes, "pad:read") {
+		t.Errorf("scopes not stashed correctly; got %q want JSON array containing pad:read", transport.SeenScopes)
+	}
+}
+
+// TestMCP_OAuthAccessToken_AudienceMismatch_Rejected pins the
+// RFC 8707 anti-replay defense: even if a token is otherwise valid,
+// /mcp rejects it when the granted audience doesn't include the
+// resource server's canonical URL.
+//
+// Strategy: mint a token normally (audience matches the OAuth
+// server's canonical = testCanonicalAudience), then swap the
+// Server's oauthServer for one with a DIFFERENT canonical so the
+// MCP gate's AllowedAudience() returns a value that doesn't match
+// the token's stored aud claim. fosite.IntrospectToken still
+// validates the token (storage isn't audience-bound), but our
+// post-introspection check in handleMCPOAuthAuth rejects.
+//
+// This is belt-and-suspenders: in normal operation,
+// audienceMatchingStrategy on the grant side refuses to mint
+// tokens for non-canonical audiences. The resource-server check
+// here defends against scenarios where the auth server is
+// compromised, misconfigured, or shared across multiple resources.
+func TestMCP_OAuthAccessToken_AudienceMismatch_Rejected(t *testing.T) {
+	// Step 1: build a normal MCP+OAuth server matched to
+	// testCanonicalAudience and mint a token through the standard
+	// helper.
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-audmismatch-quick-brown-fox-jumps-over-lazy-")
+	access, _ := tokens["access_token"].(string)
+	if access == "" {
+		t.Fatalf("missing access token: %v", tokens)
+	}
+
+	// Step 2: swap in an OAuth server with a different canonical
+	// audience. The token we just minted has
+	// granted_audience=testCanonicalAudience, but the new gate
+	// expects something else.
+	mismatched, err := oauth.NewServer(oauth.Config{
+		Store:           srv.store,
+		HMACSecret:      bytes32ForTest(),
+		AllowedAudience: "https://mcp.unrelated.example/mcp",
+	})
+	if err != nil {
+		t.Fatalf("oauth.NewServer (mismatched): %v", err)
+	}
+	srv.SetOAuthServer(mismatched)
+
+	// Step 3: try to use the token at /mcp — must reject.
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("audience mismatch must produce 401; got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// WWW-Authenticate must still point at discovery so the client
+	// knows how to recover.
+	if rr.Header().Get("WWW-Authenticate") == "" {
+		t.Error("audience-mismatch 401 must still emit WWW-Authenticate")
+	}
+}
+
+// TestMCP_OAuthRefreshToken_RejectedAtMCP pins the rule that refresh
+// tokens are NOT valid bearers for resource calls. RFC 6749 §1.5
+// distinguishes refresh tokens (used to obtain access tokens) from
+// access tokens (used to access protected resources). A client that
+// accidentally puts the refresh token in the Authorization header
+// must NOT authenticate.
+func TestMCP_OAuthRefreshToken_RejectedAtMCP(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-refresh-token-quick-brown-fox-jumps-over-laz")
+	refresh, _ := tokens["refresh_token"].(string)
+	if refresh == "" {
+		t.Fatalf("missing refresh token: %v", tokens)
+	}
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+refresh)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("refresh token must NOT authenticate /mcp; got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestMCP_RevokedOAuthToken_Rejected pins the rule that revocation
+// takes effect immediately at the resource server. Mints a token,
+// revokes it via /oauth/revoke, then confirms /mcp rejects.
+//
+// This is the primary security guarantee of the family-revocation
+// flow that sub-PRs A + D wired: a revoke call must invalidate
+// every bearer in the chain.
+func TestMCP_RevokedOAuthToken_Rejected(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-revoke-mcp-quick-brown-fox-jumps-over-lazy-d")
+	access, _ := tokens["access_token"].(string)
+	if access == "" {
+		t.Fatalf("missing access token: %v", tokens)
+	}
+
+	// Revoke via /oauth/revoke (RFC 7009). Public client → only
+	// client_id needed.
+	rrRevoke := postOAuthForm(srv, "/oauth/revoke", url.Values{
+		"token":     {access},
+		"client_id": {clientID},
+	})
+	if rrRevoke.Code != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d (body: %s)", rrRevoke.Code, rrRevoke.Body.String())
+	}
+
+	// Use the revoked token at /mcp — must 401.
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("revoked token must NOT authenticate /mcp; got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestMCP_PATPath_StillWorks regresses the original TASK-950 PAT
+// auth path. Sub-PR E added an OAuth branch; the PAT branch must
+// keep working unchanged so existing CLI / Claude-Code-on-self-host
+// users don't see a regression.
+func TestMCP_PATPath_StillWorks(t *testing.T) {
+	srv, transport := mcpAndOAuthEnabledTestServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "pat-regression@example.com",
+		Name:     "PAT Regression",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "PAT Test WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name: "regression-token", WorkspaceID: ws.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PAT path broken by OAuth integration: got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if transport.SeenUserID != user.ID {
+		t.Errorf("PAT path should attach user; got %q want %q", transport.SeenUserID, user.ID)
+	}
+}
+
+// TestMCP_OAuthScopeReadOnly_StashesPadReadScope confirms that an
+// OAuth token granted only `pad:read` reaches the in-process
+// dispatcher with that scope stashed in the canonical JSON-array
+// form. Pairs with the tokenScopeAllows pad:* extension — together
+// they ensure that an OAuth read-only token can NOT drive write
+// MCP tools.
+//
+// This test exercises only the MCPBearerAuth-side stash; the
+// dispatcher-side enforcement is covered by
+// TestTokenScopeAllows_PublicWrapper / token_scopes_test.go.
+func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
+	srv, transport := mcpAndOAuthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-readonly-quick-brown-fox-jumps-over-lazy-dog")
+	access, _ := tokens["access_token"].(string)
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (auth passes — scope check is dispatcher-side), got %d", rr.Code)
+	}
+	// runAuthCodeFlow grants `pad:read` (single scope). Stash should
+	// be the JSON-array equivalent.
+	want := `["pad:read"]`
+	if transport.SeenScopes != want {
+		t.Errorf("scopes stash: got %q, want %q", transport.SeenScopes, want)
+	}
+}
+
+// TestOAuthScopesToJSON_FailClosedOnEmpty pins Codex review #375
+// round 1: OAuth's `scope` parameter is optional per RFC 6749 §3.3,
+// so fosite can hand back a token with empty granted scopes. Without
+// the fail-closed mapping in oauthScopesToJSON, that empty list
+// would serialize to `[]` — which tokenScopeAllows interprets as
+// the legacy "unrestricted" PAT shape, granting write access.
+//
+// The fix maps empty → JSON `null`, which tokenScopeAllows denies
+// via its "scopes == nil" branch. This test asserts both halves of
+// the contract: oauthScopesToJSON produces null, and tokenScopeAllows
+// then denies for every method.
+func TestOAuthScopesToJSON_FailClosedOnEmpty(t *testing.T) {
+	got := oauthScopesToJSON(nil)
+	if got != "null" {
+		t.Errorf("nil scopes: got %q, want %q", got, "null")
+	}
+	gotEmpty := oauthScopesToJSON([]string{})
+	if gotEmpty != "null" {
+		t.Errorf("empty scopes: got %q, want %q", gotEmpty, "null")
+	}
+
+	// Routing through tokenScopeAllows must produce false for all
+	// methods — pin the end-to-end contract, not just the helper.
+	for _, method := range []string{
+		http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete,
+	} {
+		if tokenScopeAllows(got, method, "/api/v1/items") {
+			t.Errorf("empty OAuth scopes must deny %s; tokenScopeAllows returned true", method)
+		}
+	}
+
+	// Sanity: non-empty OAuth scopes round-trip the canonical JSON
+	// form (regression — the fail-closed path must NOT extend to
+	// the populated case).
+	if got := oauthScopesToJSON([]string{"pad:read"}); got != `["pad:read"]` {
+		t.Errorf("populated scopes: got %q, want %q", got, `["pad:read"]`)
+	}
+}
+
+// =====================================================================
+// /api/v1/oauth/clients/{id}/public-info (sub-PR E, TASK-1027)
+// =====================================================================
+
+// TestOAuthClientPublicInfo_HappyPath confirms the consent-screen
+// support endpoint returns the four whitelisted fields and matches
+// what was registered.
+func TestOAuthClientPublicInfo_HappyPath(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+
+	// Register via the public DCR endpoint so the test exercises the
+	// full create → read round-trip a real client would do.
+	rrReg := doRequest(srv, "POST", "/oauth/register", map[string]any{
+		"client_name":   "Test Connector",
+		"redirect_uris": []string{"https://app.test/cb", "claude://oauth/callback"},
+		"logo_uri":      "https://test.example/logo.png",
+	})
+	if rrReg.Code != http.StatusCreated {
+		t.Fatalf("register: %d (body: %s)", rrReg.Code, rrReg.Body.String())
+	}
+	var regResp map[string]any
+	parseJSON(t, rrReg, &regResp)
+	clientID, _ := regResp["client_id"].(string)
+	if clientID == "" {
+		t.Fatal("DCR returned empty client_id")
+	}
+
+	rr := doAuthedRequest(srv, "GET",
+		"/api/v1/oauth/clients/"+clientID+"/public-info", nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public-info: %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var info map[string]any
+	parseJSON(t, rr, &info)
+
+	if got, _ := info["client_id"].(string); got != clientID {
+		t.Errorf("client_id: got %q want %q", got, clientID)
+	}
+	if got, _ := info["client_name"].(string); got != "Test Connector" {
+		t.Errorf("client_name: got %q want Test Connector", got)
+	}
+	if got, _ := info["logo_uri"].(string); got != "https://test.example/logo.png" {
+		t.Errorf("logo_uri: got %q", got)
+	}
+	uris, _ := info["redirect_uris"].([]any)
+	if len(uris) != 2 {
+		t.Errorf("redirect_uris: got %v, want 2 entries", uris)
+	}
+
+	// Leak surface: nothing else should be present.
+	for _, leakField := range []string{
+		"grant_types", "response_types", "token_endpoint_auth_method",
+		"scope", "client_id_issued_at",
+	} {
+		if _, ok := info[leakField]; ok {
+			t.Errorf("public-info leaked %q (whitelist surface only); got %v", leakField, info[leakField])
+		}
+	}
+}
+
+// TestOAuthClientPublicInfo_UnknownClient_404 confirms an unknown
+// client ID gets 404, not 401 (caller IS authenticated; the resource
+// just doesn't exist).
+func TestOAuthClientPublicInfo_UnknownClient_404(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+
+	rr := doAuthedRequest(srv, "GET",
+		"/api/v1/oauth/clients/no-such-client/public-info", nil, sessionToken)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown client, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestOAuthClientPublicInfo_Unauthenticated_401 confirms the auth
+// gate works — reading client metadata requires a session, so an
+// attacker can't enumerate registered clients pre-login.
+//
+// Setup quirk: pad's auth bootstrap path lets requests through when
+// no users exist (setup_required mode for first-admin creation). We
+// have to seed a user so the system is past setup, even though we
+// don't use that user's session in the actual request.
+func TestOAuthClientPublicInfo_Unauthenticated_401(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	// Seed a user so the system isn't in setup_required mode (which
+	// auto-allows everything). Discard the session — we want this
+	// request to land WITHOUT auth to verify the gate.
+	_, _ = loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	rr := doRequest(srv, "GET",
+		"/api/v1/oauth/clients/"+clientID+"/public-info", nil)
+	if rr.Code == http.StatusOK {
+		t.Errorf("public-info must require auth; got 200 (body: %s)", rr.Body.String())
+	}
+}
+
+// TestOAuthClientPublicInfo_NotMountedOutsideCloudMode confirms the
+// cloud-mode gate covers the endpoint — self-hosted deployments
+// without the OAuth surface don't expose it.
+func TestOAuthClientPublicInfo_NotMountedOutsideCloudMode(t *testing.T) {
+	srv := testServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+
+	rr := doAuthedRequest(srv, "GET",
+		"/api/v1/oauth/clients/anything/public-info", nil, sessionToken)
+	// requireCloudMode returns 404 outside cloud mode.
+	if rr.Code == http.StatusOK {
+		t.Errorf("public-info must NOT be reachable outside cloud mode; got 200")
+	}
+}
+
+// =====================================================================
+// E2E simulation: discovery → DCR → authorize → token → /mcp call
+// =====================================================================
+
+// TestE2E_ClaudeDesktopFlow simulates the sequence Claude Desktop
+// (and any RFC 9728 / RFC 7591 / OAuth 2.1 client) walks on first
+// connect:
+//
+//  1. POST /mcp without a token → 401 + WWW-Authenticate pointing
+//     at the protected-resource discovery doc.
+//  2. GET .well-known/oauth-protected-resource → resource +
+//     authorization_servers.
+//  3. GET .well-known/oauth-authorization-server → endpoint URLs.
+//  4. POST /oauth/register (DCR) → client_id.
+//  5. POST /oauth/authorize/decide (consent stub) → authorization
+//     code.
+//  6. POST /oauth/token → access + refresh tokens.
+//  7. POST /mcp with the access token → 200 + transport reached
+//     with the right user context.
+//
+// Without sub-PR E, the final /mcp call would 401 because
+// MCPBearerAuth only validated PATs. The full chain pinned here is
+// what makes the OAuth surface end-to-end usable; if any single
+// hop breaks, the whole connector experience breaks for every
+// MCP-aware client. Worth one slow integration test.
+func TestE2E_ClaudeDesktopFlow(t *testing.T) {
+	srv, transport := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+
+	// 1. Unauthenticated /mcp → 401 + WWW-Authenticate.
+	rr1 := doRequest(srv, "POST", "/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+	})
+	if rr1.Code != http.StatusUnauthorized {
+		t.Fatalf("step 1: expected 401, got %d", rr1.Code)
+	}
+	if !strings.Contains(rr1.Header().Get("WWW-Authenticate"), "resource_metadata=") {
+		t.Fatalf("step 1: missing resource_metadata pointer; got %q", rr1.Header().Get("WWW-Authenticate"))
+	}
+
+	// 2. Protected-resource discovery doc.
+	rr2 := doRequest(srv, "GET", "/.well-known/oauth-protected-resource", nil)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("step 2: discovery doc %d", rr2.Code)
+	}
+
+	// 3. Authorization-server discovery doc.
+	rr3 := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("step 3: auth-server doc %d", rr3.Code)
+	}
+	var asDoc map[string]any
+	parseJSON(t, rr3, &asDoc)
+	regEndpoint, _ := asDoc["registration_endpoint"].(string)
+	if !strings.Contains(regEndpoint, "/oauth/register") {
+		t.Fatalf("step 3: bad registration_endpoint %q", regEndpoint)
+	}
+
+	// 4. DCR.
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// 5 + 6: full authorize → token via the helper.
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-e2e-quick-brown-fox-jumps-over-the-lazy-dog")
+	access, _ := tokens["access_token"].(string)
+	refresh, _ := tokens["refresh_token"].(string)
+	if access == "" || refresh == "" {
+		t.Fatalf("step 6: missing tokens %v", tokens)
+	}
+
+	// 7. /mcp with the access token.
+	req := httptest.NewRequest("POST", "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("step 7: /mcp expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if !transport.Called {
+		t.Fatal("step 7: transport not reached")
+	}
+	if transport.SeenUserID != user.ID {
+		t.Errorf("step 7: user mismatch — got %q want %q", transport.SeenUserID, user.ID)
+	}
+}
+
+// newTestOAuthServer builds an internal/oauth.Server matched to the
+// test harness's canonical audience (testCanonicalAudience). Used by
+// mcpAndOAuthEnabledTestServer to wire OAuth alongside the MCP stub.
+//
+// Extracted so the audience-mismatch test can build the same shape
+// with a different audience.
+func newTestOAuthServer(t *testing.T, srv *Server) (*oauth.Server, error) {
+	t.Helper()
+	return oauth.NewServer(oauth.Config{
+		Store:           srv.store,
+		HMACSecret:      bytes32ForTest(),
+		AllowedAudience: testCanonicalAudience,
+	})
 }
 
 // sliceEqual reports whether a and b have the same elements in the
