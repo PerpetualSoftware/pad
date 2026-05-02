@@ -3645,13 +3645,19 @@ func nextCmd() *cobra.Command {
 				return err
 			}
 
-			if formatFlag == "json" {
-				return cli.PrintJSON(dashJSON)
-			}
-
+			// Decode once; both the JSON branch and the human-readable
+			// branch use the same suggested_next slice.
+			//
+			// BUG-987 bug 6: previously the JSON branch dumped the
+			// entire dashboard, making `project next --format json`
+			// indistinguishable from `project dashboard --format json`.
+			// Now it emits ONLY the recommended-next array (with the
+			// item-ref + reason fields agents need), matching the human
+			// branch's framing.
 			var dash struct {
 				SuggestedNext []struct {
 					ItemSlug   string `json:"item_slug"`
+					ItemRef    string `json:"item_ref,omitempty"`
 					ItemTitle  string `json:"item_title"`
 					Collection string `json:"collection"`
 					Reason     string `json:"reason"`
@@ -3660,6 +3666,10 @@ func nextCmd() *cobra.Command {
 
 			if err := json.Unmarshal(dashJSON, &dash); err != nil {
 				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(dash.SuggestedNext)
 			}
 
 			if len(dash.SuggestedNext) == 0 {

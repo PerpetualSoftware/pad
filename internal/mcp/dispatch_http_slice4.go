@@ -121,14 +121,22 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 
 	blockers := make([]standupItem, 0)
 	for _, a := range dashboardArrayField(dash, "attention") {
+		// BUG-987 bug 8: previously omitted Ref, leaving agents
+		// unable to link the blocker entry back to the blocked item.
+		// The dashboard's attention[].item_ref is the canonical issue
+		// ref (e.g. TASK-7), already populated by the dashboard handler.
 		blockers = append(blockers, standupItem{
+			Ref:    stringFromMap(a, "item_ref"),
 			Title:  stringFromMap(a, "item_title"),
 			Reason: stringFromMap(a, "reason"),
 		})
 	}
 	suggested := make([]standupItem, 0)
 	for _, s := range dashboardArrayField(dash, "suggested_next") {
+		// Same Ref-omission as blockers above. dashboard's
+		// suggested_next[].item_ref carries the canonical issue ref.
 		suggested = append(suggested, standupItem{
+			Ref:    stringFromMap(s, "item_ref"),
 			Title:  stringFromMap(s, "item_title"),
 			Reason: stringFromMap(s, "reason"),
 		})

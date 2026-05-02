@@ -202,6 +202,16 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 	var metadata ItemConventionMetadata
 	hasMetadata := false
 
+	// hasConventionShape tracks whether we've found a Convention-
+	// SPECIFIC marker — the structured convention field, or one of
+	// trigger / surfaces / scope / commands / direct enforcement.
+	// `category` alone is NOT a Convention marker (Ideas, Bugs, Roadmap
+	// items also use category). Used to gate the priority→enforcement
+	// legacy fallback below; without this gate every Task/Idea with a
+	// `priority` field got a phantom `convention.enforcement` surfaced
+	// on its response (BUG-987 bug 13).
+	hasConventionShape := false
+
 	if raw, ok := fieldsMap[ItemFieldConvention]; ok {
 		payload, err := json.Marshal(raw)
 		if err == nil {
@@ -215,6 +225,7 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 					Commands:    append([]string(nil), structured.Commands...),
 				}
 				hasMetadata = true
+				hasConventionShape = true
 			}
 		}
 	}
@@ -223,12 +234,15 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 		if category, ok := fieldsMap["category"].(string); ok {
 			metadata.Category = category
 			hasMetadata = true
+			// Note: category alone does NOT flip hasConventionShape —
+			// many non-Convention collections legitimately use it.
 		}
 	}
 	if metadata.Trigger == "" {
 		if trigger, ok := fieldsMap["trigger"].(string); ok {
 			metadata.Trigger = trigger
 			hasMetadata = true
+			hasConventionShape = true
 		}
 	}
 	if metadata.Enforcement == "" {
@@ -236,10 +250,17 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 		case string:
 			metadata.Enforcement = value
 			hasMetadata = true
+			hasConventionShape = true
 		default:
-			if priority, ok := fieldsMap["priority"].(string); ok {
-				metadata.Enforcement = priority
-				hasMetadata = true
+			// Legacy fallback: Conventions used to store enforcement
+			// under `priority` (must/should/nice-to-have). Only apply
+			// the fallback when we've already seen a Convention-shape
+			// marker — otherwise every Task with priority=high gets
+			// a phantom enforcement (BUG-987 bug 13).
+			if hasConventionShape {
+				if priority, ok := fieldsMap["priority"].(string); ok {
+					metadata.Enforcement = priority
+				}
 			}
 		}
 	}
@@ -247,19 +268,29 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 		if surfaces := extractStringList(fieldsMap["surfaces"]); len(surfaces) > 0 {
 			metadata.Surfaces = surfaces
 			hasMetadata = true
+			hasConventionShape = true
 		} else if scope, ok := fieldsMap["scope"].(string); ok && scope != "" {
 			metadata.Surfaces = []string{scope}
 			hasMetadata = true
+			hasConventionShape = true
 		}
 	}
 	if len(metadata.Commands) == 0 {
 		if commands := extractStringList(fieldsMap["commands"]); len(commands) > 0 {
 			metadata.Commands = commands
 			hasMetadata = true
+			hasConventionShape = true
 		}
 	}
 
 	if !hasMetadata {
+		return nil
+	}
+	// Final guard: if we ONLY matched on `category` (no Convention-
+	// specific markers), the item isn't a Convention. Suppress the
+	// metadata entirely — surfacing { category } on a non-Convention
+	// item just for category alone produced confusing responses.
+	if !hasConventionShape {
 		return nil
 	}
 	return normalizeItemConventionMetadata(&metadata)

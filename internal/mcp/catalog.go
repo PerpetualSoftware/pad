@@ -155,7 +155,13 @@ func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[s
 	}
 	cliArgs, err := BuildCLIArgs(cmdInfo, input, env.Workspace.Get(), env.RootFlags)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s", err.Error()), nil
+		// BUG-987 bug 12: BuildCLIArgs returns plain Go errors for
+		// missing required args / bad types. Previously those came
+		// out as bare-text MCP results, breaking the structured
+		// envelope contract that every other error path follows.
+		// Wrap as validation_failed so agents see a consistent
+		// shape across the surface and can branch on error.code.
+		return validationFailedFromBuildErr(pathStr, err), nil
 	}
 	ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.Get(), env.RootFlags))
 	return env.Dispatcher.Dispatch(ctx, cmdPath, cliArgs)
