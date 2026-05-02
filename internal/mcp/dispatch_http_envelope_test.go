@@ -355,6 +355,55 @@ func TestBuildAllowSet_SpecificListBuildsSet(t *testing.T) {
 // path the production /mcp transport runs.
 // ─────────────────────────────────────────────────────────────────────
 
+// TestExecuteRequest_UsesRequestContext_NotOuterContext pins Codex
+// review #379 round 1. The dispatcher's `executeRequest` MUST pass
+// `req.Context()` (not the outer `ctx`) into `packageHTTPResponse`
+// so the lister sees everything `buildHTTPRequest` + `d.Apply`
+// attached: WithCurrentUser, WithAPITokenAuth, and any
+// TokenAllowedWorkspaces the Apply hook layered on.
+//
+// Strategy: drive executeRequest with context.Background() (no
+// values on the outer ctx) + a UserResolver that returns a user
+// + a Handler that 404s with a workspace body. The lister must
+// still see the user via req.Context() and produce
+// available_workspaces. If the buggy version (using outer ctx)
+// runs, the lister sees no user and returns empty hints —
+// asserted against here as the fail mode.
+func TestExecuteRequest_UsesRequestContext_NotOuterContext(t *testing.T) {
+	store := &fakeStore{
+		workspaces: []WorkspaceHint{{Slug: "alpha"}, {Slug: "beta"}},
+	}
+	user := fakeUser("user-1")
+
+	d := &HTTPHandlerDispatcher{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":{"message":"workspace 'foo' not visible"}}`))
+		}),
+		// UserResolver runs from the dispatcher's outer context;
+		// the user is set on req.Context() inside buildHTTPRequest.
+		// The outer ctx (passed to executeRequest) has NO user.
+		UserResolver: func(_ context.Context) *models.User { return user },
+		Lister:       &oauthWorkspaceLister{store: store},
+	}
+
+	res, err := d.executeRequest(context.Background(), "item show", user, "GET", "/api/v1/workspaces/foo/items", nil)
+	if err != nil {
+		t.Fatalf("executeRequest: %v", err)
+	}
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok {
+		t.Fatalf("structured content: got %T, want ErrorEnvelope", res.StructuredContent)
+	}
+	if env.Error.Code != ErrUnknownWorkspace {
+		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrUnknownWorkspace)
+	}
+	if len(env.Error.AvailableWorkspaces) != 2 {
+		t.Errorf("expected 2 hints (user has alpha+beta, no token allow-list); got %d (entries=%v)",
+			len(env.Error.AvailableWorkspaces), env.Error.AvailableWorkspaces)
+	}
+}
+
 func TestPackageHTTPResponse_404Workspace_FiltersAvailableWorkspaces(t *testing.T) {
 	store := &fakeStore{
 		workspaces: []WorkspaceHint{

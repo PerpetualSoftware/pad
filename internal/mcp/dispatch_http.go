@@ -375,7 +375,18 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
-	return packageHTTPResponse(ctx, cmdKey, rec.Result(), d.Lister)
+	// Use req.Context() (NOT the outer ctx) so the workspace lister
+	// sees everything buildHTTPRequest + d.Apply attached:
+	// WithCurrentUser, WithAPITokenAuth, and any TokenAllowedWorkspaces
+	// the dispatcher's Apply hook layered on. Tests that drive
+	// executeRequest with context.Background() + a UserResolver get
+	// the user via req.Context(), not via the outer ctx — without
+	// this fix the lister would silently return empty hints in
+	// those test paths and (more critically) in any production
+	// dispatcher that attaches token state via Apply rather than
+	// inheriting from the inbound request's ctx. Codex review #379
+	// round 1.
+	return packageHTTPResponse(req.Context(), cmdKey, rec.Result(), d.Lister)
 }
 
 // buildAuthedRequest constructs an in-process HTTP request against
