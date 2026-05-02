@@ -108,5 +108,5 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// (protected-resource) gets the real metadata; RFC 8414 (auth-server)
 	// is the 501 stub TASK-951 fills in.
 	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
-	r.With(s.requireCloudMode).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServerStub)
+	r.With(s.requireCloudMode).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
 }

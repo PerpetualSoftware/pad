@@ -246,14 +246,40 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		}
 
 		path := r.URL.Path
+		ip := clientIP(r)
 
-		// Only rate-limit API endpoints
-		if !strings.HasPrefix(path, "/api/") {
+		// OAuth 2.1 registration endpoint (PLAN-943 TASK-1025).
+		// /oauth/register is open by RFC 7591 design — Claude
+		// Desktop / Cursor self-register without prior auth — but
+		// without a limiter an attacker can flood the oauth_clients
+		// table. Reuse the Register limiter (5/min/IP), same shape
+		// as /api/v1/auth/register's protection. Codex review #372
+		// round 2.
+		//
+		// Other /oauth/* endpoints (authorize, token, decide) ride
+		// session cookies (authorize) or are PKCE-bound to a stored
+		// code (token), so flooding them just spends CPU. They go
+		// through fosite's own internal protections + the future
+		// TASK-959 /mcp limiter; explicit /oauth/* limits beyond
+		// /register can land alongside that work.
+		if path == "/oauth/register" {
+			l := s.rateLimiters.Register.getLimiter(ip)
+			if !l.Allow() {
+				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "oauth_register")
+				writeRateLimitResponse(w, s.rateLimiters.Register.config)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		ip := clientIP(r)
+		// Only rate-limit API endpoints below this point — the rest
+		// of the OAuth surface + the SPA static files don't ride
+		// the /api/* path.
+		if !strings.HasPrefix(path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		// Auth-specific rate limits
 		if strings.HasPrefix(path, "/api/v1/auth/") {
