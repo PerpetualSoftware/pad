@@ -184,16 +184,44 @@ func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
 // previous behaviour where DeleteOAuthClient errored on FK violation
 // for any client that had ever issued a grant.
 //
+// Postgres concurrency note (Codex review #370 round 4): without the
+// row-level lock below, a concurrent grant/token insert on the same
+// client_id could land between our child-row deletes and the parent
+// delete, producing a fresh FK reference that fails the parent
+// delete. We take SELECT … FOR UPDATE on the client row as the very
+// first statement in the tx, which blocks any concurrent insert
+// trying to read the client (which fosite does as part of FK
+// resolution on grant insert) until our tx commits. SQLite serializes
+// writes via BEGIN IMMEDIATE (set globally in store.go's DSN), so
+// the race doesn't exist there — we skip the FOR UPDATE on SQLite
+// because the syntax isn't universally supported by the driver.
+//
 // Idempotent: calling on a non-existent client is a no-op (every
-// dependent table's WHERE matches nothing). Atomic: if any of the
-// five DELETEs fails, the whole transaction rolls back so we never
-// leave a half-deleted client.
+// dependent table's WHERE matches nothing; the FOR UPDATE locks no
+// row but doesn't error). Atomic: if any DELETE fails, the whole
+// transaction rolls back so we never leave a half-deleted client.
 func (s *Store) DeleteOAuthClient(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin delete oauth client tx: %w", err)
 	}
 	defer tx.Rollback() // no-op after Commit
+
+	// Postgres: lock the parent row first to serialize against
+	// concurrent grant/token inserts. Skipped on SQLite because
+	// (a) BEGIN IMMEDIATE already serializes writes, and (b) the
+	// FOR UPDATE syntax isn't recognized by every SQLite driver.
+	if s.dialect.Driver() == DriverPostgres {
+		var locked sql.NullString
+		err := tx.QueryRow(s.q(`SELECT id FROM oauth_clients WHERE id = ? FOR UPDATE`), id).Scan(&locked)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("lock oauth client row: %w", err)
+		}
+		// sql.ErrNoRows is fine: the client doesn't exist, so the
+		// subsequent DELETEs match nothing and the call stays
+		// idempotent. We still proceed through the deletes for
+		// uniform code paths.
+	}
 
 	// Order: child rows first, parent (oauth_clients) last. Required
 	// for the FK constraint to be satisfied at commit time when ON
