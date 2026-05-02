@@ -530,11 +530,15 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 }
 
 // TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints
-// pins Codex review #372 round 1 fix #2: the discovery doc must
-// NOT advertise revocation_endpoint or introspection_endpoint
-// until sub-PR D (TASK-1026) actually mounts those handlers.
-// Advertised-but-404 endpoints are worse than absent ones — RFC
-// 8414 §2 says they're optional, so omitting is spec-compliant.
+// pins Codex review #372 round 1 fix #2 + round 2 fix #2: the
+// discovery doc must NOT advertise revocation_endpoint /
+// introspection_endpoint (sub-PR D wires those) or
+// authorization_response_iss_parameter_supported (RFC 9207 — fosite
+// v0.49 doesn't add iss to the redirect, so claiming support would
+// mislead RFC 9207-aware clients).
+//
+// Advertised-but-broken metadata is worse than absent metadata —
+// RFC 8414 §2 marks all four fields OPTIONAL.
 func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 
@@ -550,10 +554,43 @@ func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testin
 		"introspection_endpoint",
 		"revocation_endpoint_auth_methods_supported",
 		"introspection_endpoint_auth_methods_supported",
+		"authorization_response_iss_parameter_supported",
 	} {
 		if _, ok := doc[k]; ok {
-			t.Errorf("doc must NOT advertise %q until sub-PR D ships the handler; got %v", k, doc[k])
+			t.Errorf("doc must NOT advertise %q (handler/feature not implemented); got %v", k, doc[k])
 		}
+	}
+}
+
+// TestOAuth_Register_RateLimited pins Codex review #372 round 2:
+// /oauth/register is open by RFC 7591 design but must be rate-
+// limited so an attacker can't flood the oauth_clients table.
+// Reuses the Register limiter (5/hour/IP, burst 5), so the 6th
+// request from the same IP within an hour returns 429.
+//
+// All requests share the test harness's "192.0.2.1" RemoteAddr,
+// so the limiter buckets per-IP work as expected. testServer's
+// fresh Server has fresh limiters, so other tests don't leak
+// budget across.
+func TestOAuth_Register_RateLimited(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+
+	body := map[string]any{
+		"client_name":   "Spammer",
+		"redirect_uris": []string{"https://app.test/cb"},
+	}
+
+	// First 5 within the burst window must succeed.
+	for i := 0; i < 5; i++ {
+		rr := doRequest(srv, "POST", "/oauth/register", body)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("request %d: expected 201, got %d (body: %s)", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	// 6th must trip the limiter.
+	rr := doRequest(srv, "POST", "/oauth/register", body)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th request: expected 429 (rate-limited), got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
 

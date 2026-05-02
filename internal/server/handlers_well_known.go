@@ -147,9 +147,19 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		TokenEndpointAuthMethodsSupported:          []string{"none"},
-		ScopesSupported:                            []string{"pad:read", "pad:write", "pad:admin"},
-		ResourceIndicatorsSupported:                true,
-		AuthorizationResponseIssParameterSupported: true,
+		ScopesSupported:             []string{"pad:read", "pad:write", "pad:admin"},
+		ResourceIndicatorsSupported: true,
+		// authorization_response_iss_parameter_supported (RFC 9207)
+		// is intentionally OMITTED. Advertising it would imply that
+		// /authorize redirects carry iss=<issuer> in the response
+		// query string — but fosite v0.49 doesn't add it natively
+		// and we don't post-process WriteAuthorizeResponse to inject
+		// it. RFC 9207-aware clients (currently rare; not yet
+		// required by Claude Desktop) would treat the missing
+		// parameter as a protocol violation and reject the response.
+		// Codex review #372 round 2 caught the discrepancy; we'll
+		// add the parameter in a future PR alongside any RFC 9207
+		// requirement we encounter from a client.
 	}
 	w.Header().Set("Content-Type", "application/json")
 	// Same 1-hour cache as the protected-resource doc.
@@ -168,17 +178,16 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 // omitted entirely (RFC 8414 §2 marks them OPTIONAL) so clients
 // don't dial endpoints that 404.
 type authServerMetadata struct {
-	Issuer                                     string   `json:"issuer"`
-	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
-	TokenEndpoint                              string   `json:"token_endpoint"`
-	RegistrationEndpoint                       string   `json:"registration_endpoint"`
-	ResponseTypesSupported                     []string `json:"response_types_supported"`
-	GrantTypesSupported                        []string `json:"grant_types_supported"`
-	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
-	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
-	ScopesSupported                            []string `json:"scopes_supported"`
-	ResourceIndicatorsSupported                bool     `json:"resource_indicators_supported"`
-	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported"`
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	TokenEndpoint                     string   `json:"token_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	GrantTypesSupported               []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
+	ScopesSupported                   []string `json:"scopes_supported"`
+	ResourceIndicatorsSupported       bool     `json:"resource_indicators_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names

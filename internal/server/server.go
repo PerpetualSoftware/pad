@@ -588,10 +588,18 @@ func (s *Server) setupRouter() {
 	// /login). RequireAuth is intentionally NOT used — /oauth/authorize
 	// must be reachable anonymously to trigger the login redirect.
 	//
+	// RateLimit gates /oauth/register specifically (per Codex review
+	// #372 round 2 — the DCR endpoint is open by RFC 7591 design,
+	// but unlimited writes to oauth_clients are an obvious DoS
+	// surface). The middleware short-circuits other /oauth/* paths
+	// because they're either session-bound or PKCE-bound; explicit
+	// per-endpoint limits arrive with TASK-959.
+	//
 	// No-op when SetOAuthServer hasn't been called or cloud mode is off.
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireCloudMode)
 		r.Use(s.SessionAuth)
+		r.Use(s.RateLimit)
 		s.registerOAuthRoutes(r)
 	})
 
