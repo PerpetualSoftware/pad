@@ -80,6 +80,27 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Rate limit per-token BEFORE auth validation. Reasons:
+		//
+		//   - The limiter key is SHA-256(bearer), so the bucket
+		//     identifies a specific token regardless of whether
+		//     it's valid right now (revoked tokens still hash to
+		//     the same key).
+		//   - A token making 60 invalid-after-revoke calls in a
+		//     minute is just as expensive as 60 valid calls — the
+		//     auth path does a DB lookup either way. Limiting before
+		//     auth validation defends the validation step itself.
+		//   - An attacker rotating bearer values (random garbage)
+		//     hits a different key per request, so this gate
+		//     doesn't catch unauthenticated spam — but the limiter
+		//     map's retention bounds the memory footprint, and the
+		//     authentication path then 401s the spam cheaply.
+		//
+		// PLAN-943 TASK-959.
+		if !s.checkMCPRateLimit(w, r, token) {
+			return
+		}
+
 		// PAT path: prefix `pad_` + 68 chars total (4 prefix + 64 hex
 		// secret). Cheap shape gate before the DB lookup. Anything
 		// else falls into the OAuth introspection branch.

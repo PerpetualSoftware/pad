@@ -935,6 +935,221 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 }
 
 // =====================================================================
+// Per-token rate limit on /mcp (TASK-959)
+// =====================================================================
+
+// TestMCPRateLimit_PerToken_BucketEnforced verifies the basic rate
+// limit: a single token gets ~burst requests through immediately,
+// then 429s once the bucket is empty.
+//
+// Drives through MCPBearerAuth directly with a stub transport so
+// the test doesn't need to validate a real OAuth/PAT — the rate
+// limiter runs BEFORE auth validation and uses SHA-256(bearer) as
+// the bucket key, so an invalid bearer is enough to exercise the
+// limiter (and the path still 401s afterwards on the auth side,
+// which is fine for the rate-limit assertion).
+func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	bearer := "Bearer pad_" + strings.Repeat("a", 64) // shape-valid PAT, will fail validation
+	got429 := false
+	for i := 0; i < 30; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			got429 = true
+			// Verify Retry-After is set on the rate-limited response.
+			if ra := rr.Header().Get("Retry-After"); ra == "" || ra == "0" {
+				t.Errorf("429 must include Retry-After; got %q", ra)
+			}
+			break
+		}
+	}
+	if !got429 {
+		t.Errorf("expected 429 within 30 requests on a single token bucket (60/min, burst 20); never saw it")
+	}
+}
+
+// TestMCPRateLimit_PerToken_TwoTokensIndependent pins the per-token
+// isolation property: two different bearers MUST have independent
+// buckets, even if the user is the same. Otherwise a runaway agent
+// on one token would burn through the user's quota for every other
+// token.
+//
+// Strategy: drain token1 to 429, then verify token2 still gets
+// through. Both tokens share the same shape-validation failure
+// (the rate limiter doesn't care about validity), so both progress
+// through MCPBearerAuth identically except for the bucket key.
+func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	hammer := func(bearer string) (rrs []*httptest.ResponseRecorder) {
+		for i := 0; i < 30; i++ {
+			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+			req.Header.Set("Authorization", bearer)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			rrs = append(rrs, rr)
+			if rr.Code == http.StatusTooManyRequests {
+				break
+			}
+		}
+		return
+	}
+
+	// Drain token1 until 429.
+	rr1s := hammer("Bearer pad_" + strings.Repeat("1", 64))
+	if last := rr1s[len(rr1s)-1]; last.Code != http.StatusTooManyRequests {
+		t.Fatalf("token1: expected to hit 429; final status %d", last.Code)
+	}
+
+	// Token2 must still be fresh — zero 429s in its first burst-
+	// worth of requests.
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer pad_"+strings.Repeat("2", 64))
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("token2 hit 429 at request %d — buckets must be independent per-token", i+1)
+			break
+		}
+	}
+}
+
+// TestMCPRateLimit_DiscoveryDocsExempt verifies the per-token
+// limiter is NOT applied to /.well-known/oauth-* paths. Discovery
+// docs are polled by MCP clients before any token exists; they
+// shouldn't share a bucket and they shouldn't even attempt to look
+// for a Bearer header. The rate limiter sits inside MCPBearerAuth,
+// which only runs on /mcp — so by construction the discovery
+// routes never hit it. This test pins that wiring.
+func TestMCPRateLimit_DiscoveryDocsExempt(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	// Hammer the protected-resource discovery doc 50 times; expect
+	// zero 429s.
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("discovery doc must NOT be rate-limited; got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusOK {
+			t.Fatalf("discovery doc: expected 200, got %d", rr.Code)
+		}
+	}
+}
+
+// TestMCPRateLimit_NoBearer_NotCounted verifies that a request
+// without a Bearer header fails with 401 BEFORE the rate-limit
+// check (because the limiter key would be empty otherwise, and
+// every no-bearer request would share a bucket — defeating the
+// per-token model).
+//
+// Concretely: 50 no-bearer requests should all 401, never 429.
+func TestMCPRateLimit_NoBearer_NotCounted(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("no-bearer request must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+	}
+}
+
+// TestMCPRateLimit_429EnvelopeShape pins the wire shape of the 429
+// response: MCP-style `{error: {code, message}}` JSON envelope plus
+// the standard rate-limit headers (Retry-After, X-RateLimit-Limit,
+// X-RateLimit-Remaining).
+//
+// MCP clients (Claude Desktop, Cursor) parse this body to surface
+// the message; without the envelope they'd render a raw 429 with
+// no actionable text.
+func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	bearer := "Bearer pad_" + strings.Repeat("e", 64)
+	var limited *httptest.ResponseRecorder
+	for i := 0; i < 30; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			limited = rr
+			break
+		}
+	}
+	if limited == nil {
+		t.Fatal("never hit 429")
+	}
+
+	if ra := limited.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing")
+	}
+	if l := limited.Header().Get("X-RateLimit-Limit"); l == "" {
+		t.Error("X-RateLimit-Limit header missing")
+	}
+	if r := limited.Header().Get("X-RateLimit-Remaining"); r != "0" {
+		t.Errorf("X-RateLimit-Remaining: got %q, want 0", r)
+	}
+	if ct := limited.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+
+	var body map[string]any
+	parseJSON(t, limited, &body)
+	errObj, _ := body["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("body missing error object: %v", body)
+	}
+	if code, _ := errObj["code"].(string); code != "rate_limited" {
+		t.Errorf("error.code: got %q, want %q", code, "rate_limited")
+	}
+}
+
+// TestHashTokenForLimiter pins the helper's deterministic, length-
+// stable, non-collision-by-prefix output: same input → same hash;
+// different inputs → different hashes; empty input → empty-input
+// hash (caller is expected to skip empty bearers, but the helper
+// itself must not panic).
+func TestHashTokenForLimiter(t *testing.T) {
+	a := hashTokenForLimiter("token-a")
+	b := hashTokenForLimiter("token-b")
+	a2 := hashTokenForLimiter("token-a")
+
+	if len(a) != 64 {
+		t.Errorf("hash length: got %d, want 64 (sha256 hex)", len(a))
+	}
+	if a != a2 {
+		t.Error("hash not deterministic across calls")
+	}
+	if a == b {
+		t.Error("different inputs should produce different hashes")
+	}
+	// Empty bearer: helper still produces a hash (caller skips empty
+	// before calling, but defense-in-depth — no panic).
+	if got := hashTokenForLimiter(""); len(got) != 64 {
+		t.Errorf("empty bearer hash length: got %d, want 64", len(got))
+	}
+}
+
+// =====================================================================
 // Workspace allow-list gate (TASK-953)
 // =====================================================================
 
