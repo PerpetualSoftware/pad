@@ -1207,11 +1207,20 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 		defaultTier = "read"
 	}
 
-	// Mirror every original query param into the form so the POST
-	// reproduces the same AuthorizeRequest fosite parsed here. Strip
-	// csrf_token if it leaked into the URL; we render fresh.
-	hidden := r.URL.Query()
-	hidden.Del("csrf_token")
+	// Round-trip ONLY the OAuth-request params fosite needs to
+	// rebuild the AuthorizeRequest at /authorize/decide time. An
+	// allowlist (rather than a "round-trip everything" pattern with
+	// blocklisted names) is critical here because the consent UI
+	// also has form fields named capability_tier / allowed_workspaces
+	// — without the allowlist a malicious client could craft
+	//   /oauth/authorize?...&capability_tier=admin&allowed_workspaces=*
+	// and the hidden inputs (rendered in DOM order BEFORE the
+	// user-controlled radios + checkboxes) would override the user's
+	// selection on submit. r.FormValue returns the first matching
+	// value, and r.PostForm["allowed_workspaces"] sees the wildcard
+	// scan match before the user's slug list. Codex review #376
+	// round 1 caught the gap.
+	hidden := allowlistedAuthorizeParams(r.URL.Query())
 
 	data := consentData{
 		ClientName:    clientName,
@@ -1234,6 +1243,47 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	if err := consentTmpl.Execute(w, data); err != nil {
 		writeInternalError(w, fmt.Errorf("oauth: render consent: %w", err))
 	}
+}
+
+// allowlistedAuthorizeParams returns a copy of in containing ONLY
+// the keys an OAuth /authorize request is allowed to round-trip
+// through the consent form. Defends against URL parameter pollution
+// where a malicious client crafts /oauth/authorize with extra params
+// (e.g. capability_tier, allowed_workspaces, decision) that would
+// otherwise be rendered as hidden inputs and override the user's
+// consent selections on submit.
+//
+// The allowlist covers the standard OAuth 2.1 + PKCE + RFC 8707
+// authorize-request parameters fosite reads from r.Form when it
+// rebuilds the AuthorizeRequest at /authorize/decide time. Any
+// param not in this list is silently dropped — the consent flow
+// doesn't use it, and the AuthorizeRequest reconstruction won't
+// miss it.
+//
+// Note `csrf_token` is also dropped: that value belongs in the
+// __Host-pad_csrf cookie, not the URL, and we always render a
+// fresh one from the cookie.
+func allowlistedAuthorizeParams(in url.Values) url.Values {
+	allowed := map[string]struct{}{
+		"client_id":             {},
+		"response_type":         {},
+		"redirect_uri":          {},
+		"scope":                 {},
+		"state":                 {},
+		"audience":              {},
+		"resource":              {},
+		"code_challenge":        {},
+		"code_challenge_method": {},
+		"nonce":                 {}, // OIDC-compatible clients may send; harmless to round-trip
+	}
+	out := make(url.Values, len(in))
+	for k, vs := range in {
+		if _, ok := allowed[k]; !ok {
+			continue
+		}
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
 }
 
 // readOrSetConsentCSRF reads the current __Host-pad_csrf cookie or

@@ -1199,6 +1199,132 @@ func TestConsent_TokenScopeMatchesTierChoice_Read(t *testing.T) {
 	}
 }
 
+// TestConsent_URLPollution_DoesNotOverrideUserSelection pins Codex
+// review #376 round 1: a malicious OAuth client could craft
+//
+//	/oauth/authorize?client_id=…&capability_tier=admin&allowed_workspaces=*
+//
+// with extra params alongside the standard OAuth ones. Without the
+// allowlistedAuthorizeParams filter, those extras would be rendered
+// as hidden inputs in the consent form. On submit, hidden inputs
+// (rendered in DOM order BEFORE the user-controlled radios +
+// checkboxes) would precede the user's selections, and FormValue +
+// PostForm[name] would see the attacker-controlled values first —
+// silently overriding the user's choice.
+//
+// This test simulates the attack: the GET includes attacker
+// params, the consent form's hidden fields are inspected to confirm
+// they're NOT round-tripped, and the POST decision flow with the
+// user's actual selection produces a token matching the user's
+// choice (not the attacker's URL params).
+func TestConsent_URLPollution_DoesNotOverrideUserSelection(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	verifier := "verifier-pollution-quick-brown-fox-jumps-over-lazy"
+	challenge := s256Challenge(verifier)
+
+	// Step 1: GET /oauth/authorize with attacker-injected consent
+	// params alongside the legitimate OAuth params.
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"pollution-state"},
+		// Attacker-injected (not standard OAuth params):
+		"capability_tier":    {"admin"},
+		"allowed_workspaces": {"*"},
+		"decision":           {"approve"},
+		"evil_extra":         {"oh-no"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authorize render: %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// Hidden-input assertions: the attacker's params must NOT be
+	// rendered as `<input type="hidden">` round-trips. Note `decision`
+	// legitimately appears in the rendered HTML on the Cancel + Allow
+	// `<button name="decision">` elements — those don't preserve
+	// URL-injected values, only the value attribute on the button
+	// itself. Assert specifically against hidden-input rendering.
+	for _, attackerName := range []string{
+		"evil_extra", "decision", "capability_tier", "allowed_workspaces",
+	} {
+		if strings.Contains(body, `<input type="hidden" name="`+attackerName+`"`) {
+			t.Errorf("attacker-injected %q must NOT be round-tripped as a hidden input (URL pollution)", attackerName)
+		}
+	}
+	// Sanity: legitimate OAuth params ARE round-tripped.
+	if !strings.Contains(body, `name="client_id"`) {
+		t.Error("client_id hidden input missing — legitimate OAuth param round-trip broken")
+	}
+	if !strings.Contains(body, `name="state"`) {
+		t.Error("state hidden input missing — legitimate OAuth param round-trip broken")
+	}
+
+	// Step 2: simulate the user's consent submission. Build a clean
+	// POST body that ONLY carries the user's actual selection
+	// (capability_tier=read, allowed_workspaces=*) plus the OAuth
+	// params from hidden fields. Without the allowlist, the
+	// attacker's URL params would also have been hidden inputs,
+	// and a real browser would have submitted both the attacker's
+	// and the user's values together — but with the allowlist, only
+	// the user's values reach the server. We test that here by
+	// constructing the form as a legitimate browser would.
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"pollution-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		// User's actual selection — should win.
+		"capability_tier":    {"read"},
+		"allowed_workspaces": {"*"},
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("missing code in callback")
+	}
+
+	// Step 3: exchange code for token, verify granted scope is
+	// pad:read (user's choice) NOT pad:admin (attacker's URL param).
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	if scope, _ := resp["scope"].(string); scope != "pad:read" {
+		t.Errorf("URL pollution attack succeeded: got scope %q, want %q (user picked read; attacker injected admin)",
+			scope, "pad:read")
+	}
+}
+
 // mustSeedWorkspaceWithRole is a test helper that creates a workspace
 // + adds the user as a member with the given role. Centralized here
 // because TASK-952 tests need it repeatedly to set up consent
