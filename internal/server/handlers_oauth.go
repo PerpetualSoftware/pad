@@ -17,12 +17,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
-// OAuth 2.1 authorization-server HTTP handlers (PLAN-943 TASK-951
-// sub-PR C). The four endpoints below + the populated
-// /.well-known/oauth-authorization-server discovery doc complete
-// the flow-driving half of the OAuth surface — sub-PR D adds
-// /revoke and /introspect, sub-PR E wires MCPBearerAuth to OAuth
-// introspection.
+// OAuth 2.1 authorization-server HTTP handlers (PLAN-943 TASK-951).
+// Sub-PR C built the /register, /authorize, /authorize/decide and
+// /token endpoints + the populated discovery doc. Sub-PR D
+// (TASK-1026) adds /revoke and /introspect on top, completing the
+// RFC 7009 + RFC 7662 surface; sub-PR E wires MCPBearerAuth to
+// OAuth introspection internally.
 //
 // Mounting:
 //
@@ -46,8 +46,17 @@ import (
 //     to the client.
 //   - POST /oauth/token — code exchange (PKCE + RFC 8707 verified
 //     by fosite). Also handles refresh_token grant.
+//   - POST /oauth/revoke — RFC 7009 token revocation. Authenticates
+//     the public client by client_id, then walks the refresh-token
+//     family (or single access token) to mark every chain member
+//     inactive. Sub-PR D.
+//   - POST /oauth/introspect — RFC 7662 token introspection.
+//     Authenticates via Bearer header (an access token issued to
+//     the same authorization server) — public clients only, so
+//     Basic-auth is rejected by fosite as a side effect of our
+//     token_endpoint_auth_methods=none policy. Sub-PR D.
 //
-// All four go via Server.oauthServer (set by SetOAuthServer at
+// All six go via Server.oauthServer (set by SetOAuthServer at
 // startup). When that's nil the routes don't mount — see
 // registerOAuthRoutes.
 
@@ -86,6 +95,8 @@ func (s *Server) registerOAuthRoutes(r interface {
 	r.Get("/oauth/authorize", s.handleOAuthAuthorize)
 	r.Post("/oauth/authorize/decide", s.handleOAuthAuthorizeDecide)
 	r.Post("/oauth/token", s.handleOAuthToken)
+	r.Post("/oauth/revoke", s.handleOAuthRevoke)
+	r.Post("/oauth/introspect", s.handleOAuthIntrospect)
 }
 
 // =====================================================================
@@ -602,6 +613,144 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.oauthServer.Provider().WriteAccessResponse(ctx, w, ar, resp)
+}
+
+// =====================================================================
+// /oauth/revoke — RFC 7009 token revocation
+// =====================================================================
+
+// handleOAuthRevoke implements RFC 7009 token revocation. Public
+// clients authenticate by sending only `client_id` in the form body
+// (fosite's AuthenticateClient accepts that for clients with
+// token_endpoint_auth_method=none, which is every client we
+// register).
+//
+// Why this is interesting:
+//
+// fosite's revocation handler (handler/oauth2/revocation.go) calls
+// our adapter's TokenRevocationStorage methods (RevokeRefreshToken /
+// RevokeAccessToken) keyed by request_id — the chain identifier sub-
+// PR A wires through every persisted row in a grant. Both methods
+// delegate to store.RevokeRefreshTokenFamily / RevokeAccessTokenFamily,
+// which walk the request_id index and mark every row inactive in a
+// single statement. So revoking a single refresh token kills the
+// whole grant — every paired access token, every rotated refresh
+// — in one shot. Matches OAuth 2.1 BCP §4.14's "revoke the family"
+// rule.
+//
+// Wire shape:
+//
+//   - 200 OK on success or unknown token (RFC 7009 §2.2: "invalid
+//     tokens do not cause an error response since the client cannot
+//     handle such an error in a reasonable way"; revocation is
+//     idempotent from the client's POV).
+//   - 400 invalid_request on malformed input (missing token, wrong
+//     HTTP method, unparseable body).
+//   - 401 invalid_client on client-auth failure.
+//
+// Response body is empty for the 200 success path; the OAuth error
+// envelope for the others.
+//
+// fosite v0.49 already handles RFC 7009 §2.2 idempotency natively:
+// handler/oauth2/revocation.go's RevokeToken returns nil for
+// unknown / already-revoked tokens via storeErrorsToRevocationError
+// (which collapses ErrNotFound + ErrInactiveToken to nil). So
+// NewRevocationRequest returns nil and WriteRevocationResponse
+// writes 200. The only spec gap we patch is missing-token: RFC
+// 7009 §2.1 marks `token` REQUIRED, but fosite doesn't enforce that
+// — it passes the empty string into the revocation handlers and
+// returns nil (because both signatures look up empty and miss).
+// Without the pre-check below, "client_id but no token" would
+// silently 200 instead of 400. Codex review #373 round 3.
+func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
+	if !s.IsCloud() || s.oauthServer == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+
+	// Pre-check: RFC 7009 §2.1 marks `token` REQUIRED. Parse the
+	// form ourselves (fosite would do it inside NewRevocationRequest
+	// anyway) so we can fail-fast with a clean 400 + spec-shaped
+	// error envelope instead of fosite's silent 200-on-empty-token
+	// behavior. ParseForm on a x-www-form-urlencoded body populates
+	// r.PostForm; multipart bodies are extremely rare for OAuth
+	// endpoints, and ParseForm refuses to handle them — for those
+	// we let fosite handle the rejection downstream.
+	if err := r.ParseForm(); err == nil && r.PostForm.Get("token") == "" {
+		s.oauthServer.Provider().WriteRevocationResponse(ctx, w,
+			fosite.ErrInvalidRequest.WithHint("The `token` parameter is required (RFC 7009 §2.1)."))
+		return
+	}
+
+	err := s.oauthServer.Provider().NewRevocationRequest(ctx, r)
+	s.oauthServer.Provider().WriteRevocationResponse(ctx, w, err)
+}
+
+// =====================================================================
+// /oauth/introspect — RFC 7662 token introspection
+// =====================================================================
+
+// handleOAuthIntrospect implements RFC 7662 token introspection.
+// Returns one of two JSON shapes:
+//
+//   - {"active": true, "client_id": ..., "scope": ..., "sub": ...,
+//     "aud": [...], "exp": ..., "iat": ...}  — for active tokens.
+//   - {"active": false}  — for any other case (unknown, expired,
+//     revoked, or the caller isn't allowed to know about this
+//     token). RFC 7662 §2.2 explicitly mandates the empty-body
+//     shape on the inactive path so an attacker can't enumerate
+//     token state from the response shape.
+//
+// Authentication (RFC 7662 §2.1: "the endpoint MUST also require
+// some form of authorization to access this endpoint"):
+//
+// fosite's NewIntrospectionRequest accepts either Basic auth
+// (client_id + client_secret) or Bearer auth (a separate access
+// token). Pad's clients are public-only — no secrets — so the
+// Basic-auth branch will always fail; callers MUST send Bearer
+// auth using a different access token they hold. fosite checks the
+// bearer is itself active and not the same token being introspected
+// (avoid trivial "introspect yourself with yourself" auth).
+//
+// In practice the consumer of this endpoint is sub-PR E's
+// MCPBearerAuth — but that integration uses fosite.IntrospectToken
+// directly (server-side, no HTTP roundtrip), so this public
+// endpoint primarily satisfies the RFC 7662 + RFC 8414 contract
+// for clients that follow the discovery chain. Internal call sites
+// stay efficient.
+//
+// Why a fresh empty oauth.Session: fosite's IntrospectToken hydrates
+// the session from the stored token via Storage.GetAccessTokenSession
+// / GetRefreshTokenSession — we just need a typed session pointer
+// to receive the JSON unmarshal. Using oauth.NewSession("") matches
+// the pattern in /oauth/token.
+func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
+	if !s.IsCloud() || s.oauthServer == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+
+	// Empty session pointer — fosite hydrates from storage. The
+	// session type must match what's stored (oauth.Session, written
+	// via oauth.NewSession in /authorize/decide), or the JSON
+	// unmarshal in oauthRequestToFositeRequest would silently drop
+	// pad-specific fields.
+	session := oauth.NewSession("")
+
+	ir, err := s.oauthServer.Provider().NewIntrospectionRequest(ctx, r, session)
+	if err != nil {
+		// fosite's WriteIntrospectionError handles the RFC 7662 §2.2
+		// distinction: for ErrInactiveToken / general validation
+		// failures it emits 200 + {active: false}; for auth failures
+		// (bad bearer, missing auth header) it emits 401 with the
+		// OAuth error envelope. Don't second-guess that — the spec
+		// is finicky about which failure category gets which response.
+		s.oauthServer.Provider().WriteIntrospectionError(ctx, w, err)
+		return
+	}
+	s.oauthServer.Provider().WriteIntrospectionResponse(ctx, w, ir)
 }
 
 // =====================================================================

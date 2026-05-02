@@ -149,24 +149,40 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 	}
 
 	// Sub-PR D (TASK-1026) wires /oauth/revoke + /oauth/introspect.
-	// Until then, OMIT those fields from the metadata rather than
-	// advertising URLs that 404 — RFC 8414 §2 lists them as OPTIONAL,
-	// and emitting them prematurely would mislead clients into
-	// calling endpoints that don't exist. Codex review #372 round 1
-	// caught the gap. Sub-PR D's PR description includes "populate
-	// revocation_endpoint + introspection_endpoint here" as a
-	// follow-up.
+	//
+	// revocation_endpoint_auth_methods_supported = ["none"] is honest:
+	// fosite's NewRevocationRequest accepts a public client that
+	// posts only `client_id` (no secret, no Bearer header), which
+	// matches the "none" value from the OAuth Token Endpoint
+	// Authentication Methods registry.
+	//
+	// introspection_endpoint_auth_methods_supported is intentionally
+	// OMITTED. fosite's NewIntrospectionRequest insists on either
+	// Bearer auth (a separate active access token, RFC 7662 §2.1's
+	// "bearer token" branch) or HTTP Basic — and our public-clients-
+	// only model has no Basic-auth path. "bearer" isn't a registered
+	// value in the auth-methods registry, so listing "none" would
+	// mislead clients into thinking they can post bare token+client_id
+	// and have it accepted (the test in this PR locks in that a
+	// missing Authorization header is rejected). RFC 8414 §2 marks
+	// the field OPTIONAL; omitting it tells discovery clients
+	// "negotiate auth out-of-band," which for our case is documented
+	// in the public docs at getpad.dev/mcp/local. Codex review #373
+	// round 1 caught the mismatch.
 	doc := authServerMetadata{
-		Issuer:                            issuer,
-		AuthorizationEndpoint:             issuer + "/oauth/authorize",
-		TokenEndpoint:                     issuer + "/oauth/token",
-		RegistrationEndpoint:              issuer + "/oauth/register",
-		ResponseTypesSupported:            []string{"code"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
-		CodeChallengeMethodsSupported:     []string{"S256"},
-		TokenEndpointAuthMethodsSupported: []string{"none"},
-		ScopesSupported:                   []string{"pad:read", "pad:write", "pad:admin"},
-		ResourceIndicatorsSupported:       true,
+		Issuer:                                 issuer,
+		AuthorizationEndpoint:                  issuer + "/oauth/authorize",
+		TokenEndpoint:                          issuer + "/oauth/token",
+		RegistrationEndpoint:                   issuer + "/oauth/register",
+		RevocationEndpoint:                     issuer + "/oauth/revoke",
+		IntrospectionEndpoint:                  issuer + "/oauth/introspect",
+		ResponseTypesSupported:                 []string{"code"},
+		GrantTypesSupported:                    []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:          []string{"S256"},
+		TokenEndpointAuthMethodsSupported:      []string{"none"},
+		RevocationEndpointAuthMethodsSupported: []string{"none"},
+		ScopesSupported:                        []string{"pad:read", "pad:write", "pad:admin"},
+		ResourceIndicatorsSupported:            true,
 		// authorization_response_iss_parameter_supported (RFC 9207)
 		// is intentionally OMITTED. Advertising it would imply that
 		// /authorize redirects carry iss=<issuer> in the response
@@ -191,21 +207,29 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 // (jwks_uri, ui_locales_supported, op_policy_uri, …) but they're
 // optional and not relevant to opaque-token deployments.
 //
-// revocation_endpoint + introspection_endpoint will be added by
-// sub-PR D (TASK-1026) when the handlers ship. Until then they're
-// omitted entirely (RFC 8414 §2 marks them OPTIONAL) so clients
-// don't dial endpoints that 404.
+// revocation_endpoint + introspection_endpoint were added in sub-PR D
+// (TASK-1026) when the handlers shipped; keeping their JSON tags
+// stable lets clients rely on them.
+//
+// introspection_endpoint_auth_methods_supported is deliberately not a
+// field here. The introspection endpoint only accepts Bearer auth in
+// our public-clients-only model, and "bearer" isn't a registered
+// auth-methods value — see the comment in handleOAuthAuthorizationServer
+// for the full reasoning. RFC 8414 §2 marks it OPTIONAL.
 type authServerMetadata struct {
-	Issuer                            string   `json:"issuer"`
-	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
-	TokenEndpoint                     string   `json:"token_endpoint"`
-	RegistrationEndpoint              string   `json:"registration_endpoint"`
-	ResponseTypesSupported            []string `json:"response_types_supported"`
-	GrantTypesSupported               []string `json:"grant_types_supported"`
-	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
-	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
-	ScopesSupported                   []string `json:"scopes_supported"`
-	ResourceIndicatorsSupported       bool     `json:"resource_indicators_supported"`
+	Issuer                                 string   `json:"issuer"`
+	AuthorizationEndpoint                  string   `json:"authorization_endpoint"`
+	TokenEndpoint                          string   `json:"token_endpoint"`
+	RegistrationEndpoint                   string   `json:"registration_endpoint"`
+	RevocationEndpoint                     string   `json:"revocation_endpoint"`
+	IntrospectionEndpoint                  string   `json:"introspection_endpoint"`
+	ResponseTypesSupported                 []string `json:"response_types_supported"`
+	GrantTypesSupported                    []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported          []string `json:"code_challenge_methods_supported"`
+	TokenEndpointAuthMethodsSupported      []string `json:"token_endpoint_auth_methods_supported"`
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported"`
+	ScopesSupported                        []string `json:"scopes_supported"`
+	ResourceIndicatorsSupported            bool     `json:"resource_indicators_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names
