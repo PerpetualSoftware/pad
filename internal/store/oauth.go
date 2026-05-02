@@ -316,23 +316,37 @@ func (s *Store) DeleteRefreshToken(signature string) error {
 	return nil
 }
 
-// RotateRefreshToken marks a single refresh token inactive in place.
-// fosite calls this after issuing the rotated pair (new access + new
-// refresh) so the previous refresh becomes single-use. Distinct from
-// RevokeRefreshTokenFamily, which walks the entire chain — this
-// only touches one row.
+// RotateRefreshToken revokes the entire grant — both the refresh
+// family AND the paired access family for the given requestID —
+// then fosite immediately issues a new refresh + access pair via
+// CreateRefreshTokenSession + CreateAccessTokenSession.
 //
-// signatureToRotate identifies the refresh row to flip; requestID is
-// passed by fosite for log correlation but the pure storage layer
-// doesn't need it (fosite preserves request_id across rotation, so
-// the chain is naturally walkable on revocation regardless of
-// which row we flip).
-func (s *Store) RotateRefreshToken(_ /*requestID*/, signatureToRotate string) error {
-	_, err := s.db.Exec(s.q(`
-		UPDATE oauth_refresh_tokens SET active = ? WHERE signature = ?
-	`), false, signatureToRotate)
-	if err != nil {
-		return fmt.Errorf("rotate refresh token: %w", err)
+// This matches fosite's reference MemoryStore.RotateRefreshToken
+// (storage/memory.go:497-504), which delegates to
+// RevokeRefreshToken + RevokeAccessToken: the simple "revoke the
+// whole grant on rotation" model rather than the more complex
+// graceful-rotation pattern fosite mentions but doesn't implement.
+//
+// Why both families: every token in a refresh-rotation chain shares
+// the same request_id (fosite preserves it via flow_refresh.go:86),
+// so the new access + new refresh fosite issues immediately after
+// this call inherit the same request_id. They get inserted with
+// active=TRUE per insertOAuthRequestRow's hardcode, so the net
+// state is "all old rows in this chain inactive; the new pair
+// active." Without revoking the access family here, the previously-
+// issued access token would remain active until its TTL expired —
+// the bug Codex review #370 round 2 caught.
+//
+// signatureToRotate is fosite's hint about which specific refresh
+// row triggered the rotation; we ignore it because revoking by
+// request_id catches the entire chain whether we flip one row at
+// a time or all at once.
+func (s *Store) RotateRefreshToken(requestID, _ /*signatureToRotate*/ string) error {
+	if err := s.RevokeRefreshTokenFamily(requestID); err != nil {
+		return fmt.Errorf("rotate refresh: revoke refresh family: %w", err)
+	}
+	if err := s.RevokeAccessTokenFamily(requestID); err != nil {
+		return fmt.Errorf("rotate refresh: revoke access family: %w", err)
 	}
 	return nil
 }

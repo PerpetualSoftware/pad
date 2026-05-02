@@ -277,47 +277,65 @@ func TestOAuth_RefreshToken_CRUD(t *testing.T) {
 	}
 }
 
-func TestOAuth_RotateRefreshToken_FlipsActiveOnSingleRow(t *testing.T) {
-	// fosite's RotateRefreshToken marks the named row inactive after
-	// issuing the next-step rotation. It must NOT touch other rows
-	// in the chain — that's RevokeRefreshTokenFamily's job.
+func TestOAuth_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
+	// Per fosite's reference MemoryStore.RotateRefreshToken
+	// (storage/memory.go:497-504), rotation revokes BOTH the refresh
+	// family AND the access family for the grant's request_id, then
+	// fosite immediately issues a fresh pair via CreateAccessTokenSession
+	// + CreateRefreshTokenSession (which inherit the same request_id
+	// per flow_refresh.go:86 and get inserted active=TRUE per our
+	// insertOAuthRequestRow contract).
+	//
+	// Codex review #370 round 2 caught the previous implementation
+	// that flipped only the named refresh row, leaving the previously-
+	// issued access token active until TTL expired. The test below
+	// pins the corrected behavior: after rotation, the OLD refresh +
+	// OLD access in the grant are inactive, and unrelated grants are
+	// untouched.
 	s := testStore(t)
 	c := newTestClient(t, s)
-
 	chain := "request-rotate-1"
+	other := "request-other-1"
 
-	r1 := newTestRequest(c.ID, "refresh-1", chain)
-	r2 := newTestRequest(c.ID, "refresh-2", chain) // simulates the rotated successor
-	if err := s.CreateRefreshToken(r1); err != nil {
-		t.Fatalf("create r1: %v", err)
+	// Seed the grant: one refresh + one access token sharing
+	// request_id = chain. (fosite never has multiple active
+	// refreshes in the same chain at once — the chain is sequential —
+	// so a single pair is the realistic input shape.)
+	rreq := newTestRequest(c.ID, "refresh-1", chain)
+	rreq.AccessTokenSignature = "access-1"
+	if err := s.CreateRefreshToken(rreq); err != nil {
+		t.Fatalf("create refresh: %v", err)
 	}
-	if err := s.CreateRefreshToken(r2); err != nil {
-		t.Fatalf("create r2: %v", err)
+	if err := s.CreateAccessToken(newTestRequest(c.ID, "access-1", chain)); err != nil {
+		t.Fatalf("create access: %v", err)
 	}
 
-	// Rotate r1 (mark inactive); r2 stays active.
+	// Seed an unrelated grant to verify rotation is scoped by request_id.
+	if err := s.CreateRefreshToken(newTestRequest(c.ID, "other-refresh", other)); err != nil {
+		t.Fatalf("create other refresh: %v", err)
+	}
+	if err := s.CreateAccessToken(newTestRequest(c.ID, "other-access", other)); err != nil {
+		t.Fatalf("create other access: %v", err)
+	}
+
 	if err := s.RotateRefreshToken(chain, "refresh-1"); err != nil {
 		t.Fatalf("RotateRefreshToken: %v", err)
 	}
 
-	// r1 → inactive: GetRefreshToken returns ErrOAuthInactiveToken
-	// alongside the request payload (so the caller can run family
-	// revocation if this was a replay).
-	got1, err := s.GetRefreshToken("refresh-1")
-	if !errors.Is(err, ErrOAuthInactiveToken) {
-		t.Errorf("expected ErrOAuthInactiveToken on rotated refresh, got %v", err)
+	// Both old refresh AND old access in the rotated grant must be inactive.
+	if got, err := s.GetRefreshToken("refresh-1"); !errors.Is(err, ErrOAuthInactiveToken) {
+		t.Errorf("refresh-1 must be inactive after rotation, got err=%v got=%+v", err, got)
 	}
-	if got1 == nil {
-		t.Fatal("expected request payload alongside ErrOAuthInactiveToken")
+	if got, err := s.GetAccessToken("access-1"); !errors.Is(err, ErrOAuthInactiveToken) {
+		t.Errorf("access-1 must be inactive after rotation (matches fosite's reference); got err=%v got=%+v", err, got)
 	}
 
-	// r2 must still be active — rotation is per-row, not per-chain.
-	got2, err := s.GetRefreshToken("refresh-2")
-	if err != nil {
-		t.Fatalf("expected r2 still active, got error: %v", err)
+	// Unrelated grant must be untouched — rotation is request_id-scoped.
+	if got, err := s.GetRefreshToken("other-refresh"); err != nil || !got.Active {
+		t.Errorf("other-chain refresh touched by rotation: err=%v got=%+v", err, got)
 	}
-	if !got2.Active {
-		t.Error("rotation must NOT touch other rows in the same chain")
+	if got, err := s.GetAccessToken("other-access"); err != nil || !got.Active {
+		t.Errorf("other-chain access touched by rotation: err=%v got=%+v", err, got)
 	}
 }
 
