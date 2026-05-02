@@ -39,6 +39,13 @@ const (
 	// ctxResolvedWorkspaceID is set by RequireWorkspaceAccess after resolving
 	// the workspace slug/ID. Avoids redundant lookups in handlers.
 	ctxResolvedWorkspaceID contextKey = "resolved_workspace_id"
+	// ctxTokenAllowedWorkspaces carries the OAuth token's workspace
+	// allow-list set at consent time (TASK-952). Either a list of
+	// slugs or `["*"]` (wildcard). Read by RequireWorkspaceAccess to
+	// reject requests against workspaces the user didn't include in
+	// the consent (TASK-953). nil → no token-level workspace
+	// constraint (PAT auth, or pre-TASK-952 OAuth tokens).
+	ctxTokenAllowedWorkspaces contextKey = "token_allowed_workspaces"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
@@ -376,6 +383,29 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
+		// OAuth token allow-list gate (TASK-953). The consent UI
+		// (TASK-952) lets the user pick which workspaces a token
+		// can access; MCPBearerAuth stashes that list in context
+		// via WithTokenAllowedWorkspaces. Reject any request hitting
+		// a workspace outside the list, even if the user is a
+		// member of it — the user explicitly chose not to grant the
+		// app that access.
+		//
+		// nil → no token-level constraint (PAT auth, or pre-TASK-952
+		// OAuth tokens that predate the consent UI). Wildcard `["*"]`
+		// → grant access to any membership the user has. Else: the
+		// resolved workspace's slug MUST appear in the list.
+		//
+		// Compares against the canonical slug (ws.Slug) because the
+		// consent UI persists slugs and the URL slugOrID may be a
+		// UUID which resolveWorkspace just translated. Slug-vs-slug
+		// is the right comparison.
+		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+			writeError(w, http.StatusForbidden, "permission_denied",
+				"Token is not authorized for this workspace")
+			return
+		}
+
 		// Store resolved workspace ID in context for downstream handlers
 		ctx := context.WithValue(r.Context(), ctxResolvedWorkspaceID, ws.ID)
 
@@ -678,6 +708,41 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// tokenAllowedWorkspaceMatches reports whether the OAuth token's
+// workspace allow-list (set at consent time, TASK-952) permits the
+// given workspace slug. The three return-shape cases match
+// TokenAllowedWorkspacesFromContext:
+//
+//   - nil — no allow-list set (PAT auth, or pre-TASK-952 tokens) →
+//     allow.
+//   - ["*"] — wildcard consent → allow.
+//   - [slug-a, slug-b, ...] — explicit allow-list → require slug ∈
+//     list.
+//
+// Empty (non-nil) slice — the SetAllowedWorkspaces guard rejects
+// nil → empty translation, and the consent flow rejects
+// `allowed_workspaces` with no entries (handlers_oauth.go's
+// parseConsentPayload). So an empty list shouldn't appear in
+// practice; if it does, fail closed (no slug matches an empty list).
+//
+// Used by RequireWorkspaceAccess; package-private because the
+// allow-list semantics are coupled to that middleware's flow.
+func tokenAllowedWorkspaceMatches(ctx context.Context, slug string) bool {
+	allowed := TokenAllowedWorkspacesFromContext(ctx)
+	if allowed == nil {
+		return true // no token-level gate
+	}
+	for _, entry := range allowed {
+		if entry == "*" {
+			return true
+		}
+		if entry == slug {
+			return true
+		}
+	}
+	return false
 }
 
 // tokenScopeAllows checks if the token's scopes permit the given HTTP method

@@ -565,7 +565,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	// workspace allow-list; TASK-953 reads it at /mcp time + does
 	// the live role lookup. Round-trips via storage.go's JSON marshal.
 	session := oauth.NewSession(user.ID)
-	session.DefaultSession.Extra["allowed_workspaces"] = allowedWorkspaces
+	session.SetAllowedWorkspaces(allowedWorkspaces)
 
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(ctx, ar, session)
 	if err != nil {
