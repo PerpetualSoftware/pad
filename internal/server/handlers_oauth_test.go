@@ -493,6 +493,70 @@ func TestOAuth_FullAuthCodeFlow_PKCE(t *testing.T) {
 	}
 }
 
+// TestOAuth_Authorize_AcceptsResourceOnly pins Codex review #372
+// round 1 fix: real RFC 8707 clients (Claude Desktop / Cursor /
+// ChatGPT) send `resource=` not `audience=`. fosite v0.49 only
+// reads the `audience` form key, so without translation the
+// audienceMatchingStrategy sees an empty needle and rejects
+// every authorize request from a real-world client.
+//
+// This test sends ONLY `resource=` (no `audience=`) and asserts
+// the request reaches the consent stub successfully — i.e.
+// translateResourceToAudience populated fosite's expected key.
+func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	_, sessionToken := loginTestUser(t, srv)
+
+	verifier := "verifier-the-quick-brown-fox-1234567890-abcdef"
+	challenge := s256Challenge(verifier)
+
+	// Note: ONLY resource= here — no audience=. RFC 8707 form.
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"resource":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"resource-only-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (consent stub) for resource-only request; got %d (Location: %s)",
+			rr.Code, rr.Header().Get("Location"))
+	}
+}
+
+// TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints
+// pins Codex review #372 round 1 fix #2: the discovery doc must
+// NOT advertise revocation_endpoint or introspection_endpoint
+// until sub-PR D (TASK-1026) actually mounts those handlers.
+// Advertised-but-404 endpoints are worse than absent ones — RFC
+// 8414 §2 says they're optional, so omitting is spec-compliant.
+func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+
+	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var doc map[string]any
+	parseJSON(t, rr, &doc)
+
+	for _, k := range []string{
+		"revocation_endpoint",
+		"introspection_endpoint",
+		"revocation_endpoint_auth_methods_supported",
+		"introspection_endpoint_auth_methods_supported",
+	} {
+		if _, ok := doc[k]; ok {
+			t.Errorf("doc must NOT advertise %q until sub-PR D ships the handler; got %v", k, doc[k])
+		}
+	}
+}
+
 func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)

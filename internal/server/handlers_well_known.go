@@ -130,19 +130,23 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Sub-PR D (TASK-1026) wires /oauth/revoke + /oauth/introspect.
+	// Until then, OMIT those fields from the metadata rather than
+	// advertising URLs that 404 — RFC 8414 §2 lists them as OPTIONAL,
+	// and emitting them prematurely would mislead clients into
+	// calling endpoints that don't exist. Codex review #372 round 1
+	// caught the gap. Sub-PR D's PR description includes "populate
+	// revocation_endpoint + introspection_endpoint here" as a
+	// follow-up.
 	doc := authServerMetadata{
 		Issuer:                                     issuer,
 		AuthorizationEndpoint:                      issuer + "/oauth/authorize",
 		TokenEndpoint:                              issuer + "/oauth/token",
 		RegistrationEndpoint:                       issuer + "/oauth/register",
-		RevocationEndpoint:                         issuer + "/oauth/revoke",     // sub-PR D wires the handler
-		IntrospectionEndpoint:                      issuer + "/oauth/introspect", // sub-PR D wires the handler
 		ResponseTypesSupported:                     []string{"code"},
 		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		TokenEndpointAuthMethodsSupported:          []string{"none"},
-		RevocationEndpointAuthMethodsSupported:     []string{"none"},
-		IntrospectionEndpointAuthMethodsSupported:  []string{"none"},
 		ScopesSupported:                            []string{"pad:read", "pad:write", "pad:admin"},
 		ResourceIndicatorsSupported:                true,
 		AuthorizationResponseIssParameterSupported: true,
@@ -158,19 +162,20 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 // pad populates are declared. RFC 8414 §2 lists many more
 // (jwks_uri, ui_locales_supported, op_policy_uri, …) but they're
 // optional and not relevant to opaque-token deployments.
+//
+// revocation_endpoint + introspection_endpoint will be added by
+// sub-PR D (TASK-1026) when the handlers ship. Until then they're
+// omitted entirely (RFC 8414 §2 marks them OPTIONAL) so clients
+// don't dial endpoints that 404.
 type authServerMetadata struct {
 	Issuer                                     string   `json:"issuer"`
 	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
 	TokenEndpoint                              string   `json:"token_endpoint"`
 	RegistrationEndpoint                       string   `json:"registration_endpoint"`
-	RevocationEndpoint                         string   `json:"revocation_endpoint"`
-	IntrospectionEndpoint                      string   `json:"introspection_endpoint"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	GrantTypesSupported                        []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
-	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported"`
-	IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported"`
 	ScopesSupported                            []string `json:"scopes_supported"`
 	ResourceIndicatorsSupported                bool     `json:"resource_indicators_supported"`
 	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported"`

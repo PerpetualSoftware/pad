@@ -332,6 +332,46 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 // /oauth/authorize — start auth-code flow
 // =====================================================================
 
+// translateResourceToAudience copies any RFC 8707 `resource` form
+// parameters into fosite's non-standard `audience` parameter slot,
+// so the request fosite parses sees the audience it expects.
+//
+// The two are semantically equivalent: RFC 8707 §2 calls them
+// "resource indicators" and labels them "audience hints"; fosite
+// (v0.49.0) reads `audience` only. Without translation, real RFC
+// 8707 clients (Claude Desktop, Cursor, ChatGPT) sending only
+// `resource=https://mcp.getpad.dev/mcp` would hit our custom
+// audienceMatchingStrategy with an empty needle and fail every
+// authorize / token request. Codex review #372 round 1.
+//
+// Mutates r.Form in place. Idempotent — if `audience` is already
+// set we leave it (the test suite uses both keys as belt-and-
+// suspenders; production clients would send only one). r MUST
+// have ParseForm called before this; the OAuth handlers below
+// parse before invoking fosite.
+//
+// Both keys land in the form because fosite preserves r.Form into
+// the AuthorizeRequester, and the storage layer round-trips the
+// form on token exchange — so the translated audience is what
+// gets persisted + compared on the /token side too.
+func translateResourceToAudience(r *http.Request) {
+	if r == nil || r.Form == nil {
+		return
+	}
+	resources := r.Form["resource"]
+	if len(resources) == 0 {
+		return
+	}
+	if existing := r.Form["audience"]; len(existing) > 0 {
+		// Caller passed both — defer to audience as canonical and
+		// leave it untouched. Audit-log noise about ambiguity isn't
+		// worth the complexity for the v1 stub; if this becomes a
+		// real source of confusion we can warn here later.
+		return
+	}
+	r.Form["audience"] = append([]string(nil), resources...)
+}
+
 // handleOAuthAuthorize is the entry point for the authorization-code
 // flow. fosite validates the request shape; if the user is logged
 // in we render the inline consent stub (TODO TASK-952), otherwise we
@@ -355,6 +395,15 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+
+	// fosite reads only `audience` from the form; RFC 8707 mandates
+	// `resource`. Translate before fosite parses (Codex review #372
+	// round 1). ParseForm has to run first so r.Form exists.
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid query string", http.StatusBadRequest)
+		return
+	}
+	translateResourceToAudience(r)
 
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
@@ -439,6 +488,9 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
+	translateResourceToAudience(r)
+
 	ctx := r.Context()
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
@@ -511,6 +563,15 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+
+	// RFC 8707 resource= → fosite audience= before fosite parses.
+	// Codex review #372 round 1 caught this — without translation
+	// real RFC 8707 token-exchange requests fail audience matching.
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form body", http.StatusBadRequest)
+		return
+	}
+	translateResourceToAudience(r)
 
 	// Empty session for fosite to populate from storage. The auth
 	// code's stored session_data carries the user's Subject; fosite
