@@ -245,23 +245,17 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 			hasConventionShape = true
 		}
 	}
+	// Direct enforcement only — the priority fallback runs at the
+	// END so surfaces/scope/commands have a chance to flip
+	// hasConventionShape first. Without that ordering, a legacy
+	// Convention like `{scope:"all", priority:"must"}` (no trigger)
+	// would silently drop enforcement because the fallback ran
+	// before scope set hasConventionShape.
 	if metadata.Enforcement == "" {
-		switch value := fieldsMap["enforcement"].(type) {
-		case string:
+		if value, ok := fieldsMap["enforcement"].(string); ok {
 			metadata.Enforcement = value
 			hasMetadata = true
 			hasConventionShape = true
-		default:
-			// Legacy fallback: Conventions used to store enforcement
-			// under `priority` (must/should/nice-to-have). Only apply
-			// the fallback when we've already seen a Convention-shape
-			// marker — otherwise every Task with priority=high gets
-			// a phantom enforcement (BUG-987 bug 13).
-			if hasConventionShape {
-				if priority, ok := fieldsMap["priority"].(string); ok {
-					metadata.Enforcement = priority
-				}
-			}
 		}
 	}
 	if len(metadata.Surfaces) == 0 {
@@ -280,6 +274,18 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 			metadata.Commands = commands
 			hasMetadata = true
 			hasConventionShape = true
+		}
+	}
+
+	// Legacy priority→enforcement fallback. Runs AFTER all other
+	// markers because hasConventionShape only flips once we've seen
+	// a Convention-specific signal. Without this ordering, a legacy
+	// Convention with only `{scope, priority}` would lose its
+	// enforcement value because scope hadn't been processed yet
+	// (Codex review on PR #361 caught this).
+	if metadata.Enforcement == "" && hasConventionShape {
+		if priority, ok := fieldsMap["priority"].(string); ok {
+			metadata.Enforcement = priority
 		}
 	}
 

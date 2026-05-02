@@ -283,6 +283,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		return d.dispatchProjectReady(ctx, input, user)
 	case "project stale":
 		return d.dispatchProjectStale(ctx, input, user)
+	case "project next":
+		return d.dispatchProjectNext(ctx, input, user)
 	case "project standup":
 		return d.dispatchProjectStandup(ctx, input, user)
 	case "project changelog":

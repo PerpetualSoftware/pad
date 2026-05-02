@@ -112,6 +112,39 @@ func TestExtractItemConventionMetadata_ConventionWithLegacyPriority(t *testing.T
 	}
 }
 
+// TestExtractItemConventionMetadata_LegacyConvention_ScopeOnly is
+// the regression test for Codex's PR #361 round-1 finding: a legacy
+// Convention carrying only `{scope, priority}` (no trigger, no
+// commands, no structured convention field) must still resolve
+// priority→enforcement. Pre-fix, the fallback ran BEFORE scope had
+// flipped hasConventionShape, so enforcement got silently dropped.
+func TestExtractItemConventionMetadata_LegacyConvention_ScopeOnly(t *testing.T) {
+	got := ExtractItemConventionMetadata(`{"status":"active","scope":"all","priority":"must"}`)
+	if got == nil {
+		t.Fatal("expected metadata for legacy Convention with scope+priority")
+	}
+	if got.Enforcement != "must" {
+		t.Errorf("Enforcement = %q, want must (priority fallback after scope flips shape)",
+			got.Enforcement)
+	}
+	if len(got.Surfaces) != 1 || got.Surfaces[0] != "all" {
+		t.Errorf("Surfaces = %v, want [all]", got.Surfaces)
+	}
+}
+
+// TestExtractItemConventionMetadata_LegacyConvention_CommandsOnly
+// covers the equivalent path for the commands marker.
+func TestExtractItemConventionMetadata_LegacyConvention_CommandsOnly(t *testing.T) {
+	got := ExtractItemConventionMetadata(`{"status":"active","commands":["go test"],"priority":"should"}`)
+	if got == nil {
+		t.Fatal("expected metadata for legacy Convention with commands+priority")
+	}
+	if got.Enforcement != "should" {
+		t.Errorf("Enforcement = %q, want should (priority fallback after commands flips shape)",
+			got.Enforcement)
+	}
+}
+
 func TestExtractItemImplementationNotes(t *testing.T) {
 	notes := ExtractItemImplementationNotes(`{"status":"open","implementation_notes":[{"id":"note-1","summary":"Used SSE refresh","details":"Reload phase tasks on visibility resume","created_at":"2026-04-02T15:00:00Z","created_by":"agent"}]}`)
 	if len(notes) != 1 {

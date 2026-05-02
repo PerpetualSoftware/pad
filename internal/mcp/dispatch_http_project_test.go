@@ -12,21 +12,80 @@ import (
 
 // --- project next / ready / stale ---
 
-func TestRouteTable_ProjectNextAliasesDashboard(t *testing.T) {
-	// `pad project next --format json` returns the FULL dashboard
-	// JSON verbatim (cmd/pad/main.go nextCmd's `cli.PrintJSON(dashJSON)`
-	// path). The MCP route-table entry is a straight alias; this test
-	// pins that the URL is the dashboard endpoint and the agent gets
-	// the same payload they'd get from `project dashboard`.
-	m, p, _, err := routeTable["project next"](map[string]any{"workspace": "docapp"})
-	if err != nil {
-		t.Fatalf("routeTable[project next]: %v", err)
+// TestDispatch_ProjectNext_SlicesToSuggestedNext is the post-BUG-987
+// regression test. Pre-fix, `project next` was a route-table alias
+// for /dashboard and returned the entire dashboard payload — making
+// the action indistinguishable from `project dashboard`. Now it's
+// dispatched as a method on HTTPHandlerDispatcher that fetches the
+// dashboard then slices to suggested_next, matching the CLI's
+// post-fix `pad project next --format json` behaviour.
+func TestDispatch_ProjectNext_SlicesToSuggestedNext(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"summary": {"total_items": 99},
+			"active_items": [{"slug":"x"}],
+			"suggested_next": [
+				{"item_ref":"TASK-1","item_title":"First","reason":"high priority"},
+				{"item_ref":"TASK-2","item_title":"Second","reason":"in_progress"}
+			]
+		}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{"workspace": "docapp"}),
+		[]string{"project", "next"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
 	}
-	if m != http.MethodGet {
-		t.Errorf("method = %q", m)
+	// Wrapped as {items: [...]} per BUG-985 fix.
+	wrapped, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %T, want map[string]any", res.StructuredContent)
 	}
-	if p != "/api/v1/workspaces/docapp/dashboard" {
-		t.Errorf("path = %q", p)
+	items, ok := wrapped["items"].([]any)
+	if !ok {
+		t.Fatalf("items field missing or wrong type: %#v", wrapped)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 suggestions, got %d", len(items))
+	}
+	// Critical: dashboard-only fields must NOT appear at the top level
+	// of the structured content (the WHOLE point of project.next is to
+	// be smaller than the dashboard).
+	for _, leaked := range []string{"summary", "active_items"} {
+		if _, present := wrapped[leaked]; present {
+			t.Errorf("project.next leaked dashboard field %q at top level: %#v", leaked, wrapped)
+		}
+	}
+}
+
+// TestDispatch_ProjectNext_EmptyDashboardYieldsEmptyArray covers the
+// "no candidates" path — the response must still produce a valid
+// items envelope, not return an error or a missing field.
+func TestDispatch_ProjectNext_EmptyDashboardYieldsEmptyArray(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"suggested_next": []}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{"workspace": "docapp"}),
+		[]string{"project", "next"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	wrapped, _ := res.StructuredContent.(map[string]any)
+	items, _ := wrapped["items"].([]any)
+	if items == nil {
+		t.Errorf("expected empty items array, got %#v", wrapped)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 suggestions, got %d", len(items))
 	}
 }
 
