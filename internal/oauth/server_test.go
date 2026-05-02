@@ -447,6 +447,78 @@ func TestStorage_AccessToken_InactiveMappedToFositeError(t *testing.T) {
 	}
 }
 
+// TestStorage_GetRefreshTokenSession_InactiveReturnsPayload pins
+// Codex review #371 round 2: when the refresh row is inactive,
+// GetRefreshTokenSession must return the hydrated request payload
+// alongside fosite.ErrInactiveToken. Fosite's handleRefreshTokenReuse
+// (flow_refresh.go:178-204) calls req.GetID() to revoke the family —
+// returning nil would nil-deref the family-revocation flow and
+// defeat replay detection.
+//
+// Symmetric pattern is used for access tokens (no caller currently
+// derefs on inactive, but defense-in-depth makes the contract
+// uniform).
+func TestStorage_GetRefreshTokenSession_InactiveReturnsPayload(t *testing.T) {
+	st := testStoreOAuth(t)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
+	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
+
+	const sig = "refresh-replay-sig"
+	req := buildFositeRequest(client.ID, "user-1", nil, nil)
+	if err := storage.CreateRefreshTokenSession(context.Background(), sig, "access-sig", req); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Mark inactive directly (simulating a rotation that flipped the
+	// row). RotateRefreshToken would do the same plus revoke the
+	// access family — for this test we just want the inactive row
+	// without the access-side effect.
+	if err := st.RevokeRefreshTokenFamily(req.GetID()); err != nil {
+		t.Fatalf("seed inactive: %v", err)
+	}
+
+	got, err := storage.GetRefreshTokenSession(context.Background(), sig, NewSession(""))
+	if !errors.Is(err, fosite.ErrInactiveToken) {
+		t.Fatalf("expected ErrInactiveToken, got %v", err)
+	}
+	if got == nil {
+		t.Fatal("inactive refresh must return request payload alongside error (fosite handleRefreshTokenReuse derefs req.GetID())")
+	}
+	if got.GetID() != req.GetID() {
+		t.Errorf("returned request_id mismatch: got %q want %q", got.GetID(), req.GetID())
+	}
+}
+
+// TestStorage_GetAccessTokenSession_InactiveReturnsPayload — symmetric
+// to the refresh path. Access-token introspection / revocation
+// handlers don't currently dereference on inactive, but the uniform
+// contract makes the adapter resilient to future fosite changes.
+func TestStorage_GetAccessTokenSession_InactiveReturnsPayload(t *testing.T) {
+	st := testStoreOAuth(t)
+	storage := NewStorage(st, "https://mcp.test.example/mcp")
+	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})
+
+	const sig = "access-inactive-sig"
+	req := buildFositeRequest(client.ID, "user-1", nil, nil)
+	if err := storage.CreateAccessTokenSession(context.Background(), sig, req); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := storage.RevokeAccessToken(context.Background(), req.GetID()); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	got, err := storage.GetAccessTokenSession(context.Background(), sig, NewSession(""))
+	if !errors.Is(err, fosite.ErrInactiveToken) {
+		t.Fatalf("expected ErrInactiveToken, got %v", err)
+	}
+	if got == nil {
+		t.Fatal("inactive access must return request payload alongside error")
+	}
+	if got.GetID() != req.GetID() {
+		t.Errorf("returned request_id mismatch: got %q want %q", got.GetID(), req.GetID())
+	}
+}
+
 func TestStorage_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 	// End-to-end test of fosite's rotation expectation: after
 	// RotateRefreshToken, both the refresh AND the paired access

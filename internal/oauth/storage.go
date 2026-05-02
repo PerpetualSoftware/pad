@@ -181,13 +181,21 @@ func (s *Storage) CreateAccessTokenSession(_ context.Context, signature string, 
 // GetAccessTokenSession hydrates an access token. Inactive rows
 // surface as fosite.ErrInactiveToken so the introspection /
 // authorization-bearer middleware can reject cleanly.
+//
+// Inactive rows return the request payload AND the error so callers
+// (introspector, revocation handler) can read req.GetID() for grant-
+// scoped follow-up actions without nil-pointer dereferencing.
+// Codex review #371 round 2 caught the equivalent gap on the refresh
+// path; symmetric fix here for safety even though the access path's
+// callers don't currently dereference on inactive.
 func (s *Storage) GetAccessTokenSession(_ context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetAccessToken(signature)
 	if errors.Is(err, store.ErrOAuthNotFound) {
 		return nil, fosite.ErrNotFound
 	}
 	if errors.Is(err, store.ErrOAuthInactiveToken) {
-		return nil, fosite.ErrInactiveToken
+		req, _ := s.oauthRequestToFositeRequest(stored, session)
+		return req, fosite.ErrInactiveToken
 	}
 	if err != nil {
 		return nil, fmt.Errorf("oauth: get access token: %w", err)
@@ -226,13 +234,31 @@ func (s *Storage) CreateRefreshTokenSession(_ context.Context, signature, access
 // and triggers RevokeRefreshToken / RevokeAccessToken on the
 // request_id, which under our adapter walks the entire family and
 // revokes it (the OAuth 2.1 BCP §4.14 rule).
+//
+// Crucially, the inactive-row path returns the request payload
+// ALONGSIDE the error: fosite's handleRefreshTokenReuse
+// (flow_refresh.go:178-204) calls req.GetID() on the returned value
+// to drive RevokeRefreshToken(requestID) + RevokeAccessToken(requestID).
+// Returning a nil request would nil-deref the family-revocation
+// flow, defeating replay detection. Codex review #371 round 2 caught
+// this. The symmetric pattern is used by the auth-code invalidation
+// path (GetAuthorizeCodeSession above).
 func (s *Storage) GetRefreshTokenSession(_ context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetRefreshToken(signature)
 	if errors.Is(err, store.ErrOAuthNotFound) {
 		return nil, fosite.ErrNotFound
 	}
 	if errors.Is(err, store.ErrOAuthInactiveToken) {
-		return nil, fosite.ErrInactiveToken
+		// fosite needs req.GetID() to revoke the family; hydrate even
+		// on the failure path. Hydration may itself fail (e.g. the
+		// client was deleted) — in that case return the underlying
+		// error rather than masking it; replay detection still loses
+		// but at least the failure is observable.
+		req, hydrateErr := s.oauthRequestToFositeRequest(stored, session)
+		if hydrateErr != nil {
+			return nil, hydrateErr
+		}
+		return req, fosite.ErrInactiveToken
 	}
 	if err != nil {
 		return nil, fmt.Errorf("oauth: get refresh token: %w", err)
