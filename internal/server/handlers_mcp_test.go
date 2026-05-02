@@ -942,20 +942,17 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 // limit: a single token gets ~burst requests through immediately,
 // then 429s once the bucket is empty.
 //
-// Drives through MCPBearerAuth directly with a stub transport so
-// the test doesn't need to validate a real OAuth/PAT — the rate
-// limiter runs BEFORE auth validation and uses SHA-256(bearer) as
-// the bucket key, so an invalid bearer is enough to exercise the
-// limiter (and the path still 401s afterwards on the auth side,
-// which is fine for the rate-limit assertion).
+// Uses a real PAT so the rate-limit check fires (the limiter runs
+// AFTER ValidateToken — Codex review #378 round 1 — to bound the
+// limiter map to valid-token hashes only).
 func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
+	pat := mustCreatePATForTest(t, srv, "rate-limit-bucket")
 
-	bearer := "Bearer pad_" + strings.Repeat("a", 64) // shape-valid PAT, will fail validation
 	got429 := false
 	for i := 0; i < 30; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-		req.Header.Set("Authorization", bearer)
+		req.Header.Set("Authorization", "Bearer "+pat)
 		req.RemoteAddr = "192.0.2.1:1234"
 		rr := httptest.NewRecorder()
 		srv.ServeHTTP(rr, req)
@@ -980,16 +977,16 @@ func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 // token.
 //
 // Strategy: drain token1 to 429, then verify token2 still gets
-// through. Both tokens share the same shape-validation failure
-// (the rate limiter doesn't care about validity), so both progress
-// through MCPBearerAuth identically except for the bucket key.
+// through. Two real PATs so the rate-limit check fires for both.
 func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
+	pat1 := mustCreatePATForTest(t, srv, "rate-limit-pat-1")
+	pat2 := mustCreatePATForTest(t, srv, "rate-limit-pat-2")
 
 	hammer := func(bearer string) (rrs []*httptest.ResponseRecorder) {
 		for i := 0; i < 30; i++ {
 			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-			req.Header.Set("Authorization", bearer)
+			req.Header.Set("Authorization", "Bearer "+bearer)
 			req.RemoteAddr = "192.0.2.1:1234"
 			rr := httptest.NewRecorder()
 			srv.ServeHTTP(rr, req)
@@ -1002,7 +999,7 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 	}
 
 	// Drain token1 until 429.
-	rr1s := hammer("Bearer pad_" + strings.Repeat("1", 64))
+	rr1s := hammer(pat1)
 	if last := rr1s[len(rr1s)-1]; last.Code != http.StatusTooManyRequests {
 		t.Fatalf("token1: expected to hit 429; final status %d", last.Code)
 	}
@@ -1011,7 +1008,7 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 	// worth of requests.
 	for i := 0; i < 20; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-		req.Header.Set("Authorization", "Bearer pad_"+strings.Repeat("2", 64))
+		req.Header.Set("Authorization", "Bearer "+pat2)
 		req.RemoteAddr = "192.0.2.1:1234"
 		rr := httptest.NewRecorder()
 		srv.ServeHTTP(rr, req)
@@ -1019,6 +1016,74 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 			t.Errorf("token2 hit 429 at request %d — buckets must be independent per-token", i+1)
 			break
 		}
+	}
+}
+
+// TestMCPRateLimit_InvalidBearerNotRateLimited pins the post-auth-
+// validation property (Codex review #378 round 1): a bearer that
+// fails token validation must NOT consume a per-token bucket. The
+// limiter map only fills with valid-token hashes, bounding memory
+// under random-bearer spam.
+//
+// 50 invalid bearers in a row — each one should 401 cleanly, none
+// should 429 (because validation rejected before the limiter runs).
+func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	// Shape-valid but unknown PAT — passes the prefix+length check,
+	// then fails store.ValidateToken (no row).
+	bearer := "Bearer pad_" + strings.Repeat("a", 64)
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Errorf("invalid bearer must NOT be rate-limited (always 401); got 429 at request %d", i+1)
+			break
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("invalid bearer: expected 401, got %d (body: %s)", rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly is the
+// memory-DoS regression test for Codex review #378 round 1. After
+// 100 distinct invalid bearers, the per-token limiter map MUST
+// contain zero entries (or only ours from setup). Without the
+// post-auth-validation guard, every distinct bearer would create
+// a new entry in the map, growing it unbounded under random-bearer
+// spam.
+func TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+
+	if srv.rateLimiters == nil || srv.rateLimiters.MCPPerToken == nil {
+		t.Fatal("rate limiters not configured")
+	}
+
+	// Snapshot map size before.
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	beforeCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	// Spam 100 distinct invalid bearers.
+	for i := 0; i < 100; i++ {
+		bearer := "Bearer pad_" + strings.Repeat(string(rune('a'+(i%26))), 64)
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.RemoteAddr = "192.0.2.1:1234"
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	srv.rateLimiters.MCPPerToken.mu.Lock()
+	afterCount := len(srv.rateLimiters.MCPPerToken.limiters)
+	srv.rateLimiters.MCPPerToken.mu.Unlock()
+
+	if afterCount != beforeCount {
+		t.Errorf("limiter map grew under invalid-bearer spam: before=%d, after=%d (must be equal — invalid bearers MUST NOT create entries)",
+			beforeCount, afterCount)
 	}
 }
 
@@ -1081,12 +1146,12 @@ func TestMCPRateLimit_NoBearer_NotCounted(t *testing.T) {
 // no actionable text.
 func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
+	pat := mustCreatePATForTest(t, srv, "rate-limit-envelope")
 
-	bearer := "Bearer pad_" + strings.Repeat("e", 64)
 	var limited *httptest.ResponseRecorder
 	for i := 0; i < 30; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-		req.Header.Set("Authorization", bearer)
+		req.Header.Set("Authorization", "Bearer "+pat)
 		req.RemoteAddr = "192.0.2.1:1234"
 		rr := httptest.NewRecorder()
 		srv.ServeHTTP(rr, req)
@@ -1543,6 +1608,41 @@ func callWorkspaceViaOAuth(t *testing.T, srv *Server, access, workspaceSlug stri
 	rr := httptest.NewRecorder()
 	srv.MCPBearerAuth(inner).ServeHTTP(rr, req)
 	return rr
+}
+
+// mustCreatePATForTest creates a real PAT against a fresh user +
+// workspace. Returns the raw token string suitable for the
+// Authorization: Bearer header.
+//
+// Used by the TASK-959 rate-limit tests, which need real (validation-
+// passing) tokens because the post-auth-validation guard means
+// invalid bearers don't fill the limiter map. The label arg lets
+// tests use distinct emails so multiple PATs in one test file don't
+// collide on the unique email constraint.
+func mustCreatePATForTest(t *testing.T, srv *Server, label string) string {
+	t.Helper()
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email:    label + "@example.com",
+		Name:     "Rate Limit Tester " + label,
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(%q): %v", label, err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "Rate WS " + label,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(%q): %v", label, err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name:        "rate-test-" + label,
+		WorkspaceID: ws.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken(%q): %v", label, err)
+	}
+	return tok.Token
 }
 
 // mustCreateUserForTest creates a user for tests that need a user

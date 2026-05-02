@@ -80,27 +80,6 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Rate limit per-token BEFORE auth validation. Reasons:
-		//
-		//   - The limiter key is SHA-256(bearer), so the bucket
-		//     identifies a specific token regardless of whether
-		//     it's valid right now (revoked tokens still hash to
-		//     the same key).
-		//   - A token making 60 invalid-after-revoke calls in a
-		//     minute is just as expensive as 60 valid calls — the
-		//     auth path does a DB lookup either way. Limiting before
-		//     auth validation defends the validation step itself.
-		//   - An attacker rotating bearer values (random garbage)
-		//     hits a different key per request, so this gate
-		//     doesn't catch unauthenticated spam — but the limiter
-		//     map's retention bounds the memory footprint, and the
-		//     authentication path then 401s the spam cheaply.
-		//
-		// PLAN-943 TASK-959.
-		if !s.checkMCPRateLimit(w, r, token) {
-			return
-		}
-
 		// PAT path: prefix `pad_` + 68 chars total (4 prefix + 64 hex
 		// secret). Cheap shape gate before the DB lookup. Anything
 		// else falls into the OAuth introspection branch.
@@ -139,6 +118,18 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	}
 	if apiToken == nil {
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token is invalid or expired.")
+		return
+	}
+
+	// Per-token rate limit (TASK-959). Runs AFTER ValidateToken
+	// rather than before so the limiter map only fills with
+	// valid-token hashes — Codex review #378 round 1 caught the
+	// memory-DoS risk where a pre-auth check would create a new
+	// bucket for every distinct bearer string (including random
+	// garbage spam). Auth validation is a single DB lookup; the
+	// CPU cost of running it before rate limiting is small enough
+	// that the bounded-map property wins on the trade-off.
+	if !s.checkMCPRateLimit(w, r, token) {
 		return
 	}
 
@@ -235,6 +226,14 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		// but a mocked dispatcher could violate that. 401 on the
 		// safe side.
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token is invalid or expired.")
+		return
+	}
+
+	// Per-token rate limit (TASK-959). Runs AFTER fosite validates
+	// the token — same reasoning as the PAT path: limiter map only
+	// fills with valid-token hashes, bounding memory under bearer-
+	// string spam (Codex review #378 round 1).
+	if !s.checkMCPRateLimit(w, r, token) {
 		return
 	}
 
