@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -532,24 +533,38 @@ func TestDashboardSuggestedNext(t *testing.T) {
 		"fields": `{"status":"open","priority":"medium","parent":"` + plan.ID + `"}`,
 	})
 
-	// This one is in-progress — not "open", so NOT suggested
+	// In-progress task: BUG-990 changed the algorithm to surface
+	// in-progress items FIRST (the user is actively working them, so
+	// "what should I work on next" should suggest continuing).
+	// Pre-fix this task was ignored (status != open); now it ranks
+	// above any open task regardless of priority.
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Already In Progress",
-		"fields": `{"status":"in-progress","priority":"critical","parent":"` + plan.ID + `"}`,
+		"fields": `{"status":"in-progress","priority":"medium","parent":"` + plan.ID + `"}`,
 	})
 
 	resp := getDashboard(t, srv, slug)
 
-	// Should get top 3 sorted by priority
+	// Should get top 3: in-progress first, then open by priority.
 	if len(resp.SuggestedNext) != 3 {
 		t.Fatalf("expected 3 suggested_next, got %d: %+v", len(resp.SuggestedNext), resp.SuggestedNext)
 	}
 
-	expectedOrder := []string{"Critical Priority Task", "High Priority Task", "Medium Priority Task"}
+	expectedOrder := []string{
+		"Already In Progress",    // in-progress always wins
+		"Critical Priority Task", // highest open priority
+		"High Priority Task",     // next-highest open
+	}
 	for i, expected := range expectedOrder {
 		if resp.SuggestedNext[i].ItemTitle != expected {
 			t.Errorf("suggested_next[%d]: expected %q, got %q", i, expected, resp.SuggestedNext[i].ItemTitle)
 		}
+	}
+
+	// First suggestion's reason should mention in-progress framing.
+	if !strings.Contains(resp.SuggestedNext[0].Reason, "In-progress") {
+		t.Errorf("first suggestion reason should mark in-progress; got %q",
+			resp.SuggestedNext[0].Reason)
 	}
 
 	// Verify collection and reason are populated
@@ -563,6 +578,67 @@ func TestDashboardSuggestedNext(t *testing.T) {
 		if sn.ItemSlug == "" {
 			t.Errorf("expected item_slug to be set for suggestion %q", sn.ItemTitle)
 		}
+	}
+}
+
+// TestDashboardSuggestedNext_FiltersBlockedItems is the regression
+// test for BUG-990's blocked-item filter. Items with at least one
+// active "blocks" link from a non-done blocker shouldn't appear in
+// suggested_next — the agent shouldn't recommend work the user
+// can't actually start. Verifies that an explicit blocker results
+// in the otherwise-eligible task being skipped.
+func TestDashboardSuggestedNext_FiltersBlockedItems(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Active Plan",
+		"fields": `{"status":"active"}`,
+	})
+	blocker := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Blocker",
+		"fields": `{"status":"open","priority":"high","parent":"` + plan.ID + `"}`,
+	})
+	blocked := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Blocked Task",
+		"fields": `{"status":"open","priority":"critical","parent":"` + plan.ID + `"}`,
+	})
+	free := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Free Task",
+		"fields": `{"status":"open","priority":"medium","parent":"` + plan.ID + `"}`,
+	})
+	_ = free // avoid unused-var if Go reorders
+
+	// Create a `blocks` link: blocker → blocked. The route creates
+	// the link FROM the URL ref TO the body's target_id, so we POST
+	// to the BLOCKER's slug with the BLOCKED item's ID as target.
+	// Result: "Blocker blocks Blocked Task". `Blocked Task` should
+	// NOT appear in suggested_next even though it has the highest
+	// priority of any open task in the plan.
+	doRequest(srv, "POST",
+		"/api/v1/workspaces/"+slug+"/items/"+blocker.Slug+"/links",
+		map[string]interface{}{
+			"link_type": "blocks",
+			"target_id": blocked.ID,
+			"actor":     "user",
+			"source":    "test",
+		})
+
+	resp := getDashboard(t, srv, slug)
+	for _, s := range resp.SuggestedNext {
+		if s.ItemTitle == "Blocked Task" {
+			t.Errorf("blocked task surfaced in suggested_next: %+v", s)
+		}
+	}
+	// Sanity: Free Task and Blocker should both appear (both
+	// unblocked, both open). At least one of them should be there.
+	titles := map[string]bool{}
+	for _, s := range resp.SuggestedNext {
+		titles[s.ItemTitle] = true
+	}
+	if !titles["Blocker"] && !titles["Free Task"] {
+		t.Errorf("expected at least one of Blocker / Free Task in suggested_next; got %v",
+			titles)
 	}
 }
 

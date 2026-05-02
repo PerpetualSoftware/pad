@@ -84,6 +84,61 @@ type DashboardSuggestion struct {
 	Reason     string `json:"reason"`
 }
 
+// itemBlockedByActive returns true when the item identified by id
+// has at least one active "blocks" link with a non-done blocker.
+// Mirrors the attention-blocked logic above so the suggested_next
+// algorithm filters out the same items the dashboard's attention
+// section flags as blocked.
+//
+// Visibility filters (collection visibility + per-item guest grants)
+// apply to BLOCKERS too — a blocker the requesting user can't see
+// shouldn't influence whether the target is suggested. This matches
+// the attention block's behavior.
+//
+// Returns false on lookup errors (best-effort: better to surface a
+// suggestion than swallow the algorithm on a transient store hiccup).
+//
+// BUG-990 introduced this helper alongside the in-progress
+// surfacing change in handleDashboard's suggested_next section.
+func (s *Server) itemBlockedByActive(
+	workspaceID, itemID string,
+	ctxMap map[string]doneContext,
+	visibleIDs []string,
+	r *http.Request,
+	dashFullCollIDs, dashGrantedItemIDs []string,
+) bool {
+	links, err := s.store.GetItemLinks(itemID)
+	if err != nil {
+		return false
+	}
+	for _, link := range links {
+		if link.LinkType != "blocks" {
+			continue
+		}
+		// We care only about links where this item is the BLOCKED
+		// (target) side — `source blocks target`.
+		if link.TargetID != itemID {
+			continue
+		}
+		blocker, err := s.store.GetItem(link.SourceID)
+		if err != nil || blocker == nil {
+			continue
+		}
+		if !isCollectionVisible(blocker.CollectionID, visibleIDs) {
+			continue
+		}
+		if !s.isItemVisibleToGuest(r, workspaceID, blocker, dashFullCollIDs, dashGrantedItemIDs) {
+			continue
+		}
+		if isItemDone(blocker.Fields, blocker.CollectionID, ctxMap) {
+			continue
+		}
+		// At least one active blocker visible to this user — bail.
+		return true
+	}
+	return false
+}
+
 // priorityRank returns a sort rank for task priority (lower = higher priority).
 func priorityRank(priority string) int {
 	switch strings.ToLower(priority) {
@@ -565,11 +620,22 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Suggested Next ---
-	// Find open child items in active plans, sorted by priority, top 3
+	// BUG-990: includes both open AND in-progress child items in
+	// active plans. In-progress items rank ABOVE open ones — the user
+	// is already working them, so "what should I work on next" should
+	// almost always surface continuing work first. Items with active
+	// blockers are excluded entirely (the agent shouldn't suggest
+	// work the user can't actually do).
+	//
+	// Bucket order (within each, by priority rank):
+	//   1. in-progress, unblocked
+	//   2. open, unblocked
 	type suggestion struct {
-		item     models.Item
-		plan     string
-		priority int
+		item       models.Item
+		plan       string
+		status     string
+		priority   int
+		inProgress bool
 	}
 	var candidates []suggestion
 
@@ -591,19 +657,35 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			taskStatus := extractFieldValue(task.Fields, "status")
-			if taskStatus == "open" {
-				pri := extractFieldValue(task.Fields, "priority")
-				candidates = append(candidates, suggestion{
-					item:     task,
-					plan:     dp.Title,
-					priority: priorityRank(pri),
-				})
+			isInProgress := isActiveStatus(taskStatus)
+			isOpen := taskStatus == "open"
+			if !isInProgress && !isOpen {
+				continue
 			}
+			// Filter blocked items: don't suggest work an agent can't
+			// actually start. Mirrors the attention-blocked logic
+			// above — `blocks` link with this item as the target,
+			// where the blocker is still non-done.
+			if s.itemBlockedByActive(workspaceID, task.ID, ctxMap, visibleIDs, r, dashFullCollIDs, dashGrantedItemIDs) {
+				continue
+			}
+			pri := extractFieldValue(task.Fields, "priority")
+			candidates = append(candidates, suggestion{
+				item:       task,
+				plan:       dp.Title,
+				status:     taskStatus,
+				priority:   priorityRank(pri),
+				inProgress: isInProgress,
+			})
 		}
 	}
 
-	// Sort by priority rank (ascending = highest priority first)
+	// Sort: in-progress first, then by priority rank within each
+	// bucket. Lower rank = higher priority.
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].inProgress != candidates[j].inProgress {
+			return candidates[i].inProgress
+		}
 		return candidates[i].priority < candidates[j].priority
 	})
 
@@ -614,7 +696,12 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range candidates[:limit] {
 		pri := extractFieldValue(c.item.Fields, "priority")
-		reason := "Open task in active plan \"" + c.plan + "\""
+		var reason string
+		if c.inProgress {
+			reason = "In-progress task in active plan \"" + c.plan + "\""
+		} else {
+			reason = "Open task in active plan \"" + c.plan + "\""
+		}
 		if pri != "" {
 			reason += " (" + pri + " priority)"
 		}
