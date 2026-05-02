@@ -187,6 +187,9 @@ func packageJSONResult(out string) *mcp.CallToolResult {
 // normalizeStringEncodedJSONFields recursively walks a parsed JSON
 // value, finds string-typed `fields` and `tags` properties, parses
 // them as embedded JSON, and substitutes the native object/array.
+// Additionally drops `implementation_notes` and `decision_log` from
+// the parsed fields object — those entries are duplicates of the
+// top-level arrays the server hydrates onto each item (BUG-992).
 //
 // Why: the server-side `models.Item` carries `Fields` and `Tags` as
 // JSON-string columns (a SQLite-era choice that propagated through
@@ -209,6 +212,9 @@ func normalizeStringEncodedJSONFields(v any) any {
 		for k, val := range x {
 			if s, ok := val.(string); ok && (k == "fields" || k == "tags") {
 				if parsed, ok := tryParseEmbeddedJSON(s); ok {
+					if k == "fields" {
+						parsed = stripDuplicatedFieldsKeys(parsed)
+					}
 					x[k] = parsed
 					continue
 				}
@@ -224,6 +230,33 @@ func normalizeStringEncodedJSONFields(v any) any {
 	default:
 		return v
 	}
+}
+
+// stripDuplicatedFieldsKeys removes implementation_notes and
+// decision_log from a parsed fields object. The server hydrates both
+// onto items as top-level arrays (item.ImplementationNotes,
+// item.DecisionLog) by extracting them from the fields blob — so
+// every response that carries the fields blob ALSO carries the
+// arrays as top-level. Surfacing them inside fields too is a
+// duplicate that bloats payloads and forces agents to dedupe.
+//
+// Per BUG-992 the top-level arrays are the canonical shape; the
+// fields embed is a write-side artifact of how AppendImplementation*
+// stores data. Stripping at the MCP boundary keeps the wire shape
+// clean without coordinating a write-side migration.
+//
+// Returns the input unchanged when it isn't an object — defensive
+// against hand-written fields values that aren't shaped as objects
+// (rare but plausible if someone stuffs a primitive into the column).
+func stripDuplicatedFieldsKeys(parsed any) any {
+	m, ok := parsed.(map[string]any)
+	if !ok {
+		return parsed
+	}
+	for _, dup := range []string{"implementation_notes", "decision_log"} {
+		delete(m, dup)
+	}
+	return m
 }
 
 // tryParseEmbeddedJSON attempts to parse s as JSON, returning the
