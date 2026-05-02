@@ -423,6 +423,81 @@ func TestOAuth_PKCE_CRUD(t *testing.T) {
 // Validation
 // ------------------------------------------------------------
 
+// TestOAuth_Insert_AlwaysActive pins the active-on-insert contract
+// the round-1 Codex finding flushed out. Before the fix,
+// insertOAuthRequestRow used `if req.Active != defaultActive` to
+// detect "explicit override" — but a zero-value bool is
+// indistinguishable from "the caller forgot to set it," so any
+// adapter that built an OAuthRequest without explicitly setting
+// Active=true would silently store an immediately-revoked token.
+//
+// The fix hardcodes active=TRUE on insert; this test enforces that
+// invariant by passing zero-value Active and asserting the row is
+// readable as active. Without the fix, GetAccessToken would return
+// ErrOAuthInactiveToken here.
+func TestOAuth_Insert_AlwaysActive(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+
+	// Deliberately omit Active — caller used the zero value.
+	req := models.OAuthRequest{
+		Signature:   "active-default-1",
+		RequestID:   "req-1",
+		ClientID:    c.ID,
+		Subject:     "user-x",
+		RequestedAt: time.Now().UTC(),
+		// Active: not set; zero value is false.
+	}
+	if err := s.CreateAccessToken(req); err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	got, err := s.GetAccessToken("active-default-1")
+	if err != nil {
+		t.Fatalf("GetAccessToken (must succeed because insert hardcodes active=true): %v", err)
+	}
+	if !got.Active {
+		t.Error("row stored with active=false despite hardcoded active=true on insert; the round-1 fix regressed")
+	}
+
+	// Same for refresh tokens.
+	rreq := models.OAuthRequest{
+		Signature:   "active-default-2",
+		RequestID:   "req-2",
+		ClientID:    c.ID,
+		Subject:     "user-x",
+		RequestedAt: time.Now().UTC(),
+	}
+	if err := s.CreateRefreshToken(rreq); err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+	rgot, err := s.GetRefreshToken("active-default-2")
+	if err != nil {
+		t.Fatalf("GetRefreshToken: %v", err)
+	}
+	if !rgot.Active {
+		t.Error("refresh row stored inactive despite zero-value Active in input")
+	}
+
+	// Same for auth codes.
+	creq := models.OAuthRequest{
+		Signature:   "active-default-3",
+		RequestID:   "req-3",
+		ClientID:    c.ID,
+		RequestedAt: time.Now().UTC(),
+	}
+	if err := s.CreateAuthorizationCode(creq); err != nil {
+		t.Fatalf("CreateAuthorizationCode: %v", err)
+	}
+	cgot, err := s.GetAuthorizationCode("active-default-3")
+	if err != nil {
+		t.Fatalf("GetAuthorizationCode (must succeed; insert is active=true): %v", err)
+	}
+	if !cgot.Active {
+		t.Error("auth code stored inactive despite zero-value Active in input")
+	}
+}
+
 func TestOAuth_Insert_RejectsEmptyRequiredFields(t *testing.T) {
 	// The store-level guards exist as defense in depth — fosite's
 	// adapter in sub-PR B will populate these fields, but the SQL

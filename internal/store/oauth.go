@@ -193,8 +193,13 @@ func (s *Store) DeleteOAuthClient(id string) error {
 // CreateAuthorizationCode persists a code's session under its
 // signature. The signature is fosite's HMAC of the code value;
 // the code itself is never stored, so a DB read can't replay it.
+//
+// The row's `active` column is always set TRUE on insert; callers
+// flip it via InvalidateAuthorizationCode after the code is
+// exchanged. Pre-seeding an inactive row isn't a supported flow —
+// fosite never does it.
 func (s *Store) CreateAuthorizationCode(req models.OAuthRequest) error {
-	return s.insertOAuthRequestRow("oauth_authorization_codes", req, false)
+	return s.insertOAuthRequestRow("oauth_authorization_codes", req)
 }
 
 // GetAuthorizationCode hydrates the code's session. Returns
@@ -233,11 +238,17 @@ func (s *Store) InvalidateAuthorizationCode(signature string) error {
 // Access tokens (handler/oauth2/storage.go AccessTokenStorage)
 // ============================================================
 
-// CreateAccessToken persists an access token row. fosite always
-// stamps `active=true` on insert; the column is materialized here
-// so RevokeAccessToken can flip it without re-issuing.
+// CreateAccessToken persists an access token row. The row's
+// `active` column is always set TRUE on insert; callers flip it
+// via DeleteAccessToken (drop) or RevokeAccessTokenFamily (mark
+// inactive but keep the row for introspection auditing). The
+// caller's `req.Active` field is ignored on insert — fosite never
+// issues pre-revoked tokens, so honoring it would only enable
+// silently-broken adapters. Codex review #370 round 1 caught the
+// previous bug where zero-value `req.Active=false` collided with
+// the default and silently issued inactive tokens.
 func (s *Store) CreateAccessToken(req models.OAuthRequest) error {
-	return s.insertOAuthRequestRow("oauth_access_tokens", req, true)
+	return s.insertOAuthRequestRow("oauth_access_tokens", req)
 }
 
 // GetAccessToken hydrates an access token by its HMAC signature.
@@ -272,9 +283,10 @@ func (s *Store) DeleteAccessToken(signature string) error {
 // CreateRefreshToken persists a refresh token. accessSignature links
 // the refresh to the access token issued in the same grant; pass
 // empty string when there is no paired access token (rare — only
-// during error recovery flows).
+// during error recovery flows). Same active-on-insert contract as
+// CreateAccessToken — the caller's req.Active field is ignored.
 func (s *Store) CreateRefreshToken(req models.OAuthRequest) error {
-	return s.insertOAuthRequestRow("oauth_refresh_tokens", req, true)
+	return s.insertOAuthRequestRow("oauth_refresh_tokens", req)
 }
 
 // GetRefreshToken hydrates a refresh token. Returns
@@ -375,7 +387,7 @@ func (s *Store) CreatePKCERequest(req models.OAuthRequest) error {
 	// PKCE rows have no `active` column (lifecycle is "exists or
 	// deleted" rather than "active or revoked"). insertOAuthRequestRow
 	// with table=oauth_pkce_requests skips the active column write.
-	return s.insertOAuthRequestRow("oauth_pkce_requests", req, false /*ignored for pkce*/)
+	return s.insertOAuthRequestRow("oauth_pkce_requests", req)
 }
 
 // GetPKCERequest hydrates the PKCE session. Returns ErrOAuthNotFound
@@ -402,7 +414,7 @@ func (s *Store) DeletePKCERequest(signature string) error {
 
 // insertOAuthRequestRow writes a request payload into the named
 // table. The four request-row tables (auth codes, access tokens,
-// refresh tokens, pkce) share the same column set with two
+// refresh tokens, pkce) share the same column set with three
 // exceptions:
 //
 //   - pkce has no `active` column (no revocation lifecycle).
@@ -412,12 +424,19 @@ func (s *Store) DeletePKCERequest(signature string) error {
 //   - refresh has an `access_token_signature` column linking to the
 //     access row issued in the same grant.
 //
+// Active-on-insert contract: the three flagged tables (codes /
+// access / refresh) ALWAYS get `active=TRUE`. The caller's
+// req.Active field is ignored — fosite never issues pre-revoked
+// tokens, and honoring zero-value Active=false would silently
+// produce immediately-revoked tokens for any adapter that didn't
+// remember to set it. Codex review #370 round 1.
+//
 // Switch on the table name to pick the right INSERT — uglier than
 // per-table methods but keeps the call sites uniform and lets the
 // helpers below share the same row-decoding code on read. The
 // per-table methods above (CreateAccessToken etc.) are the public
 // surface; this is the private worker.
-func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest, defaultActive bool) error {
+func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) error {
 	if req.Signature == "" {
 		return fmt.Errorf("oauth: signature required")
 	}
@@ -434,16 +453,10 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest, def
 	}
 	requestedStr := requestedAt.UTC().Format(time.RFC3339)
 
-	// Active defaults to true for token tables on insert; auth-code
-	// rows are also active on insert. The defaultActive flag is the
-	// hint the caller passes, but the OAuthRequest itself wins when
-	// explicitly set (false on insert is rare — only used by tests
-	// to seed a pre-revoked row).
-	active := defaultActive
-	if req.Active != defaultActive {
-		// The caller explicitly overrode it.
-		active = req.Active
-	}
+	// Always TRUE on insert for the three flagged tables. Callers
+	// drop a row to inactive via Invalidate / Rotate /
+	// RevokeXxxFamily; pre-seeding inactive isn't a supported flow.
+	const active = true
 
 	switch table {
 	case "oauth_authorization_codes":
