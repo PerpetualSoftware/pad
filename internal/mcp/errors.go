@@ -274,31 +274,34 @@ func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stde
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrAuthRequired,
 			Message: "Authentication required. Run `pad auth login` to sign in.",
-			Hint:    stderr,
+			Hint:    stripErrorPrefix(stderr),
 		})
 	case execStderrMatchesPermissionDenied(lower):
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrPermissionDenied,
 			Message: "Permission denied for this operation.",
-			Hint:    stderr,
+			Hint:    stripErrorPrefix(stderr),
 		})
 	case execStderrMatchesItemNotFound(lower):
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrItemNotFound,
 			Message: "Item not found.",
-			Hint:    stderr,
+			Hint:    stripErrorPrefix(stderr),
 		})
 	case execStderrMatchesValidation(lower):
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrValidationFailed,
 			Message: "Validation failed.",
-			Hint:    stderr,
+			Hint:    stripErrorPrefix(stderr),
 		})
 	}
 
-	// Fallback: unstructured server error. Preserve the original
-	// "pad <cmd> failed: <stderr>" shape so any agent that special-
-	// cased the old text still has something to read.
+	// Fallback: unstructured server error. Surface the cleaned stderr
+	// directly without the legacy "pad <cmd> failed:" prefix — that
+	// prefix referenced OLD CLI verb names (e.g. `pad item block`)
+	// that don't match the v0.2 catalog action names agents see, and
+	// the cmdPath is already implicit from which tool was called
+	// (BUG-987 bug 11 round 2).
 	msg := stderr
 	if msg == "" && runErr != nil {
 		msg = runErr.Error()
@@ -306,11 +309,24 @@ func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stde
 	if msg == "" {
 		msg = "unknown error"
 	}
-	cmd := strings.Join(cmdPath, " ")
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrServerError,
-		Message: fmt.Sprintf("pad %s failed: %s", cmd, msg),
+		Message: stripErrorPrefix(msg),
 	})
+}
+
+// stripErrorPrefix removes the leading "Error:" prefix that the CLI
+// (and many of its dependencies) emit on stderr lines. Cosmetic — the
+// envelope's error.code already carries the "this is an error" signal
+// so the prefix is redundant noise.
+func stripErrorPrefix(msg string) string {
+	msg = strings.TrimSpace(msg)
+	for _, prefix := range []string{"Error: ", "error: ", "ERROR: "} {
+		if strings.HasPrefix(msg, prefix) {
+			return strings.TrimSpace(msg[len(prefix):])
+		}
+	}
+	return msg
 }
 
 // Stderr-pattern matchers. Compiled at init for cost-free
@@ -323,7 +339,12 @@ var (
 	reAuthRequired      = regexp.MustCompile(`(not authenticated|authentication required|please log in|run pad auth login|invalid token|expired token)`)
 	rePermissionDenied  = regexp.MustCompile(`(permission denied|forbidden|insufficient (permissions|role))`)
 	reItemNotFound      = regexp.MustCompile(`(item.*not found|no such item|unknown ref)`)
-	reValidationFailed  = regexp.MustCompile(`(invalid|missing required|must be one of|validation)`)
+	// reValidationFailed catches generic validation phrasings. Includes
+	// "cannot ..." (e.g. "cannot link an item to itself", "cannot
+	// modify archived item") which are validation-shaped server
+	// rejections previously falling through to server_error
+	// (BUG-987 bug 11 round 2).
+	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|cannot )`)
 	// Only match QUOTED slugs to avoid capturing stop-words like "not"
 	// in generic "Workspace not found" / "workspace not visible"
 	// messages. Quoted forms come from CLI stderr ("workspace 'foo'
