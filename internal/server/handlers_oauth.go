@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -385,6 +386,49 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 // the OAuth server without it), case 3 becomes a no-op so the
 // audienceMatchingStrategy's strict empty-needle reject still fires.
 //
+// # Security trade-off (case 3)
+//
+// Defaulting to canonical weakens the cross-server replay defense
+// RFC 8707 was designed to provide. Threat: an attacker convinces a
+// user to add a malicious MCP server (e.g. `https://evil.example/mcp`)
+// to their MCP client; evil's discovery doc lies that pad's auth
+// server is its AS; the client (which doesn't send `resource=`)
+// drives a flow against pad's AS; pad mints a token bound to its own
+// canonical audience because the AS never learned the client's real
+// intended target; the client returns the token to evil; evil replays
+// it at `https://mcp.getpad.dev/mcp`. The token's audience claim
+// passes pad's RS-side check because it IS canonical.
+//
+// Why we accept this:
+//
+//   - Real-world MCP clients (Claude Desktop, Cursor, ChatGPT as of
+//     2026-05) don't send `resource=`. Without case 3, no MCP client
+//     can authenticate at all and the product doesn't ship.
+//   - The mitigation is the consent screen (TASK-952): every grant
+//     requires the user to actively click through a screen that
+//     identifies the resource as "your Pad workspaces" and lists
+//     their actual workspace names. A user attempting to connect to
+//     a non-pad MCP server who lands on pad's consent screen sees the
+//     mismatch immediately ("why is this asking for my pad workspaces
+//     when I'm trying to connect to <other-thing>?").
+//   - This matches industry practice: GitHub, Google, Atlassian, etc.
+//     all rely on consent-as-trust-anchor since RFC 8707 is barely
+//     deployed in the wild. We're not weakening the bar below the
+//     ecosystem's median.
+//   - audienceMatchingStrategy's strict empty-needle reject stays as
+//     defense in depth: it catches any future code path that bypasses
+//     this helper, and the fail-closed branch when canonical is
+//     unset.
+//   - Audit log on every default-fire (slog.Warn below) gives ops a
+//     signal to detect anomalous patterns — e.g. a sudden spike in
+//     defaulted requests from a previously-unseen client_id.
+//
+// Codex review #383 caught the trade-off; we're shipping with the
+// mitigations above rather than reverting because the alternative is
+// "remote MCP doesn't work for any client until the entire ecosystem
+// adopts RFC 8707." A future task tracks restoring the strict reject
+// once Claude / Cursor / ChatGPT all send `resource=`.
+//
 // Mutates r.Form in place. r MUST have ParseForm called before this;
 // the OAuth handlers below parse before invoking fosite.
 func translateResourceToAudience(r *http.Request, canonical string) {
@@ -410,6 +454,18 @@ func translateResourceToAudience(r *http.Request, canonical string) {
 	if canonical != "" {
 		r.Form["audience"] = []string{canonical}
 		r.Form["resource"] = []string{canonical}
+		// Audit signal so ops can track how often this fallback
+		// fires + which clients trigger it. A spike from a new
+		// client_id is the earliest detectable shape of a confused-
+		// deputy attempt (per the security note above). client_id
+		// is intentionally pulled directly from the form rather than
+		// from a parsed AuthorizeRequest, because translation runs
+		// BEFORE fosite parses; an empty value just means the client
+		// also omitted client_id (fosite will reject downstream).
+		slog.Warn("oauth/authorize: client omitted RFC 8707 resource= param, defaulting to canonical audience",
+			"client_id", r.Form.Get("client_id"),
+			"audience", canonical,
+		)
 	}
 }
 
