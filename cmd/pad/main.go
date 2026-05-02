@@ -2931,13 +2931,21 @@ func deleteCmd() *cobra.Command {
 
 			// JSON branch (BUG-989): emit a structured envelope so
 			// MCP agents can confirm the archive landed without
-			// scraping text. status is the canonical terminal value
-			// the handler applies to deleted items.
+			// scraping text.
+			//
+			// `archived: true` instead of `status: "archived"` —
+			// the store's delete path sets `deleted_at` (a soft-
+			// delete marker) but does NOT mutate the item's status
+			// field. Surfacing `status: "archived"` would mislead
+			// agents into thinking the item's persisted status had
+			// changed, which would break flows that restore an item
+			// (the original status is still there). The `archived`
+			// boolean is unambiguous about what actually happened.
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
-					"ref":    ref,
-					"title":  item.Title,
-					"status": "archived",
+					"ref":      ref,
+					"title":    item.Title,
+					"archived": true,
 				})
 			}
 
