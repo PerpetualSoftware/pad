@@ -441,10 +441,10 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Render the inline consent stub. TODO(TASK-952): replace with
-	// the SvelteKit /oauth/consent page that surfaces workspace
-	// allow-list selection (TASK-953) + per-app branding.
-	s.renderConsentStub(w, r, ar, user)
+	// Render the consent UI (TASK-952). Loads the user's workspaces
+	// + filters tier radios to the intersection of {pad:read,
+	// pad:write, pad:admin} and the client's requested scopes.
+	s.renderConsent(w, r, ar, user)
 }
 
 // =====================================================================
@@ -452,22 +452,39 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 // =====================================================================
 
 // handleOAuthAuthorizeDecide processes the consent decision posted
-// from the inline consent stub. Validates a form-bound CSRF token
-// (the same __Host-pad_csrf cookie the SPA uses, but read from a
-// hidden form field instead of a header), then either runs fosite's
-// authorize-response flow (approve) or writes an access_denied
-// redirect (deny).
+// from the consent UI. Validates the form-bound CSRF token, parses
+// the user's tier + workspace allow-list selections, then either
+// runs fosite's authorize-response flow (approve) or writes an
+// access_denied redirect (deny).
 //
 // The decision endpoint is what an attacker would target via a
 // cross-origin POST trying to silently grant consent on a victim's
 // behalf. The CSRF token check binds the POST to the original
-// browser context. Same defense the SPA uses elsewhere, just
-// rendered via form field rather than header because the consent
-// stub is server-rendered HTML, not SPA fetch().
+// browser context — same double-submit pattern the SPA uses, with
+// the token in a form field rather than a header.
 //
-// On approve: ar.GrantScope() each requested scope (auto-approve
-// all in the v1 stub), ar.GrantAudience(canonical), then run
-// fosite. On deny: WriteAuthorizeError with ErrAccessDenied.
+// Approve flow:
+//
+//  1. Parse capability_tier ∈ {read, write, admin}; reject anything
+//     else.
+//  2. Parse allowed_workspaces (multi-value form field). At least
+//     one entry required; "*" is the wildcard. Each non-wildcard
+//     value must be a workspace the user is currently a member of
+//     (defense in depth — the form was rendered with their
+//     memberships, but a tampered POST could send other slugs).
+//  3. Grant exactly the chosen tier scope (pad:read / pad:write /
+//     pad:admin), NOT every requested scope. Selective consent is
+//     the whole point of TASK-952 — granting more than the user
+//     picked would defeat the UI.
+//  4. Stash the workspace allow-list in session.Extra. TASK-953
+//     reads it at /mcp introspection time + does the live role
+//     lookup against the membership table. Storing it in Extra
+//     rather than as scope strings sidesteps fosite's strict
+//     "granted ⊆ requested ⊆ client.Scopes" subset check; clients
+//     don't request `pad:workspaces:foo`, but the consent UI lets
+//     the user pick from their workspaces regardless.
+//  5. NewAuthorizeResponse persists the request + session and
+//     redirects to the client's redirect_uri with the auth code.
 func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Request) {
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
@@ -521,22 +538,34 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// v1 stub: auto-approve every requested scope. TASK-952's real
-	// consent UI lets the user toggle per-scope, and TASK-953 adds
-	// the workspace allow-list selection that gates which workspaces
-	// the issued token can reach.
-	for _, sc := range ar.GetRequestedScopes() {
-		ar.GrantScope(sc)
+	// Parse + validate the consent payload.
+	tierScope, allowedWorkspaces, vErr := s.parseConsentPayload(r, ar, user)
+	if vErr != nil {
+		// Validation failures are user-fixable (re-render with an
+		// error message would be friendlier, but a 400 + JSON envelope
+		// matches the rest of pad's API surface and the consent flow
+		// is rarely re-driven manually). The OAuth client will see the
+		// 400, NOT a redirect to redirect_uri, because the user never
+		// reached the "real" /authorize/decide → fosite flow.
+		writeError(w, http.StatusBadRequest, "invalid_request", vErr.Error())
+		return
 	}
+
+	// Grant exactly the chosen tier — selective consent. No loop over
+	// GetRequestedScopes; that would re-grant every scope the client
+	// asked for, defeating the user's tier choice.
+	ar.GrantScope(tierScope)
 	for _, aud := range ar.GetRequestedAudience() {
 		ar.GrantAudience(aud)
 	}
 
 	// Build the session that fosite serializes alongside the code.
-	// The opaque token's signature ties back to this; introspection
-	// (sub-PR D) reads back the same Subject for the bearer-auth
-	// gate on /mcp (sub-PR E).
+	// Subject = pad user ID (used by MCPBearerAuth's introspection
+	// branch to resolve the bearer to a user). Extra carries the
+	// workspace allow-list; TASK-953 reads it at /mcp time + does
+	// the live role lookup. Round-trips via storage.go's JSON marshal.
 	session := oauth.NewSession(user.ID)
+	session.DefaultSession.Extra["allowed_workspaces"] = allowedWorkspaces
 
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(ctx, ar, session)
 	if err != nil {
@@ -545,6 +574,90 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	s.oauthServer.Provider().WriteAuthorizeResponse(ctx, w, ar, resp)
+}
+
+// parseConsentPayload extracts and validates the user's tier choice
+// + workspace allow-list from the consent form. Returns the chosen
+// tier as a "pad:<tier>" scope string ready to GrantScope, and the
+// allow-list as either ["*"] (wildcard) or a list of slugs.
+//
+// Validation rules:
+//
+//   - capability_tier MUST be one of {read, write, admin}.
+//   - capability_tier MUST also be in the client's requested scopes
+//     (fosite's grant-time check would reject otherwise — fail fast
+//     here with a cleaner error).
+//   - allowed_workspaces MUST be non-empty (after coalescing).
+//   - If "*" appears, the result is exactly ["*"] regardless of any
+//     other slugs sent (matches the UI's mutual-exclusion behaviour
+//   - defends against tampered forms that send both).
+//   - Each non-wildcard slug MUST be a workspace the user is
+//     currently a member of (defense in depth).
+//
+// Returns wrapped errors with WithMessage strings safe to surface to
+// the user.
+func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequester, user *models.User) (tierScope string, allowedWorkspaces []string, err error) {
+	tier := r.FormValue("capability_tier")
+	switch tier {
+	case "read", "write", "admin":
+		// ok
+	default:
+		return "", nil, errors.New("capability_tier must be 'read', 'write', or 'admin'")
+	}
+	tierScope = "pad:" + tier
+
+	// Mirror the consent UI's tier-radio constraint server-side. The
+	// UI hides radios for tiers the client didn't request, but a
+	// tampered form could send any value — fosite's grant-time check
+	// would catch this with a less-obvious error, so we reject early.
+	requestedTier := false
+	for _, sc := range ar.GetRequestedScopes() {
+		if sc == tierScope {
+			requestedTier = true
+			break
+		}
+	}
+	if !requestedTier {
+		return "", nil, fmt.Errorf("capability_tier %q is not among the scopes the client requested", tier)
+	}
+
+	raw := r.PostForm["allowed_workspaces"]
+	if len(raw) == 0 {
+		return "", nil, errors.New("at least one workspace must be selected")
+	}
+
+	// Wildcard wins if present — the UI enforces mutual exclusion,
+	// and a tampered form sending both should still resolve to the
+	// safer wildcard interpretation (rather than partial allow-list).
+	for _, w := range raw {
+		if w == "*" {
+			return tierScope, []string{"*"}, nil
+		}
+	}
+
+	// Validate every slug against the user's current memberships.
+	// Tampered submissions land here.
+	memberships, mErr := s.store.GetUserWorkspaceMemberships(user.ID)
+	if mErr != nil {
+		return "", nil, fmt.Errorf("load memberships: %w", mErr)
+	}
+	memberSet := make(map[string]struct{}, len(memberships))
+	for _, m := range memberships {
+		memberSet[m.WorkspaceSlug] = struct{}{}
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, slug := range raw {
+		if _, ok := memberSet[slug]; !ok {
+			return "", nil, fmt.Errorf("you are not a member of workspace %q", slug)
+		}
+		if _, dup := seen[slug]; dup {
+			continue // de-dupe; defensive against form tampering
+		}
+		seen[slug] = struct{}{}
+		out = append(out, slug)
+	}
+	return tierScope, out, nil
 }
 
 // =====================================================================
@@ -596,15 +709,17 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mirror /authorize's grant: the access response derives from
-	// the granted scope/audience set on the request. fosite preserves
-	// these from the underlying auth-code grant for the refresh path.
-	for _, sc := range ar.GetRequestedScopes() {
-		ar.GrantScope(sc)
-	}
-	for _, aud := range ar.GetRequestedAudience() {
-		ar.GrantAudience(aud)
-	}
+	// fosite's auth-code + refresh-token handlers
+	// (handler/oauth2/flow_authorize_code_token.go:134-138 +
+	// flow_refresh.go:91-103) copy GrantedScope + GrantedAudience
+	// from the persisted upstream request to the new access request
+	// automatically. We deliberately do NOT loop over RequestedScope
+	// here — that would expand the granted set on every /token
+	// exchange to include scopes the user explicitly chose NOT to
+	// grant at consent time (TASK-952's selective-consent rule).
+	// The earlier auto-approve stub coincidentally got away with the
+	// loop because granted == requested for every grant; the new
+	// consent UI breaks that equivalence.
 
 	resp, err := s.oauthServer.Provider().NewAccessResponse(ctx, ar)
 	if err != nil {
@@ -754,122 +869,421 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 }
 
 // =====================================================================
-// Inline consent stub — TODO(TASK-952): replace with real UI
+// Consent UI (TASK-952)
 // =====================================================================
 
-// consentTmpl is the inline-HTML consent screen rendered by
-// /oauth/authorize when the user is logged in. Deliberately ugly —
-// TASK-952 replaces this with the SvelteKit /oauth/consent page
-// that surfaces workspace allow-list selection (TASK-953) + proper
-// branding. The stub is just enough to drive the auth-code flow
-// end-to-end for testing during the OAuth-server build-out.
+// consentTmpl is the server-rendered consent page that drives /oauth/authorize.
 //
-// Form action POSTs to /oauth/authorize/decide with a hidden CSRF
-// token + a hidden copy of every original /authorize query param.
-// The decision is "approve" (the primary button) or "deny".
+// Why server-rendered HTML (not a SvelteKit page):
 //
-// Style note: any future caller that updates this template MUST
-// keep the {{.CSRF}} field's auto-escape disabled — it's pre-
-// validated as hex in setCSRFCookie / validateConsentCSRFToken,
-// and the html/template package's default escaping would otherwise
-// double-escape the hex chars. We use {{.CSRF}} (escaped) since
-// hex IS safe for HTML attributes.
+//   - Security-critical: this is where a user grants long-lived bearer
+//     tokens to a third-party application. A purely-static HTML page
+//     with no client-side hydration has a much smaller attack surface
+//     than a SPA route that loads bundled JavaScript, runtime hooks,
+//     and an API client.
+//   - Pre-form-submit failure modes are simpler: if the user has
+//     JavaScript disabled or it fails to load, the form still works
+//     (the JS below is purely UX polish, not a security gate). The
+//     security-relevant validations all run on the server in
+//     handleOAuthAuthorizeDecide.
+//   - Performance: zero hydration latency on a one-shot page that's
+//     never revisited.
+//
+// What's on the page:
+//
+//   - Client name + logo (from /oauth/register's metadata).
+//   - Logged-in user's email/name as a "you are signed in as X" line.
+//   - Workspace multi-select: every workspace the user is a member of,
+//     with their role shown next to each row.
+//   - "Any workspace I currently or later have access to" wildcard
+//     checkbox (mutually exclusive with the per-workspace boxes).
+//   - Capability-tier radio: read / write / admin. Constrained to
+//     the intersection of {pad:read, pad:write, pad:admin} and the
+//     client's requested scopes — fosite's grant-time check rejects
+//     scopes not in the request, so only-requested tiers can be
+//     granted.
+//   - Cancel + Allow buttons. Allow disabled until at least one
+//     workspace (or the wildcard) is checked.
+//
+// Form action posts to /oauth/authorize/decide with a hidden
+// __Host-pad_csrf token + every original /authorize query param
+// preserved. handleOAuthAuthorizeDecide rebuilds the AuthorizeRequest
+// from those hidden fields, then layers the user's tier + workspace
+// selections on top.
+//
+// CSRF: the form-bound hex token is rendered escaped (default html/
+// template behaviour is fine — generateCSRFToken outputs hex which
+// is safe in HTML attributes). validateConsentCSRFToken does the
+// constant-time comparison server-side.
+//
+// JS gracefully degrades:
+//
+//   - When wildcard is checked, per-workspace checkboxes are disabled.
+//   - When any per-workspace checkbox is checked, wildcard is
+//     unchecked.
+//   - Allow button stays disabled until ≥1 workspace OR wildcard
+//     selected. Server-side validation in handleOAuthAuthorizeDecide
+//     repeats these checks (the JS is convenience only).
 var consentTmpl = template.Must(template.New("consent").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Authorize {{.ClientName}}</title>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authorize {{.ClientName}} · Pad</title>
 <style>
-body { font: 14px system-ui; max-width: 480px; margin: 4em auto; padding: 0 1em; color: #333; }
-h1 { font-size: 1.4em; }
-.client { display: flex; align-items: center; gap: .75em; margin: 1em 0; padding: 1em;
-          border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
-.client img { width: 48px; height: 48px; border-radius: 8px; }
-ul { padding-left: 1.4em; } li { margin: .25em 0; }
-.actions { margin-top: 2em; display: flex; gap: 1em; }
-button { padding: .75em 1.5em; border-radius: 6px; border: 1px solid #888;
-         font-size: 1em; cursor: pointer; }
-button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  max-width: 540px; margin: 2em auto; padding: 0 1em; color: #1a1a1a;
+}
+@media (prefers-color-scheme: dark) {
+  body { color: #e8e8e8; background: #1a1a1a; }
+  fieldset, .client-card { border-color: #444; background: #222; }
+  .role { color: #aaa; }
+  .hint, .footer { color: #999; }
+  button { background: #333; color: #e8e8e8; border-color: #555; }
+  button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  a { color: #6ea8fe; }
+}
+h1 { font-size: 1.5em; margin: 0 0 .25em; }
+.client-card {
+  display: flex; align-items: center; gap: 1em; margin: 1.5em 0;
+  padding: 1em; border: 1px solid #ddd; border-radius: 10px; background: #fafafa;
+}
+.client-card img.logo {
+  width: 56px; height: 56px; border-radius: 10px;
+  object-fit: cover; background: #fff;
+}
+.client-card .meta strong { font-size: 1.05em; }
+.client-card .meta small { display: block; color: #666; margin-top: .15em; }
+fieldset {
+  border: 1px solid #ddd; border-radius: 10px; padding: 1em 1.25em;
+  margin: 1.25em 0;
+}
+legend { font-weight: 600; padding: 0 .4em; }
+.ws-row, .tier-row {
+  display: flex; align-items: baseline; gap: .6em;
+  padding: .35em 0; cursor: pointer;
+}
+.ws-row input, .tier-row input { flex: 0 0 auto; margin-top: 2px; }
+.ws-name { flex: 1 1 auto; }
+.role { color: #666; font-size: .9em; }
+.tier-row .desc { color: #555; font-size: .92em; margin-left: .4em; }
+.wildcard-warning {
+  display: none; margin: .5em 0 0; padding: .6em .8em;
+  background: #fff3cd; border-left: 3px solid #f0c000;
+  font-size: .9em; border-radius: 4px;
+}
+.wildcard-warning.show { display: block; }
+@media (prefers-color-scheme: dark) {
+  .wildcard-warning { background: #3a2f00; border-left-color: #d4a400; color: #f0d873; }
+}
+.hint { color: #555; font-size: .9em; margin: .75em 0; }
+.actions { margin-top: 2em; display: flex; gap: .75em; justify-content: flex-end; }
+button {
+  padding: .65em 1.4em; border-radius: 8px; border: 1px solid #ccc;
+  font-size: 1em; font-weight: 500; cursor: pointer; background: #f5f5f5;
+}
+button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary:hover:not(:disabled) { background: #1e54d4; }
 .footer { margin-top: 2em; font-size: .85em; color: #888; }
-</style></head>
+.footer a { color: inherit; }
+.no-ws { color: #b00; }
+</style>
+</head>
 <body>
-<h1>Authorize {{.ClientName}}?</h1>
-<div class="client">
-  {{if .LogoURL}}<img src="{{.LogoURL}}" alt="">{{end}}
-  <div>
-    <strong>{{.ClientName}}</strong><br>
-    <small>Wants to access your Pad account as {{.Username}}</small>
+<h1>Authorize {{.ClientName}}</h1>
+<p>Signed in as <strong>{{.Username}}</strong>.</p>
+
+<div class="client-card">
+  {{if .ClientLogoURL}}<img class="logo" src="{{.ClientLogoURL}}" alt="">{{end}}
+  <div class="meta">
+    <strong>{{.ClientName}}</strong>
+    <small>is requesting access to your Pad workspaces.</small>
   </div>
 </div>
-<p>Permissions requested:</p>
-<ul>{{range .Scopes}}<li><code>{{.}}</code></li>{{end}}</ul>
-<form method="POST" action="/oauth/authorize/decide">
+
+<form method="POST" action="/oauth/authorize/decide" id="consent-form">
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   {{range $k, $vs := .HiddenFields}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
+
+  <fieldset>
+    <legend>Workspaces this connection can access</legend>
+    {{if .Workspaces}}
+      {{range .Workspaces}}
+      <label class="ws-row">
+        <input type="checkbox" name="allowed_workspaces" value="{{.Slug}}" class="ws-checkbox">
+        <span class="ws-name">{{.Name}}</span>
+        <span class="role">(you are {{.Role}})</span>
+      </label>
+      {{end}}
+    {{else}}
+      <p class="no-ws">You are not a member of any workspaces yet. Create or join one to authorize this app.</p>
+    {{end}}
+    <label class="ws-row">
+      <input type="checkbox" name="allowed_workspaces" value="*" id="ws-wildcard">
+      <span class="ws-name">Allow access to any workspace I currently or later have access to</span>
+    </label>
+    <div class="wildcard-warning" id="wildcard-warning">
+      This connection will be able to access any workspace you join in the future, without
+      asking again. Only choose this if you trust the app fully.
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Access level</legend>
+    {{if .CanRead}}
+      <label class="tier-row">
+        <input type="radio" name="capability_tier" value="read"{{if eq .DefaultTier "read"}} checked{{end}}>
+        <span><strong>Read only</strong><span class="desc">— list, show, search, dashboard</span></span>
+      </label>
+    {{end}}
+    {{if .CanWrite}}
+      <label class="tier-row">
+        <input type="radio" name="capability_tier" value="write"{{if eq .DefaultTier "write"}} checked{{end}}>
+        <span><strong>Read and write</strong><span class="desc">— create + update items, comments, links</span></span>
+      </label>
+    {{end}}
+    {{if .CanAdmin}}
+      <label class="tier-row">
+        <input type="radio" name="capability_tier" value="admin"{{if eq .DefaultTier "admin"}} checked{{end}}>
+        <span><strong>Full access</strong><span class="desc">— read, write, admin (workspace settings, members)</span></span>
+      </label>
+    {{end}}
+  </fieldset>
+
+  <p class="hint">
+    Effective permissions are also limited by your role in each workspace —
+    e.g. if you're a Viewer in a workspace, you can read but not write there
+    even at "Read and write" level. If your membership changes, this
+    connection's permissions change immediately.
+  </p>
+
+  <p class="hint">
+    You can revoke access any time from
+    <a href="/console/connected-apps">app.getpad.dev/console/connected-apps</a>.
+  </p>
+
   <div class="actions">
-    <button type="submit" name="decision" value="deny">Deny</button>
-    <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+    <button type="submit" name="decision" value="deny">Cancel</button>
+    <button type="submit" name="decision" value="approve" class="primary" id="allow-btn" disabled>Allow access</button>
   </div>
 </form>
-<p class="footer">Inline consent stub — TASK-952 replaces with the production UI.</p>
+
+<script>
+(function(){
+  var wildcard = document.getElementById('ws-wildcard');
+  var wsBoxes = document.querySelectorAll('input.ws-checkbox');
+  var allowBtn = document.getElementById('allow-btn');
+  var warning = document.getElementById('wildcard-warning');
+
+  function refresh() {
+    var anySpecific = false;
+    for (var i = 0; i < wsBoxes.length; i++) {
+      if (wsBoxes[i].checked) { anySpecific = true; break; }
+    }
+    if (wildcard.checked) {
+      // Wildcard wins: disable per-workspace, show warning.
+      for (var j = 0; j < wsBoxes.length; j++) {
+        wsBoxes[j].checked = false;
+        wsBoxes[j].disabled = true;
+      }
+      warning.classList.add('show');
+      allowBtn.disabled = false;
+      return;
+    }
+    // Wildcard off: re-enable per-workspace, hide warning.
+    for (var k = 0; k < wsBoxes.length; k++) wsBoxes[k].disabled = false;
+    warning.classList.remove('show');
+    allowBtn.disabled = !anySpecific;
+  }
+  wildcard.addEventListener('change', refresh);
+  for (var n = 0; n < wsBoxes.length; n++) {
+    wsBoxes[n].addEventListener('change', refresh);
+  }
+  refresh();
+})();
+</script>
 </body></html>`))
 
+// consentData is the template's data shape. Field names match the
+// template's references; adding a new field requires updating both.
 type consentData struct {
-	ClientName   string
-	Username     string
-	LogoURL      string
-	Scopes       []string
-	CSRF         string
-	HiddenFields url.Values
+	ClientName    string
+	ClientLogoURL string
+	Username      string
+	Workspaces    []consentWorkspaceRow // user's workspace memberships
+	CanRead       bool                  // tier radios — true iff client requested the corresponding pad:* scope
+	CanWrite      bool
+	CanAdmin      bool
+	DefaultTier   string // "read" / "write" / "admin" — initially-checked radio
+	CSRF          string
+	HiddenFields  url.Values
 }
 
-// renderConsentStub draws the inline approval page. The CSRF token
-// is the existing __Host-pad_csrf cookie value; the consent decision
-// handler validates the form-submitted copy against the cookie via
-// validateConsentCSRFToken.
+// consentWorkspaceRow renders one workspace checkbox row with the
+// user's role for that workspace.
+type consentWorkspaceRow struct {
+	Slug string
+	Name string
+	Role string // "owner" / "editor" / "viewer"
+}
+
+// renderConsent draws the consent UI. CSRF token comes from the
+// existing __Host-pad_csrf cookie (or is minted here if absent —
+// rare on the post-login path, but defensive). Workspaces come from
+// the user's membership table; the live role lookup at TASK-953
+// enforcement time will re-check current role per call, so the role
+// we render here is informational ("at the moment of consent, you
+// were an Editor in foo"). If the role changes later the token's
+// effective permissions change immediately.
 //
-// If the cookie isn't set yet (rare — the user is logged in, so the
-// session creation path has already issued one), we mint one here
-// so the form always carries a valid token.
-func (s *Server) renderConsentStub(w http.ResponseWriter, r *http.Request, ar fosite.AuthorizeRequester, user *models.User) {
+// Tier radios are constrained to the intersection of {pad:read,
+// pad:write, pad:admin} and the client's requested scopes — fosite's
+// grant-time check rejects granting any scope outside the request
+// (subset rule, RFC 6749 §3.3), so we must only let the user pick
+// scopes the client opted into. Default radio is the highest tier
+// the client requested (admin > write > read), which matches what
+// most clients ask for and lets users dial down if they want.
+func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite.AuthorizeRequester, user *models.User) {
 	csrf := readOrSetConsentCSRF(w, r, s.secureCookies)
 
+	clientName := ar.GetClient().GetID()
 	logo := ""
-	if dc, ok := ar.GetClient().(*fosite.DefaultClient); ok && dc != nil {
-		// fosite.DefaultClient doesn't expose LogoURL; fetch the row
-		// directly so we can show the logo if registered.
-		if c, err := s.store.GetOAuthClient(ar.GetClient().GetID()); err == nil {
-			logo = c.LogoURL
+	if c, err := s.store.GetOAuthClient(ar.GetClient().GetID()); err == nil {
+		if c.Name != "" {
+			clientName = c.Name
+		}
+		logo = c.LogoURL
+	}
+
+	// Load the user's workspace memberships to populate the multi-
+	// select. GetUserWorkspaceMemberships sorts by name. If a user
+	// has no workspaces, the template renders a clear "create or
+	// join one first" message and the Allow button stays disabled
+	// (server validation enforces this regardless).
+	memberships, err := s.store.GetUserWorkspaceMemberships(user.ID)
+	if err != nil {
+		writeInternalError(w, fmt.Errorf("oauth: load workspaces for consent: %w", err))
+		return
+	}
+	rows := make([]consentWorkspaceRow, 0, len(memberships))
+	for _, m := range memberships {
+		rows = append(rows, consentWorkspaceRow{
+			Slug: m.WorkspaceSlug,
+			Name: m.WorkspaceName,
+			Role: m.Role,
+		})
+	}
+
+	// Determine which tiers the client requested. fosite's auth-code
+	// flow refuses to grant scopes that weren't requested, so the UI
+	// must only offer tiers the request includes.
+	canRead, canWrite, canAdmin := false, false, false
+	for _, sc := range ar.GetRequestedScopes() {
+		switch sc {
+		case "pad:read":
+			canRead = true
+		case "pad:write":
+			canWrite = true
+		case "pad:admin":
+			canAdmin = true
 		}
 	}
-
-	clientName := ar.GetClient().GetID()
-	if c, err := s.store.GetOAuthClient(ar.GetClient().GetID()); err == nil && c.Name != "" {
-		clientName = c.Name
+	// Default to the highest-power tier the client requested. Users
+	// who want to grant less can still pick a lower radio. If the
+	// client requested neither read/write/admin, none of the radios
+	// renders — that flow is rare (a client requesting only
+	// pad:user:* etc.) and would also fail the form submission's
+	// tier validation.
+	defaultTier := ""
+	switch {
+	case canAdmin:
+		defaultTier = "admin"
+	case canWrite:
+		defaultTier = "write"
+	case canRead:
+		defaultTier = "read"
 	}
 
-	// Mirror every original query param into the form so the POST
-	// can re-validate via fosite.NewAuthorizeRequest with the same
-	// inputs. r.URL.Query() returns a parsed map with the original
-	// values intact.
-	hidden := r.URL.Query()
-	hidden.Del("csrf_token") // never round-trip this; we render fresh
+	// Round-trip ONLY the OAuth-request params fosite needs to
+	// rebuild the AuthorizeRequest at /authorize/decide time. An
+	// allowlist (rather than a "round-trip everything" pattern with
+	// blocklisted names) is critical here because the consent UI
+	// also has form fields named capability_tier / allowed_workspaces
+	// — without the allowlist a malicious client could craft
+	//   /oauth/authorize?...&capability_tier=admin&allowed_workspaces=*
+	// and the hidden inputs (rendered in DOM order BEFORE the
+	// user-controlled radios + checkboxes) would override the user's
+	// selection on submit. r.FormValue returns the first matching
+	// value, and r.PostForm["allowed_workspaces"] sees the wildcard
+	// scan match before the user's slug list. Codex review #376
+	// round 1 caught the gap.
+	hidden := allowlistedAuthorizeParams(r.URL.Query())
 
 	data := consentData{
-		ClientName:   clientName,
-		Username:     user.Name,
-		LogoURL:      logo,
-		Scopes:       []string(ar.GetRequestedScopes()),
-		CSRF:         csrf,
-		HiddenFields: hidden,
+		ClientName:    clientName,
+		ClientLogoURL: logo,
+		Username:      user.Name,
+		Workspaces:    rows,
+		CanRead:       canRead,
+		CanWrite:      canWrite,
+		CanAdmin:      canAdmin,
+		DefaultTier:   defaultTier,
+		CSRF:          csrf,
+		HiddenFields:  hidden,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Cache-Control: no-store — the consent page carries a CSRF
-	// token tied to the user's session; serving a cached copy to a
-	// different user would let them complete the flow with someone
-	// else's identity.
+	// Cache-Control: no-store — the page carries a CSRF token tied
+	// to the user's session; serving a cached copy to a different
+	// user would let them complete the flow with someone else's
+	// identity. Plus the workspace list is per-user.
 	w.Header().Set("Cache-Control", "no-store")
 	if err := consentTmpl.Execute(w, data); err != nil {
-		// Already streaming HTML; logging is the most we can do.
 		writeInternalError(w, fmt.Errorf("oauth: render consent: %w", err))
 	}
+}
+
+// allowlistedAuthorizeParams returns a copy of in containing ONLY
+// the keys an OAuth /authorize request is allowed to round-trip
+// through the consent form. Defends against URL parameter pollution
+// where a malicious client crafts /oauth/authorize with extra params
+// (e.g. capability_tier, allowed_workspaces, decision) that would
+// otherwise be rendered as hidden inputs and override the user's
+// consent selections on submit.
+//
+// The allowlist covers the standard OAuth 2.1 + PKCE + RFC 8707
+// authorize-request parameters fosite reads from r.Form when it
+// rebuilds the AuthorizeRequest at /authorize/decide time. Any
+// param not in this list is silently dropped — the consent flow
+// doesn't use it, and the AuthorizeRequest reconstruction won't
+// miss it.
+//
+// Note `csrf_token` is also dropped: that value belongs in the
+// __Host-pad_csrf cookie, not the URL, and we always render a
+// fresh one from the cookie.
+func allowlistedAuthorizeParams(in url.Values) url.Values {
+	allowed := map[string]struct{}{
+		"client_id":             {},
+		"response_type":         {},
+		"redirect_uri":          {},
+		"scope":                 {},
+		"state":                 {},
+		"audience":              {},
+		"resource":              {},
+		"code_challenge":        {},
+		"code_challenge_method": {},
+		"nonce":                 {}, // OIDC-compatible clients may send; harmless to round-trip
+	}
+	out := make(url.Values, len(in))
+	for k, vs := range in {
+		if _, ok := allowed[k]; !ok {
+			continue
+		}
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
 }
 
 // readOrSetConsentCSRF reads the current __Host-pad_csrf cookie or

@@ -278,7 +278,7 @@ func TestOAuth_Authorize_RedirectsToLoginWhenNoSession(t *testing.T) {
 	}
 }
 
-func TestOAuth_Authorize_RendersConsentStubWhenLoggedIn(t *testing.T) {
+func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	user, sessionToken := loginTestUser(t, srv)
@@ -303,17 +303,33 @@ func TestOAuth_Authorize_RendersConsentStubWhenLoggedIn(t *testing.T) {
 		t.Fatalf("expected 200 with consent HTML, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "<form method=\"POST\" action=\"/oauth/authorize/decide\"") {
-		t.Error("consent stub must POST to /oauth/authorize/decide")
+	if !strings.Contains(body, `action="/oauth/authorize/decide"`) {
+		t.Error("consent UI must POST to /oauth/authorize/decide")
 	}
 	if !strings.Contains(body, `name="csrf_token"`) {
-		t.Error("consent stub must include csrf_token hidden field")
+		t.Error("consent UI must include csrf_token hidden field")
 	}
-	if !strings.Contains(body, "pad:read") || !strings.Contains(body, "pad:write") {
-		t.Error("consent stub must list requested scopes")
+	// Tier radios — client requested pad:read + pad:write, so both
+	// radios should render. pad:admin was NOT requested → must NOT
+	// render (granting it would fail fosite's subset check).
+	if !strings.Contains(body, `value="read"`) {
+		t.Error("consent UI must render the pad:read tier radio (requested)")
+	}
+	if !strings.Contains(body, `value="write"`) {
+		t.Error("consent UI must render the pad:write tier radio (requested)")
+	}
+	if strings.Contains(body, `value="admin"`) {
+		t.Error("consent UI must NOT render pad:admin tier radio (not requested)")
+	}
+	// Workspace allow-list section.
+	if !strings.Contains(body, `name="allowed_workspaces"`) {
+		t.Error("consent UI must include the workspace allow-list field")
+	}
+	if !strings.Contains(body, `value="*"`) {
+		t.Error("consent UI must offer the wildcard workspace option")
 	}
 	if !strings.Contains(body, user.Name) {
-		t.Errorf("consent stub must surface the username %q for clarity", user.Name)
+		t.Errorf("consent UI must surface the username %q for clarity", user.Name)
 	}
 }
 
@@ -443,6 +459,11 @@ func TestOAuth_FullAuthCodeFlow_PKCE(t *testing.T) {
 		"state":                 {"client-csrf-state"},
 		"decision":              {"approve"},
 		"csrf_token":            {csrfTok},
+		// TASK-952 consent fields (read tier + wildcard workspace —
+		// minimal valid selection that doesn't require seeding workspace
+		// memberships in this PKCE-focused test).
+		"capability_tier":    {"read"},
+		"allowed_workspaces": {"*"},
 	}
 	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
 	// fosite uses 303 See Other for OAuth redirects.
@@ -686,6 +707,9 @@ func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
 		"state":                 {"test-state-12345"},
 		"decision":              {"approve"},
 		"csrf_token":            {csrfTok},
+		// TASK-952 consent fields (read tier + wildcard workspace).
+		"capability_tier":    {"read"},
+		"allowed_workspaces": {"*"},
 	}
 	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
 	loc := rr.Header().Get("Location")
@@ -709,6 +733,615 @@ func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
 	if trr.Code == http.StatusOK {
 		t.Errorf("expected non-200 for missing PKCE verifier; got %d (body: %s)", trr.Code, trr.Body.String())
 	}
+}
+
+// =====================================================================
+// Consent UI (TASK-952)
+// =====================================================================
+
+// TestConsent_RendersUserWorkspaces verifies the consent UI lists
+// the workspaces the logged-in user is a member of, with the user's
+// role shown next to each. Multi-workspace coverage — the single-
+// workspace case is covered implicitly by the basic render test.
+func TestConsent_RendersUserWorkspaces(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// Seed three workspaces with different roles for this user.
+	wsAlpha := mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha Project", "alpha", "owner")
+	wsBeta := mustSeedWorkspaceWithRole(t, srv, user.ID, "Beta Site", "beta", "editor")
+	wsGamma := mustSeedWorkspaceWithRole(t, srv, user.ID, "Gamma Notes", "gamma", "viewer")
+	_ = wsAlpha
+	_ = wsBeta
+	_ = wsGamma
+
+	verifier := "verifier-render-ws-quick-brown-fox-jumps-over-lazy"
+	challenge := s256Challenge(verifier)
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"render-ws-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+
+	// Each workspace's slug must appear as a checkbox value, plus
+	// its display name + role label so the user can tell them apart.
+	for _, ws := range []struct{ slug, name, role string }{
+		{"alpha", "Alpha Project", "owner"},
+		{"beta", "Beta Site", "editor"},
+		{"gamma", "Gamma Notes", "viewer"},
+	} {
+		if !strings.Contains(body, `value="`+ws.slug+`"`) {
+			t.Errorf("checkbox for workspace %q missing", ws.slug)
+		}
+		if !strings.Contains(body, ws.name) {
+			t.Errorf("workspace name %q not displayed", ws.name)
+		}
+		if !strings.Contains(body, "you are "+ws.role) {
+			t.Errorf("role %q not surfaced for workspace %q", ws.role, ws.slug)
+		}
+	}
+}
+
+// TestConsent_NoWorkspaces_ShowsEmptyState confirms the consent UI
+// renders cleanly for a user with zero workspace memberships. The
+// Allow button stays disabled (server-side validation enforces this
+// regardless of JS state).
+//
+// In production cloud-mode signup creates a default workspace, so
+// this case is rare — but worth pinning so a future regression
+// (e.g. autoCreateWorkspace failing silently) doesn't leave users
+// with a broken consent screen.
+func TestConsent_NoWorkspaces_ShowsEmptyState(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	verifier := "verifier-no-ws-quick-brown-fox-jumps-over-lazy-dog"
+	challenge := s256Challenge(verifier)
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"no-ws-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// The empty-state message must mention how to recover.
+	if !strings.Contains(body, "not a member of any workspaces") {
+		t.Errorf("expected empty-state message; got body: %s", body[:min(400, len(body))])
+	}
+}
+
+// TestConsent_TierRadios_OnlyRequestedScopes verifies the tier radio
+// is constrained to the intersection of {pad:read, pad:write,
+// pad:admin} and the client's requested scopes. fosite's grant-time
+// subset check (RFC 6749 §3.3) would reject granting a tier the
+// client didn't request, so the UI must never offer it.
+func TestConsent_TierRadios_OnlyRequestedScopes(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	verifier := "verifier-tiers-quick-brown-fox-jumps-over-lazy-dog"
+	challenge := s256Challenge(verifier)
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"}, // ONLY read requested
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"tiers-state"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `value="read"`) {
+		t.Error("read tier radio must render (was requested)")
+	}
+	if strings.Contains(body, `value="write"`) {
+		t.Error("write tier radio must NOT render (not requested)")
+	}
+	if strings.Contains(body, `value="admin"`) {
+		t.Error("admin tier radio must NOT render (not requested)")
+	}
+}
+
+// TestConsent_ApproveWithSpecificWorkspaces verifies the happy
+// path: user picks a specific workspace + tier, and the issued
+// access token carries the chosen tier scope plus the
+// workspace allow-list in session.Extra (where TASK-953 will read
+// it for live role enforcement).
+func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "editor")
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Beta", "beta", "editor")
+
+	verifier := "verifier-approve-specific-quick-brown-fox-1234567890"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"approve-specific-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"write"},
+		"allowed_workspaces":    {"alpha", "beta"}, // multi-value
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("missing code in callback: %s", rrDecide.Header().Get("Location"))
+	}
+
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	access, _ := resp["access_token"].(string)
+
+	// Token's granted scope must be exactly pad:write — selective
+	// consent. The client requested pad:read + pad:write, but the
+	// user picked write tier; only that scope must be granted.
+	scope, _ := resp["scope"].(string)
+	if scope != "pad:write" {
+		t.Errorf("granted scope: got %q, want exactly %q (selective consent)", scope, "pad:write")
+	}
+
+	// Introspect to confirm the session.Extra carries the workspace
+	// allow-list. Use a separate grant for the bearer (fosite
+	// rejects self-bearer-introspect).
+	bearerTokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-approve-bearer-quick-brown-fox-jumps-over-l")
+	bearer, _ := bearerTokens["access_token"].(string)
+
+	rrIntro := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access},
+	}, bearer)
+	if rrIntro.Code != http.StatusOK {
+		t.Fatalf("introspect: expected 200, got %d (body: %s)", rrIntro.Code, rrIntro.Body.String())
+	}
+	var ir map[string]any
+	parseJSON(t, rrIntro, &ir)
+	if active, _ := ir["active"].(bool); !active {
+		t.Fatalf("introspected token should be active; got %v", ir)
+	}
+	// session.Extra is serialized as top-level fields by fosite's
+	// WriteIntrospectionResponse (introspection_response_writer.go:197-209).
+	// allowed_workspaces must be the list the user picked.
+	got, ok := ir["allowed_workspaces"].([]any)
+	if !ok {
+		t.Fatalf("allowed_workspaces missing from introspection response; got %v", ir)
+	}
+	want := map[string]bool{"alpha": true, "beta": true}
+	if len(got) != len(want) {
+		t.Fatalf("allowed_workspaces length: got %d, want %d (entries: %v)", len(got), len(want), got)
+	}
+	for _, v := range got {
+		s, _ := v.(string)
+		if !want[s] {
+			t.Errorf("unexpected workspace in allow-list: %q", s)
+		}
+	}
+}
+
+// TestConsent_ApproveWithWildcard verifies the wildcard "any
+// workspace" path: the issued token's session.Extra carries
+// ["*"] which TASK-953 will translate to "no workspace gating
+// beyond live membership" at enforcement time.
+func TestConsent_ApproveWithWildcard(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "verifier-approve-wildcard-quick-brown-fox-1234567890"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"approve-wildcard-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"*"},
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	access, _ := resp["access_token"].(string)
+
+	// Introspect via a separate bearer.
+	bearerTokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-wildcard-bearer-quick-brown-fox-jumps-over-")
+	bearer, _ := bearerTokens["access_token"].(string)
+
+	rrIntro := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{
+		"token": {access},
+	}, bearer)
+	var ir map[string]any
+	parseJSON(t, rrIntro, &ir)
+	got, ok := ir["allowed_workspaces"].([]any)
+	if !ok || len(got) != 1 {
+		t.Fatalf("allowed_workspaces should be exactly [\"*\"]; got %v", ir["allowed_workspaces"])
+	}
+	if s, _ := got[0].(string); s != "*" {
+		t.Errorf("allowed_workspaces[0]: got %q, want %q", s, "*")
+	}
+}
+
+// TestConsent_ApproveWithoutWorkspaceSelection_Rejected pins the
+// server-side check that at least one workspace (or wildcard) is
+// selected. The UI's Allow button is disabled in this state, but
+// a tampered POST that sends decision=approve with no
+// allowed_workspaces must still be rejected.
+func TestConsent_ApproveWithoutWorkspaceSelection_Rejected(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "verifier-no-selection-quick-brown-fox-jumps-over-l"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"no-selection-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		// Deliberately no allowed_workspaces.
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 with no workspace selection, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestConsent_ApproveWithUntrustedSlug_Rejected pins the defense-in-
+// depth check: a tampered form sending a workspace slug the user
+// is NOT a member of must be rejected at consent time, not silently
+// stored on the token (where TASK-953 would also reject, but with
+// a misleading "you don't have access" error far downstream).
+func TestConsent_ApproveWithUntrustedSlug_Rejected(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	// User is a member of "alpha" only. Tampered form submits
+	// "evil-other-workspace" — must reject.
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+
+	verifier := "verifier-untrusted-quick-brown-fox-jumps-over-lazy"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"untrusted-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"alpha", "evil-other-workspace"},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for tampered allow-list, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestConsent_ApproveWithUnrequestedTier_Rejected pins the server-
+// side tier validation: a tampered form sending capability_tier=admin
+// when the client only requested pad:read+pad:write must be rejected.
+// fosite's grant-time check would also catch this with a less-
+// readable error, so the parse-time check produces a cleaner UX.
+func TestConsent_ApproveWithUnrequestedTier_Rejected(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "verifier-unreq-tier-quick-brown-fox-jumps-over-laz"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"}, // no admin
+		"audience":              {testCanonicalAudience},
+		"state":                 {"unreq-tier-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"admin"}, // tampered: not requested
+		"allowed_workspaces":    {"*"},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unrequested tier, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestConsent_TokenScopeMatchesTierChoice_Read pins selective consent:
+// when the user picks "read" tier even though the client requested
+// pad:read AND pad:write, the issued access token's scope is exactly
+// pad:read. This is the central security property of the consent UI.
+//
+// registerTestClient defaults to scopes=[pad:read, pad:write] (per
+// handleOAuthRegister), so we can request both but pick only read.
+// pad:admin would require explicit registration which isn't relevant
+// here — the read-vs-write distinction is the same selective-consent
+// property either way.
+func TestConsent_TokenScopeMatchesTierChoice_Read(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "verifier-tier-match-quick-brown-fox-jumps-over-laz"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"}, // both requested
+		"audience":              {testCanonicalAudience},
+		"state":                 {"tier-match-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"}, // user picks read despite client asking for both
+		"allowed_workspaces":    {"*"},
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	scope, _ := resp["scope"].(string)
+	if scope != "pad:read" {
+		t.Errorf("selective consent: got scope %q, want exactly %q (user picked read despite client asking for all)", scope, "pad:read")
+	}
+}
+
+// TestConsent_URLPollution_DoesNotOverrideUserSelection pins Codex
+// review #376 round 1: a malicious OAuth client could craft
+//
+//	/oauth/authorize?client_id=…&capability_tier=admin&allowed_workspaces=*
+//
+// with extra params alongside the standard OAuth ones. Without the
+// allowlistedAuthorizeParams filter, those extras would be rendered
+// as hidden inputs in the consent form. On submit, hidden inputs
+// (rendered in DOM order BEFORE the user-controlled radios +
+// checkboxes) would precede the user's selections, and FormValue +
+// PostForm[name] would see the attacker-controlled values first —
+// silently overriding the user's choice.
+//
+// This test simulates the attack: the GET includes attacker
+// params, the consent form's hidden fields are inspected to confirm
+// they're NOT round-tripped, and the POST decision flow with the
+// user's actual selection produces a token matching the user's
+// choice (not the attacker's URL params).
+func TestConsent_URLPollution_DoesNotOverrideUserSelection(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	verifier := "verifier-pollution-quick-brown-fox-jumps-over-lazy"
+	challenge := s256Challenge(verifier)
+
+	// Step 1: GET /oauth/authorize with attacker-injected consent
+	// params alongside the legitimate OAuth params.
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"pollution-state"},
+		// Attacker-injected (not standard OAuth params):
+		"capability_tier":    {"admin"},
+		"allowed_workspaces": {"*"},
+		"decision":           {"approve"},
+		"evil_extra":         {"oh-no"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authorize render: %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// Hidden-input assertions: the attacker's params must NOT be
+	// rendered as `<input type="hidden">` round-trips. Note `decision`
+	// legitimately appears in the rendered HTML on the Cancel + Allow
+	// `<button name="decision">` elements — those don't preserve
+	// URL-injected values, only the value attribute on the button
+	// itself. Assert specifically against hidden-input rendering.
+	for _, attackerName := range []string{
+		"evil_extra", "decision", "capability_tier", "allowed_workspaces",
+	} {
+		if strings.Contains(body, `<input type="hidden" name="`+attackerName+`"`) {
+			t.Errorf("attacker-injected %q must NOT be round-tripped as a hidden input (URL pollution)", attackerName)
+		}
+	}
+	// Sanity: legitimate OAuth params ARE round-tripped.
+	if !strings.Contains(body, `name="client_id"`) {
+		t.Error("client_id hidden input missing — legitimate OAuth param round-trip broken")
+	}
+	if !strings.Contains(body, `name="state"`) {
+		t.Error("state hidden input missing — legitimate OAuth param round-trip broken")
+	}
+
+	// Step 2: simulate the user's consent submission. Build a clean
+	// POST body that ONLY carries the user's actual selection
+	// (capability_tier=read, allowed_workspaces=*) plus the OAuth
+	// params from hidden fields. Without the allowlist, the
+	// attacker's URL params would also have been hidden inputs,
+	// and a real browser would have submitted both the attacker's
+	// and the user's values together — but with the allowlist, only
+	// the user's values reach the server. We test that here by
+	// constructing the form as a legitimate browser would.
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"pollution-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		// User's actual selection — should win.
+		"capability_tier":    {"read"},
+		"allowed_workspaces": {"*"},
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("missing code in callback")
+	}
+
+	// Step 3: exchange code for token, verify granted scope is
+	// pad:read (user's choice) NOT pad:admin (attacker's URL param).
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	if scope, _ := resp["scope"].(string); scope != "pad:read" {
+		t.Errorf("URL pollution attack succeeded: got scope %q, want %q (user picked read; attacker injected admin)",
+			scope, "pad:read")
+	}
+}
+
+// mustSeedWorkspaceWithRole is a test helper that creates a workspace
+// + adds the user as a member with the given role. Centralized here
+// because TASK-952 tests need it repeatedly to set up consent
+// scenarios with realistic membership data.
+func mustSeedWorkspaceWithRole(t *testing.T, srv *Server, userID, name, slug, role string) *models.Workspace {
+	t.Helper()
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: name,
+		Slug: slug,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(%q): %v", slug, err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, userID, role); err != nil {
+		t.Fatalf("AddWorkspaceMember(%q, role=%s): %v", slug, role, err)
+	}
+	return ws
 }
 
 // =====================================================================
@@ -1359,6 +1992,14 @@ func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID,
 		"state":                 {state},
 		"decision":              {"approve"},
 		"csrf_token":            {csrfTok},
+		// TASK-952 consent fields. The helper drives the auth-code
+		// flow with a sane default (read tier + wildcard workspace
+		// allow-list) so tests not focused on consent UI behaviour
+		// don't have to construct workspace memberships per call.
+		// Tests that DO care about consent (TASK-952's own coverage)
+		// build their own forms instead of going through this helper.
+		"capability_tier":    {"read"},
+		"allowed_workspaces": {"*"},
 	}
 	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
 	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
