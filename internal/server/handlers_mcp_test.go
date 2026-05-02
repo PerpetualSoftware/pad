@@ -691,6 +691,45 @@ func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
 	}
 }
 
+// TestOAuthScopesToJSON_FailClosedOnEmpty pins Codex review #375
+// round 1: OAuth's `scope` parameter is optional per RFC 6749 §3.3,
+// so fosite can hand back a token with empty granted scopes. Without
+// the fail-closed mapping in oauthScopesToJSON, that empty list
+// would serialize to `[]` — which tokenScopeAllows interprets as
+// the legacy "unrestricted" PAT shape, granting write access.
+//
+// The fix maps empty → JSON `null`, which tokenScopeAllows denies
+// via its "scopes == nil" branch. This test asserts both halves of
+// the contract: oauthScopesToJSON produces null, and tokenScopeAllows
+// then denies for every method.
+func TestOAuthScopesToJSON_FailClosedOnEmpty(t *testing.T) {
+	got := oauthScopesToJSON(nil)
+	if got != "null" {
+		t.Errorf("nil scopes: got %q, want %q", got, "null")
+	}
+	gotEmpty := oauthScopesToJSON([]string{})
+	if gotEmpty != "null" {
+		t.Errorf("empty scopes: got %q, want %q", gotEmpty, "null")
+	}
+
+	// Routing through tokenScopeAllows must produce false for all
+	// methods — pin the end-to-end contract, not just the helper.
+	for _, method := range []string{
+		http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete,
+	} {
+		if tokenScopeAllows(got, method, "/api/v1/items") {
+			t.Errorf("empty OAuth scopes must deny %s; tokenScopeAllows returned true", method)
+		}
+	}
+
+	// Sanity: non-empty OAuth scopes round-trip the canonical JSON
+	// form (regression — the fail-closed path must NOT extend to
+	// the populated case).
+	if got := oauthScopesToJSON([]string{"pad:read"}); got != `["pad:read"]` {
+		t.Errorf("populated scopes: got %q, want %q", got, `["pad:read"]`)
+	}
+}
+
 // =====================================================================
 // /api/v1/oauth/clients/{id}/public-info (sub-PR E, TASK-1027)
 // =====================================================================

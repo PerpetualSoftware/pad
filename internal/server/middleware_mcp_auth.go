@@ -298,15 +298,35 @@ func audienceContains(haystack []string, needle string) bool {
 }
 
 // oauthScopesToJSON serializes fosite's granted-scope slice to the
-// JSON array form tokenScopeAllows expects. nil / empty → `[]` (the
-// "explicit unrestricted legacy form" — but in practice OAuth
-// introspection always returns at least one scope because /authorize
-// requires `scope=` and /authorize/decide grants every requested
-// scope). json.Marshal can't fail on a []string, so we ignore the
-// error and the result string is always a valid JSON array.
+// JSON array form tokenScopeAllows expects.
+//
+// Crucial fail-closed: nil / empty granted scopes map to JSON `null`
+// (which tokenScopeAllows denies via the "scopes == nil" branch),
+// NOT to `[]` (which the same function would accept as the legacy
+// "unrestricted" PAT form). Codex review #375 round 1 caught the
+// bug: OAuth's `scope` parameter is optional per RFC 6749 §3.3, so
+// a client can run the auth-code flow without requesting any scopes
+// — fosite hands back a token with no granted scopes, and without
+// this guard MCPBearerAuth would treat that token as unrestricted
+// (because `[]` is the legacy PAT shape). Mapping empty OAuth
+// scopes to `null` instead routes them through the deny path.
+//
+// Note: in the production setup, sub-PR C's handleOAuthRegister
+// defaults a registered client's scope set to `pad:read pad:write`
+// when DCR omits it, and audienceMatchingStrategy refuses any
+// authorize-side request with an unrecognized audience. So the
+// "empty granted scopes" path is hard to hit through the public
+// endpoints — but defense-in-depth at the resource server is the
+// right policy regardless.
+//
+// json.Marshal can't fail on a []string, so we ignore the error
+// and the result string is always valid JSON.
 func oauthScopesToJSON(scopes []string) string {
 	if len(scopes) == 0 {
-		return "[]"
+		// Fail closed: route empty OAuth scopes through
+		// tokenScopeAllows's deny path, NOT the legacy `[]`
+		// unrestricted-PAT path.
+		return "null"
 	}
 	b, _ := json.Marshal(scopes)
 	return string(b)
