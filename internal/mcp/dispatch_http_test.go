@@ -686,7 +686,7 @@ func TestPackageHTTPResponse_StructuredJSONOnSuccess(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(`{"ref":"TASK-1"}`)),
 	}
-	res, err := packageHTTPResponse(context.Background(), "item create", resp)
+	res, err := packageHTTPResponse(context.Background(), "item create", resp, nil)
 	if err != nil {
 		t.Fatalf("packageHTTPResponse: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestPackageHTTPResponse_TextFallbackOnNonJSON(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader("hello world")),
 	}
-	res, err := packageHTTPResponse(context.Background(), "item create", resp)
+	res, err := packageHTTPResponse(context.Background(), "item create", resp, nil)
 	if err != nil {
 		t.Fatalf("packageHTTPResponse: %v", err)
 	}

@@ -389,6 +389,12 @@ func serveCmd() *cobra.Command {
 						u, _ := server.CurrentUserFromContext(ctx)
 						return u
 					},
+					// OAuth-aware workspace lister (TASK-977).
+					// Filters error envelopes' available_workspaces
+					// hint by the token's consent allow-list so
+					// agents never see workspace slugs the user
+					// didn't explicitly grant.
+					Lister: mcpserver.NewOAuthWorkspaceLister(s),
 				}
 				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
 					Doc:        mcpDoc,
