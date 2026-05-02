@@ -172,16 +172,48 @@ func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
 	return &c, nil
 }
 
-// DeleteOAuthClient removes a client and all dependent token /
-// auth-code / pkce rows by FK cascade is NOT used because Postgres
-// FKs default to NO ACTION and we never wrote ON DELETE CASCADE in
-// the migration. Callers needing to delete a client must revoke its
-// outstanding grants first (sub-PR D's revocation flow), then delete.
-// Returns nil even if the client doesn't exist (idempotent delete).
+// DeleteOAuthClient removes a client AND every dependent row (auth
+// codes, access tokens, refresh tokens, PKCE sessions) atomically.
+//
+// Why explicit cascade in code rather than ON DELETE CASCADE on the
+// FKs: keeping the FK as a plain reference means a stray
+// `DELETE FROM oauth_clients` from a future migration / admin tool
+// errors loudly instead of silently nuking grants. The intentional
+// cascade lives here, in one named method, so its blast radius is
+// obvious and auditable. Codex review #370 round 3 caught the
+// previous behaviour where DeleteOAuthClient errored on FK violation
+// for any client that had ever issued a grant.
+//
+// Idempotent: calling on a non-existent client is a no-op (every
+// dependent table's WHERE matches nothing). Atomic: if any of the
+// five DELETEs fails, the whole transaction rolls back so we never
+// leave a half-deleted client.
 func (s *Store) DeleteOAuthClient(id string) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM oauth_clients WHERE id = ?`), id)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("delete oauth client: %w", err)
+		return fmt.Errorf("begin delete oauth client tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	// Order: child rows first, parent (oauth_clients) last. Required
+	// for the FK constraint to be satisfied at commit time when ON
+	// DELETE CASCADE isn't set. The order between the four child
+	// tables doesn't matter — none reference each other.
+	deletes := []string{
+		`DELETE FROM oauth_pkce_requests WHERE client_id = ?`,
+		`DELETE FROM oauth_refresh_tokens WHERE client_id = ?`,
+		`DELETE FROM oauth_access_tokens WHERE client_id = ?`,
+		`DELETE FROM oauth_authorization_codes WHERE client_id = ?`,
+		`DELETE FROM oauth_clients WHERE id = ?`,
+	}
+	for _, q := range deletes {
+		if _, err := tx.Exec(s.q(q), id); err != nil {
+			return fmt.Errorf("delete oauth client cascade (%q): %w", q, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete oauth client: %w", err)
 	}
 	return nil
 }

@@ -109,6 +109,57 @@ func TestOAuth_GetOAuthClient_NotFound(t *testing.T) {
 	}
 }
 
+// TestOAuth_DeleteOAuthClient_CascadesDependentRows pins the round-3
+// fix Codex caught: DeleteOAuthClient must cascade through the four
+// dependent tables (auth codes, access tokens, refresh tokens, PKCE)
+// rather than failing with an FK violation on any client that has
+// ever issued a grant. The cascade is intentional + named (no ON
+// DELETE CASCADE on the migration) so its blast radius stays
+// obvious to future readers.
+func TestOAuth_DeleteOAuthClient_CascadesDependentRows(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+
+	// Seed every dependent table with a row referencing this client.
+	if err := s.CreateAuthorizationCode(newTestRequest(c.ID, "code-cascade", "req-cascade")); err != nil {
+		t.Fatalf("create code: %v", err)
+	}
+	if err := s.CreateAccessToken(newTestRequest(c.ID, "access-cascade", "req-cascade")); err != nil {
+		t.Fatalf("create access: %v", err)
+	}
+	if err := s.CreateRefreshToken(newTestRequest(c.ID, "refresh-cascade", "req-cascade")); err != nil {
+		t.Fatalf("create refresh: %v", err)
+	}
+	if err := s.CreatePKCERequest(newTestRequest(c.ID, "pkce-cascade", "req-cascade")); err != nil {
+		t.Fatalf("create pkce: %v", err)
+	}
+
+	// Without the round-3 fix this errors with an FK constraint
+	// violation. With the cascade in place, the delete succeeds and
+	// every dependent row is gone.
+	if err := s.DeleteOAuthClient(c.ID); err != nil {
+		t.Fatalf("DeleteOAuthClient with dependent rows must cascade: %v", err)
+	}
+
+	// Verify nothing's left behind. NotFound on each row's
+	// signature confirms the cascade reached it.
+	if _, err := s.GetAuthorizationCode("code-cascade"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("auth code not cascaded; got %v", err)
+	}
+	if _, err := s.GetAccessToken("access-cascade"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("access token not cascaded; got %v", err)
+	}
+	if _, err := s.GetRefreshToken("refresh-cascade"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("refresh token not cascaded; got %v", err)
+	}
+	if _, err := s.GetPKCERequest("pkce-cascade"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("pkce row not cascaded; got %v", err)
+	}
+	if _, err := s.GetOAuthClient(c.ID); !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("client itself not deleted; got %v", err)
+	}
+}
+
 func TestOAuth_DeleteOAuthClient_Idempotent(t *testing.T) {
 	s := testStore(t)
 	c := newTestClient(t, s)
