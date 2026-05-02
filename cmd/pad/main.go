@@ -2928,6 +2928,19 @@ func deleteCmd() *cobra.Command {
 			}
 
 			ref := cli.ItemRef(*item)
+
+			// JSON branch (BUG-989): emit a structured envelope so
+			// MCP agents can confirm the archive landed without
+			// scraping text. status is the canonical terminal value
+			// the handler applies to deleted items.
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":    ref,
+					"title":  item.Title,
+					"status": "archived",
+				})
+			}
+
 			if ref != "" {
 				fmt.Printf("Archived %s %q\n", ref, item.Title)
 			} else {
@@ -5382,15 +5395,29 @@ Examples:
 			green := color.New(color.FgGreen)
 			red := color.New(color.FgRed)
 
-			successCount := 0
-			failCount := 0
+			// Per-item outcome tuples for the JSON branch (BUG-989).
+			// `applied` carries only the fields actually set on the
+			// successful path so consumers see the same shape they'd
+			// pass back through update.
+			type updateResult struct {
+				Ref     string         `json:"ref"`
+				Applied map[string]any `json:"applied"`
+			}
+			type updateFailure struct {
+				Ref   string `json:"ref"`
+				Error string `json:"error"`
+			}
+			updated := make([]updateResult, 0, len(args))
+			failed := make([]updateFailure, 0)
 
 			for _, slug := range args {
 				// Get current item to merge fields
 				item, err := client.GetItem(ws, slug)
 				if err != nil {
-					fmt.Printf("  %s %s — %s\n", red.Sprint("✗"), slug, err)
-					failCount++
+					if formatFlag != "json" {
+						fmt.Printf("  %s %s — %s\n", red.Sprint("✗"), slug, err)
+					}
+					failed = append(failed, updateFailure{Ref: slug, Error: err.Error()})
 					continue
 				}
 
@@ -5401,13 +5428,16 @@ Examples:
 				}
 
 				var changeParts []string
+				applied := map[string]any{}
 				if status != "" {
 					existingFields["status"] = status
 					changeParts = append(changeParts, status)
+					applied["status"] = status
 				}
 				if priority != "" {
 					existingFields["priority"] = priority
 					changeParts = append(changeParts, priority)
+					applied["priority"] = priority
 				}
 
 				fieldsJSON, _ := json.Marshal(existingFields)
@@ -5419,18 +5449,37 @@ Examples:
 
 				_, err = client.UpdateItem(ws, slug, input)
 				if err != nil {
-					fmt.Printf("  %s %s — %s\n", red.Sprint("✗"), slug, err)
-					failCount++
+					if formatFlag != "json" {
+						fmt.Printf("  %s %s — %s\n", red.Sprint("✗"), slug, err)
+					}
+					failed = append(failed, updateFailure{Ref: slug, Error: err.Error()})
 					continue
 				}
 
-				changeDesc := strings.Join(changeParts, ", ")
-				fmt.Printf("  %s %s → %s\n", green.Sprint("✓"), slug, changeDesc)
-				successCount++
+				updated = append(updated, updateResult{
+					Ref:     cli.ItemRef(*item),
+					Applied: applied,
+				})
+				if formatFlag != "json" {
+					changeDesc := strings.Join(changeParts, ", ")
+					fmt.Printf("  %s %s → %s\n", green.Sprint("✓"), slug, changeDesc)
+				}
 			}
 
-			total := successCount + failCount
-			fmt.Printf("\nUpdated %d of %d items\n", successCount, total)
+			total := len(updated) + len(failed)
+
+			// JSON branch (BUG-989): structured envelope. Agents that
+			// need to know which items succeeded vs failed can branch
+			// on the typed payload directly.
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"updated": updated,
+					"failed":  failed,
+					"total":   total,
+				})
+			}
+
+			fmt.Printf("\nUpdated %d of %d items\n", len(updated), total)
 			return nil
 		},
 	}
@@ -6357,6 +6406,18 @@ func starCmd() *cobra.Command {
 			}
 
 			ref := cli.ItemRef(*item)
+
+			// JSON branch (BUG-989): structured envelope so agents
+			// can branch on `starred: true` rather than parsing the
+			// "⭐ Starred ..." text shape.
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":     ref,
+					"title":   item.Title,
+					"starred": true,
+				})
+			}
+
 			if ref != "" {
 				fmt.Printf("⭐ Starred %s %q\n", ref, item.Title)
 			} else {
@@ -6386,6 +6447,16 @@ func unstarCmd() *cobra.Command {
 			}
 
 			ref := cli.ItemRef(*item)
+
+			// JSON branch (BUG-989). Symmetric with star: starred=false.
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":     ref,
+					"title":   item.Title,
+					"starred": false,
+				})
+			}
+
 			if ref != "" {
 				fmt.Printf("Unstarred %s %q\n", ref, item.Title)
 			} else {

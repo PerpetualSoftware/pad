@@ -39,13 +39,19 @@ func noteCmd() *cobra.Command {
 				}
 			}
 
-			fields, err := models.AppendImplementationNote(item.Fields, models.ItemImplementationNote{
+			// Capture the entry locally before persisting so the JSON
+			// branch can echo the freshly-created note back to the
+			// caller (BUG-989: previously this command emitted only
+			// plain text, agents had to re-fetch the item to read the
+			// note ID / timestamp).
+			entry := models.ItemImplementationNote{
 				ID:        newStructuredEntryID("note"),
 				Summary:   strings.TrimSpace(args[1]),
 				Details:   body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 				CreatedBy: "user",
-			})
+			}
+			fields, err := models.AppendImplementationNote(item.Fields, entry)
 			if err != nil {
 				return err
 			}
@@ -57,6 +63,14 @@ func noteCmd() *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":   cli.ItemRef(*updated),
+					"title": updated.Title,
+					"note":  entry,
+				})
 			}
 
 			fmt.Printf("Added implementation note to %s %s\n", cli.ItemRef(*updated), updated.Title)
@@ -94,13 +108,16 @@ func decideCmd() *cobra.Command {
 				}
 			}
 
-			fields, err := models.AppendDecisionLogEntry(item.Fields, models.ItemDecisionLogEntry{
+			// Capture the entry locally so the JSON branch can echo
+			// it back without re-fetching the item (BUG-989).
+			entry := models.ItemDecisionLogEntry{
 				ID:        newStructuredEntryID("decision"),
 				Decision:  strings.TrimSpace(args[1]),
 				Rationale: body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 				CreatedBy: "user",
-			})
+			}
+			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
 			if err != nil {
 				return err
 			}
@@ -112,6 +129,14 @@ func decideCmd() *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":      cli.ItemRef(*updated),
+					"title":    updated.Title,
+					"decision": entry,
+				})
 			}
 
 			fmt.Printf("Added decision log entry to %s %s\n", cli.ItemRef(*updated), updated.Title)
