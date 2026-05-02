@@ -28,6 +28,14 @@ const (
 	// ctxIsAPIToken is set to true when the request is authenticated via an API token
 	// (as opposed to a session cookie or CLI session token).
 	ctxIsAPIToken contextKey = "is_api_token"
+	// ctxTokenScopes carries the JSON-encoded scopes string from the
+	// validated API token (e.g. `["read"]`, `["*"]`). Stashed by
+	// MCPBearerAuth so the in-process MCP dispatcher can re-check
+	// scopes per synthesized tool call (the dispatcher bypasses
+	// TokenAuth's chain-level scope check by setting WithCurrentUser
+	// directly). See WithTokenScopes / TokenScopesFromContext in
+	// context.go and the per-tool gate in internal/mcp/dispatch_http.go.
+	ctxTokenScopes contextKey = "token_scopes"
 	// ctxResolvedWorkspaceID is set by RequireWorkspaceAccess after resolving
 	// the workspace slug/ID. Avoids redundant lookups in handlers.
 	ctxResolvedWorkspaceID contextKey = "resolved_workspace_id"

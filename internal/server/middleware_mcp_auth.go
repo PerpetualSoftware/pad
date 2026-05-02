@@ -55,7 +55,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := extractBearer(r.Header.Get("Authorization"))
 		if !ok {
-			s.writeMCPUnauthorized(w, "missing_token", "Bearer token required.")
+			s.writeMCPUnauthorized(w, r, "missing_token", "Bearer token required.")
 			return
 		}
 
@@ -64,7 +64,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 		// malformed tokens — a small but meaningful win under any
 		// volume of unauth probes.
 		if !strings.HasPrefix(token, "pad_") || len(token) != 68 {
-			s.writeMCPUnauthorized(w, "invalid_token", "Token format not recognized.")
+			s.writeMCPUnauthorized(w, r, "invalid_token", "Token format not recognized.")
 			return
 		}
 
@@ -79,7 +79,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			return
 		}
 		if apiToken == nil {
-			s.writeMCPUnauthorized(w, "invalid_token", "Token is invalid or expired.")
+			s.writeMCPUnauthorized(w, r, "invalid_token", "Token is invalid or expired.")
 			return
 		}
 
@@ -98,12 +98,12 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			// API surface — see handlers_events.go:52 — but the MCP
 			// transport requires a user identity (every audit log entry,
 			// every "who created this item", etc.). Reject cleanly.
-			s.writeMCPUnauthorized(w, "invalid_token", "MCP requires a user-owned token. Legacy workspace-scoped tokens are not supported here.")
+			s.writeMCPUnauthorized(w, r, "invalid_token", "MCP requires a user-owned token. Legacy workspace-scoped tokens are not supported here.")
 			return
 		}
 		user, err := s.store.GetUser(apiToken.UserID)
 		if err != nil || user == nil {
-			s.writeMCPUnauthorized(w, "invalid_token", "Token references an unknown user.")
+			s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
 			return
 		}
 
@@ -112,6 +112,14 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 		// handlers that distinguish session vs token auth see the same
 		// shape they would on /api/v1/*. Cheap, future-proof.
 		ctx = context.WithValue(ctx, ctxIsAPIToken, true)
+		// Stash the token's scopes so the in-process MCP dispatcher
+		// (internal/mcp/dispatch_http.go) can enforce per-tool scope
+		// checks. Without this, a PAT with `["read"]` scope can drive
+		// write MCP tools because the synthesized in-process request
+		// looks pre-authenticated to the handler tree, bypassing
+		// TokenAuth's chain-level scopeAllows check. Codex review
+		// #369 round 1.
+		ctx = WithTokenScopes(ctx, apiToken.Scopes)
 
 		// Surface near-expiry warning headers the same way TokenAuth
 		// does (middleware_auth.go:125). MCP clients can read them,
@@ -156,19 +164,41 @@ func extractBearer(h string) (string, bool) {
 // resource_metadata points at the same URL handleOAuthProtectedResource
 // serves — Claude Desktop, Cursor, etc. follow it to begin the OAuth
 // discovery flow described in the MCP authorization spec.
-func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, code, msg string) {
-	resourceMeta := strings.TrimRight(s.mcpPublicURL, "/")
-	if resourceMeta == "" {
-		// Fallback for local dev without PAD_MCP_PUBLIC_URL set. The
-		// blank-resource-metadata case is intentionally unsupported
-		// because RFC 9728 §5.3 requires the URL — emitting an empty
-		// value would let agents skip discovery and fail in confusing
-		// ways. Skip the header entirely; the JSON body still carries
-		// the error code.
+//
+// URL resolution for the resource_metadata parameter:
+//
+//  1. s.mcpPublicURL (set by SetMCPTransport from PAD_MCP_PUBLIC_URL).
+//     The canonical case — production deployments always set this.
+//  2. Fallback: derive from the request's Host header with "https://"
+//     prefix. Matches handleOAuthProtectedResource's fallback so the
+//     two URLs stay in sync for local dev without env vars set.
+//
+// Codex review #369 round 1 caught a regression where the fallback
+// path dropped the WWW-Authenticate header entirely — that broke MCP
+// client discovery on cloud-mode-without-PAD_MCP_PUBLIC_URL deploys
+// because fresh clients rely on the header to find the metadata doc.
+func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, code, msg string) {
+	resourceBase := strings.TrimRight(s.mcpPublicURL, "/")
+	if resourceBase == "" && r != nil && r.Host != "" {
+		// Same fallback as handleOAuthProtectedResource — assume HTTPS
+		// because RFC 9728 §3 + MCP authorization spec both require
+		// HTTPS in production, and the test harness doesn't probe the
+		// scheme. Operators on dev hosts running plain HTTP will see
+		// "https://localhost:7777/..." in the header; the test rig
+		// already pins the canonical case via SetMCPTransport.
+		resourceBase = "https://" + r.Host
+	}
+	if resourceBase == "" {
+		// No request and no configured URL — extremely rare (would
+		// only fire if writeMCPUnauthorized is called from a path
+		// that synthesizes a 401 without a request, which today none
+		// do). Fall back to the plain JSON 401 so the response is
+		// still well-formed; agents will get a generic "unauthorized"
+		// rather than a discovery-pointing one.
 		writeError(w, http.StatusUnauthorized, code, msg)
 		return
 	}
-	resourceMeta = resourceMeta + "/.well-known/oauth-protected-resource"
+	resourceMeta := resourceBase + "/.well-known/oauth-protected-resource"
 	w.Header().Set("WWW-Authenticate", `Bearer realm="pad", resource_metadata="`+resourceMeta+`"`)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)

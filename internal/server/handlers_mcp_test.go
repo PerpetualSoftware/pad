@@ -233,6 +233,128 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 // A unit test against extractBearer + a fake store interface is the
 // right shape if someone adds tests for this branch later.
 
+// TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset pins the
+// regression Codex review #369 round 1 caught: when PAD_MCP_PUBLIC_URL
+// is unset, writeMCPUnauthorized used to drop the WWW-Authenticate
+// header entirely, which breaks fresh-client discovery on cloud-mode
+// deploys that hadn't configured the public URL yet. The fallback
+// derives "https://" + r.Host so the discovery handshake completes.
+func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode("test-secret")
+	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	// Both URLs intentionally empty — simulates a cloud deploy that
+	// hasn't set PAD_MCP_PUBLIC_URL / PAD_AUTH_SERVER_URL yet.
+	srv.SetMCPTransport(stub, "", "")
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Host = "mcp.test.local"
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	wwwAuth := rr.Header().Get("WWW-Authenticate")
+	if wwwAuth == "" {
+		t.Fatal("WWW-Authenticate must be set even when PAD_MCP_PUBLIC_URL is unset; got empty header")
+	}
+	wantSubstring := `resource_metadata="https://mcp.test.local/.well-known/oauth-protected-resource"`
+	if !strings.Contains(wwwAuth, wantSubstring) {
+		t.Errorf("expected fallback resource_metadata derived from r.Host, got %q", wwwAuth)
+	}
+}
+
+// TestMCP_ReadScopedPAT_RejectedOnWriteTool pins the security fix
+// for Codex review #369 round 1 finding 1: a PAT with scopes
+// `["read"]` must NOT be able to drive write tools through /mcp.
+// MCPBearerAuth used to skip tokenScopeAllows entirely; the
+// dispatcher's synthesized in-process request bypassed TokenAuth's
+// chain-level check too, so a read-scoped token could perform writes
+// silently. The fix stashes scopes via server.WithTokenScopes in
+// MCPBearerAuth and re-checks them per synthesized request in
+// HTTPHandlerDispatcher.executeRequest. This test exercises the
+// MCPBearerAuth-side stash; the dispatcher enforcement is unit-
+// tested in internal/mcp/dispatch_http_test.go.
+func TestMCP_ReadScopedPAT_StashesScopesInContext(t *testing.T) {
+	srv := testServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "scope-test@example.com", Name: "Scope Tester", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Scope Test WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name:        "read-only-pat",
+		WorkspaceID: ws.ID,
+		Scopes:      `["read"]`,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Stub transport reads scopes from context to confirm they
+	// arrived. Without the WithTokenScopes call in MCPBearerAuth,
+	// the assertion fails — pinning the fix.
+	var seenScopes string
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenScopes = TokenScopesFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	srv.SetCloudMode("test-secret")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (auth passes — scope check is dispatcher-side), got %d", rr.Code)
+	}
+	if seenScopes != `["read"]` {
+		t.Errorf("expected scopes to round-trip via WithTokenScopes; got %q want `[\"read\"]`", seenScopes)
+	}
+}
+
+// TestTokenScopeAllows_PublicWrapper sanity-checks that the exported
+// helper preserves the policy (so the dispatcher can rely on it).
+// Specifically pins the read-vs-write decision the security finding
+// cared about.
+func TestTokenScopeAllows_PublicWrapper(t *testing.T) {
+	cases := []struct {
+		name           string
+		scopes, method string
+		want           bool
+	}{
+		{"read scope on GET", `["read"]`, "GET", true},
+		{"read scope on POST", `["read"]`, "POST", false},
+		{"read scope on PATCH", `["read"]`, "PATCH", false},
+		{"read scope on DELETE", `["read"]`, "DELETE", false},
+		{"write scope on POST", `["write"]`, "POST", true},
+		{"wildcard on POST", `["*"]`, "POST", true},
+		{"empty scopes (legacy) on POST", "", "POST", true},
+		{"unparseable denies", `not-json`, "GET", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TokenScopeAllows(tc.scopes, tc.method, "/api/v1/anything")
+			if got != tc.want {
+				t.Errorf("TokenScopeAllows(%q, %s) = %v, want %v", tc.scopes, tc.method, got, tc.want)
+			}
+		})
+	}
+}
+
 // mcpEnabledTestServer builds a Server with cloud mode + a stub
 // streamable-HTTP transport so tests targeting auth / discovery /
 // routing don't need to drive a full MCP handshake. The stub returns

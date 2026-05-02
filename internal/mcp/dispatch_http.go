@@ -341,6 +341,22 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 // against the wrapped handler. Pulled out of Dispatch so the
 // special-case methods (dispatchItemUpdate, future RMW commands) can
 // reuse the same auth-context + recorder + response-shaping path.
+//
+// Scope enforcement:
+//
+// MCPBearerAuth stashes the API token's scopes string in context via
+// server.WithTokenScopes. Synthesizing the in-process request via
+// server.WithCurrentUser bypasses TokenAuth's chain-level
+// tokenScopeAllows check (TokenAuth short-circuits when currentUser
+// is already set), so we re-check scope here per synthesized request.
+// Without this, a PAT with scope `["read"]` could drive write tools
+// (POST/PATCH/DELETE) because the in-process request looks
+// pre-authenticated to the handler tree. Codex review #369 round 1.
+//
+// The scope check uses the request's actual HTTP method, not the
+// MCP cmdKey, so a `read`-scoped token can still drive read-only
+// tools (project dashboard, item show, search) while writes are
+// rejected with a structured permission_denied error envelope.
 func (d *HTTPHandlerDispatcher) executeRequest(
 	ctx context.Context,
 	cmdKey string,
@@ -348,6 +364,13 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	method, urlPath string,
 	body []byte,
 ) (*mcp.CallToolResult, error) {
+	if scopes := server.TokenScopesFromContext(ctx); !server.TokenScopeAllows(scopes, method, urlPath) {
+		return mcp.NewToolResultErrorf(
+			"%s: permission_denied — token scope does not permit %s on this resource",
+			cmdKey, method,
+		), nil
+	}
+
 	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil

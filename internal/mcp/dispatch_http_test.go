@@ -48,9 +48,15 @@ func (h *recordingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.gotPath = r.URL.Path
 	h.contentType = r.Header.Get("Content-Type")
 
-	body, _ := io.ReadAll(r.Body)
-	h.gotBody = string(body)
-	defer r.Body.Close()
+	// GET / DELETE requests synthesized by buildHTTPRequest have nil
+	// r.Body (no payload to send). Guard so the test handler is
+	// usable for both the create-with-body and the list-without-body
+	// dispatcher paths.
+	if r.Body != nil {
+		body, _ := io.ReadAll(r.Body)
+		h.gotBody = string(body)
+		_ = r.Body.Close()
+	}
 
 	// Pull whatever the dispatcher attached via server.WithCurrentUser
 	// + server.WithAPITokenAuth. Going through exported helpers keeps
@@ -166,6 +172,116 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 	}
 	if !rec.gotIsAPITok {
 		t.Errorf("isAPIToken not set; auth context missing")
+	}
+}
+
+// TestHTTPHandlerDispatcher_ScopeEnforcement_RejectsReadScopeOnWrites
+// pins the security fix from Codex review #369 round 1: a PAT with
+// scopes `["read"]` must not drive write tools through the in-process
+// dispatcher.
+//
+// Background: MCPBearerAuth used to skip tokenScopeAllows entirely.
+// The dispatcher's synthesized request bypasses TokenAuth's chain-
+// level check (because WithCurrentUser is already set), so without
+// the executeRequest scope re-check, a read-scoped token could POST
+// item create / PATCH item update / DELETE item — silently. The
+// fix stashes scopes in MCPBearerAuth via server.WithTokenScopes
+// and re-checks per synthesized request here.
+func TestHTTPHandlerDispatcher_ScopeEnforcement_RejectsReadScopeOnWrites(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t}
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+	}
+
+	// Read-only scope in context — simulates what MCPBearerAuth
+	// stashes for a `["read"]` PAT.
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+	ctx = WithDispatchInput(ctx, map[string]any{
+		"workspace":  "docapp",
+		"collection": "tasks",
+		"title":      "Should Be Rejected",
+	})
+
+	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError result for read-scoped POST; got success: %#v", res)
+	}
+	if rec.requestCount != 0 {
+		t.Errorf("handler must not be invoked when scope check fails (defense in depth); got %d calls", rec.requestCount)
+	}
+	// The error envelope must mention permission_denied so agents can
+	// branch on the code rather than parse free-text.
+	var msg string
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(mcp.TextContent); ok {
+			msg = tc.Text
+		}
+	}
+	if !strings.Contains(msg, "permission_denied") {
+		t.Errorf("error envelope missing permission_denied marker: %q", msg)
+	}
+}
+
+// TestHTTPHandlerDispatcher_ScopeEnforcement_AllowsReadScopeOnReads
+// is the positive complement: a `["read"]` PAT can still call
+// read-only tools (project dashboard, item show, etc.) because their
+// synthesized HTTP method is GET.
+func TestHTTPHandlerDispatcher_ScopeEnforcement_AllowsReadScopeOnReads(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `{"items":[]}`}
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+	}
+
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+	ctx = WithDispatchInput(ctx, map[string]any{"workspace": "docapp"})
+
+	// item list resolves to GET — read scope must allow it.
+	res, err := d.Dispatch(ctx, []string{"item", "list"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("read-scoped GET should succeed; got error: %#v", res)
+	}
+	if rec.gotMethod != http.MethodGet {
+		t.Errorf("expected GET (precondition for the scope-allow path), got %q", rec.gotMethod)
+	}
+}
+
+// TestHTTPHandlerDispatcher_ScopeEnforcement_NoScopeContextAllows
+// pins the legacy/empty-context behaviour: when no scope is stashed
+// (e.g. the dispatcher is used outside the MCP middleware path, or
+// for tests that don't simulate a token), the scope check defers to
+// tokenScopeAllows's "" → allow-all branch. Without this, every
+// existing dispatcher test would break.
+func TestHTTPHandlerDispatcher_ScopeEnforcement_NoScopeContextAllows(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t}
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+	}
+
+	// No WithTokenScopes call — empty scope falls through.
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp", "collection": "tasks", "title": "OK",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("empty scope must allow (legacy); got error: %#v", res)
 	}
 }
 
