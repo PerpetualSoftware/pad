@@ -7,6 +7,7 @@
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 	import AuthOAuthButtons from '$lib/components/auth/AuthOAuthButtons.svelte';
+	import AuthIntentBanner from '$lib/components/auth/AuthIntentBanner.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
 		recordAuthMethod,
@@ -188,6 +189,8 @@
 			/>
 		{:else}
 			<p class="subtitle">Create your account</p>
+
+			<AuthIntentBanner {redirectTarget} mode="signup" />
 
 			<div class="form">
 				<input
