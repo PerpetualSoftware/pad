@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/ory/fosite"
+
+	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
 // MCPBearerAuth is the auth gate for the /mcp Streamable HTTP endpoint.
@@ -281,6 +283,27 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// alongside the legacy PAT scopes, so the same per-method
 	// policy applies to OAuth-issued tokens.
 	ctx = WithTokenScopes(ctx, oauthScopesToJSON(ar.GetGrantedScopes()))
+
+	// Stash the workspace allow-list set at consent time (TASK-952)
+	// so RequireWorkspaceAccess can gate workspace access per-token
+	// (TASK-953). Reading from session.Extra goes through the typed
+	// AllowedWorkspaces accessor so JSON round-trip handling
+	// ([]interface{} vs []string) is centralized in oauth.Session.
+	//
+	// Three shapes arrive here:
+	//   - nil — pre-TASK-952 token (no consent payload). Treated by
+	//     RequireWorkspaceAccess as "no token-level gate"; standard
+	//     membership applies.
+	//   - ["*"] — wildcard. Same effective behaviour as nil for the
+	//     gate: any workspace the user is a member of is allowed.
+	//   - [slug-a, slug-b, ...] — explicit allow-list. Workspaces
+	//     NOT in this set are rejected before the membership check
+	//     even runs.
+	if oauthSession, ok := session.(*oauth.Session); ok {
+		if allowed := oauthSession.AllowedWorkspaces(); allowed != nil {
+			ctx = WithTokenAllowedWorkspaces(ctx, allowed)
+		}
+	}
 
 	next.ServeHTTP(w, r.WithContext(ctx))
 }

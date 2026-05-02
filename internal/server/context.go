@@ -121,3 +121,54 @@ func TokenScopesFromContext(ctx context.Context) string {
 func TokenScopeAllows(scopesJSON, method, path string) bool {
 	return tokenScopeAllows(scopesJSON, method, path)
 }
+
+// WithTokenAllowedWorkspaces returns ctx decorated with the OAuth
+// token's workspace allow-list set at consent time (TASK-952). The
+// list is either a set of slugs (the user's specific selection) or
+// `["*"]` (the wildcard checkbox). MCPBearerAuth's OAuth path stashes
+// this on every request so RequireWorkspaceAccess can gate the
+// resolved workspace against the allow-list (TASK-953) before
+// running the standard membership check.
+//
+// nil clears any previously set allow-list — distinct from setting
+// an empty slice, which would deny every workspace. PAT auth never
+// calls this; the helper exists for the OAuth path only.
+//
+// Exported so the in-process MCP dispatcher can forward the same
+// allow-list onto synthesized requests via Apply, matching the
+// pattern WithTokenScopes uses (sub-PR E TASK-1027 round 1).
+func WithTokenAllowedWorkspaces(ctx context.Context, slugs []string) context.Context {
+	if slugs == nil {
+		return context.WithValue(ctx, ctxTokenAllowedWorkspaces, []string(nil))
+	}
+	// Defensive copy — caller mutating after the call must not
+	// corrupt the per-request token state.
+	cp := make([]string, len(slugs))
+	copy(cp, slugs)
+	return context.WithValue(ctx, ctxTokenAllowedWorkspaces, cp)
+}
+
+// TokenAllowedWorkspacesFromContext returns the token's workspace
+// allow-list, or nil if none was attached. Three return shapes
+// matter to callers:
+//
+//   - nil — no allow-list set (PAT auth, or pre-TASK-952 OAuth
+//     tokens). Caller should NOT apply any token-level gate; rely
+//     on standard membership checks.
+//   - []string{"*"} — wildcard. Caller should not apply per-slug
+//     gating; standard membership applies.
+//   - []string{"slug-a", ...} — explicit allow-list. Caller MUST
+//     deny any workspace not in this set, even if the user is a
+//     member of it.
+//
+// Returns a copy of the stored slice — callers can mutate without
+// risk to the per-request context value.
+func TokenAllowedWorkspacesFromContext(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxTokenAllowedWorkspaces).([]string)
+	if v == nil {
+		return nil
+	}
+	out := make([]string, len(v))
+	copy(out, v)
+	return out
+}

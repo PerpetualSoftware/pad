@@ -934,6 +934,418 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 	}
 }
 
+// =====================================================================
+// Workspace allow-list gate (TASK-953)
+// =====================================================================
+
+// TestWorkspaceAllowList_AllowsListedSlug verifies the happy path:
+// an OAuth token whose consent allow-list includes "alpha" passes
+// the gate when reaching /api/v1/workspaces/alpha/* — same as the
+// pre-TASK-953 behaviour for tokens whose allow-list isn't set.
+//
+// Drives the full chain: OAuth token via /mcp's MCPBearerAuth
+// stashes the allow-list in context; the synthesized API request
+// inherits it; RequireWorkspaceAccess reads it; the workspace
+// resolves; the gate matches; the standard membership check runs.
+func TestWorkspaceAllowList_AllowsListedSlug(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// Seed two workspaces; user is owner of both.
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Beta", "beta", "owner")
+
+	// Mint a token with allow-list = [alpha] (NOT beta).
+	verifier := "verifier-allow-alpha-quick-brown-fox-jumps-over-laz"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"allow-alpha-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"alpha"},
+	}
+	access := mintOAuthTokenForTest(t, srv, sessionToken, csrfTok, clientID, verifier, form)
+
+	// Hit /api/v1/workspaces/alpha — inside allow-list, should
+	// pass the gate. Use the dispatcher path: drive through /mcp's
+	// MCPBearerAuth so the context plumbing matches production.
+	rrAlpha := callWorkspaceViaOAuth(t, srv, access, "alpha")
+	if rrAlpha.Code == http.StatusForbidden {
+		t.Errorf("alpha (in allow-list) must NOT 403; got %d (body: %s)",
+			rrAlpha.Code, rrAlpha.Body.String())
+	}
+}
+
+// TestWorkspaceAllowList_DeniesUnlistedSlug pins the security
+// invariant: a workspace not in the consent allow-list must be
+// rejected with 403 even when the user is a member of it. The
+// user's choice at consent time is binding.
+func TestWorkspaceAllowList_DeniesUnlistedSlug(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Beta", "beta", "owner")
+
+	// Token's allow-list contains ONLY "alpha".
+	verifier := "verifier-deny-beta-quick-brown-fox-jumps-over-lazy-"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"deny-beta-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"alpha"},
+	}
+	access := mintOAuthTokenForTest(t, srv, sessionToken, csrfTok, clientID, verifier, form)
+
+	// Beta is NOT in the allow-list — must 403 even though the
+	// user is owner of beta.
+	rrBeta := callWorkspaceViaOAuth(t, srv, access, "beta")
+	if rrBeta.Code != http.StatusForbidden {
+		t.Errorf("beta (not in allow-list) must 403; got %d (body: %s)",
+			rrBeta.Code, rrBeta.Body.String())
+	}
+}
+
+// TestWorkspaceAllowList_WildcardAllowsAnyMembership pins the
+// wildcard semantics: ["*"] grants access to every workspace the
+// user is a member of, no per-slug gate. Standard membership is
+// still the boundary.
+func TestWorkspaceAllowList_WildcardAllowsAnyMembership(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Beta", "beta", "editor")
+
+	verifier := "verifier-wildcard-quick-brown-fox-jumps-over-lazy-d"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"wildcard-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"*"},
+	}
+	access := mintOAuthTokenForTest(t, srv, sessionToken, csrfTok, clientID, verifier, form)
+
+	for _, slug := range []string{"alpha", "beta"} {
+		rr := callWorkspaceViaOAuth(t, srv, access, slug)
+		if rr.Code == http.StatusForbidden {
+			t.Errorf("wildcard token must NOT 403 on %s; got %d (body: %s)",
+				slug, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// TestWorkspaceAllowList_LiveMembershipRevocation pins the live-
+// membership check: a token whose allow-list includes "alpha"
+// stops working when the user's membership in "alpha" is revoked
+// — even though the token's stored allow-list still includes the
+// slug. The membership table is the binding gate (RequireWorkspaceAccess
+// runs after the allow-list check).
+//
+// This is the "if your membership changes, this connection's
+// permissions change immediately" property from the PLAN-943 design
+// (TASK-952's consent-screen footer references this).
+func TestWorkspaceAllowList_LiveMembershipRevocation(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	ws := mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+
+	verifier := "verifier-revoke-quick-brown-fox-jumps-over-the-lazy"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"revoke-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		"allowed_workspaces":    {"alpha"},
+	}
+	access := mintOAuthTokenForTest(t, srv, sessionToken, csrfTok, clientID, verifier, form)
+
+	// Sanity check — token works against alpha while membership
+	// is intact.
+	rrBefore := callWorkspaceViaOAuth(t, srv, access, "alpha")
+	if rrBefore.Code == http.StatusForbidden {
+		t.Fatalf("baseline: token should pass while user is owner of alpha; got %d", rrBefore.Code)
+	}
+
+	// Revoke membership. Reuse the store directly so the test
+	// doesn't depend on an admin-only API path.
+	if err := srv.store.RemoveWorkspaceMember(ws.ID, user.ID); err != nil {
+		t.Fatalf("RemoveWorkspaceMember: %v", err)
+	}
+
+	// Same token now — must NOT succeed (live membership check).
+	// resolveWorkspace short-circuits for non-admin users by scoping
+	// slug lookup to the user's memberships, so post-revocation the
+	// response is actually 404 (workspace doesn't resolve) rather
+	// than 403 (workspace resolves but member is missing). Both
+	// are valid "no access" outcomes — 404 leaks less than 403,
+	// since the attacker can't tell whether the workspace exists.
+	// The TASK-953 design lists 403 as the canonical response, but
+	// either denial mode satisfies "membership revocation cuts the
+	// connection immediately."
+	rrAfter := callWorkspaceViaOAuth(t, srv, access, "alpha")
+	if rrAfter.Code != http.StatusForbidden && rrAfter.Code != http.StatusNotFound {
+		t.Errorf("post-revocation: must 403 or 404 (live membership check); got %d (body: %s)",
+			rrAfter.Code, rrAfter.Body.String())
+	}
+}
+
+// TestWorkspaceAllowList_PATPathUnaffected regresses the PAT auth
+// path: a Personal Access Token doesn't carry a workspace allow-
+// list (the consent UI is OAuth-only), so its requests must NOT
+// hit the gate. PATs that hit /api/v1/workspaces/<slug>/* should
+// continue to work the same as they did pre-TASK-953.
+func TestWorkspaceAllowList_PATPathUnaffected(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user := mustCreateUserForTest(t, srv, "pat-no-gate@example.com")
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
+
+	// Workspace-scoped PAT (the Y2025 model — workspace required for the
+	// FK but the user is the auth principal).
+	wsForToken, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Token WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace (token holder): %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name: "pat-no-gate", WorkspaceID: wsForToken.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// PAT against /api/v1/workspaces/alpha must not be gate-rejected.
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/alpha/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusForbidden {
+		t.Errorf("PAT path must NOT be subject to the OAuth allow-list gate; got 403 (body: %s)", rr.Body.String())
+	}
+}
+
+// TestWorkspaceAllowList_TierTimesRole_WriteByViewer pins the
+// central tier×role security claim from PLAN-943: a token whose
+// capability tier is `pad:write` does NOT bypass the user's
+// workspace role. If the user is only a Viewer in workspace foo,
+// a `pad:write` token must NOT be able to create items there even
+// though the token's tier is sufficient — the role gate kicks in
+// at the per-handler level (requireEditPermission via
+// workspaceRole(r)).
+//
+// This is the test the task spec calls out specifically:
+// "pad:write action + Viewer → 403 (capability allows but role
+// doesn't)."
+func TestWorkspaceAllowList_TierTimesRole_WriteByViewer(t *testing.T) {
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+
+	// User is a VIEWER in workspace alpha — restrictive role.
+	ws := mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "viewer")
+
+	// Seed a collection so the POST has a valid target.
+	if _, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks",
+		Schema: `{"fields":[]}`,
+	}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// Mint a pad:write tier token, allow-list = [alpha]. Capability
+	// tier alone passes tokenScopeAllows for POST.
+	verifier := "verifier-tier-role-quick-brown-fox-jumps-over-lazy-"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"tier-role-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"write"},
+		"allowed_workspaces":    {"alpha"},
+	}
+	access := mintOAuthTokenForTest(t, srv, sessionToken, csrfTok, clientID, verifier, form)
+
+	// POST a new item under alpha/tasks. Token's tier is write
+	// (passes tokenScopeAllows), token's allow-list includes alpha
+	// (passes the new gate), user is a viewer in alpha (must
+	// trigger requireEditPermission's role check → 403).
+	urlPath := "/api/v1/workspaces/alpha/collections/tasks/items"
+	body := strings.NewReader(`{"title":"should be denied"}`)
+	req := httptest.NewRequest("POST", urlPath, body)
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.1:1234"
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api := req.Clone(r.Context())
+		api.Header.Del("Authorization")
+		srv.ServeHTTP(w, api)
+	})
+	rr := httptest.NewRecorder()
+	srv.MCPBearerAuth(inner).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("pad:write tier × viewer role MUST 403 on item create; got %d (body: %s)",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// mintOAuthTokenForTest drives the consent → token exchange and
+// returns the access token. Lightly customizable via the form arg
+// so callers can vary the consent payload (allow-list, tier, etc.).
+//
+// Centralizes the boilerplate that would otherwise repeat across
+// every workspace-allow-list test.
+func mintOAuthTokenForTest(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier string, form url.Values) string {
+	t.Helper()
+
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("missing code in callback: %s", rrDecide.Header().Get("Location"))
+	}
+
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {testCanonicalAudience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	access, _ := resp["access_token"].(string)
+	if access == "" {
+		t.Fatalf("missing access_token: %v", resp)
+	}
+	return access
+}
+
+// callWorkspaceViaOAuth simulates an MCP-driven workspace API call
+// by going through MCPBearerAuth's OAuth path. The MCP transport
+// stub the test harness wires (mcpAndOAuthEnabledTestServer) DOES
+// NOT actually synthesize a workspace request — it just records
+// the auth context. So we make the workspace request directly with
+// the OAuth bearer, going through the same auth chain a synthesized
+// dispatcher request would go through.
+//
+// This works because /api/v1/workspaces/<slug>/ is mounted on the
+// /api/v1 group with TokenAuth + SessionAuth + RequireAuth. We need
+// MCPBearerAuth to set up the context, but a direct API request
+// with a Bearer token won't hit MCPBearerAuth — it'll hit TokenAuth
+// instead, which doesn't currently introspect OAuth tokens. So we
+// use httptest.NewRecorder + manually inject the context the
+// dispatcher would, then invoke the API via a fresh handler call.
+//
+// Concretely: this helper invokes MCPBearerAuth as a chain wrapper
+// around a simple workspace handler so the OAuth-token validation
+// + context plumbing happens once, exactly as production.
+func callWorkspaceViaOAuth(t *testing.T, srv *Server, access, workspaceSlug string) *httptest.ResponseRecorder {
+	t.Helper()
+	// Build a request to /api/v1/workspaces/<slug>/. The path goes
+	// through chi's routing for slug extraction in the workspace
+	// middleware.
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+workspaceSlug+"/", nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.RemoteAddr = "192.0.2.1:1234"
+
+	// MCPBearerAuth normally only runs on /mcp. To exercise the
+	// OAuth-token allow-list gate end-to-end, manually wrap the
+	// handler chain so MCPBearerAuth runs first and stashes context,
+	// then the regular API chain sees the synthesized token state.
+	// This mirrors what the dispatcher does in production: the
+	// inbound /mcp request sets context, then in-process
+	// synthesized requests inherit it.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Build a fresh request for /api with the bearer-derived
+		// context preserved — mirror buildHTTPRequest's pattern.
+		api := req.Clone(r.Context())
+		api.Header.Del("Authorization") // drop bearer; context carries the auth state
+		srv.ServeHTTP(w, api)
+	})
+	rr := httptest.NewRecorder()
+	srv.MCPBearerAuth(inner).ServeHTTP(rr, req)
+	return rr
+}
+
+// mustCreateUserForTest creates a user for tests that need a user
+// row but don't need a session. Counterpart to loginTestUser, which
+// creates BOTH a user and a session.
+func mustCreateUserForTest(t *testing.T, srv *Server, email string) *models.User {
+	t.Helper()
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email:    email,
+		Name:     "Test User",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return user
+}
+
 // newTestOAuthServer builds an internal/oauth.Server matched to the
 // test harness's canonical audience (testCanonicalAudience). Used by
 // mcpAndOAuthEnabledTestServer to wire OAuth alongside the MCP stub.

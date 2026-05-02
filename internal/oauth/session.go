@@ -67,6 +67,91 @@ func (s *Session) UserID() string {
 	return s.DefaultSession.Subject
 }
 
+// allowedWorkspacesExtraKey is the session.Extra map key under which
+// the consent UI (TASK-952) stores the workspace allow-list. Defined
+// as a package constant so producers (handlers_oauth.go's
+// /authorize/decide) and consumers (TASK-953's MCPBearerAuth gate)
+// agree on the wire form.
+const allowedWorkspacesExtraKey = "allowed_workspaces"
+
+// AllowedWorkspaces returns the workspace allow-list stored in
+// session.Extra at consent time (TASK-952). Three return shapes
+// matter to callers:
+//
+//   - nil — no allow-list set. Either a non-OAuth session (PAT auth
+//     never goes through this code path) or a pre-TASK-952 token
+//     issued before the consent UI shipped. Callers should treat
+//     this as "no token-level workspace constraint" and rely on the
+//     standard membership gate.
+//   - []string{"*"} — wildcard. The user explicitly granted access
+//     to any workspace they currently or later have access to;
+//     standard membership still applies, no extra restriction.
+//   - []string{"slug-a", "slug-b", ...} — explicit allow-list. Each
+//     workspace request must hit a slug in this set OR be denied
+//     before the membership check runs.
+//
+// JSON round-trip handling: fosite serializes session.Extra via
+// json.Marshal and deserializes back through json.Unmarshal into a
+// map[string]interface{}. After a round-trip the value is
+// []interface{} (Go's untyped JSON array shape), not []string.
+// We accept both so the helper works whether the session was just
+// created in memory (handlers_oauth.go's decide flow) or hydrated
+// from storage (sub-PR D's introspection path).
+func (s *Session) AllowedWorkspaces() []string {
+	if s == nil || s.DefaultSession == nil || s.DefaultSession.Extra == nil {
+		return nil
+	}
+	raw, ok := s.DefaultSession.Extra[allowedWorkspacesExtraKey]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, len(v))
+		copy(out, v)
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		// Distinguish "explicit empty list" from "no key set" — the
+		// former is unusual but if a future change persists []string{}
+		// for some reason we don't want a phantom nil meaning "no
+		// constraint." Return non-nil empty so callers see "list is
+		// set, but contains nothing"; current MCPBearerAuth would
+		// reject the request as no workspace can match.
+		if out == nil {
+			out = []string{}
+		}
+		return out
+	}
+	return nil
+}
+
+// SetAllowedWorkspaces is the symmetric writer used by
+// /oauth/authorize/decide (TASK-952). Centralizing the key string
+// here keeps producers + consumers in sync; nil clears the entry.
+func (s *Session) SetAllowedWorkspaces(workspaces []string) {
+	if s == nil || s.DefaultSession == nil {
+		return
+	}
+	if s.DefaultSession.Extra == nil {
+		s.DefaultSession.Extra = map[string]interface{}{}
+	}
+	if workspaces == nil {
+		delete(s.DefaultSession.Extra, allowedWorkspacesExtraKey)
+		return
+	}
+	// Defensive copy — caller mutating the slice after the call
+	// shouldn't bleed through into the persisted session.
+	cp := make([]string, len(workspaces))
+	copy(cp, workspaces)
+	s.DefaultSession.Extra[allowedWorkspacesExtraKey] = cp
+}
+
 // Clone overrides DefaultSession.Clone so the returned value is a
 // *Session, not a *DefaultSession. Without this override, fosite's
 // internal Clone() calls during refresh-token rotation would lose the
