@@ -155,6 +155,11 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 // without the wrap they reject the tool call with "expected: record"
 // (BUG-985 bug 3).
 //
+// Item-shaped objects also get their `fields` and `tags` properties
+// parsed from JSON-encoded strings into native objects/arrays
+// (BUG-991, path A). Server / web / CLI keep their existing
+// stringified contract; the MCP boundary normalizes for agents.
+//
 // Shared between ExecDispatcher and HTTPHandlerDispatcher's
 // packageHTTPResponse so both transports produce the same wire
 // shape.
@@ -167,6 +172,7 @@ func packageJSONResult(out string) *mcp.CallToolResult {
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		return mcp.NewToolResultText(out)
 	}
+	parsed = normalizeStringEncodedJSONFields(parsed)
 	if arr, ok := parsed.([]any); ok {
 		// Wrap top-level arrays. MCP host validators (Claude Desktop)
 		// require `structuredContent` to be an object/record, not an
@@ -176,6 +182,72 @@ func packageJSONResult(out string) *mcp.CallToolResult {
 		return mcp.NewToolResultStructured(map[string]any{"items": arr}, out)
 	}
 	return mcp.NewToolResultStructured(parsed, out)
+}
+
+// normalizeStringEncodedJSONFields recursively walks a parsed JSON
+// value, finds string-typed `fields` and `tags` properties, parses
+// them as embedded JSON, and substitutes the native object/array.
+//
+// Why: the server-side `models.Item` carries `Fields` and `Tags` as
+// JSON-string columns (a SQLite-era choice that propagated through
+// the API contract). For agents going through MCP this means a
+// double-encode every read — the agent has to JSON.parse the field
+// before doing anything useful. Normalizing at the MCP boundary
+// gives agents clean JSON without coordinating a server / web / CLI
+// migration (which is the bigger BUG-991 path B).
+//
+// The walk handles every common item shape:
+//   - Single-item responses (top-level item object).
+//   - Item arrays (item list, dashboard.active_items, comment lists).
+//   - Nested items (dashboard.recent_activity[].item, parent_*).
+//
+// Strings that don't parse as JSON pass through unchanged — covers
+// hand-written field values that happen to share a key name.
+func normalizeStringEncodedJSONFields(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok && (k == "fields" || k == "tags") {
+				if parsed, ok := tryParseEmbeddedJSON(s); ok {
+					x[k] = parsed
+					continue
+				}
+			}
+			x[k] = normalizeStringEncodedJSONFields(val)
+		}
+		return x
+	case []any:
+		for i, val := range x {
+			x[i] = normalizeStringEncodedJSONFields(val)
+		}
+		return x
+	default:
+		return v
+	}
+}
+
+// tryParseEmbeddedJSON attempts to parse s as JSON, returning the
+// native value when it succeeds. Returns (nil, false) when the
+// string is empty, doesn't start with `{` or `[`, or fails to
+// unmarshal — leaves the caller free to keep the original string.
+//
+// We require the leading-brace check before attempting Unmarshal so
+// hand-written values that happen to be quoted-but-numeric or
+// quoted-but-bare strings don't get spuriously coerced into Go
+// values agents weren't expecting.
+func tryParseEmbeddedJSON(s string) (any, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	if !strings.HasPrefix(s, "{") && !strings.HasPrefix(s, "[") {
+		return nil, false
+	}
+	var out any
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // ListWorkspaces satisfies WorkspaceLister so error helpers can

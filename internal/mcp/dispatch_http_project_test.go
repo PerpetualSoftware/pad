@@ -832,9 +832,9 @@ func TestHTTPHandlerDispatcher_Integration_Slice3(t *testing.T) {
 		t.Fatalf("item show: %#v", showRes)
 	}
 	shown, _ := showRes.StructuredContent.(map[string]any)
-	fieldsStr, _ := shown["fields"].(string)
-	var fields map[string]any
-	_ = json.Unmarshal([]byte(fieldsStr), &fields)
+	// BUG-991 path A: fields is now parsed at the MCP boundary; no
+	// JSON.Unmarshal step needed.
+	fields := itemFieldsAsMap(t, shown)
 	if fields["priority"] != "high" {
 		t.Errorf("priority should survive bulk-update; got %v", fields["priority"])
 	}

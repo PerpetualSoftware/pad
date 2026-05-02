@@ -465,11 +465,10 @@ func TestHTTPHandlerDispatcher_Integration_ItemUpdateAndAssignResolution(t *test
 	if !ok {
 		t.Fatalf("update result not structured: %#v", updateRes.StructuredContent)
 	}
-	fields, _ := updated["fields"].(string)
-	var fieldMap map[string]any
-	if err := json.Unmarshal([]byte(fields), &fieldMap); err != nil {
-		t.Fatalf("decode fields: %v\n%s", err, fields)
-	}
+	// BUG-991 path A: `fields` is now parsed at the MCP boundary so
+	// it arrives as a native map. Pre-fix we had to JSON.Unmarshal
+	// the string ourselves here.
+	fieldMap := itemFieldsAsMap(t, updated)
 	want := map[string]string{
 		"status":   "in-progress",
 		"priority": "high",  // pre-existing, must survive RMW
@@ -480,6 +479,24 @@ func TestHTTPHandlerDispatcher_Integration_ItemUpdateAndAssignResolution(t *test
 			t.Errorf("fields[%q] = %q, want %q (full fields: %v)", k, got, v, fieldMap)
 		}
 	}
+}
+
+// itemFieldsAsMap reads the parsed `fields` value off an item-shape
+// structuredContent map. After BUG-991 path A's normalization the
+// MCP boundary returns `fields` as a native map[string]any; tests
+// that previously decoded a string fall through this helper for
+// readability + a clear error when the shape regresses.
+func itemFieldsAsMap(t *testing.T, item map[string]any) map[string]any {
+	t.Helper()
+	v, ok := item["fields"]
+	if !ok {
+		t.Fatalf("item missing `fields`: %#v", item)
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("item.fields is %T, want map[string]any (BUG-991 normalization regressed?)", v)
+	}
+	return m
 }
 
 func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
