@@ -8,6 +8,7 @@
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 	import AuthOAuthButtons from '$lib/components/auth/AuthOAuthButtons.svelte';
+	import AuthIntentBanner from '$lib/components/auth/AuthIntentBanner.svelte';
 	import {
 		recordAuthMethod,
 		getLastAuthMethod,
@@ -353,6 +354,8 @@
 			</div>
 		{:else}
 			<p class="subtitle">Sign in to continue</p>
+
+			<AuthIntentBanner {redirectTarget} mode="signin" />
 
 			<div class="form">
 				<input
