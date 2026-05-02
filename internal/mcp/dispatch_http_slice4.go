@@ -19,6 +19,39 @@ import (
 
 // --- project standup ---
 
+// dispatchProjectNext reproduces `pad project next --format json`
+// after BUG-987 bug 6's fix: fetch the dashboard, return ONLY the
+// suggested_next array. Without this method, "project next" routed
+// straight to /dashboard via the route table — making the HTTP
+// transport's response indistinguishable from project dashboard,
+// which the CLI no longer does. Catalog actions must produce the
+// same shape on both transports.
+func (d *HTTPHandlerDispatcher) dispatchProjectNext(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "project next"
+	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
+	if errRes != nil {
+		return errRes, nil
+	}
+	suggestions := dashboardArrayField(dash, "suggested_next")
+	if suggestions == nil {
+		// Distinguish "no suggestions" from a totally absent field —
+		// emit an empty slice so consumers see a stable shape.
+		suggestions = []map[string]any{}
+	}
+	// Re-encode the slice to drive packageJSONResult's
+	// array-wrap-as-{items: [...]} path (BUG-985 fix). Same wire
+	// shape MCP host validators expect.
+	body, err := json.Marshal(suggestions)
+	if err != nil {
+		return mcp.NewToolResultErrorf("%s: marshal suggestions: %s", cmdKey, err.Error()), nil
+	}
+	return packageJSONResult(string(body)), nil
+}
+
 // dispatchProjectStandup reproduces `pad project standup --format
 // json`: fetches the dashboard for blockers + suggested-next, lists
 // items in each terminal status to find recently completed work,
@@ -121,14 +154,22 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 
 	blockers := make([]standupItem, 0)
 	for _, a := range dashboardArrayField(dash, "attention") {
+		// BUG-987 bug 8: previously omitted Ref, leaving agents
+		// unable to link the blocker entry back to the blocked item.
+		// The dashboard's attention[].item_ref is the canonical issue
+		// ref (e.g. TASK-7), already populated by the dashboard handler.
 		blockers = append(blockers, standupItem{
+			Ref:    stringFromMap(a, "item_ref"),
 			Title:  stringFromMap(a, "item_title"),
 			Reason: stringFromMap(a, "reason"),
 		})
 	}
 	suggested := make([]standupItem, 0)
 	for _, s := range dashboardArrayField(dash, "suggested_next") {
+		// Same Ref-omission as blockers above. dashboard's
+		// suggested_next[].item_ref carries the canonical issue ref.
 		suggested = append(suggested, standupItem{
+			Ref:    stringFromMap(s, "item_ref"),
 			Title:  stringFromMap(s, "item_title"),
 			Reason: stringFromMap(s, "reason"),
 		})

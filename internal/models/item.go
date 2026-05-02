@@ -202,6 +202,16 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 	var metadata ItemConventionMetadata
 	hasMetadata := false
 
+	// hasConventionShape tracks whether we've found a Convention-
+	// SPECIFIC marker — the structured convention field, or one of
+	// trigger / surfaces / scope / commands / direct enforcement.
+	// `category` alone is NOT a Convention marker (Ideas, Bugs, Roadmap
+	// items also use category). Used to gate the priority→enforcement
+	// legacy fallback below; without this gate every Task/Idea with a
+	// `priority` field got a phantom `convention.enforcement` surfaced
+	// on its response (BUG-987 bug 13).
+	hasConventionShape := false
+
 	if raw, ok := fieldsMap[ItemFieldConvention]; ok {
 		payload, err := json.Marshal(raw)
 		if err == nil {
@@ -215,6 +225,7 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 					Commands:    append([]string(nil), structured.Commands...),
 				}
 				hasMetadata = true
+				hasConventionShape = true
 			}
 		}
 	}
@@ -223,43 +234,69 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 		if category, ok := fieldsMap["category"].(string); ok {
 			metadata.Category = category
 			hasMetadata = true
+			// Note: category alone does NOT flip hasConventionShape —
+			// many non-Convention collections legitimately use it.
 		}
 	}
 	if metadata.Trigger == "" {
 		if trigger, ok := fieldsMap["trigger"].(string); ok {
 			metadata.Trigger = trigger
 			hasMetadata = true
+			hasConventionShape = true
 		}
 	}
+	// Direct enforcement only — the priority fallback runs at the
+	// END so surfaces/scope/commands have a chance to flip
+	// hasConventionShape first. Without that ordering, a legacy
+	// Convention like `{scope:"all", priority:"must"}` (no trigger)
+	// would silently drop enforcement because the fallback ran
+	// before scope set hasConventionShape.
 	if metadata.Enforcement == "" {
-		switch value := fieldsMap["enforcement"].(type) {
-		case string:
+		if value, ok := fieldsMap["enforcement"].(string); ok {
 			metadata.Enforcement = value
 			hasMetadata = true
-		default:
-			if priority, ok := fieldsMap["priority"].(string); ok {
-				metadata.Enforcement = priority
-				hasMetadata = true
-			}
+			hasConventionShape = true
 		}
 	}
 	if len(metadata.Surfaces) == 0 {
 		if surfaces := extractStringList(fieldsMap["surfaces"]); len(surfaces) > 0 {
 			metadata.Surfaces = surfaces
 			hasMetadata = true
+			hasConventionShape = true
 		} else if scope, ok := fieldsMap["scope"].(string); ok && scope != "" {
 			metadata.Surfaces = []string{scope}
 			hasMetadata = true
+			hasConventionShape = true
 		}
 	}
 	if len(metadata.Commands) == 0 {
 		if commands := extractStringList(fieldsMap["commands"]); len(commands) > 0 {
 			metadata.Commands = commands
 			hasMetadata = true
+			hasConventionShape = true
+		}
+	}
+
+	// Legacy priority→enforcement fallback. Runs AFTER all other
+	// markers because hasConventionShape only flips once we've seen
+	// a Convention-specific signal. Without this ordering, a legacy
+	// Convention with only `{scope, priority}` would lose its
+	// enforcement value because scope hadn't been processed yet
+	// (Codex review on PR #361 caught this).
+	if metadata.Enforcement == "" && hasConventionShape {
+		if priority, ok := fieldsMap["priority"].(string); ok {
+			metadata.Enforcement = priority
 		}
 	}
 
 	if !hasMetadata {
+		return nil
+	}
+	// Final guard: if we ONLY matched on `category` (no Convention-
+	// specific markers), the item isn't a Convention. Suppress the
+	// metadata entirely — surfacing { category } on a non-Convention
+	// item just for category alone produced confusing responses.
+	if !hasConventionShape {
 		return nil
 	}
 	return normalizeItemConventionMetadata(&metadata)

@@ -312,10 +312,13 @@ func init() {
 		// returns dashJSON verbatim). `ready` and `stale` get custom
 		// dispatchers because their CLI JSON output is `{count, results}`
 		// post-filter, not the raw dashboard.
-		"project next": routeSpec{
-			method:       http.MethodGet,
-			pathTemplate: "/api/v1/workspaces/{workspace}/dashboard",
-		}.toRouteMapper(),
+		// `project next` is dispatched as a method on
+		// HTTPHandlerDispatcher (see dispatch_http.go's switch) so it
+		// can fetch the dashboard then slice to suggested_next only —
+		// matching the CLI behaviour after BUG-987 bug 6's fix.
+		// Routing this entry to the bare /dashboard endpoint would
+		// re-introduce the full-dashboard regression on the HTTP
+		// transport.
 
 		// --- Admin: collections ---
 		"collection create": mapCollectionCreate,

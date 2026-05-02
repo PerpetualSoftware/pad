@@ -250,6 +250,14 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // structured envelope. lookup is optional — when supplied, no_workspace
 // errors get available_workspaces enrichment.
 func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stderr string, lookup WorkspaceLister) *mcp.CallToolResult {
+	// BUG-987 bug 11: cobra automatically appends a "Usage: ..." block
+	// to stderr when a command fails with a runtime error. That help
+	// text uses the OLD CLI verb names (e.g. `pad item block`) which
+	// confuses agents using the v0.2 catalog (`pad_item action=link
+	// link_type=blocks`) and bloats error messages. Strip the Usage
+	// block before classification so neither matchers nor envelope
+	// content carry it.
+	stderr = stripCobraUsageBlock(stderr)
 	stderr = strings.TrimSpace(stderr)
 	lower := strings.ToLower(stderr)
 
@@ -347,6 +355,99 @@ func extractUnknownWorkspaceSlug(stderr string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// validationFailedFromBuildErr wraps a BuildCLIArgs error (typically
+// "missing required argument %q" or "flag %q: <type-mismatch>") as a
+// structured validation_failed envelope. Best-effort extraction of
+// the offending field name out of Go's error wrapping conventions —
+// when the regex misses, the message itself still carries the
+// underlying text.
+//
+// BUG-987 bug 12: previously BuildCLIArgs failures came out of
+// env.Dispatch as bare mcp.NewToolResultErrorf strings, breaking the
+// structured-envelope invariant that every other error path follows.
+func validationFailedFromBuildErr(cmdPath string, err error) *mcp.CallToolResult {
+	msg := err.Error()
+	field := extractValidationField(msg)
+	payload := ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("validation failed for `%s`: %s", cmdPath, msg),
+		Field:   field,
+	}
+	return NewErrorResult(payload)
+}
+
+// reValidationField matches the field-name token in BuildCLIArgs's
+// error strings. Both `argument "x"` and `flag "x"` formats cover
+// ~all of its err paths (see internal/mcp/dispatch.go's BuildCLIArgs).
+var reValidationField = regexp.MustCompile(`(?:argument|flag)\s+"([^"]+)"`)
+
+// extractValidationField pulls the field name out of a BuildCLIArgs
+// error message, returning empty string when no match is found.
+func extractValidationField(msg string) string {
+	m := reValidationField.FindStringSubmatch(msg)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
+}
+
+// stripCobraUsageBlock removes cobra's auto-appended "Usage: ..."
+// help block from a stderr string. cobra emits this block on any
+// runtime error from a RunE handler — useful for human users running
+// the CLI directly, but noise in MCP error envelopes (and worse,
+// references CLI verb names like `pad item block` that aren't part
+// of the v0.2 MCP catalog at all, BUG-987 bug 11).
+//
+// The block is recognizable: a line containing exactly "Usage:"
+// (with optional surrounding whitespace) followed by the help text.
+// Truncate at the first such line. If no Usage block is present
+// (the typical no-cobra-help error path), the input is returned
+// unchanged.
+func stripCobraUsageBlock(stderr string) string {
+	idx := indexOfUsageLine(stderr)
+	if idx < 0 {
+		return stderr
+	}
+	return strings.TrimRight(stderr[:idx], " \t\r\n")
+}
+
+// indexOfUsageLine returns the byte offset of the line containing
+// "Usage:" (cobra's help-block prefix), or -1 when absent. The match
+// is anchored to a line start (preceded by '\n' or string start) so
+// in-message mentions of the word "Usage:" don't accidentally
+// truncate.
+func indexOfUsageLine(s string) int {
+	const marker = "Usage:"
+	idx := 0
+	for {
+		rel := strings.Index(s[idx:], marker)
+		if rel < 0 {
+			return -1
+		}
+		abs := idx + rel
+		// Anchor: must be at the start of a line. A leading newline
+		// (with optional whitespace before the marker) qualifies.
+		if abs == 0 || isLineStart(s, abs) {
+			return abs
+		}
+		idx = abs + len(marker)
+	}
+}
+
+// isLineStart returns true when the character at byte position i is
+// preceded by a newline (with arbitrary leading whitespace allowed
+// between the newline and i).
+func isLineStart(s string, i int) bool {
+	for j := i - 1; j >= 0; j-- {
+		c := s[j]
+		if c == ' ' || c == '\t' {
+			continue
+		}
+		return c == '\n'
+	}
+	return true
 }
 
 // ─────────────────────────────────────────────────────────────────────

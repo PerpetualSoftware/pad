@@ -244,7 +244,15 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		})
 	}
 
-	// Add unassigned
+	// Add unassigned. BUG-987 bug 14: previously the unassigned row
+	// was emitted with empty role_name + role_slug, which downstream
+	// consumers parsed as a "phantom" entry — visually misleading
+	// (appeared as a blank row with item_count > 0) and forced clients
+	// to special-case empty strings as "unassigned." Use explicit
+	// "Unassigned" / "unassigned" so the entry is self-describing,
+	// while still keeping role_id null so it's distinguishable from
+	// a real role with that slug (none can exist — `unassigned` is
+	// reserved by virtue of role_id being nil).
 	if unassigned.count > 0 {
 		var userList []string
 		if unassigned.users != "" {
@@ -252,8 +260,8 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		}
 		result = append(result, RoleBreakdown{
 			RoleID:    nil,
-			RoleName:  "",
-			RoleSlug:  "",
+			RoleName:  "Unassigned",
+			RoleSlug:  "unassigned",
 			RoleIcon:  "",
 			ItemCount: unassigned.count,
 			Users:     userList,

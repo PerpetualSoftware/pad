@@ -65,6 +65,86 @@ func TestExtractItemConventionMetadataFallsBackToLegacyFields(t *testing.T) {
 	}
 }
 
+// TestExtractItemConventionMetadata_NoLeakOnNonConventionItems is the
+// regression test for BUG-987 bug 13. Previously every Task / Idea /
+// Plan with a `priority` field got a phantom
+// `convention.enforcement: <priority>` surfaced on its response,
+// because the legacy fallback in ExtractItemConventionMetadata
+// unconditionally treated `priority` as the Convention enforcement
+// tier. Tasks have priority but aren't Conventions; the metadata
+// must NOT be synthesized for them.
+func TestExtractItemConventionMetadata_NoLeakOnNonConventionItems(t *testing.T) {
+	cases := []struct {
+		name   string
+		fields string
+	}{
+		{"task with priority", `{"status":"open","priority":"high"}`},
+		{"task with priority and category", `{"status":"open","priority":"high","category":"frontend"}`},
+		{"idea with priority", `{"status":"new","priority":"medium","impact":"high"}`},
+		{"plan with start_date and priority", `{"status":"active","priority":"high","start_date":"2026-01-01"}`},
+		{"category alone is not a Convention signal", `{"category":"agent-integration","status":"new"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractItemConventionMetadata(tc.fields)
+			if got != nil {
+				t.Errorf("expected nil metadata for non-Convention item; got %+v", got)
+			}
+		})
+	}
+}
+
+// TestExtractItemConventionMetadata_ConventionWithLegacyPriority
+// exercises the path where priority→enforcement legacy fallback IS
+// expected to fire — items that carry Convention-specific markers
+// (trigger, scope, etc.) but use the legacy `priority` field for
+// enforcement. The bug 13 fix preserves this path.
+func TestExtractItemConventionMetadata_ConventionWithLegacyPriority(t *testing.T) {
+	got := ExtractItemConventionMetadata(`{"status":"active","trigger":"on-commit","scope":"all","priority":"must"}`)
+	if got == nil {
+		t.Fatal("expected metadata for Convention with legacy priority field")
+	}
+	if got.Enforcement != "must" {
+		t.Errorf("Enforcement = %q, want must (priority legacy fallback)", got.Enforcement)
+	}
+	if got.Trigger != "on-commit" {
+		t.Errorf("Trigger = %q, want on-commit", got.Trigger)
+	}
+}
+
+// TestExtractItemConventionMetadata_LegacyConvention_ScopeOnly is
+// the regression test for Codex's PR #361 round-1 finding: a legacy
+// Convention carrying only `{scope, priority}` (no trigger, no
+// commands, no structured convention field) must still resolve
+// priority→enforcement. Pre-fix, the fallback ran BEFORE scope had
+// flipped hasConventionShape, so enforcement got silently dropped.
+func TestExtractItemConventionMetadata_LegacyConvention_ScopeOnly(t *testing.T) {
+	got := ExtractItemConventionMetadata(`{"status":"active","scope":"all","priority":"must"}`)
+	if got == nil {
+		t.Fatal("expected metadata for legacy Convention with scope+priority")
+	}
+	if got.Enforcement != "must" {
+		t.Errorf("Enforcement = %q, want must (priority fallback after scope flips shape)",
+			got.Enforcement)
+	}
+	if len(got.Surfaces) != 1 || got.Surfaces[0] != "all" {
+		t.Errorf("Surfaces = %v, want [all]", got.Surfaces)
+	}
+}
+
+// TestExtractItemConventionMetadata_LegacyConvention_CommandsOnly
+// covers the equivalent path for the commands marker.
+func TestExtractItemConventionMetadata_LegacyConvention_CommandsOnly(t *testing.T) {
+	got := ExtractItemConventionMetadata(`{"status":"active","commands":["go test"],"priority":"should"}`)
+	if got == nil {
+		t.Fatal("expected metadata for legacy Convention with commands+priority")
+	}
+	if got.Enforcement != "should" {
+		t.Errorf("Enforcement = %q, want should (priority fallback after commands flips shape)",
+			got.Enforcement)
+	}
+}
+
 func TestExtractItemImplementationNotes(t *testing.T) {
 	notes := ExtractItemImplementationNotes(`{"status":"open","implementation_notes":[{"id":"note-1","summary":"Used SSE refresh","details":"Reload phase tasks on visibility resume","created_at":"2026-04-02T15:00:00Z","created_by":"agent"}]}`)
 	if len(notes) != 1 {
