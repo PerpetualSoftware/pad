@@ -85,25 +85,24 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 	}
 }
 
-// TestMCP_AuthServerMetadata_Mounted confirms the RFC 8414
+// TestMCP_AuthServerMetadata_MountedAndGated confirms the RFC 8414
 // authorization-server discovery doc is mounted by the cloud-mode
-// route group.
+// route group AND fail-loud-503s when the OAuth server isn't
+// wired (Codex review #372 round 3 — the MCP routes mount the
+// discovery doc, but the /oauth/* handlers only mount when
+// SetOAuthServer is called; without OAuth the doc must NOT
+// advertise live URLs that 404).
 //
-// The stub-501 contract from TASK-950 was replaced by sub-PR C
-// (TASK-1025) when /oauth/{authorize,token,register} actually
-// exist. The full document-shape assertions live in
-// TestOAuth_AuthorizationServerMetadata_PopulatedShape; here we
-// just confirm the endpoint mounts + serves a 200 (or a 503 when
-// the auth-server URL is not configured, the fail-loud branch).
-func TestMCP_AuthServerMetadata_Mounted(t *testing.T) {
+// mcpEnabledTestServer mounts MCP transport but NOT OAuth, so 503
+// is the correct fail-loud response. The full happy-path 200
+// shape assertions live in TestOAuth_AuthorizationServerMetadata_PopulatedShape
+// (which uses oauthEnabledTestServer).
+func TestMCP_AuthServerMetadata_MountedAndGated(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
-	// mcpEnabledTestServer passes a non-empty mcpAuthServerURL
-	// ("https://app.test.example"), so the doc serves 200 with
-	// the populated metadata. 501 is now extinct.
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 with populated RFC 8414 metadata, got %d (body: %s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 (MCP mounted but OAuth disabled), got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
 

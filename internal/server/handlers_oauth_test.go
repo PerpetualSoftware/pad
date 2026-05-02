@@ -562,6 +562,33 @@ func TestOAuth_AuthorizationServerMetadata_OmitsUnimplementedEndpoints(t *testin
 	}
 }
 
+// TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled pins
+// Codex review #372 round 3: the discovery doc lives in the MCP
+// route group while the /oauth/* handlers live in their own group.
+// A cloud deployment with PAD_MCP_PUBLIC_URL unset gets the MCP
+// routes mounted (so the discovery doc is reachable) but NOT the
+// OAuth handlers (cmd/pad/main.go skips oauth.NewServer wiring
+// because there's no canonical audience). Without the gate, the
+// doc would 200 with /oauth/{register,authorize,token} URLs that
+// 404 — worse for clients than no document at all.
+//
+// Fail-loud 503 lets ops detect the misconfiguration immediately.
+func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode("test-secret")
+	// Mount MCP transport (so the discovery route is registered)
+	// but DO NOT call SetOAuthServer — simulating the
+	// PAD_MCP_PUBLIC_URL-unset path in cmd/pad/main.go.
+	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+
+	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 fail-loud when oauthServer is nil, got %d (body: %s)",
+			rr.Code, rr.Body.String())
+	}
+}
+
 // TestOAuth_Register_RateLimited pins Codex review #372 round 2:
 // /oauth/register is open by RFC 7591 design but must be rate-
 // limited so an attacker can't flood the oauth_clients table.

@@ -119,6 +119,24 @@ func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Req
 // unauthenticated — RFC 8414 §3 explicitly says metadata MUST be
 // available without authentication.
 func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.Request) {
+	// Gate on oauthServer being mounted (Codex review #372 round 3):
+	// the discovery doc lives in the MCP route group, while the
+	// /oauth/* handlers live in the OAuth route group. Cloud
+	// deployments without PAD_MCP_PUBLIC_URL set get the discovery
+	// route mounted (registerMCPRoutes) but NOT the OAuth handlers
+	// (registerOAuthRoutes nil-checks oauthServer). Without this
+	// gate, the document would 200 with URLs that 404 — worse than
+	// no document.
+	//
+	// 503 with a clear error code lets ops detect the
+	// misconfiguration faster than a misleading 200 + clients can
+	// retry with backoff.
+	if s.oauthServer == nil {
+		writeError(w, http.StatusServiceUnavailable, "config_error",
+			"OAuth authorization server is not enabled on this deployment")
+		return
+	}
+
 	issuer := s.authServerIssuerURL(r)
 	if issuer == "" {
 		// Same fail-loud branch as the protected-resource doc:
