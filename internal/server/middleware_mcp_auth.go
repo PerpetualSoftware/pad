@@ -121,18 +121,6 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 		return
 	}
 
-	// Per-token rate limit (TASK-959). Runs AFTER ValidateToken
-	// rather than before so the limiter map only fills with
-	// valid-token hashes — Codex review #378 round 1 caught the
-	// memory-DoS risk where a pre-auth check would create a new
-	// bucket for every distinct bearer string (including random
-	// garbage spam). Auth validation is a single DB lookup; the
-	// CPU cost of running it before rate limiting is small enough
-	// that the bounded-map property wins on the trade-off.
-	if !s.checkMCPRateLimit(w, r, token) {
-		return
-	}
-
 	// Resolve the user. Workspace-scope binding (apiToken.WorkspaceID)
 	// is intentionally NOT pinned here for user-owned PATs — the
 	// downstream RequireWorkspaceAccess middleware (when handlers
@@ -154,6 +142,19 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	user, err := s.store.GetUser(apiToken.UserID)
 	if err != nil || user == nil {
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
+		return
+	}
+
+	// Per-token rate limit (TASK-959). Runs AFTER ALL PAT validation
+	// gates pass: ValidateToken, the legacy-workspace-scoped guard,
+	// and the GetUser lookup. Codex review #378 round 3 caught the
+	// gap where rate-limiting between ValidateToken and these later
+	// gates would create limiter buckets for active-but-not-
+	// authorized tokens (legacy workspace-scoped tokens with no
+	// UserID, tokens whose user row was deleted between issuance
+	// and use). Symmetric to the OAuth path's positioning — both
+	// paths run the rate limit at the very end of their happy path.
+	if !s.checkMCPRateLimit(w, r, token) {
 		return
 	}
 
