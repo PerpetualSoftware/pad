@@ -1,7 +1,8 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
-import { test, type SuiteFixture } from './fixtures';
+import { test } from './fixtures';
+import { seedRealisticContent } from './lib/demo-seed';
 
 /**
  * README screenshot capture.
@@ -64,7 +65,7 @@ test.describe('README screenshots', () => {
 		// holds an open SSE connection — we use targeted waits below.
 		test.setTimeout(120_000);
 
-		await seedDemoContent(fixture, request);
+		await seedRealisticContent(fixture, request);
 
 		const wsPath = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
 
@@ -96,106 +97,5 @@ test.describe('README screenshots', () => {
 	});
 });
 
-/**
- * Seed a realistic-looking project: one active plan, half a dozen tasks
- * spread across statuses + priorities (so the board has meaningful columns
- * and the list has variety), and a couple of ideas. All linked to the plan
- * so the dashboard's "Active Plans" widget shows a non-zero progress bar.
- */
-async function seedDemoContent(
-	fixture: SuiteFixture,
-	request: Parameters<Parameters<typeof test>[1]>[0]['request']
-) {
-	const ws = fixture.workspaceSlug;
-	const headers = {
-		Authorization: `Bearer ${fixture.apiToken}`,
-		'Content-Type': 'application/json'
-	};
-
-	// `fields` is a JSON-encoded string on the wire (see
-	// internal/models/item.go ItemCreate). Stringify it once.
-	const enc = (obj: Record<string, string>) => JSON.stringify(obj);
-
-	// 1. Active plan
-	const planResp = await request.post(`/api/v1/workspaces/${ws}/collections/plans/items`, {
-		headers,
-		data: {
-			title: 'v0.2 — Collaboration',
-			fields: enc({ status: 'active' }),
-			content: 'Real-time multiplayer editing, team invites, and shared views.'
-		}
-	});
-	if (!planResp.ok()) {
-		throw new Error(`plan create failed (${planResp.status()}): ${await planResp.text()}`);
-	}
-	const plan = (await planResp.json()) as { id?: string };
-	if (!plan.id) throw new Error('plan create succeeded but response missing id');
-
-	// 2. Tasks — explicit mix of status / priority / parent linkage
-	const tasks: { title: string; fields: Record<string, string>; parent?: string }[] = [
-		{
-			title: 'Fix OAuth redirect bug',
-			fields: { status: 'in-progress', priority: 'high', effort: 'm' },
-			parent: plan.id
-		},
-		{
-			title: 'Add rate limiting to API endpoints',
-			fields: { status: 'in-progress', priority: 'high', effort: 'l' },
-			parent: plan.id
-		},
-		{
-			title: 'Refactor auth middleware',
-			fields: { status: 'open', priority: 'medium', effort: 'm' }
-		},
-		{
-			title: 'Add SSO support for enterprise users',
-			fields: { status: 'open', priority: 'medium', effort: 'xl' },
-			parent: plan.id
-		},
-		{
-			title: 'Document the deploy pipeline',
-			fields: { status: 'open', priority: 'low', effort: 's' }
-		},
-		{
-			title: 'Update Go to 1.26',
-			fields: { status: 'done', priority: 'medium', effort: 's' }
-		},
-		{
-			title: 'Set up CI security scanning',
-			fields: { status: 'done', priority: 'high', effort: 's' },
-			parent: plan.id
-		}
-	];
-
-	for (const t of tasks) {
-		const resp = await request.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, {
-			headers,
-			data: {
-				title: t.title,
-				fields: enc(t.fields),
-				...(t.parent ? { parent_id: t.parent } : {})
-			}
-		});
-		if (!resp.ok()) {
-			throw new Error(`task ${t.title} failed (${resp.status()}): ${await resp.text()}`);
-		}
-	}
-
-	// 3. Ideas — a couple, varied state
-	const ideas: { title: string; fields: Record<string, string> }[] = [
-		{
-			title: 'Real-time presence indicators',
-			fields: { status: 'exploring', impact: 'high' }
-		},
-		{ title: 'Slack integration for notifications', fields: { status: 'new', impact: 'medium' } }
-	];
-	for (const idea of ideas) {
-		const resp = await request.post(`/api/v1/workspaces/${ws}/collections/ideas/items`, {
-			headers,
-			data: { title: idea.title, fields: enc(idea.fields) }
-		});
-		if (!resp.ok()) {
-			throw new Error(`idea ${idea.title} failed (${resp.status()}): ${await resp.text()}`);
-		}
-	}
-}
+// seedRealisticContent now lives in ./lib/demo-seed.ts and is shared with
+// blog-screenshots.spec.ts.
