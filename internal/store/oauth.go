@@ -1,0 +1,646 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// OAuth 2.1 server storage layer (PLAN-943 TASK-951 sub-PR A).
+//
+// This file implements pure CRUD against the five oauth_* tables
+// added by migrations/048_oauth.sql + pgmigrations/027_oauth.sql.
+// The methods are intentionally fosite-agnostic: callers pass and
+// receive pad-internal types (models.OAuthClient, models.OAuthRequest)
+// rather than fosite.Client / fosite.Requester. Sub-PR B (TASK-1024)
+// adds the fosite import + adapter wrappers in internal/oauth/.
+//
+// Why the boundary lives here:
+//
+// fosite's storage interfaces accept fosite.Requester (an interface
+// with ~20 methods) and fosite.Session (another interface with custom
+// claims). Implementing them directly in this package would pull
+// fosite into every Pad build, including builds that don't host the
+// MCP/OAuth surface (self-hosted CLI users). Keeping the storage
+// layer in pure Go means:
+//
+//   - Self-host builds skip the fosite dep entirely (smaller binary).
+//   - The schema can be tested in isolation with simple structs.
+//   - Sub-PR B's adapter is the single place a Requester ⇄ DB row
+//     translation happens — easier to audit + mock in tests.
+//
+// Concurrency:
+//
+// Each method runs as a single SQL statement. SQLite serializes
+// writes globally (BEGIN IMMEDIATE per store.go), so the visible
+// behaviour is one-at-a-time even under concurrent callers; Postgres
+// allows row-level concurrent writes. Both backends are safe for the
+// "rotate refresh = invalidate one row + insert two rows" pattern
+// fosite uses, because fosite always issues those calls inside the
+// same handler request and pad's existing /api/v1/* code paths
+// don't share rows with the OAuth grant flow.
+
+// Sentinel errors. fosite-side adapters in sub-PR B map these to
+// fosite.ErrNotFound / fosite.ErrInvalidatedAuthorizeCode etc.
+// Defined here so the storage layer can return them without
+// importing fosite.
+var (
+	// ErrOAuthNotFound is returned when a row lookup misses (no
+	// matching client / signature). Callers should map to fosite.ErrNotFound.
+	ErrOAuthNotFound = errors.New("oauth: not found")
+
+	// ErrOAuthInvalidatedCode is returned when GetAuthorizationCode
+	// hits a row whose active flag is false. fosite expects
+	// ErrInvalidatedAuthorizeCode in that case (it uses the error
+	// to trigger family-revocation on the original request).
+	ErrOAuthInvalidatedCode = errors.New("oauth: authorization code invalidated")
+
+	// ErrOAuthInactiveToken signals an access/refresh row exists but
+	// has been revoked or rotated out. Adapters map to
+	// fosite.ErrInactiveToken.
+	ErrOAuthInactiveToken = errors.New("oauth: token inactive")
+)
+
+// ============================================================
+// Clients (RFC 7591 — Dynamic Client Registration)
+// ============================================================
+
+// CreateOAuthClient inserts a new client and returns its issued
+// client_id (random ID + creation timestamp).
+//
+// Validation lives at the HTTP boundary in sub-PR C; this method
+// trusts the caller. Empty slices serialize to "[]" so reads always
+// produce a stable JSON shape.
+func (s *Store) CreateOAuthClient(input models.OAuthClientCreate) (*models.OAuthClient, error) {
+	id := newID()
+	created := time.Now().UTC()
+	createdStr := created.Format(time.RFC3339)
+
+	redirects, err := jsonStringList(input.RedirectURIs)
+	if err != nil {
+		return nil, fmt.Errorf("encode redirect_uris: %w", err)
+	}
+	grants, err := jsonStringList(input.GrantTypes)
+	if err != nil {
+		return nil, fmt.Errorf("encode grant_types: %w", err)
+	}
+	respTypes, err := jsonStringList(input.ResponseTypes)
+	if err != nil {
+		return nil, fmt.Errorf("encode response_types: %w", err)
+	}
+	scopes, err := jsonStringList(input.Scopes)
+	if err != nil {
+		return nil, fmt.Errorf("encode scopes: %w", err)
+	}
+
+	authMethod := input.TokenEndpointAuthMethod
+	if authMethod == "" {
+		authMethod = "none"
+	}
+
+	// Postgres uses a BOOLEAN column for `public`; SQLite uses INTEGER.
+	// Both accept Go's bool via the standard driver — no dialect-
+	// specific handling needed at the call site.
+	_, err = s.db.Exec(s.q(`
+		INSERT INTO oauth_clients (
+			id, name, redirect_uris, grant_types, response_types,
+			token_endpoint_auth_method, scopes, public, logo_url, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, input.Name, redirects, grants, respTypes, authMethod,
+		scopes, input.Public, input.LogoURL, createdStr)
+	if err != nil {
+		return nil, fmt.Errorf("insert oauth client: %w", err)
+	}
+
+	return &models.OAuthClient{
+		ID:                      id,
+		Name:                    input.Name,
+		RedirectURIs:            cloneStringSlice(input.RedirectURIs),
+		GrantTypes:              cloneStringSlice(input.GrantTypes),
+		ResponseTypes:           cloneStringSlice(input.ResponseTypes),
+		TokenEndpointAuthMethod: authMethod,
+		Scopes:                  cloneStringSlice(input.Scopes),
+		Public:                  input.Public,
+		LogoURL:                 input.LogoURL,
+		CreatedAt:               created,
+	}, nil
+}
+
+// GetOAuthClient looks up a registered client by ID. Returns
+// ErrOAuthNotFound if no row matches.
+func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
+	var (
+		c                                                models.OAuthClient
+		redirectsRaw, grantsRaw, respTypesRaw, scopesRaw string
+		logoURL                                          sql.NullString
+		createdStr                                       string
+		public                                           bool
+	)
+	err := s.db.QueryRow(s.q(`
+		SELECT id, name, redirect_uris, grant_types, response_types,
+		       token_endpoint_auth_method, scopes, public, logo_url, created_at
+		FROM oauth_clients WHERE id = ?
+	`), id).Scan(&c.ID, &c.Name, &redirectsRaw, &grantsRaw, &respTypesRaw,
+		&c.TokenEndpointAuthMethod, &scopesRaw, &public, &logoURL, &createdStr)
+	if err == sql.ErrNoRows {
+		return nil, ErrOAuthNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query oauth client: %w", err)
+	}
+
+	if c.RedirectURIs, err = parseJSONStringList(redirectsRaw); err != nil {
+		return nil, fmt.Errorf("decode redirect_uris: %w", err)
+	}
+	if c.GrantTypes, err = parseJSONStringList(grantsRaw); err != nil {
+		return nil, fmt.Errorf("decode grant_types: %w", err)
+	}
+	if c.ResponseTypes, err = parseJSONStringList(respTypesRaw); err != nil {
+		return nil, fmt.Errorf("decode response_types: %w", err)
+	}
+	if c.Scopes, err = parseJSONStringList(scopesRaw); err != nil {
+		return nil, fmt.Errorf("decode scopes: %w", err)
+	}
+	c.Public = public
+	c.LogoURL = logoURL.String
+	c.CreatedAt = parseTime(createdStr)
+	return &c, nil
+}
+
+// DeleteOAuthClient removes a client and all dependent token /
+// auth-code / pkce rows by FK cascade is NOT used because Postgres
+// FKs default to NO ACTION and we never wrote ON DELETE CASCADE in
+// the migration. Callers needing to delete a client must revoke its
+// outstanding grants first (sub-PR D's revocation flow), then delete.
+// Returns nil even if the client doesn't exist (idempotent delete).
+func (s *Store) DeleteOAuthClient(id string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM oauth_clients WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("delete oauth client: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// Authorization codes (handler/oauth2/storage.go AuthorizeCodeStorage)
+// ============================================================
+
+// CreateAuthorizationCode persists a code's session under its
+// signature. The signature is fosite's HMAC of the code value;
+// the code itself is never stored, so a DB read can't replay it.
+func (s *Store) CreateAuthorizationCode(req models.OAuthRequest) error {
+	return s.insertOAuthRequestRow("oauth_authorization_codes", req, false)
+}
+
+// GetAuthorizationCode hydrates the code's session. Returns
+// ErrOAuthInvalidatedCode if the row exists but active=false (fosite
+// triggers grant-family revocation on this); ErrOAuthNotFound if the
+// row is missing entirely.
+func (s *Store) GetAuthorizationCode(signature string) (*models.OAuthRequest, error) {
+	req, active, err := s.queryOAuthRequestRow("oauth_authorization_codes", signature)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		// Per fosite contract: still return the request payload
+		// alongside the invalidation error so the caller can run
+		// family revocation against the now-known request_id.
+		return req, ErrOAuthInvalidatedCode
+	}
+	return req, nil
+}
+
+// InvalidateAuthorizationCode marks a code inactive (single-use).
+// Idempotent: invalidating an already-invalid or missing row is a
+// no-op (fosite's contract here is "make it invalid", not "fail if
+// it's already invalid").
+func (s *Store) InvalidateAuthorizationCode(signature string) error {
+	_, err := s.db.Exec(s.q(`
+		UPDATE oauth_authorization_codes SET active = ? WHERE signature = ?
+	`), false, signature)
+	if err != nil {
+		return fmt.Errorf("invalidate auth code: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// Access tokens (handler/oauth2/storage.go AccessTokenStorage)
+// ============================================================
+
+// CreateAccessToken persists an access token row. fosite always
+// stamps `active=true` on insert; the column is materialized here
+// so RevokeAccessToken can flip it without re-issuing.
+func (s *Store) CreateAccessToken(req models.OAuthRequest) error {
+	return s.insertOAuthRequestRow("oauth_access_tokens", req, true)
+}
+
+// GetAccessToken hydrates an access token by its HMAC signature.
+// Returns ErrOAuthInactiveToken if the row exists but has been
+// revoked / rotated out, ErrOAuthNotFound if missing.
+func (s *Store) GetAccessToken(signature string) (*models.OAuthRequest, error) {
+	req, active, err := s.queryOAuthRequestRow("oauth_access_tokens", signature)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return req, ErrOAuthInactiveToken
+	}
+	return req, nil
+}
+
+// DeleteAccessToken removes a row entirely (fosite uses Delete after
+// successful exchange to prevent reuse). Distinct from RevokeAccessToken
+// which preserves the row for introspection auditing.
+func (s *Store) DeleteAccessToken(signature string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM oauth_access_tokens WHERE signature = ?`), signature)
+	if err != nil {
+		return fmt.Errorf("delete access token: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// Refresh tokens (handler/oauth2/storage.go RefreshTokenStorage)
+// ============================================================
+
+// CreateRefreshToken persists a refresh token. accessSignature links
+// the refresh to the access token issued in the same grant; pass
+// empty string when there is no paired access token (rare — only
+// during error recovery flows).
+func (s *Store) CreateRefreshToken(req models.OAuthRequest) error {
+	return s.insertOAuthRequestRow("oauth_refresh_tokens", req, true)
+}
+
+// GetRefreshToken hydrates a refresh token. Returns
+// ErrOAuthInactiveToken when active=false, which fosite uses to
+// trigger family revocation on the matching request_id (the OAuth
+// 2.1 BCP "revoke the whole family on replay" rule). Sub-PR D wires
+// the family-revocation walk via RevokeRefreshTokenFamily.
+func (s *Store) GetRefreshToken(signature string) (*models.OAuthRequest, error) {
+	req, active, err := s.queryOAuthRequestRow("oauth_refresh_tokens", signature)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return req, ErrOAuthInactiveToken
+	}
+	return req, nil
+}
+
+// DeleteRefreshToken removes a refresh row entirely. Used by the
+// rotation flow to drop the previous-step's refresh after the new
+// one is in place.
+func (s *Store) DeleteRefreshToken(signature string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM oauth_refresh_tokens WHERE signature = ?`), signature)
+	if err != nil {
+		return fmt.Errorf("delete refresh token: %w", err)
+	}
+	return nil
+}
+
+// RotateRefreshToken marks a single refresh token inactive in place.
+// fosite calls this after issuing the rotated pair (new access + new
+// refresh) so the previous refresh becomes single-use. Distinct from
+// RevokeRefreshTokenFamily, which walks the entire chain — this
+// only touches one row.
+//
+// signatureToRotate identifies the refresh row to flip; requestID is
+// passed by fosite for log correlation but the pure storage layer
+// doesn't need it (fosite preserves request_id across rotation, so
+// the chain is naturally walkable on revocation regardless of
+// which row we flip).
+func (s *Store) RotateRefreshToken(_ /*requestID*/, signatureToRotate string) error {
+	_, err := s.db.Exec(s.q(`
+		UPDATE oauth_refresh_tokens SET active = ? WHERE signature = ?
+	`), false, signatureToRotate)
+	if err != nil {
+		return fmt.Errorf("rotate refresh token: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// Token revocation (handler/oauth2/revocation_storage.go)
+// ============================================================
+
+// RevokeRefreshTokenFamily marks every refresh token sharing the
+// given requestID inactive — the OAuth 2.1 BCP §4.14
+// (refresh_token_replay rule) "revoke the whole family on a replayed
+// refresh" behaviour. fosite's RevokeRefreshToken adapter in sub-PR
+// B calls this when GetRefreshToken returns ErrOAuthInactiveToken.
+//
+// The walk uses the request_id index (oauth_refresh_request_id_idx)
+// added by the migration, so it stays O(family-size) even when the
+// table grows. Idempotent — re-revoking an already-inactive family
+// is a no-op.
+func (s *Store) RevokeRefreshTokenFamily(requestID string) error {
+	_, err := s.db.Exec(s.q(`
+		UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?
+	`), false, requestID)
+	if err != nil {
+		return fmt.Errorf("revoke refresh family: %w", err)
+	}
+	return nil
+}
+
+// RevokeAccessTokenFamily mirrors RevokeRefreshTokenFamily for
+// access tokens. fosite calls these in pairs when revoking by
+// request_id (the unified RevokeRefreshToken / RevokeAccessToken
+// pair in TokenRevocationStorage).
+func (s *Store) RevokeAccessTokenFamily(requestID string) error {
+	_, err := s.db.Exec(s.q(`
+		UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?
+	`), false, requestID)
+	if err != nil {
+		return fmt.Errorf("revoke access family: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// PKCE request sessions (handler/pkce/storage.go PKCERequestStorage)
+// ============================================================
+
+// CreatePKCERequest persists a PKCE session keyed by the auth code's
+// signature. fosite stores the original /authorize request here so
+// the code_challenge can be re-validated against the code_verifier
+// on /token exchange.
+func (s *Store) CreatePKCERequest(req models.OAuthRequest) error {
+	// PKCE rows have no `active` column (lifecycle is "exists or
+	// deleted" rather than "active or revoked"). insertOAuthRequestRow
+	// with table=oauth_pkce_requests skips the active column write.
+	return s.insertOAuthRequestRow("oauth_pkce_requests", req, false /*ignored for pkce*/)
+}
+
+// GetPKCERequest hydrates the PKCE session. Returns ErrOAuthNotFound
+// if the row is missing.
+func (s *Store) GetPKCERequest(signature string) (*models.OAuthRequest, error) {
+	req, _, err := s.queryOAuthRequestRow("oauth_pkce_requests", signature)
+	return req, err
+}
+
+// DeletePKCERequest removes the row after a successful /token
+// exchange (fosite's lifecycle for PKCE is delete-on-use, unlike
+// auth codes which are flagged inactive).
+func (s *Store) DeletePKCERequest(signature string) error {
+	_, err := s.db.Exec(s.q(`DELETE FROM oauth_pkce_requests WHERE signature = ?`), signature)
+	if err != nil {
+		return fmt.Errorf("delete pkce request: %w", err)
+	}
+	return nil
+}
+
+// ============================================================
+// Helpers — shared by the three "request-row" tables
+// ============================================================
+
+// insertOAuthRequestRow writes a request payload into the named
+// table. The four request-row tables (auth codes, access tokens,
+// refresh tokens, pkce) share the same column set with two
+// exceptions:
+//
+//   - pkce has no `active` column (no revocation lifecycle).
+//   - access + refresh have a `subject` column for fast subject-
+//     bound lookups; auth codes have a subject column too (set when
+//     consent fires); pkce sets it to the empty string for now.
+//   - refresh has an `access_token_signature` column linking to the
+//     access row issued in the same grant.
+//
+// Switch on the table name to pick the right INSERT — uglier than
+// per-table methods but keeps the call sites uniform and lets the
+// helpers below share the same row-decoding code on read. The
+// per-table methods above (CreateAccessToken etc.) are the public
+// surface; this is the private worker.
+func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest, defaultActive bool) error {
+	if req.Signature == "" {
+		return fmt.Errorf("oauth: signature required")
+	}
+	if req.RequestID == "" {
+		return fmt.Errorf("oauth: request_id required")
+	}
+	if req.ClientID == "" {
+		return fmt.Errorf("oauth: client_id required")
+	}
+
+	requestedAt := req.RequestedAt
+	if requestedAt.IsZero() {
+		requestedAt = time.Now().UTC()
+	}
+	requestedStr := requestedAt.UTC().Format(time.RFC3339)
+
+	// Active defaults to true for token tables on insert; auth-code
+	// rows are also active on insert. The defaultActive flag is the
+	// hint the caller passes, but the OAuthRequest itself wins when
+	// explicitly set (false on insert is rare — only used by tests
+	// to seed a pre-revoked row).
+	active := defaultActive
+	if req.Active != defaultActive {
+		// The caller explicitly overrode it.
+		active = req.Active
+	}
+
+	switch table {
+	case "oauth_authorization_codes":
+		_, err := s.db.Exec(s.q(`
+			INSERT INTO oauth_authorization_codes (
+				signature, request_id, requested_at, client_id,
+				scopes, granted_scopes, request_form, session_data,
+				audience, granted_audience, active
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), req.Signature, req.RequestID, requestedStr, req.ClientID,
+			req.Scopes, req.GrantedScopes, req.RequestForm, req.SessionData,
+			req.Audience, req.GrantedAudience, active)
+		if err != nil {
+			return fmt.Errorf("insert auth code: %w", err)
+		}
+	case "oauth_access_tokens":
+		_, err := s.db.Exec(s.q(`
+			INSERT INTO oauth_access_tokens (
+				signature, request_id, requested_at, client_id,
+				scopes, granted_scopes, request_form, session_data,
+				audience, granted_audience, active, subject
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), req.Signature, req.RequestID, requestedStr, req.ClientID,
+			req.Scopes, req.GrantedScopes, req.RequestForm, req.SessionData,
+			req.Audience, req.GrantedAudience, active, req.Subject)
+		if err != nil {
+			return fmt.Errorf("insert access token: %w", err)
+		}
+	case "oauth_refresh_tokens":
+		var accessSig interface{}
+		if req.AccessTokenSignature != "" {
+			accessSig = req.AccessTokenSignature
+		}
+		_, err := s.db.Exec(s.q(`
+			INSERT INTO oauth_refresh_tokens (
+				signature, request_id, access_token_signature, requested_at,
+				client_id, scopes, granted_scopes, request_form, session_data,
+				audience, granted_audience, active, subject
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), req.Signature, req.RequestID, accessSig, requestedStr,
+			req.ClientID, req.Scopes, req.GrantedScopes, req.RequestForm, req.SessionData,
+			req.Audience, req.GrantedAudience, active, req.Subject)
+		if err != nil {
+			return fmt.Errorf("insert refresh token: %w", err)
+		}
+	case "oauth_pkce_requests":
+		// PKCE rows have no active column — fosite's lifecycle is
+		// "exists or deleted", not "active or revoked".
+		_, err := s.db.Exec(s.q(`
+			INSERT INTO oauth_pkce_requests (
+				signature, request_id, requested_at, client_id,
+				scopes, granted_scopes, request_form, session_data,
+				audience, granted_audience
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), req.Signature, req.RequestID, requestedStr, req.ClientID,
+			req.Scopes, req.GrantedScopes, req.RequestForm, req.SessionData,
+			req.Audience, req.GrantedAudience)
+		if err != nil {
+			return fmt.Errorf("insert pkce request: %w", err)
+		}
+	default:
+		return fmt.Errorf("oauth: unknown table %q", table)
+	}
+	return nil
+}
+
+// queryOAuthRequestRow reads a row by signature from the named
+// table and returns (request, active, err).
+//
+//   - For oauth_pkce_requests, active is always true (no column).
+//   - Returns ErrOAuthNotFound when the row is missing; callers map
+//     that to fosite.ErrNotFound.
+//   - Active=false rows are returned alongside no error; the caller
+//     decides whether to treat that as ErrInvalidatedCode (auth
+//     codes) or ErrInactiveToken (access/refresh).
+func (s *Store) queryOAuthRequestRow(table, signature string) (*models.OAuthRequest, bool, error) {
+	if signature == "" {
+		return nil, false, fmt.Errorf("oauth: signature required")
+	}
+
+	var req models.OAuthRequest
+	req.Signature = signature
+	var requestedStr string
+
+	switch table {
+	case "oauth_authorization_codes":
+		err := s.db.QueryRow(s.q(`
+			SELECT request_id, requested_at, client_id, scopes, granted_scopes,
+			       request_form, session_data, audience, granted_audience, active
+			FROM oauth_authorization_codes WHERE signature = ?
+		`), signature).Scan(&req.RequestID, &requestedStr, &req.ClientID,
+			&req.Scopes, &req.GrantedScopes, &req.RequestForm, &req.SessionData,
+			&req.Audience, &req.GrantedAudience, &req.Active)
+		if err == sql.ErrNoRows {
+			return nil, false, ErrOAuthNotFound
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("query auth code: %w", err)
+		}
+	case "oauth_access_tokens":
+		err := s.db.QueryRow(s.q(`
+			SELECT request_id, requested_at, client_id, scopes, granted_scopes,
+			       request_form, session_data, audience, granted_audience, active, subject
+			FROM oauth_access_tokens WHERE signature = ?
+		`), signature).Scan(&req.RequestID, &requestedStr, &req.ClientID,
+			&req.Scopes, &req.GrantedScopes, &req.RequestForm, &req.SessionData,
+			&req.Audience, &req.GrantedAudience, &req.Active, &req.Subject)
+		if err == sql.ErrNoRows {
+			return nil, false, ErrOAuthNotFound
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("query access token: %w", err)
+		}
+	case "oauth_refresh_tokens":
+		var accessSig sql.NullString
+		err := s.db.QueryRow(s.q(`
+			SELECT request_id, access_token_signature, requested_at, client_id,
+			       scopes, granted_scopes, request_form, session_data,
+			       audience, granted_audience, active, subject
+			FROM oauth_refresh_tokens WHERE signature = ?
+		`), signature).Scan(&req.RequestID, &accessSig, &requestedStr, &req.ClientID,
+			&req.Scopes, &req.GrantedScopes, &req.RequestForm, &req.SessionData,
+			&req.Audience, &req.GrantedAudience, &req.Active, &req.Subject)
+		if err == sql.ErrNoRows {
+			return nil, false, ErrOAuthNotFound
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("query refresh token: %w", err)
+		}
+		req.AccessTokenSignature = accessSig.String
+	case "oauth_pkce_requests":
+		err := s.db.QueryRow(s.q(`
+			SELECT request_id, requested_at, client_id, scopes, granted_scopes,
+			       request_form, session_data, audience, granted_audience
+			FROM oauth_pkce_requests WHERE signature = ?
+		`), signature).Scan(&req.RequestID, &requestedStr, &req.ClientID,
+			&req.Scopes, &req.GrantedScopes, &req.RequestForm, &req.SessionData,
+			&req.Audience, &req.GrantedAudience)
+		if err == sql.ErrNoRows {
+			return nil, false, ErrOAuthNotFound
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("query pkce: %w", err)
+		}
+		// PKCE rows are always "active" for the purposes of this method —
+		// lifecycle is exists/deleted, not flagged.
+		req.Active = true
+	default:
+		return nil, false, fmt.Errorf("oauth: unknown table %q", table)
+	}
+
+	req.RequestedAt = parseTime(requestedStr)
+	return &req, req.Active, nil
+}
+
+// jsonStringList encodes a []string as a JSON array string suitable
+// for both SQLite (TEXT column) and Postgres (JSONB column — pgx
+// accepts a JSON-shaped string and validates it server-side). nil
+// input encodes to "[]" so reads always parse cleanly.
+func jsonStringList(in []string) (string, error) {
+	if in == nil {
+		in = []string{}
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// parseJSONStringList decodes a JSON array string back to []string.
+// Empty / null inputs produce an empty (non-nil) slice so callers
+// can range without nil-checking.
+func parseJSONStringList(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return []string{}, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
+}
+
+// cloneStringSlice returns a copy of in so callers holding the
+// returned model can't mutate the input the caller still owns.
+// nil → nil so the model's slice fields stay falsy when the caller
+// passed nil; sub-PR B's adapter relies on that.
+func cloneStringSlice(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
