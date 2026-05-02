@@ -69,6 +69,30 @@ func TestTokenScopeAllows(t *testing.T) {
 		{"unknown+read blocks POST", `["docs","read"]`, http.MethodPost, "/api/v1/test", false},
 		{"unknown+wildcard still allows POST", `["docs","*"]`, http.MethodPost, "/api/v1/test", true},
 		{"unknown+write still allows DELETE", `["docs","write"]`, http.MethodDelete, "/api/v1/test", true},
+
+		// OAuth scope vocabulary (sub-PR E, TASK-1027). MCPBearerAuth
+		// stashes fosite-issued scopes as JSON arrays alongside PAT
+		// scopes, so the same policy applies. Asserts the read/write/
+		// admin mappings hold under the OAuth namespace.
+		{"pad:read allows GET", `["pad:read"]`, http.MethodGet, "/api/v1/test", true},
+		{"pad:read allows HEAD", `["pad:read"]`, http.MethodHead, "/api/v1/test", true},
+		{"pad:read allows OPTIONS", `["pad:read"]`, http.MethodOptions, "/api/v1/test", true},
+		{"pad:read blocks POST", `["pad:read"]`, http.MethodPost, "/api/v1/test", false},
+		{"pad:read blocks PATCH", `["pad:read"]`, http.MethodPatch, "/api/v1/test", false},
+		{"pad:read blocks DELETE", `["pad:read"]`, http.MethodDelete, "/api/v1/test", false},
+		{"pad:write allows GET", `["pad:write"]`, http.MethodGet, "/api/v1/test", true},
+		{"pad:write allows POST", `["pad:write"]`, http.MethodPost, "/api/v1/test", true},
+		{"pad:write allows DELETE", `["pad:write"]`, http.MethodDelete, "/api/v1/test", true},
+		{"pad:write allows PATCH", `["pad:write"]`, http.MethodPatch, "/api/v1/test", true},
+		{"pad:admin allows POST", `["pad:admin"]`, http.MethodPost, "/api/v1/test", true},
+		{"pad:admin allows DELETE", `["pad:admin"]`, http.MethodDelete, "/api/v1/test", true},
+		// Multi-scope OAuth grants (the realistic shape — DCR clients
+		// usually request all scopes they might need).
+		{"pad:read+pad:write allows POST", `["pad:read","pad:write"]`, http.MethodPost, "/api/v1/test", true},
+		{"pad:read+pad:write allows GET", `["pad:read","pad:write"]`, http.MethodGet, "/api/v1/test", true},
+		// PAT + OAuth scope mixed (defensive — shouldn't happen in
+		// practice but the policy should still work).
+		{"read+pad:write allows POST", `["read","pad:write"]`, http.MethodPost, "/api/v1/test", true},
 	}
 
 	for _, tt := range tests {

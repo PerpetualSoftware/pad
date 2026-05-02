@@ -683,10 +683,21 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 // tokenScopeAllows checks if the token's scopes permit the given HTTP method
 // and path. Scopes are stored as a JSON array of strings.
 //
-// Supported scopes:
+// Supported scopes (PAT vocabulary):
 //   - "*"       — full access
 //   - "read"    — GET/HEAD/OPTIONS only
 //   - "write"   — all methods
+//
+// Supported scopes (OAuth 2.1 / RFC 6749 vocabulary, sub-PR E TASK-1027):
+//   - "pad:read"  — equivalent to PAT "read"
+//   - "pad:write" — equivalent to PAT "write"
+//   - "pad:admin" — equivalent to PAT "*"
+//
+// MCPBearerAuth's OAuth introspection branch translates fosite's
+// space-separated scope string into the same JSON-array stash form
+// PAT auth uses, so the same policy applies to both transports. This
+// keeps MCP tool authorization centralized: a `pad:read` OAuth token
+// can drive read tools; a `pad:write` OAuth token can drive any.
 //
 // Policy (deny-by-default whitelist):
 //   - Empty scope string → allow (legacy DB rows where the column was never
@@ -738,9 +749,9 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 	var unknown []string
 	for _, scope := range scopes {
 		switch scope {
-		case "*", "write":
+		case "*", "write", "pad:write", "pad:admin":
 			allowed = true
-		case "read":
+		case "read", "pad:read":
 			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
 				allowed = true
 			}

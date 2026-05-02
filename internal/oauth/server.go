@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -234,6 +235,57 @@ func (s *Server) Storage() *Storage {
 // before fosite's downstream validation runs.
 func (s *Server) AllowedAudience() string {
 	return s.cfg.AllowedAudience
+}
+
+// IntrospectToken validates an opaque OAuth access token without
+// going through the public RFC 7662 HTTP endpoint. Used by sub-PR E's
+// MCPBearerAuth middleware to gate /mcp on OAuth-issued tokens —
+// server-side, no roundtrip, no client-auth dance.
+//
+// Returns:
+//
+//   - ar: the AccessRequester with session hydrated. The session's
+//     Subject is the pad user ID (set in /authorize/decide via
+//     oauth.NewSession(user.ID)); GetGrantedScopes / GetGrantedAudience
+//     return the values fosite persisted at grant time.
+//   - tokenUse: fosite.AccessToken or fosite.RefreshToken. Resource-
+//     server callers MUST reject anything other than AccessToken;
+//     refresh tokens are not valid bearers for protected-resource
+//     calls.
+//   - err: fosite.ErrInactiveToken / fosite.ErrNotFound when the
+//     token is invalid; a wrapped storage error otherwise.
+//
+// Why a wrapper rather than calling fosite directly: fosite.Fosite's
+// IntrospectToken isn't on the OAuth2Provider interface — it's on
+// the concrete *Fosite type. compose.Compose returns OAuth2Provider
+// (interface) but the underlying value is always *Fosite (compose.go:38
+// hardcodes the constructor). Type-asserting at every call site would
+// scatter the dependency on this implementation detail; centralizing
+// it here keeps the boundary clean and gives us a single place to
+// fail loudly if a future fosite version-bump changes the return
+// type.
+//
+// Hint: fosite.AccessToken — if the token is actually a refresh
+// token, fosite tries the access-token strategy first, fails, then
+// falls through to the refresh-token strategy. The returned tokenUse
+// reports the actual kind, which the caller is expected to validate.
+func (s *Server) IntrospectToken(ctx context.Context, token string) (fosite.AccessRequester, fosite.TokenUse, error) {
+	f, ok := s.provider.(*fosite.Fosite)
+	if !ok {
+		// Defensive: compose.Compose has hardcoded *Fosite as the
+		// concrete return type since fosite v0.1.0. If a future
+		// version changes that we want to fail loudly, not silently
+		// fall through to a refused-everything state.
+		return nil, "", fmt.Errorf("oauth: provider type-assertion to *fosite.Fosite failed; got %T (compose.Compose internals changed?)", s.provider)
+	}
+	// Empty session pointer — fosite hydrates from storage. The
+	// session type must match what's stored (oauth.Session, written
+	// via oauth.NewSession in /authorize/decide), or the JSON
+	// unmarshal in oauthRequestToFositeRequest would silently drop
+	// pad-specific fields.
+	session := NewSession("")
+	tokenUse, ar, err := f.IntrospectToken(ctx, token, fosite.AccessToken, session)
+	return ar, tokenUse, err
 }
 
 // Compile-time guard: NewStorage produces a value that satisfies the
