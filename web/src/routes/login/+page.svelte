@@ -48,6 +48,7 @@
 	// '&' separator so it can append onto banner URLs that already carry
 	// `?force=1`.
 	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	const oauthRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
 	const oauthRedirectAmpQuery = $derived(redirectQueryFragment(redirectTarget, '&'));
 
 	// Map pad-cloud's /login?error=... redirect codes to a friendly banner
@@ -397,7 +398,7 @@
 			</p>
 			{#if cloudMode}
 				<p class="register-link">
-					Don't have an account? <a href="/register">Sign up</a>
+					Don't have an account? <a href="/register{oauthRedirectQuery}">Sign up</a>
 				</p>
 			{:else}
 				<p class="register-link">

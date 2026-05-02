@@ -13,7 +13,7 @@
 		getLastAuthMethod,
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
-	import { validateRedirect } from '$lib/auth/redirect';
+	import { validateRedirect, redirectQueryFragment } from '$lib/auth/redirect';
 
 	let name = $state('');
 	let username = $state('');
@@ -43,6 +43,9 @@
 	// the user to /oauth/authorize after SSO. Falls back to /console for
 	// missing or invalid values.
 	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	// Forward redirect= onto the "Sign in" cross-link so a user mid-OAuth flow
+	// can hop /register ↔ /login without dropping their original destination.
+	const loginRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
 
 	onMount(async () => {
 		// Read the last-used method on mount so the "Last used" pill on the
@@ -273,7 +276,7 @@
 			/>
 
 			<p class="login-link">
-				Already have an account? <a href="/login">Sign in</a>
+				Already have an account? <a href="/login{loginRedirectQuery}">Sign in</a>
 			</p>
 		{/if}
 	</div>
