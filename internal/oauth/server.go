@@ -143,6 +143,24 @@ func NewServer(cfg Config) (*Server, error) {
 		// sees is the public half + a "." + signature).
 		GlobalSecret: cfg.HMACSecret,
 
+		// Refresh-token issuance gate. fosite defaults
+		// RefreshTokenScopes to ["offline", "offline_access"], which
+		// means refresh tokens only get minted when one of those
+		// scopes is granted. PLAN-943's scope vocabulary is
+		// pad:read / pad:write / pad:admin — no offline scope —
+		// so the default would silently block refresh issuance for
+		// every Pad grant, defeating the whole rotation + family-
+		// revocation flow this PR adds. Codex review #371 round 3
+		// caught the gap.
+		//
+		// Empty slice tells fosite "issue refresh tokens on every
+		// authorize-code grant whose client allows the
+		// refresh_token grant type, no scope predicate." Matches
+		// fosite's own tests (flow_authorize_code_token_test.go:129).
+		// If we ever introduce per-grant offline opt-in, switch to
+		// the named scope here.
+		RefreshTokenScopes: []string{},
+
 		// Custom audience strategy (RFC 8707). Rejects any audience
 		// that isn't the canonical MCP resource URL. See audience.go.
 		AudienceMatchingStrategy: audienceMatchingStrategy(cfg.AllowedAudience),

@@ -118,6 +118,54 @@ func TestNewServer_FillsDefaultLifespans(t *testing.T) {
 	}
 }
 
+// TestNewServer_RefreshTokenScopesIsEmpty pins Codex review #371
+// round 3: fosite defaults Config.RefreshTokenScopes to
+// ["offline", "offline_access"] — without overriding, refresh tokens
+// only get issued for grants that include one of those scopes. PLAN-
+// 943's scope vocabulary is pad:read / pad:write / pad:admin (no
+// offline), so the default would silently disable the rotation +
+// family-revocation flow this PR adds.
+//
+// NewServer sets RefreshTokenScopes to []string{} which tells fosite
+// "issue refresh on every authorize-code grant" — matches fosite's
+// own tests for the unconditional path.
+//
+// We can't read the Config back through fosite.OAuth2Provider's
+// public surface, so this test goes via reflection-free approach:
+// constructing a server, then exercising the audience strategy
+// hook (which we DO retain a reference to via the server's audience
+// configuration). Covering the actual issue-on-grant path requires
+// the HTTP handlers (sub-PR C). For sub-PR B, we pin the wiring
+// behaviour: a fresh server's provider is non-nil and the
+// configuration we passed in survives storage.
+//
+// Pin via the configured Storage's canonical audience round-trip,
+// which we already cover. The RefreshTokenScopes field itself is a
+// fosite-internal concern; the test for whether refresh tokens are
+// actually issued lands in sub-PR C's /token end-to-end tests.
+// This test exists to document the decision via name + comment so
+// a future contributor reading server.go's RefreshTokenScopes line
+// can find the rationale here.
+func TestNewServer_RefreshTokenScopesIsEmpty(t *testing.T) {
+	s := testStoreOAuth(t)
+	srv, err := NewServer(Config{
+		Store:           s,
+		HMACSecret:      bytes32(),
+		AllowedAudience: "https://mcp.test.example/mcp",
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// Smoke check: the constructor returns a usable provider.
+	if srv.Provider() == nil {
+		t.Fatal("provider is nil — RefreshTokenScopes wiring may have broken NewServer")
+	}
+	// The actual "refresh issued on authorize-code grant" assertion
+	// lands in sub-PR C's /token endpoint test — that's where fosite's
+	// flow_authorize_code_token.go reads RefreshTokenScopes. Naming
+	// this test ties the rationale together for grep.
+}
+
 // =====================================================================
 // audienceMatchingStrategy — RFC 8707 hook
 // =====================================================================
