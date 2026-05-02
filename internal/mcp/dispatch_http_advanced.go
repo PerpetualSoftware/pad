@@ -296,8 +296,13 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if prefetchRec.Code >= 400 {
 		// Mirror the CLI's "not found" UX — the handler's 404 body
 		// already contains a clear message; package it the same way
-		// any other tool error would be packaged.
-		return packageHTTPResponse(ctx, cmdKey, prefetchRec.Result())
+		// any other tool error would be packaged. Pass d.Lister so
+		// the workspace-not-found envelope's available_workspaces
+		// list is filtered by the OAuth allow-list (TASK-977). Use
+		// prefetchReq.Context() so the lister sees the same
+		// auth/token state buildHTTPRequest + d.Apply attached
+		// (Codex review #379 round 1 — same fix as executeRequest).
+		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchRec.Result(), d.Lister)
 	}
 	var existing struct {
 		Fields string `json:"fields"`
