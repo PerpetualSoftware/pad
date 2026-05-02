@@ -38,11 +38,13 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/logging"
+	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
+	mcptransport "github.com/mark3labs/mcp-go/server"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/term"
 	"golang.org/x/text/cases"
@@ -343,6 +345,74 @@ func serveCmd() *cobra.Command {
 				}
 				srv.SetCloudMode(cfg.CloudSecret)
 				slog.Info("Cloud mode enabled")
+
+				// MCP Streamable HTTP transport (PLAN-943 TASK-950).
+				// Mount the public /mcp endpoint + RFC 9728 / RFC 8414
+				// discovery docs. Wired only in cloud mode because:
+				//
+				//   - It requires user-owned PATs (the existing
+				//     workspace-scoped PAT path is rejected — see
+				//     MCPBearerAuth in middleware_mcp_auth.go), so a
+				//     self-host running without users would have no
+				//     usable auth path.
+				//   - The discovery docs reference a public OAuth
+				//     authorization server URL (TASK-951) that only
+				//     exists on the Pad-Cloud deployment.
+				//
+				// Construction shape mirrors `pad mcp serve` (cmd/pad/mcp.go)
+				// minus the stdio runtime: cmdhelp.Doc → MCPServer →
+				// catalog/prompts/meta registration → wrap in Streamable
+				// HTTP transport → hand to *server.Server. Resources
+				// are intentionally skipped for v1 of TASK-950 — the
+				// existing ExecResourceFetcher shells out to the pad
+				// binary, which doesn't carry a per-OAuth-user
+				// credential context. An HTTPResourceFetcher equivalent
+				// is its own follow-up task.
+				root := cmd.Root()
+				mcpDoc := cmdhelp.Build(root, root, cmdhelp.Options{
+					Binary:   "pad",
+					Version:  fullVersion(),
+					Homepage: padHomepage,
+					MaxDepth: -1,
+				})
+				mcpSrv := mcpserver.NewServer(mcpserver.Options{Version: fullVersion()})
+				// CurrentUserFromContext returns (*User, bool); the
+				// dispatcher's UserResolver signature is just
+				// (ctx) *User. The bool is "found", which equals
+				// "non-nil pointer" for the path the MCP middleware
+				// guarantees (it 401s on no-user before reaching
+				// dispatch), so flatten with a closure.
+				dispatcher := &mcpserver.HTTPHandlerDispatcher{
+					Handler: srv,
+					UserResolver: func(ctx context.Context) *models.User {
+						u, _ := server.CurrentUserFromContext(ctx)
+						return u
+					},
+				}
+				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
+					Doc:        mcpDoc,
+					Workspace:  mcpserver.NewWorkspaceState(""),
+					Dispatcher: dispatcher,
+					PadVersion: fullVersion(),
+				}); regErr != nil {
+					return fmt.Errorf("register MCP catalog: %w", regErr)
+				}
+				mcpserver.RegisterPrompts(mcpSrv.MCP())
+				mcpserver.RegisterMeta(mcpSrv.MCP(), fullVersion())
+				// Stateless mode: every Streamable HTTP request stands
+				// alone, Bearer is the auth, no session resumption to
+				// manage. Matches the spike's verified shape.
+				streamable := mcptransport.NewStreamableHTTPServer(
+					mcpSrv.MCP(),
+					mcptransport.WithEndpointPath("/mcp"),
+					mcptransport.WithStateLess(true),
+				)
+				srv.SetMCPTransport(streamable, cfg.MCPPublicURL, cfg.AuthServerURL)
+				slog.Info("MCP /mcp transport mounted",
+					"public_url", cfg.MCPPublicURL,
+					"auth_server", cfg.AuthServerURL,
+					"resources_wired", false,
+				)
 
 				// Reverse pad → pad-cloud client (TASK-690). Used by
 				// handleDeleteAccount to cancel Stripe subscriptions + delete

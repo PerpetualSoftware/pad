@@ -61,6 +61,15 @@ type Config struct {
 	CloudSidecarURL     string `toml:"cloud_sidecar_url"`     // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
 	CloudOutboundSecret string `toml:"cloud_outbound_secret"` // Optional: exact secret to send when calling pad-cloud. Falls back to the LAST entry of CloudSecret (the older rotation value, which is what pad-cloud is usually running). See DEPLOY.md "Cloud secret rotation".
 
+	// MCP remote-transport surface (PLAN-943 TASK-950). Optional even
+	// in cloud mode — leaving them empty in dev lets the discovery doc
+	// + WWW-Authenticate header fall back to the request Host. In
+	// production, set them to the canonical public URLs so the
+	// metadata document matches the cert and the URL agents paste into
+	// Claude Desktop.
+	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL of the MCP vhost, e.g. https://mcp.getpad.dev. Concatenated with /mcp + /.well-known/oauth-protected-resource.
+	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
+
 	// Encryption
 	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
 	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
@@ -197,6 +206,12 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_CLOUD_OUTBOUND_SECRET"); v != "" {
 		cfg.CloudOutboundSecret = v
+	}
+	if v := os.Getenv("PAD_MCP_PUBLIC_URL"); v != "" {
+		cfg.MCPPublicURL = v
+	}
+	if v := os.Getenv("PAD_AUTH_SERVER_URL"); v != "" {
+		cfg.AuthServerURL = v
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
 		cfg.EncryptionKey = v
