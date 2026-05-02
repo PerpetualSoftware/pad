@@ -426,7 +426,21 @@ func serveCmd() *cobra.Command {
 				// when the cloud deployment has a configured MCP
 				// public URL — the OAuth server's audience strategy
 				// rejects every request unless tokens are bound to
-				// cfg.MCPPublicURL + "/mcp" (the canonical resource).
+				// cfg.MCPPublicURL (the canonical resource URL the
+				// operator published).
+				//
+				// We treat cfg.MCPPublicURL as the canonical resource
+				// URL exactly — no path suffix appended. Per the MCP
+				// authorization spec the client compares the URL it
+				// was given against the discovery doc's `resource`
+				// field; a mismatch is a hard reject. So if the
+				// operator publishes "https://mcp.getpad.dev" (matches
+				// industry convention — mcp.stripe.com, mcp.linear.app,
+				// etc.), tokens are audience-bound to that exact
+				// string. The transport itself is internally mounted
+				// at /mcp on the chi router; pad-cloud's nginx router
+				// rewrites mcp.* root → /mcp transparently so external
+				// clients see a single canonical URL.
 				//
 				// HMAC secret reuses cfg.EncryptionKey, the same
 				// 32-byte hex key cloud deployments already require
@@ -437,7 +451,7 @@ func serveCmd() *cobra.Command {
 					oauthSrv, oauthErr := oauthpkg.NewServer(oauthpkg.Config{
 						Store:           s,
 						HMACSecret:      keyBytes,
-						AllowedAudience: strings.TrimRight(cfg.MCPPublicURL, "/") + "/mcp",
+						AllowedAudience: strings.TrimRight(cfg.MCPPublicURL, "/"),
 					})
 					if oauthErr != nil {
 						return fmt.Errorf("init OAuth server: %w", oauthErr)

@@ -67,7 +67,7 @@ type Config struct {
 	// production, set them to the canonical public URLs so the
 	// metadata document matches the cert and the URL agents paste into
 	// Claude Desktop.
-	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL of the MCP vhost, e.g. https://mcp.getpad.dev. Concatenated with /mcp + /.well-known/oauth-protected-resource.
+	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
 	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 
 	// Encryption

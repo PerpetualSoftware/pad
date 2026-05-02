@@ -35,7 +35,12 @@ import (
 // layer in isolation.
 
 const (
-	testCanonicalAudience = "https://mcp.test.example/mcp"
+	// Canonical resource URL the test fixtures advertise + bind tokens to.
+	// No /mcp suffix — matches the post-fix semantic where MCPPublicURL
+	// is published verbatim as the RFC 9728 resource (mcp.stripe.com /
+	// mcp.linear.app convention). The actual transport still mounts at
+	// /mcp internally on the chi router.
+	testCanonicalAudience = "https://mcp.test.example"
 	testAuthServerURL     = "https://app.test.example"
 )
 
@@ -50,8 +55,10 @@ func oauthEnabledTestServer(t *testing.T) (*Server, *oauth.Server) {
 	srv.SetCloudMode("test-secret")
 	// Stub MCP transport so SetMCPTransport's URL fields are populated;
 	// the OAuth handlers read mcpAuthServerURL via authServerIssuerURL.
+	// Pass testCanonicalAudience directly — post-fix it IS the canonical
+	// resource URL (no /mcp suffix to strip).
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})
-	srv.SetMCPTransport(stub, testCanonicalAudience[:strings.LastIndex(testCanonicalAudience, "/")], testAuthServerURL)
+	srv.SetMCPTransport(stub, testCanonicalAudience, testAuthServerURL)
 
 	o, err := oauth.NewServer(oauth.Config{
 		Store:           srv.store,

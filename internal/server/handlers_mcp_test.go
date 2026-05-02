@@ -72,8 +72,8 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 	var doc protectedResourceMetadata
 	parseJSON(t, rr, &doc)
 
-	if doc.Resource != "https://mcp.test.example/mcp" {
-		t.Errorf("Resource: got %q, want %q", doc.Resource, "https://mcp.test.example/mcp")
+	if doc.Resource != testCanonicalAudience {
+		t.Errorf("Resource: got %q, want %q", doc.Resource, testCanonicalAudience)
 	}
 	if len(doc.AuthorizationServers) != 1 || doc.AuthorizationServers[0] != "https://app.test.example" {
 		t.Errorf("AuthorizationServers: got %v, want [https://app.test.example]", doc.AuthorizationServers)
@@ -398,8 +398,10 @@ func mcpAndOAuthEnabledTestServer(t *testing.T) (srv *Server, transport *mcpStub
 	srv.SetCloudMode("test-secret")
 
 	transport = &mcpStubTransport{}
+	// testCanonicalAudience IS the canonical resource URL post-fix
+	// (no /mcp suffix to strip).
 	srv.SetMCPTransport(http.HandlerFunc(transport.serve),
-		strings.TrimSuffix(testCanonicalAudience, "/mcp"),
+		testCanonicalAudience,
 		testAuthServerURL)
 
 	o, err := newTestOAuthServer(t, srv)

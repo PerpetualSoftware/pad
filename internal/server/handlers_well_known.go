@@ -30,7 +30,7 @@ import (
 // Output:
 //
 //	{
-//	  "resource": "https://mcp.getpad.dev/mcp",
+//	  "resource": "https://mcp.getpad.dev",
 //	  "authorization_servers": ["https://app.getpad.dev"],
 //	  "bearer_methods_supported": ["header"],
 //	  "scopes_supported": ["pad:read", "pad:write", "pad:admin"]
@@ -38,16 +38,29 @@ import (
 //
 // resource and authorization_servers come from runtime config wired at
 // startup via SetMCPTransport (cmd/pad/main.go reads PAD_MCP_PUBLIC_URL
-// and PAD_AUTH_SERVER_URL). When unset, we fall back to deriving from
-// the request scheme + host so local testing without those env vars
-// still produces a valid document; ops should always set them in
-// production so the doc matches the public URL the cert covers.
+// and PAD_AUTH_SERVER_URL). When PAD_MCP_PUBLIC_URL is unset we fall
+// back to deriving from the request scheme + host so local testing
+// without those env vars still produces a valid document; ops should
+// always set PAD_MCP_PUBLIC_URL in production so the doc matches the
+// public URL the cert covers.
+//
+// PAD_MCP_PUBLIC_URL is published verbatim as the `resource` field —
+// no /mcp suffix is appended. The MCP authorization spec requires
+// clients to verify the URL they were given matches `resource` exactly;
+// auto-suffixing would force operators publishing the bare hostname
+// (the industry convention — mcp.stripe.com, mcp.linear.app, etc.)
+// into a mismatch and Claude Desktop / Cursor would reject. The
+// transport is internally mounted at /mcp on the chi router; pad-cloud's
+// nginx router transparently rewrites mcp.* root → /mcp so external
+// clients see a single canonical URL regardless of internal path.
 func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
 	resource := strings.TrimRight(s.mcpPublicURL, "/")
 	if resource == "" {
+		// Fallback for local dev where PAD_MCP_PUBLIC_URL isn't set.
+		// Use r.Host as-is; the operator who cares about the path
+		// shape should set the env var explicitly.
 		resource = "https://" + r.Host
 	}
-	resource = resource + "/mcp"
 
 	authServer := strings.TrimRight(s.mcpAuthServerURL, "/")
 	if authServer == "" {
