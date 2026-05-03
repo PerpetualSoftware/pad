@@ -395,6 +395,14 @@ func serveCmd() *cobra.Command {
 					// agents never see workspace slugs the user
 					// didn't explicitly grant.
 					Lister: mcpserver.NewOAuthWorkspaceLister(s),
+					// Tier-mismatch observability (TASK-1119).
+					// Bumps pad_mcp_authz_denials_total{reason="tier_mismatch"}
+					// when the dispatcher's per-tool scope check
+					// rejects a synthesized request. No-op until
+					// metrics are wired; safe to attach unconditionally
+					// because Server.RecordMCPTierMismatch nil-checks
+					// internally.
+					OnScopeDenied: srv.RecordMCPTierMismatch,
 				}
 				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
 					Doc:        mcpDoc,

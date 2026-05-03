@@ -356,6 +356,115 @@ func TestHTTPHandlerDispatcher_ScopeEnforcement_NoScopeContextAllows(t *testing.
 	}
 }
 
+// TestHTTPHandlerDispatcher_OnScopeDenied_FiresOnce pins the
+// observability hook added in TASK-1119: when a synthesized request
+// fails the scope check, the dispatcher must invoke OnScopeDenied
+// exactly once with the (method, urlPath) it was about to send. Backs
+// the pad_mcp_authz_denials_total{reason="tier_mismatch"} metric.
+func TestHTTPHandlerDispatcher_OnScopeDenied_FiresOnce(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t}
+
+	type observed struct {
+		method  string
+		urlPath string
+	}
+	var calls []observed
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+		OnScopeDenied: func(method, urlPath string) {
+			calls = append(calls, observed{method: method, urlPath: urlPath})
+		},
+	}
+
+	// Read-only scope + a write tool — same fixture the existing
+	// scope-deny test uses, but verifies the observer side now too.
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+	ctx = WithDispatchInput(ctx, map[string]any{
+		"workspace":  "docapp",
+		"collection": "tasks",
+		"title":      "Should Be Rejected",
+	})
+
+	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError result for read-scoped POST; got success: %#v", res)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("OnScopeDenied: got %d calls, want 1 (calls=%+v)", len(calls), calls)
+	}
+	if calls[0].method != http.MethodPost {
+		t.Errorf("OnScopeDenied method: got %q, want %q", calls[0].method, http.MethodPost)
+	}
+	if !strings.HasPrefix(calls[0].urlPath, "/api/v1/workspaces/docapp/collections/tasks") {
+		t.Errorf("OnScopeDenied urlPath: got %q, want prefix /api/v1/workspaces/docapp/collections/tasks", calls[0].urlPath)
+	}
+}
+
+// TestHTTPHandlerDispatcher_OnScopeDenied_NotFiredOnAllow guards
+// against the inverse mistake: if the scope check passes, the observer
+// MUST NOT fire (otherwise dashboards would treat allowed traffic as
+// denied — false-positive that masks real abuse).
+func TestHTTPHandlerDispatcher_OnScopeDenied_NotFiredOnAllow(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `{"items":[]}`}
+
+	var fired int
+	d := &HTTPHandlerDispatcher{
+		Handler:       rec,
+		UserResolver:  fixedUserResolver(user),
+		OnScopeDenied: func(string, string) { fired++ },
+	}
+
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+	ctx = WithDispatchInput(ctx, map[string]any{"workspace": "docapp"})
+
+	res, err := d.Dispatch(ctx, []string{"item", "list"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("read-scoped GET should succeed; got error: %#v", res)
+	}
+	if fired != 0 {
+		t.Errorf("OnScopeDenied fired on allowed request: got %d calls, want 0", fired)
+	}
+}
+
+// TestHTTPHandlerDispatcher_OnScopeDenied_NilSafe verifies the hook is
+// optional — leaving it unset must not panic, even on the deny path.
+func TestHTTPHandlerDispatcher_OnScopeDenied_NilSafe(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t}
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+		// OnScopeDenied intentionally unset.
+	}
+
+	ctx := server.WithTokenScopes(context.Background(), `["read"]`)
+	ctx = WithDispatchInput(ctx, map[string]any{
+		"workspace":  "docapp",
+		"collection": "tasks",
+		"title":      "x",
+	})
+
+	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError on deny path; got %#v", res)
+	}
+}
+
 func TestMapItemCreate_ExplicitFieldOverridesNamedFlag(t *testing.T) {
 	// Last-write-wins: an explicit --field status=blocked should
 	// override a separate --status=in-progress on the same call.
