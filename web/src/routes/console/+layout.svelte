@@ -47,13 +47,28 @@
 			<div class="nav-left">
 				<a href="/console" class="nav-logo">Pad</a>
 				<div class="nav-links">
-					<a href="/console" class="nav-link" class:active={isActive('/console') && !isActive('/console/settings') && !isActive('/console/billing') && !isActive('/console/admin')}>
+					<a
+						href="/console"
+						class="nav-link"
+						class:active={isActive('/console') &&
+							!isActive('/console/settings') &&
+							!isActive('/console/billing') &&
+							!isActive('/console/admin') &&
+							!isActive('/console/connected-apps')}
+					>
 						Workspaces
 					</a>
 					<a href="/console/settings" class="nav-link" class:active={isActive('/console/settings')}>
 						Settings
 					</a>
 					{#if authStore.cloudMode}
+						<a
+							href="/console/connected-apps"
+							class="nav-link"
+							class:active={isActive('/console/connected-apps')}
+						>
+							Connected Apps
+						</a>
 						<a href="/console/billing" class="nav-link" class:active={isActive('/console/billing')}>
 							Billing
 						</a>
