@@ -92,6 +92,28 @@ type HTTPHandlerDispatcher struct {
 	// production wiring.
 	Routes map[string]RouteMapper
 
+	// OnScopeDenied, when non-nil, fires every time buildAuthedRequest
+	// rejects a synthesized request because the API token's scope does
+	// not permit the requested method on the resource (TASK-1119
+	// follow-up to TASK-961). The callback gets the same (method,
+	// urlPath) the dispatcher was about to send so the observer can
+	// add useful labels if needed; today it backs the
+	// pad_mcp_authz_denials_total{reason="tier_mismatch"} counter.
+	//
+	// Why a callback rather than importing internal/metrics directly:
+	// internal/mcp depends on internal/server, but adding an
+	// internal/metrics import here would create a circular concern —
+	// server already owns metrics wiring, and the dispatcher's role is
+	// "translate tool args → in-process HTTP request." Keeping it
+	// metrics-naive (matches the OAuth Storage SetRevocationObserver
+	// pattern from TASK-961) lets cmd/pad attach the observer at
+	// startup without coupling.
+	//
+	// nil → no observer; the existing permission_denied error envelope
+	// still flows up to the caller unchanged. Tests that don't care
+	// about metrics can leave this unset.
+	OnScopeDenied func(method, urlPath string)
+
 	// Lister, when non-nil, populates available_workspaces in the
 	// no_workspace / unknown_workspace error envelopes (TASK-977).
 	// Production wires an OAuth-aware lister that reads the token's
@@ -470,6 +492,14 @@ func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 	user *models.User,
 ) (*http.Request, error) {
 	if scopes := server.TokenScopesFromContext(ctx); !server.TokenScopeAllows(scopes, method, urlPath) {
+		// TASK-1119: fire the optional observability hook BEFORE
+		// returning so the caller's error path is unchanged. Best-
+		// effort — a panicking observer is the observer's bug; we
+		// don't recover() because that would mask metric-wiring
+		// breakage in tests where panics are the right signal.
+		if d.OnScopeDenied != nil {
+			d.OnScopeDenied(method, urlPath)
+		}
 		return nil, fmt.Errorf("permission_denied: token scope does not permit %s on this resource", method)
 	}
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)

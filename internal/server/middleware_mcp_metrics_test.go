@@ -94,6 +94,34 @@ func TestRecordMCPCallMetrics_NilMetrics(t *testing.T) {
 	s.recordMCPCallMetrics("pad_item", "ok", "u", time.Second, r, http.StatusOK)
 }
 
+// TestRecordMCPTierMismatch covers the dispatcher-side observer added
+// in TASK-1119: every call increments
+// pad_mcp_authz_denials_total{reason="tier_mismatch"} unconditionally
+// (no MCP-origin gate — the dispatcher is by construction MCP-only).
+// Also verifies nil-metrics safety.
+func TestRecordMCPTierMismatch(t *testing.T) {
+	s := &Server{metrics: metrics.New()}
+
+	s.RecordMCPTierMismatch(http.MethodPost, "/api/v1/workspaces/x/items")
+	s.RecordMCPTierMismatch(http.MethodDelete, "/api/v1/workspaces/x/items/y")
+
+	got := counterValue(t, s.metrics.MCPAuthzDenialsTotal.WithLabelValues("tier_mismatch"))
+	if got != 2 {
+		t.Errorf("MCPAuthzDenialsTotal{tier_mismatch}: got %v, want 2", got)
+	}
+
+	// Other reasons untouched — sanity check the wiring didn't fan out.
+	for _, r := range []string{"audience_mismatch", "rate_limited", "workspace_not_in_allowlist", "not_a_member"} {
+		if got := counterValue(t, s.metrics.MCPAuthzDenialsTotal.WithLabelValues(r)); got != 0 {
+			t.Errorf("MCPAuthzDenialsTotal{%s}: got %v, want 0 (untouched)", r, got)
+		}
+	}
+
+	// Nil metrics → no panic.
+	s2 := &Server{metrics: nil}
+	s2.RecordMCPTierMismatch(http.MethodPost, "/whatever")
+}
+
 // TestRecordMCPAuthzDenial_GatedOnMCPOrigin verifies the discriminator:
 // the counter only increments when the request context carries an MCP
 // token identity (set by MCPBearerAuth). Non-MCP requests must be

@@ -499,6 +499,30 @@ func workspaceRole(r *http.Request) string {
 	return v
 }
 
+// RecordMCPTierMismatch bumps the pad_mcp_authz_denials_total counter
+// with reason="tier_mismatch" (TASK-1119). Wired from
+// internal/mcp/dispatch_http.go's OnScopeDenied callback — every
+// dispatcher invocation is by construction MCP-origin (only the /mcp
+// surface routes through HTTPHandlerDispatcher), so unlike
+// recordMCPAuthzDenial below this helper does NOT need a context
+// gate.
+//
+// Exported for cross-package wiring (cmd/pad attaches it as the
+// dispatcher observer at startup). The (method, urlPath) arguments
+// match the dispatcher's callback signature so callers can wire with
+// a one-liner; we currently ignore them because the metric only
+// labels by reason.
+//
+// No-op when metrics aren't wired (selfhost / tests).
+func (s *Server) RecordMCPTierMismatch(method, urlPath string) {
+	_ = method
+	_ = urlPath
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.MCPAuthzDenialsTotal.WithLabelValues("tier_mismatch").Inc()
+}
+
 // recordMCPAuthzDenial bumps the pad_mcp_authz_denials_total counter
 // when the request originated from the MCP surface. The discriminator
 // is the presence of an MCPTokenIdentity in the request context —
