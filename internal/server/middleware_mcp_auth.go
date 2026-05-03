@@ -171,6 +171,11 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// TokenAuth's chain-level scopeAllows check. Codex review
 	// #369 round 1.
 	ctx = WithTokenScopes(ctx, apiToken.Scopes)
+	// Stash the token identity so the audit middleware (TASK-960)
+	// can record which PAT drove the call. Audit logging is
+	// independent of every other gate above and below — even calls
+	// that the inner handler later rejects produce a row.
+	ctx = WithMCPTokenIdentity(ctx, "pat", apiToken.ID)
 
 	// Surface near-expiry warning headers the same way TokenAuth
 	// does (middleware_auth.go:125). MCP clients can read them,
@@ -310,6 +315,12 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// alongside the legacy PAT scopes, so the same per-method
 	// policy applies to OAuth-issued tokens.
 	ctx = WithTokenScopes(ctx, oauthScopesToJSON(ar.GetGrantedScopes()))
+	// Stash the OAuth connection identity (request_id chain) for
+	// the audit middleware (TASK-960). request_id is preserved
+	// across refresh-token rotations, so it's the stable identifier
+	// for a single user-authorized connection — exactly what the
+	// connected-apps page (TASK-954) keys revoke + last-used on.
+	ctx = WithMCPTokenIdentity(ctx, "oauth", ar.GetID())
 
 	// Stash the workspace allow-list set at consent time (TASK-952)
 	// so RequireWorkspaceAccess can gate workspace access per-token

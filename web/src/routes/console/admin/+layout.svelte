@@ -23,6 +23,11 @@
 		{ label: 'Users', href: '/console/admin' },
 		{ label: 'Invitations', href: '/console/admin/invitations' },
 		{ label: 'Audit Log', href: '/console/admin/audit-log' },
+		// MCP audit log (TASK-960) — full-table view of every MCP call.
+		// Cloud-only: the /api/v1/admin/mcp-audit endpoint backs the
+		// MCP transport, which only mounts in cloud mode. Hiding the
+		// tab in self-host avoids a "the page always errors" UX.
+		...(cloudMode ? [{ label: 'MCP Audit', href: '/console/admin/mcp-audit' }] : []),
 		...(cloudMode ? [{ label: 'Billing', href: '/console/admin/billing' }] : []),
 		{ label: 'Settings', href: '/console/admin/settings' }
 	]);

@@ -148,6 +148,41 @@ func WithTokenAllowedWorkspaces(ctx context.Context, slugs []string) context.Con
 	return context.WithValue(ctx, ctxTokenAllowedWorkspaces, cp)
 }
 
+// WithMCPTokenIdentity stashes the bearer-token identity so the MCP
+// audit middleware can record which connection drove the call.
+//
+// kind is the discriminator — "oauth" for fosite-issued access tokens,
+// "pat" for personal access tokens. ref is the connection identifier:
+//
+//   - For "oauth", ref is the OAuth request_id chain identifier
+//     (preserved across refresh-token rotations — see
+//     internal/store/oauth.go). One value per "connection" the user
+//     authorized via consent.
+//   - For "pat", ref is api_tokens.id.
+//
+// Only called from MCPBearerAuth's two branches (PAT + OAuth).
+// Other auth middleware doesn't touch /mcp, so the audit middleware
+// reads "" and skips the row when no MCP identity was attached
+// (defense in depth — the audit middleware only mounts behind
+// MCPBearerAuth, so the empty case shouldn't fire in practice).
+//
+// Empty kind or ref clears any previously set value, which would only
+// happen in a synthesized test request.
+func WithMCPTokenIdentity(ctx context.Context, kind, ref string) context.Context {
+	ctx = context.WithValue(ctx, ctxMCPTokenKind, kind)
+	ctx = context.WithValue(ctx, ctxMCPTokenRef, ref)
+	return ctx
+}
+
+// MCPTokenIdentityFromContext returns (kind, ref) attached by
+// WithMCPTokenIdentity, or ("", "") if none was set. The audit
+// middleware uses this to populate token_kind + token_ref columns.
+func MCPTokenIdentityFromContext(ctx context.Context) (kind, ref string) {
+	k, _ := ctx.Value(ctxMCPTokenKind).(string)
+	r, _ := ctx.Value(ctxMCPTokenRef).(string)
+	return k, r
+}
+
 // TokenAllowedWorkspacesFromContext returns the token's workspace
 // allow-list, or nil if none was attached. Three return shapes
 // matter to callers:
