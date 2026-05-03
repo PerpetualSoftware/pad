@@ -680,13 +680,85 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-1082: orphan branch. The active-plan loop above only
+	// surfaces items that are children of an active plan — workspaces
+	// without active plans (or in-progress / high-priority items
+	// outside their active plans) get an empty suggested_next, which
+	// burned us during dogfooding when the obvious answer was
+	// "continue your one in-progress task."
+	//
+	// Scan everything else for:
+	//   - in-progress, unblocked, not already a candidate (catches
+	//     in-progress orphans regardless of priority — agents should
+	//     suggest continuing what's already in flight).
+	//   - open with high or critical priority, unblocked, not already
+	//     a candidate (catches the "important standalone item" case
+	//     without flooding with low-priority orphans).
+	//
+	// Orphans rank LOWER than active-plan candidates so existing
+	// behavior is preserved for plan-driven workspaces — the orphan
+	// branch only surfaces when nothing else does (or pads out the
+	// suggestion list).
+	seen := make(map[string]struct{}, len(candidates))
+	for _, c := range candidates {
+		seen[c.item.ID] = struct{}{}
+	}
+	for _, item := range allItems {
+		if _, dup := seen[item.ID]; dup {
+			continue
+		}
+		// Skip non-tasks (the active-plan loop walks plan children;
+		// the orphan branch is similarly task-shaped). isCollectionVisible
+		// + collection-task gating mirrors the active-plan branch's
+		// shape so behaviour stays consistent.
+		if !isCollectionVisible(item.CollectionID, visibleIDs) {
+			continue
+		}
+		if !s.isItemVisibleToGuest(r, workspaceID, &item, dashFullCollIDs, dashGrantedItemIDs) {
+			continue
+		}
+		taskStatus := extractFieldValue(item.Fields, "status")
+		isInProgress := isActiveStatus(taskStatus)
+		isOpen := taskStatus == "open"
+		if !isInProgress && !isOpen {
+			continue
+		}
+		pri := extractFieldValue(item.Fields, "priority")
+		// Open orphans must be high or critical to surface — open
+		// in-progress items always do (continuing-work signal beats
+		// priority gating).
+		if !isInProgress && pri != "high" && pri != "critical" {
+			continue
+		}
+		if s.itemBlockedByActive(workspaceID, item.ID, ctxMap, visibleIDs, r, dashFullCollIDs, dashGrantedItemIDs) {
+			continue
+		}
+		candidates = append(candidates, suggestion{
+			item:       item,
+			plan:       "", // empty plan name signals orphan in the reason text below
+			status:     taskStatus,
+			priority:   priorityRank(pri),
+			inProgress: isInProgress,
+		})
+	}
+
 	// Sort: in-progress first, then by priority rank within each
-	// bucket. Lower rank = higher priority.
+	// bucket, then plan-children before orphans so the existing
+	// "active-plan continuation" suggestion stays at the top when
+	// both are present. Lower rank = higher priority.
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].inProgress != candidates[j].inProgress {
 			return candidates[i].inProgress
 		}
-		return candidates[i].priority < candidates[j].priority
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority < candidates[j].priority
+		}
+		// Same in-progress + priority: prefer plan-children (non-empty
+		// .plan) over orphans (empty .plan) so the more-contextful
+		// suggestion ranks first.
+		iPlan := candidates[i].plan != ""
+		jPlan := candidates[j].plan != ""
+		return iPlan && !jPlan
 	})
 
 	// Take top 3
@@ -697,10 +769,15 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, c := range candidates[:limit] {
 		pri := extractFieldValue(c.item.Fields, "priority")
 		var reason string
-		if c.inProgress {
+		switch {
+		case c.inProgress && c.plan != "":
 			reason = "In-progress task in active plan \"" + c.plan + "\""
-		} else {
+		case c.inProgress:
+			reason = "In-progress task"
+		case c.plan != "":
 			reason = "Open task in active plan \"" + c.plan + "\""
+		default:
+			reason = "Open task"
 		}
 		if pri != "" {
 			reason += " (" + pri + " priority)"

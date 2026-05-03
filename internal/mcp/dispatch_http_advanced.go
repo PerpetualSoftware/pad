@@ -401,3 +401,53 @@ func hasFieldChanges(input map[string]any) bool {
 	}
 	return false
 }
+
+// maybeInjectWorkspace defaults the `workspace` input from the
+// dispatcher's WorkspaceLister when the caller didn't pass one
+// explicitly (TASK-1076).
+//
+// The lister already encodes the right policy via the OAuth-token
+// allow-list (internal/mcp/dispatch_http_lister.go):
+//
+//   - PAT auth (no allow-list)        → all of the user's workspaces
+//   - Wildcard token (`["*"]`)        → all of the user's workspaces
+//   - Specific allow-list             → intersection with the user's
+//     memberships
+//
+// Inject ONLY when exactly one workspace results — that's the case
+// where defaulting is unambiguous. Zero (no memberships, or
+// allow-list disjoint from memberships) → leave alone; the route
+// mapper's "missing required input" error is the agent's signal to
+// pass workspace= explicitly. Multiple → also leave alone; agents
+// should pick which workspace they mean rather than the dispatcher
+// silently choosing one (the latter would be a real audience-confusion
+// hazard for write operations).
+//
+// Caller-passed workspace ALWAYS wins (the early-return on the
+// existing-value branch). Lister == nil paths (tests + non-OAuth
+// transports) skip injection entirely so behavior stays unchanged
+// for them — no Lister means no defaulting policy to apply.
+//
+// Mutations are applied to a copy; the caller's input map is not
+// modified in place.
+func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
+	ctx context.Context,
+	input map[string]any,
+) map[string]any {
+	if d.Lister == nil {
+		return input
+	}
+	if existing, ok := input["workspace"].(string); ok && existing != "" {
+		return input
+	}
+	workspaces, err := d.Lister.ListWorkspaces(ctx)
+	if err != nil || len(workspaces) != 1 {
+		return input
+	}
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	out["workspace"] = workspaces[0].Slug
+	return out
+}

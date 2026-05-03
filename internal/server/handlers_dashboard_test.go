@@ -642,11 +642,17 @@ func TestDashboardSuggestedNext_FiltersBlockedItems(t *testing.T) {
 	}
 }
 
+// TestDashboardSuggestedNextNoPlans pins BUG-1082's orphan branch:
+// pre-fix this test asserted that a workspace with no active plans
+// returns empty suggested_next. That was the bug — the dashboard
+// gave agents zero guidance even when an obvious high-priority open
+// task existed. Post-fix the orphan branch surfaces high-priority
+// open items even outside any plan.
 func TestDashboardSuggestedNextNoPlans(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Create tasks but no active plans
+	// High-priority open task with no active plan parent.
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Orphan Task",
 		"fields": `{"status":"open","priority":"high"}`,
@@ -654,16 +660,29 @@ func TestDashboardSuggestedNextNoPlans(t *testing.T) {
 
 	resp := getDashboard(t, srv, slug)
 
-	if len(resp.SuggestedNext) != 0 {
-		t.Errorf("expected 0 suggested_next without active plans, got %d", len(resp.SuggestedNext))
+	if len(resp.SuggestedNext) != 1 {
+		t.Fatalf("expected 1 suggested_next (high-priority orphan), got %d: %+v",
+			len(resp.SuggestedNext), resp.SuggestedNext)
+	}
+	if got := resp.SuggestedNext[0].ItemTitle; got != "Orphan Task" {
+		t.Errorf("expected Orphan Task, got %q", got)
+	}
+	// Reason should NOT name a plan since there isn't one.
+	if reason := resp.SuggestedNext[0].Reason; strings.Contains(reason, "active plan") {
+		t.Errorf("orphan reason should not reference an active plan; got %q", reason)
 	}
 }
 
+// TestDashboardSuggestedNextFromPlannedPlan: tasks under a NOT-active
+// plan rank as orphans (since their plan parent doesn't trigger the
+// active-plan loop). Pre-BUG-1082 they were invisible.
 func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	// Planned plan — should NOT contribute to suggested_next
+	// Planned (not active) plan — tasks under it are functionally
+	// orphans for the active-plan loop. The orphan branch should
+	// surface high-priority ones.
 	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
 		"title":  "Planned Plan",
 		"fields": `{"status":"planned"}`,
@@ -676,8 +695,76 @@ func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
 
 	resp := getDashboard(t, srv, slug)
 
-	if len(resp.SuggestedNext) != 0 {
-		t.Errorf("expected 0 suggested_next from planned plan, got %d", len(resp.SuggestedNext))
+	if len(resp.SuggestedNext) != 1 {
+		t.Fatalf("expected 1 suggested_next (orphan-of-planned-plan), got %d: %+v",
+			len(resp.SuggestedNext), resp.SuggestedNext)
+	}
+	if got := resp.SuggestedNext[0].ItemTitle; got != "Task in Planned Plan" {
+		t.Errorf("expected Task in Planned Plan, got %q", got)
+	}
+}
+
+// TestDashboardSuggestedNextOrphan_InProgressBeatsPriority pins
+// BUG-1082's gating rule for the orphan branch: in-progress items
+// surface regardless of priority, but open items must be high or
+// critical to surface (avoids flooding suggestions with low-priority
+// open work). The "continue what's in flight" signal beats priority.
+func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Low-priority in-progress orphan should surface.
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Low-Pri In-Progress Orphan",
+		"fields": `{"status":"in-progress","priority":"low"}`,
+	})
+	// Low-priority OPEN orphan should NOT surface.
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Low-Pri Open Orphan",
+		"fields": `{"status":"open","priority":"low"}`,
+	})
+
+	resp := getDashboard(t, srv, slug)
+
+	if len(resp.SuggestedNext) != 1 {
+		t.Fatalf("expected exactly 1 suggested_next (in-progress only), got %d: %+v",
+			len(resp.SuggestedNext), resp.SuggestedNext)
+	}
+	if got := resp.SuggestedNext[0].ItemTitle; got != "Low-Pri In-Progress Orphan" {
+		t.Errorf("expected in-progress orphan, got %q", got)
+	}
+}
+
+// TestDashboardSuggestedNextOrphan_RanksBelowActivePlan pins the
+// rank order: when both an active-plan candidate AND an orphan
+// candidate exist at the same in-progress / priority bucket, the
+// active-plan one comes first (more contextful).
+func TestDashboardSuggestedNextOrphan_RanksBelowActivePlan(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Active Plan",
+		"fields": `{"status":"active"}`,
+	})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "In Active Plan",
+		"fields": `{"status":"in-progress","priority":"medium","parent":"` + plan.ID + `"}`,
+	})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Orphan",
+		"fields": `{"status":"in-progress","priority":"medium"}`,
+	})
+
+	resp := getDashboard(t, srv, slug)
+
+	if len(resp.SuggestedNext) < 2 {
+		t.Fatalf("expected ≥2 suggested_next, got %d: %+v",
+			len(resp.SuggestedNext), resp.SuggestedNext)
+	}
+	if got := resp.SuggestedNext[0].ItemTitle; got != "In Active Plan" {
+		t.Errorf("expected active-plan candidate first, got %q (full list: %+v)",
+			got, resp.SuggestedNext)
 	}
 }
 
