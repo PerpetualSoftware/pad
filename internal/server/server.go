@@ -105,6 +105,17 @@ type Server struct {
 	// writer still work. See middleware_mcp_audit.go.
 	mcpAudit *mcpAuditWriter
 
+	// MCP session tracker (PLAN-943 TASK-1120). Replaces the naive
+	// +1/-1 active-sessions accounting from TASK-961. Wired by
+	// startMCPSessionTracker (called from SetMCPTransport in cloud
+	// mode); shut down from Server.Stop alongside the audit writer.
+	// nil-safe: trackMCPSession + the gauge-update path both
+	// nil-check so non-cloud builds + tests run without the tracker.
+	// See middleware_mcp_session.go.
+	mcpSessions             *mcpSessionTracker
+	mcpSessionTTL           time.Duration // 0 → defaultMCPSessionTTL
+	mcpSessionSweepInterval time.Duration // 0 → defaultMCPSessionSweepInterval
+
 	// storageInfoCache memoizes per-workspace storage usage summaries
 	// behind a short TTL (storageInfoTTL). Reduces DB load on the
 	// Settings → Storage page and quota-aware UI surfaces. Initialized
@@ -176,6 +187,10 @@ func (s *Server) Stop() {
 	// signal Wait would hang forever on the writer's blocking
 	// queue receive.
 	s.stopMCPAuditWriter()
+	// MCP session tracker (TASK-1120) runs its sweeper on s.bg too.
+	// Order with the audit writer doesn't matter — both are
+	// independent goroutines; we just need the close BEFORE Wait().
+	s.stopMCPSessionTracker()
 	s.bg.Wait()
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }

@@ -232,6 +232,11 @@ func TestMCPAudit_BufferFull_DropsAndIncrementsCounter(t *testing.T) {
 	// Stop the worker first so it doesn't drain while we're filling.
 	// Then enqueue one extra entry; that one must drop.
 	srv.mcpAudit.shutdown()
+	// TASK-1120: SetMCPTransport (called by auditedMCPServer setup)
+	// also spawned the session-tracker sweeper on srv.bg. Without
+	// shutting that down too, srv.bg.Wait() below would block on the
+	// sweeper's 5-minute ticker. Mirror what Server.Stop() does.
+	srv.stopMCPSessionTracker()
 	// Wait for the worker goroutine to finish so the queue is
 	// guaranteed not to be drained mid-test.
 	srv.bg.Wait()

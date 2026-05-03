@@ -74,6 +74,15 @@ func (s *Server) SetMCPTransport(transport http.Handler, mcpPublicURL, authServe
 	// SetMCPTransport. The writer outlives the request flow; it's
 	// stopped from Server.Stop via stopMCPAuditWriter.
 	s.startMCPAuditWriter()
+
+	// Spawn the session tracker + periodic sweeper (PLAN-943
+	// TASK-1120). Replaces the naive +1/-1 active-sessions gauge
+	// accounting that drifted upward on crashed clients. Idempotent
+	// like startMCPAuditWriter. ttl + sweep interval are tuned via
+	// PAD_MCP_SESSION_TTL / PAD_MCP_SESSION_SWEEP_INTERVAL by
+	// cmd/pad through SetMCPSessionTrackerConfig before this call;
+	// otherwise the package defaults (ttl=30m, sweep=5m) apply.
+	s.startMCPSessionTracker()
 }
 
 // registerMCPRoutes installs the /mcp + /.well-known endpoints on r,

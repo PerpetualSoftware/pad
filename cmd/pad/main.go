@@ -422,6 +422,15 @@ func serveCmd() *cobra.Command {
 					mcptransport.WithEndpointPath("/mcp"),
 					mcptransport.WithStateLess(true),
 				)
+				// TASK-1120: optional env-driven overrides for the
+				// mcp-active-sessions tracker. Both default to the
+				// package values (30m TTL, 5m sweep) when unset. Must
+				// be applied BEFORE SetMCPTransport, which spawns the
+				// tracker — calling after has no effect.
+				srv.SetMCPSessionTrackerConfig(
+					parseDurationEnv("PAD_MCP_SESSION_TTL", 0),
+					parseDurationEnv("PAD_MCP_SESSION_SWEEP_INTERVAL", 0),
+				)
 				srv.SetMCPTransport(streamable, cfg.MCPPublicURL, cfg.AuthServerURL)
 				slog.Info("MCP /mcp transport mounted",
 					"public_url", cfg.MCPPublicURL,

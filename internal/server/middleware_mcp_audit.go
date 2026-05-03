@@ -314,6 +314,22 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		// Fired AFTER enqueue so a metrics misconfigure (nil registry
 		// in test builds) can't accidentally drop the audit row.
 		s.recordMCPCallMetrics(toolName, string(status), user.ID, time.Since(start), r, ww.Status())
+
+		// TASK-1120: session-id-keyed accounting for the
+		// pad_mcp_active_sessions gauge. Replaces the naive
+		// "tool==initialize → +1, method==DELETE → -1" logic that
+		// used to live in recordMCPCallMetrics — that path drifted
+		// upward on crashed clients. The tracker keys by Mcp-Session-Id
+		// and a periodic sweeper evicts stale entries past the TTL,
+		// so the gauge converges on reality even when clients vanish
+		// without a clean DELETE.
+		//
+		// Pulling the headers via closures (rather than passing the
+		// http.Header values) lets trackMCPSession be tested with
+		// plain map[string]string fixtures without spinning up a
+		// full http.Request — the seam matches the helper's signature
+		// in middleware_mcp_session.go.
+		s.trackMCPSession(r.Header.Get, ww.Header().Get, r.Method, ww.Status())
 	})
 }
 
@@ -322,16 +338,15 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 // from MCPAuditLog so the audit hot path stays focused on its own
 // concerns and metrics maintenance touches one method.
 //
-// Session gauge accounting: MCP Streamable HTTP carries session
-// lifecycle through method names + HTTP verbs:
-//   - tool method "initialize"     → session opens (+1)
-//   - HTTP DELETE on /mcp           → session closes per spec (-1)
-//
-// Anything else is a per-message call inside an existing session
-// (no gauge change). The gauge is intentionally cheap — best-effort
-// accounting for a "do we have anomalous open sessions?" alert,
-// not a transaction log.
-func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Duration, r *http.Request, httpStatus int) {
+// Session-gauge accounting moved to trackMCPSession in TASK-1120 —
+// the previous "tool==initialize → +1, method==DELETE → -1" logic
+// drifted upward on crashed clients. The tracker keys by
+// Mcp-Session-Id with a TTL sweeper, so the gauge converges on
+// reality without depending on a clean shutdown handshake. The r
+// + httpStatus parameters stay in the signature for now — callers
+// already plumb them and a future per-status histogram would want
+// them back — they're explicitly unused via the underscore names.
+func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Duration, _ *http.Request, _ int) {
 	if s.metrics == nil {
 		return
 	}
@@ -340,19 +355,6 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 	// would explode the series count without a clear analytical
 	// payoff (alerts care about p95 latency per tool, not per user).
 	s.metrics.MCPToolCallDuration.WithLabelValues(tool).Observe(dur.Seconds())
-
-	// Session lifecycle. We only adjust on successful calls (2xx);
-	// a failed initialize doesn't actually open a session, and a
-	// failed DELETE didn't close one. classifyMCPResult collapses
-	// HTTP 200 + 0 to "ok" so this matches the audit row's status.
-	if httpStatus == http.StatusOK || httpStatus == 0 {
-		switch {
-		case tool == "initialize":
-			s.metrics.MCPActiveSessions.Inc()
-		case r.Method == http.MethodDelete:
-			s.metrics.MCPActiveSessions.Dec()
-		}
-	}
 }
 
 // parseMCPRequestBody extracts (tool_name, args_hash) from the
