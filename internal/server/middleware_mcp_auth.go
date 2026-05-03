@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ory/fosite"
 
@@ -74,6 +75,15 @@ import (
 // only, intentionally.
 func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the entry timestamp so denied-but-resolved requests
+		// (e.g. valid bearer rate-limited at the per-token bucket) can
+		// still emit an audit row with real latency. The audit row
+		// emit path lives in middleware_mcp_audit.go's
+		// emitMCPAuditDenied — see that helper for the rationale on
+		// why we audit those branches directly here rather than from
+		// the wrapping middleware (Codex review on PR #389 round 1).
+		mcpAuthStart := time.Now().UTC()
+
 		token, ok := extractBearer(r.Header.Get("Authorization"))
 		if !ok {
 			s.writeMCPUnauthorized(w, r, "missing_token", "Bearer token required.")
@@ -84,7 +94,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 		// secret). Cheap shape gate before the DB lookup. Anything
 		// else falls into the OAuth introspection branch.
 		if strings.HasPrefix(token, "pad_") && len(token) == 68 {
-			s.handleMCPPATAuth(w, r, token, next)
+			s.handleMCPPATAuth(w, r, token, next, mcpAuthStart)
 			return
 		}
 
@@ -97,7 +107,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			s.writeMCPUnauthorized(w, r, "invalid_token", "Token format not recognized.")
 			return
 		}
-		s.handleMCPOAuthAuth(w, r, token, next)
+		s.handleMCPOAuthAuth(w, r, token, next, mcpAuthStart)
 	})
 }
 
@@ -105,7 +115,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 // Extracted from MCPBearerAuth so the OAuth branch reads cleanly
 // without a deeply-nested if/else; behaviour identical to the
 // pre-sub-PR-E single-path version.
-func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token string, next http.Handler) {
+func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token string, next http.Handler, mcpAuthStart time.Time) {
 	apiToken, err := s.store.ValidateToken(token)
 	if err != nil {
 		// A DB error during token validation is a server-side
@@ -155,6 +165,12 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// and use). Symmetric to the OAuth path's positioning — both
 	// paths run the rate limit at the very end of their happy path.
 	if !s.checkMCPRateLimit(w, r, token) {
+		// Resolved user + token but rate-limited: emit an audit row
+		// directly. The wrapping MCPAuditLog never sees this branch
+		// because we return before next.ServeHTTP. Codex review on
+		// PR #389 round 1 — see emitMCPAuditDenied for the design
+		// rationale.
+		s.emitMCPAuditDenied(r, user, "pat", apiToken.ID, "rate_limited", mcpAuthStart)
 		return
 	}
 
@@ -205,7 +221,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 // scope vocabulary (pad:read / pad:write / pad:admin) alongside
 // the legacy PAT vocabulary, so MCP tools see one uniform policy
 // regardless of which transport issued the bearer.
-func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, token string, next http.Handler) {
+func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, token string, next http.Handler, mcpAuthStart time.Time) {
 	ar, tokenUse, err := s.oauthServer.IntrospectToken(r.Context(), token)
 	if err != nil {
 		// fosite returns ErrInactiveToken / ErrNotFound for unknown
@@ -304,6 +320,11 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// of the OAuth happy path ensures the limiter map only
 	// contains tokens that would otherwise reach next.ServeHTTP.
 	if !s.checkMCPRateLimit(w, r, token) {
+		// Resolved user + OAuth connection but rate-limited: emit
+		// an audit row directly. Wrapping MCPAuditLog never sees
+		// this branch because we return before next.ServeHTTP.
+		// Codex review on PR #389 round 1.
+		s.emitMCPAuditDenied(r, user, "oauth", ar.GetID(), "rate_limited", mcpAuthStart)
 		return
 	}
 

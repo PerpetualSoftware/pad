@@ -276,6 +276,77 @@ filled:
 	}
 }
 
+// TestMCPAudit_RateLimited_RecordsDeniedRow pins the fix for Codex
+// review on PR #389 round 1: when MCPBearerAuth resolves the user
+// + token but then rate-limits the request, the wrapping
+// MCPAuditLog never sees the response (it's mounted INSIDE
+// MCPBearerAuth, which returns before next.ServeHTTP). The fix is
+// emitMCPAuditDenied called from the rate-limit deny branch — this
+// test asserts the audit row lands with result_status="denied" and
+// error_kind="rate_limited".
+func TestMCPAudit_RateLimited_RecordsDeniedRow(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+	pat := mustCreatePATForTest(t, srv, "audit-rate-limit")
+
+	// Find the user we just created so we can scope the audit query.
+	user, err := srv.store.GetUserByEmail("audit-rate-limit@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+
+	// Hammer until we see a 429 — same pattern as the existing
+	// rate-limit tests.
+	got429 := false
+	for i := 0; i < 30; i++ {
+		req := httptest.NewRequest("POST", "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item"}}`))
+		req.Header.Set("Authorization", "Bearer "+pat)
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatal("never hit 429 within 30 requests")
+	}
+
+	// Wait for the async audit writer to drain. Burst sent + 1 denied
+	// = burst+1 audit rows (every accepted call writes one too via
+	// the wrapping middleware; the 429 writes one via the direct
+	// emit). We just need at least one row with status=denied.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rows, err := srv.store.ListMCPAuditByUser(user.ID, 100, 0)
+		if err != nil {
+			t.Fatalf("ListMCPAuditByUser: %v", err)
+		}
+		var sawDenied bool
+		for _, r := range rows {
+			if r.ResultStatus == models.MCPAuditResultDenied {
+				sawDenied = true
+				if r.ErrorKind == nil || *r.ErrorKind != "rate_limited" {
+					t.Errorf("denied row error_kind = %v, want rate_limited", r.ErrorKind)
+				}
+				if r.ToolName != "pad_item" {
+					t.Errorf("denied row tool_name = %q, want pad_item", r.ToolName)
+				}
+				break
+			}
+		}
+		if sawDenied {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no denied row landed within 2s; rows=%+v", rows)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestMCPAudit_ClassifyResult(t *testing.T) {
 	cases := []struct {
 		status int

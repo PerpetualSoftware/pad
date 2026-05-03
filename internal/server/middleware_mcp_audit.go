@@ -472,3 +472,62 @@ func (s *Server) stopMCPAuditWriter() {
 // Compile-time guard: pin the middleware's signature so an accidental
 // refactor that breaks the http.Handler chain doesn't slip in.
 var _ func(http.Handler) http.Handler = (*Server)(nil).MCPAuditLog
+
+// emitMCPAuditDenied records an audit row for a request that
+// MCPBearerAuth resolved (so we know the user + token identity) but
+// then rejected — currently only the per-token rate-limit branch.
+//
+// Why a direct emit rather than letting the audit middleware catch
+// it: MCPAuditLog is mounted INSIDE MCPBearerAuth, so when bearer
+// auth denies before calling next.ServeHTTP, the audit middleware
+// never runs. Codex review on PR #389 round 1 caught the resulting
+// blind spot. Pre-auth rejections (missing / malformed / unknown
+// bearer) intentionally stay un-audited because there's no user to
+// attribute the row to and the audit_trail table covers those
+// auth-event signals already.
+//
+// errorKind is one of the static strings classifyMCPResult uses
+// (currently only "rate_limited" — extend if more denial paths
+// emit through here). Keeping the vocabulary aligned makes the
+// admin UI's status badges render consistently regardless of which
+// emitter wrote the row.
+//
+// latencyStart is the moment the request entered MCPBearerAuth so
+// the audit row carries real latency for denied requests too —
+// useful for spotting "the rate limiter is the slowest thing on the
+// hot path" patterns in the admin view.
+func (s *Server) emitMCPAuditDenied(r *http.Request, user *models.User, kind, ref, errorKind string, latencyStart time.Time) {
+	if s.mcpAudit == nil || user == nil || kind == "" || ref == "" {
+		return
+	}
+	reqID := chimiddleware.GetReqID(r.Context())
+	if reqID == "" {
+		reqID = strconv.FormatInt(latencyStart.UnixNano(), 36)
+	}
+	// Body sniff: same path as the middleware uses, capped at the
+	// same limit. We can't read r.Body destructively here because
+	// the rate-limit denial returns immediately afterwards and
+	// nothing else reads it — but we CAN tee out the first chunk
+	// for tool_name extraction. If it fails or the body's already
+	// been read by a prior middleware, parseMCPRequestBody returns
+	// "(unknown)" which is the expected sentinel.
+	var snifferBytes []byte
+	if r.Body != nil && r.Method != http.MethodGet {
+		limited := io.LimitReader(r.Body, mcpAuditBodyMaxBytes)
+		snifferBytes, _ = io.ReadAll(limited)
+	}
+	toolName, argsHash := parseMCPRequestBody(snifferBytes)
+
+	s.mcpAudit.enqueue(models.MCPAuditEntryInput{
+		Timestamp:    latencyStart,
+		UserID:       user.ID,
+		TokenKind:    models.TokenKind(kind),
+		TokenRef:     ref,
+		ToolName:     toolName,
+		ArgsHash:     argsHash,
+		ResultStatus: models.MCPAuditResultDenied,
+		ErrorKind:    errorKind,
+		LatencyMs:    int(time.Since(latencyStart) / time.Millisecond),
+		RequestID:    reqID,
+	})
+}
