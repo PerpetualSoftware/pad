@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -170,8 +169,13 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{"409_conflict", http.StatusConflict, "version mismatch", ErrConflict},
 		{"422_validation", http.StatusUnprocessableEntity, "title required", ErrValidationFailed},
 		{"400_validation", http.StatusBadRequest, "bad input", ErrValidationFailed},
-		{"500_server", http.StatusInternalServerError, "boom", ErrServerError},
-		{"503_server", http.StatusServiceUnavailable, "down", ErrServerError},
+		// TASK-1078: 5xx now maps to upstream_error (distinct from
+		// server_error, which is reserved for dispatcher internal
+		// failures + un-mapped 4xx). Pre-fix every 5xx collapsed to
+		// ErrServerError; the new code lets agents distinguish
+		// "backend hiccup, retry" from "dispatcher bug, escalate."
+		{"500_upstream", http.StatusInternalServerError, "boom", ErrUpstreamError},
+		{"503_upstream", http.StatusServiceUnavailable, "down", ErrUpstreamError},
 		{"418_other", http.StatusTeapot, "weird", ErrServerError},
 	}
 	for _, tc := range cases {
@@ -185,13 +189,23 @@ func TestClassifyHTTPStatus(t *testing.T) {
 			if env.Error.Code != tc.wantCode {
 				t.Errorf("Code = %q, want %q", env.Error.Code, tc.wantCode)
 			}
-			// Body fragment should appear somewhere in the envelope —
-			// either in Hint (typical) or Message (server_error path).
-			combined := env.Error.Hint + " " + env.Error.Message
-			if tc.body != "" && !strings.Contains(combined, tc.body) {
-				t.Errorf("envelope should preserve body %q somewhere; got message=%q hint=%q",
-					tc.body, env.Error.Message, env.Error.Hint)
-			}
+			// Body fragment preservation contract changed in TASK-1077:
+			// pre-fix the raw body was always copied into Hint, which
+			// would leak unstructured upstream output (Codex review #387
+			// round 1). Post-fix only structured-envelope-shaped bodies
+			// have their inner message lifted; unstructured bodies are
+			// dropped to avoid leaking tokens / debug dumps.
+			//
+			// Each test case above passes a bare string body — those
+			// hit the safe-fallback path and don't appear in the
+			// envelope. The unknown_workspace branch can also legitimately
+			// emit an empty Hint (no upstream message AND no extractable
+			// slug AND no lister wired). This test asserts the code
+			// mapping; body preservation specifically is tested in
+			// TestExtractUpstreamMessage with structured input, and hint
+			// shape per code is tested in
+			// TestClassifyHTTPStatus_HintsAreActionable.
+			_ = env.Error.Hint
 		})
 	}
 }

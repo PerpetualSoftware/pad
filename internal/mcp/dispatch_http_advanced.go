@@ -262,10 +262,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	workspace, _ := input["workspace"].(string)
 	ref, _ := input["ref"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (or whichever item ref to update)."), nil
 	}
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -289,7 +291,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// hook) sees this prefetch the same as a top-level dispatch.
 	prefetchReq, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: build prefetch request: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "build prefetch request", err), nil
 	}
 	prefetchRec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(prefetchRec, prefetchReq)
@@ -308,7 +310,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		Fields string `json:"fields"`
 	}
 	if err := json.Unmarshal(prefetchRec.Body.Bytes(), &existing); err != nil {
-		return mcp.NewToolResultErrorf("%s: parse current item: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "parse current item", err), nil
 	}
 
 	// Step 2: Build the PATCH payload.
@@ -336,8 +338,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		merged := map[string]any{}
 		if existing.Fields != "" && existing.Fields != "{}" {
 			if err := json.Unmarshal([]byte(existing.Fields), &merged); err != nil {
-				return mcp.NewToolResultErrorf(
-					"%s: parse existing fields JSON: %s", cmdKey, err.Error()), nil
+				return dispatcherErrorResult(cmdKey, "parse existing fields JSON", err), nil
 			}
 		}
 		for _, key := range []string{"status", "priority", "category", "parent"} {
@@ -348,7 +349,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		if rawFields, ok := input["field"]; ok {
 			extra, err := parseFieldKVP(rawFields)
 			if err != nil {
-				return mcp.NewToolResultErrorf("%s: parse --field: %s", cmdKey, err.Error()), nil
+				return validationFailedResult(cmdKey, "parse --field: "+err.Error(),
+					"--field expects key=value entries (string array or single string)."), nil
 			}
 			for k, v := range extra {
 				merged[k] = v
@@ -362,7 +364,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		liftFieldsToColumns(merged, payload)
 		fieldsJSON, err := json.Marshal(merged)
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: encode merged fields: %s", cmdKey, err.Error()), nil
+			return dispatcherErrorResult(cmdKey, "encode merged fields", err), nil
 		}
 		fieldsStr := string(fieldsJSON)
 		payload["fields"] = fieldsStr
@@ -370,7 +372,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode body: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 
 	// Step 3: PATCH.

@@ -87,25 +87,23 @@ func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 ) (map[string]any, *mcp.CallToolResult) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return nil, mcp.NewToolResultErrorf("%s: workspace is required", cmdKey)
+		return nil, validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace.")
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/dashboard"
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
 	if err != nil {
-		return nil, mcp.NewToolResultErrorf("%s: build dashboard request: %s", cmdKey, err.Error())
+		return nil, dispatcherErrorResult(cmdKey, "build dashboard request", err)
 	}
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
 	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
-		if body == "" {
-			body = http.StatusText(rec.Code)
-		}
-		return nil, mcp.NewToolResultErrorf("%s: %d %s", cmdKey, rec.Code, body)
+		return nil, upstreamHTTPErrorResult(ctx, cmdKey, "fetch dashboard", path,
+			rec.Code, rec.Body.Bytes(), d.Lister, ResourceWorkspace, workspace)
 	}
 	var dash map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &dash); err != nil {
-		return nil, mcp.NewToolResultErrorf("%s: parse dashboard: %s", cmdKey, err.Error())
+		return nil, dispatcherErrorResult(cmdKey, "parse dashboard", err)
 	}
 	return dash, nil
 }
@@ -197,30 +195,55 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	refs, err := bulkUpdateRefs(input["ref"])
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return validationFailedResult(cmdKey, err.Error(),
+			"Pass `ref` as a string or array of TASK-N / BUG-N / etc. refs."), nil
 	}
 	if len(refs) == 0 {
-		return mcp.NewToolResultErrorf("%s: at least one ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "at least one ref is required",
+			"Pass at least one item ref (e.g. ref=[\"TASK-7\",\"TASK-8\"])."), nil
 	}
 
 	status, _ := input["status"].(string)
 	priority, _ := input["priority"].(string)
 	if status == "" && priority == "" {
-		return mcp.NewToolResultErrorf("%s: at least one of --status or --priority is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "at least one of status or priority is required",
+			"Pass `status=<value>` and/or `priority=<value>` to specify what to update."), nil
 	}
 
 	type bulkResult struct {
-		Ref     string `json:"ref"`
-		Updated bool   `json:"updated"`
-		Error   string `json:"error,omitempty"`
+		Ref     string        `json:"ref"`
+		Updated bool          `json:"updated"`
+		Error   *ErrorPayload `json:"error,omitempty"`
 	}
 	results := make([]bulkResult, 0, len(refs))
 	successes := 0
+
+	// rowError builds a per-row ErrorPayload. Reuses the same shape
+	// the top-level error envelope uses — agents see consistent
+	// {code, message, hint} per failed row instead of bare strings
+	// (BUG-1077 / Bug 15: bulk-update was the partially-fixed case
+	// that surfaced this requirement).
+	rowError := func(code ErrorCode, msg, hint string) *ErrorPayload {
+		return &ErrorPayload{Code: code, Message: msg, Hint: hint}
+	}
+	rowDispatcherError := func(op string, err error) *ErrorPayload {
+		return rowError(ErrServerError, fmt.Sprintf("%s failed", op),
+			fmt.Sprintf("Internal: %s — %s", op, err.Error()))
+	}
+	rowUpstreamError := func(op, route string, status int, body []byte, ref string) *ErrorPayload {
+		res := classifyHTTPStatusKind(ctx, cmdKey, route, status, body, d.Lister, ResourceItem, ref)
+		env := envelopeFrom(res)
+		if op != "" && env.Error.Message != "" {
+			env.Error.Message = fmt.Sprintf("%s (%s)", env.Error.Message, op)
+		}
+		return &env.Error
+	}
 
 	for _, ref := range refs {
 		// Per-item RMW: GET, merge fields, PATCH. Same shape
@@ -231,7 +254,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 
 		getReq, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
 		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("build request: %s", err.Error())})
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("build request", err)})
 			continue
 		}
 		getRec := httptest.NewRecorder()
@@ -239,7 +262,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 		if getRec.Code >= 400 {
 			results = append(results, bulkResult{
 				Ref:   ref,
-				Error: fmt.Sprintf("read item: %d %s", getRec.Code, strings.TrimSpace(getRec.Body.String())),
+				Error: rowUpstreamError("read item", itemPath, getRec.Code, getRec.Body.Bytes(), ref),
 			})
 			continue
 		}
@@ -247,14 +270,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 			Fields string `json:"fields"`
 		}
 		if err := json.Unmarshal(getRec.Body.Bytes(), &existing); err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("parse item: %s", err.Error())})
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("parse item", err)})
 			continue
 		}
 
 		merged := map[string]any{}
 		if existing.Fields != "" && existing.Fields != "{}" {
 			if err := json.Unmarshal([]byte(existing.Fields), &merged); err != nil {
-				results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("parse existing fields: %s", err.Error())})
+				results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("parse existing fields", err)})
 				continue
 			}
 		}
@@ -266,19 +289,19 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 		}
 		fieldsJSON, err := json.Marshal(merged)
 		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("encode fields: %s", err.Error())})
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("encode fields", err)})
 			continue
 		}
 		fieldsStr := string(fieldsJSON)
 		patchBody, err := json.Marshal(map[string]any{"fields": fieldsStr})
 		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("encode body: %s", err.Error())})
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("encode body", err)})
 			continue
 		}
 
 		patchReq, err := d.buildAuthedRequest(ctx, http.MethodPatch, itemPath, patchBody, user)
 		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: fmt.Sprintf("build PATCH: %s", err.Error())})
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("build PATCH", err)})
 			continue
 		}
 		patchRec := httptest.NewRecorder()
@@ -286,7 +309,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 		if patchRec.Code >= 400 {
 			results = append(results, bulkResult{
 				Ref:   ref,
-				Error: fmt.Sprintf("update: %d %s", patchRec.Code, strings.TrimSpace(patchRec.Body.String())),
+				Error: rowUpstreamError("update item", itemPath, patchRec.Code, patchRec.Body.Bytes(), ref),
 			})
 			continue
 		}
@@ -368,20 +391,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 	ref, _ := input["ref"].(string)
 	summary, _ := input["summary"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (or whichever item ref the note targets)."), nil
 	}
 	if summary == "" {
-		return mcp.NewToolResultErrorf("%s: summary is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "summary is required",
+			"Pass `summary=<short text>` describing the note."), nil
 	}
 	details, _ := input["details"].(string)
 	details = strings.TrimSpace(details)
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
-	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath)
+	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath, ref)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -394,12 +420,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 		CreatedBy: userActorLabel(user),
 	})
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: append note: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "append note", err), nil
 	}
 
 	body, err := json.Marshal(map[string]any{"fields": updated})
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode body: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
 }
@@ -418,20 +444,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 	ref, _ := input["ref"].(string)
 	decision, _ := input["decision"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (or whichever item ref the decision targets)."), nil
 	}
 	if decision == "" {
-		return mcp.NewToolResultErrorf("%s: decision is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "decision is required",
+			"Pass `decision=<short text>` describing the decision."), nil
 	}
 	rationale, _ := input["rationale"].(string)
 	rationale = strings.TrimSpace(rationale)
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
-	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath)
+	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath, ref)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -444,12 +473,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 		CreatedBy: userActorLabel(user),
 	})
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: append decision: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "append decision", err), nil
 	}
 
 	body, err := json.Marshal(map[string]any{"fields": updated})
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode body: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
 }
@@ -462,29 +491,30 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 // Used by note/decide which append into the existing fields blob —
 // they need the current value so AppendImplementationNote /
 // AppendDecisionLogEntry can preserve other entries.
+//
+// ref is the item ref the caller was looking up; threaded through to
+// the error envelope so agents see e.g. "Item TASK-7 not found"
+// rather than a bare 404 (TASK-1078 / TASK-1079).
 func (d *HTTPHandlerDispatcher) prefetchItemFields(
 	ctx context.Context,
 	user *models.User,
-	cmdKey, itemPath string,
+	cmdKey, itemPath, ref string,
 ) (string, *mcp.CallToolResult) {
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
 	if err != nil {
-		return "", mcp.NewToolResultErrorf("%s: build prefetch: %s", cmdKey, err.Error())
+		return "", dispatcherErrorResult(cmdKey, "build prefetch", err)
 	}
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
 	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
-		if body == "" {
-			body = http.StatusText(rec.Code)
-		}
-		return "", mcp.NewToolResultErrorf("%s: prefetch: %d %s", cmdKey, rec.Code, body)
+		return "", upstreamHTTPErrorResult(ctx, cmdKey, "prefetch item", itemPath,
+			rec.Code, rec.Body.Bytes(), d.Lister, ResourceItem, ref)
 	}
 	var existing struct {
 		Fields string `json:"fields"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &existing); err != nil {
-		return "", mcp.NewToolResultErrorf("%s: parse current item: %s", cmdKey, err.Error())
+		return "", dispatcherErrorResult(cmdKey, "parse current item", err)
 	}
 	return existing.Fields, nil
 }
@@ -544,10 +574,9 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryList(
 	wantConventions := typ == "" || typ == "conventions"
 	wantPlaybooks := typ == "" || typ == "playbooks"
 	if !wantConventions && !wantPlaybooks {
-		return mcp.NewToolResultErrorf(
-			"%s: unknown --type %q (expected: conventions, playbooks, or empty for both)",
-			cmdKey, typ,
-		), nil
+		return validationFailedResult(cmdKey,
+			fmt.Sprintf("unknown --type %q", typ),
+			"Pass `type=conventions`, `type=playbooks`, or omit for both."), nil
 	}
 
 	var conventions any
@@ -593,20 +622,17 @@ func (d *HTTPHandlerDispatcher) fetchLibraryEndpoint(
 ) (any, *mcp.CallToolResult) {
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
 	if err != nil {
-		return nil, mcp.NewToolResultErrorf("%s: build %s: %s", cmdKey, path, err.Error())
+		return nil, dispatcherErrorResult(cmdKey, "build "+path, err)
 	}
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
 	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
-		if body == "" {
-			body = http.StatusText(rec.Code)
-		}
-		return nil, mcp.NewToolResultErrorf("%s: %s: %d %s", cmdKey, path, rec.Code, body)
+		return nil, upstreamHTTPErrorResult(ctx, cmdKey, "fetch "+path, path,
+			rec.Code, rec.Body.Bytes(), d.Lister, ResourceListing, "")
 	}
 	var decoded any
 	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
-		return nil, mcp.NewToolResultErrorf("%s: parse %s: %s", cmdKey, path, err.Error())
+		return nil, dispatcherErrorResult(cmdKey, "parse "+path, err)
 	}
 	return decoded, nil
 }

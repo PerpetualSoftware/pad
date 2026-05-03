@@ -631,8 +631,27 @@ func TestHTTPHandlerDispatcher_HandlerErrorSurfacesAsToolError(t *testing.T) {
 	if !res.IsError {
 		t.Errorf("expected IsError when handler returns 400, got %#v", res)
 	}
-	if !containsToolText(res, "Title is required") {
-		t.Errorf("error should propagate handler stderr; got %#v", res)
+	// Pre-TASK-1077 the handler's raw response body ("Title is
+	// required") was passed through into the error envelope's hint.
+	// Post-fix the body is a non-envelope JSON ({"error":"Title is
+	// required"} — note: error is a string, not an object) so
+	// extractUpstreamMessage's safe-fallback drops it. The envelope
+	// still surfaces the validation_failed code + the route + a
+	// generic recovery hint, so agents know what to do; only the raw
+	// body content is dropped.
+	//
+	// If the upstream handler emits the structured shape
+	// {"error":{"message":"Title is required"}}, the inner message
+	// IS lifted into the hint — see TestExtractUpstreamMessage's
+	// envelope happy path. The pad codebase's writeError emits that
+	// shape; the bare-string shape this test uses is a deliberate
+	// anti-pattern repro.
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok {
+		t.Fatalf("expected ErrorEnvelope, got %T", res.StructuredContent)
+	}
+	if env.Error.Code != ErrValidationFailed {
+		t.Errorf("expected validation_failed code, got %q", env.Error.Code)
 	}
 }
 

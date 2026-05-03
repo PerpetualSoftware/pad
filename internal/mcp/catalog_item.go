@@ -379,11 +379,22 @@ func joinSorted(ss []string) string {
 }
 
 // errStructured wraps a Go error into the standard MCP tool-error
-// shape with a stable identifier prefix (e.g. "pad_item.link").
-// Local helper — avoids leaking actionFn-specific formatting up to
-// every caller.
+// envelope (TASK-1077) with a stable identifier prefix (e.g.
+// "pad_item.link"). Local helper — avoids leaking actionFn-specific
+// formatting up to every caller.
+//
+// All catalog-level validation errors that flow through here go to
+// ErrValidationFailed because every current call site is "the agent
+// passed bad input" (missing link_type, missing refs, unknown
+// link_type, etc.). If a future call site needs a different code,
+// give it its own helper rather than overloading this one — keeps
+// the code-per-call-site mapping explicit.
 func errStructured(prefix string, err error) *mcp.CallToolResult {
-	return mcp.NewToolResultErrorf("%s: %s", prefix, err.Error())
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("%s: %s", prefix, err.Error()),
+		Hint:    "Check the input shape against the tool's schema.",
+	})
 }
 
 // actionItemBulkUpdate translates the catalog's `refs: array<string>`

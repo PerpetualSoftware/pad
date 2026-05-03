@@ -47,7 +47,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 	// shape MCP host validators expect.
 	body, err := json.Marshal(suggestions)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: marshal suggestions: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "marshal suggestions", err), nil
 	}
 	return packageJSONResult(string(body)), nil
 }
@@ -80,7 +80,8 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 	const cmdKey = "project standup"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	days := 1
@@ -211,7 +212,8 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 	const cmdKey = "project changelog"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	since, _ := input["since"].(string)
@@ -225,10 +227,9 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 	if since != "" {
 		parsed, err := time.Parse("2006-01-02", since)
 		if err != nil {
-			return mcp.NewToolResultErrorf(
-				"%s: invalid --since date %q (expected YYYY-MM-DD): %s",
-				cmdKey, since, err.Error(),
-			), nil
+			return validationFailedResult(cmdKey,
+				fmt.Sprintf("invalid --since date %q: %s", since, err.Error()),
+				"Pass `since=YYYY-MM-DD` (e.g. since=2026-04-01)."), nil
 		}
 		cutoff = parsed
 	} else {
@@ -521,11 +522,13 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	const cmdKey = "library activate"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	title, _ := input["title"].(string)
 	if title == "" {
-		return mcp.NewToolResultErrorf("%s: title is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "title is required",
+			"Pass `title=<library-item-title>` matching an entry in the convention or playbook library."), nil
 	}
 
 	if conv := collections.GetLibraryConvention(title); conv != nil {
@@ -537,7 +540,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 			Commands:    conv.Commands,
 		})
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: build convention fields: %s", cmdKey, err.Error()), nil
+			return dispatcherErrorResult(cmdKey, "build convention fields", err), nil
 		}
 		return d.postLibraryItem(ctx, user, workspace, "conventions", cmdKey, conv.Title, conv.Content, fieldsJSON)
 	}
@@ -550,14 +553,16 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 		}
 		fieldsJSON, err := json.Marshal(fields)
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: encode playbook fields: %s", cmdKey, err.Error()), nil
+			return dispatcherErrorResult(cmdKey, "encode playbook fields", err), nil
 		}
 		return d.postLibraryItem(ctx, user, workspace, "playbooks", cmdKey, pb.Title, pb.Content, string(fieldsJSON))
 	}
 
-	return mcp.NewToolResultErrorf(
-		"%s: not found in convention or playbook library: %q", cmdKey, title,
-	), nil
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrNotFound,
+		Message: fmt.Sprintf("%s: %q not found in convention or playbook library", cmdKey, title),
+		Hint:    "Use `pad_project action=library-list` to enumerate available titles.",
+	}), nil
 }
 
 // postLibraryItem POSTs an ItemCreate body into the named
@@ -578,7 +583,7 @@ func (d *HTTPHandlerDispatcher) postLibraryItem(
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode body: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/collections/" + url.PathEscape(collection) + "/items"
