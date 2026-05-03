@@ -411,6 +411,14 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// UUID which resolveWorkspace just translated. Slug-vs-slug
 		// is the right comparison.
 		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+			// TASK-961: count workspace-allow-list denials so the
+			// MCP dashboard can flag tokens hitting workspaces outside
+			// their consent scope. Gated on MCP-origin requests only
+			// (presence of MCP token identity in context) so non-MCP
+			// /api/v1 traffic — which can't even reach this gate
+			// today, but might in a future PAT-with-allow-list world
+			// — doesn't pollute the MCP-specific counter.
+			s.recordMCPAuthzDenial(r, "workspace_not_in_allowlist")
 			writeError(w, http.StatusForbidden, "permission_denied",
 				"Token is not authorized for this workspace")
 			return
@@ -466,6 +474,11 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 				return
 			}
 			if !hasGrants {
+				// TASK-961: not_a_member denial — counts only when the
+				// request originated from the /mcp surface (otherwise
+				// the regular /api/v1 403s would inflate the MCP-
+				// specific counter).
+				s.recordMCPAuthzDenial(r, "not_a_member")
 				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
 				return
 			}
@@ -484,6 +497,31 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 func workspaceRole(r *http.Request) string {
 	v, _ := r.Context().Value(ctxWorkspaceRole).(string)
 	return v
+}
+
+// recordMCPAuthzDenial bumps the pad_mcp_authz_denials_total counter
+// when the request originated from the MCP surface. The discriminator
+// is the presence of an MCPTokenIdentity in the request context —
+// MCPBearerAuth stashes that for every authenticated /mcp request, and
+// no other entry point sets it.
+//
+// Called from middleware that runs DOWNSTREAM of MCPBearerAuth (the
+// in-process MCP dispatcher routes through the API handler tree, so
+// /api/v1/* middleware sees the same context). Called sites must pass
+// a reason string from the documented vocabulary in
+// internal/metrics/metrics.go's MCPAuthzDenialsTotal comment.
+//
+// No-op when metrics aren't wired (selfhost / tests) or when the
+// request didn't come through MCP — keeps the metric MCP-specific
+// without forcing every caller to repeat the gate.
+func (s *Server) recordMCPAuthzDenial(r *http.Request, reason string) {
+	if s.metrics == nil {
+		return
+	}
+	if kind, _ := MCPTokenIdentityFromContext(r.Context()); kind == "" {
+		return
+	}
+	s.metrics.MCPAuthzDenialsTotal.WithLabelValues(reason).Inc()
 }
 
 // requireRole checks if the user's workspace role meets the minimum

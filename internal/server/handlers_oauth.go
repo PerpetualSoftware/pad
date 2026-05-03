@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ory/fosite"
 
@@ -69,8 +70,14 @@ import (
 // Like SetMCPTransport, this MUST be called before setupRouter
 // runs (which it does on first request). Calling it later is a
 // no-op because chi routes are immutable post-mount.
+//
+// Side effect (TASK-961): triggers wireOAuthMetricsObserver, which
+// attaches the OAuth-specific Prometheus collectors when metrics
+// are also wired. Order-independent — safe to call before or after
+// SetMetrics; wireOAuthMetricsObserver no-ops until both are present.
 func (s *Server) SetOAuthServer(srv *oauth.Server) {
 	s.oauthServer = srv
+	s.wireOAuthMetricsObserver()
 }
 
 // registerOAuthRoutes mounts the OAuth endpoints on r. Called from
@@ -81,6 +88,28 @@ func (s *Server) SetOAuthServer(srv *oauth.Server) {
 //
 // The discovery document at /.well-known/oauth-authorization-server
 // continues to be served by registerMCPRoutes — it lives there
+// recordOAuthFlow bumps the pad_oauth_flows_total counter with the
+// supplied stage label. No-op when metrics aren't wired (selfhost /
+// tests). Stage vocabulary documented at MCP-961's metric registration
+// site (internal/metrics/metrics.go).
+func (s *Server) recordOAuthFlow(stage string) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.OAuthFlowsTotal.WithLabelValues(stage).Inc()
+}
+
+// observeOAuthFlowDuration records the elapsed time since `start` for
+// the given stage. Designed to be `defer`'d at the top of each OAuth
+// flow handler so every exit path — happy or error — gets observed.
+// No-op when metrics aren't wired.
+func (s *Server) observeOAuthFlowDuration(stage string, start time.Time) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.OAuthFlowDuration.WithLabelValues(stage).Observe(time.Since(start).Seconds())
+}
+
 // because it was the 501 stub from TASK-950, and replacing it in
 // place keeps the URL stable for clients that already discovered
 // the chain. The OAuth-server routes added here are the four flow
@@ -487,6 +516,14 @@ func translateResourceToAudience(r *http.Request, canonical string) {
 //   - canonical-audience mismatch: surfaced via fosite's
 //     audienceMatchingStrategy → invalid_request.
 func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
+	// TASK-961: wrap the whole handler in a duration timer so the
+	// histogram captures every exit path (404, parse error, login
+	// redirect, consent render). Stage-counter emission is per-branch
+	// because "started" only fires when consent actually renders;
+	// login redirects are pre-flow and shouldn't count as starts.
+	start := time.Now()
+	defer s.observeOAuthFlowDuration("authorize", start)
+
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
 		return
@@ -504,6 +541,10 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
+		// TASK-961: malformed authorize request (bad client_id, missing
+		// redirect_uri, audience mismatch). Counts as "failed" — these
+		// never reach a consent screen so they're not "started" either.
+		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
 		return
 	}
@@ -518,6 +559,11 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		// The login page (web/src/routes/login/+page.svelte) +
 		// pad-cloud's OAuth callback (TASK-998) honor `redirect=`
 		// for relative paths.
+		//
+		// Intentionally NOT counted as "started" — the user might
+		// abandon at the login screen. The flow only truly begins
+		// once they reach (and render) the consent page on the
+		// post-login round-trip.
 		dest := "/oauth/authorize"
 		if r.URL.RawQuery != "" {
 			dest += "?" + r.URL.RawQuery
@@ -526,6 +572,13 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, loginURL, http.StatusFound)
 		return
 	}
+
+	// TASK-961: consent render is the canonical "flow started" signal —
+	// the user has identified themselves AND fosite has accepted the
+	// authorize request. From here the only outcomes are
+	// completed/abandoned (via /authorize/decide) or silent abandon
+	// (close the tab — invisible to us, an expected gap).
+	s.recordOAuthFlow("started")
 
 	// Render the consent UI (TASK-952). Loads the user's workspaces
 	// + filters tier radios to the intersection of {pad:read,
@@ -572,6 +625,11 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 //  5. NewAuthorizeResponse persists the request + session and
 //     redirects to the client's redirect_uri with the auth code.
 func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Request) {
+	// TASK-961: per-handler duration for the decide stage. Stage
+	// counter emits per-branch below: completed / abandoned / failed.
+	start := time.Now()
+	defer s.observeOAuthFlowDuration("decide", start)
+
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
 		return
@@ -589,6 +647,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := r.ParseForm(); err != nil {
+		s.recordOAuthFlow("failed")
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
 	}
@@ -598,6 +657,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	// hidden form input rather than a header (consent is server-
 	// rendered HTML, not SPA fetch).
 	if err := s.validateConsentCSRFToken(r); err != nil {
+		s.recordOAuthFlow("failed")
 		writeError(w, http.StatusForbidden, "csrf_error", err.Error())
 		return
 	}
@@ -608,17 +668,24 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
+		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
 		return
 	}
 
 	decision := r.FormValue("decision")
 	if decision == "deny" {
+		// TASK-961: explicit user denial → "abandoned". Distinct from
+		// "failed" so dashboards can surface user-facing trust signal
+		// (high abandonment % = clients asking for too much, or
+		// confusing consent UI).
+		s.recordOAuthFlow("abandoned")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar,
 			fosite.ErrAccessDenied.WithHint("The user denied the consent."))
 		return
 	}
 	if decision != "approve" {
+		s.recordOAuthFlow("failed")
 		writeError(w, http.StatusBadRequest, "invalid_request",
 			"decision must be 'approve' or 'deny'")
 		return
@@ -633,6 +700,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		// is rarely re-driven manually). The OAuth client will see the
 		// 400, NOT a redirect to redirect_uri, because the user never
 		// reached the "real" /authorize/decide → fosite flow.
+		s.recordOAuthFlow("failed")
 		writeError(w, http.StatusBadRequest, "invalid_request", vErr.Error())
 		return
 	}
@@ -655,10 +723,18 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(ctx, ar, session)
 	if err != nil {
+		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
 		return
 	}
 
+	// TASK-961: happy path — auth code minted, redirect issued.
+	// "completed" doesn't guarantee the client successfully exchanges
+	// the code for a token; the /token handler emits its own duration
+	// observation but no separate stage label (an exchange failure
+	// after a completed consent is a rare client bug, not a flow-
+	// level signal).
+	s.recordOAuthFlow("completed")
 	s.oauthServer.Provider().WriteAuthorizeResponse(ctx, w, ar, resp)
 }
 
@@ -768,6 +844,14 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 // body; on success WriteAccessResponse writes
 // {access_token, token_type, expires_in, refresh_token, scope}.
 func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
+	// TASK-961: duration only — no stage counter. The "completed"
+	// counter on /authorize/decide is the canonical flow-completion
+	// signal; counting again here would double-tally happy paths and
+	// the refresh-token rotation path (which doesn't go through
+	// /authorize at all) would be miscounted as a "completion."
+	start := time.Now()
+	defer s.observeOAuthFlowDuration("token", start)
+
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
 		return
@@ -864,6 +948,15 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 // Without the pre-check below, "client_id but no token" would
 // silently 200 instead of 400. Codex review #373 round 3.
 func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
+	// TASK-961: duration always observed. The revocation counter
+	// itself is emitted from internal/oauth/storage.go's
+	// RevokeAccessToken via the SetRevocationObserver hook, so we
+	// count the actual storage mutation rather than the HTTP entry —
+	// that way RFC 7009's "200 even on unknown token" idempotent
+	// path doesn't inflate the revocation count.
+	start := time.Now()
+	defer s.observeOAuthFlowDuration("revoke", start)
+
 	if !s.IsCloud() || s.oauthServer == nil {
 		http.NotFound(w, r)
 		return

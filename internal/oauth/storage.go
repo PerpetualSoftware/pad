@@ -51,6 +51,62 @@ import (
 type Storage struct {
 	store             *store.Store
 	canonicalAudience string
+
+	// onTokenRevoked is an optional observer that fires AFTER each
+	// successful access-token family revocation. Wired by cmd/pad
+	// from internal/metrics so the OAuth surface stays metrics-naive
+	// (no Prometheus import in this package).
+	//
+	// kind is one of:
+	//   - "user_initiated" — caller hit /oauth/revoke
+	//   - "rotated"        — refresh-rotation revoked the parent family
+	//   - "replayed"       — replay-detection (refresh used twice)
+	//
+	// ttl is wall-clock age of the oldest token in the revoked family.
+	// Zero when the lookup couldn't determine an issuance time (no
+	// rows, parse failure) — observers should treat zero as "no
+	// observation to record."
+	//
+	// Best-effort: failures from the lookup or the observer must not
+	// block revocation. The store's revoke-then-observe ordering means
+	// the on-disk state is correct even if we crash mid-observation.
+	onTokenRevoked func(kind string, ttl time.Duration)
+}
+
+// SetRevocationObserver wires a callback that fires after each
+// access-token family revocation. Optional — leaving it unset is
+// equivalent to wiring a no-op. Replacing a previously-set observer
+// is allowed; cmd/pad calls this once at startup. Concurrent calls
+// to SetRevocationObserver during traffic are not synchronized —
+// callers responsible for one-shot wiring before serving requests.
+func (s *Storage) SetRevocationObserver(fn func(kind string, ttl time.Duration)) {
+	s.onTokenRevoked = fn
+}
+
+// observeRevocation looks up the oldest active-token issuance time
+// for the family and fires the configured observer. Always called
+// AFTER the family has been flagged inactive in storage so a slow
+// observer never blocks revocation latency.
+func (s *Storage) observeRevocation(requestID, kind string) {
+	if s.onTokenRevoked == nil {
+		return
+	}
+	issuedAt, err := s.store.OldestAccessTokenIssuedAtByRequestID(requestID)
+	if err != nil || issuedAt.IsZero() {
+		// No matching family (already pruned), parse failure, or
+		// transient store error — record nothing rather than emit a
+		// bogus zero/negative duration. Observability noise is worse
+		// than a missed datapoint.
+		return
+	}
+	ttl := time.Since(issuedAt)
+	if ttl < 0 {
+		// Clock skew between issuance and revocation — clamp to zero
+		// rather than poison the histogram with negative observations
+		// (Prometheus accepts them but the bucket math is meaningless).
+		ttl = 0
+	}
+	s.onTokenRevoked(kind, ttl)
 }
 
 // NewStorage wraps a *store.Store as a fosite-compatible adapter.
@@ -283,7 +339,14 @@ func (s *Storage) DeleteRefreshTokenSession(_ context.Context, signature string)
 // signatureToRotate is fosite's hint about which row triggered the
 // rotation; the store layer ignores it and revokes by request_id.
 func (s *Storage) RotateRefreshToken(_ context.Context, requestID, signatureToRotate string) error {
-	return s.store.RotateRefreshToken(requestID, signatureToRotate)
+	if err := s.store.RotateRefreshToken(requestID, signatureToRotate); err != nil {
+		return err
+	}
+	// TASK-961: report rotation-induced revocation to the observability
+	// hook. Distinct kind label so dashboards can separate "user clicked
+	// revoke" from "client refreshed and we naturally rolled the family."
+	s.observeRevocation(requestID, "rotated")
+	return nil
 }
 
 // =====================================================================
@@ -294,6 +357,12 @@ func (s *Storage) RotateRefreshToken(_ context.Context, requestID, signatureToRo
 // given requestID and marks every one inactive. Called by fosite's
 // /oauth/revoke handler (sub-PR D wires the endpoint) and by the
 // rotation flow's replay-detection branch.
+//
+// No metrics observation here: when fosite revokes a grant family
+// from /oauth/revoke or replay-detection, it pairs RevokeRefreshToken
+// with RevokeAccessToken — emitting from both would double-count.
+// We let the access-side emitter own the reporting and keep this
+// path lean.
 func (s *Storage) RevokeRefreshToken(_ context.Context, requestID string) error {
 	return s.store.RevokeRefreshTokenFamily(requestID)
 }
@@ -301,8 +370,21 @@ func (s *Storage) RevokeRefreshToken(_ context.Context, requestID string) error 
 // RevokeAccessToken mirrors RevokeRefreshToken for access tokens.
 // fosite calls these in pairs when revoking a grant (the unified
 // "revoke the whole family" behaviour).
+//
+// TASK-961: emits an observability signal AFTER the family is
+// flagged inactive in storage. The default kind here is
+// "user_initiated" because /oauth/revoke is the dominant caller —
+// fosite's replay-detection path also routes through this method,
+// so the label is best-effort rather than ground truth (Codex
+// could later differentiate via a context-carried hint, but the
+// gross signal "tokens are getting revoked" matters more than the
+// per-cause split for v1 alerting).
 func (s *Storage) RevokeAccessToken(_ context.Context, requestID string) error {
-	return s.store.RevokeAccessTokenFamily(requestID)
+	if err := s.store.RevokeAccessTokenFamily(requestID); err != nil {
+		return err
+	}
+	s.observeRevocation(requestID, "user_initiated")
+	return nil
 }
 
 // =====================================================================

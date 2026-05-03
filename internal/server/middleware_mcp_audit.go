@@ -306,7 +306,53 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		}
 
 		s.mcpAudit.enqueue(entry)
+
+		// TASK-961: emit Prometheus metrics for the same hot path the
+		// audit row covers. Same data, different consumer:
+		//   - audit log → forensics, per-row drill-down, retention 90d
+		//   - metrics  → real-time dashboards, alerting, no per-user PII
+		// Fired AFTER enqueue so a metrics misconfigure (nil registry
+		// in test builds) can't accidentally drop the audit row.
+		s.recordMCPCallMetrics(toolName, string(status), user.ID, time.Since(start), r, ww.Status())
 	})
+}
+
+// recordMCPCallMetrics fans the audit-row data out to Prometheus.
+// No-op when metrics aren't wired (selfhost / tests). Kept separate
+// from MCPAuditLog so the audit hot path stays focused on its own
+// concerns and metrics maintenance touches one method.
+//
+// Session gauge accounting: MCP Streamable HTTP carries session
+// lifecycle through method names + HTTP verbs:
+//   - tool method "initialize"     → session opens (+1)
+//   - HTTP DELETE on /mcp           → session closes per spec (-1)
+//
+// Anything else is a per-message call inside an existing session
+// (no gauge change). The gauge is intentionally cheap — best-effort
+// accounting for a "do we have anomalous open sessions?" alert,
+// not a transaction log.
+func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Duration, r *http.Request, httpStatus int) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.MCPToolCallsTotal.WithLabelValues(userID, tool, status).Inc()
+	// Histogram is per-tool only — duration distributions per user
+	// would explode the series count without a clear analytical
+	// payoff (alerts care about p95 latency per tool, not per user).
+	s.metrics.MCPToolCallDuration.WithLabelValues(tool).Observe(dur.Seconds())
+
+	// Session lifecycle. We only adjust on successful calls (2xx);
+	// a failed initialize doesn't actually open a session, and a
+	// failed DELETE didn't close one. classifyMCPResult collapses
+	// HTTP 200 + 0 to "ok" so this matches the audit row's status.
+	if httpStatus == http.StatusOK || httpStatus == 0 {
+		switch {
+		case tool == "initialize":
+			s.metrics.MCPActiveSessions.Inc()
+		case r.Method == http.MethodDelete:
+			s.metrics.MCPActiveSessions.Dec()
+		}
+	}
 }
 
 // parseMCPRequestBody extracts (tool_name, args_hash) from the
@@ -530,4 +576,12 @@ func (s *Server) emitMCPAuditDenied(r *http.Request, user *models.User, kind, re
 		LatencyMs:    int(time.Since(latencyStart) / time.Millisecond),
 		RequestID:    reqID,
 	})
+
+	// TASK-961: mirror the denial into the authz-denials counter so
+	// dashboards and alerts can react in real time. The errorKind
+	// vocabulary already matches the metric's reason label by design
+	// (see metrics.go's MCPAuthzDenialsTotal comment for the contract).
+	if s.metrics != nil && errorKind != "" {
+		s.metrics.MCPAuthzDenialsTotal.WithLabelValues(errorKind).Inc()
+	}
 }
