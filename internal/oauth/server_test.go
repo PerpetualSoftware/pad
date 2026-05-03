@@ -769,6 +769,156 @@ func TestStorage_RequesterToOAuthRequest_RejectsMissingClient(t *testing.T) {
 }
 
 // =====================================================================
+// Revocation observer (PLAN-943 TASK-961)
+// =====================================================================
+
+// TestStorage_RevocationObserver_FiresOnAccessTokenRevoke pins the
+// contract metrics depend on: when fosite calls RevokeAccessToken on
+// our adapter, the configured observer fires with kind="user_initiated"
+// and a positive TTL derived from the revoked family's oldest
+// requested_at.
+func TestStorage_RevocationObserver_FiresOnAccessTokenRevoke(t *testing.T) {
+	s := testStoreOAuth(t)
+
+	// Seed a client + access token row with a known issuance time.
+	c, err := s.CreateOAuthClient(models.OAuthClientCreate{
+		Name:                    "Test",
+		RedirectURIs:            []string{"https://example.test/cb"},
+		GrantTypes:              []string{"authorization_code"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+		Scopes:                  []string{"pad:read"},
+		Public:                  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateOAuthClient: %v", err)
+	}
+
+	issuedAt := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	if err := s.CreateAccessToken(models.OAuthRequest{
+		Signature:   "sig-1",
+		RequestID:   "req-1",
+		RequestedAt: issuedAt,
+		ClientID:    c.ID,
+		Scopes:      "pad:read",
+		Audience:    "https://mcp.test.example/mcp",
+		Active:      true,
+		Subject:     "user-x",
+	}); err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	storage := NewStorage(s, "https://mcp.test.example/mcp")
+
+	var (
+		gotKind string
+		gotTTL  time.Duration
+		fired   int
+	)
+	storage.SetRevocationObserver(func(kind string, ttl time.Duration) {
+		fired++
+		gotKind = kind
+		gotTTL = ttl
+	})
+
+	if err := storage.RevokeAccessToken(context.Background(), "req-1"); err != nil {
+		t.Fatalf("RevokeAccessToken: %v", err)
+	}
+
+	if fired != 1 {
+		t.Errorf("observer fired %d times, want 1", fired)
+	}
+	if gotKind != "user_initiated" {
+		t.Errorf("kind: got %q, want %q", gotKind, "user_initiated")
+	}
+	// TTL should be ~30 minutes (allow generous slack for slow CI +
+	// timestamp truncation).
+	if gotTTL < 25*time.Minute || gotTTL > 35*time.Minute {
+		t.Errorf("ttl: got %v, want ~30m", gotTTL)
+	}
+}
+
+// TestStorage_RevocationObserver_FiresOnRotation covers the second
+// emit path: fosite's RotateRefreshToken (called during /oauth/token
+// refresh exchange) revokes the parent family and our adapter must
+// signal that with kind="rotated".
+func TestStorage_RevocationObserver_FiresOnRotation(t *testing.T) {
+	s := testStoreOAuth(t)
+
+	c, err := s.CreateOAuthClient(models.OAuthClientCreate{
+		Name:                    "Test",
+		RedirectURIs:            []string{"https://example.test/cb"},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+		Scopes:                  []string{"pad:read"},
+		Public:                  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateOAuthClient: %v", err)
+	}
+
+	issuedAt := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+	if err := s.CreateAccessToken(models.OAuthRequest{
+		Signature: "acc-1", RequestID: "fam-1", RequestedAt: issuedAt,
+		ClientID: c.ID, Audience: "https://mcp.test.example/mcp", Active: true,
+	}); err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	if err := s.CreateRefreshToken(models.OAuthRequest{
+		Signature: "ref-1", RequestID: "fam-1", RequestedAt: issuedAt,
+		ClientID: c.ID, Audience: "https://mcp.test.example/mcp", Active: true,
+	}); err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+
+	storage := NewStorage(s, "https://mcp.test.example/mcp")
+	var observed []string
+	storage.SetRevocationObserver(func(kind string, _ time.Duration) {
+		observed = append(observed, kind)
+	})
+
+	if err := storage.RotateRefreshToken(context.Background(), "fam-1", "ref-1"); err != nil {
+		t.Fatalf("RotateRefreshToken: %v", err)
+	}
+
+	if len(observed) != 1 || observed[0] != "rotated" {
+		t.Errorf("observer kinds: got %v, want [rotated]", observed)
+	}
+}
+
+// TestStorage_RevocationObserver_NilSafe verifies that an unset
+// observer is a no-op — callers shouldn't have to wire one to use
+// the storage adapter (selfhost / tests / non-metrics builds).
+func TestStorage_RevocationObserver_NilSafe(t *testing.T) {
+	s := testStoreOAuth(t)
+	c, err := s.CreateOAuthClient(models.OAuthClientCreate{
+		Name:                    "Test",
+		RedirectURIs:            []string{"https://example.test/cb"},
+		GrantTypes:              []string{"authorization_code"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+		Scopes:                  []string{"pad:read"},
+		Public:                  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateOAuthClient: %v", err)
+	}
+	if err := s.CreateAccessToken(models.OAuthRequest{
+		Signature: "sig-1", RequestID: "req-1", RequestedAt: time.Now().UTC(),
+		ClientID: c.ID, Audience: "https://mcp.test.example/mcp", Active: true,
+	}); err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	storage := NewStorage(s, "https://mcp.test.example/mcp")
+	// No SetRevocationObserver call — should not panic.
+	if err := storage.RevokeAccessToken(context.Background(), "req-1"); err != nil {
+		t.Fatalf("RevokeAccessToken (no observer): %v", err)
+	}
+}
+
+// =====================================================================
 // Helpers
 // =====================================================================
 

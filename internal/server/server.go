@@ -91,6 +91,13 @@ type Server struct {
 	// mount on self-hosted deployments. See handlers_oauth.go.
 	oauthServer *oauth.Server
 
+	// oauthMetricsWired records whether wireOAuthMetricsObserver has
+	// already attached the active-tokens callback collector. Re-
+	// registering would panic via prometheus.MustRegister, so the flag
+	// guards the one-shot registration. The TTL observer side is
+	// idempotent (just a function-pointer set) and runs unconditionally.
+	oauthMetricsWired bool
+
 	// MCP audit log async writer (PLAN-943 TASK-960). Spawned by
 	// startMCPAuditWriter at startup when MCP is wired; shut down
 	// from Server.Stop. nil-safe: every audit-emitting code path
@@ -431,8 +438,45 @@ func (s *Server) SetSecureCookies(secure bool) {
 
 // SetMetrics attaches Prometheus metrics to the server.
 // Must be called before the first request is served.
+//
+// Side effect (TASK-961): when both metrics AND the OAuth server are
+// wired, this also attaches the OAuth-active-tokens callback collector
+// and the revocation TTL observer. Order-independent — both
+// SetMetrics and SetOAuthServer call wireOAuthMetricsObserver, which
+// no-ops until both prerequisites are present.
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
+	s.wireOAuthMetricsObserver()
+}
+
+// wireOAuthMetricsObserver attaches the OAuth metrics that need both
+// the metrics registry AND the OAuth server: the active-tokens
+// callback collector (reads via the store) and the per-revocation
+// TTL observer (fires from internal/oauth/storage.go on every
+// access-token family revocation).
+//
+// Idempotent — re-registering the same collector would panic via
+// prometheus.MustRegister, so we guard with a flag. Setting the
+// observer multiple times is harmless (just replaces the function
+// pointer).
+//
+// Why this lives on Server rather than in cmd/pad: it composes two
+// optional Server fields whose set-order isn't guaranteed by the
+// boot sequence, and centralizing the wiring here keeps the cmd/pad
+// startup path declarative ("set X, set Y") without an explicit
+// "now wire the cross-cut" call.
+func (s *Server) wireOAuthMetricsObserver() {
+	if s.metrics == nil || s.oauthServer == nil {
+		return
+	}
+	if !s.oauthMetricsWired {
+		s.metrics.RegisterOAuthActiveTokensCollector(s.store.CountActiveOAuthAccessTokens)
+		s.oauthMetricsWired = true
+	}
+	s.oauthServer.Storage().SetRevocationObserver(func(kind string, ttl time.Duration) {
+		s.metrics.OAuthTokenRevocationsTotal.WithLabelValues(kind).Inc()
+		s.metrics.OAuthTokenTTLSeconds.Observe(ttl.Seconds())
+	})
 }
 
 // SetMetricsToken configures the static bearer token required to scrape

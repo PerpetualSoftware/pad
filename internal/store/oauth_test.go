@@ -302,6 +302,106 @@ func TestOAuth_AccessToken_CRUDAndDelete(t *testing.T) {
 	}
 }
 
+// TestOAuth_CountActiveOAuthAccessTokens covers the helper that
+// backs the pad_oauth_active_tokens metric (PLAN-943 TASK-961).
+// Verifies the count tracks insertions, ignores inactive rows, and
+// returns 0 when the table is empty.
+func TestOAuth_CountActiveOAuthAccessTokens(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+
+	// Empty table → 0.
+	n, err := s.CountActiveOAuthAccessTokens()
+	if err != nil {
+		t.Fatalf("CountActiveOAuthAccessTokens (empty): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("empty table count: got %d, want 0", n)
+	}
+
+	// Two active tokens.
+	for i, sig := range []string{"sig-a", "sig-b"} {
+		req := newTestRequest(c.ID, sig, "req-"+sig)
+		_ = i
+		if err := s.CreateAccessToken(req); err != nil {
+			t.Fatalf("CreateAccessToken[%s]: %v", sig, err)
+		}
+	}
+
+	n, err = s.CountActiveOAuthAccessTokens()
+	if err != nil {
+		t.Fatalf("CountActiveOAuthAccessTokens (2 active): %v", err)
+	}
+	if n != 2 {
+		t.Errorf("after 2 inserts: got %d, want 2", n)
+	}
+
+	// Revoke one family — count drops by 1.
+	if err := s.RevokeAccessTokenFamily("req-sig-a"); err != nil {
+		t.Fatalf("RevokeAccessTokenFamily: %v", err)
+	}
+	n, err = s.CountActiveOAuthAccessTokens()
+	if err != nil {
+		t.Fatalf("CountActiveOAuthAccessTokens (1 active): %v", err)
+	}
+	if n != 1 {
+		t.Errorf("after revoke: got %d, want 1", n)
+	}
+}
+
+// TestOAuth_OldestAccessTokenIssuedAtByRequestID covers the helper that
+// drives the pad_oauth_token_ttl_seconds histogram (TASK-961). The
+// "oldest" semantic is the meaningful one across rotation churn — even
+// if a family briefly stages two access tokens during a refresh swap,
+// the original issuance time gives the right "lifetime of this grant"
+// signal.
+func TestOAuth_OldestAccessTokenIssuedAtByRequestID(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+
+	// Empty: ErrOAuthNotFound (the SELECT MIN over an empty family
+	// returns NULL → mapped to NotFound).
+	_, err := s.OldestAccessTokenIssuedAtByRequestID("missing-req")
+	if !errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("missing family: expected ErrOAuthNotFound, got %v", err)
+	}
+
+	// Empty requestID: argument-validation error, NOT ErrOAuthNotFound
+	// (the latter would mask a caller bug as a no-op).
+	_, err = s.OldestAccessTokenIssuedAtByRequestID("")
+	if err == nil || errors.Is(err, ErrOAuthNotFound) {
+		t.Errorf("empty requestID: expected validation error, got %v", err)
+	}
+
+	// Two tokens in the same family with distinct timestamps. Older
+	// timestamp wins.
+	older := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	newer := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+
+	req1 := newTestRequest(c.ID, "sig-old", "req-fam")
+	req1.RequestedAt = older
+	if err := s.CreateAccessToken(req1); err != nil {
+		t.Fatalf("CreateAccessToken older: %v", err)
+	}
+	req2 := newTestRequest(c.ID, "sig-new", "req-fam")
+	req2.RequestedAt = newer
+	if err := s.CreateAccessToken(req2); err != nil {
+		t.Fatalf("CreateAccessToken newer: %v", err)
+	}
+
+	got, err := s.OldestAccessTokenIssuedAtByRequestID("req-fam")
+	if err != nil {
+		t.Fatalf("OldestAccessTokenIssuedAtByRequestID: %v", err)
+	}
+	// Allow ± 1s slack for backend timestamp granularity (Postgres
+	// truncates to microseconds; SQLite stores RFC3339 which we
+	// round to seconds via parseTime).
+	delta := got.Sub(older)
+	if delta < -time.Second || delta > time.Second {
+		t.Errorf("got %v, want %v (delta %v)", got, older, delta)
+	}
+}
+
 // ------------------------------------------------------------
 // Refresh tokens — rotation + family revocation (the security-critical part)
 // ------------------------------------------------------------

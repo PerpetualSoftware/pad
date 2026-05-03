@@ -281,6 +281,16 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		return
 	}
 	if !audienceContains(ar.GetGrantedAudience(), canonical) {
+		// TASK-961: audience-mismatch is a primary spec-compliance
+		// signal — count it explicitly so dashboards distinguish
+		// "client misconfigured the resource indicator" from generic
+		// 401s. Fires BEFORE the response so a slow metrics path
+		// can't delay the reject. The MCPAuditLog wrapper never sees
+		// this branch because we return before next.ServeHTTP, so
+		// the metric is the only real-time signal for these denials.
+		if s.metrics != nil {
+			s.metrics.MCPAuthzDenialsTotal.WithLabelValues("audience_mismatch").Inc()
+		}
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token audience does not match this resource.")
 		return
 	}

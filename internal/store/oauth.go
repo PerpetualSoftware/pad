@@ -435,6 +435,68 @@ func (s *Store) RevokeRefreshTokenFamily(requestID string) error {
 	return nil
 }
 
+// CountActiveOAuthAccessTokens returns the number of access-token rows
+// with active=1. Backs the pad_oauth_active_tokens gauge (TASK-961).
+//
+// Caveat: the schema does not store an expires_at column — fosite
+// computes expiry from session_data at introspection time. Counting
+// active=1 therefore over-reports: tokens that have aged past their
+// TTL but haven't been pruned (and haven't been re-introspected since
+// expiry) still appear active here. For an operational gauge that's
+// fine — "tokens we still consider valid storage-side" is exactly the
+// signal ops want for capacity / abuse alerting. A future expiry
+// sweeper would reduce the gap; until then the count is an upper
+// bound rather than ground truth.
+func (s *Store) CountActiveOAuthAccessTokens() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM oauth_access_tokens WHERE active = ?
+	`), true).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active oauth access tokens: %w", err)
+	}
+	return n, nil
+}
+
+// OldestAccessTokenIssuedAtByRequestID returns the requested_at of the
+// earliest access token in the family identified by requestID. Used
+// by the OAuth revocation path (TASK-961) to observe token TTL —
+// "how long was this token alive before it got revoked?"
+//
+// Why MIN(requested_at) rather than per-row reporting: a single grant
+// family typically holds one access token at a time (the refresh-
+// rotation flow revokes the prior one before issuing the new one),
+// but the "rotated" code path briefly stages two during the swap.
+// Using the oldest row's timestamp gives a meaningful "lifetime of
+// the original grant" measurement that doesn't oscillate based on
+// rotation timing.
+//
+// Returns ErrOAuthNotFound when the family has no rows (already
+// pruned, or revoke called with an unknown request_id). Callers may
+// safely treat that as "no observation to record."
+func (s *Store) OldestAccessTokenIssuedAtByRequestID(requestID string) (time.Time, error) {
+	if requestID == "" {
+		return time.Time{}, fmt.Errorf("oauth: requestID required")
+	}
+	var raw sql.NullString
+	err := s.db.QueryRow(s.q(`
+		SELECT MIN(requested_at) FROM oauth_access_tokens WHERE request_id = ?
+	`), requestID).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, ErrOAuthNotFound
+		}
+		return time.Time{}, fmt.Errorf("query oldest access token: %w", err)
+	}
+	if !raw.Valid {
+		// MIN returns NULL when the family has zero rows. SQLite drops
+		// the row through a single QueryRow.Scan rather than ErrNoRows
+		// because the aggregate "produces" exactly one (null) row.
+		return time.Time{}, ErrOAuthNotFound
+	}
+	return parseTime(raw.String), nil
+}
+
 // RevokeAccessTokenFamily mirrors RevokeRefreshTokenFamily for
 // access tokens. fosite calls these in pairs when revoking by
 // request_id (the unified RevokeRefreshToken / RevokeAccessToken
