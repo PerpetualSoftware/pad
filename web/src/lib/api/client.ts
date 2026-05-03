@@ -126,6 +126,11 @@ export interface AuthSession {
 	setup_method?: 'local_cli' | 'docker_exec' | 'cloud';
 	auth_method: 'password' | 'cloud';
 	cloud_mode?: boolean;
+	// mcp_public_url is the canonical URL clients paste into their MCP-capable
+	// agent (e.g. "https://mcp.getpad.dev"). Empty string when PAD_MCP_PUBLIC_URL
+	// is unset on the server — UI code should use the empty string as the gate
+	// for "Remote MCP not exposed by this instance, fall back to CLI flow."
+	mcp_public_url: string;
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
