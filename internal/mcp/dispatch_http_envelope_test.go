@@ -129,11 +129,16 @@ func TestClassifyHTTPStatus_ValidationOn400(t *testing.T) {
 }
 
 func TestClassifyHTTPStatus_ServerErrorOn500(t *testing.T) {
+	// TASK-1078: 5xx now classifies as upstream_error (transient
+	// backend failure), distinct from server_error (catch-all for
+	// dispatcher internal failures and un-mapped 4xx). The split lets
+	// agents tell "retry the upstream" from "fix the request" /
+	// "file a bug."
 	res := classifyHTTPStatus(context.Background(), "item create", 500,
 		[]byte(`{"error":{"message":"db connection failed"}}`), nil)
 	env := res.StructuredContent.(ErrorEnvelope)
-	if env.Error.Code != ErrServerError {
-		t.Errorf("code: got %q, want %q", env.Error.Code, ErrServerError)
+	if env.Error.Code != ErrUpstreamError {
+		t.Errorf("code: got %q, want %q", env.Error.Code, ErrUpstreamError)
 	}
 }
 

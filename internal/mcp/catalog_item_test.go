@@ -139,8 +139,12 @@ func TestPadItemLink_UnknownLinkType(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected IsError, got %s", textOf(res))
 	}
+	// Post-TASK-1077 the message lives inside the structured envelope
+	// (quotes are JSON-escaped in the wire form). Substring on the
+	// bad-value token is sufficient; the literal-quoted form has
+	// backslashes around it.
 	msg := textOf(res)
-	if !strings.Contains(msg, `unknown link_type "totally-invalid"`) {
+	if !strings.Contains(msg, `totally-invalid`) {
 		t.Errorf("message %q should name the bad value", msg)
 	}
 }

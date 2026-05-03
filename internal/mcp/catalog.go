@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -149,9 +150,11 @@ func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[s
 	pathStr := strings.Join(cmdPath, " ")
 	cmdInfo, ok := env.Doc.Commands[pathStr]
 	if !ok {
-		return mcp.NewToolResultErrorf(
-			"action mapped to unknown cmdPath %q (catalog/cmdhelp drift)",
-			pathStr), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrServerError,
+			Message: fmt.Sprintf("action mapped to unknown cmdPath %q (catalog/cmdhelp drift)", pathStr),
+			Hint:    "Catalog action's cmdPath doesn't appear in the cmdhelp Doc — programmer error in the catalog. File a bug.",
+		}), nil
 	}
 	cliArgs, err := BuildCLIArgs(cmdInfo, input, env.Workspace.Get(), env.RootFlags)
 	if err != nil {
@@ -379,16 +382,20 @@ func sortedActionNames(def ToolDef) []string {
 // has no `action` field. Lists the valid actions inline so agents can
 // retry with a correct value.
 func errMissingAction(def ToolDef) *mcp.CallToolResult {
-	return mcp.NewToolResultErrorf(
-		"%s: missing required field 'action'. Valid actions: %s",
-		def.Name, strings.Join(sortedActionNames(def), ", "))
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("%s: missing required field 'action'", def.Name),
+		Hint:    "Pass `action=<verb>`. Valid actions: " + strings.Join(sortedActionNames(def), ", "),
+	})
 }
 
 // errUnknownAction is the structured result returned when `action` is
 // set but not in the tool's action table. Same listing as
 // errMissingAction so agents can self-correct.
 func errUnknownAction(def ToolDef, action string) *mcp.CallToolResult {
-	return mcp.NewToolResultErrorf(
-		"%s: unknown action %q. Valid actions: %s",
-		def.Name, action, strings.Join(sortedActionNames(def), ", "))
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("%s: unknown action %q", def.Name, action),
+		Hint:    "Valid actions: " + strings.Join(sortedActionNames(def), ", "),
+	})
 }

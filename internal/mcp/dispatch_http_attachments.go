@@ -2,13 +2,13 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	goMime "mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -40,21 +40,22 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	const cmdKey = "attachment list"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	attached, _ := input["attached"].(bool)
 	unattached, _ := input["unattached"].(bool)
 	if attached && unattached {
-		return mcp.NewToolResultErrorf(
-			"%s: --attached and --unattached are mutually exclusive", cmdKey,
-		), nil
+		return validationFailedResult(cmdKey,
+			"attached and unattached are mutually exclusive",
+			"Pass at most one of `attached=true` or `unattached=true`."), nil
 	}
 	itemRef, _ := input["item"].(string)
 	if itemRef != "" && unattached {
-		return mcp.NewToolResultErrorf(
-			"%s: --item and --unattached are mutually exclusive", cmdKey,
-		), nil
+		return validationFailedResult(cmdKey,
+			"item and unattached are mutually exclusive",
+			"`item=<ref>` filters to that item's attachments; `unattached=true` filters to attachments NOT linked to any item. Drop one."), nil
 	}
 
 	q := url.Values{}
@@ -86,7 +87,8 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	if itemRef != "" {
 		resolved, err := d.resolveItemRef(ctx, user, workspace, itemRef)
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: resolve --item: %s", cmdKey, err.Error()), nil
+			return validationFailedResult(cmdKey, "resolve --item: "+err.Error(),
+				fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", itemRef, workspace)), nil
 		}
 		q.Set("item_id", resolved.ID)
 	}
@@ -119,11 +121,13 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 	const cmdKey = "attachment show"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	attachmentID, _ := input["attachment_id"].(string)
 	if attachmentID == "" {
-		return mcp.NewToolResultErrorf("%s: attachment_id is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "attachment_id is required",
+			"Pass `attachment_id=<id>` (use pad_item show to see an item's attachments)."), nil
 	}
 
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -134,17 +138,14 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 
 	req, err := d.buildAuthedRequest(ctx, http.MethodHead, urlPath, nil, user)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "build request", err), nil
 	}
 	rec := httptest.NewRecorder()
 	d.Handler.ServeHTTP(rec, req)
 
 	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
-		if body == "" {
-			body = http.StatusText(rec.Code)
-		}
-		return mcp.NewToolResultErrorf("pad %s failed: %s", cmdKey, body), nil
+		return upstreamHTTPErrorResult(ctx, cmdKey, "fetch attachment metadata", urlPath,
+			rec.Code, rec.Body.Bytes(), d.Lister, ResourceAttachment, attachmentID), nil
 	}
 
 	headers := rec.Result().Header

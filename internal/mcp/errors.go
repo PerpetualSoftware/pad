@@ -62,9 +62,19 @@ const (
 	ErrPermissionDenied ErrorCode = "permission_denied"
 
 	// ErrItemNotFound fires when an item ref / slug doesn't resolve.
-	// Future enhancement: populate `available_collections` or recent
-	// items as a hint (deferred to TASK-977).
+	// Distinct from ErrNotFound: this code is reserved for the
+	// specific case where a tool was looking up an item by ref
+	// (e.g. pad_item show TASK-7 against a missing ref). The hint
+	// then references pad_item search / list as recovery paths.
 	ErrItemNotFound ErrorCode = "item_not_found"
+
+	// ErrNotFound fires for resource-shaped 404s that AREN'T item
+	// lookups — workspace doesn't exist, collection list returns
+	// 404, dashboard route 404s, etc. Pre-TASK-1078 these all
+	// collapsed to ErrItemNotFound, which misled agents into
+	// thinking an item was the missing thing. Recovery is
+	// "verify the slug / path you passed", not "search for items."
+	ErrNotFound ErrorCode = "not_found"
 
 	// ErrValidationFailed fires on bad input — required field missing,
 	// enum value out of range, malformed JSON. HTTP: 422.
@@ -74,10 +84,35 @@ const (
 	// state (e.g. version mismatch on update). HTTP: 409.
 	ErrConflict ErrorCode = "conflict"
 
+	// ErrWorkspaceRequired fires when a tool needs a workspace
+	// context but the OAuth token's allow-list contains zero or
+	// multiple workspaces (no unambiguous auto-default available
+	// per TASK-1076). The hint points at pad_workspace list +
+	// passing workspace= explicitly. Distinct from ErrNoWorkspace
+	// (which is the local-CLI "no .pad.toml found" case).
+	ErrWorkspaceRequired ErrorCode = "workspace_required"
+
+	// ErrBackendUnreachable fires when the dispatcher's synthesized
+	// HTTP request never reaches a meaningful response — connection
+	// refused, DNS failure, upstream service down. Pre-TASK-1078
+	// these collapsed into ErrServerError with bare status text;
+	// distinguishing them lets agents decide "retry" vs "tell the
+	// user the backend is down" vs "fix the request."
+	ErrBackendUnreachable ErrorCode = "backend_unreachable"
+
+	// ErrUpstreamError fires on 5xx responses from the backend
+	// where a structured body was returned. Distinct from
+	// ErrBackendUnreachable (transport never completed) and from
+	// ErrServerError (catch-all for anything we don't have a code
+	// for). Hint includes a body excerpt so the agent has a chance
+	// of recognizing transient vs persistent failures.
+	ErrUpstreamError ErrorCode = "upstream_error"
+
 	// ErrServerError is the catch-all for unexpected failures —
-	// 5xx from HTTP, unknown stderr patterns from exec. The wrapped
-	// message preserves the underlying detail for debugging without
-	// promising any structured shape.
+	// dispatcher internal errors (build request failed, parse
+	// response failed, marshal failed), unknown stderr patterns
+	// from exec, etc. The wrapped message preserves the underlying
+	// detail for debugging without promising any structured shape.
 	ErrServerError ErrorCode = "server_error"
 )
 
@@ -480,13 +515,92 @@ func isLineStart(s string, i int) bool {
 // envelope's Message.
 // ─────────────────────────────────────────────────────────────────────
 
-// classifyHTTPStatus turns an HTTP error response into a structured
-// envelope. body is the raw response body (may be empty); cmdKey is
-// the dotted command path for debugging context. lookup is optional
-// — supply the dispatcher's WorkspaceLister so 404 (workspace) /
-// 403 / etc. can populate available_workspaces when relevant.
+// ResourceKind hints what shape of resource a dispatcher was reading
+// when it hit an error. Drives 404 classification (item_not_found vs
+// not_found) and the contextual hint text per code (TASK-1078 +
+// TASK-1079).
+//
+// The dispatcher knows exactly what it was reading (an item, a
+// workspace, a collection list, etc.); the classifier doesn't need
+// to guess from URL paths or body strings.
+type ResourceKind string
+
+const (
+	// ResourceUnknown is the legacy "we don't know what was being
+	// read" sentinel — call sites that haven't been retrofitted yet
+	// pass this and get the pre-TASK-1078 behaviour (404 →
+	// item_not_found by default unless body says workspace).
+	ResourceUnknown ResourceKind = ""
+
+	// ResourceItem signals an item-by-ref lookup (pad_item show /
+	// update / delete / star / etc.). 404 → item_not_found with
+	// pad_item search / list as the recovery hint.
+	ResourceItem ResourceKind = "item"
+
+	// ResourceWorkspace signals a workspace-level read or write
+	// (pad_workspace * actions, pad_project dashboard, etc.).
+	// 404 → unknown_workspace with available_workspaces enrichment.
+	ResourceWorkspace ResourceKind = "workspace"
+
+	// ResourceCollection signals a collection-shaped read
+	// (pad_collection list / show, item-list-by-collection).
+	// 404 → not_found with the collection-name in the hint.
+	ResourceCollection ResourceKind = "collection"
+
+	// ResourceListing signals a generic listing endpoint where
+	// 404 means the parent route doesn't exist (NOT "no rows" —
+	// list endpoints return 200 with [] for that case). Used for
+	// pad_workspace list, pad_role list, pad_project dashboard.
+	ResourceListing ResourceKind = "listing"
+
+	// ResourceLink signals a link create/delete operation. 404 →
+	// not_found with the link-target ref in the hint.
+	ResourceLink ResourceKind = "link"
+
+	// ResourceAttachment signals an attachment metadata read.
+	// 404 → not_found with the attachment_id in the hint.
+	ResourceAttachment ResourceKind = "attachment"
+)
+
+// classifyHTTPStatus is the legacy entry point preserved for callers
+// that don't know their resource kind. New callers should use
+// classifyHTTPStatusKind directly.
 func classifyHTTPStatus(ctx context.Context, cmdKey string, status int, body []byte, lookup WorkspaceLister) *mcp.CallToolResult {
+	return classifyHTTPStatusKind(ctx, cmdKey, "", status, body, lookup, ResourceUnknown, "")
+}
+
+// classifyHTTPStatusKind turns an HTTP error response into a structured
+// envelope, using the dispatcher's known resource context to emit the
+// right error code and an actionable hint (TASK-1078 / TASK-1079).
+//
+// Parameters:
+//
+//   - ctx, cmdKey, lookup — same as classifyHTTPStatus.
+//   - route — the URL path the dispatcher hit, e.g.
+//     "/api/v1/workspaces/foo/items/TASK-7". Used in hint text so
+//     agents know which path failed without parsing the message.
+//     May be empty when the caller doesn't have a route handy
+//     (legacy classifyHTTPStatus path).
+//   - status, body — same as classifyHTTPStatus.
+//   - kind — what shape of resource was being read. Drives both
+//     the code selection (404 splits item_not_found / unknown_workspace
+//     / not_found) and the hint text per code.
+//   - refOrSlug — the specific identifier the dispatcher was looking
+//     up (a TASK-N ref for items, a workspace slug for workspaces,
+//     etc.). Used in the hint so an agent reading "Item ref TASK-7
+//     not found in workspace foo" knows exactly what to fix. May be
+//     empty.
+func classifyHTTPStatusKind(
+	ctx context.Context,
+	cmdKey, route string,
+	status int,
+	body []byte,
+	lookup WorkspaceLister,
+	kind ResourceKind,
+	refOrSlug string,
+) *mcp.CallToolResult {
 	bodyText := strings.TrimSpace(string(body))
+	bodyMessage := extractUpstreamMessage(bodyText)
 	if bodyText == "" {
 		bodyText = http.StatusText(status)
 	}
@@ -496,61 +610,35 @@ func classifyHTTPStatus(ctx context.Context, cmdKey string, status int, body []b
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrAuthRequired,
 			Message: "Authentication required.",
-			Hint:    bodyText,
+			Hint:    authHintFor(bodyMessage, route),
 		})
 	case http.StatusForbidden:
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrPermissionDenied,
 			Message: "Permission denied for this operation.",
-			Hint:    bodyText,
+			Hint:    permissionHintFor(bodyMessage, route),
 		})
 	case http.StatusNotFound:
-		// Without inspecting the URL we can't tell workspace-404 vs
-		// item-404 with certainty; the body usually says. Default to
-		// item_not_found and let TASK-977 refine when the remote
-		// transport can provide URL-aware classification.
-		if strings.Contains(strings.ToLower(bodyText), "workspace") {
-			// Try to pull the slug out of the body so the message
-			// names it (e.g. body="workspace 'foo' not visible" →
-			// "Workspace \"foo\" is not visible..."). Falls back to
-			// the body in Hint when no slug parses.
-			slug := extractUnknownWorkspaceSlug(bodyText)
-			res := unknownWorkspaceResult(ctx, slug, lookup)
-			// unknownWorkspaceResult uses the available_workspaces
-			// hint line; preserve the original handler body in Hint
-			// so debug detail isn't lost. Concatenate when both
-			// exist so neither hides the other.
-			env := envelopeFrom(res)
-			if env.Error.Hint == "" {
-				env.Error.Hint = bodyText
-			} else {
-				env.Error.Hint = bodyText + " — " + env.Error.Hint
-			}
-			return NewErrorResult(env.Error)
-		}
-		return NewErrorResult(ErrorPayload{
-			Code:    ErrItemNotFound,
-			Message: "Item not found.",
-			Hint:    bodyText,
-		})
+		return classify404(ctx, cmdKey, route, bodyText, bodyMessage, lookup, kind, refOrSlug)
 	case http.StatusConflict:
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrConflict,
 			Message: "Conflict — current state changed beneath this update.",
-			Hint:    bodyText,
+			Hint:    conflictHintFor(bodyMessage, route),
 		})
 	case http.StatusUnprocessableEntity, http.StatusBadRequest:
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrValidationFailed,
 			Message: "Validation failed.",
-			Hint:    bodyText,
+			Hint:    validationHintFor(bodyMessage, route),
 		})
 	}
 
 	if status >= 500 {
 		return NewErrorResult(ErrorPayload{
-			Code:    ErrServerError,
-			Message: fmt.Sprintf("pad %s failed: %s", cmdKey, bodyText),
+			Code:    ErrUpstreamError,
+			Message: fmt.Sprintf("pad %s failed: backend returned %d", cmdKey, status),
+			Hint:    upstreamHintFor(bodyMessage, route, status),
 		})
 	}
 	// Other 4xx without a specific mapping — surface as server_error
@@ -558,6 +646,346 @@ func classifyHTTPStatus(ctx context.Context, cmdKey string, status int, body []b
 	// promoting them to validation_failed; that would mislead callers.
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrServerError,
-		Message: fmt.Sprintf("pad %s failed (HTTP %d): %s", cmdKey, status, bodyText),
+		Message: fmt.Sprintf("pad %s failed (HTTP %d)", cmdKey, status),
+		Hint:    serverHintFor(bodyMessage, route, status),
 	})
+}
+
+// classify404 splits HTTP 404 by ResourceKind into the right code +
+// hint. Called from classifyHTTPStatusKind only — extracted so the
+// 404-shaped logic doesn't dominate the parent switch statement.
+func classify404(
+	ctx context.Context,
+	cmdKey, route, bodyText, bodyMessage string,
+	lookup WorkspaceLister,
+	kind ResourceKind,
+	refOrSlug string,
+) *mcp.CallToolResult {
+	// Workspace-shaped 404s: route through the existing
+	// unknown_workspace path so available_workspaces enrichment fires.
+	// Body-string sniffing is the legacy fallback for callers that
+	// pass ResourceUnknown.
+	if kind == ResourceWorkspace ||
+		(kind == ResourceUnknown && strings.Contains(strings.ToLower(bodyText), "workspace")) {
+		slug := refOrSlug
+		if slug == "" {
+			slug = extractUnknownWorkspaceSlug(bodyText)
+		}
+		res := unknownWorkspaceResult(ctx, slug, lookup)
+		env := envelopeFrom(res)
+		// Layer in a route-aware hint suffix so the agent sees the
+		// path that 404'd in addition to the workspace-list hint.
+		extra := workspaceMissingHint(slug, route, bodyMessage)
+		if env.Error.Hint == "" {
+			env.Error.Hint = extra
+		} else if extra != "" {
+			env.Error.Hint = extra + " — " + env.Error.Hint
+		}
+		return NewErrorResult(env.Error)
+	}
+	switch kind {
+	case ResourceItem:
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrItemNotFound,
+			Message: "Item not found.",
+			Hint:    itemMissingHint(refOrSlug, route, bodyMessage),
+		})
+	case ResourceUnknown:
+		// Legacy fallback — preserved so call sites that haven't
+		// been retrofitted yet keep the pre-TASK-1078 code mapping.
+		// Use itemMissingHint (NOT raw bodyText) so the safe-extracted
+		// bodyMessage is the only upstream content forwarded, matching
+		// the privacy contract extractUpstreamMessage establishes
+		// (Codex review #387 round 2 caught the residual leak from
+		// the previous bare-`bodyText` Hint).
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrItemNotFound,
+			Message: "Item not found.",
+			Hint:    itemMissingHint(refOrSlug, route, bodyMessage),
+		})
+	default:
+		// All other resource kinds (collection, listing, link,
+		// attachment) get the generic not_found code with a
+		// kind-aware hint.
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrNotFound,
+			Message: notFoundMessageFor(kind, refOrSlug),
+			Hint:    notFoundHintFor(kind, refOrSlug, route, bodyMessage),
+		})
+	}
+}
+
+// extractUpstreamMessage pulls a human-readable message out of an
+// upstream error body. Three return shapes:
+//
+//   - Pad's structured envelope ({error:{message:...}}) → return the
+//     inner message verbatim. This is the common case for any 4xx /
+//     5xx pad emits internally (every handler uses writeError which
+//     produces this shape).
+//   - chi's default 404 body ("404 page not found") → return "" so
+//     the hint omits the upstream-message clause entirely. The
+//     literal text has zero diagnostic value (Bug 17) and forwarding
+//     it doesn't help anyone.
+//   - Anything else → return "". Per Codex review #387 round 1, the
+//     pre-fix fallback returned the raw body — which would forward
+//     non-envelope upstream JSON / HTML / debug dumps, including any
+//     tokens / passwords / internal-only fields the backend might
+//     surface in a 5xx. Refusing to forward unstructured bodies is
+//     the safer default; operators debugging a non-envelope upstream
+//     can read the pad container logs, agents don't need the raw
+//     body to recover.
+//
+// Trailing whitespace is trimmed before classification because chi's
+// "404 page not found" body ships with a trailing newline and the
+// EqualFold check needs to match it byte-for-byte.
+func extractUpstreamMessage(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	if strings.EqualFold(body, "404 page not found") {
+		return ""
+	}
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err == nil && env.Error.Message != "" {
+		return env.Error.Message
+	}
+	return ""
+}
+
+// itemMissingHint is the per-error-code hint generator for
+// ErrItemNotFound. References the actual ref + route so the agent
+// can pin the failure without re-parsing the message, plus points
+// at the next-step recovery tools.
+func itemMissingHint(ref, route, bodyMsg string) string {
+	parts := []string{}
+	if ref != "" {
+		parts = append(parts, fmt.Sprintf("Item %q not found.", ref))
+	} else {
+		parts = append(parts, "Item not found at the requested ref.")
+	}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	parts = append(parts, "Try `pad_item search` or `pad_item list` to find the right ref.")
+	if bodyMsg != "" && !strings.EqualFold(bodyMsg, "404 page not found") {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// workspaceMissingHint generates the route-aware suffix appended to
+// the standard unknown_workspace envelope's available_workspaces line.
+func workspaceMissingHint(slug, route, bodyMsg string) string {
+	parts := []string{}
+	if slug != "" {
+		parts = append(parts, fmt.Sprintf("Workspace %q not visible.", slug))
+	}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" && !strings.EqualFold(bodyMsg, "404 page not found") {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// notFoundMessageFor returns a kind-aware short message for the
+// not_found code. Falls back to a generic "Resource not found" when
+// the kind doesn't match a specialized case.
+func notFoundMessageFor(kind ResourceKind, refOrSlug string) string {
+	switch kind {
+	case ResourceCollection:
+		if refOrSlug != "" {
+			return fmt.Sprintf("Collection %q not found.", refOrSlug)
+		}
+		return "Collection not found."
+	case ResourceLink:
+		return "Link target not found."
+	case ResourceAttachment:
+		if refOrSlug != "" {
+			return fmt.Sprintf("Attachment %q not found.", refOrSlug)
+		}
+		return "Attachment not found."
+	case ResourceListing:
+		return "Listing endpoint did not respond."
+	}
+	return "Resource not found."
+}
+
+// notFoundHintFor generates the actionable hint for ErrNotFound.
+// References the route + ref/slug + suggests verification of the
+// path the caller passed.
+func notFoundHintFor(kind ResourceKind, refOrSlug, route, bodyMsg string) string {
+	parts := []string{}
+	switch kind {
+	case ResourceCollection:
+		parts = append(parts, "Verify the collection slug exists; use `pad_collection list` to enumerate.")
+	case ResourceLink:
+		parts = append(parts, fmt.Sprintf("Verify the target ref %q exists.", refOrSlug))
+	case ResourceAttachment:
+		parts = append(parts, "Verify the attachment_id from the parent item.")
+	case ResourceListing:
+		parts = append(parts, "Verify the route matches the server's API surface (build version may be stale).")
+	default:
+		parts = append(parts, "Verify the path you passed.")
+	}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" && !strings.EqualFold(bodyMsg, "404 page not found") {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// authHintFor generates the actionable hint for ErrAuthRequired.
+// Distinct from the upstream body — agents see "fix your auth", not
+// the literal upstream JSON envelope (Bug 19).
+func authHintFor(bodyMsg, route string) string {
+	parts := []string{"Re-authenticate (Claude Desktop: reconnect the connector; CLI: `pad auth login`)."}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// permissionHintFor generates the actionable hint for
+// ErrPermissionDenied. References the route + the inner backend
+// message (which often names the missing role / workspace).
+func permissionHintFor(bodyMsg, route string) string {
+	parts := []string{"Insufficient role for this operation."}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// conflictHintFor generates the actionable hint for ErrConflict.
+func conflictHintFor(bodyMsg, route string) string {
+	parts := []string{"Re-read the current item state and retry the update."}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// validationHintFor generates the actionable hint for
+// ErrValidationFailed. The backend message usually pinpoints the
+// field, so it's prioritized.
+func validationHintFor(bodyMsg, route string) string {
+	parts := []string{}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	parts = append(parts, "Adjust the input shape and retry.")
+	return strings.Join(parts, " ")
+}
+
+// upstreamHintFor generates the actionable hint for ErrUpstreamError.
+// 5xx responses are usually transient; the hint encodes that bias.
+func upstreamHintFor(bodyMsg, route string, status int) string {
+	parts := []string{
+		fmt.Sprintf("Backend returned %d.", status),
+		"Usually transient — retry once or check pad logs for the underlying error.",
+	}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" && bodyMsg != http.StatusText(status) {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// serverHintFor generates the actionable hint for ErrServerError.
+// Catch-all — surface enough for an agent to file a bug report.
+func serverHintFor(bodyMsg, route string, status int) string {
+	parts := []string{fmt.Sprintf("Unexpected status %d from backend.", status)}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers for non-HTTP error paths (TASK-1077 — replace plain-string
+// NewToolResultErrorf with structured envelopes uniformly).
+// ─────────────────────────────────────────────────────────────────────
+
+// validationFailedResult wraps a "missing required input" or other
+// caller-input error into the structured envelope. cmdKey identifies
+// which tool was invoked; msg is the human-readable issue (e.g.
+// "workspace is required", "ref is required"); fixHint is the
+// recovery suggestion.
+func validationFailedResult(cmdKey, msg, fixHint string) *mcp.CallToolResult {
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("%s: %s", cmdKey, msg),
+		Hint:    fixHint,
+	})
+}
+
+// dispatcherErrorResult wraps an internal dispatcher failure
+// (build request, encode body, parse response, marshal merged
+// fields, etc.) into the structured envelope. These shouldn't
+// happen at runtime — they're usually programmer errors or
+// genuinely unexpected I/O failures.
+//
+// op is a short verb describing what failed ("build prefetch
+// request", "encode body", "parse current item"); err is the
+// underlying error — its message goes in the hint so debugging
+// info isn't lost.
+func dispatcherErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
+	hint := fmt.Sprintf("Internal: %s — %s", op, err.Error())
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrServerError,
+		Message: fmt.Sprintf("%s: %s failed", cmdKey, op),
+		Hint:    hint,
+	})
+}
+
+// upstreamHTTPErrorResult is the canonical wrapper for "the
+// dispatcher made an HTTP call that returned a non-2xx" cases
+// outside the main executeRequest/packageHTTPResponse pipeline
+// (in-handler prefetches, link create/delete, project dispatchers,
+// etc.). Routes the failure through classifyHTTPStatusKind so the
+// shape matches the main pipeline exactly — agents see the same
+// envelope regardless of which dispatcher path produced it.
+func upstreamHTTPErrorResult(
+	ctx context.Context,
+	cmdKey, op, route string,
+	status int,
+	body []byte,
+	lookup WorkspaceLister,
+	kind ResourceKind,
+	refOrSlug string,
+) *mcp.CallToolResult {
+	res := classifyHTTPStatusKind(ctx, cmdKey, route, status, body, lookup, kind, refOrSlug)
+	// Layer the per-call op verb into the message so a "prefetch"
+	// failure surfaces distinct from a top-level "execute" failure.
+	env := envelopeFrom(res)
+	if op != "" && env.Error.Message != "" {
+		env.Error.Message = fmt.Sprintf("%s (%s)", env.Error.Message, op)
+	}
+	return NewErrorResult(env.Error)
 }

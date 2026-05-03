@@ -186,25 +186,32 @@ func (d *HTTPHandlerDispatcher) dispatchCreateItemLink(
 ) (*mcp.CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", spec.cmdKey), nil
+		return validationFailedResult(spec.cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	urlRef, _ := input[spec.urlRefKey].(string)
 	if urlRef == "" {
-		return mcp.NewToolResultErrorf("%s: %s is required", spec.cmdKey, spec.urlRefKey), nil
+		return validationFailedResult(spec.cmdKey,
+			fmt.Sprintf("%s is required", spec.urlRefKey),
+			fmt.Sprintf("Pass `%s=<TASK-N>` (the source side of the link).", spec.urlRefKey)), nil
 	}
 	bodyRef, _ := input[spec.bodyTargetRefKey].(string)
 	if bodyRef == "" {
-		return mcp.NewToolResultErrorf("%s: %s is required", spec.cmdKey, spec.bodyTargetRefKey), nil
+		return validationFailedResult(spec.cmdKey,
+			fmt.Sprintf("%s is required", spec.bodyTargetRefKey),
+			fmt.Sprintf("Pass `%s=<TASK-N>` (the target side of the link).", spec.bodyTargetRefKey)), nil
 	}
 
 	urlItem, err := d.resolveItemRef(ctx, user, workspace, urlRef)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", spec.cmdKey, err.Error()), nil
+		return validationFailedResult(spec.cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", urlRef, workspace)), nil
 	}
 	bodyItem, err := d.resolveItemRef(ctx, user, workspace, bodyRef)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", spec.cmdKey, err.Error()), nil
+		return validationFailedResult(spec.cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", bodyRef, workspace)), nil
 	}
 
 	payload := map[string]any{
@@ -213,7 +220,7 @@ func (d *HTTPHandlerDispatcher) dispatchCreateItemLink(
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode body: %s", spec.cmdKey, err.Error()), nil
+		return dispatcherErrorResult(spec.cmdKey, "encode body", err), nil
 	}
 
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -238,36 +245,44 @@ func (d *HTTPHandlerDispatcher) dispatchDeleteItemLink(
 ) (*mcp.CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", spec.cmdKey), nil
+		return validationFailedResult(spec.cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 
 	urlRef, _ := input[spec.urlRefKey].(string)
 	if urlRef == "" {
-		return mcp.NewToolResultErrorf("%s: %s is required", spec.cmdKey, spec.urlRefKey), nil
+		return validationFailedResult(spec.cmdKey,
+			fmt.Sprintf("%s is required", spec.urlRefKey),
+			fmt.Sprintf("Pass `%s=<TASK-N>` (the source side of the link to remove).", spec.urlRefKey)), nil
 	}
 	bodyRef, _ := input[spec.bodyTargetRefKey].(string)
 	if bodyRef == "" {
-		return mcp.NewToolResultErrorf("%s: %s is required", spec.cmdKey, spec.bodyTargetRefKey), nil
+		return validationFailedResult(spec.cmdKey,
+			fmt.Sprintf("%s is required", spec.bodyTargetRefKey),
+			fmt.Sprintf("Pass `%s=<TASK-N>` (the target side of the link to remove).", spec.bodyTargetRefKey)), nil
 	}
 
 	urlItem, err := d.resolveItemRef(ctx, user, workspace, urlRef)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", spec.cmdKey, err.Error()), nil
+		return validationFailedResult(spec.cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q.", urlRef, workspace)), nil
 	}
 	bodyItem, err := d.resolveItemRef(ctx, user, workspace, bodyRef)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", spec.cmdKey, err.Error()), nil
+		return validationFailedResult(spec.cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q.", bodyRef, workspace)), nil
 	}
 
 	links, err := d.listItemLinks(ctx, user, workspace, urlItem.Slug)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", spec.cmdKey, err.Error()), nil
+		return dispatcherErrorResult(spec.cmdKey, "list links", err), nil
 	}
 
 	canonicalType, normErr := models.NormalizeItemLinkType(spec.linkType)
 	if normErr != nil {
 		// Programming error — only canonical types belong in itemLinkSpecs.
-		return mcp.NewToolResultErrorf("%s: invalid link type %q", spec.cmdKey, spec.linkType), nil
+		return dispatcherErrorResult(spec.cmdKey, "validate link type",
+			fmt.Errorf("invalid link type %q", spec.linkType)), nil
 	}
 
 	var linkID string
@@ -285,10 +300,12 @@ func (d *HTTPHandlerDispatcher) dispatchDeleteItemLink(
 		}
 	}
 	if linkID == "" {
-		return mcp.NewToolResultErrorf(
-			"%s: no %s relationship found between %s and %s",
-			spec.cmdKey, spec.linkType, urlRef, bodyRef,
-		), nil
+		return NewErrorResult(ErrorPayload{
+			Code: ErrNotFound,
+			Message: fmt.Sprintf("%s: no %s relationship found between %s and %s",
+				spec.cmdKey, spec.linkType, urlRef, bodyRef),
+			Hint: fmt.Sprintf("Use pad_item action=deps to see existing relationships on %q.", urlRef),
+		}), nil
 	}
 
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -319,11 +336,13 @@ func (d *HTTPHandlerDispatcher) dispatchItemDeps(
 	const cmdKey = "item deps"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (the item whose dependencies you're querying)."), nil
 	}
 
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
@@ -368,20 +387,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemRelated(
 	const cmdKey = "item related"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (the item whose related items you're querying)."), nil
 	}
 
 	item, err := d.fetchItem(ctx, user, workspace, ref)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return validationFailedResult(cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q.", ref, workspace)), nil
 	}
 	links, err := d.listItemLinks(ctx, user, workspace, item.Slug)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "list links", err), nil
 	}
 
 	groups := buildRelatedGroups(item, links)
@@ -412,20 +434,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 	const cmdKey = "item implemented-by"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return mcp.NewToolResultErrorf("%s: workspace is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
-		return mcp.NewToolResultErrorf("%s: ref is required", cmdKey), nil
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass `ref=<TASK-N>` (the item whose implementers you're querying)."), nil
 	}
 
 	item, err := d.fetchItem(ctx, user, workspace, ref)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return validationFailedResult(cmdKey, err.Error(),
+			fmt.Sprintf("Verify item %q exists in workspace %q.", ref, workspace)), nil
 	}
 	links, err := d.listItemLinks(ctx, user, workspace, item.Slug)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "list links", err), nil
 	}
 
 	results := incomingImplementedBy(item, links)
@@ -450,7 +475,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 func packageStructuredResponse(cmdKey string, payload any) (*mcp.CallToolResult, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: encode response: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "encode response", err), nil
 	}
 	var decoded any
 	if err := json.Unmarshal(body, &decoded); err != nil {

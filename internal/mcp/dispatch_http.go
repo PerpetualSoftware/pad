@@ -215,10 +215,18 @@ var noRemoteEquivalent = map[string]string{
 //     synthesized request, and execute through the handler chain.
 func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []string) (*mcp.CallToolResult, error) {
 	if d.Handler == nil {
-		return mcp.NewToolResultError("HTTPHandlerDispatcher: Handler not configured"), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrServerError,
+			Message: "HTTPHandlerDispatcher: Handler not configured",
+			Hint:    "Wire d.Handler before invoking Dispatch (programmer error).",
+		}), nil
 	}
 	if d.UserResolver == nil {
-		return mcp.NewToolResultError("HTTPHandlerDispatcher: UserResolver not configured"), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrServerError,
+			Message: "HTTPHandlerDispatcher: UserResolver not configured",
+			Hint:    "Wire d.UserResolver before invoking Dispatch (programmer error).",
+		}), nil
 	}
 
 	cmdKey := strings.Join(cmdPath, " ")
@@ -231,15 +239,20 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	// agent a hint about WHY (and, for the github / attachment
 	// commands, the alternative path).
 	if rationale, local := noRemoteEquivalent[cmdKey]; local {
-		return mcp.NewToolResultErrorf(
-			"%s: no remote equivalent — CLI-only command (%s)",
-			cmdKey, rationale,
-		), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrValidationFailed,
+			Message: fmt.Sprintf("%s: no remote equivalent — CLI-only command", cmdKey),
+			Hint:    rationale,
+		}), nil
 	}
 
 	user := d.UserResolver(ctx)
 	if user == nil {
-		return mcp.NewToolResultErrorf("%s: no authenticated user in context", cmdKey), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrAuthRequired,
+			Message: fmt.Sprintf("%s: no authenticated user in context", cmdKey),
+			Hint:    "Re-authenticate (Claude Desktop: reconnect connector; CLI: pad auth login).",
+		}), nil
 	}
 
 	input := DispatchInputFromContext(ctx)
@@ -257,7 +270,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		var err error
 		input, err = d.resolveAssignName(ctx, user, input)
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: resolve --assign: %s", cmdKey, err.Error()), nil
+			return validationFailedResult(cmdKey, "resolve --assign: "+err.Error(),
+				"Pass `assign=<user-name|email>` matching a workspace member, or `assigned_user_id=<uuid>` directly."), nil
 		}
 	}
 
@@ -271,7 +285,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		var err error
 		input, err = d.resolveRoleSlug(ctx, user, input)
 		if err != nil {
-			return mcp.NewToolResultErrorf("%s: resolve --role: %s", cmdKey, err.Error()), nil
+			return validationFailedResult(cmdKey, "resolve --role: "+err.Error(),
+				"Pass `role=<slug>` matching an existing agent role, or `agent_role_id=<uuid>` directly."), nil
 		}
 	}
 
@@ -353,15 +368,17 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		// wired into the HTTP route table. The registry intentionally
 		// advertises every safe leaf command from PLAN-942's tool
 		// surface; the route table grows incrementally.
-		return mcp.NewToolResultErrorf(
-			"%s: not yet implemented over HTTP transport "+
-				"(see internal/mcp/dispatch_http.go routeTable)", cmdKey,
-		), nil
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrServerError,
+			Message: fmt.Sprintf("%s: not yet implemented over HTTP transport", cmdKey),
+			Hint:    "This command is registered as an MCP tool but no route mapper has been wired in internal/mcp/dispatch_http_routes.go. File a feature request or use the CLI/stdio MCP path.",
+		}), nil
 	}
 
 	method, urlPath, body, err := mapper(input)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: %s", cmdKey, err.Error()), nil
+		return validationFailedResult(cmdKey, err.Error(),
+			"Check the input shape against the tool's schema (most route-mapper errors are missing required path placeholders)."), nil
 	}
 
 	return d.executeRequest(ctx, cmdKey, user, method, urlPath, body)
@@ -386,7 +403,19 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 ) (*mcp.CallToolResult, error) {
 	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: build request: %s", cmdKey, err.Error()), nil
+		// Most build-request failures are scope-rejection from
+		// buildAuthedRequest's TokenScopeAllows check (PATCH on a
+		// read-only token, etc.). Surface as permission_denied so
+		// agents see the same code as a backend 403, not a
+		// generic server_error.
+		if strings.HasPrefix(err.Error(), "permission_denied:") {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrPermissionDenied,
+				Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
+				Hint:    "Token scope does not permit this operation. Re-issue with the required scopes (read for GET; write for POST/PATCH; admin for workspace settings).",
+			}), nil
+		}
+		return dispatcherErrorResult(cmdKey, "build request", err), nil
 	}
 
 	rec := httptest.NewRecorder()
@@ -542,7 +571,7 @@ func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return mcp.NewToolResultErrorf("%s: read response: %s", cmdKey, err.Error()), nil
+		return dispatcherErrorResult(cmdKey, "read response", err), nil
 	}
 	body := string(bodyBytes)
 

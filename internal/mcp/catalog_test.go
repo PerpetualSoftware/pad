@@ -235,8 +235,11 @@ func TestMakeFanOutHandler_UnknownAction(t *testing.T) {
 	if !res.IsError {
 		t.Errorf("expected IsError=true for unknown action")
 	}
+	// Post-TASK-1077 the error result is a structured envelope; the
+	// text content is the JSON-encoded body. Look for the action name
+	// (escaped because it's inside JSON) and the listed valid action.
 	msg := textOf(res)
-	if !strings.Contains(msg, `unknown action "nope"`) {
+	if !strings.Contains(msg, `nope`) {
 		t.Errorf("error message %q does not name the bad action", msg)
 	}
 	if !strings.Contains(msg, "foo") {
@@ -299,8 +302,12 @@ func TestActionEnv_Dispatch_UnknownCmdPath(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected IsError=true for unknown cmdPath")
 	}
-	if !strings.Contains(textOf(res), `unknown cmdPath "item ghost"`) {
-		t.Errorf("error message %q should name the missing cmdPath", textOf(res))
+	// Post-TASK-1077 the message is JSON-encoded inside the structured
+	// envelope (escaped quotes around "item ghost"). Check for the
+	// path tokens individually rather than the literal-quoted form.
+	msg := textOf(res)
+	if !strings.Contains(msg, `item ghost`) {
+		t.Errorf("error message %q should name the missing cmdPath", msg)
 	}
 }
 
