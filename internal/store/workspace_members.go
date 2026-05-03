@@ -383,6 +383,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		ws.CreatedAt = parseTime(createdAt)
 		ws.UpdatedAt = parseTime(updatedAt)
 		ws.DeletedAt = parseTimePtr(deletedAt)
+		ws.HydrateDerivedFields()
 		result = append(result, ws)
 	}
 	if err := rows.Err(); err != nil {
@@ -436,6 +437,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		ws.UpdatedAt = parseTime(updatedAt)
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		ws.IsGuest = true
+		ws.HydrateDerivedFields()
 		result = append(result, ws)
 	}
 	if err := guestRows.Err(); err != nil {
