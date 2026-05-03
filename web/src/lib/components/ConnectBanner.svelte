@@ -112,7 +112,17 @@
 	});
 
 	let visible = $derived(
-		!!wsSlug && !dismissed && hasAgentActivity === false && !connectOpen
+		!!wsSlug &&
+			!dismissed &&
+			hasAgentActivity === false &&
+			!connectOpen &&
+			// Transitional gate (TASK-1114 → TASK-1115): the MCP-mode copy
+			// + CTA + icon are wired up below and ready to render, but the
+			// modal that the click should open (ConnectMCPModal) ships in
+			// TASK-1115. Showing the MCP banner now would promise "zero
+			// install" and route to the CLI flow — strictly worse than
+			// showing nothing. Removed when TASK-1115 mounts the new modal.
+			mode === 'cli'
 	);
 
 	function dismiss(event: MouseEvent) {
@@ -213,11 +223,11 @@
 {/if}
 
 <!--
-	The MCP-mode banner currently routes to ConnectWorkspaceModal as a
-	transitional fallback. TASK-1115 ships ConnectMCPModal.svelte and
-	will swap the bind below to mount the new modal when mode === 'mcp'.
-	Until then, MCP-mode users who click the banner see the CLI flow —
-	worse UX than the destination, but coherent (no broken click).
+	ConnectWorkspaceModal is the CLI install flow. The MCP-mode banner
+	is suppressed entirely (see the `mode === 'cli'` clause in `visible`)
+	until TASK-1115 ships ConnectMCPModal.svelte — at which point the
+	gate is removed and the new modal mounts conditionally on
+	`mode === 'mcp'` here.
 -->
 <ConnectWorkspaceModal
 	bind:open={connectOpen}
