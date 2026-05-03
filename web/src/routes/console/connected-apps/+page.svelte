@@ -162,8 +162,11 @@
 		<div class="empty-state">
 			<p class="empty-title">No connected apps yet.</p>
 			<p class="empty-desc">
-				See the <a href="/connect">connect guide</a> to set up Claude Desktop, Cursor,
-				or another MCP client.
+				See the
+				<a href="https://getpad.dev/connect" target="_blank" rel="noopener noreferrer"
+					>connect guide</a
+				>
+				to set up Claude Desktop, Cursor, or another MCP client.
 			</p>
 		</div>
 	{:else}
