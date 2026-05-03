@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -442,6 +443,49 @@ func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 // chain treats the call as authenticated. Pulled out so tests can
 // inspect / decorate it cheaply.
 func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, user *models.User) (*http.Request, error) {
+	// Strip any inherited chi.RouteCtxKey from the inbound context
+	// before synthesizing the new request. Without this, every
+	// production /mcp tool call 404s on the synthesized /api/v1/...
+	// request because chi's Mux.ServeHTTP short-circuits when it
+	// detects an existing RouteCtxKey:
+	//
+	//   // chi/v5/mux.go:71-75
+	//   rctx, _ := r.Context().Value(RouteCtxKey).(*Context)
+	//   if rctx != nil {
+	//       mx.handler.ServeHTTP(w, r)  // bypass fresh routing
+	//       return
+	//   }
+	//
+	// chi assumes "if there's already a route context, I'm being
+	// invoked as a sub-router from a parent — don't reset state."
+	// That's correct for chi's own Sub() / Mount() patterns, but
+	// here we're synthesizing a brand-new request that needs to
+	// route from scratch against the ROOT mux. The stale RouteCtxKey
+	// from the inbound /mcp request causes chi to skip its
+	// rctx.Reset() + RoutePath = "/api/v1/..." setup; the route
+	// table lookup runs against contaminated routing state and
+	// falls through to chi's default NotFound handler — whose body
+	// is the literal "404 page not found\n" the production user
+	// reported on every dispatcher call.
+	//
+	// In tests this never fired because Dispatch was always called
+	// with context.Background() (no RouteCtxKey to inherit). In
+	// production every call enters via /mcp's chi-routed handler,
+	// so the contamination is universal.
+	//
+	// Setting the value to a typed nil shadows the parent's value:
+	// chi's `.(*Context)` type assertion on a context.Value of nil
+	// returns (nil, false), the `rctx != nil` check fails, and
+	// chi takes the fresh-routing branch as intended.
+	//
+	// Critically we DON'T strip pad's own context values
+	// (WithCurrentUser, WithAPITokenAuth, TokenScopes,
+	// TokenAllowedWorkspaces) — those are added below / preserved
+	// from the inbound request and are exactly what the synthesized
+	// request needs to authenticate as the same user. We only strip
+	// the chi-specific routing key.
+	ctx = context.WithValue(ctx, chi.RouteCtxKey, (*chi.Context)(nil))
+
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
