@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import ConnectWorkspaceModal from './ConnectWorkspaceModal.svelte';
 
 	interface Props {
@@ -19,6 +20,22 @@
 	let dismissed = $state(false);
 	let connectOpen = $state(false);
 
+	// Banner mode is gated on the server-exposed MCP public URL rather than
+	// `cloudMode` directly: it's true on Pad Cloud AND on any self-host that
+	// opted into Remote MCP via PAD_MCP_PUBLIC_URL. When the server has no
+	// public MCP URL configured, fall back to the CLI install flow that
+	// has historically been the only way to wire up an agent.
+	let mode = $derived<'mcp' | 'cli'>(authStore.mcpPublicUrl !== '' ? 'mcp' : 'cli');
+
+	// localStorage dismiss key migration (TASK-1114). Existing users have
+	// `pad-cli-banner-dismissed-{ws}` set; we now write to the broader
+	// `pad-connect-banner-dismissed-{ws}` so a future banner-mode rename
+	// doesn't force users to re-dismiss. For one release, read both keys
+	// so existing dismissals carry over without re-pestering. After ~1
+	// release we can drop the legacy-key read.
+	const NEW_DISMISS_KEY = (slug: string) => `pad-connect-banner-dismissed-${slug}`;
+	const LEGACY_DISMISS_KEY = (slug: string) => `pad-cli-banner-dismissed-${slug}`;
+
 	// Effect A — sync dismissed state from localStorage when workspace
 	// changes. Mirrors the pattern in `[username]/[workspace]/+page.svelte`
 	// for the onboarding-dismissed flag. Per CONVE-606, kept separate from
@@ -29,8 +46,10 @@
 	// state we can back this with a `workspace_user_state` row.
 	$effect(() => {
 		if (browser && wsSlug) {
-			dismissed =
-				localStorage.getItem(`pad-cli-banner-dismissed-${wsSlug}`) === 'true';
+			const isDismissed =
+				localStorage.getItem(NEW_DISMISS_KEY(wsSlug)) === 'true' ||
+				localStorage.getItem(LEGACY_DISMISS_KEY(wsSlug)) === 'true';
+			dismissed = isDismissed;
 		}
 	});
 
@@ -72,33 +91,50 @@
 		refreshHasAgentActivity(wsSlug);
 	});
 
-	// Effect C — refetch when the modal CLOSES. The user's most common
-	// flow is: see banner → open modal → copy command → run it in their
-	// terminal → close the modal. By that point an agent-sourced item has
-	// almost certainly landed; a fresh fetch makes the banner auto-hide
-	// in-session instead of waiting for a route change or page reload.
-	// `$effect.pre` + a tracked previous value matches the transition
-	// pattern used in ShareDialog. Out of scope for this PR but left as a
-	// follow-up: subscribe to SSE item-created events to also catch
-	// "user ran the CLI from another terminal without ever opening the
-	// modal" — see PLAN-859 for any spawned follow-up tasks.
+	// Effect C — CLI mode only. Refetch when the modal CLOSES because the
+	// user's typical CLI flow is: see banner → open modal → copy command
+	// → run it in their terminal → close the modal. By that point an
+	// agent-sourced item has almost certainly landed; the fresh fetch
+	// makes the banner auto-hide in-session instead of waiting for a
+	// route change.
+	//
+	// In MCP mode this refetch doesn't help: the user leaves the page
+	// entirely (off to Claude Desktop / Cursor / Windsurf to paste the
+	// URL and authorize). The first MCP-sourced item lands minutes later,
+	// after the user is gone — the SSE feed + workspace-change fetch
+	// (Effect B) catches it on the next visit.
 	let prevConnectOpen = $state(false);
 	$effect.pre(() => {
-		if (prevConnectOpen && !connectOpen) {
+		if (mode === 'cli' && prevConnectOpen && !connectOpen) {
 			refreshHasAgentActivity(wsSlug);
 		}
 		prevConnectOpen = connectOpen;
 	});
 
 	let visible = $derived(
-		!!wsSlug && !dismissed && hasAgentActivity === false && !connectOpen
+		!!wsSlug &&
+			!dismissed &&
+			hasAgentActivity === false &&
+			!connectOpen &&
+			// Transitional gate (TASK-1114 → TASK-1115): the MCP-mode copy
+			// + CTA + icon are wired up below and ready to render, but the
+			// modal that the click should open (ConnectMCPModal) ships in
+			// TASK-1115. Showing the MCP banner now would promise "zero
+			// install" and route to the CLI flow — strictly worse than
+			// showing nothing. Removed when TASK-1115 mounts the new modal.
+			mode === 'cli'
 	);
 
 	function dismiss(event: MouseEvent) {
 		event.stopPropagation();
 		dismissed = true;
 		if (browser) {
-			localStorage.setItem(`pad-cli-banner-dismissed-${wsSlug}`, 'true');
+			// Write the new key only. The legacy key, if set, stays in
+			// localStorage as harmless dead state — readers OR the two
+			// keys (Effect A above), so its presence doesn't affect
+			// future behavior. Cleaning it up isn't worth the risk of
+			// touching localStorage for keys we don't own conceptually.
+			localStorage.setItem(NEW_DISMISS_KEY(wsSlug), 'true');
 		}
 	}
 
@@ -125,25 +161,55 @@
 		}}
 	>
 		<span class="banner-icon" aria-hidden="true">
-			<svg
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			>
-				<polyline points="4 17 10 11 4 5" />
-				<line x1="12" y1="19" x2="20" y2="19" />
-			</svg>
+			{#if mode === 'mcp'}
+				<!-- Plug icon — universal "connect a service" affordance. -->
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<path d="M9 2v6" />
+					<path d="M15 2v6" />
+					<path d="M6 8h12v4a6 6 0 0 1-12 0z" />
+					<path d="M12 18v4" />
+				</svg>
+			{:else}
+				<!-- Terminal-arrow icon — historical CLI affordance. -->
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<polyline points="4 17 10 11 4 5" />
+					<line x1="12" y1="19" x2="20" y2="19" />
+				</svg>
+			{/if}
 		</span>
 		<span class="banner-text">
-			Manage this workspace from your terminal &mdash; get the CLI &rarr;
+			{#if mode === 'mcp'}
+				Connect an AI agent to this workspace &mdash; zero install &rarr;
+			{:else}
+				Manage this workspace from your terminal &mdash; get the CLI &rarr;
+			{/if}
 		</span>
 		<span class="banner-actions">
-			<span class="banner-cta">Get the CLI</span>
+			<span class="banner-cta">
+				{#if mode === 'mcp'}
+					Connect
+				{:else}
+					Get the CLI
+				{/if}
+			</span>
 			<button
 				class="dismiss-btn"
 				type="button"
@@ -156,6 +222,13 @@
 	</div>
 {/if}
 
+<!--
+	ConnectWorkspaceModal is the CLI install flow. The MCP-mode banner
+	is suppressed entirely (see the `mode === 'cli'` clause in `visible`)
+	until TASK-1115 ships ConnectMCPModal.svelte — at which point the
+	gate is removed and the new modal mounts conditionally on
+	`mode === 'mcp'` here.
+-->
 <ConnectWorkspaceModal
 	bind:open={connectOpen}
 	{serverUrl}
