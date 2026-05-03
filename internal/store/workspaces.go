@@ -7,36 +7,18 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// ListWorkspaces returns every non-deleted workspace, unordered by user.
+// This is intended for admin-panel cross-tenant views and the
+// pre-auth/fresh-install bootstrap. End-user workspace switchers should
+// call GetUserWorkspaces instead, which scopes to the user's memberships.
 func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
-	return s.ListWorkspacesForUser("")
-}
-
-// ListWorkspacesForUser returns all workspaces (admin view), with per-user
-// sort_order from workspace_members when userID is provided.
-func (s *Store) ListWorkspacesForUser(userID string) ([]models.Workspace, error) {
-	var rows *sql.Rows
-	var err error
-
-	if userID != "" {
-		rows, err = s.db.Query(s.q(`
-			SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at,
-			       COALESCE(wm.sort_order, 0)
-			FROM workspaces w
-			LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
-			LEFT JOIN users ou ON ou.id = w.owner_id
-			WHERE w.deleted_at IS NULL
-			ORDER BY COALESCE(wm.sort_order, 0) ASC, w.name ASC
-		`), userID)
-	} else {
-		rows, err = s.db.Query(s.q(`
-			SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at,
-			       0 as sort_order
-			FROM workspaces w
-			LEFT JOIN users ou ON ou.id = w.owner_id
-			WHERE w.deleted_at IS NULL
-			ORDER BY w.name ASC
-		`))
-	}
+	rows, err := s.db.Query(s.q(`
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at
+		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE w.deleted_at IS NULL
+		ORDER BY w.name ASC
+	`))
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +28,7 @@ func (s *Store) ListWorkspacesForUser(userID string) ([]models.Workspace, error)
 	for rows.Next() {
 		var w models.Workspace
 		var createdAt, updatedAt string
-		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt, &w.SortOrder); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		w.CreatedAt = parseTime(createdAt)

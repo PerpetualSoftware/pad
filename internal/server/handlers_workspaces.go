@@ -136,8 +136,15 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 
-	// If a user is authenticated and is not an admin, scope to their memberships.
-	if user != nil && user.Role != "admin" {
+	// Authenticated users — including admins — see only workspaces they're
+	// a member of (which includes ones they own, since owners get a
+	// workspace_members row at creation time). Server admins previously got
+	// the unfiltered list here, which leaked workspace metadata into their
+	// "shared with me" switcher even though they weren't members
+	// (BUG-982). Cross-tenant visibility for admins is available through
+	// the admin panel routes (/api/v1/admin/...), which call
+	// ListWorkspaces() directly with the appropriate auth gate.
+	if user != nil {
 		workspaces, err := s.store.GetUserWorkspaces(user.ID)
 		if err != nil {
 			writeInternalError(w, err)
@@ -150,15 +157,9 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admin users (or fresh-install with no users) see all workspaces.
-	// Pass user ID when available so sort_order is included.
-	var workspaces []models.Workspace
-	var err error
-	if user != nil {
-		workspaces, err = s.store.ListWorkspacesForUser(user.ID)
-	} else {
-		workspaces, err = s.store.ListWorkspaces()
-	}
+	// Pre-auth / fresh-install bootstrap: list everything so the setup
+	// flow can find any seeded workspace.
+	workspaces, err := s.store.ListWorkspaces()
 	if err != nil {
 		writeInternalError(w, err)
 		return
