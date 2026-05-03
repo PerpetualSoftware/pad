@@ -117,15 +117,22 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"setup_method":   setupMethod,
 		"auth_method":    authMethodPassword,
 		"cloud_mode":     s.cloudMode,
+		"mcp_public_url": s.mcpPublicURL,
 	}
 }
 
 func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
+	// mcp_public_url is the canonical URL clients paste into their MCP-capable
+	// agent (e.g. "https://mcp.getpad.dev"). Empty string when PAD_MCP_PUBLIC_URL
+	// is unset — the web UI uses presence/absence as the gate that drives the
+	// connect banner mode (Remote MCP vs CLI install). Always emitted, never
+	// omitted, so the frontend can rely on a string value.
 	payload := map[string]interface{}{
 		"authenticated":  authenticated,
 		"setup_required": false,
 		"auth_method":    authMethodPassword,
 		"cloud_mode":     s.cloudMode,
+		"mcp_public_url": s.mcpPublicURL,
 	}
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)

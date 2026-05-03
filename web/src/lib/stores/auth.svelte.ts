@@ -19,6 +19,11 @@ export const authStore = {
 	get userId() { return session?.user?.id ?? ''; },
 	get authenticated() { return session?.authenticated ?? false; },
 	get cloudMode() { return session?.cloud_mode ?? false; },
+	// mcpPublicUrl is the canonical URL clients paste into their MCP-capable
+	// agent. Empty string ('') when PAD_MCP_PUBLIC_URL is unset on the server.
+	// Components that conditionally render Remote-MCP onboarding UI should
+	// branch on `authStore.mcpPublicUrl !== ''`.
+	get mcpPublicUrl() { return session?.mcp_public_url ?? ''; },
 	get loading() { return loading; },
 
 	async load() {

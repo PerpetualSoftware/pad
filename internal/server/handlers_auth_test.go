@@ -51,6 +51,14 @@ func TestAuthBootstrapFlow(t *testing.T) {
 	if _, ok := session["needs_setup"]; ok {
 		t.Error("did not expect deprecated needs_setup field")
 	}
+	// mcp_public_url is always present (even pre-setup) so the web UI can
+	// render the right onboarding flow before the first admin exists. Empty
+	// when PAD_MCP_PUBLIC_URL is unset (the default for this test server).
+	if got, ok := session["mcp_public_url"]; !ok {
+		t.Error("expected mcp_public_url field in setup-state session payload")
+	} else if got != "" {
+		t.Errorf("expected mcp_public_url='' when PAD_MCP_PUBLIC_URL unset, got %v", got)
+	}
 
 	token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -72,6 +80,33 @@ func TestAuthBootstrapFlow(t *testing.T) {
 	}
 	if session["setup_required"] != false {
 		t.Errorf("expected setup_required=false after bootstrap, got %v", session["setup_required"])
+	}
+	if got, ok := session["mcp_public_url"]; !ok {
+		t.Error("expected mcp_public_url field in authenticated session payload")
+	} else if got != "" {
+		t.Errorf("expected mcp_public_url='' when PAD_MCP_PUBLIC_URL unset, got %v", got)
+	}
+}
+
+// When PAD_MCP_PUBLIC_URL is configured (e.g. on Pad Cloud), the
+// /auth/session response must echo the URL verbatim so the web UI can
+// gate the Remote-MCP connect banner on its presence.
+func TestAuthSessionEmitsMCPPublicURLWhenConfigured(t *testing.T) {
+	srv := testServer(t)
+	// Same-package access to the unexported field — equivalent to what
+	// SetMCPTransport sets at startup, but without spawning the audit
+	// writer goroutine that this test doesn't need.
+	srv.mcpPublicURL = "https://mcp.test.example"
+
+	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session check: expected 200, got %d", rr.Code)
+	}
+
+	var session map[string]interface{}
+	parseJSON(t, rr, &session)
+	if session["mcp_public_url"] != "https://mcp.test.example" {
+		t.Errorf("expected mcp_public_url='https://mcp.test.example', got %v", session["mcp_public_url"])
 	}
 }
 
