@@ -12,9 +12,10 @@
 	let { wsSlug, serverUrl, workspaceName = '' }: Props = $props();
 
 	// `null` = unknown (still loading, banner stays hidden to avoid a flash);
-	// `true` = workspace already has at least one CLI-sourced item, auto-hide;
-	// `false` = no CLI source detected, show the banner.
-	let hasCliSource = $state<boolean | null>(null);
+	// `true` = workspace already has at least one agent-sourced item (CLI
+	//          or Remote MCP), auto-hide;
+	// `false` = no agent activity detected, show the banner.
+	let hasAgentActivity = $state<boolean | null>(null);
 	let dismissed = $state(false);
 	let connectOpen = $state(false);
 
@@ -33,8 +34,8 @@
 		}
 	});
 
-	// Fetch `has_cli_source` for a specific slug. Two safeguards against
-	// stale responses overwriting fresher ones:
+	// Fetch `has_agent_activity` for a specific slug. Two safeguards
+	// against stale responses overwriting fresher ones:
 	//
 	// 1. A monotonic sequence id captured at call time — only the LATEST
 	//    request's result is applied. This handles same-workspace races,
@@ -47,33 +48,33 @@
 	// Failures fall back to `false` (fail-open: better to show the banner
 	// than to hide it on a transient error).
 	let fetchSeq = 0;
-	function refreshHasCliSource(slug: string) {
+	function refreshHasAgentActivity(slug: string) {
 		if (!slug) return;
 		const mySeq = ++fetchSeq;
-		hasCliSource = null;
+		hasAgentActivity = null;
 		api.dashboard
 			.get(slug)
 			.then((d) => {
 				if (mySeq !== fetchSeq) return; // a newer request superseded us
 				if (slug !== wsSlug) return; // workspace changed under us
-				hasCliSource = d.has_cli_source;
+				hasAgentActivity = d.has_agent_activity;
 			})
 			.catch(() => {
 				if (mySeq !== fetchSeq) return;
 				if (slug !== wsSlug) return;
-				hasCliSource = false;
+				hasAgentActivity = false;
 			});
 	}
 
 	// Effect B — refetch on workspace change. Per CONVE-606, kept separate
 	// from the localStorage sync above.
 	$effect(() => {
-		refreshHasCliSource(wsSlug);
+		refreshHasAgentActivity(wsSlug);
 	});
 
 	// Effect C — refetch when the modal CLOSES. The user's most common
 	// flow is: see banner → open modal → copy command → run it in their
-	// terminal → close the modal. By that point a CLI-sourced item has
+	// terminal → close the modal. By that point an agent-sourced item has
 	// almost certainly landed; a fresh fetch makes the banner auto-hide
 	// in-session instead of waiting for a route change or page reload.
 	// `$effect.pre` + a tracked previous value matches the transition
@@ -84,13 +85,13 @@
 	let prevConnectOpen = $state(false);
 	$effect.pre(() => {
 		if (prevConnectOpen && !connectOpen) {
-			refreshHasCliSource(wsSlug);
+			refreshHasAgentActivity(wsSlug);
 		}
 		prevConnectOpen = connectOpen;
 	});
 
 	let visible = $derived(
-		!!wsSlug && !dismissed && hasCliSource === false && !connectOpen
+		!!wsSlug && !dismissed && hasAgentActivity === false && !connectOpen
 	);
 
 	function dismiss(event: MouseEvent) {

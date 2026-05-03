@@ -23,11 +23,14 @@ type DashboardResponse struct {
 	Attention      []DashboardAttention  `json:"attention"`
 	RecentActivity []DashboardActivity   `json:"recent_activity"`
 	SuggestedNext  []DashboardSuggestion `json:"suggested_next"`
-	// HasCLISource is true when any non-deleted item in the workspace was
-	// created via the CLI. Drives the "connect your local project" banner
-	// auto-hide — once true, the user is wired up and the banner stops
-	// nagging them on this workspace.
-	HasCLISource bool `json:"has_cli_source"`
+	// HasAgentActivity is true when any non-deleted item in the workspace
+	// was created via an agent surface — direct CLI or Remote MCP (both
+	// paths persist source='cli'; future MCP-distinct attribution would
+	// land as source='mcp', which the underlying query also matches).
+	// Drives the "connect an agent" banner auto-hide — once true, the
+	// workspace's agent loop is wired up and the banner stops nagging
+	// the user on this workspace.
+	HasAgentActivity bool `json:"has_agent_activity"`
 }
 
 type DashboardActiveItem struct {
@@ -287,17 +290,17 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		SuggestedNext:  []DashboardSuggestion{},
 	}
 
-	// Cheap EXISTS query — drives the connect-CLI banner's auto-hide on the
-	// web side. Filtered by the same visibility set used elsewhere in this
-	// handler (dashCollIDs / dashItemIDs) so a guest can't infer the
-	// existence of CLI-sourced items in collections they don't have access
-	// to. See WorkspaceHasCLISource for the rationale.
-	hasCLI, err := s.store.WorkspaceHasCLISource(workspaceID, dashCollIDs, dashItemIDs)
+	// Cheap EXISTS query — drives the connect-agent banner's auto-hide on
+	// the web side. Filtered by the same visibility set used elsewhere in
+	// this handler (dashCollIDs / dashItemIDs) so a guest can't infer the
+	// existence of agent-sourced items in collections they don't have
+	// access to. See WorkspaceHasAgentActivity for the rationale.
+	hasAgent, err := s.store.WorkspaceHasAgentActivity(workspaceID, dashCollIDs, dashItemIDs)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	resp.HasCLISource = hasCLI
+	resp.HasAgentActivity = hasAgent
 
 	// Summary: items grouped by collection slug and status field
 	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})

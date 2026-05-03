@@ -1037,7 +1037,7 @@ func TestItemCrossCollectionListing(t *testing.T) {
 // AFTER persisting (for SSE / activity logs). With the fix, the handler
 // now backfills input.Source from actorFromRequest before calling
 // store.CreateItem, so items created with a Bearer auth header land as
-// source='cli'. Without it, the dashboard's has_cli_source signal
+// source='cli'. Without it, the dashboard's has_agent_activity signal
 // (TASK-862) would never flip on for normal CLI usage.
 //
 // The bearer-auth test uses a real bootstrapped session token because
