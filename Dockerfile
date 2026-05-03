@@ -13,8 +13,32 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web-builder /app/web/build ./web/build
+
+# Build metadata. All three are caller-passed via --build-arg (see
+# pad-cloud/scripts/build-pad.sh for the production wrapper that
+# resolves them from the host's pad checkout).
+#
+# Why all three are passed in vs. computed inside the container:
+#
+#   - .dockerignore intentionally excludes .git/, so an in-container
+#     `git rev-parse` substitution returns empty (with `2>/dev/null`
+#     swallowing the error) — the previous Dockerfile shipped "dev"
+#     forever because of this. We don't want to add .git/ to the
+#     context just for this; pre-computing on the host is the
+#     standard pattern.
+#   - `date` would work in-container but a fresh `date` value on
+#     every build invalidates layer caching for this RUN. Passing
+#     as ARG lets the caller decide cache semantics.
+#
+# Defaults are deliberately ugly-but-honest so a `docker build .`
+# without args produces a binary whose pad_version makes the
+# misconfiguration obvious ("dev (unknown)") rather than hiding it.
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION} -X main.commit=$(git rev-parse --short HEAD 2>/dev/null) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o pad ./cmd/pad
+ARG COMMIT=unknown
+ARG BUILD_TIME=
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
+    -o pad ./cmd/pad
 
 # Stage 3: Runtime
 FROM alpine:3.21
