@@ -91,6 +91,13 @@ type Server struct {
 	// mount on self-hosted deployments. See handlers_oauth.go.
 	oauthServer *oauth.Server
 
+	// MCP audit log async writer (PLAN-943 TASK-960). Spawned by
+	// startMCPAuditWriter at startup when MCP is wired; shut down
+	// from Server.Stop. nil-safe: every audit-emitting code path
+	// nil-checks so MCP-less builds + tests that don't start the
+	// writer still work. See middleware_mcp_audit.go.
+	mcpAudit *mcpAuditWriter
+
 	// storageInfoCache memoizes per-workspace storage usage summaries
 	// behind a short TTL (storageInfoTTL). Reduces DB load on the
 	// Settings → Storage page and quota-aware UI surfaces. Initialized
@@ -157,6 +164,11 @@ func (s *Server) Stop() {
 	// Each loop registers itself on s.bg, so the Wait() below blocks
 	// until they actually finish and any in-flight goroutines drain.
 	s.stopOrphanGC()
+	// MCP audit writer / sweeper run on s.bg too. Signal first so
+	// the workers see the close BEFORE Wait() blocks; without the
+	// signal Wait would hang forever on the writer's blocking
+	// queue receive.
+	s.stopMCPAuditWriter()
 	s.bg.Wait()
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
@@ -751,10 +763,26 @@ func (s *Server) setupRouter() {
 
 				// Platform stats
 				r.Get("/stats", s.handleAdminStats)
+
+				// MCP audit log — admin-only full-table view (TASK-960).
+				// Powers /console/admin/mcp-audit. Per-connection
+				// drilldown that users see for their own connections
+				// lives at /api/v1/connected-apps/{id}/audit (registered
+				// outside the admin group so non-admin users can read
+				// their own).
+				r.Get("/mcp-audit", s.handleAdminMCPAudit)
 			})
 
 			// Audit log (admin-only)
 			r.Get("/audit-log", s.handleAuditLog)
+
+			// MCP per-connection audit (TASK-960). Owner-only via the
+			// store query (user_id is one of the WHERE clauses);
+			// returns the requesting user's own MCP activity for one
+			// connection. The handler runs inside the standard
+			// /api/v1 auth-required group, so unauthenticated callers
+			// 401 here just like every other API endpoint.
+			r.Get("/connected-apps/{id}/audit", s.handleMCPConnectionAudit)
 
 			// Templates
 			r.Get("/templates", s.handleListTemplates)

@@ -67,6 +67,13 @@ func (s *Server) SetMCPTransport(transport http.Handler, mcpPublicURL, authServe
 	s.mcpTransport = transport
 	s.mcpPublicURL = mcpPublicURL
 	s.mcpAuthServerURL = authServerURL
+
+	// Spawn the audit log writer + retention sweeper now that the
+	// MCP surface is wired (TASK-960). Idempotent — safe to call
+	// from tests that flip transport state on/off via repeated
+	// SetMCPTransport. The writer outlives the request flow; it's
+	// stopped from Server.Stop via stopMCPAuditWriter.
+	s.startMCPAuditWriter()
 }
 
 // registerMCPRoutes installs the /mcp + /.well-known endpoints on r,
@@ -102,7 +109,14 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// server handles all methods (POST handshake/calls, GET for SSE
 	// streams, DELETE for session termination), so we Mount() rather
 	// than registering per-method.
-	r.With(s.requireCloudMode, s.MCPBearerAuth).Mount("/mcp", s.mcpTransport)
+	//
+	// MCPAuditLog (TASK-960) sits AFTER MCPBearerAuth so the audit
+	// row carries the resolved user + token identity. It also runs
+	// AFTER the rate-limit gates inside MCPBearerAuth so 429s get
+	// captured as result_status="denied". The audit middleware is a
+	// no-op when the writer hasn't been spawned (selfhost / test
+	// builds), so the chain is safe to mount unconditionally.
+	r.With(s.requireCloudMode, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", s.mcpTransport)
 
 	// Discovery endpoints — unauthenticated, cloud-mode-gated. RFC 9728
 	// (protected-resource) gets the real metadata; RFC 8414 (auth-server)

@@ -46,6 +46,16 @@ const (
 	// the consent (TASK-953). nil → no token-level workspace
 	// constraint (PAT auth, or pre-TASK-952 OAuth tokens).
 	ctxTokenAllowedWorkspaces contextKey = "token_allowed_workspaces"
+	// ctxMCPTokenKind / ctxMCPTokenRef carry the bearer's identity for
+	// MCP audit logging (TASK-960). Stashed by MCPBearerAuth so the
+	// audit middleware (middleware_mcp_audit.go) can record which
+	// connection (OAuth request_id chain) or which PAT (api_tokens.id)
+	// drove the call. Empty when no MCP-auth happened (i.e. the request
+	// didn't go through MCPBearerAuth). The ref values aren't sensitive
+	// — they're internal IDs / chain identifiers, never the raw bearer
+	// — so leaking via context is fine.
+	ctxMCPTokenKind contextKey = "mcp_token_kind"
+	ctxMCPTokenRef  contextKey = "mcp_token_ref"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
