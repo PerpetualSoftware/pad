@@ -275,6 +275,21 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		}
 	}
 
+	// Preprocess input: workspace auto-default from OAuth-token
+	// allow-list (TASK-1076). When a tool call doesn't carry an
+	// explicit `workspace` param, try to default from the resolved
+	// workspaces the lister returns. Single resolved workspace →
+	// inject; otherwise leave alone (the route mapper will surface
+	// a "missing required input" error if the route needs it,
+	// which is informative enough for agents to retry with an
+	// explicit param). Routes that don't need workspace (like
+	// `pad_workspace list`) just see an extra unused field — harmless.
+	//
+	// Caller-passed workspace ALWAYS wins. Tests + non-OAuth paths
+	// (no Lister wired) skip the injection entirely so behavior
+	// stays unchanged for them.
+	input = d.maybeInjectWorkspace(ctx, input)
+
 	// Special-case routes that need read-modify-write or other
 	// in-handler prefetches. These live as methods on the dispatcher
 	// because they need the Handler reference; the simple route

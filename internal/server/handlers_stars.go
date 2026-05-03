@@ -58,7 +58,18 @@ func (s *Server) handleStarItem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	// Return a structured success body so MCP clients consuming this
+	// through HTTPHandlerDispatcher get a non-empty signal (BUG-1081).
+	// Pre-fix this returned 204 No Content — RESTfully fine, but the
+	// MCP transport surfaces empty bodies as empty tool results, which
+	// gives agents no confirmation the operation landed. The shape
+	// ({ref, starred}) matches BUG-989's original spec for these
+	// actions and the broader "return enough info to be the next
+	// source of truth" pattern that note/decide adopted.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ref":     item.Ref,
+		"starred": true,
+	})
 }
 
 // handleUnstarItem removes a star from an item for the authenticated user.
@@ -114,7 +125,12 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	// Same structured-body pattern as handleStarItem — see BUG-1081
+	// rationale there.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ref":     item.Ref,
+		"starred": false,
+	})
 }
 
 // handleListStarredItems returns all starred items for the authenticated user in a workspace.
