@@ -1905,15 +1905,29 @@ func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]model
 
 // ListItemVersionsBeforeTime returns versions for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
+//
+// When beforeID is empty (first page / no cursor), the secondary id tie-breaker
+// is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(s.q(`
-		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
-		FROM item_versions
-		WHERE item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
-		ORDER BY created_at DESC, id DESC
-		LIMIT ?
-	`), itemID, ts, ts, beforeID, limit)
+	const selectCols = `id, item_id, content, change_summary, created_by, source, is_diff, created_at`
+	const orderLimit = `ORDER BY created_at DESC, id DESC LIMIT ?`
+
+	var rows *sql.Rows
+	var err error
+	if beforeID == "" {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM item_versions
+			WHERE item_id = ? AND created_at < ?
+			`+orderLimit), itemID, ts, limit)
+	} else {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM item_versions
+			WHERE item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+			`+orderLimit), itemID, ts, ts, beforeID, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -198,16 +198,31 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 
 // ListDocumentActivityBeforeTime returns activities for a document created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
+//
+// When beforeID is empty (first page / no cursor), the secondary id tie-breaker
+// is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(s.q(`
-		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
-		FROM activities a
-		LEFT JOIN users u ON a.user_id = u.id
-		WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
-		ORDER BY a.created_at DESC, a.id DESC
-		LIMIT ?
-	`), documentID, ts, ts, beforeID, limit)
+	const selectCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')`
+	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
+
+	var rows *sql.Rows
+	var err error
+	if beforeID == "" {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM activities a
+			LEFT JOIN users u ON a.user_id = u.id
+			WHERE a.document_id = ? AND a.created_at < ?
+			`+orderLimit), documentID, ts, limit)
+	} else {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM activities a
+			LEFT JOIN users u ON a.user_id = u.id
+			WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
+			`+orderLimit), documentID, ts, ts, beforeID, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

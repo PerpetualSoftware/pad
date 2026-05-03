@@ -103,16 +103,33 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 
 // ListCommentsBeforeTime returns comments for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
+//
+// When beforeID is empty (first page / no cursor), the secondary id tie-breaker
+// is omitted. Earlier code passed a "\xff" sentinel intended to sort after any
+// UUID, but Postgres rejects that as an invalid UTF-8 byte sequence in a TEXT
+// bind parameter (SQLSTATE 22021). See BUG-1086.
 func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
 	ts := before.Format(time.RFC3339)
-	rows, err := s.db.Query(s.q(`
-		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
+	const selectCols = `c.id, c.item_id, c.workspace_id, c.author, c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
-		       c.created_at, c.updated_at
-		FROM comments c
-		WHERE c.item_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
-		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT ?`), itemID, ts, ts, beforeID, limit)
+		       c.created_at, c.updated_at`
+	const orderLimit = `ORDER BY c.created_at DESC, c.id DESC LIMIT ?`
+
+	var rows *sql.Rows
+	var err error
+	if beforeID == "" {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM comments c
+			WHERE c.item_id = ? AND c.created_at < ?
+			`+orderLimit), itemID, ts, limit)
+	} else {
+		rows, err = s.db.Query(s.q(`
+			SELECT `+selectCols+`
+			FROM comments c
+			WHERE c.item_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
+			`+orderLimit), itemID, ts, ts, beforeID, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list comments before time: %w", err)
 	}

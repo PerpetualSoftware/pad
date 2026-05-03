@@ -38,18 +38,38 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Cursor: fetch entries before this (timestamp, id) pair.
-	// Defaults to now + a future-biased ID to include "just now" entries on first page.
+	//
+	// Three cases:
+	//   1. Neither before nor before_id supplied (true first page) →
+	//      beforeID = "" tells the store to drop the id predicate entirely.
+	//   2. Both before and before_id supplied (normal cursor pagination) →
+	//      passed straight through.
+	//   3. before supplied without before_id (malformed/external client) →
+	//      use a UUID-safe upper-bound sentinel ("g" sorts after any
+	//      lowercase-hex UUID character in every reasonable collation) so
+	//      same-second entries aren't silently dropped.
+	//
+	// The previous code defaulted beforeID to "\xff" in all three cases.
+	// That worked on SQLite but Postgres rejects "\xff" as an invalid UTF-8
+	// byte sequence (SQLSTATE 22021), causing every timeline load to 500.
+	// See BUG-1086.
 	before := time.Now().UTC().Add(time.Minute)
-	beforeID := "\xff" // sorts after all UUIDs on first page
+	beforeID := ""
+	hasBefore := false
 	if v := r.URL.Query().Get("before"); v != "" {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			before = t
+			hasBefore = true
 		} else if t, err := time.Parse(time.RFC3339, v); err == nil {
 			before = t
+			hasBefore = true
 		}
 	}
 	if v := r.URL.Query().Get("before_id"); v != "" {
 		beforeID = v
+	}
+	if hasBefore && beforeID == "" {
+		beforeID = "g" // > any UUID character lex-wise; valid UTF-8
 	}
 
 	// Over-fetch per source (3x limit) to compensate for entries removed by
