@@ -45,6 +45,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
+	"github.com/google/uuid"
 	mcptransport "github.com/mark3labs/mcp-go/server"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/term"
@@ -417,10 +418,24 @@ func serveCmd() *cobra.Command {
 				// Stateless mode: every Streamable HTTP request stands
 				// alone, Bearer is the auth, no session resumption to
 				// manage. Matches the spike's verified shape.
+				// Stateless transport: every request stands alone; Bearer is the
+				// auth; no session resumption. mcp-go's WithStateLess(true)
+				// would do this exactly, BUT it wires StatelessSessionIdManager
+				// whose Generate() returns "" — so the response never carries
+				// Mcp-Session-Id, which makes the active-sessions tracker
+				// (TASK-1120) unobservable in production.
+				//
+				// Use a generate-only manager instead: every initialize gets a
+				// unique UUID on the response (so the tracker can key on it),
+				// but Validate accepts ANY incoming header value (including
+				// empty / arbitrary), so clients that never echo the
+				// session-id behave exactly as they did under the original
+				// WithStateLess(true) setup. Codex review on PR #400 round 1
+				// caught the gauge-stays-at-zero gap.
 				streamable := mcptransport.NewStreamableHTTPServer(
 					mcpSrv.MCP(),
 					mcptransport.WithEndpointPath("/mcp"),
-					mcptransport.WithStateLess(true),
+					mcptransport.WithSessionIdManager(&padMCPGenerateOnlySessionIDManager{}),
 				)
 				// TASK-1120: optional env-driven overrides for the
 				// mcp-active-sessions tracker. Both default to the
@@ -1241,6 +1256,43 @@ workspaces with no owner).`,
 		},
 	}
 	return cmd
+}
+
+// padMCPGenerateOnlySessionIDManager is the SessionIdManager used for
+// the /mcp Streamable HTTP transport (TASK-1120). It produces a fresh
+// UUID on every initialize so the response carries Mcp-Session-Id
+// (which the active-sessions tracker reads), but accepts ANY incoming
+// session-id value — including empty strings — without rejection.
+//
+// This intentionally diverges from both shipped mcp-go managers:
+//
+//   - StatelessSessionIdManager: Generate() returns "" → tracker can't
+//     observe sessions in production. Original choice; broken for
+//     observability after TASK-1120.
+//   - StatelessGeneratingSessionIdManager: Generate() works, BUT
+//     Validate() rejects clients that don't echo the spec'd UUID
+//     prefix → breaking change for any client previously running
+//     under WithStateLess(true) that didn't track session-id.
+//
+// We're truly stateless server-side (no DB, no map of session IDs to
+// validate against), so accepting any incoming value is correct: the
+// "session" is purely a per-request observability label and the
+// server doesn't depend on any client honoring it. Termination is a
+// no-op for the same reason — there's no per-session state to free
+// when DELETE arrives, and the active-sessions tracker handles its
+// own bookkeeping.
+type padMCPGenerateOnlySessionIDManager struct{}
+
+func (padMCPGenerateOnlySessionIDManager) Generate() string {
+	return "pad-mcp-" + uuid.NewString()
+}
+
+func (padMCPGenerateOnlySessionIDManager) Validate(string) (isTerminated bool, err error) {
+	return false, nil
+}
+
+func (padMCPGenerateOnlySessionIDManager) Terminate(string) (isNotAllowed bool, err error) {
+	return false, nil
 }
 
 // humanBytes formats a byte count with the smallest IEC unit that

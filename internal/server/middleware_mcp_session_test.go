@@ -181,6 +181,72 @@ func TestMCPSessionTracker_ConcurrentTouchEvict(t *testing.T) {
 	}
 }
 
+// TestMCPSessionTracker_OnChangeUnderLock pins the Codex round-1 fix
+// for the race where onChange ran AFTER the mutex was released:
+// concurrent touches could compute (n=1, n=2) under the lock then
+// race the callback writes, leaving the gauge at 1 while the map
+// holds 2 entries (last writer wins on the gauge but loses the
+// observation order).
+//
+// We assert by recording (size, observation) pairs from inside the
+// callback. With the lock held across onChange, every observation
+// matches the actual map size at observation time — no `recorded[i] <
+// recorded[i-1]` after a sequence of pure inserts.
+func TestMCPSessionTracker_OnChangeUnderLock(t *testing.T) {
+	const goroutines = 32
+	const opsPerGoroutine = 50
+
+	var (
+		mu       sync.Mutex
+		observed []int
+	)
+	tr := newMCPSessionTracker(time.Hour, func(n int) {
+		mu.Lock()
+		observed = append(observed, n)
+		mu.Unlock()
+	})
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			// Each goroutine touches a unique id repeatedly. Only the
+			// first touch fires onChange; the rest are refreshes.
+			id := "sess-touch-" + string(rune('A'+g))
+			for i := 0; i < opsPerGoroutine; i++ {
+				tr.touch(id)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Exactly `goroutines` onChange invocations (one per first-touch).
+	if got := len(observed); got != goroutines {
+		t.Fatalf("onChange invocations: got %d, want %d", got, goroutines)
+	}
+
+	// With the lock held, observations form a strictly monotonic
+	// sequence 1, 2, 3, ... goroutines (one per insert, no reorder).
+	// Without the fix, a race would let observations land out of order
+	// and this assertion would fail intermittently under -race.
+	for i, n := range observed {
+		want := i + 1
+		if n != want {
+			t.Errorf("observed[%d] = %d, want %d (sequence: %v)", i, n, want, observed)
+			break
+		}
+	}
+
+	// Final map size matches the last observation.
+	if got := tr.size(); got != goroutines {
+		t.Errorf("final size: got %d, want %d", got, goroutines)
+	}
+	if observed[len(observed)-1] != goroutines {
+		t.Errorf("last observation: got %d, want %d", observed[len(observed)-1], goroutines)
+	}
+}
+
 // TestMCPSessionTracker_RunStopsCleanly verifies the run() loop
 // exits promptly after shutdown(). Uses a tight sweep interval so
 // the goroutine has cycled at least once before we stop it.

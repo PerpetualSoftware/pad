@@ -92,43 +92,61 @@ func newMCPSessionTracker(ttl time.Duration, onChange func(count int)) *mcpSessi
 // callers pre-filter, but a missing header should never bump anything).
 // Fires onChange only when the size actually changes (insert, not
 // refresh) so the gauge doesn't churn on every per-session tool call.
+//
+// Critical: onChange is called WHILE holding mu, not after the
+// unlock. Codex round 1 on PR #400 caught the race — releasing the
+// lock before the callback lets two concurrent inserts compute
+// (n=1, n=2) under the lock, then race to write Set(1) and Set(2)
+// on the gauge. Last writer wins on the gauge, but the map state
+// is "2 sessions" — gauge would permanently disagree with size.
+// Holding the lock serializes the (compute n, observe n) pair so
+// every onChange invocation reflects a consistent map snapshot.
+//
+// Safety: onChange is the gauge.Set closure wired by
+// startMCPSessionTracker; it doesn't reach back into the tracker so
+// there's no re-entrancy risk. If a future caller wires an onChange
+// that DID re-enter (e.g. calls touch from the callback), this will
+// deadlock — that's a deliberate trade-off (correctness over
+// re-entrancy) and the deadlock is a clear failure mode rather than
+// silent metric corruption.
 func (t *mcpSessionTracker) touch(id string) {
 	if id == "" {
 		return
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	_, existed := t.sessions[id]
 	t.sessions[id] = time.Now().UTC()
-	n := len(t.sessions)
-	t.mu.Unlock()
 	if !existed && t.onChange != nil {
-		t.onChange(n)
+		t.onChange(len(t.sessions))
 	}
 }
 
 // evict removes an entry. No-op on empty id or unknown id. Fires
-// onChange only when an entry was actually removed.
+// onChange only when an entry was actually removed. See touch's
+// comment for why onChange runs under the lock.
 func (t *mcpSessionTracker) evict(id string) {
 	if id == "" {
 		return
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	_, existed := t.sessions[id]
 	delete(t.sessions, id)
-	n := len(t.sessions)
-	t.mu.Unlock()
 	if existed && t.onChange != nil {
-		t.onChange(n)
+		t.onChange(len(t.sessions))
 	}
 }
 
 // sweep walks the map, evicts entries older than ttl, and returns
 // the eviction count. onChange fires once at the end with the new
 // total — single observation regardless of how many were evicted,
-// which avoids spurious gauge oscillation on a large sweep.
+// which avoids spurious gauge oscillation on a large sweep. Same
+// lock-held-across-callback contract as touch / evict.
 func (t *mcpSessionTracker) sweep() int {
 	cutoff := time.Now().UTC().Add(-t.ttl)
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	var evicted int
 	for id, last := range t.sessions {
 		if last.Before(cutoff) {
@@ -136,10 +154,8 @@ func (t *mcpSessionTracker) sweep() int {
 			evicted++
 		}
 	}
-	n := len(t.sessions)
-	t.mu.Unlock()
 	if evicted > 0 && t.onChange != nil {
-		t.onChange(n)
+		t.onChange(len(t.sessions))
 	}
 	return evicted
 }
