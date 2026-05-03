@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import ConnectMCPModal from './ConnectMCPModal.svelte';
 	import ConnectWorkspaceModal from './ConnectWorkspaceModal.svelte';
 
 	interface Props {
@@ -18,7 +19,13 @@
 	// `false` = no agent activity detected, show the banner.
 	let hasAgentActivity = $state<boolean | null>(null);
 	let dismissed = $state(false);
-	let connectOpen = $state(false);
+	// Two independent modal states because the user can flip between them
+	// via "Prefer the CLI? →" in the MCP modal — both can be closed, only
+	// one open at a time. The visibility predicate ORs both so the banner
+	// hides while either is mounted.
+	let mcpOpen = $state(false);
+	let cliOpen = $state(false);
+	let connectOpen = $derived(mcpOpen || cliOpen);
 
 	// Banner mode is gated on the server-exposed MCP public URL rather than
 	// `cloudMode` directly: it's true on Pad Cloud AND on any self-host that
@@ -91,38 +98,32 @@
 		refreshHasAgentActivity(wsSlug);
 	});
 
-	// Effect C — CLI mode only. Refetch when the modal CLOSES because the
-	// user's typical CLI flow is: see banner → open modal → copy command
-	// → run it in their terminal → close the modal. By that point an
+	// Effect C — refetch when the CLI modal CLOSES (regardless of banner
+	// mode). The user's typical CLI flow is: open modal → copy command →
+	// run it in their terminal → close the modal. By that point an
 	// agent-sourced item has almost certainly landed; the fresh fetch
 	// makes the banner auto-hide in-session instead of waiting for a
 	// route change.
 	//
-	// In MCP mode this refetch doesn't help: the user leaves the page
-	// entirely (off to Claude Desktop / Cursor / Windsurf to paste the
-	// URL and authorize). The first MCP-sourced item lands minutes later,
-	// after the user is gone — the SSE feed + workspace-change fetch
-	// (Effect B) catches it on the next visit.
-	let prevConnectOpen = $state(false);
+	// We gate on the CLI modal specifically (not `connectOpen`) because:
+	//
+	// - MCP modal close: the user has gone off to a separate agent client
+	//   (Claude Desktop / Cursor / Windsurf) to paste the URL — refetching
+	//   right now doesn't help; their first MCP-sourced item lands minutes
+	//   later via SSE / Effect B on the next visit.
+	// - CLI modal close in MCP mode: reachable via "Prefer the CLI? →" in
+	//   the MCP modal. If the user switched to CLI and ran the install,
+	//   the same refetch logic applies — refetching helps.
+	let prevCliOpen = $state(false);
 	$effect.pre(() => {
-		if (mode === 'cli' && prevConnectOpen && !connectOpen) {
+		if (prevCliOpen && !cliOpen) {
 			refreshHasAgentActivity(wsSlug);
 		}
-		prevConnectOpen = connectOpen;
+		prevCliOpen = cliOpen;
 	});
 
 	let visible = $derived(
-		!!wsSlug &&
-			!dismissed &&
-			hasAgentActivity === false &&
-			!connectOpen &&
-			// Transitional gate (TASK-1114 → TASK-1115): the MCP-mode copy
-			// + CTA + icon are wired up below and ready to render, but the
-			// modal that the click should open (ConnectMCPModal) ships in
-			// TASK-1115. Showing the MCP banner now would promise "zero
-			// install" and route to the CLI flow — strictly worse than
-			// showing nothing. Removed when TASK-1115 mounts the new modal.
-			mode === 'cli'
+		!!wsSlug && !dismissed && hasAgentActivity === false && !connectOpen
 	);
 
 	function dismiss(event: MouseEvent) {
@@ -139,7 +140,18 @@
 	}
 
 	function openModal() {
-		connectOpen = true;
+		if (mode === 'mcp') {
+			mcpOpen = true;
+		} else {
+			cliOpen = true;
+		}
+	}
+
+	// Called from ConnectMCPModal when the user clicks "Prefer the CLI? →".
+	// The MCP modal closes itself before invoking this; we just open the
+	// CLI modal in response.
+	function switchMcpToCli() {
+		cliOpen = true;
 	}
 </script>
 
@@ -223,14 +235,24 @@
 {/if}
 
 <!--
-	ConnectWorkspaceModal is the CLI install flow. The MCP-mode banner
-	is suppressed entirely (see the `mode === 'cli'` clause in `visible`)
-	until TASK-1115 ships ConnectMCPModal.svelte — at which point the
-	gate is removed and the new modal mounts conditionally on
-	`mode === 'mcp'` here.
+	Both modals are always declared so a transient mode flip while the
+	user has one open doesn't unmount it mid-interaction. Each tracks an
+	independent `open` state; the parent's `connectOpen` derived value is
+	true while EITHER is open (so the banner hides during interaction).
+
+	The MCP modal's "Prefer the CLI? →" link calls `onSwitchToCli`, which
+	opens the CLI modal — the MCP modal closes itself first via its own
+	internal handler so the two never overlap visually.
 -->
+<ConnectMCPModal
+	bind:open={mcpOpen}
+	mcpPublicUrl={authStore.mcpPublicUrl}
+	{workspaceName}
+	onSwitchToCli={switchMcpToCli}
+/>
+
 <ConnectWorkspaceModal
-	bind:open={connectOpen}
+	bind:open={cliOpen}
 	{serverUrl}
 	workspaceSlug={wsSlug}
 	{workspaceName}
