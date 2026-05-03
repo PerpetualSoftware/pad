@@ -75,10 +75,10 @@
 		onSwitchToCli?.();
 	}
 
-	// Documentation link target. Until TASK-1117 ships getpad.dev/mcp/remote,
-	// fall back to the broader docs hub at /docs/mcp. Swap to /mcp/remote
-	// once that page lands.
-	const DOCS_HREF = 'https://getpad.dev/docs/mcp';
+	// Documentation link target. Lives at getpad.dev/mcp/remote since
+	// TASK-1117 (pad-web PR #80) — the canonical Remote MCP landing page,
+	// sibling to /mcp/local.
+	const DOCS_HREF = 'https://getpad.dev/mcp/remote';
 	const CONNECTED_APPS_HREF = '/console/connected-apps';
 </script>
 
