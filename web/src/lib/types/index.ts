@@ -623,7 +623,12 @@ export interface DashboardResponse {
 		collection: string;
 		reason: string;
 	}[];
-	has_cli_source: boolean;
+	// has_agent_activity is true when any item in the workspace was created
+	// by an agent surface (CLI or Remote MCP — both persist source='cli'
+	// today; future MCP-distinct attribution lands as source='mcp', which
+	// the underlying store query also matches). Drives the connect-agent
+	// banner's auto-hide.
+	has_agent_activity: boolean;
 }
 
 // ─── Incremental Sync ────────────────────────────────────────────────────────

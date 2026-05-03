@@ -270,7 +270,8 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	// reflects which client created it. Without this, items created via
 	// the CLI would persist as 'web' (the column default) since the CLI's
 	// ItemCreate body has no Source field set, and downstream signals like
-	// the dashboard's has_cli_source flag (TASK-862) would never flip on.
+	// the dashboard's has_agent_activity flag (TASK-862) would never flip
+	// on.
 	// If a client explicitly sent a source in the body (e.g. an agent
 	// marking itself as 'skill'), respect it.
 	if input.Source == "" {

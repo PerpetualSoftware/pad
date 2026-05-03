@@ -2218,21 +2218,21 @@ func TestItemVersionCreation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceHasCLISource(t *testing.T) {
+func TestWorkspaceHasAgentActivity(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Connect Banner")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 
 	// Empty workspace — false.
-	has, err := s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err := s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
-		t.Fatalf("WorkspaceHasCLISource: %v", err)
+		t.Fatalf("WorkspaceHasAgentActivity: %v", err)
 	}
 	if has {
 		t.Fatal("expected false on empty workspace")
 	}
 
-	// Non-cli items shouldn't flip it on.
+	// Non-agent items (web, skill) shouldn't flip it on.
 	for _, src := range []string{"web", "skill"} {
 		_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
 			Title:  fmt.Sprintf("From %s", src),
@@ -2243,9 +2243,9 @@ func TestWorkspaceHasCLISource(t *testing.T) {
 			t.Fatalf("create %s item: %v", src, err)
 		}
 	}
-	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
-		t.Fatalf("WorkspaceHasCLISource (non-cli): %v", err)
+		t.Fatalf("WorkspaceHasAgentActivity (non-agent): %v", err)
 	}
 	if has {
 		t.Fatal("expected false when only web/skill items exist")
@@ -2260,9 +2260,9 @@ func TestWorkspaceHasCLISource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create cli item: %v", err)
 	}
-	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
-		t.Fatalf("WorkspaceHasCLISource (with cli): %v", err)
+		t.Fatalf("WorkspaceHasAgentActivity (with cli): %v", err)
 	}
 	if !has {
 		t.Fatal("expected true after a cli-sourced item exists")
@@ -2272,12 +2272,38 @@ func TestWorkspaceHasCLISource(t *testing.T) {
 	if err := s.DeleteItem(cliItem.ID); err != nil {
 		t.Fatalf("delete cli item: %v", err)
 	}
-	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
-		t.Fatalf("WorkspaceHasCLISource (after delete): %v", err)
+		t.Fatalf("WorkspaceHasAgentActivity (after delete): %v", err)
 	}
 	if has {
 		t.Fatal("expected false after the only cli item was deleted")
+	}
+
+	// An item with source='mcp' (reserved for future MCP-distinct
+	// attribution — not currently emitted by any code path; today MCP
+	// activity persists as source='cli' per dispatch_http_test.go) should
+	// also flip the signal on, so the query stays correct if attribution
+	// is later split.
+	mcpItem, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "From MCP",
+		Fields: `{"status":"open"}`,
+		Source: "mcp",
+	})
+	if err != nil {
+		t.Fatalf("create mcp item: %v", err)
+	}
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("WorkspaceHasAgentActivity (with mcp): %v", err)
+	}
+	if !has {
+		t.Fatal("expected true after a mcp-sourced item exists")
+	}
+	// Clean up so the workspace-isolation case below reflects only the
+	// other-ws CLI item it inserts.
+	if err := s.DeleteItem(mcpItem.ID); err != nil {
+		t.Fatalf("delete mcp item: %v", err)
 	}
 
 	// Workspace isolation — a cli item in another workspace must not leak.
@@ -2290,21 +2316,22 @@ func TestWorkspaceHasCLISource(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create other-ws cli item: %v", err)
 	}
-	has, err = s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
-		t.Fatalf("WorkspaceHasCLISource (after other-ws cli): %v", err)
+		t.Fatalf("WorkspaceHasAgentActivity (after other-ws cli): %v", err)
 	}
 	if has {
 		t.Fatal("a cli item in a different workspace must not flip ours on")
 	}
 }
 
-// TestWorkspaceHasCLISourceVisibility covers the visibility filter so a
-// guest with restricted access can't infer the existence of CLI items in
-// collections they don't have visibility into. Codex flagged this as a
-// P2 leak during PR #284 review — without filtering, has_cli_source
-// reflected the whole workspace regardless of caller visibility.
-func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
+// TestWorkspaceHasAgentActivityVisibility covers the visibility filter
+// so a guest with restricted access can't infer the existence of
+// agent-sourced items in collections they don't have visibility into.
+// Codex flagged this as a P2 leak during PR #284 review — without
+// filtering, has_agent_activity reflected the whole workspace regardless
+// of caller visibility.
+func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Visibility")
 	visibleColl := createTestCollection(t, s, ws.ID, "Visible")
@@ -2330,7 +2357,7 @@ func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
 	}
 
 	// Unfiltered (full-visibility caller) sees the CLI item.
-	has, err := s.WorkspaceHasCLISource(ws.ID, nil, nil)
+	has, err := s.WorkspaceHasAgentActivity(ws.ID, nil, nil)
 	if err != nil {
 		t.Fatalf("unfiltered: %v", err)
 	}
@@ -2340,7 +2367,7 @@ func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
 
 	// Caller with only the VISIBLE collection in scope must NOT see the
 	// CLI item that lives in a hidden collection.
-	has, err = s.WorkspaceHasCLISource(ws.ID, []string{visibleColl.ID}, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, []string{visibleColl.ID}, nil)
 	if err != nil {
 		t.Fatalf("visible-coll only: %v", err)
 	}
@@ -2350,7 +2377,7 @@ func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
 
 	// Item-level grant on the hidden CLI item should expose it via the
 	// guest-item path even when the collection isn't in scope.
-	has, err = s.WorkspaceHasCLISource(ws.ID, []string{visibleColl.ID}, []string{hiddenCLI.ID})
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, []string{visibleColl.ID}, []string{hiddenCLI.ID})
 	if err != nil {
 		t.Fatalf("with item grant: %v", err)
 	}
@@ -2360,7 +2387,7 @@ func TestWorkspaceHasCLISourceVisibility(t *testing.T) {
 
 	// Non-nil empty collectionIDs + no item grants = no visibility =
 	// short-circuit false (matches ListItems' early-exit semantics).
-	has, err = s.WorkspaceHasCLISource(ws.ID, []string{}, nil)
+	has, err = s.WorkspaceHasAgentActivity(ws.ID, []string{}, nil)
 	if err != nil {
 		t.Fatalf("empty visibility: %v", err)
 	}

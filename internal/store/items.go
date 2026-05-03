@@ -2105,10 +2105,20 @@ func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []stri
 	return results, rows.Err()
 }
 
-// WorkspaceHasCLISource reports whether any non-deleted item VISIBLE to the
-// caller was created via the CLI (source='cli'). Used by the dashboard to
-// auto-hide the "connect your local project" banner once a user has wired
-// up the CLI.
+// WorkspaceHasAgentActivity reports whether any non-deleted item VISIBLE
+// to the caller was created via an agent surface — direct CLI invocation
+// or the Remote MCP transport. Used by the dashboard to auto-hide the
+// "connect an agent" banner once a workspace's agent loop is wired up.
+//
+// "Agent activity" is the union of two source values:
+//
+//   - source='cli': set by both the direct `pad` CLI and the
+//     HTTPHandlerDispatcher used by the Remote MCP transport, which
+//     deliberately mirrors CLI attribution (see dispatch_http_test.go).
+//     Today, this single value covers both surfaces.
+//   - source='mcp': reserved for future code paths that may want to
+//     distinguish MCP attribution from CLI. Included here defensively so
+//     the query keeps working if attribution is later split.
 //
 // Visibility filtering matches the dashboard's existing model (see
 // handleGetDashboard): an item counts when its collection is in
@@ -2119,7 +2129,7 @@ func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []stri
 // returns false without hitting the DB — symmetric with ListItems.
 //
 // Backed by EXISTS so it short-circuits on the first match.
-func (s *Store) WorkspaceHasCLISource(workspaceID string, collectionIDs, itemIDs []string) (bool, error) {
+func (s *Store) WorkspaceHasAgentActivity(workspaceID string, collectionIDs, itemIDs []string) (bool, error) {
 	// Symmetric early-exit with ListItems: caller signaled no visibility.
 	if collectionIDs != nil && len(collectionIDs) == 0 && len(itemIDs) == 0 {
 		return false, nil
@@ -2128,7 +2138,7 @@ func (s *Store) WorkspaceHasCLISource(workspaceID string, collectionIDs, itemIDs
 	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM items
-			WHERE workspace_id = ? AND source = 'cli' AND deleted_at IS NULL
+			WHERE workspace_id = ? AND source IN ('cli', 'mcp') AND deleted_at IS NULL
 	`
 	args := []interface{}{workspaceID}
 
@@ -2164,7 +2174,7 @@ func (s *Store) WorkspaceHasCLISource(workspaceID string, collectionIDs, itemIDs
 
 	var has bool
 	if err := s.db.QueryRow(s.q(query), args...).Scan(&has); err != nil {
-		return false, fmt.Errorf("workspace has cli source: %w", err)
+		return false, fmt.Errorf("workspace has agent activity: %w", err)
 	}
 	return has, nil
 }
