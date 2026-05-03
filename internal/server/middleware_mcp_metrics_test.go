@@ -58,30 +58,26 @@ func TestRecordMCPCallMetrics_HappyPath(t *testing.T) {
 	}
 }
 
-// TestRecordMCPCallMetrics_SessionLifecycle covers the gauge logic
-// for initialize / DELETE lifecycle signals.
-func TestRecordMCPCallMetrics_SessionLifecycle(t *testing.T) {
+// TestRecordMCPCallMetrics_DoesNotTouchSessionGauge pins the
+// TASK-1120 invariant: recordMCPCallMetrics must NOT mutate the
+// active-sessions gauge directly. The gauge is now owned by the
+// session tracker (middleware_mcp_session.go) keyed on
+// Mcp-Session-Id, so the audit-side helper deliberately drops the
+// initialize/DELETE accounting it used to do. If a future refactor
+// re-adds gauge updates here, the resulting double-counting would
+// silently corrupt the dashboard — this test is the canary.
+func TestRecordMCPCallMetrics_DoesNotTouchSessionGauge(t *testing.T) {
 	s := &Server{metrics: metrics.New()}
-
 	post := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	del := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
 
-	// initialize on POST → +1
 	s.recordMCPCallMetrics("initialize", "ok", "u", time.Millisecond, post, http.StatusOK)
-	// another initialize → +1
 	s.recordMCPCallMetrics("initialize", "ok", "u", time.Millisecond, post, http.StatusOK)
-	// DELETE on /mcp → -1 (regardless of inferred tool name)
 	s.recordMCPCallMetrics("(unknown)", "ok", "u", time.Millisecond, del, http.StatusOK)
-
-	if got := gaugeValueOrZero(t, s.metrics.MCPActiveSessions); got != 1 {
-		t.Errorf("MCPActiveSessions after 2 initialize + 1 DELETE: got %v, want 1", got)
-	}
-
-	// Failed initialize (5xx) must NOT bump the gauge — a 500 didn't
-	// open a real session.
 	s.recordMCPCallMetrics("initialize", "error", "u", time.Millisecond, post, http.StatusInternalServerError)
-	if got := gaugeValueOrZero(t, s.metrics.MCPActiveSessions); got != 1 {
-		t.Errorf("MCPActiveSessions after failed initialize: got %v, want 1 (unchanged)", got)
+
+	if got := gaugeValueOrZero(t, s.metrics.MCPActiveSessions); got != 0 {
+		t.Errorf("recordMCPCallMetrics must not touch MCPActiveSessions; got %v", got)
 	}
 }
 
