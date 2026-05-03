@@ -48,7 +48,8 @@ import type {
 	ServerCapabilities,
 	WorkspaceStorageInfo,
 	AttachmentListFilters,
-	AttachmentListResponse
+	AttachmentListResponse,
+	ConnectedApp
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -952,6 +953,19 @@ export const api = {
 
 	server: {
 		capabilities: () => request<ServerCapabilities>('/server/capabilities')
+	},
+
+	// ── Connected apps (TASK-954) ────────────────────────────────────────────
+	//
+	// Lists every active OAuth grant chain the user has authorized
+	// (Claude Desktop, Cursor, …) and lets them revoke one. Cloud-mode-
+	// only — the route returns 404 outside cloud mode, the page hides
+	// the nav link in self-host.
+
+	connectedApps: {
+		list: () => request<{ items: ConnectedApp[] }>('/connected-apps'),
+		revoke: (id: string) =>
+			request<void>(`/connected-apps/${encodeURIComponent(id)}`, { method: 'DELETE' })
 	},
 
 	// ── Admin ────────────────────────────────────────────────────────────────

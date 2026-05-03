@@ -784,6 +784,18 @@ func (s *Server) setupRouter() {
 			// 401 here just like every other API endpoint.
 			r.Get("/connected-apps/{id}/audit", s.handleMCPConnectionAudit)
 
+			// Connected-apps management (TASK-954). Lists every
+			// active OAuth grant chain the user has authorized
+			// (Claude Desktop, Cursor, …) and lets them revoke one.
+			// Cloud-mode-gated because OAuth is a cloud-only
+			// surface — self-hosted deployments would always see
+			// an empty list.
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireCloudMode)
+				r.Get("/connected-apps", s.handleListConnectedApps)
+				r.Delete("/connected-apps/{id}", s.handleRevokeConnectedApp)
+			})
+
 			// Templates
 			r.Get("/templates", s.handleListTemplates)
 

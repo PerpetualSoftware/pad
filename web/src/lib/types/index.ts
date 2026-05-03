@@ -902,6 +902,33 @@ export interface AttachmentListFilters {
 	offset?: number;
 }
 
+// Connected apps (TASK-954) — one OAuth grant chain the user has
+// authorized via the consent flow. The `id` is the OAuth request_id
+// (chain identifier preserved across refresh-token rotations) — used
+// as the URL path param for revoke + audit drilldown.
+//
+// allowed_workspaces: nil / undefined / ["*"] all mean "any workspace
+// the user belongs to"; the page renders the appropriate badge.
+// Otherwise the array is the explicit slug list the user picked at
+// consent time.
+//
+// last_used_at and calls_30d come from the MCP audit log enrichment
+// (TASK-960). last_used_at is empty when no audit entries exist for
+// this connection — the page renders "—" instead of a date.
+export interface ConnectedApp {
+	id: string;
+	client_id: string;
+	client_name: string;
+	logo_uri?: string;
+	redirect_uris?: string[];
+	allowed_workspaces?: string[] | null;
+	scope_string: string;
+	capability_tier: 'read_only' | 'read_write' | 'full_access' | 'unknown';
+	connected_at: string;
+	last_used_at?: string;
+	calls_30d: number;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {
