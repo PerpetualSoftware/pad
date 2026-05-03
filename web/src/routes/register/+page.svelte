@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
-	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
@@ -14,7 +13,7 @@
 		getLastAuthMethod,
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
-	import { validateRedirect, redirectQueryFragment } from '$lib/auth/redirect';
+	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
 
 	let name = $state('');
 	let username = $state('');
@@ -68,7 +67,7 @@
 				return;
 			}
 			if (session?.authenticated) {
-				goto(redirectTarget, { replaceState: true });
+				await navigateToRedirectTarget(redirectTarget);
 				return;
 			}
 		} catch {}
@@ -154,7 +153,7 @@
 		try {
 			await api.auth.register(email, name, password, username || undefined);
 			recordAuthMethod('password');
-			await goto(redirectTarget, { replaceState: true });
+			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Registration failed.';

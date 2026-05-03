@@ -3,7 +3,6 @@
 	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { goto } from '$app/navigation';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
@@ -14,7 +13,7 @@
 		getLastAuthMethod,
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
-	import { validateRedirect, redirectQueryFragment } from '$lib/auth/redirect';
+	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
 
 	let email = $state('');
 	let password = $state('');
@@ -143,7 +142,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto(redirectTarget, { replaceState: true });
+				await navigateToRedirectTarget(redirectTarget);
 				return;
 			}
 		} catch {}
@@ -173,7 +172,7 @@
 
 			recordAuthMethod('password');
 			await authStore.load();
-			await goto(redirectTarget, { replaceState: true });
+			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid email or password.';
@@ -206,7 +205,7 @@
 
 			recordAuthMethod('password');
 			await authStore.load();
-			await goto(redirectTarget, { replaceState: true });
+			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			if (err instanceof Error) {
 				error = err.message || 'Invalid code. Please try again.';
