@@ -98,24 +98,28 @@
 		refreshHasAgentActivity(wsSlug);
 	});
 
-	// Effect C — CLI mode only. Refetch when the modal CLOSES because the
-	// user's typical CLI flow is: see banner → open modal → copy command
-	// → run it in their terminal → close the modal. By that point an
+	// Effect C — refetch when the CLI modal CLOSES (regardless of banner
+	// mode). The user's typical CLI flow is: open modal → copy command →
+	// run it in their terminal → close the modal. By that point an
 	// agent-sourced item has almost certainly landed; the fresh fetch
 	// makes the banner auto-hide in-session instead of waiting for a
 	// route change.
 	//
-	// In MCP mode this refetch doesn't help: the user leaves the page
-	// entirely (off to Claude Desktop / Cursor / Windsurf to paste the
-	// URL and authorize). The first MCP-sourced item lands minutes later,
-	// after the user is gone — the SSE feed + workspace-change fetch
-	// (Effect B) catches it on the next visit.
-	let prevConnectOpen = $state(false);
+	// We gate on the CLI modal specifically (not `connectOpen`) because:
+	//
+	// - MCP modal close: the user has gone off to a separate agent client
+	//   (Claude Desktop / Cursor / Windsurf) to paste the URL — refetching
+	//   right now doesn't help; their first MCP-sourced item lands minutes
+	//   later via SSE / Effect B on the next visit.
+	// - CLI modal close in MCP mode: reachable via "Prefer the CLI? →" in
+	//   the MCP modal. If the user switched to CLI and ran the install,
+	//   the same refetch logic applies — refetching helps.
+	let prevCliOpen = $state(false);
 	$effect.pre(() => {
-		if (mode === 'cli' && prevConnectOpen && !connectOpen) {
+		if (prevCliOpen && !cliOpen) {
 			refreshHasAgentActivity(wsSlug);
 		}
-		prevConnectOpen = connectOpen;
+		prevCliOpen = cliOpen;
 	});
 
 	let visible = $derived(
