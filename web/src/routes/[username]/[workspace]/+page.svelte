@@ -111,14 +111,29 @@
 	// banner. Errors are intentionally silent: the dashboard is the
 	// primary surface, and a broken sub-fetch should not throw the
 	// dashboard render off.
+	//
+	// IMPORTANT: server-side ResolveItem (in store.GetItemByRef) falls
+	// back from PREFIX-NUMBER to a number-only lookup when the prefix
+	// doesn't match any collection in the workspace. In a non-software
+	// workspace (hiring, interviewing, …), `IDEA-1` would resolve to
+	// whatever item has item_number=1 (REQ-1 / APP-1 / etc.) — and
+	// rendering the banner against that item would link to a missing
+	// /ideas/... page and confuse the user. We pin to the exact ref
+	// before trusting the result.
 	async function loadIdeaOne(slug: string) {
 		try {
 			const item = await api.items.get(slug, 'IDEA-1');
+			// Guard against ResolveItem's prefix→number-only fallback: only
+			// accept the result if it is the actual seeded IDEA-1.
+			if (!item || item.collection_prefix !== 'IDEA' || item.item_number !== 1) {
+				ideaOneStatus = null;
+				return;
+			}
 			// item.fields is a JSON string per the API shape (see Item.fields
 			// in lib/types). Empty / malformed payloads collapse to '' so
 			// the banner stays hidden rather than flashing on bad data.
 			let status = '';
-			if (item?.fields) {
+			if (item.fields) {
 				try {
 					const parsed = JSON.parse(item.fields) as Record<string, unknown>;
 					if (typeof parsed.status === 'string') status = parsed.status;
