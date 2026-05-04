@@ -183,6 +183,79 @@ func TestSoftwareTemplatesShipStarterPacks(t *testing.T) {
 	}
 }
 
+// TestStartupOnboardingItemsOrderAndShape verifies that StartupOnboardingItems
+// returns the four onboarding seeds in the order Ideas, Plans, Tasks, Docs —
+// the order that produces the IDEA-1 / PLAN-2 / TASK-3 / DOC-4 ref sequence
+// in a fresh workspace. Each item must have a non-empty title, body, and a
+// status field set in Fields. If the order or collection slugs ever drift,
+// the post-signup hint copy (which names IDEA-1) and the design doc
+// (DOC-1139) silently desync.
+func TestStartupOnboardingItemsOrderAndShape(t *testing.T) {
+	items := StartupOnboardingItems()
+	want := []struct {
+		Slug, Status string
+	}{
+		{"ideas", "new"},
+		{"plans", "planned"},
+		{"tasks", "open"},
+		{"docs", "draft"},
+	}
+
+	if len(items) != len(want) {
+		t.Fatalf("StartupOnboardingItems returned %d items, want %d", len(items), len(want))
+	}
+
+	for i, it := range items {
+		if it.CollectionSlug != want[i].Slug {
+			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
+		}
+		if it.Title == "" {
+			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
+		}
+		if it.Content == "" {
+			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
+		}
+		// Status must appear in the Fields JSON. Naive substring check is
+		// enough — the schema validates the full payload elsewhere.
+		wantStatus := `"status":"` + want[i].Status + `"`
+		if !contains(it.Fields, wantStatus) {
+			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
+		}
+	}
+}
+
+// TestStartupTemplateShipsOnboardingSeedItems verifies the startup template
+// references StartupOnboardingItems on its SeedItems field. This is what
+// makes a fresh `pad workspace init --template startup` produce the
+// IDEA-1 / PLAN-2 / TASK-3 / DOC-4 sequence rather than starting at CONVE-1.
+func TestStartupTemplateShipsOnboardingSeedItems(t *testing.T) {
+	tmpl := GetTemplate("startup")
+	if tmpl == nil {
+		t.Fatal("startup template missing")
+	}
+	if len(tmpl.SeedItems) != len(StartupOnboardingItems()) {
+		t.Errorf("startup template SeedItems = %d items, want %d (the onboarding seeds)", len(tmpl.SeedItems), len(StartupOnboardingItems()))
+	}
+	// The first SeedItem MUST go to ideas — it's IDEA-1, what the
+	// post-signup hint names. If this drifts, the hint silently points
+	// at the wrong (or missing) item.
+	if len(tmpl.SeedItems) > 0 && tmpl.SeedItems[0].CollectionSlug != "ideas" {
+		t.Errorf("startup SeedItems[0].CollectionSlug = %q, want %q (IDEA-1 must be first)", tmpl.SeedItems[0].CollectionSlug, "ideas")
+	}
+}
+
+// contains is a local substring helper to keep the templates_test.go file
+// dependency-free. The standard library's strings.Contains would also work;
+// keeping this local matches the file's existing style.
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 // TestGroupTemplatesByCategory verifies the grouping helper used by CLI
 // and web pickers: canonical category order, only visible templates, and
 // every visible template lands in exactly one group.

@@ -370,6 +370,11 @@ var templates = []WorkspaceTemplate{
 		Description: "Tasks, Ideas, Plans, Docs, Conventions, Playbooks",
 		Icon:        "\U0001F680", // 🚀
 		Collections: Defaults(),
+		// SeedItems run before Conventions/Playbooks in the bootstrap loop
+		// (see store.SeedCollectionsFromTemplate), so the workspace-scoped
+		// item_number sequence produces IDEA-1, PLAN-2, TASK-3, DOC-4.
+		// The post-signup hint names IDEA-1 specifically.
+		SeedItems:   StartupOnboardingItems(),
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),
 	},

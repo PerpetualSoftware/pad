@@ -429,6 +429,64 @@ func TestSeedCollectionsFromTemplateRecoversPartialInit(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateStartupRefSequence verifies the central
+// invariant of the onboarding seed design: a fresh `startup` workspace
+// produces refs IDEA-1, PLAN-2, TASK-3, DOC-4 — in that order — for the
+// four onboarding seed items. The post-signup hint copy points users at
+// IDEA-1 specifically, so the ref sequence MUST be stable: if conventions
+// or playbooks ever leak in front of the SeedItems loop, IDEA-1 won't be
+// the first item and the hint silently misfires.
+func TestSeedCollectionsFromTemplateStartupRefSequence(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Startup Refs")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed startup template: %v", err)
+	}
+
+	// Look up each onboarding seed by collection + title and assert its
+	// item_number. Title-based lookup is robust against accidental
+	// re-ordering inside collection lists.
+	type expected struct {
+		Slug, Title string
+		WantItemNum int
+	}
+	want := []expected{
+		{"ideas", "Welcome — let's get this place set up", 1},
+		{"plans", "A plan I haven't written yet", 2},
+		{"tasks", "A task I haven't named yet", 3},
+		{"docs", "A doc I haven't written yet", 4},
+	}
+
+	for _, w := range want {
+		items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: w.Slug})
+		if err != nil {
+			t.Fatalf("list %s: %v", w.Slug, err)
+		}
+		var found *models.Item
+		for i := range items {
+			if items[i].Title == w.Title {
+				found = &items[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("expected seed item %q in %q collection, not found", w.Title, w.Slug)
+			continue
+		}
+		if found.ItemNumber == nil {
+			t.Errorf("seed item %q in %q: ItemNumber is nil", w.Title, w.Slug)
+			continue
+		}
+		if *found.ItemNumber != w.WantItemNum {
+			t.Errorf("seed item %q in %q: ItemNumber = %d, want %d (drift in seeding order means the post-signup hint will point at the wrong ref)", w.Title, w.Slug, *found.ItemNumber, w.WantItemNum)
+		}
+		if found.Content == "" {
+			t.Errorf("seed item %q in %q: empty Content (body lost between template and store)", w.Title, w.Slug)
+		}
+	}
+}
+
 // TestSeedCollectionsFromTemplateIdempotentWithSeedItems verifies that re-running
 // the seed function across a pre-existing workspace does NOT duplicate seed items.
 // This invariant is what lets the server's startup auto-upgrade safely iterate
