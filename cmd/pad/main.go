@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -825,14 +826,9 @@ func setupCmd() *cobra.Command {
 				return nil
 			}
 
-			email, name, password, err := promptForAccountDetails()
+			resp, err := promptAndBootstrap(client)
 			if err != nil {
 				return err
-			}
-
-			resp, err := client.Bootstrap(email, name, password)
-			if err != nil {
-				return fmt.Errorf("setup failed: %w", err)
 			}
 			if err := saveCredentials(cfg, resp); err != nil {
 				return err
@@ -1075,36 +1071,108 @@ func isAllDigits(s string) bool {
 	return len(s) > 0
 }
 
-func promptForAccountDetails() (string, string, string, error) {
+// maxAccountSetupAttempts caps the number of password retries during
+// admin bootstrap. The most common rejection paths — local mismatch on
+// Confirm, and server-side strength rejection from
+// validatePasswordStrength (internal/server/password_strength.go) —
+// are recoverable, so the prompt loops on them. The cap guards against
+// pathological cases (broken pipe, misconfigured strength validator)
+// instead of looping forever.
+const maxAccountSetupAttempts = 5
+
+// promptAndBootstrap collects admin credentials from the terminal and
+// creates the first admin account via /auth/bootstrap, retrying the
+// password pair on recoverable input errors.
+//
+// Recoverable (loops, prints the error, re-prompts password + confirm):
+//   - Local password / confirm mismatch
+//   - validation_error from Bootstrap whose message begins with
+//     "Password" — the three messages produced by
+//     validatePasswordStrength in
+//     internal/server/password_strength.go (too-short, too-long,
+//     too-weak). The prefix gate keeps us from looping on non-password
+//     validation errors (email format, missing name) where re-prompting
+//     only the password pair would never help.
+//
+// Non-recoverable (returns to caller for an immediate exit):
+//   - EOF / Ctrl-D on a password prompt
+//   - validation_error for email/name (user must re-run with a fresh
+//     prompt to fix those fields)
+//   - conflict (instance already initialized), forbidden (bootstrap
+//     attempted from a non-loopback caller), or any other API code
+//   - Network errors, 5xx, or any non-API error from Bootstrap
+//   - Hitting maxAccountSetupAttempts without success
+//
+// Email and name are collected once at the top — server validation
+// rarely rejects them and re-typing them on every weak-password retry
+// is the primary UX complaint behind BUG-1155.
+func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Print("  Email: ")
-	email, _ := reader.ReadString('\n')
-	email = strings.TrimSpace(email)
+	emailLine, err := reader.ReadString('\n')
+	if err != nil && emailLine == "" {
+		return nil, fmt.Errorf("read email: %w", err)
+	}
+	email := strings.TrimSpace(emailLine)
 
 	fmt.Print("  Name: ")
-	name, _ := reader.ReadString('\n')
-	name = strings.TrimSpace(name)
-
-	fmt.Print("  Password: ")
-	password, err := readPassword()
-	if err != nil {
-		return "", "", "", fmt.Errorf("read password: %w", err)
+	nameLine, err := reader.ReadString('\n')
+	if err != nil && nameLine == "" {
+		return nil, fmt.Errorf("read name: %w", err)
 	}
-	fmt.Println()
+	name := strings.TrimSpace(nameLine)
 
-	fmt.Print("  Confirm: ")
-	confirm, err := readPassword()
-	if err != nil {
-		return "", "", "", fmt.Errorf("read password confirmation: %w", err)
+	red := color.New(color.FgRed)
+
+	for attempt := 1; attempt <= maxAccountSetupAttempts; attempt++ {
+		fmt.Print("  Password: ")
+		password, err := readPassword()
+		if err != nil {
+			return nil, fmt.Errorf("read password: %w", err)
+		}
+		fmt.Println()
+
+		fmt.Print("  Confirm: ")
+		confirm, err := readPassword()
+		if err != nil {
+			return nil, fmt.Errorf("read password confirmation: %w", err)
+		}
+		fmt.Println()
+
+		if password != confirm {
+			red.Println("  ✗ Passwords do not match. Please try again.")
+			fmt.Println()
+			continue
+		}
+
+		resp, err := client.Bootstrap(email, name, password)
+		if err == nil {
+			return resp, nil
+		}
+
+		// Only password-strength rejections are recoverable inside this
+		// loop, because the loop only re-prompts the password pair. The
+		// three messages from validatePasswordStrength
+		// (internal/server/password_strength.go) all begin with
+		// "Password" — gate on that prefix so we don't trap the user in
+		// retries for unrelated server errors:
+		//
+		//   - validation_error "Valid email is required" / "Name is
+		//     required" — not fixable here; needs a new run.
+		//   - conflict "Pad instance has already been initialized" —
+		//     terminal; another admin already exists.
+		//   - forbidden — bootstrap from a non-loopback caller.
+		//   - internal_error / network failures — bail.
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "validation_error" && strings.HasPrefix(apiErr.Message, "Password") {
+			red.Printf("  ✗ %s\n\n", apiErr.Message)
+			continue
+		}
+
+		return nil, fmt.Errorf("setup failed: %w", err)
 	}
-	fmt.Println()
-
-	if password != confirm {
-		return "", "", "", fmt.Errorf("passwords do not match")
-	}
-
-	return email, name, password, nil
+	return nil, fmt.Errorf("setup failed: too many invalid attempts (%d) — try again from a fresh prompt", maxAccountSetupAttempts)
 }
 
 func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
