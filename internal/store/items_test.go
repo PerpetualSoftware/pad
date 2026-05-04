@@ -823,6 +823,296 @@ func TestOnboardingFlow_FullWalkthrough_Startup(t *testing.T) {
 	}
 }
 
+// TestOnboardingFlow_FullWalkthrough_Scrum is the scrum-template sibling
+// of TestOnboardingFlow_FullWalkthrough_Startup. Same three-phase shape
+// — fresh seed → user activity → idempotent re-trigger — but the verbs
+// are scrum's: the user populates a sprint, fills the backlog with
+// real items, and reports a bug. The seed primary (BACK-1) flips out
+// of `new` once the agent engages.
+//
+// Failure of any phase signals a PLAN-1146 success-criteria
+// regression for the scrum template; walk back through DOC-1152
+// before "fixing" the test.
+func TestOnboardingFlow_FullWalkthrough_Scrum(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Scrum Walkthrough")
+
+	// ── Phase 1: fresh-workspace seed ──────────────────────────────
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "scrum"); err != nil {
+		t.Fatalf("Phase 1 seed: %v", err)
+	}
+
+	type seedExpect struct {
+		Slug, Title, Status string
+		ItemNum             int
+	}
+	wantSeeds := []seedExpect{
+		{"backlog", "Welcome — let's start tracking what we're going to build", "new", 1},
+		{"sprints", "A sprint I haven't planned yet", "planning", 2},
+		{"bugs", "A bug I haven't filed yet", "new", 3},
+		{"docs", "A doc I haven't written yet", "draft", 4},
+	}
+	for _, want := range wantSeeds {
+		got := findItemByTitle(t, s, ws.ID, want.Slug, want.Title)
+		if got == nil {
+			t.Fatalf("Phase 1: expected seed %q in %q, not found", want.Title, want.Slug)
+		}
+		if got.ItemNumber == nil || *got.ItemNumber != want.ItemNum {
+			t.Errorf("Phase 1: %q item_number = %v, want %d", want.Title, got.ItemNumber, want.ItemNum)
+		}
+		if status := extractStatus(got.Fields); status != want.Status {
+			t.Errorf("Phase 1: %q status = %q, want %q", want.Title, status, want.Status)
+		}
+	}
+	convCountPhase1 := countItemsInCollection(t, s, ws.ID, "conventions")
+	playCountPhase1 := countItemsInCollection(t, s, ws.ID, "playbooks")
+	if convCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter conventions did not seed")
+	}
+	if playCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter playbooks did not seed")
+	}
+
+	// ── Phase 2: agent walks user through populating real items ────
+	back1 := findItemByTitle(t, s, ws.ID, "backlog", "Welcome — let's start tracking what we're going to build")
+	if back1 == nil {
+		t.Fatal("Phase 2: BACK-1 missing")
+	}
+
+	// Agent: BACK-1 status new → ready (signaling engagement; the user's
+	// own backlog items get tracked separately).
+	setItemStatus(t, s, back1.ID, "ready")
+
+	// User describes their actual scrum work: a real sprint, a few
+	// backlog items rolled into it, one bug.
+	backlogColl, _ := s.GetCollectionBySlug(ws.ID, "backlog")
+	sprintsColl, _ := s.GetCollectionBySlug(ws.ID, "sprints")
+	bugsColl, _ := s.GetCollectionBySlug(ws.ID, "bugs")
+
+	userSprint, err := s.CreateItem(ws.ID, sprintsColl.ID, models.ItemCreate{
+		Title:     "Sprint 24 — auth hardening",
+		Content:   "Two-week sprint focused on session + token rotation work.",
+		Fields:    `{"status":"active","start_date":"2026-05-04","end_date":"2026-05-18"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	})
+	if err != nil {
+		t.Fatalf("Phase 2: create user sprint: %v", err)
+	}
+
+	for _, item := range []struct{ Title, Status string }{
+		{"Refresh-token rotation on session resume", "in_sprint"},
+		{"Audit log for failed-login attempts", "ready"},
+		{"Rate-limit /auth/login by IP", "ready"},
+	} {
+		_, err := s.CreateItem(ws.ID, backlogColl.ID, models.ItemCreate{
+			Title:     item.Title,
+			Fields:    `{"status":"` + item.Status + `","priority":"high"}`,
+			ParentID:  &userSprint.ID,
+			CreatedBy: "agent",
+			Source:    "cli",
+		})
+		if err != nil {
+			t.Fatalf("Phase 2: create backlog %q: %v", item.Title, err)
+		}
+	}
+
+	if _, err := s.CreateItem(ws.ID, bugsColl.ID, models.ItemCreate{
+		Title:     "Login screen flashes briefly before redirect when already signed in",
+		Fields:    `{"status":"triaged","severity":"low"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	}); err != nil {
+		t.Fatalf("Phase 2: create user bug: %v", err)
+	}
+
+	// Agent: BACK-1 status ready → done (closes the seed; banner hides).
+	setItemStatus(t, s, back1.ID, "done")
+
+	// Phase 2 sanity counts.
+	if got := countItemsInCollection(t, s, ws.ID, "backlog"); got != 4 {
+		t.Errorf("Phase 2: backlog count = %d, want 4 (BACK-1 seed + 3 user items)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "sprints"); got != 2 {
+		t.Errorf("Phase 2: sprints count = %d, want 2 (SPRINT-2 seed + user's sprint)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "bugs"); got != 2 {
+		t.Errorf("Phase 2: bugs count = %d, want 2 (BUG-3 seed + user's bug)", got)
+	}
+	back1Refresh := findItemByTitle(t, s, ws.ID, "backlog", "Welcome — let's start tracking what we're going to build")
+	if back1Refresh == nil || extractStatus(back1Refresh.Fields) != "done" {
+		t.Errorf("Phase 2: BACK-1 not flipped to `done` (got %q)", extractStatus(safeFields(back1Refresh)))
+	}
+
+	// ── Phase 3: idempotency on re-trigger ─────────────────────────
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "scrum"); err != nil {
+		t.Fatalf("Phase 3 re-seed: %v", err)
+	}
+	back1Final := findItemByTitle(t, s, ws.ID, "backlog", "Welcome — let's start tracking what we're going to build")
+	if back1Final == nil {
+		t.Fatal("Phase 3: BACK-1 disappeared on re-seed")
+	}
+	if status := extractStatus(back1Final.Fields); status != "done" {
+		t.Errorf("Phase 3: BACK-1 status = %q after re-seed, want `done` (re-seed must NOT reset user-engaged items)", status)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "backlog"); got != 4 {
+		t.Errorf("Phase 3: backlog count = %d, want 4", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "sprints"); got != 2 {
+		t.Errorf("Phase 3: sprints count = %d, want 2", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "bugs"); got != 2 {
+		t.Errorf("Phase 3: bugs count = %d, want 2", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "conventions"); got != convCountPhase1 {
+		t.Errorf("Phase 3: conventions count = %d, want %d", got, convCountPhase1)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "playbooks"); got != playCountPhase1 {
+		t.Errorf("Phase 3: playbooks count = %d, want %d", got, playCountPhase1)
+	}
+}
+
+// TestOnboardingFlow_FullWalkthrough_Product is the product-template
+// sibling. Verbs are product's: the user defines a feature, captures
+// real user feedback, places a roadmap commitment. FEAT-1 flips from
+// `proposed` to `shipped` (terminal status for Features) at the end.
+func TestOnboardingFlow_FullWalkthrough_Product(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Product Walkthrough")
+
+	// ── Phase 1: fresh-workspace seed ──────────────────────────────
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "product"); err != nil {
+		t.Fatalf("Phase 1 seed: %v", err)
+	}
+
+	type seedExpect struct {
+		Slug, Title, Status string
+		ItemNum             int
+	}
+	wantSeeds := []seedExpect{
+		{"features", "Welcome — let's start shaping what we're going to ship", "proposed", 1},
+		{"feedback", "A piece of feedback I haven't captured yet", "new", 2},
+		{"roadmap-items", "A roadmap commitment I haven't placed yet", "planned", 3},
+		{"docs", "A doc I haven't written yet", "draft", 4},
+	}
+	for _, want := range wantSeeds {
+		got := findItemByTitle(t, s, ws.ID, want.Slug, want.Title)
+		if got == nil {
+			t.Fatalf("Phase 1: expected seed %q in %q, not found", want.Title, want.Slug)
+		}
+		if got.ItemNumber == nil || *got.ItemNumber != want.ItemNum {
+			t.Errorf("Phase 1: %q item_number = %v, want %d", want.Title, got.ItemNumber, want.ItemNum)
+		}
+		if status := extractStatus(got.Fields); status != want.Status {
+			t.Errorf("Phase 1: %q status = %q, want %q", want.Title, status, want.Status)
+		}
+	}
+	convCountPhase1 := countItemsInCollection(t, s, ws.ID, "conventions")
+	playCountPhase1 := countItemsInCollection(t, s, ws.ID, "playbooks")
+	if convCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter conventions did not seed")
+	}
+	if playCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter playbooks did not seed")
+	}
+
+	// ── Phase 2: agent walks user through populating real items ────
+	feat1 := findItemByTitle(t, s, ws.ID, "features", "Welcome — let's start shaping what we're going to ship")
+	if feat1 == nil {
+		t.Fatal("Phase 2: FEAT-1 missing")
+	}
+
+	// Agent: FEAT-1 status proposed → researching.
+	setItemStatus(t, s, feat1.ID, "researching")
+
+	featuresColl, _ := s.GetCollectionBySlug(ws.ID, "features")
+	feedbackColl, _ := s.GetCollectionBySlug(ws.ID, "feedback")
+	roadmapColl, _ := s.GetCollectionBySlug(ws.ID, "roadmap-items")
+
+	userRoadmap, err := s.CreateItem(ws.ID, roadmapColl.ID, models.ItemCreate{
+		Title:     "Self-serve onboarding by Q3",
+		Content:   "Cut time-to-first-value for new sign-ups in half.",
+		Fields:    `{"status":"in_progress","quarter":"2026-Q3"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	})
+	if err != nil {
+		t.Fatalf("Phase 2: create user roadmap: %v", err)
+	}
+
+	for _, item := range []struct{ Title, Status string }{
+		{"Welcome modal with first-task picker", "building"},
+		{"Empty-state CTA on dashboard", "planned"},
+		{"Magic link signup (no password)", "researching"},
+	} {
+		_, err := s.CreateItem(ws.ID, featuresColl.ID, models.ItemCreate{
+			Title:     item.Title,
+			Fields:    `{"status":"` + item.Status + `","priority":"high"}`,
+			ParentID:  &userRoadmap.ID,
+			CreatedBy: "agent",
+			Source:    "cli",
+		})
+		if err != nil {
+			t.Fatalf("Phase 2: create feature %q: %v", item.Title, err)
+		}
+	}
+
+	if _, err := s.CreateItem(ws.ID, feedbackColl.ID, models.ItemCreate{
+		Title:     `"I bounced off because I didn't know what to do first"`,
+		Content:   "Sales call quote, mid-market lead. Echoed by 3 other prospects this month.",
+		Fields:    `{"status":"reviewed","source":"sales-call","impact":"high"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	}); err != nil {
+		t.Fatalf("Phase 2: create user feedback: %v", err)
+	}
+
+	// Agent: FEAT-1 status researching → shipped (closes the seed).
+	setItemStatus(t, s, feat1.ID, "shipped")
+
+	// Phase 2 sanity counts.
+	if got := countItemsInCollection(t, s, ws.ID, "features"); got != 4 {
+		t.Errorf("Phase 2: features count = %d, want 4 (FEAT-1 seed + 3 user features)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "feedback"); got != 2 {
+		t.Errorf("Phase 2: feedback count = %d, want 2 (FB-2 seed + user's feedback)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "roadmap-items"); got != 2 {
+		t.Errorf("Phase 2: roadmap count = %d, want 2 (ROAD-3 seed + user's roadmap item)", got)
+	}
+	feat1Refresh := findItemByTitle(t, s, ws.ID, "features", "Welcome — let's start shaping what we're going to ship")
+	if feat1Refresh == nil || extractStatus(feat1Refresh.Fields) != "shipped" {
+		t.Errorf("Phase 2: FEAT-1 not flipped to `shipped` (got %q)", extractStatus(safeFields(feat1Refresh)))
+	}
+
+	// ── Phase 3: idempotency on re-trigger ─────────────────────────
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "product"); err != nil {
+		t.Fatalf("Phase 3 re-seed: %v", err)
+	}
+	feat1Final := findItemByTitle(t, s, ws.ID, "features", "Welcome — let's start shaping what we're going to ship")
+	if feat1Final == nil {
+		t.Fatal("Phase 3: FEAT-1 disappeared on re-seed")
+	}
+	if status := extractStatus(feat1Final.Fields); status != "shipped" {
+		t.Errorf("Phase 3: FEAT-1 status = %q after re-seed, want `shipped`", status)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "features"); got != 4 {
+		t.Errorf("Phase 3: features count = %d, want 4", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "feedback"); got != 2 {
+		t.Errorf("Phase 3: feedback count = %d, want 2", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "roadmap-items"); got != 2 {
+		t.Errorf("Phase 3: roadmap count = %d, want 2", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "conventions"); got != convCountPhase1 {
+		t.Errorf("Phase 3: conventions count = %d, want %d", got, convCountPhase1)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "playbooks"); got != playCountPhase1 {
+		t.Errorf("Phase 3: playbooks count = %d, want %d", got, playCountPhase1)
+	}
+}
+
 // findItemByTitle is a helper for the onboarding-walkthrough test:
 // look up an item in a collection by exact title. Used because the
 // store's ResolveItem expects either UUID, ref, or slug, not a title.
