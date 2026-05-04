@@ -1,4 +1,4 @@
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 # dockers_v2 organizes goreleaser-built binaries under ${TARGETPLATFORM}/pad
 # (e.g. linux/amd64/pad, linux/arm64/pad). buildx sets TARGETPLATFORM
