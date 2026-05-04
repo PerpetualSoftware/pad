@@ -107,6 +107,14 @@ pad auth reset-password user@example.com  # Generate reset link (admin fallback)
 # CLI auto-attaches auth token to all API requests
 ```
 
+After `pad auth setup` (and after `pad init` / `pad workspace init` for any subsequent workspace), the success output points new users at the seeded onboarding entry point. Open a fresh agent session in the workspace's directory and say:
+
+```
+use pad to get IDEA-1
+```
+
+`startup`-template workspaces seed `IDEA-1` (plus `PLAN-2`, `TASK-3`, `DOC-4`) as a first-person note from the workspace owner's future self. Any of the four is a viable entry point for `/pad let's discuss <REF>`; `IDEA-1` is the one the post-signup hint surfaces because *"I want to start using Pad"* is itself an idea. See `internal/collections/templates_onboarding.go` for the bodies, and PLAN-1131 for the design history.
+
 ### Workspace membership
 ```bash
 pad workspace members                         # List workspace members
