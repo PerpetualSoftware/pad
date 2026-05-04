@@ -212,7 +212,7 @@ Examples:
 				fmt.Fprintf(os.Stderr, "Note: --workspace %q overrides positional name %q.\n", workspaceFlag, args[0])
 			}
 
-			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, wsName, workspaceFlag, templateFlag)
+			ws, newlyCreated, createdTemplate, err := ensureWorkspace(client, cfg, cwd, wsName, workspaceFlag, templateFlag)
 			if err != nil {
 				return err
 			}
@@ -230,7 +230,7 @@ Examples:
 			if !actioned {
 				printInitStatus(client, cfg, ws, skillResults)
 			} else if newlyCreated {
-				printOnboardingHints(cfg)
+				printOnboardingHints(cfg, createdTemplate)
 			}
 
 			return nil
@@ -245,14 +245,16 @@ Examples:
 
 // ensureWorkspace checks if the current directory is linked to a workspace.
 // If not, it creates or links one. Returns the workspace, whether it was newly
-// created, and any error.
+// created, the resolved template name (empty when no workspace was created
+// in this call — link paths reuse an existing workspace's settings), and
+// any error.
 //
 // When wsSlug is non-empty, the caller has explicitly identified a workspace
 // by slug (typically `pad init --workspace <slug>`). In that mode we will
 // ONLY attach to a workspace with that exact slug — never silently fall
 // through to "create a new workspace named after the slug." This is the
 // keystone behavior for the web-first onboarding flow (IDEA-750/PLAN-859).
-func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, templateFlag string) (*models.Workspace, bool, error) {
+func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, templateFlag string) (*models.Workspace, bool, string, error) {
 	green := color.New(color.FgGreen)
 	bold := color.New(color.Bold)
 	dim := color.New(color.Faint)
@@ -266,7 +268,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 	// workspace.
 	if wsSlug != "" {
 		if existingSlug != "" && existingSlug != wsSlug {
-			return nil, false, fmt.Errorf(
+			return nil, false, "", fmt.Errorf(
 				"this directory is already linked to workspace %q; refusing to relink to %q.\n"+
 					"Remove or edit the existing .pad.toml, or run from a different directory",
 				existingSlug, wsSlug)
@@ -276,35 +278,35 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 		if err != nil {
 			var apiErr *cli.APIError
 			if errors.As(err, &apiErr) && apiErr.Code == "not_found" {
-				return nil, false, fmt.Errorf(
+				return nil, false, "", fmt.Errorf(
 					"workspace %q not found on %s.\n"+
 						"Check the slug, or run 'pad workspace list' to see available workspaces",
 					wsSlug, cfg.BaseURL())
 			}
-			return nil, false, fmt.Errorf(
+			return nil, false, "", fmt.Errorf(
 				"look up workspace %q on %s: %w", wsSlug, cfg.BaseURL(), err)
 		}
 
 		// Already linked to this exact slug — idempotent, no-op.
 		if existingSlug == wsSlug {
-			return ws, false, nil
+			return ws, false, "", nil
 		}
 
 		if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
-			return nil, false, fmt.Errorf("write .pad.toml: %w", err)
+			return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 		}
 		green.Print("✓ ")
 		fmt.Printf("Linked to existing workspace %s %s\n",
 			bold.Sprint(ws.Name),
 			dim.Sprintf("(slug: %s)", ws.Slug))
-		return ws, false, nil
+		return ws, false, "", nil
 	}
 
 	// ── Name-driven path (legacy interactive behavior) ────────
 	if existingSlug != "" {
 		ws, err := client.GetWorkspace(existingSlug)
 		if err == nil && ws != nil {
-			return ws, false, nil
+			return ws, false, "", nil
 		}
 		// Linked but workspace doesn't exist on server — fall through to create/link.
 	}
@@ -323,13 +325,13 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 
 	if ws != nil {
 		if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
-			return nil, false, fmt.Errorf("write .pad.toml: %w", err)
+			return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 		}
 		green.Print("✓ ")
 		fmt.Printf("Linked to existing workspace %s %s\n",
 			bold.Sprint(ws.Name),
 			dim.Sprintf("(slug: %s)", ws.Slug))
-		return ws, false, nil
+		return ws, false, "", nil
 	}
 
 	// Create new workspace. When the caller didn't pass --template:
@@ -344,7 +346,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 		if canPromptForTemplate() {
 			picked, perr := pickTemplateInteractive(os.Stdin, os.Stdout)
 			if perr != nil {
-				return nil, false, perr
+				return nil, false, "", perr
 			}
 			effectiveTemplate = picked
 		} else {
@@ -356,11 +358,11 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 		Template: effectiveTemplate,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("create workspace: %w", err)
+		return nil, false, "", fmt.Errorf("create workspace: %w", err)
 	}
 
 	if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
-		return nil, false, fmt.Errorf("write .pad.toml: %w", err)
+		return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 	}
 
 	tmplMsg := ""
@@ -374,7 +376,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 		tmplMsg)
 	fmt.Printf("  Linked to %s\n", bold.Sprint(cwd))
 
-	return ws, true, nil
+	return ws, true, effectiveTemplate, nil
 }
 
 // skillResult tracks what ensureSkills did.

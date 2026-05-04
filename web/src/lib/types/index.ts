@@ -629,6 +629,22 @@ export interface DashboardResponse {
 	// the underlying store query also matches). Drives the connect-agent
 	// banner's auto-hide.
 	has_agent_activity: boolean;
+	// onboarding_seed identifies the seeded onboarding entry for the
+	// workspace (e.g. IDEA-1 for `startup`, BACK-1 for `scrum`,
+	// FEAT-1 for `product`). Present + active drives the
+	// OnboardingIdeaBanner. Absent = no IDEA-1-style onboarding seed
+	// in this workspace (empty template, hiring/interviewing example
+	// items, etc.); banner stays hidden. Computed server-side.
+	onboarding_seed?: {
+		ref: string;
+		title: string;
+		slug: string;
+		collection_slug: string;
+		status: string;
+		// active is true while the seed is still in its initial
+		// (untouched) status — banner shows only when this is true.
+		active: boolean;
+	};
 }
 
 // ─── Incremental Sync ────────────────────────────────────────────────────────

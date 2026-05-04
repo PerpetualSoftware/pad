@@ -99,6 +99,19 @@ type WorkspaceTemplate struct {
 	Conventions []SeedConvention // Domain-specific conventions seeded with the workspace
 	Playbooks   []SeedPlaybook   // Domain-specific playbooks seeded with the workspace
 	SeedItems   []SeedItem       // Optional sample items to create after collections
+
+	// OnboardingPrimaryRef names the seeded item the post-signup hint
+	// should surface as the agent-onboarding entry point (e.g. "IDEA-1"
+	// for startup, "BACK-1" for scrum, "FEAT-1" for product).
+	//
+	// Empty for templates that don't ship the IDEA-1-style first-person
+	// onboarding pattern — hiring / interviewing have example items +
+	// manual-trigger playbooks instead, demo has its own seeded shape.
+	// The CLI's printOnboardingHints and the web dashboard banner skip
+	// the hint entirely when this is empty.
+	//
+	// PLAN-1131 / PLAN-1146 / DOC-1139 / DOC-1152 / DOC-1153.
+	OnboardingPrimaryRef string
 }
 
 // SeedItem defines a sample item to seed into a workspace.
@@ -374,9 +387,10 @@ var templates = []WorkspaceTemplate{
 		// (see store.SeedCollectionsFromTemplate), so the workspace-scoped
 		// item_number sequence produces IDEA-1, PLAN-2, TASK-3, DOC-4.
 		// The post-signup hint names IDEA-1 specifically.
-		SeedItems:   StartupOnboardingItems(),
-		Conventions: SoftwareStarterConventions(),
-		Playbooks:   SoftwareStarterPlaybooks(),
+		SeedItems:            StartupOnboardingItems(),
+		OnboardingPrimaryRef: "IDEA-1",
+		Conventions:          SoftwareStarterConventions(),
+		Playbooks:            SoftwareStarterPlaybooks(),
 	},
 	{
 		Name:        "scrum",
@@ -514,12 +528,12 @@ var templates = []WorkspaceTemplate{
 		},
 		// SeedItems run before Conventions/Playbooks in the bootstrap loop
 		// so refs land at BACK-1 / SPRINT-2 / BUG-3 / DOC-4. The CLI hint
-		// and dashboard banner are still hardcoded to IDEA-1 from PR #403;
-		// TASK-1150 makes them template-aware so a fresh scrum workspace
-		// promotes BACK-1. (PLAN-1146 / DOC-1152.)
-		SeedItems:   ScrumOnboardingItems(),
-		Conventions: SoftwareStarterConventions(),
-		Playbooks:   SoftwareStarterPlaybooks(),
+		// and dashboard banner read OnboardingPrimaryRef to surface BACK-1
+		// per workspace template. (PLAN-1146 / DOC-1152.)
+		SeedItems:            ScrumOnboardingItems(),
+		OnboardingPrimaryRef: "BACK-1",
+		Conventions:          SoftwareStarterConventions(),
+		Playbooks:            SoftwareStarterPlaybooks(),
 	},
 	{
 		Name:        "product",
@@ -653,12 +667,12 @@ var templates = []WorkspaceTemplate{
 		},
 		// SeedItems run before Conventions/Playbooks in the bootstrap loop
 		// so refs land at FEAT-1 / FB-2 / ROAD-3 / DOC-4. The CLI hint and
-		// dashboard banner are still hardcoded to IDEA-1 from PR #403;
-		// TASK-1150 makes them template-aware so a fresh product workspace
-		// promotes FEAT-1. (PLAN-1146 / DOC-1153.)
-		SeedItems:   ProductOnboardingItems(),
-		Conventions: SoftwareStarterConventions(),
-		Playbooks:   SoftwareStarterPlaybooks(),
+		// dashboard banner read OnboardingPrimaryRef to surface FEAT-1 per
+		// workspace template. (PLAN-1146 / DOC-1153.)
+		SeedItems:            ProductOnboardingItems(),
+		OnboardingPrimaryRef: "FEAT-1",
+		Conventions:          SoftwareStarterConventions(),
+		Playbooks:            SoftwareStarterPlaybooks(),
 	},
 	hiringTemplate(),
 	interviewingTemplate(),

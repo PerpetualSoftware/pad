@@ -23,12 +23,13 @@
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
 
-	// Status of the seeded IDEA-1 onboarding entry. Drives the
-	// OnboardingIdeaBanner gate: shown only while the user hasn't yet
-	// engaged with the agent (status === 'new'). null = not yet checked /
-	// no IDEA-1 exists in this workspace (e.g. an empty-template or
-	// non-software-category workspace).
-	let ideaOneStatus = $state<string | null>(null);
+	// The dashboard response carries an `onboarding_seed` field when the
+	// workspace has a seeded onboarding primary (IDEA-1 / BACK-1 / FEAT-1
+	// per template). The OnboardingIdeaBanner shows only when that seed
+	// is still active (status equals its initial value — agent has not
+	// yet engaged). The server computes `active` so the frontend doesn't
+	// need a per-collection "what's the initial status" map.
+	let onboardingSeed = $derived(dashboard?.onboarding_seed);
 
 	// Sync dismissed state from localStorage when workspace changes
 	$effect(() => {
@@ -55,13 +56,7 @@
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
 	$effect(() => {
-		if (wsSlug) {
-			// Reset banner state immediately on workspace change so a stale
-			// `new` status from the previous workspace can't briefly render
-			// the IDEA-1 banner before loadIdeaOne resolves for the new one.
-			ideaOneStatus = null;
-			untrack(() => load(wsSlug));
-		}
+		if (wsSlug) untrack(() => load(wsSlug));
 	});
 
 	// Workspace home shows only the workspace-level title — clear section/item.
@@ -103,62 +98,6 @@
 			// allow partial render
 		} finally {
 			loading = false;
-		}
-		// Refresh the seeded IDEA-1 status alongside each dashboard load.
-		// Cheap (single-row lookup, indexed by ref) and self-correcting:
-		// once the user engages the agent and IDEA-1 leaves status=new,
-		// the next poll silently hides the banner.
-		void loadIdeaOne(slug);
-	}
-
-	// loadIdeaOne fetches the seeded IDEA-1 entry's status. A 404 (or any
-	// error) leaves ideaOneStatus null, which keeps the banner hidden —
-	// workspaces that don't ship an onboarding seed should never see the
-	// banner. Errors are intentionally silent: the dashboard is the
-	// primary surface, and a broken sub-fetch should not throw the
-	// dashboard render off.
-	//
-	// IMPORTANT: server-side ResolveItem (in store.GetItemByRef) falls
-	// back from PREFIX-NUMBER to a number-only lookup when the prefix
-	// doesn't match any collection in the workspace. In a non-software
-	// workspace (hiring, interviewing, …), `IDEA-1` would resolve to
-	// whatever item has item_number=1 (REQ-1 / APP-1 / etc.) — and
-	// rendering the banner against that item would link to a missing
-	// /ideas/... page and confuse the user. We pin to the exact ref
-	// before trusting the result.
-	async function loadIdeaOne(slug: string) {
-		try {
-			const item = await api.items.get(slug, 'IDEA-1');
-			// Drop the response if the user navigated to a different
-			// workspace while we were waiting on the network. Otherwise a
-			// slow request from workspace A (where IDEA-1 is `new`) could
-			// land after the user is on workspace B and incorrectly flip
-			// the banner on. Mirrors the standard "was this still the
-			// active request" pattern.
-			if (slug !== wsSlug) return;
-			// Guard against ResolveItem's prefix→number-only fallback: only
-			// accept the result if it is the actual seeded IDEA-1.
-			if (!item || item.collection_prefix !== 'IDEA' || item.item_number !== 1) {
-				ideaOneStatus = null;
-				return;
-			}
-			// item.fields is a JSON string per the API shape (see Item.fields
-			// in lib/types). Empty / malformed payloads collapse to '' so
-			// the banner stays hidden rather than flashing on bad data.
-			let status = '';
-			if (item.fields) {
-				try {
-					const parsed = JSON.parse(item.fields) as Record<string, unknown>;
-					if (typeof parsed.status === 'string') status = parsed.status;
-				} catch {
-					/* leave status empty */
-				}
-			}
-			ideaOneStatus = status;
-		} catch {
-			// Same race-guard applies on the error path: only clear if this
-			// is still the active workspace.
-			if (slug === wsSlug) ideaOneStatus = null;
 		}
 	}
 
@@ -270,15 +209,23 @@
 		</header>
 
 		<!-- 2. Onboarding -->
-		<!-- IDEA-1 banner: shown only while the seeded onboarding entry is
-		     still untouched (status === 'new'). Once the user engages the
-		     agent and the status flips, the banner disappears on the next
-		     dashboard poll. The OnboardingChecklist below remains gated on
-		     totalItems === 0 — its surface is empty/non-templated workspaces;
-		     this banner is the surface for templated (seeded) workspaces. -->
-		{#if ideaOneStatus === 'new' && !onboardingDismissed}
+		<!-- Onboarding seed banner: shown only while the seeded primary entry
+		     is still untouched (server returns active=true when its status
+		     equals the schema initial value). Once the user engages the
+		     agent and the status flips, the next dashboard poll returns
+		     active=false and the banner disappears. The OnboardingChecklist
+		     below remains gated on totalItems === 0 — its surface is empty
+		     / non-templated workspaces; this banner is the surface for
+		     templated (seeded) workspaces. -->
+		{#if onboardingSeed?.active && !onboardingDismissed}
 			<div class="onboarding-wrapper">
-				<OnboardingIdeaBanner {wsSlug} {username} />
+				<OnboardingIdeaBanner
+					{wsSlug}
+					{username}
+					primaryRef={onboardingSeed.ref}
+					ideaSlug={onboardingSeed.slug}
+					collectionSlug={onboardingSeed.collection_slug}
+				/>
 			</div>
 		{/if}
 		{#if totalItems === 0 && !onboardingDismissed}

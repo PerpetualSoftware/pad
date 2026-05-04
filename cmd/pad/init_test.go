@@ -65,7 +65,7 @@ func TestEnsureWorkspaceSlugAttachExisting(t *testing.T) {
 	client := cli.NewClientFromURL(server.URL)
 	cfg := remoteCfg(server.URL)
 
-	ws, created, err := ensureWorkspace(client, cfg, project, "ignored-name", "my-cool-project", "")
+	ws, created, _, err := ensureWorkspace(client, cfg, project, "ignored-name", "my-cool-project", "")
 	if err != nil {
 		t.Fatalf("ensureWorkspace: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestEnsureWorkspaceSlugNotFound(t *testing.T) {
 	client := cli.NewClientFromURL(server.URL)
 	cfg := remoteCfg(server.URL)
 
-	_, _, err := ensureWorkspace(client, cfg, project, "ignored-name", "missing-slug", "")
+	_, _, _, err := ensureWorkspace(client, cfg, project, "ignored-name", "missing-slug", "")
 	if err == nil {
 		t.Fatal("expected error when workspace slug is missing")
 	}
@@ -148,7 +148,7 @@ func TestEnsureWorkspaceSlugRefusesClobber(t *testing.T) {
 	client := cli.NewClientFromURL(server.URL)
 	cfg := remoteCfg(server.URL)
 
-	_, _, err := ensureWorkspace(client, cfg, project, "ignored", "my-cool-project", "")
+	_, _, _, err := ensureWorkspace(client, cfg, project, "ignored", "my-cool-project", "")
 	if err == nil {
 		t.Fatal("expected error when CWD is already linked to a different workspace")
 	}
@@ -195,7 +195,7 @@ func TestEnsureWorkspaceSlugIdempotent(t *testing.T) {
 	client := cli.NewClientFromURL(server.URL)
 	cfg := remoteCfg(server.URL)
 
-	ws, created, err := ensureWorkspace(client, cfg, project, "x", "my-cool-project", "")
+	ws, created, _, err := ensureWorkspace(client, cfg, project, "x", "my-cool-project", "")
 	if err != nil {
 		t.Fatalf("ensureWorkspace: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestEnsureWorkspaceNameDrivenStillWorks(t *testing.T) {
 	client := cli.NewClientFromURL(server.URL)
 	cfg := remoteCfg(server.URL)
 
-	ws, created, err := ensureWorkspace(client, cfg, project, "Legacy Name", "", "")
+	ws, created, _, err := ensureWorkspace(client, cfg, project, "Legacy Name", "", "")
 	if err != nil {
 		t.Fatalf("ensureWorkspace: %v", err)
 	}

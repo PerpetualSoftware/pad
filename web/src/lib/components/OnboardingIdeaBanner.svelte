@@ -2,24 +2,30 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	interface Props {
-		/** Workspace slug — used to link "View IDEA-1" into the right URL. */
+		/** Workspace slug — used to link the seeded item into the right URL. */
 		wsSlug: string;
-		/** Workspace owner username — used to build the IDEA-1 deep link. */
+		/** Workspace owner username — used to build the deep link. */
 		username: string;
-		/** Slug of the seeded IDEA-1 (the workspace bootstrap creates it
-		 *  with this slug). Defaults to the canonical seed slug; passing
-		 *  it explicitly keeps the component decoupled from the seeder. */
-		ideaSlug?: string;
+		/** The seeded primary-entry ref (e.g. "IDEA-1", "BACK-1", "FEAT-1").
+		 *  Drives the trigger phrase the user copies. The dashboard handler
+		 *  computes this per workspace based on the seeded item; the
+		 *  component just renders it. */
+		primaryRef: string;
+		/** Slug of the seeded item — used for the "Read it first" link. */
+		ideaSlug: string;
+		/** Collection slug the seeded item lives in (ideas / backlog /
+		 *  features). Used to build the deep-link path. */
+		collectionSlug: string;
 	}
 
-	let { wsSlug, username, ideaSlug = 'welcome-lets-get-this-place-set-up' }: Props = $props();
+	let { wsSlug, username, primaryRef, ideaSlug, collectionSlug }: Props = $props();
 
-	const TRIGGER_PHRASE = 'use pad to get IDEA-1';
+	let triggerPhrase = $derived(`use pad to get ${primaryRef}`);
 
 	let copied = $state(false);
 
 	async function copyTrigger() {
-		const ok = await copyToClipboard(TRIGGER_PHRASE);
+		const ok = await copyToClipboard(triggerPhrase);
 		if (ok) {
 			copied = true;
 			setTimeout(() => {
@@ -32,23 +38,23 @@
 <div class="idea-banner">
 	<div class="idea-banner-icon" aria-hidden="true">💡</div>
 	<div class="idea-banner-body">
-		<h2>Your workspace has an idea waiting.</h2>
+		<h2>Your workspace has a starting point waiting.</h2>
 		<p>
 			Open a fresh agent session — Claude Code, Cursor, Codex, whatever you have —
 			and say:
 		</p>
 		<div class="trigger-row">
-			<code class="trigger-phrase">{TRIGGER_PHRASE}</code>
+			<code class="trigger-phrase">{triggerPhrase}</code>
 			<button class="copy-btn" type="button" onclick={copyTrigger} title="Copy to clipboard">
 				{copied ? 'Copied!' : 'Copy'}
 			</button>
 		</div>
 		<p class="idea-banner-footnote">
-			IDEA-1 is a note from your future self to whoever's helping you set up. The
-			agent will read it and walk through your project with you, capturing what
-			you tell it as plans, tasks, and ideas — using your real work, not toy data.
-			<a href="/{username}/{wsSlug}/ideas/{ideaSlug}">Read it first</a> if you'd
-			like to see what's there.
+			{primaryRef} is a note from your future self to whoever's helping you set up.
+			The agent will read it and walk through your project with you, capturing
+			what you tell it — using your real work, not toy data.
+			<a href="/{username}/{wsSlug}/{collectionSlug}/{ideaSlug}">Read it first</a>
+			if you'd like to see what's there.
 		</p>
 	</div>
 </div>

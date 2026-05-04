@@ -31,6 +31,61 @@ type DashboardResponse struct {
 	// workspace's agent loop is wired up and the banner stops nagging
 	// the user on this workspace.
 	HasAgentActivity bool `json:"has_agent_activity"`
+	// OnboardingSeed identifies the seeded onboarding entry point for
+	// the workspace (e.g. IDEA-1 for `startup`, BACK-1 for `scrum`,
+	// FEAT-1 for `product`) when present and untouched. The web UI's
+	// dashboard banner reads this to surface the right "use pad to get
+	// <REF>" trigger phrase per template, then hides itself once the
+	// user (or agent) updates the seed out of its initial status.
+	// Nil for workspaces that didn't seed an onboarding primary
+	// (empty template, hiring/interviewing example items, etc.).
+	OnboardingSeed *DashboardOnboardingSeed `json:"onboarding_seed,omitempty"`
+}
+
+// DashboardOnboardingSeed is the dashboard-side projection of a
+// seeded onboarding entry. The web banner uses Ref + Slug (link) and
+// gates rendering on Active.
+type DashboardOnboardingSeed struct {
+	Ref            string `json:"ref"`
+	Title          string `json:"title"`
+	Slug           string `json:"slug"`
+	CollectionSlug string `json:"collection_slug"`
+	Status         string `json:"status"`
+	// Active is true while the seed is still in its initial (untouched)
+	// status — the moment the agent or user flips it to anything else,
+	// the banner should disappear. Computed server-side so the frontend
+	// doesn't need a per-collection "what's the initial status" map.
+	Active bool `json:"active"`
+}
+
+// onboardingPrimaryCollectionSlugs is the set of collection slugs that
+// can host a seeded onboarding primary. Only items from these
+// collections are eligible to be surfaced as the dashboard's onboarding
+// seed. Mirrors the templates that ship `OnboardingPrimaryRef` —
+// hiring/interviewing example items live in different collections and
+// are intentionally excluded.
+//
+// When a new template adds an IDEA-1-style onboarding flow, append its
+// primary-entry collection slug here. The collection package's
+// `OnboardingPrimaryRef` field on `WorkspaceTemplate` is the canonical
+// source — cross-reference when adding.
+var onboardingPrimaryCollectionSlugs = map[string]bool{
+	"ideas":    true, // startup → IDEA-1
+	"backlog":  true, // scrum → BACK-1
+	"features": true, // product → FEAT-1
+}
+
+// onboardingInitialStatus returns the schema-default initial status for
+// each primary-entry collection. The dashboard treats a seed as
+// "active" (banner-eligible) only while its status equals this value.
+// Mirrors the schemas defined in `internal/collections/`:
+//   - Ideas:    Default "new"     (collection.go Defaults)
+//   - Backlog:  Default "new"     (templates.go scrum)
+//   - Features: Default "proposed" (templates.go product)
+var onboardingInitialStatus = map[string]string{
+	"ideas":    "new",
+	"backlog":  "new",
+	"features": "proposed",
 }
 
 type DashboardActiveItem struct {
@@ -321,6 +376,30 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			status = "unknown"
 		}
 		resp.Summary.ByCollection[collSlug][status]++
+
+		// Identify the seeded onboarding primary entry. Match shape:
+		// item_number=1 + system-template provenance + lives in a
+		// known onboarding-primary collection. The first match wins —
+		// item_number is workspace-scoped + monotonic so there's only
+		// one item with item_number=1 per workspace anyway.
+		if resp.OnboardingSeed == nil &&
+			item.ItemNumber != nil && *item.ItemNumber == 1 &&
+			item.Source == "template" && item.CreatedBy == "system" &&
+			onboardingPrimaryCollectionSlugs[collSlug] {
+			itemStatus := extractFieldValue(item.Fields, "status")
+			ref := ""
+			if item.CollectionPrefix != "" {
+				ref = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+			}
+			resp.OnboardingSeed = &DashboardOnboardingSeed{
+				Ref:            ref,
+				Title:          item.Title,
+				Slug:           item.Slug,
+				CollectionSlug: collSlug,
+				Status:         itemStatus,
+				Active:         onboardingInitialStatus[collSlug] == itemStatus,
+			}
+		}
 	}
 
 	// Active items: items currently being worked on (not initial state, not terminal state)
