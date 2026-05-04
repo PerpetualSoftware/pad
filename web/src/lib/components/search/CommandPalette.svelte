@@ -71,6 +71,28 @@
 		}
 	});
 
+	/*
+		Body-scroll lock while the palette is open (TASK-1124 follow-up).
+		Prevents the page underneath from scrolling — both for general
+		modal-correctness reasons and so the underlying page's sticky
+		elements can't shift into view behind the overlay.
+
+		Critical: only lock `overflow`, NOT `touch-action`. Setting
+		`touch-action: none` on body kills scrolling on every descendant
+		too — touches starting on .results would walk up the ancestor
+		chain, find `none` on body, and the browser refuses to scroll
+		ANY element. `overflow: hidden` alone is enough to stop body
+		scroll while leaving child overflow:auto regions scrollable.
+	*/
+	$effect(() => {
+		if (!uiStore.searchOpen) return;
+		const prevOverflow = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = prevOverflow;
+		};
+	});
+
 	function buildFilters(offset = 0): SearchFilters {
 		const filters: SearchFilters = {
 			workspace: workspaceStore.current?.slug,
@@ -320,6 +342,23 @@
 					<span class="search-spinner"></span>
 				{/if}
 				<kbd class="search-hint">esc</kbd>
+				<!--
+					Mobile-only close button (TASK-1124). On mobile the palette
+					is a full-screen takeover so there's no overlay area to
+					tap-to-dismiss, and the `esc` hint is useless without a
+					keyboard. CSS hides this on desktop and hides .search-hint
+					on mobile so each surface gets the right affordance.
+				-->
+				<button
+					class="mobile-close"
+					onclick={() => uiStore.closeSearch()}
+					aria-label="Close search"
+					title="Close"
+				>
+					<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+						<path d="M5 5L15 15M15 5L5 15" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+					</svg>
+				</button>
 			</div>
 
 			<!-- Filter chips -->
@@ -868,5 +907,115 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/*
+		Mobile-only close button (TASK-1124). Hidden on desktop where the
+		`esc` keyboard hint suffices; visible on mobile where there's no
+		keyboard and the full-screen palette has no overlay area to dismiss
+		via tap-outside. Sized to match the .mobile-hamburger / icon-button
+		vocabulary used elsewhere in the mobile chrome.
+	*/
+	.mobile-close {
+		display: none;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		background: none;
+		border: none;
+		cursor: pointer;
+		padding: 0;
+		flex-shrink: 0;
+		transition: color 0.15s, background 0.15s;
+	}
+	.mobile-close:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	/*
+		Mobile UX overrides for the CommandPalette (IDEA-1121 / TASK-1124).
+		Desktop is byte-identical above this rule — every property here is
+		scoped to ≤768px (the same breakpoint uiStore.isMobile uses, so JS
+		layout decisions and CSS layout stay in sync).
+
+		Key changes:
+
+		• Full-screen takeover. The palette fills the viewport (no rounded
+		  corners, no shadow, no max-width / max-height) so the search input
+		  anchors at the very top. With the input at the top, the on-screen
+		  keyboard pops up from the bottom and the input never has to scroll
+		  to stay visible — eliminating the "things shift when keyboard
+		  appears" problem the centered desktop layout has on phones.
+
+		• 100dvh (dynamic viewport height) instead of 100vh. On iOS Safari
+		  15+ and modern Chrome, `dvh` shrinks when the on-screen keyboard
+		  is shown, so the palette is sized to the *visible* viewport above
+		  the keyboard rather than the full screen behind it. This is what
+		  actually makes the layout stop fighting the keyboard. Older
+		  browsers fall back to the standard viewport (treats as vh).
+
+		• 16px input font. Below 16px iOS Safari auto-zooms the page on
+		  focus, which is the root cause of a separate "everything jumps"
+		  jitter when tapping the input. Forcing 16px on mobile is the
+		  standard mobile-web fix.
+
+		• Hide the `esc` kbd hint, show the X close button. The hint is
+		  meaningless without a hardware keyboard; the X gives users a clear
+		  tap target since the full-screen palette leaves no overlay to
+		  tap-outside.
+	*/
+	@media (max-width: 768px) {
+		.overlay {
+			padding-top: 0;
+			/*
+				Belt-and-braces with the JS body-scroll lock: even if iOS
+				somehow drags the body, the overlay itself can't scroll its
+				own contents. The palette below is height: 100dvh so it
+				exactly fills the overlay; nothing should ever overflow.
+			*/
+			overflow: hidden;
+			overscroll-behavior: contain;
+		}
+		.palette {
+			max-width: none;
+			max-height: 100dvh;
+			height: 100dvh;
+			width: 100%;
+			border: none;
+			border-radius: 0;
+			box-shadow: none;
+		}
+		.search-input {
+			/* iOS Safari skips its focus-zoom only when font-size ≥ 16px. */
+			font-size: 16px;
+		}
+		.search-hint {
+			display: none;
+		}
+		.mobile-close {
+			display: flex;
+		}
+		/*
+			Pin .results as the SOLE scroll target inside the palette so
+			the search-row stays at the top regardless of result-list
+			length. `flex: 1; min-height: 0` lets the flex item shrink
+			below its content size (without min-height: 0, an item with
+			overflow: auto in a flex column refuses to shrink and the
+			whole palette ends up taller than 100dvh — which is what made
+			the input scroll off-screen in the first reported bug).
+			`overscroll-behavior: contain` prevents bounce-scroll from
+			chaining out to the body, which on iOS would re-trigger the
+			scroll-to-input quirk we're trying to suppress.
+		*/
+		.results {
+			flex: 1;
+			min-height: 0;
+			overscroll-behavior: contain;
+			-webkit-overflow-scrolling: touch;
+		}
 	}
 </style>

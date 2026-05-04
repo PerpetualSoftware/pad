@@ -1190,11 +1190,19 @@
 		border-bottom: 1px solid transparent;
 		transition: border-color 0.15s ease;
 	}
-	@media (max-width: 768px) {
-		.sticky-header {
-			top: 45px;
-		}
-	}
+	/*
+		Historical note (TASK-1124): there used to be a `@media (max-width:
+		768px) { .sticky-header { top: 45px; } }` rule here that pushed the
+		breadcrumb 45px below the top of its scroll container — to clear the
+		old slim `.mobile-header` (hamburger + switcher) that lived inside
+		.main-content on mobile. After the IDEA-1121 mobile chrome
+		consolidation, that header no longer exists; the topbar is now
+		`position: fixed` outside .main-content and .app-layout pads itself
+		by --topbar-height on mobile, so the breadcrumb's scroll container
+		already starts below the topbar. `top: 0` is correct on both
+		surfaces now — the override is removed to close the gap that the
+		stale 45px offset was producing.
+	*/
 
 	/* Breadcrumb */
 	.breadcrumb {
