@@ -841,9 +841,26 @@ func setupCmd() *cobra.Command {
 			green := color.New(color.FgGreen).SprintFunc()
 			fmt.Printf("%s First admin account created\n", green("✓"))
 			fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+			printIdeaOneTriggerHint()
 			return nil
 		},
 	}
+}
+
+// printIdeaOneTriggerHint surfaces the trigger phrase that points a fresh
+// agent session at the seeded IDEA-1 onboarding item. The phrase is named
+// (not generic) so a copy-paste lands deterministically on the right ref
+// in software-category workspaces. People-category and other templates
+// will need a template-aware version of this hint — tracked under
+// PLAN-1140 (the people-category onboarding plan).
+func printIdeaOneTriggerHint() {
+	bold := color.New(color.Bold)
+	cyan := color.New(color.FgCyan)
+
+	fmt.Println()
+	bold.Println("To get started:")
+	fmt.Printf("  Open a fresh agent session (Claude Code, Cursor, etc.) and say:\n")
+	fmt.Printf("  %s\n", cyan.Sprint("use pad to get IDEA-1"))
 }
 
 func loginCmd() *cobra.Command {
@@ -1787,8 +1804,14 @@ func printOnboardingHints(cfg *config.Config) {
 
 	fmt.Println()
 	bold.Println("Get started:")
+	// IDEA-1 is the seeded onboarding entry point in software-category
+	// workspaces (`startup` template); naming it specifically here avoids
+	// a generic "your first item" copy that would force the user to
+	// figure out the ref themselves. Other templates seed different
+	// primary-entry refs (REQ-1 / APP-1 / …); making this template-aware
+	// is tracked under PLAN-1140.
+	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "use pad to get IDEA-1")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "scan this codebase and set up my workspace")
-	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "what conventions should this project follow?")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
 	fmt.Println()
 	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BrowserURL()))

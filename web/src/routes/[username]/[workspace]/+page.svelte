@@ -8,6 +8,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
+	import OnboardingIdeaBanner from '$lib/components/OnboardingIdeaBanner.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
@@ -21,6 +22,13 @@
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
+
+	// Status of the seeded IDEA-1 onboarding entry. Drives the
+	// OnboardingIdeaBanner gate: shown only while the user hasn't yet
+	// engaged with the agent (status === 'new'). null = not yet checked /
+	// no IDEA-1 exists in this workspace (e.g. an empty-template or
+	// non-software-category workspace).
+	let ideaOneStatus = $state<string | null>(null);
 
 	// Sync dismissed state from localStorage when workspace changes
 	$effect(() => {
@@ -89,6 +97,38 @@
 			// allow partial render
 		} finally {
 			loading = false;
+		}
+		// Refresh the seeded IDEA-1 status alongside each dashboard load.
+		// Cheap (single-row lookup, indexed by ref) and self-correcting:
+		// once the user engages the agent and IDEA-1 leaves status=new,
+		// the next poll silently hides the banner.
+		void loadIdeaOne(slug);
+	}
+
+	// loadIdeaOne fetches the seeded IDEA-1 entry's status. A 404 (or any
+	// error) leaves ideaOneStatus null, which keeps the banner hidden —
+	// workspaces that don't ship an onboarding seed should never see the
+	// banner. Errors are intentionally silent: the dashboard is the
+	// primary surface, and a broken sub-fetch should not throw the
+	// dashboard render off.
+	async function loadIdeaOne(slug: string) {
+		try {
+			const item = await api.items.get(slug, 'IDEA-1');
+			// item.fields is a JSON string per the API shape (see Item.fields
+			// in lib/types). Empty / malformed payloads collapse to '' so
+			// the banner stays hidden rather than flashing on bad data.
+			let status = '';
+			if (item?.fields) {
+				try {
+					const parsed = JSON.parse(item.fields) as Record<string, unknown>;
+					if (typeof parsed.status === 'string') status = parsed.status;
+				} catch {
+					/* leave status empty */
+				}
+			}
+			ideaOneStatus = status;
+		} catch {
+			ideaOneStatus = null;
 		}
 	}
 
@@ -200,6 +240,17 @@
 		</header>
 
 		<!-- 2. Onboarding -->
+		<!-- IDEA-1 banner: shown only while the seeded onboarding entry is
+		     still untouched (status === 'new'). Once the user engages the
+		     agent and the status flips, the banner disappears on the next
+		     dashboard poll. The OnboardingChecklist below remains gated on
+		     totalItems === 0 — its surface is empty/non-templated workspaces;
+		     this banner is the surface for templated (seeded) workspaces. -->
+		{#if ideaOneStatus === 'new' && !onboardingDismissed}
+			<div class="onboarding-wrapper">
+				<OnboardingIdeaBanner {wsSlug} {username} />
+			</div>
+		{/if}
 		{#if totalItems === 0 && !onboardingDismissed}
 			<div class="onboarding-wrapper">
 				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
