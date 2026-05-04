@@ -1086,12 +1086,20 @@ const maxAccountSetupAttempts = 5
 //
 // Recoverable (loops, prints the error, re-prompts password + confirm):
 //   - Local password / confirm mismatch
-//   - Any *cli.APIError from Bootstrap (e.g. weak password, length
-//     bounds — the three messages produced by validatePasswordStrength
-//     in internal/server/password_strength.go)
+//   - validation_error from Bootstrap whose message begins with
+//     "Password" — the three messages produced by
+//     validatePasswordStrength in
+//     internal/server/password_strength.go (too-short, too-long,
+//     too-weak). The prefix gate keeps us from looping on non-password
+//     validation errors (email format, missing name) where re-prompting
+//     only the password pair would never help.
 //
 // Non-recoverable (returns to caller for an immediate exit):
 //   - EOF / Ctrl-D on a password prompt
+//   - validation_error for email/name (user must re-run with a fresh
+//     prompt to fix those fields)
+//   - conflict (instance already initialized), forbidden (bootstrap
+//     attempted from a non-loopback caller), or any other API code
 //   - Network errors, 5xx, or any non-API error from Bootstrap
 //   - Hitting maxAccountSetupAttempts without success
 //
@@ -1143,17 +1151,25 @@ func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
 			return resp, nil
 		}
 
-		// Server-side validation rejection (weak password, length
-		// bounds, etc.) surfaces as *cli.APIError. Show the message and
-		// let the user pick a stronger password without losing email +
-		// name they already typed.
+		// Only password-strength rejections are recoverable inside this
+		// loop, because the loop only re-prompts the password pair. The
+		// three messages from validatePasswordStrength
+		// (internal/server/password_strength.go) all begin with
+		// "Password" — gate on that prefix so we don't trap the user in
+		// retries for unrelated server errors:
+		//
+		//   - validation_error "Valid email is required" / "Name is
+		//     required" — not fixable here; needs a new run.
+		//   - conflict "Pad instance has already been initialized" —
+		//     terminal; another admin already exists.
+		//   - forbidden — bootstrap from a non-loopback caller.
+		//   - internal_error / network failures — bail.
 		var apiErr *cli.APIError
-		if errors.As(err, &apiErr) {
+		if errors.As(err, &apiErr) && apiErr.Code == "validation_error" && strings.HasPrefix(apiErr.Message, "Password") {
 			red.Printf("  ✗ %s\n\n", apiErr.Message)
 			continue
 		}
 
-		// Network error, 5xx, or other non-API failure — bail.
 		return nil, fmt.Errorf("setup failed: %w", err)
 	}
 	return nil, fmt.Errorf("setup failed: too many invalid attempts (%d) — try again from a fresh prompt", maxAccountSetupAttempts)
