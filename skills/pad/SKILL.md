@@ -176,6 +176,7 @@ Items can carry image and file attachments. They appear in item content as `![al
 **Onboarding:**
 - "set up my workspace" / "onboard me" / "scan this codebase" → Onboarding workflow (see below). The software templates' onboarding step still scans the codebase; non-software workspaces run their own template-specific onboarding.
 - "what conventions should this workspace follow?" → Run the workspace's onboarding playbook if one exists, otherwise suggest conventions from the library.
+- **"use pad to get IDEA-1"** (or any of `PLAN-2` / `TASK-3` / `DOC-4` in a fresh `startup` workspace) → Fetch the named seed item with `pad item show <REF> --format markdown` and let its body guide you. Each is a first-person note from the workspace owner's future self that asks you to capture their actual project. There is no special "onboarding mode" — it's just an item you read and act on like any other. Once the user has captured something useful, run `pad project dashboard` so they see what got built, point them at the web UI, and update the seed item's status to its terminal value (Ideas: `implemented`, Plans: `completed`, Tasks: `done`, Docs: `archived`) so the dashboard hint disappears.
 
 ## Before Performing Work
 

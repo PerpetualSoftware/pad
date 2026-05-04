@@ -30,6 +30,14 @@ pad server open             # opens the web UI at localhost:7777
 
 `pad init` is the smart entry point — it auto-detects what's needed, walks you through each step, and is safe to re-run anytime (it skips finished steps and prints a status summary).
 
+Then, in a fresh agent session in your project, say:
+
+```
+use pad to get IDEA-1
+```
+
+Your new workspace ships with a thoughtful first idea — IDEA-1 — that the agent reads and uses to help you get set up around your actual project. It's the fastest way to go from empty workspace to "okay, this is mine."
+
 ## Why Pad?
 
 Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them.
