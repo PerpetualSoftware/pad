@@ -488,6 +488,109 @@ func TestSeedCollectionsFromTemplateStartupRefSequence(t *testing.T) {
 	}
 }
 
+// TestSeedCollectionsFromTemplateScrumRefSequence is the scrum-template
+// sibling of TestSeedCollectionsFromTemplateStartupRefSequence. Locks
+// down the BACK-1 / SPRINT-2 / BUG-3 / DOC-4 sequence for fresh scrum
+// workspaces — same reasoning as the startup version: drift here
+// silently misfires the post-signup hint, which will name BACK-1.
+func TestSeedCollectionsFromTemplateScrumRefSequence(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Scrum Refs")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "scrum"); err != nil {
+		t.Fatalf("seed scrum template: %v", err)
+	}
+
+	type expected struct {
+		Slug, Title string
+		WantItemNum int
+		WantPrefix  string
+	}
+	want := []expected{
+		{"backlog", "Welcome — let's start tracking what we're going to build", 1, "BACK"},
+		{"sprints", "A sprint I haven't planned yet", 2, "SPRINT"},
+		{"bugs", "A bug I haven't filed yet", 3, "BUG"},
+		{"docs", "A doc I haven't written yet", 4, "DOC"},
+	}
+
+	for _, w := range want {
+		items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: w.Slug})
+		if err != nil {
+			t.Fatalf("list %s: %v", w.Slug, err)
+		}
+		var found *models.Item
+		for i := range items {
+			if items[i].Title == w.Title {
+				found = &items[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("expected scrum seed %q in %q, not found", w.Title, w.Slug)
+			continue
+		}
+		if found.ItemNumber == nil || *found.ItemNumber != w.WantItemNum {
+			t.Errorf("scrum seed %q in %q: ItemNumber = %v, want %d (seeding order regressed)", w.Title, w.Slug, found.ItemNumber, w.WantItemNum)
+		}
+		if found.CollectionPrefix != w.WantPrefix {
+			t.Errorf("scrum seed %q in %q: CollectionPrefix = %q, want %q (templates.go's explicit Prefix may have drifted; see PLAN-1146 prefix precondition)", w.Title, w.Slug, found.CollectionPrefix, w.WantPrefix)
+		}
+		if found.Content == "" {
+			t.Errorf("scrum seed %q in %q: empty Content", w.Title, w.Slug)
+		}
+	}
+}
+
+// TestSeedCollectionsFromTemplateProductRefSequence is the
+// product-template sibling. Locks FEAT-1 / FB-2 / ROAD-3 / DOC-4.
+func TestSeedCollectionsFromTemplateProductRefSequence(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Product Refs")
+
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "product"); err != nil {
+		t.Fatalf("seed product template: %v", err)
+	}
+
+	type expected struct {
+		Slug, Title string
+		WantItemNum int
+		WantPrefix  string
+	}
+	want := []expected{
+		{"features", "Welcome — let's start shaping what we're going to ship", 1, "FEAT"},
+		{"feedback", "A piece of feedback I haven't captured yet", 2, "FB"},
+		{"roadmap-items", "A roadmap commitment I haven't placed yet", 3, "ROAD"},
+		{"docs", "A doc I haven't written yet", 4, "DOC"},
+	}
+
+	for _, w := range want {
+		items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: w.Slug})
+		if err != nil {
+			t.Fatalf("list %s: %v", w.Slug, err)
+		}
+		var found *models.Item
+		for i := range items {
+			if items[i].Title == w.Title {
+				found = &items[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("expected product seed %q in %q, not found", w.Title, w.Slug)
+			continue
+		}
+		if found.ItemNumber == nil || *found.ItemNumber != w.WantItemNum {
+			t.Errorf("product seed %q in %q: ItemNumber = %v, want %d (seeding order regressed)", w.Title, w.Slug, found.ItemNumber, w.WantItemNum)
+		}
+		if found.CollectionPrefix != w.WantPrefix {
+			t.Errorf("product seed %q in %q: CollectionPrefix = %q, want %q (templates.go's explicit Prefix may have drifted; see PLAN-1146 prefix precondition)", w.Title, w.Slug, found.CollectionPrefix, w.WantPrefix)
+		}
+		if found.Content == "" {
+			t.Errorf("product seed %q in %q: empty Content", w.Title, w.Slug)
+		}
+	}
+}
+
 // TestSeedCollectionsFromTemplateIdempotentWithSeedItems verifies that re-running
 // the seed function across a pre-existing workspace does NOT duplicate seed items.
 // This invariant is what lets the server's startup auto-upgrade safely iterate
