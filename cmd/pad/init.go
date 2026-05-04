@@ -147,13 +147,9 @@ Examples:
 					fmt.Println(bold.Sprint("Create admin account"))
 				}
 				fmt.Println()
-				email, name, password, err := promptForAccountDetails()
+				resp, err := promptAndBootstrap(client)
 				if err != nil {
-					return fmt.Errorf("setup: %w", err)
-				}
-				resp, err := client.Bootstrap(email, name, password)
-				if err != nil {
-					return fmt.Errorf("setup failed: %w", err)
+					return err
 				}
 				if err := saveCredentials(cfg, resp); err != nil {
 					return err
