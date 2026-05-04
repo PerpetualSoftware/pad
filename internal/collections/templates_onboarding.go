@@ -59,7 +59,7 @@ looking for thoroughness — I'm looking for momentum.
 
 When it feels like I've got enough here to be useful, run
 ` + "`pad project dashboard`" + ` so I can see what we built, and point me at
-the web UI so I can poke around there too. Then mark this idea done.
+the web UI so I can poke around there too. Then mark this idea implemented.
 
 ## A few things to know about Pad
 
@@ -105,7 +105,7 @@ idea so I can come back to it. The collection isn't precious; capturing
 the thought is.
 
 When we've got something useful, run ` + "`pad project dashboard`" + ` so I can
-see it. Then mark me done — or delete me, I'm not precious either.
+see it. Then mark me completed — or delete me, I'm not precious either.
 `
 
 // taskOnboardingBody is the body of TASK-3. Angle: "something concrete
@@ -158,8 +158,8 @@ If what I'm describing is more "I want to do X" than "I want to remember
 how X works," capture it as an idea or a task instead — those are for
 action, this is for memory.
 
-When we've got the doc, show it back to me so I can read it. Then mark
-me done — or delete me, I'm not precious.
+When we've got the doc, show it back to me so I can read it. Then archive
+me — or delete me, I'm not precious.
 `
 
 // StartupOnboardingItems returns the four onboarding seed items that ship
