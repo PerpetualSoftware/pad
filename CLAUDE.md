@@ -107,7 +107,7 @@ pad auth reset-password user@example.com  # Generate reset link (admin fallback)
 # CLI auto-attaches auth token to all API requests
 ```
 
-After `pad auth setup` (and after `pad init` / `pad workspace init` for any subsequent workspace), the success output points new users at the seeded onboarding entry point. Open a fresh agent session in the workspace's directory and say:
+After a `startup`-template workspace is created (via `pad init` or `pad workspace init` — note that `pad auth setup` only creates the admin account, not a workspace), the success output points new users at the seeded onboarding entry point. Open a fresh agent session in the workspace's directory and say:
 
 ```
 use pad to get IDEA-1
