@@ -841,26 +841,27 @@ func setupCmd() *cobra.Command {
 			green := color.New(color.FgGreen).SprintFunc()
 			fmt.Printf("%s First admin account created\n", green("✓"))
 			fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
-			printIdeaOneTriggerHint()
+			printPostSetupNextStepsHint()
 			return nil
 		},
 	}
 }
 
-// printIdeaOneTriggerHint surfaces the trigger phrase that points a fresh
-// agent session at the seeded IDEA-1 onboarding item. The phrase is named
-// (not generic) so a copy-paste lands deterministically on the right ref
-// in software-category workspaces. People-category and other templates
-// will need a template-aware version of this hint — tracked under
-// PLAN-1140 (the people-category onboarding plan).
-func printIdeaOneTriggerHint() {
+// printPostSetupNextStepsHint walks the freshly-bootstrapped admin to the
+// next step that actually does something useful: creating a workspace.
+// The IDEA-1 trigger phrase belongs in `printOnboardingHints` (which runs
+// after `pad init` / `pad workspace init`) — by then the workspace
+// exists and IDEA-1 is seeded. Calling out the trigger phrase here would
+// have sent users at a nonexistent ref (TASK-1143 / Codex review of PR
+// #406).
+func printPostSetupNextStepsHint() {
 	bold := color.New(color.Bold)
 	cyan := color.New(color.FgCyan)
 
 	fmt.Println()
-	bold.Println("To get started:")
-	fmt.Printf("  Open a fresh agent session (Claude Code, Cursor, etc.) and say:\n")
-	fmt.Printf("  %s\n", cyan.Sprint("use pad to get IDEA-1"))
+	bold.Println("Next:")
+	fmt.Printf("  Run %s in your project directory to create your first workspace.\n", cyan.Sprint("pad init"))
+	fmt.Printf("  The success message will tell you how to kick off your first agent session.\n")
 }
 
 func loginCmd() *cobra.Command {
