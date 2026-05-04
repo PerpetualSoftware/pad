@@ -5,10 +5,17 @@ package collections
 // Same mechanism as the startup template's onboarding seeds (see
 // templates_onboarding.go and DOC-1139): one seed item per user-facing
 // collection, agent-invocable, written first-person from the workspace
-// owner's future self. The post-signup hint will name BACK-1 because
-// "I want to start tracking what we're going to build" is itself a
-// backlog item — but any of BACK-1 / SPRINT-2 / BUG-3 / DOC-4 is a
+// owner's future self. Any of BACK-1 / SPRINT-2 / BUG-3 / DOC-4 is a
 // viable entry point for `/pad let's discuss <REF>`.
+//
+// Status of the post-signup hint that names the primary entry: as of
+// this PR (TASK-1149) the CLI hint and dashboard banner are still
+// hardcoded to IDEA-1 — they were shipped against the startup template
+// only (PR #403). TASK-1150 makes those template-aware so a fresh scrum
+// workspace surfaces "use pad to get BACK-1" rather than IDEA-1.
+// Until TASK-1150 lands, the bodies are still reachable via direct
+// fetch (`pad item show BACK-1`) but the dashboard banner doesn't
+// promote them.
 //
 // Bodies and design rationale: DOC-1152 (PLAN-1146).
 //
@@ -139,7 +146,8 @@ delete me, I'm not precious.
 // in a fresh `scrum` workspace. The order matters: items are inserted
 // in this slice's order before conventions/playbooks, so the
 // workspace-scoped item_number sequence lands at BACK-1 / SPRINT-2 /
-// BUG-3 / DOC-4. The post-signup hint will name BACK-1 specifically.
+// BUG-3 / DOC-4. BACK-1 is the designated primary — TASK-1150 will
+// wire the post-signup hint and dashboard banner to surface it.
 //
 // Backlog is the primary entry rather than Sprints because work
 // originates in the backlog; sprints organize what's already there.

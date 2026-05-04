@@ -513,8 +513,10 @@ var templates = []WorkspaceTemplate{
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
 		// SeedItems run before Conventions/Playbooks in the bootstrap loop
-		// so refs land at BACK-1 / SPRINT-2 / BUG-3 / DOC-4. The post-signup
-		// hint will name BACK-1 specifically. (PLAN-1146 / DOC-1152.)
+		// so refs land at BACK-1 / SPRINT-2 / BUG-3 / DOC-4. The CLI hint
+		// and dashboard banner are still hardcoded to IDEA-1 from PR #403;
+		// TASK-1150 makes them template-aware so a fresh scrum workspace
+		// promotes BACK-1. (PLAN-1146 / DOC-1152.)
 		SeedItems:   ScrumOnboardingItems(),
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),
@@ -650,8 +652,10 @@ var templates = []WorkspaceTemplate{
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
 		// SeedItems run before Conventions/Playbooks in the bootstrap loop
-		// so refs land at FEAT-1 / FB-2 / ROAD-3 / DOC-4. The post-signup
-		// hint will name FEAT-1 specifically. (PLAN-1146 / DOC-1153.)
+		// so refs land at FEAT-1 / FB-2 / ROAD-3 / DOC-4. The CLI hint and
+		// dashboard banner are still hardcoded to IDEA-1 from PR #403;
+		// TASK-1150 makes them template-aware so a fresh product workspace
+		// promotes FEAT-1. (PLAN-1146 / DOC-1153.)
 		SeedItems:   ProductOnboardingItems(),
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),

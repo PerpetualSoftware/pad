@@ -4,10 +4,18 @@ package collections
 //
 // Same mechanism as the startup + scrum onboarding seeds: one seed
 // item per user-facing collection, agent-invocable, written
-// first-person from the workspace owner's future self. The
-// post-signup hint will name FEAT-1 because Features are product's
-// spine — but any of FEAT-1 / FB-2 / ROAD-3 / DOC-4 is a viable
-// entry point for `/pad let's discuss <REF>`.
+// first-person from the workspace owner's future self. Any of
+// FEAT-1 / FB-2 / ROAD-3 / DOC-4 is a viable entry point for
+// `/pad let's discuss <REF>`.
+//
+// Status of the post-signup hint that names the primary entry: as of
+// this PR (TASK-1149) the CLI hint and dashboard banner are still
+// hardcoded to IDEA-1 — they were shipped against the startup template
+// only (PR #403). TASK-1150 makes those template-aware so a fresh
+// product workspace surfaces "use pad to get FEAT-1" rather than
+// IDEA-1. Until TASK-1150 lands, the bodies are still reachable via
+// direct fetch (`pad item show FEAT-1`) but the dashboard banner
+// doesn't promote them.
 //
 // Bodies and design rationale: DOC-1153 (PLAN-1146).
 //
@@ -140,7 +148,8 @@ delete me, I'm not precious.
 // ship in a fresh `product` workspace. The order matters: items are
 // inserted in this slice's order before conventions/playbooks, so
 // the workspace-scoped item_number sequence lands at FEAT-1 / FB-2 /
-// ROAD-3 / DOC-4. The post-signup hint will name FEAT-1 specifically.
+// ROAD-3 / DOC-4. FEAT-1 is the designated primary — TASK-1150 will
+// wire the post-signup hint and dashboard banner to surface it.
 //
 // Features is the primary entry — uncontested. Roadmap is the
 // strategic frame above features; feedback is the signal source
