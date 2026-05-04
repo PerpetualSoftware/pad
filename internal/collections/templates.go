@@ -387,6 +387,7 @@ var templates = []WorkspaceTemplate{
 			{
 				Name:        "Backlog",
 				Slug:        "backlog",
+				Prefix:      "BACK", // explicit so DerivePrefix doesn't yield "BACKL"
 				Icon:        "\U0001F4CB",
 				Description: "Product backlog items for sprint planning",
 				SortOrder:   0,
@@ -430,6 +431,7 @@ var templates = []WorkspaceTemplate{
 			{
 				Name:        "Sprints",
 				Slug:        "sprints",
+				Prefix:      "SPRINT", // explicit so DerivePrefix doesn't yield "SPRIN"
 				Icon:        "\U0001F3C3",
 				Description: "Sprint cycles with goals and timelines",
 				SortOrder:   1,
@@ -510,6 +512,12 @@ var templates = []WorkspaceTemplate{
 			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
+		// SeedItems run before Conventions/Playbooks in the bootstrap loop
+		// so refs land at BACK-1 / SPRINT-2 / BUG-3 / DOC-4. The CLI hint
+		// and dashboard banner are still hardcoded to IDEA-1 from PR #403;
+		// TASK-1150 makes them template-aware so a fresh scrum workspace
+		// promotes BACK-1. (PLAN-1146 / DOC-1152.)
+		SeedItems:   ScrumOnboardingItems(),
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),
 	},
@@ -522,6 +530,7 @@ var templates = []WorkspaceTemplate{
 			{
 				Name:        "Features",
 				Slug:        "features",
+				Prefix:      "FEAT", // explicit so DerivePrefix doesn't yield "FEATU"
 				Icon:        "\u2728",
 				Description: "Track feature development from proposal to launch",
 				SortOrder:   0,
@@ -560,6 +569,7 @@ var templates = []WorkspaceTemplate{
 			{
 				Name:        "Feedback",
 				Slug:        "feedback",
+				Prefix:      "FB", // explicit so DerivePrefix doesn't yield "FEEDB". Same prefix as hiring's Feedback collection — fine since templates never coexist in a single workspace.
 				Icon:        "\U0001F4AC",
 				Description: "Collect and prioritize user feedback",
 				SortOrder:   1,
@@ -603,6 +613,7 @@ var templates = []WorkspaceTemplate{
 			{
 				Name:        "Roadmap Items",
 				Slug:        "roadmap-items",
+				Prefix:      "ROAD", // explicit so DerivePrefix doesn't yield the multi-word "RI" initials
 				Icon:        "\U0001F5FA\uFE0F",
 				Description: "Plan and communicate product direction",
 				SortOrder:   2,
@@ -640,6 +651,12 @@ var templates = []WorkspaceTemplate{
 			conventionsCollection(4, SoftwareConventionTriggers, SoftwareConventionScopes),
 			playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
 		},
+		// SeedItems run before Conventions/Playbooks in the bootstrap loop
+		// so refs land at FEAT-1 / FB-2 / ROAD-3 / DOC-4. The CLI hint and
+		// dashboard banner are still hardcoded to IDEA-1 from PR #403;
+		// TASK-1150 makes them template-aware so a fresh product workspace
+		// promotes FEAT-1. (PLAN-1146 / DOC-1153.)
+		SeedItems:   ProductOnboardingItems(),
 		Conventions: SoftwareStarterConventions(),
 		Playbooks:   SoftwareStarterPlaybooks(),
 	},

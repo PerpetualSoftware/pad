@@ -244,6 +244,155 @@ func TestStartupTemplateShipsOnboardingSeedItems(t *testing.T) {
 	}
 }
 
+// TestScrumOnboardingItemsOrderAndShape — sister to startup's test for
+// the scrum template (PLAN-1146, DOC-1152). Locks down the order +
+// collection slugs + status fields so the post-signup hint copy
+// (which will name BACK-1) doesn't silently desync.
+func TestScrumOnboardingItemsOrderAndShape(t *testing.T) {
+	items := ScrumOnboardingItems()
+	want := []struct {
+		Slug, Status string
+	}{
+		{"backlog", "new"},
+		{"sprints", "planning"},
+		{"bugs", "new"},
+		{"docs", "draft"},
+	}
+
+	if len(items) != len(want) {
+		t.Fatalf("ScrumOnboardingItems returned %d items, want %d", len(items), len(want))
+	}
+
+	for i, it := range items {
+		if it.CollectionSlug != want[i].Slug {
+			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
+		}
+		if it.Title == "" {
+			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
+		}
+		if it.Content == "" {
+			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
+		}
+		wantStatus := `"status":"` + want[i].Status + `"`
+		if !contains(it.Fields, wantStatus) {
+			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
+		}
+	}
+}
+
+// TestProductOnboardingItemsOrderAndShape — sister test for the product
+// template (PLAN-1146, DOC-1153). Locks the FEAT-1 / FB-2 / ROAD-3 /
+// DOC-4 sequence.
+func TestProductOnboardingItemsOrderAndShape(t *testing.T) {
+	items := ProductOnboardingItems()
+	want := []struct {
+		Slug, Status string
+	}{
+		{"features", "proposed"},
+		{"feedback", "new"},
+		{"roadmap-items", "planned"},
+		{"docs", "draft"},
+	}
+
+	if len(items) != len(want) {
+		t.Fatalf("ProductOnboardingItems returned %d items, want %d", len(items), len(want))
+	}
+
+	for i, it := range items {
+		if it.CollectionSlug != want[i].Slug {
+			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
+		}
+		if it.Title == "" {
+			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
+		}
+		if it.Content == "" {
+			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
+		}
+		wantStatus := `"status":"` + want[i].Status + `"`
+		if !contains(it.Fields, wantStatus) {
+			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
+		}
+	}
+}
+
+// TestScrumProductTemplatesShipOnboardingSeedItems mirrors the startup
+// version — verifies the templates' SeedItems fields wire to their
+// onboarding helpers.
+func TestScrumProductTemplatesShipOnboardingSeedItems(t *testing.T) {
+	cases := []struct {
+		Name            string
+		WantSeedFn      func() []SeedItem
+		WantPrimarySlug string
+	}{
+		{Name: "scrum", WantSeedFn: ScrumOnboardingItems, WantPrimarySlug: "backlog"},
+		{Name: "product", WantSeedFn: ProductOnboardingItems, WantPrimarySlug: "features"},
+	}
+
+	for _, c := range cases {
+		tmpl := GetTemplate(c.Name)
+		if tmpl == nil {
+			t.Errorf("%s template missing", c.Name)
+			continue
+		}
+		want := c.WantSeedFn()
+		if len(tmpl.SeedItems) != len(want) {
+			t.Errorf("%s template SeedItems = %d items, want %d", c.Name, len(tmpl.SeedItems), len(want))
+			continue
+		}
+		// The first SeedItem MUST go to the template's primary entry
+		// collection (BACK-1 for scrum, FEAT-1 for product). If this
+		// drifts, the post-signup hint silently names a different
+		// (or missing) item.
+		if len(tmpl.SeedItems) > 0 && tmpl.SeedItems[0].CollectionSlug != c.WantPrimarySlug {
+			t.Errorf("%s SeedItems[0].CollectionSlug = %q, want %q (primary entry must be first)", c.Name, tmpl.SeedItems[0].CollectionSlug, c.WantPrimarySlug)
+		}
+	}
+}
+
+// TestScrumProductTemplatesUseExplicitFriendlyPrefixes guards the
+// prefix-fix precondition from PLAN-1146: scrum and product collection
+// definitions set explicit Prefix values rather than relying on
+// DerivePrefix, which would yield awkward refs like BACKL / SPRIN /
+// FEATU / FEEDB / RI. Drift here means the seeded refs no longer match
+// the bodies' "use pad to get BACK-1" copy.
+func TestScrumProductTemplatesUseExplicitFriendlyPrefixes(t *testing.T) {
+	cases := []struct {
+		Template string
+		Slug     string
+		WantPfx  string
+	}{
+		{"scrum", "backlog", "BACK"},
+		{"scrum", "sprints", "SPRINT"},
+		{"product", "features", "FEAT"},
+		{"product", "feedback", "FB"},
+		{"product", "roadmap-items", "ROAD"},
+	}
+
+	for _, c := range cases {
+		tmpl := GetTemplate(c.Template)
+		if tmpl == nil {
+			t.Errorf("%s template missing", c.Template)
+			continue
+		}
+		var got string
+		var found bool
+		for _, coll := range tmpl.Collections {
+			if coll.Slug == c.Slug {
+				got = coll.Prefix
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s template missing collection %q", c.Template, c.Slug)
+			continue
+		}
+		if got != c.WantPfx {
+			t.Errorf("%s.%s.Prefix = %q, want %q (rely on derivation and you'll get an awkward ref)", c.Template, c.Slug, got, c.WantPfx)
+		}
+	}
+}
+
 // contains is a local substring helper to keep the templates_test.go file
 // dependency-free. The standard library's strings.Contains would also work;
 // keeping this local matches the file's existing style.
