@@ -349,6 +349,43 @@ func TestScrumProductTemplatesShipOnboardingSeedItems(t *testing.T) {
 	}
 }
 
+// TestTemplatesDeclareOnboardingPrimaryRef verifies the templates that
+// ship the IDEA-1-style onboarding flow have OnboardingPrimaryRef set
+// (so the CLI hint and dashboard banner can read it). Drift here means
+// a template advertises onboarding seeds via SeedItems but doesn't
+// declare which one is "primary" — the CLI hint + dashboard wouldn't
+// know which ref to surface.
+//
+// Templates that intentionally don't ship the IDEA-1-style pattern
+// (hiring, interviewing — see PLAN-1140 paused; demo) MUST leave
+// OnboardingPrimaryRef empty so the CLI hint stays silent for them.
+func TestTemplatesDeclareOnboardingPrimaryRef(t *testing.T) {
+	cases := []struct {
+		Template string
+		WantRef  string // "" means "must be empty"
+	}{
+		{"startup", "IDEA-1"},
+		{"scrum", "BACK-1"},
+		{"product", "FEAT-1"},
+		// Hiring + interviewing intentionally don't declare a primary
+		// (PLAN-1140 paused — agent-onboarding pattern doesn't fit).
+		{"hiring", ""},
+		{"interviewing", ""},
+		// Demo is hidden + has its own seeded shape.
+		{"demo", ""},
+	}
+	for _, c := range cases {
+		tmpl := GetTemplate(c.Template)
+		if tmpl == nil {
+			t.Errorf("%s template missing", c.Template)
+			continue
+		}
+		if tmpl.OnboardingPrimaryRef != c.WantRef {
+			t.Errorf("%s.OnboardingPrimaryRef = %q, want %q", c.Template, tmpl.OnboardingPrimaryRef, c.WantRef)
+		}
+	}
+}
+
 // TestScrumProductTemplatesUseExplicitFriendlyPrefixes guards the
 // prefix-fix precondition from PLAN-1146: scrum and product collection
 // definitions set explicit Prefix values rather than relying on

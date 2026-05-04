@@ -1608,7 +1608,7 @@ a workspace in one step.`,
 				fmt.Fprintf(os.Stderr, "Note: --workspace %q overrides positional name %q.\n", workspaceFlag, args[0])
 			}
 
-			ws, newlyCreated, err := ensureWorkspace(client, cfg, cwd, name, workspaceFlag, templateFlag)
+			ws, newlyCreated, createdTemplate, err := ensureWorkspace(client, cfg, cwd, name, workspaceFlag, templateFlag)
 			if err != nil {
 				return err
 			}
@@ -1620,7 +1620,7 @@ a workspace in one step.`,
 			offerSkillInstall()
 
 			if newlyCreated {
-				printOnboardingHints(cfg)
+				printOnboardingHints(cfg, createdTemplate)
 			}
 			return nil
 		},
@@ -1798,25 +1798,45 @@ func readChoice() string {
 	return strings.TrimSpace(input)
 }
 
-func printOnboardingHints(cfg *config.Config) {
+func printOnboardingHints(cfg *config.Config, templateName string) {
 	bold := color.New(color.Bold)
 	dim := color.New(color.Faint)
 	cyan := color.New(color.FgCyan)
 
 	fmt.Println()
 	bold.Println("Get started:")
-	// IDEA-1 is the seeded onboarding entry point in software-category
-	// workspaces (`startup` template); naming it specifically here avoids
-	// a generic "your first item" copy that would force the user to
-	// figure out the ref themselves. Other templates seed different
-	// primary-entry refs (REQ-1 / APP-1 / …); making this template-aware
-	// is tracked under PLAN-1140.
-	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "use pad to get IDEA-1")
+	// Surface the seeded onboarding entry-point ref per template
+	// (IDEA-1 / BACK-1 / FEAT-1 / …). Templates that don't ship the
+	// IDEA-1-style first-person onboarding pattern (hiring,
+	// interviewing, demo, custom user templates) skip this line —
+	// they fall through to the generic /pad prompts instead.
+	if ref := onboardingPrimaryRef(templateName); ref != "" {
+		fmt.Printf("  %s  use pad to get %s\n", cyan.Sprint("/pad"), ref)
+	}
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "scan this codebase and set up my workspace")
 	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
 	fmt.Println()
 	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BrowserURL()))
 	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
+}
+
+// onboardingPrimaryRef returns the seeded onboarding entry-point ref
+// for a template (e.g. "IDEA-1" for startup, "BACK-1" for scrum).
+// Returns "" for templates without the IDEA-1-style onboarding flow,
+// for empty/unknown templates, or for custom user templates.
+//
+// Wraps the collections-package lookup; centralized here so the CLI
+// has a single call site (printOnboardingHints) rather than reaching
+// into the templates registry directly.
+func onboardingPrimaryRef(templateName string) string {
+	if templateName == "" {
+		return ""
+	}
+	tmpl := collections.GetTemplate(templateName)
+	if tmpl == nil {
+		return ""
+	}
+	return tmpl.OnboardingPrimaryRef
 }
 
 // --- onboard ---
