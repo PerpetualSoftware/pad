@@ -9,7 +9,6 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
-	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
@@ -167,7 +166,18 @@
 {:else if isAuthPage || isSharePage || isConsolePage}
 	{@render children()}
 {:else}
-	{#if uiStore.isMobile && uiStore.sidebarOpen}
+	{#if uiStore.isMobile}
+		<!--
+			Mobile chrome: a single, always-rendered <TopBar mobile /> (IDEA-1121 /
+			TASK-1122). The previous design rendered TopBar only when the sidebar
+			was open and patched in a slim hamburger-only `.mobile-header` inside
+			.main-content for the sidebar-closed case. That two-header split meant
+			every mobile chrome feature (search, notifications, etc.) had to be
+			added in two places. Consolidated to one bar; the hamburger lives in
+			the TopBar's .topbar-left slot and toggles the sidebar in both
+			directions. .app-layout below pads top by --topbar-height on mobile so
+			content doesn't slide under the fixed bar.
+		-->
 		<TopBar mobile />
 	{/if}
 	<div class="app-layout">
@@ -201,20 +211,6 @@
 				</button>
 			{/if}
 			<main class="main-content">
-				{#if uiStore.isMobile && !uiStore.sidebarOpen}
-					<div class="mobile-header">
-						<button class="hamburger" onclick={() => uiStore.openSidebar()} aria-label="Open sidebar">
-							<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-								<rect y="3" width="20" height="2" rx="1" fill="currentColor"/>
-								<rect y="9" width="20" height="2" rx="1" fill="currentColor"/>
-								<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
-							</svg>
-						</button>
-						<div class="mobile-switcher-slot">
-							<WorkspaceSwitcher mobile />
-						</div>
-					</div>
-				{/if}
 				{@render children()}
 			</main>
 		</div>
@@ -246,34 +242,19 @@
 		overflow-y: auto;
 		min-width: 0;
 	}
-	.mobile-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-3) var(--space-4);
-		border-bottom: 1px solid var(--border);
-		background: var(--bg-secondary);
-		position: sticky;
-		top: 0;
-		z-index: 5;
-	}
-	.hamburger {
-		padding: var(--space-1);
-		border-radius: var(--radius-sm);
-		color: var(--text-secondary);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.hamburger:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-	.mobile-switcher-slot {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		align-items: center;
+	/*
+		Mobile: the consolidated <TopBar mobile /> is rendered as a sibling
+		of .app-layout and uses position: fixed (z-index 35). Without an
+		offset the .app-layout content would slide under the bar. Pad the
+		layout's top by --topbar-height on the same breakpoint that
+		uiStore.isMobile uses (≤768px) so the chrome stacks cleanly. The
+		Sidebar already accounts for --topbar-height itself in its mobile
+		fixed positioning, so the fix lives here on the layout container.
+	*/
+	@media (max-width: 768px) {
+		.app-layout {
+			padding-top: var(--topbar-height);
+		}
 	}
 	/*
 		Expand tabs (both .topbar-expand-btn and .sidebar-expand-btn).

@@ -916,10 +916,29 @@
 		list hides workspaces off-screen. Swap the list + add + reorder
 		buttons for a single WorkspaceSwitcher trigger that opens a full-
 		width BottomSheet (see TASK-637). Reorder is available on desktop.
+
+		As of IDEA-1121 / TASK-1122 the mobile TopBar is the SOLE mobile
+		header — it renders regardless of sidebar state (see +layout.svelte).
+		The previous slim in-content `.mobile-header` (hamburger + switcher)
+		was deleted; the hamburger lives here in the .topbar-left slot,
+		replacing the PadLogo on mobile so the chrome stays a single coherent
+		bar across both sidebar-open and sidebar-closed states.
 	-->
 	<header class="topbar topbar-mobile">
 		<div class="topbar-left">
-			<PadLogo />
+			<button
+				class="mobile-hamburger"
+				onclick={() => uiStore.toggleSidebar()}
+				aria-label={uiStore.sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+				aria-expanded={uiStore.sidebarOpen}
+				title={uiStore.sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+			>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+					<rect y="3" width="20" height="2" rx="1" fill="currentColor"/>
+					<rect y="9" width="20" height="2" rx="1" fill="currentColor"/>
+					<rect y="15" width="20" height="2" rx="1" fill="currentColor"/>
+				</svg>
+			</button>
 		</div>
 		<div class="mobile-switcher-slot">
 			<!--
@@ -930,6 +949,29 @@
 			-->
 			<WorkspaceSwitcher mobile={true} />
 		</div>
+		<!--
+			Mobile-only search trigger (IDEA-1121 / TASK-1122). Desktop has
+			the sidebar's search button + ⌘K hotkey; mobile had no search
+			affordance until this button. Opens the global CommandPalette
+			mounted in +layout.svelte via uiStore.openSearch().
+
+			Also calls uiStore.onNavigate() — which closes the sidebar on
+			mobile (ui.svelte.ts:87) — so picking a search result doesn't
+			leave the sidebar overlay covering the destination page. Mirrors
+			the desktop sidebar's search button (Sidebar.svelte:522). Caught
+			by Codex review of the IDEA-1121 work.
+		-->
+		<button
+			class="mobile-search-btn"
+			onclick={() => { uiStore.openSearch(); uiStore.onNavigate(); }}
+			aria-label="Search"
+			title="Search"
+		>
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+				<path d="M10.5 10.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+			</svg>
+		</button>
 		{#if authStore.user}
 			<div class="user-menu-container">
 				<button
@@ -1357,6 +1399,61 @@
 	}
 	.collapse-btn:hover {
 		opacity: 1;
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	/*
+		Mobile-only search button (IDEA-1121 / TASK-1122). Sized and
+		styled to match .collapse-btn so the mobile right cluster reads
+		as a coherent set of icon controls. Only ever rendered inside
+		the .topbar-mobile <header>, so no media query needed here.
+	*/
+	.mobile-search-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0;
+		background: none;
+		border: none;
+		transition: color 0.15s, background 0.15s;
+	}
+	.mobile-search-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	/*
+		Mobile-only hamburger (IDEA-1121 / TASK-1122). Replaces the desktop
+		PadLogo in the .topbar-left slot on mobile because the hamburger is
+		the universal mobile-app primary affordance and space is tight. Calls
+		uiStore.toggleSidebar() — works in both directions (open when
+		closed, close when open) so a user who opens the sidebar can dismiss
+		it from the same button without hunting for an X. Slightly larger
+		than the icon buttons on the right (32×32 vs 28×28) because it's the
+		primary nav target — easier to thumb-tap and matches typical mobile
+		hamburger sizing. Color tokens mirror the right-cluster icon buttons.
+	*/
+	.mobile-hamburger {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 0;
+		background: none;
+		border: none;
+		transition: color 0.15s, background 0.15s;
+	}
+	.mobile-hamburger:hover {
 		color: var(--text-primary);
 		background: var(--bg-hover);
 	}

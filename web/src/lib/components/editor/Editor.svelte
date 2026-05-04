@@ -803,7 +803,19 @@
 
 </script>
 
-{#if isMobile && keyboardVisible && editor}
+<!--
+	Gate on editorFocused, not just keyboardVisible (TASK-1124 follow-up).
+	`keyboardVisible` flips true whenever the on-screen keyboard appears
+	for ANY input — including the global CommandPalette's search input
+	and any other input on the page. Without the editorFocused gate this
+	mobile toolbar (z-index 100) would float over the search palette
+	(z-index 50) whenever the user typed in search on a page that has a
+	tiptap editor mounted. The component already tracks editorFocused via
+	the editor's own focus/blur events (declared at line 308, wired at
+	lines 658-659) — this just makes the toolbar visibility actually
+	consult it.
+-->
+{#if isMobile && keyboardVisible && editor && editorFocused}
 	{@const _tick = editorTick}
 	{@const listItemType = getActiveListItemType()}
 	{@const canIndent = canIndentListItem(listItemType)}
