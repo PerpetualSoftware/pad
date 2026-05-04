@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -520,6 +521,290 @@ func TestSeedCollectionsFromTemplateIdempotentWithSeedItems(t *testing.T) {
 	if len(after) != initialCount {
 		t.Errorf("re-seed duplicated conventions: before=%d, after=%d", initialCount, len(after))
 	}
+}
+
+// TestOnboardingFlow_FullWalkthrough_Startup is the end-to-end gate test
+// for the IDEA-1 onboarding feature (PLAN-1131). It walks the entire
+// arc of a fresh-account-to-self-sufficient-user flow at the store
+// level, exercising the API surface that real workspace creation and
+// real agent activity ultimately call through.
+//
+// The "agent" steps are stubbed: instead of running an actual agent
+// session, the test makes the same CRUD calls a well-behaved agent
+// would make after reading IDEA-1's body. That's the right scope for
+// a state-machine test — IDEA-1's body content (the agent's
+// instructions) is independently locked down by the resource-pipeline
+// test (TASK-1136), so this layer doesn't need to simulate the
+// agent's reasoning.
+//
+// The phases mirror the user's experience:
+//
+//	Phase 1: Fresh workspace creation (seeder runs).
+//	  - The four onboarding seeds land at IDEA-1 / PLAN-2 / TASK-3 / DOC-4.
+//	  - Conventions + playbooks land too (seeded after the four user-facing items).
+//	  - IDEA-1 starts in status=new (the gate the post-signup hint relies on).
+//
+//	Phase 2: User opens an agent session, says "use pad to get IDEA-1".
+//	  - Agent reads IDEA-1, flips status new → exploring (signaling engagement).
+//	  - User describes their real project; agent captures it as a plan,
+//	    three tasks under it, and one idea — all in the user's actual
+//	    collections, not toy data.
+//	  - Agent closes IDEA-1 by flipping status exploring → implemented.
+//
+//	Phase 3: User re-runs the trigger phrase later (idempotency test).
+//	  - Re-seeding the workspace must be a no-op:
+//	    - User's items remain untouched.
+//	    - IDEA-1 status stays at `implemented` (NOT reset to `new`,
+//	      which would silently re-show the dashboard banner).
+//	    - No duplicate seed items.
+//	    - Conventions + playbooks unchanged.
+//
+// If this test ever fails, walk back through PLAN-1131's success
+// criteria (dashboard hint correctness, seed ordering, idempotency)
+// before "fixing" the test.
+func TestOnboardingFlow_FullWalkthrough_Startup(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Onboarding Walkthrough")
+
+	// ── Phase 1: fresh-workspace seed ──────────────────────────────
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("Phase 1 seed: %v", err)
+	}
+
+	type seedExpect struct {
+		Slug, Title, Status string
+		ItemNum             int
+	}
+	wantSeeds := []seedExpect{
+		{"ideas", "Welcome — let's get this place set up", "new", 1},
+		{"plans", "A plan I haven't written yet", "planned", 2},
+		{"tasks", "A task I haven't named yet", "open", 3},
+		{"docs", "A doc I haven't written yet", "draft", 4},
+	}
+	for _, want := range wantSeeds {
+		got := findItemByTitle(t, s, ws.ID, want.Slug, want.Title)
+		if got == nil {
+			t.Fatalf("Phase 1: expected seed %q in %q, not found", want.Title, want.Slug)
+		}
+		if got.ItemNumber == nil || *got.ItemNumber != want.ItemNum {
+			t.Errorf("Phase 1: %q item_number = %v, want %d (seeding order regressed)", want.Title, got.ItemNumber, want.ItemNum)
+		}
+		if status := extractStatus(got.Fields); status != want.Status {
+			t.Errorf("Phase 1: %q status = %q, want %q", want.Title, status, want.Status)
+		}
+	}
+	convCountPhase1 := countItemsInCollection(t, s, ws.ID, "conventions")
+	playCountPhase1 := countItemsInCollection(t, s, ws.ID, "playbooks")
+	if convCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter conventions did not seed")
+	}
+	if playCountPhase1 == 0 {
+		t.Fatal("Phase 1: starter playbooks did not seed")
+	}
+
+	// ── Phase 2: agent walks user through populating real items ────
+	idea1 := findItemByTitle(t, s, ws.ID, "ideas", "Welcome — let's get this place set up")
+	if idea1 == nil {
+		t.Fatal("Phase 2: IDEA-1 missing — Phase 1 should have caught this")
+	}
+
+	// Agent: status new → exploring (signaling "I've read this and started").
+	setItemStatus(t, s, idea1.ID, "exploring")
+
+	// User describes a real project; agent captures one plan + three
+	// tasks + one idea. We use the existing user-facing collections so
+	// the test exercises the same API surface real activity hits.
+	plansColl, _ := s.GetCollectionBySlug(ws.ID, "plans")
+	tasksColl, _ := s.GetCollectionBySlug(ws.ID, "tasks")
+	ideasColl, _ := s.GetCollectionBySlug(ws.ID, "ideas")
+
+	userPlan, err := s.CreateItem(ws.ID, plansColl.ID, models.ItemCreate{
+		Title:     "Ship the v1 release",
+		Content:   "Lock down core features, write release notes, ship.",
+		Fields:    `{"status":"active"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	})
+	if err != nil {
+		t.Fatalf("Phase 2: create user plan: %v", err)
+	}
+
+	for _, task := range []struct{ Title, Status string }{
+		{"Cut release branch", "in-progress"},
+		{"Write changelog from PLAN-2 work", "open"},
+		{"Tag and publish", "open"},
+	} {
+		_, err := s.CreateItem(ws.ID, tasksColl.ID, models.ItemCreate{
+			Title:     task.Title,
+			Fields:    `{"status":"` + task.Status + `","priority":"medium"}`,
+			ParentID:  &userPlan.ID,
+			CreatedBy: "agent",
+			Source:    "cli",
+		})
+		if err != nil {
+			t.Fatalf("Phase 2: create task %q: %v", task.Title, err)
+		}
+	}
+
+	if _, err := s.CreateItem(ws.ID, ideasColl.ID, models.ItemCreate{
+		Title:     "Could we add CI auto-release on tag push?",
+		Fields:    `{"status":"new"}`,
+		CreatedBy: "agent",
+		Source:    "cli",
+	}); err != nil {
+		t.Fatalf("Phase 2: create user idea: %v", err)
+	}
+
+	// Agent: status exploring → implemented (closes IDEA-1, hides banner).
+	setItemStatus(t, s, idea1.ID, "implemented")
+
+	// Phase 2 sanity: dashboard-shaped counts.
+	if got := countItemsInCollection(t, s, ws.ID, "plans"); got != 2 {
+		t.Errorf("Phase 2: plans count = %d, want 2 (PLAN-2 seed + user's plan)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "tasks"); got != 4 {
+		t.Errorf("Phase 2: tasks count = %d, want 4 (TASK-3 seed + 3 user tasks)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "ideas"); got != 2 {
+		t.Errorf("Phase 2: ideas count = %d, want 2 (IDEA-1 seed + user's idea)", got)
+	}
+	idea1Refresh := findItemByTitle(t, s, ws.ID, "ideas", "Welcome — let's get this place set up")
+	if idea1Refresh == nil || extractStatus(idea1Refresh.Fields) != "implemented" {
+		t.Errorf("Phase 2: IDEA-1 status not flipped to `implemented` (got %q)", extractStatus(safeFields(idea1Refresh)))
+	}
+
+	// ── Phase 3: idempotency on re-trigger ─────────────────────────
+	// The user re-runs `use pad to get IDEA-1` later; the workspace
+	// bootstrap path may run again (e.g. server-startup auto-upgrade).
+	// Re-seeding MUST NOT:
+	//   - Reset IDEA-1 from `implemented` back to `new` (that would
+	//     re-show the dashboard banner and confuse the user).
+	//   - Duplicate the four onboarding seeds.
+	//   - Touch the user's plan/tasks/idea.
+	//   - Re-add conventions/playbooks (already covered by
+	//     TestSeedCollectionsFromTemplateIdempotentWithSeedItems, but
+	//     re-checked here so the full-walkthrough story stands alone).
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("Phase 3 re-seed: %v", err)
+	}
+
+	// IDEA-1 status preserved.
+	idea1Final := findItemByTitle(t, s, ws.ID, "ideas", "Welcome — let's get this place set up")
+	if idea1Final == nil {
+		t.Fatal("Phase 3: IDEA-1 disappeared on re-seed")
+	}
+	if status := extractStatus(idea1Final.Fields); status != "implemented" {
+		t.Errorf("Phase 3: IDEA-1 status = %q after re-seed, want `implemented` (re-seed must NOT reset user-engaged items)", status)
+	}
+
+	// User items preserved.
+	if got := countItemsInCollection(t, s, ws.ID, "plans"); got != 2 {
+		t.Errorf("Phase 3: plans count = %d after re-seed, want 2 (re-seed should not duplicate or remove)", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "tasks"); got != 4 {
+		t.Errorf("Phase 3: tasks count = %d after re-seed, want 4", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "ideas"); got != 2 {
+		t.Errorf("Phase 3: ideas count = %d after re-seed, want 2", got)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "docs"); got != 1 {
+		t.Errorf("Phase 3: docs count = %d after re-seed, want 1 (DOC-4 seed only)", got)
+	}
+
+	// Conventions + playbooks counts unchanged.
+	if got := countItemsInCollection(t, s, ws.ID, "conventions"); got != convCountPhase1 {
+		t.Errorf("Phase 3: conventions count = %d, want %d (re-seed duplicated)", got, convCountPhase1)
+	}
+	if got := countItemsInCollection(t, s, ws.ID, "playbooks"); got != playCountPhase1 {
+		t.Errorf("Phase 3: playbooks count = %d, want %d (re-seed duplicated)", got, playCountPhase1)
+	}
+}
+
+// findItemByTitle is a helper for the onboarding-walkthrough test:
+// look up an item in a collection by exact title. Used because the
+// store's ResolveItem expects either UUID, ref, or slug, not a title.
+func findItemByTitle(t *testing.T, s *Store, workspaceID, collSlug, title string) *models.Item {
+	t.Helper()
+	items, err := s.ListItems(workspaceID, models.ItemListParams{CollectionSlug: collSlug})
+	if err != nil {
+		t.Fatalf("findItemByTitle: list %s: %v", collSlug, err)
+	}
+	for i := range items {
+		if items[i].Title == title {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+// extractStatus pulls the `status` field out of an item's fields JSON.
+// Returns "" for empty / malformed payloads — convenient for "did the
+// status field land?" assertions without a hard parse failure.
+func extractStatus(fieldsJSON string) string {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return ""
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return ""
+	}
+	if status, ok := fields["status"].(string); ok {
+		return status
+	}
+	return ""
+}
+
+// safeFields returns the item's Fields, or an empty string for nil
+// items. Callers use this to compose error messages where the item
+// itself may be nil (e.g. "expected status implemented, got <empty>").
+func safeFields(item *models.Item) string {
+	if item == nil {
+		return ""
+	}
+	return item.Fields
+}
+
+// setItemStatus updates only the status field of an item, preserving
+// any other fields. Used by the onboarding-walkthrough test to mimic
+// agent-driven status transitions.
+func setItemStatus(t *testing.T, s *Store, itemID, status string) {
+	t.Helper()
+	current, err := s.GetItem(itemID)
+	if err != nil || current == nil {
+		t.Fatalf("setItemStatus: get %s: %v", itemID, err)
+	}
+	var fields map[string]any
+	if current.Fields != "" {
+		_ = json.Unmarshal([]byte(current.Fields), &fields)
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["status"] = status
+	updatedJSON, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("setItemStatus: marshal fields: %v", err)
+	}
+	updated := string(updatedJSON)
+	if _, err := s.UpdateItem(itemID, models.ItemUpdate{
+		Fields:         &updated,
+		LastModifiedBy: "agent",
+		Source:         "cli",
+	}); err != nil {
+		t.Fatalf("setItemStatus: update %s: %v", itemID, err)
+	}
+}
+
+// countItemsInCollection returns the number of (non-deleted) items in
+// a collection. Cheap wrapper over ListItems used by the walkthrough
+// test for "did the count change as expected" assertions.
+func countItemsInCollection(t *testing.T, s *Store, workspaceID, collSlug string) int {
+	t.Helper()
+	items, err := s.ListItems(workspaceID, models.ItemListParams{CollectionSlug: collSlug})
+	if err != nil {
+		t.Fatalf("countItemsInCollection: list %s: %v", collSlug, err)
+	}
+	return len(items)
 }
 
 // --- Item Tests ---
