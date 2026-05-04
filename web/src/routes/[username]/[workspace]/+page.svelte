@@ -55,7 +55,13 @@
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
 	$effect(() => {
-		if (wsSlug) untrack(() => load(wsSlug));
+		if (wsSlug) {
+			// Reset banner state immediately on workspace change so a stale
+			// `new` status from the previous workspace can't briefly render
+			// the IDEA-1 banner before loadIdeaOne resolves for the new one.
+			ideaOneStatus = null;
+			untrack(() => load(wsSlug));
+		}
 	});
 
 	// Workspace home shows only the workspace-level title — clear section/item.
@@ -123,6 +129,13 @@
 	async function loadIdeaOne(slug: string) {
 		try {
 			const item = await api.items.get(slug, 'IDEA-1');
+			// Drop the response if the user navigated to a different
+			// workspace while we were waiting on the network. Otherwise a
+			// slow request from workspace A (where IDEA-1 is `new`) could
+			// land after the user is on workspace B and incorrectly flip
+			// the banner on. Mirrors the standard "was this still the
+			// active request" pattern.
+			if (slug !== wsSlug) return;
 			// Guard against ResolveItem's prefix→number-only fallback: only
 			// accept the result if it is the actual seeded IDEA-1.
 			if (!item || item.collection_prefix !== 'IDEA' || item.item_number !== 1) {
@@ -143,7 +156,9 @@
 			}
 			ideaOneStatus = status;
 		} catch {
-			ideaOneStatus = null;
+			// Same race-guard applies on the error path: only clear if this
+			// is still the active workspace.
+			if (slug === wsSlug) ideaOneStatus = null;
 		}
 	}
 
