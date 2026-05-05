@@ -131,8 +131,14 @@
 			return;
 		}
 		if (isMod(e) && e.key === 'f') {
-			e.preventDefault();
-			uiStore.requestCollectionSearch();
+			// Only intercept Cmd+F if a page has registered a handler (e.g. the
+			// collection list page opens its filter search). On other pages —
+			// notably item/document views — let it fall through to the browser's
+			// native find so users can search the document contents. (BUG-986)
+			if (uiStore.hasCollectionSearchHandler) {
+				e.preventDefault();
+				uiStore.triggerCollectionSearch();
+			}
 			return;
 		}
 		if (e.key === '?' && !isInputFocused()) {

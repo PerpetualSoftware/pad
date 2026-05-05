@@ -788,15 +788,18 @@
 		focusedIndex = -1;
 	});
 
-	// Watch for Cmd+F signal from layout
+	// Register a Cmd+F handler with the layout while this page is mounted.
+	// The layout only intercepts Cmd+F when a handler is registered, so on
+	// pages without one (e.g. item view) it falls through to browser-native
+	// find. (BUG-986)
 	$effect(() => {
-		if (uiStore.collectionSearchRequested) {
-			uiStore.clearCollectionSearchRequest();
+		uiStore.registerCollectionSearch(() => {
 			if (!filtersOpen) {
 				filtersOpen = true;
 			}
 			requestAnimationFrame(() => searchInputEl?.focus());
-		}
+		});
+		return () => uiStore.unregisterCollectionSearch();
 	});
 
 	function handlePageKeydown(e: KeyboardEvent) {
