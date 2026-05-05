@@ -294,16 +294,27 @@
 		} finally {
 			loading = false;
 
-			// Auto-start title editing for newly created items.
-			// Guarded on canEdit (PLAN-1100 / TASK-1105) so a read-only user
-			// can't trigger the title textarea by appending ?new=1.
-			if (page.url.searchParams.get('new') === '1' && item && canEdit) {
-				// Clean up the URL param first, then focus title after DOM settles
-				goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
-				await startEditTitle();
+			// Capture the auto-edit intent — actual trigger lives in the
+			// $effect below so it can fire even if /me (which feeds canEdit)
+			// resolves AFTER loadData() finishes. One-shot.
+			if (page.url.searchParams.get('new') === '1') {
+				pendingNewItemEdit = true;
 			}
 		}
 	}
+
+	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
+	// from false → true after loadData() resolves (workspace layout fires
+	// workspaceStore.setCurrent without awaiting it, so /me can land after
+	// the page mounts). Per Codex review round 5.
+	let pendingNewItemEdit = $state(false);
+	$effect(() => {
+		if (pendingNewItemEdit && item && canEdit && !loading) {
+			pendingNewItemEdit = false;
+			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+			startEditTitle();
+		}
+	});
 
 	async function startEditTitle() {
 		if (!item || !canEdit) return;
