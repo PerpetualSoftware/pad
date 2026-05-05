@@ -294,8 +294,10 @@
 		} finally {
 			loading = false;
 
-			// Auto-start title editing for newly created items
-			if (page.url.searchParams.get('new') === '1' && item) {
+			// Auto-start title editing for newly created items.
+			// Guarded on canEdit (PLAN-1100 / TASK-1105) so a read-only user
+			// can't trigger the title textarea by appending ?new=1.
+			if (page.url.searchParams.get('new') === '1' && item && canEdit) {
 				// Clean up the URL param first, then focus title after DOM settles
 				goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
 				await startEditTitle();
@@ -304,7 +306,7 @@
 	}
 
 	async function startEditTitle() {
-		if (!item) return;
+		if (!item || !canEdit) return;
 		titleDraft = item.title;
 		editingTitle = true;
 		// Wait for the DOM to render the textarea, then focus + select all
