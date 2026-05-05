@@ -7,6 +7,12 @@ Usage:
 ```svelte
 <FieldEditor {field} {value} onchange={(v) => handleChange(v)} />
 ```
+
+Pass `readonly={true}` to render a display-only view — used by item detail
+pages when the current user lacks edit permission on the item
+(PLAN-1100 / TASK-1105). Display mode renders the value with the same
+visual language as the editor but with no inputs, dropdowns, or mutation
+handlers — onchange is never called.
 -->
 <script lang="ts">
 	import type { FieldDef } from '$lib/types';
@@ -16,9 +22,10 @@ Usage:
 		field: FieldDef;
 		value: any;
 		onchange: (value: any) => void;
+		readonly?: boolean;
 	}
 
-	let { field, value, onchange }: Props = $props();
+	let { field, value, onchange, readonly = false }: Props = $props();
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the absolute-positioned select dropdown can clip at the
@@ -177,7 +184,48 @@ Usage:
 
 <svelte:window onclick={handleWindowClick} />
 
-{#if field.type === 'select'}
+{#if readonly}
+	<!--
+		Display-only mode (PLAN-1100 / TASK-1105). No inputs, no dropdowns,
+		no mutation handlers — value rendered with the same visual language
+		as the editor's idle state. Maps each field type to a non-interactive
+		representation; the empty case renders an em-dash to match how the
+		select/date triggers display "no value".
+	-->
+	{#if field.type === 'select'}
+		<div class="readonly-display">
+			{#if value && getStatusColor(value)}
+				<span class="color-dot" style:background={getStatusColor(value)}></span>
+			{/if}
+			<span class="select-label">{value ? formatLabel(value) : '—'}</span>
+		</div>
+	{:else if field.type === 'checkbox'}
+		<div class="readonly-display">
+			<span>{value ? 'Yes' : 'No'}</span>
+		</div>
+	{:else if field.type === 'date'}
+		<div class="readonly-display">
+			<span>{value ? formatDate(value) : '—'}</span>
+		</div>
+	{:else if field.type === 'number'}
+		<div class="readonly-display">
+			<span>{value ?? '—'}{value != null && field.suffix ? field.suffix : ''}</span>
+		</div>
+	{:else if field.type === 'url'}
+		<div class="readonly-display">
+			{#if value}
+				<a href={value} target="_blank" rel="noopener noreferrer" class="url-readonly">{value}</a>
+			{:else}
+				<span>—</span>
+			{/if}
+		</div>
+	{:else}
+		<div class="readonly-display">
+			<span>{value ?? '—'}</span>
+		</div>
+	{/if}
+
+{:else if field.type === 'select'}
 	{#snippet selectOptions()}
 		{#if field.options}
 			{#each field.options as option, i (option)}
@@ -378,6 +426,29 @@ Usage:
 {/if}
 
 <style>
+	/* ── Readonly display ─────────────────────────────────────────────── */
+
+	.readonly-display {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-1) var(--space-2);
+		min-height: 30px;
+		font-size: 0.88em;
+		color: var(--text-primary);
+	}
+
+	.url-readonly {
+		color: var(--accent-blue);
+		text-decoration: none;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.url-readonly:hover {
+		text-decoration: underline;
+	}
+
 	/* ── Shared input styles ──────────────────────────────────────────── */
 
 	.field-input {

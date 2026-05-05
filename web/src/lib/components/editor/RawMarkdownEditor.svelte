@@ -2,9 +2,11 @@
 	let {
 		content = '',
 		onUpdate,
+		readonly = false,
 	}: {
 		content?: string;
 		onUpdate?: (markdown: string) => void;
+		readonly?: boolean;
 	} = $props();
 
 	let localContent = $state('');
@@ -37,6 +39,7 @@
 	oninput={handleInput}
 	class="raw-textarea"
 	spellcheck="false"
+	{readonly}
 ></textarea>
 
 <style>

@@ -124,6 +124,11 @@
 	// by workspaceStore.setCurrent via the /me endpoint. workspaceMembers is
 	// still loaded for the assignee dropdown (line ~947).
 	let isOwner = $derived(workspaceStore.isOwner);
+	// Per-item edit predicate (PLAN-1100 / TASK-1105). Mirrors the server's
+	// ResolveUserPermission cascade: owner → item grant → collection grant
+	// → role + visibility. Drives title / content / FieldEditor / delete /
+	// status affordance gating below.
+	let canEdit = $derived(item ? workspaceStore.canEditItem(item) : false);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -289,17 +294,30 @@
 		} finally {
 			loading = false;
 
-			// Auto-start title editing for newly created items
-			if (page.url.searchParams.get('new') === '1' && item) {
-				// Clean up the URL param first, then focus title after DOM settles
-				goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
-				await startEditTitle();
-			}
+			// Capture the auto-edit intent — actual trigger lives in the
+			// $effect below so it can fire even if /me (which feeds canEdit)
+			// resolves AFTER loadData() finishes. One-shot. Always reassign
+			// (true OR false) so a stale flag from a previous ?new=1 load
+			// can't fire on a subsequent non-new item load — Codex round 6.
+			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
 		}
 	}
 
+	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
+	// from false → true after loadData() resolves (workspace layout fires
+	// workspaceStore.setCurrent without awaiting it, so /me can land after
+	// the page mounts). Per Codex review round 5.
+	let pendingNewItemEdit = $state(false);
+	$effect(() => {
+		if (pendingNewItemEdit && item && canEdit && !loading) {
+			pendingNewItemEdit = false;
+			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+			startEditTitle();
+		}
+	});
+
 	async function startEditTitle() {
-		if (!item) return;
+		if (!item || !canEdit) return;
 		titleDraft = item.title;
 		editingTitle = true;
 		// Wait for the DOM to render the textarea, then focus + select all
@@ -748,10 +766,13 @@
 					onkeydown={handleTitleKeydown}
 					oninput={(e) => autoResizeTitle(e.currentTarget)}
 				></textarea>
-			{:else}
+			{:else if canEdit}
 				<button class="title" onclick={startEditTitle}>
 					{item.title}
 				</button>
+			{:else}
+				<!-- Read-only title (PLAN-1100 / TASK-1105) — no click-to-edit. -->
+				<h1 class="title title-readonly">{item.title}</h1>
 			{/if}
 		</div>
 
@@ -798,58 +819,62 @@
 			>
 				Timeline
 			</button>
-			<div class="move-wrapper">
-				<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
-					{moving ? 'Moving...' : 'Move to...'}
-				</button>
-				{#snippet moveOptions()}
-					{#each moveTargets as target (target.slug)}
-						<button class="move-option" onclick={() => handleMove(target.slug)}>
-							{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
-							{target.name}
-						</button>
-					{/each}
-				{/snippet}
-				{#if isMobile && showMoveMenu}
-					<!--
-						Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
-						its global keydown listener) isn't mounted when the menu is
-						closed. Same pattern fix as ReactionPicker.
-					-->
-					<BottomSheet
-						open={showMoveMenu}
-						onclose={() => (showMoveMenu = false)}
-						title="Move to…"
-					>
-						<div class="move-sheet-body">
+			{#if canEdit}
+				<div class="move-wrapper">
+					<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
+						{moving ? 'Moving...' : 'Move to...'}
+					</button>
+					{#snippet moveOptions()}
+						{#each moveTargets as target (target.slug)}
+							<button class="move-option" onclick={() => handleMove(target.slug)}>
+								{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+								{target.name}
+							</button>
+						{/each}
+					{/snippet}
+					{#if isMobile && showMoveMenu}
+						<!--
+							Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
+							its global keydown listener) isn't mounted when the menu is
+							closed. Same pattern fix as ReactionPicker.
+						-->
+						<BottomSheet
+							open={showMoveMenu}
+							onclose={() => (showMoveMenu = false)}
+							title="Move to…"
+						>
+							<div class="move-sheet-body">
+								{@render moveOptions()}
+							</div>
+						</BottomSheet>
+					{:else if showMoveMenu}
+						<div class="move-dropdown">
 							{@render moveOptions()}
 						</div>
-					</BottomSheet>
-				{:else if showMoveMenu}
-					<div class="move-dropdown">
-						{@render moveOptions()}
-					</div>
-				{/if}
-			</div>
+					{/if}
+				</div>
+			{/if}
 			{#if isOwner}
 				<button class="action-btn" onclick={() => { shareDialogOpen = true; }}>
 					Share
 				</button>
 			{/if}
-			{#if confirmDelete}
-				<span class="delete-confirm">
-					Delete this item?
-					<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
-						{deleting ? '...' : 'Yes'}
+			{#if canEdit}
+				{#if confirmDelete}
+					<span class="delete-confirm">
+						Delete this item?
+						<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
+							{deleting ? '...' : 'Yes'}
+						</button>
+						<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
+							No
+						</button>
+					</span>
+				{:else}
+					<button class="action-btn delete-btn" onclick={() => { confirmDelete = true; }}>
+						Delete
 					</button>
-					<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
-						No
-					</button>
-				</span>
-			{:else}
-				<button class="action-btn delete-btn" onclick={() => { confirmDelete = true; }}>
-					Delete
-				</button>
+				{/if}
 			{/if}
 		</div>
 
@@ -924,6 +949,7 @@
 									{field}
 									value={rawFieldValue}
 									onchange={(v) => updateField(field.key, v)}
+									readonly={!canEdit}
 								/>
 							</div>
 						</div>
@@ -938,19 +964,32 @@
 					<div class="field-row">
 						<span class="field-label">Assigned to</span>
 						<div class="field-value">
-							<select
-								class="assignment-select"
-								value={item.assigned_user_id ?? ''}
-								onchange={(e) => {
-									const val = (e.target as HTMLSelectElement).value;
-									updateAssignedUser(val || null);
-								}}
-							>
-								<option value="">Unassigned</option>
-								{#each workspaceMembers as member (member.user_id)}
-									<option value={member.user_id}>{member.user_name}</option>
-								{/each}
-							</select>
+							{#if canEdit}
+								<select
+									class="assignment-select"
+									value={item.assigned_user_id ?? ''}
+									onchange={(e) => {
+										const val = (e.target as HTMLSelectElement).value;
+										updateAssignedUser(val || null);
+									}}
+								>
+									<option value="">Unassigned</option>
+									{#each workspaceMembers as member (member.user_id)}
+										<option value={member.user_id}>{member.user_name}</option>
+									{/each}
+								</select>
+							{:else}
+								<!-- Read-only display (PLAN-1100 / TASK-1105). Assignment
+								     mutations go through api.items.update which is
+								     server-gated on edit permission. -->
+								<span class="assignment-readonly">
+									{#if item?.assigned_user_id}
+										{workspaceMembers.find(m => m.user_id === item!.assigned_user_id)?.user_name ?? '—'}
+									{:else}
+										Unassigned
+									{/if}
+								</span>
+							{/if}
 						</div>
 					</div>
 				{/if}
@@ -958,19 +997,30 @@
 					<div class="field-row">
 						<span class="field-label">Role</span>
 						<div class="field-value">
-							<select
-								class="assignment-select"
-								value={item.agent_role_id ?? ''}
-								onchange={(e) => {
-									const val = (e.target as HTMLSelectElement).value;
-									updateAgentRole(val || null);
-								}}
-							>
-								<option value="">No role</option>
-								{#each agentRoles as role (role.id)}
-									<option value={role.id}>{role.icon ? role.icon + ' ' : ''}{role.name}</option>
-								{/each}
-							</select>
+							{#if canEdit}
+								<select
+									class="assignment-select"
+									value={item.agent_role_id ?? ''}
+									onchange={(e) => {
+										const val = (e.target as HTMLSelectElement).value;
+										updateAgentRole(val || null);
+									}}
+								>
+									<option value="">No role</option>
+									{#each agentRoles as role (role.id)}
+										<option value={role.id}>{role.icon ? role.icon + ' ' : ''}{role.name}</option>
+									{/each}
+								</select>
+							{:else}
+								<span class="assignment-readonly">
+									{#if item?.agent_role_id}
+										{@const r = agentRoles.find(r => r.id === item!.agent_role_id)}
+										{r ? `${r.icon ? r.icon + ' ' : ''}${r.name}` : '—'}
+									{:else}
+										No role
+									{/if}
+								</span>
+							{/if}
 						</div>
 					</div>
 				{/if}
@@ -994,19 +1044,29 @@
 				</div>
 				{#if rawMode}
 					{#key item.id}
-						<RawMarkdownEditor content={item.content ?? ''} onUpdate={handleRawContentUpdate} />
+						<RawMarkdownEditor content={item.content ?? ''} onUpdate={handleRawContentUpdate} readonly={!canEdit} />
 					{/key}
 				{:else}
-					{#key item.id}
-						<Editor content={editorContent} onUpdate={handleContentUpdate} editable={true} onEditor={(e) => editorInstance = e} />
+					<!--
+						Key on canEdit so the Editor is reconstructed when the user
+						gains/loses edit permission. BlockDragHandle (and any future
+						extensions whose registration is gated on `editable`) are
+						decided at construction time — without re-keying, an editor
+						mounted before /me resolves would never gain the drag handle
+						even after canEdit flips true. Per Codex review round 4.
+					-->
+					{#key `${item.id}:${canEdit}`}
+						<Editor content={editorContent} onUpdate={handleContentUpdate} editable={canEdit} onEditor={(e) => editorInstance = e} />
 					{/key}
-					<EditorBubbleMenu
-						editor={editorInstance}
-						{wsSlug}
-						collections={collectionStore.collections}
-						onItemCreated={() => collectionStore.loadItems(wsSlug)}
-					/>
-					<EditorLinkPopover editor={editorInstance} />
+					{#if canEdit}
+						<EditorBubbleMenu
+							editor={editorInstance}
+							{wsSlug}
+							collections={collectionStore.collections}
+							onItemCreated={() => collectionStore.loadItems(wsSlug)}
+						/>
+						<EditorLinkPopover editor={editorInstance} />
+					{/if}
 				{/if}
 			</div>
 		</div>
@@ -1033,7 +1093,7 @@
 											{#if entry.status}
 												<span class="link-status">{formatFieldDisplay(entry.status)}</span>
 											{/if}
-											{#if entry.linkId}
+											{#if entry.linkId && canEdit}
 												<button class="link-delete-btn" title="Remove relationship" onclick={() => handleDeleteLink(entry.linkId)}>×</button>
 											{/if}
 										</span>
@@ -1046,8 +1106,8 @@
 			</div>
 		{/if}
 
-		<!-- Add Relationship -->
-		{#if item}
+		<!-- Add Relationship — gated on canEdit (PLAN-1100 / TASK-1105). -->
+		{#if item && canEdit}
 			<div class="add-relationship-section">
 				{#if !showAddLink}
 					<button class="add-relationship-btn" onclick={() => { showAddLink = true; }}>
@@ -1291,6 +1351,27 @@
 	}
 	.title:hover {
 		background: var(--bg-secondary);
+	}
+	/* Read-only title for users without canEditItem (PLAN-1100 / TASK-1105).
+	   Removes the click-to-edit affordance: no hover background, no
+	   text-cursor, default heading flow. */
+	.title-readonly {
+		cursor: default;
+		margin: 0;
+		font-weight: 700;
+	}
+	.title-readonly:hover {
+		background: none;
+	}
+	/* Assignment fallback display for read-only mode. Mirrors the height
+	   and padding of the live `.assignment-select` so the row doesn't
+	   reflow when the user gains/loses edit permission. */
+	.assignment-readonly {
+		display: inline-flex;
+		align-items: center;
+		min-height: 30px;
+		color: var(--text-primary);
+		font-size: 0.88em;
 	}
 	.title-input {
 		font-size: 1.6em;

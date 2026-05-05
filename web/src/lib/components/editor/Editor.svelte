@@ -472,7 +472,12 @@
 				transformPastedText: true,
 				transformCopiedText: true,
 			}),
-			BlockDragHandle,
+			// BlockDragHandle registers a drag-to-reorder UI in the prose
+			// mirror view that is NOT gated on tiptap's `editable` flag —
+			// its handle can still drag/dispatch transactions even when
+			// `editable=false`. Exclude entirely in read-only mode so the
+			// handle is never injected (PLAN-1100 / TASK-1105 round 3).
+			...(editable ? [BlockDragHandle] : []),
 			AttachmentImage.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,
@@ -815,7 +820,7 @@
 	lines 658-659) — this just makes the toolbar visibility actually
 	consult it.
 -->
-{#if isMobile && keyboardVisible && editor && editorFocused}
+{#if editable && isMobile && keyboardVisible && editor && editorFocused}
 	{@const _tick = editorTick}
 	{@const listItemType = getActiveListItemType()}
 	{@const canIndent = canIndentListItem(listItemType)}
@@ -843,7 +848,7 @@
 
 <div class="editor-wrapper">
 	<div bind:this={element} class="editor-content prose"></div>
-	{#if editor && editorTick >= 0 && editor.isActive('table')}
+	{#if editable && editor && editorTick >= 0 && editor.isActive('table')}
 		{@const tpos = getTableToolbarPos()}
 		{#if tpos}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
