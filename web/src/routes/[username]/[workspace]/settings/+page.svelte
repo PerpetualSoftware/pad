@@ -683,7 +683,7 @@
 					<div class="coll-list">
 						{#each collections as coll (coll.id)}
 							{@const schema = parseSchema(coll)}
-							<button class="card coll-card coll-card-btn" onclick={() => (editingCollection = coll)}>
+							{#snippet collCardBody()}
 								<div class="coll-header">
 									<span class="coll-icon">{coll.icon || '#'}</span>
 									<span class="coll-name">{coll.name}</span>
@@ -692,7 +692,9 @@
 									{#if coll.is_default}
 										<span class="badge">default</span>
 									{/if}
-									<span class="edit-hint">Edit</span>
+									{#if isOwner}
+										<span class="edit-hint">Edit</span>
+									{/if}
 								</div>
 								{#if schema.fields.length > 0}
 									<div class="field-tags">
@@ -701,20 +703,37 @@
 										{/each}
 									</div>
 								{/if}
-							</button>
+							{/snippet}
+							<!-- Owner-only: card opens the edit modal. Non-owners see
+							     the same card content but as a non-interactive div
+							     (server requires owner role for collection update/delete
+							     — handlers_collections.go:113, :164). -->
+							{#if isOwner}
+								<button class="card coll-card coll-card-btn" onclick={() => (editingCollection = coll)}>
+									{@render collCardBody()}
+								</button>
+							{:else}
+								<div class="card coll-card">
+									{@render collCardBody()}
+								</div>
+							{/if}
 						{/each}
 					</div>
 				{/if}
-				<button class="btn btn-create" onclick={() => (showCreateModal = true)}>
-					+ Create Collection
-				</button>
-				<CreateCollectionModal
-					open={showCreateModal}
-					{wsSlug}
-					oncreated={handleCollectionCreated}
-					onclose={() => (showCreateModal = false)}
-				/>
-				{#if editingCollection}
+				<!-- Server requires owner role for collection create
+				     (handlers_collections.go:48). UI matches. -->
+				{#if isOwner}
+					<button class="btn btn-create" onclick={() => (showCreateModal = true)}>
+						+ Create Collection
+					</button>
+					<CreateCollectionModal
+						open={showCreateModal}
+						{wsSlug}
+						oncreated={handleCollectionCreated}
+						onclose={() => (showCreateModal = false)}
+					/>
+				{/if}
+				{#if editingCollection && isOwner}
 					<EditCollectionModal
 						open={true}
 						collection={editingCollection}
