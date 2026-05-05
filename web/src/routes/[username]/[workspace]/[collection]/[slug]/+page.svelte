@@ -1159,7 +1159,7 @@
 
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
 		{#if item}
-			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} />
+			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} {canEdit} />
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->

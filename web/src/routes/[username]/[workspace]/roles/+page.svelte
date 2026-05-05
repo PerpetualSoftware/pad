@@ -14,6 +14,31 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
+	// Role-board mutations gate on owner role (PLAN-1100 / TASK-1108):
+	// role create/edit/delete are owner-only on the server, and item drag
+	// across lanes is per-item edit which we proxy via owner-or-editor —
+	// the server enforces per-item, but svelte-dnd-action only supports
+	// zone-level dragDisabled (same constraint as TASK-1106 ListView).
+	let isOwner = $derived(workspaceStore.isOwner);
+	// Lane reorder is editor+ on the server (handleRoleBoardLaneReorder
+	// uses requireMinRole "editor"). Role create/edit/delete remain
+	// owner-only.
+	let canReorderLanes = $derived(
+		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
+	);
+	// canEditAnyItem mirrors the server's grant-aware reorder permission:
+	// a viewer/guest with even one CollectionGrant.edit or ItemGrant.edit
+	// can mutate items in this view (server enforces per-item; we just
+	// avoid hiding their drag affordance globally).
+	let canEditAnyItem = $derived.by(() => {
+		const role = workspaceStore.currentRole;
+		if (role === 'owner' || role === 'editor') return true;
+		const m = workspaceStore.currentMembership;
+		if (!m) return false;
+		if (m.collection_grants.some((g) => g.permission === 'edit')) return true;
+		if (m.item_grants.some((g) => g.permission === 'edit')) return true;
+		return false;
+	});
 
 	// Data
 	let lanes = $state<RoleBoardLane[]>([]);
@@ -29,8 +54,15 @@
 	let newItemTitle = $state('');
 	let newItemSaving = $state(false);
 
+	// Eligible collections for the "+ New" item flow. Filter to collections
+	// the user can actually create items in — handleCreateItem requires
+	// collection-level edit on the server, so an item-only edit grant
+	// doesn't qualify (Codex round 2).
 	let eligibleCollections = $derived(
-		collectionStore.collections.filter(c => !['conventions', 'playbooks'].includes(c.slug))
+		collectionStore.collections.filter(
+			(c) => !['conventions', 'playbooks'].includes(c.slug)
+				&& workspaceStore.canEditCollection(c.id)
+		)
 	);
 
 	function openNewItem() {
@@ -390,7 +422,11 @@
 			>
 				Mine
 			</button>
-			<button class="new-item-btn" onclick={openNewItem}>+ New</button>
+			<!-- "+ New" only when there's at least one collection the user can
+			     create items in (eligibleCollections is now canEditCollection-filtered). -->
+			{#if eligibleCollections.length > 0}
+				<button class="new-item-btn" onclick={openNewItem}>+ New</button>
+			{/if}
 		</div>
 	</header>
 
@@ -516,7 +552,9 @@
 				<p class="empty-desc">
 					Agent roles let you organize work by what kind of thinking it requires — planning, implementing, reviewing, etc.
 				</p>
-				<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
+				{#if isOwner}
+					<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
+				{/if}
 			{/if}
 		</div>
 	{:else}
@@ -533,23 +571,25 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="lane-header"
-						draggable={!isUnassigned}
-						ondragstart={(e) => handleLaneDragStart(e, laneId)}
-						ondragover={(e) => handleLaneDragOver(e, laneId)}
-						ondragleave={handleLaneDragLeave}
-						ondrop={(e) => handleLaneDrop(e, laneId)}
-						ondragend={handleLaneDragEnd}
+						draggable={!isUnassigned && canReorderLanes}
+						ondragstart={canReorderLanes ? (e) => handleLaneDragStart(e, laneId) : undefined}
+						ondragover={canReorderLanes ? (e) => handleLaneDragOver(e, laneId) : undefined}
+						ondragleave={canReorderLanes ? handleLaneDragLeave : undefined}
+						ondrop={canReorderLanes ? (e) => handleLaneDrop(e, laneId) : undefined}
+						ondragend={canReorderLanes ? handleLaneDragEnd : undefined}
 					>
 						<div class="lane-title-row">
 							{#if lane.role}
-								<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
+								{#if canReorderLanes}
+									<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
+								{/if}
 								<span class="lane-icon">{lane.role.icon || '&#129302;'}</span>
 								<span class="lane-name">{lane.role.name}</span>
 							{:else}
 								<span class="lane-name unassigned-name">Unassigned</span>
 							{/if}
 							<span class="lane-count">{lane.items.length}</span>
-							{#if lane.role}
+							{#if lane.role && isOwner}
 								<button class="lane-edit-btn" title="Edit role" onclick={() => lane.role && openEditModal(lane.role)}>✎</button>
 							{/if}
 						</div>
@@ -566,7 +606,8 @@
 							flipDurationMs,
 							type: 'role-board-card',
 							dropTargetClasses: ['drop-target'],
-							delayTouchStart: touchDragDelayMs
+							delayTouchStart: touchDragDelayMs,
+							dragDisabled: !canEditAnyItem
 						}}
 						onconsider={(e) => handleDndConsider(laneKey(lane), e)}
 						onfinalize={(e) => handleDndFinalize(laneKey(lane), e)}
@@ -591,13 +632,15 @@
 				</div>
 			{/each}
 
-			<!-- Add role column -->
-			<div class="lane lane-add">
-				<button class="add-role-btn" onclick={openCreateModal}>
-					<span class="add-role-icon">+</span>
-					<span class="add-role-label">Add Role</span>
-				</button>
-			</div>
+			<!-- Add role column — owner-only (PLAN-1100 / TASK-1108). -->
+			{#if isOwner}
+				<div class="lane lane-add">
+					<button class="add-role-btn" onclick={openCreateModal}>
+						<span class="add-role-icon">+</span>
+						<span class="add-role-label">Add Role</span>
+					</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>

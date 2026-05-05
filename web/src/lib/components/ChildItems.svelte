@@ -20,9 +20,16 @@
 		parentFields?: Record<string, any>;
 		terminalStatuses?: string[];
 		onChildrenChange?: (children: Item[]) => void;
+		/**
+		 * canEdit gates child reorder via drag (PLAN-1100 / TASK-1108).
+		 * Default true preserves behavior for callers that don't pass it.
+		 * Reorder is per-child mutation server-side; this is a zone-level
+		 * proxy gate (svelte-dnd-action limitation, same as TASK-1106).
+		 */
+		canEdit?: boolean;
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -206,7 +213,8 @@
 						flipDurationMs,
 						type: 'child-item',
 						dropTargetClasses: ['drop-target'],
-						delayTouchStart: touchDragDelayMs
+						delayTouchStart: touchDragDelayMs,
+						dragDisabled: !canEdit
 					}}
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}
