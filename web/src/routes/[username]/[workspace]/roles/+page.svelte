@@ -14,6 +14,15 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
+	// Role-board mutations gate on owner role (PLAN-1100 / TASK-1108):
+	// role create/edit/delete are owner-only on the server, and item drag
+	// across lanes is per-item edit which we proxy via owner-or-editor —
+	// the server enforces per-item, but svelte-dnd-action only supports
+	// zone-level dragDisabled (same constraint as TASK-1106 ListView).
+	let isOwner = $derived(workspaceStore.isOwner);
+	let canEditAnyItem = $derived(
+		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
+	);
 
 	// Data
 	let lanes = $state<RoleBoardLane[]>([]);
@@ -390,7 +399,9 @@
 			>
 				Mine
 			</button>
-			<button class="new-item-btn" onclick={openNewItem}>+ New</button>
+			{#if canEditAnyItem}
+				<button class="new-item-btn" onclick={openNewItem}>+ New</button>
+			{/if}
 		</div>
 	</header>
 
@@ -533,23 +544,25 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="lane-header"
-						draggable={!isUnassigned}
-						ondragstart={(e) => handleLaneDragStart(e, laneId)}
-						ondragover={(e) => handleLaneDragOver(e, laneId)}
-						ondragleave={handleLaneDragLeave}
-						ondrop={(e) => handleLaneDrop(e, laneId)}
-						ondragend={handleLaneDragEnd}
+						draggable={!isUnassigned && isOwner}
+						ondragstart={isOwner ? (e) => handleLaneDragStart(e, laneId) : undefined}
+						ondragover={isOwner ? (e) => handleLaneDragOver(e, laneId) : undefined}
+						ondragleave={isOwner ? handleLaneDragLeave : undefined}
+						ondrop={isOwner ? (e) => handleLaneDrop(e, laneId) : undefined}
+						ondragend={isOwner ? handleLaneDragEnd : undefined}
 					>
 						<div class="lane-title-row">
 							{#if lane.role}
-								<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
+								{#if isOwner}
+									<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
+								{/if}
 								<span class="lane-icon">{lane.role.icon || '&#129302;'}</span>
 								<span class="lane-name">{lane.role.name}</span>
 							{:else}
 								<span class="lane-name unassigned-name">Unassigned</span>
 							{/if}
 							<span class="lane-count">{lane.items.length}</span>
-							{#if lane.role}
+							{#if lane.role && isOwner}
 								<button class="lane-edit-btn" title="Edit role" onclick={() => lane.role && openEditModal(lane.role)}>✎</button>
 							{/if}
 						</div>
@@ -566,7 +579,8 @@
 							flipDurationMs,
 							type: 'role-board-card',
 							dropTargetClasses: ['drop-target'],
-							delayTouchStart: touchDragDelayMs
+							delayTouchStart: touchDragDelayMs,
+							dragDisabled: !canEditAnyItem
 						}}
 						onconsider={(e) => handleDndConsider(laneKey(lane), e)}
 						onfinalize={(e) => handleDndFinalize(laneKey(lane), e)}
@@ -591,13 +605,15 @@
 				</div>
 			{/each}
 
-			<!-- Add role column -->
-			<div class="lane lane-add">
-				<button class="add-role-btn" onclick={openCreateModal}>
-					<span class="add-role-icon">+</span>
-					<span class="add-role-label">Add Role</span>
-				</button>
-			</div>
+			<!-- Add role column — owner-only (PLAN-1100 / TASK-1108). -->
+			{#if isOwner}
+				<div class="lane lane-add">
+					<button class="add-role-btn" onclick={openCreateModal}>
+						<span class="add-role-icon">+</span>
+						<span class="add-role-label">Add Role</span>
+					</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>
