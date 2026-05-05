@@ -472,7 +472,12 @@
 				transformPastedText: true,
 				transformCopiedText: true,
 			}),
-			BlockDragHandle,
+			// BlockDragHandle registers a drag-to-reorder UI in the prose
+			// mirror view that is NOT gated on tiptap's `editable` flag —
+			// its handle can still drag/dispatch transactions even when
+			// `editable=false`. Exclude entirely in read-only mode so the
+			// handle is never injected (PLAN-1100 / TASK-1105 round 3).
+			...(editable ? [BlockDragHandle] : []),
 			AttachmentImage.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,

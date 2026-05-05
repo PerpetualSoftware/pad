@@ -808,39 +808,41 @@
 			>
 				Timeline
 			</button>
-			<div class="move-wrapper">
-				<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
-					{moving ? 'Moving...' : 'Move to...'}
-				</button>
-				{#snippet moveOptions()}
-					{#each moveTargets as target (target.slug)}
-						<button class="move-option" onclick={() => handleMove(target.slug)}>
-							{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
-							{target.name}
-						</button>
-					{/each}
-				{/snippet}
-				{#if isMobile && showMoveMenu}
-					<!--
-						Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
-						its global keydown listener) isn't mounted when the menu is
-						closed. Same pattern fix as ReactionPicker.
-					-->
-					<BottomSheet
-						open={showMoveMenu}
-						onclose={() => (showMoveMenu = false)}
-						title="Move to…"
-					>
-						<div class="move-sheet-body">
+			{#if canEdit}
+				<div class="move-wrapper">
+					<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
+						{moving ? 'Moving...' : 'Move to...'}
+					</button>
+					{#snippet moveOptions()}
+						{#each moveTargets as target (target.slug)}
+							<button class="move-option" onclick={() => handleMove(target.slug)}>
+								{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+								{target.name}
+							</button>
+						{/each}
+					{/snippet}
+					{#if isMobile && showMoveMenu}
+						<!--
+							Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
+							its global keydown listener) isn't mounted when the menu is
+							closed. Same pattern fix as ReactionPicker.
+						-->
+						<BottomSheet
+							open={showMoveMenu}
+							onclose={() => (showMoveMenu = false)}
+							title="Move to…"
+						>
+							<div class="move-sheet-body">
+								{@render moveOptions()}
+							</div>
+						</BottomSheet>
+					{:else if showMoveMenu}
+						<div class="move-dropdown">
 							{@render moveOptions()}
 						</div>
-					</BottomSheet>
-				{:else if showMoveMenu}
-					<div class="move-dropdown">
-						{@render moveOptions()}
-					</div>
-				{/if}
-			</div>
+					{/if}
+				</div>
+			{/if}
 			{#if isOwner}
 				<button class="action-btn" onclick={() => { shareDialogOpen = true; }}>
 					Share
@@ -1072,7 +1074,7 @@
 											{#if entry.status}
 												<span class="link-status">{formatFieldDisplay(entry.status)}</span>
 											{/if}
-											{#if entry.linkId}
+											{#if entry.linkId && canEdit}
 												<button class="link-delete-btn" title="Remove relationship" onclick={() => handleDeleteLink(entry.linkId)}>×</button>
 											{/if}
 										</span>
@@ -1085,8 +1087,8 @@
 			</div>
 		{/if}
 
-		<!-- Add Relationship -->
-		{#if item}
+		<!-- Add Relationship — gated on canEdit (PLAN-1100 / TASK-1105). -->
+		{#if item && canEdit}
 			<div class="add-relationship-section">
 				{#if !showAddLink}
 					<button class="add-relationship-btn" onclick={() => { showAddLink = true; }}>
