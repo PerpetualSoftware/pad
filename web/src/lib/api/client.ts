@@ -37,6 +37,7 @@ import type {
 	ChangesResponse,
 	CollectionGrant,
 	ItemGrant,
+	WorkspaceMembership,
 	ShareLink,
 	TOTPSetupResponse,
 	TOTPVerifyResponse,
@@ -164,6 +165,12 @@ export const api = {
 			}),
 
 		get: (slug: string) => request<Workspace>(`/workspaces/${slug}`),
+
+		// me returns the current user's effective workspace context — role,
+		// collection_access mode, visible collection IDs, and direct grants.
+		// Used by the workspace store's permission helpers (PLAN-1100).
+		me: (slug: string) =>
+			request<WorkspaceMembership>(`/workspaces/${slug}/me`),
 
 		update: (slug: string, data: WorkspaceUpdate) =>
 			request<Workspace>(`/workspaces/${slug}`, {
