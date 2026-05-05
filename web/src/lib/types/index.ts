@@ -100,6 +100,42 @@ export interface ItemGrant {
 	user_username?: string;
 }
 
+// ─── Workspace Membership (current user) ─────────────────────────────────────
+
+/**
+ * The current user's effective workspace context, returned by
+ * `GET /api/v1/workspaces/{ws}/me`. Used by the workspace store's permission
+ * helpers (canEditWorkspace / canEditCollection / canEditItem etc.) to decide
+ * which UI affordances to render.
+ *
+ * The shape mirrors the server's permission cascade:
+ * - role: owner / editor / viewer / guest (admin platform users normalize to
+ *   "owner"; legacy workspace-scoped tokens normalize to "editor")
+ * - collection_access: "all" means no per-collection filter; "specific" means
+ *   visibility is gated by visible_collection_ids
+ * - visible_collection_ids: nav-visibility list when collection_access is
+ *   "specific"; empty when "all". Includes system collections, direct
+ *   collection grants, and collections containing item-granted items
+ *   (so the collection appears in the sidebar). NOT a sufficient signal
+ *   for per-item access — see full_access_collection_ids.
+ * - full_access_collection_ids: strict per-item access list when
+ *   collection_access is "specific"; empty when "all". Includes only
+ *   collections where every item is accessible (member_collection_access
+ *   + system collections + direct collection grants). Item-grant
+ *   collections are intentionally excluded — having an item grant in
+ *   collection X does NOT confer access to siblings in X.
+ * - collection_grants / item_grants: direct overrides that beat membership
+ *   role per the server's ResolveUserPermission cascade.
+ */
+export interface WorkspaceMembership {
+	role: 'owner' | 'editor' | 'viewer' | 'guest';
+	collection_access: 'all' | 'specific';
+	visible_collection_ids: string[];
+	full_access_collection_ids: string[];
+	collection_grants: CollectionGrant[];
+	item_grants: ItemGrant[];
+}
+
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 export interface Workspace {

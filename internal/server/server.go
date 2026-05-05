@@ -1070,6 +1070,11 @@ func (s *Server) setupRouter() {
 						r.Put("/{userID}/collection-access", s.handleSetMemberCollectionAccess)
 					})
 
+					// Me — current user's effective workspace context (role,
+					// collection access, grants). Open to any principal admitted
+					// by RequireWorkspaceAccess (members + guests).
+					r.Get("/me", s.handleGetMe)
+
 					// Dashboard (v2)
 					r.Get("/dashboard", s.handleGetDashboard)
 

@@ -16,10 +16,10 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -53,7 +53,10 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
-	let isOwner = $derived(workspaceMembers.some(m => m.user_id === authStore.userId && m.role === 'owner'));
+	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
+	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
+	// array remains for the assignee dropdown / member rows.
+	let isOwner = $derived(workspaceStore.isOwner);
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {

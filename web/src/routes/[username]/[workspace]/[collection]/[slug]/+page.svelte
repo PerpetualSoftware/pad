@@ -23,9 +23,9 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
-	import { authStore } from '$lib/stores/auth.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -120,7 +120,10 @@
 	}
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
 	let codeContext = $derived(item?.code_context ?? null);
-	let isOwner = $derived(workspaceMembers.some(m => m.user_id === authStore.userId && m.role === 'owner'));
+	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
+	// by workspaceStore.setCurrent via the /me endpoint. workspaceMembers is
+	// still loaded for the assignee dropdown (line ~947).
+	let isOwner = $derived(workspaceStore.isOwner);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();

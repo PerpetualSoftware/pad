@@ -35,7 +35,8 @@
 	let inviteRole = $state('editor');
 	let inviting = $state(false);
 	let inviteResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
-	let currentUserRole = $state('');
+	// Current-user role + isOwner now come from workspaceStore (PLAN-1100 / TASK-1101)
+	// — populated by workspaceStore.setCurrent via the /me endpoint.
 
 	// Collection Access
 	let expandedAccessUserId = $state<string | null>(null);
@@ -85,12 +86,8 @@
 				const memberData = await api.members.list(slug);
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
-				// Determine current user's role
-				const session = await api.auth.session();
-				if (session.user) {
-					const me = members.find(m => m.user_email === session.user!.email);
-					currentUserRole = me?.role ?? '';
-				}
+				// Note: current-user role no longer derived here. workspaceStore.setCurrent
+				// fetches /me and pins workspaceStore.isOwner / .currentRole.
 			} catch {}
 		} catch { /* allow partial render */
 		} finally {
@@ -313,7 +310,7 @@
 		}
 	}
 
-	let isOwner = $derived(currentUserRole === 'owner');
+	let isOwner = $derived(workspaceStore.isOwner);
 
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
