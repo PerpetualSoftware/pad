@@ -20,9 +20,19 @@
 	// the server enforces per-item, but svelte-dnd-action only supports
 	// zone-level dragDisabled (same constraint as TASK-1106 ListView).
 	let isOwner = $derived(workspaceStore.isOwner);
-	let canEditAnyItem = $derived(
-		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
-	);
+	// canEditAnyItem mirrors the server's grant-aware reorder permission:
+	// a viewer/guest with even one CollectionGrant.edit or ItemGrant.edit
+	// can mutate items in this view (server enforces per-item; we just
+	// avoid hiding their drag affordance globally).
+	let canEditAnyItem = $derived.by(() => {
+		const role = workspaceStore.currentRole;
+		if (role === 'owner' || role === 'editor') return true;
+		const m = workspaceStore.currentMembership;
+		if (!m) return false;
+		if (m.collection_grants.some((g) => g.permission === 'edit')) return true;
+		if (m.item_grants.some((g) => g.permission === 'edit')) return true;
+		return false;
+	});
 
 	// Data
 	let lanes = $state<RoleBoardLane[]>([]);
@@ -527,7 +537,9 @@
 				<p class="empty-desc">
 					Agent roles let you organize work by what kind of thinking it requires — planning, implementing, reviewing, etc.
 				</p>
-				<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
+				{#if isOwner}
+					<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
+				{/if}
 			{/if}
 		</div>
 	{:else}
