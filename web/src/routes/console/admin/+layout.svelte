@@ -134,4 +134,26 @@
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-blue);
 	}
+
+	/*
+		Mobile: keep the tab-bar visual identity but allow horizontal
+		scroll so all tabs are reachable on narrow viewports without
+		wrapping or clipping. Mirrors the overflow-x:auto pattern used
+		elsewhere in the app (e.g. Editor.svelte). See BUG-1118.
+	*/
+	@media (max-width: 640px) {
+		.admin-tabs {
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+			flex-wrap: nowrap;
+			scrollbar-width: none;
+		}
+		.admin-tabs::-webkit-scrollbar {
+			display: none;
+		}
+		.admin-tab {
+			flex-shrink: 0;
+			white-space: nowrap;
+		}
+	}
 </style>
