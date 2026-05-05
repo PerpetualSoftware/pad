@@ -1170,6 +1170,8 @@
 				currentContent={item.content ?? ''}
 				items={collectionStore.items ?? []}
 				onRestore={handleVersionRestore}
+				itemId={item.id}
+				collectionId={item.collection_id}
 			/>
 		</div>
 
