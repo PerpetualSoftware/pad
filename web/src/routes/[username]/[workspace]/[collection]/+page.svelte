@@ -57,6 +57,13 @@
 	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
 	// array remains for the assignee dropdown / member rows.
 	let isOwner = $derived(workspaceStore.isOwner);
+	// Per-collection edit predicate (PLAN-1100 / TASK-1104). Drives create-item
+	// affordances (+ New, quick-create, empty-state CTA) on this collection
+	// page. Mirrors the server's per-collection edit cascade (item CRUD on a
+	// collection requires owner / editor / collection grant edit / etc.).
+	let canEditThisCollection = $derived(
+		collection ? workspaceStore.canEditCollection(collection.id) : false
+	);
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {
@@ -1151,9 +1158,11 @@
 						</button>
 					{/if}
 
-					<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
-						+ <span class="new-btn-label">New {singularName()}</span>
-					</button>
+					{#if canEditThisCollection}
+						<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
+							+ <span class="new-btn-label">New {singularName()}</span>
+						</button>
+					{/if}
 				</div>
 			</div>
 
@@ -1213,7 +1222,7 @@
 				</div>
 			{/if}
 
-			{#if quickCreateOpen}
+			{#if quickCreateOpen && canEditThisCollection}
 				<div class="quick-create">
 					<input
 						bind:this={quickCreateInput}
@@ -1235,10 +1244,14 @@
 			<div class="empty-state-box">
 				<div class="empty-icon">{collection.icon || '📦'}</div>
 				<h2>No {collection.name.toLowerCase()} yet</h2>
-				<p>Create your first {singularName().toLowerCase()} to get started.</p>
-				<button class="empty-cta" onclick={openQuickCreate}>+ Create {singularName()}</button>
-				{#if emptyHint}
-					<p class="empty-hint">Or try: <code>{emptyHint}</code></p>
+				{#if canEditThisCollection}
+					<p>Create your first {singularName().toLowerCase()} to get started.</p>
+					<button class="empty-cta" onclick={openQuickCreate}>+ Create {singularName()}</button>
+					{#if emptyHint}
+						<p class="empty-hint">Or try: <code>{emptyHint}</code></p>
+					{/if}
+				{:else}
+					<p>This collection is empty.</p>
 				{/if}
 			</div>
 		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0)}
@@ -1260,7 +1273,7 @@
 				onReorder={handleReorder}
 				onArchiveColumn={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
-				oncreate={openQuickCreate}
+				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
 			/>
@@ -1270,7 +1283,7 @@
 				{collection}
 				{wsSlug}
 				onStatusChange={handleStatusChange}
-				oncreate={openQuickCreate}
+				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
 			/>
@@ -1286,7 +1299,7 @@
 				onReorder={handleReorder}
 				onArchiveGroup={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
-				oncreate={openQuickCreate}
+				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
 			/>
