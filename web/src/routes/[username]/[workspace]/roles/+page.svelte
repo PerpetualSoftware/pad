@@ -20,6 +20,12 @@
 	// the server enforces per-item, but svelte-dnd-action only supports
 	// zone-level dragDisabled (same constraint as TASK-1106 ListView).
 	let isOwner = $derived(workspaceStore.isOwner);
+	// Lane reorder is editor+ on the server (handleRoleBoardLaneReorder
+	// uses requireMinRole "editor"). Role create/edit/delete remain
+	// owner-only.
+	let canReorderLanes = $derived(
+		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
+	);
 	// canEditAnyItem mirrors the server's grant-aware reorder permission:
 	// a viewer/guest with even one CollectionGrant.edit or ItemGrant.edit
 	// can mutate items in this view (server enforces per-item; we just
@@ -48,8 +54,15 @@
 	let newItemTitle = $state('');
 	let newItemSaving = $state(false);
 
+	// Eligible collections for the "+ New" item flow. Filter to collections
+	// the user can actually create items in — handleCreateItem requires
+	// collection-level edit on the server, so an item-only edit grant
+	// doesn't qualify (Codex round 2).
 	let eligibleCollections = $derived(
-		collectionStore.collections.filter(c => !['conventions', 'playbooks'].includes(c.slug))
+		collectionStore.collections.filter(
+			(c) => !['conventions', 'playbooks'].includes(c.slug)
+				&& workspaceStore.canEditCollection(c.id)
+		)
 	);
 
 	function openNewItem() {
@@ -409,7 +422,9 @@
 			>
 				Mine
 			</button>
-			{#if canEditAnyItem}
+			<!-- "+ New" only when there's at least one collection the user can
+			     create items in (eligibleCollections is now canEditCollection-filtered). -->
+			{#if eligibleCollections.length > 0}
 				<button class="new-item-btn" onclick={openNewItem}>+ New</button>
 			{/if}
 		</div>
@@ -556,16 +571,16 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="lane-header"
-						draggable={!isUnassigned && isOwner}
-						ondragstart={isOwner ? (e) => handleLaneDragStart(e, laneId) : undefined}
-						ondragover={isOwner ? (e) => handleLaneDragOver(e, laneId) : undefined}
-						ondragleave={isOwner ? handleLaneDragLeave : undefined}
-						ondrop={isOwner ? (e) => handleLaneDrop(e, laneId) : undefined}
-						ondragend={isOwner ? handleLaneDragEnd : undefined}
+						draggable={!isUnassigned && canReorderLanes}
+						ondragstart={canReorderLanes ? (e) => handleLaneDragStart(e, laneId) : undefined}
+						ondragover={canReorderLanes ? (e) => handleLaneDragOver(e, laneId) : undefined}
+						ondragleave={canReorderLanes ? handleLaneDragLeave : undefined}
+						ondrop={canReorderLanes ? (e) => handleLaneDrop(e, laneId) : undefined}
+						ondragend={canReorderLanes ? handleLaneDragEnd : undefined}
 					>
 						<div class="lane-title-row">
 							{#if lane.role}
-								{#if isOwner}
+								{#if canReorderLanes}
 									<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
 								{/if}
 								<span class="lane-icon">{lane.role.icon || '&#129302;'}</span>
