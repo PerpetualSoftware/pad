@@ -9,7 +9,7 @@ let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') 
 let createWorkspaceOpen = $state(false);
 let quickAddRequested = $state(false);
 let quickAddTargetSlug = $state<string | null>(null);
-let collectionSearchRequested = $state(false);
+let collectionSearchHandler = $state<(() => void) | null>(null);
 
 if (browser) {
 	window.addEventListener('resize', () => {
@@ -77,10 +77,15 @@ export const uiStore = {
 	requestQuickAdd(collectionSlug?: string) { quickAddTargetSlug = collectionSlug ?? null; quickAddRequested = true; },
 	clearQuickAddRequest() { quickAddRequested = false; quickAddTargetSlug = null; },
 
-	// Collection search (Cmd+F) trigger — collection page watches this
-	get collectionSearchRequested() { return collectionSearchRequested; },
-	requestCollectionSearch() { collectionSearchRequested = true; },
-	clearCollectionSearchRequest() { collectionSearchRequested = false; },
+	// Collection search (Cmd+F) registry — pages that want to handle Cmd+F
+	// register a handler on mount and unregister on destroy. The layout's
+	// global keydown handler only calls preventDefault when a handler is
+	// registered, so on pages without one (e.g. item view) Cmd+F falls
+	// through to the browser's native find. (BUG-986)
+	get hasCollectionSearchHandler() { return collectionSearchHandler !== null; },
+	triggerCollectionSearch() { collectionSearchHandler?.(); },
+	registerCollectionSearch(handler: () => void) { collectionSearchHandler = handler; },
+	unregisterCollectionSearch() { collectionSearchHandler = null; },
 
 	/** Close sidebar on mobile after navigation */
 	onNavigate() {
