@@ -9,13 +9,22 @@
 		username?: string;
 		items: Item[];
 		currentUserId?: string;
+		/**
+		 * canEdit gates write affordances on this comment: reply button,
+		 * reaction picker / per-reaction toggle, and delete (PLAN-1100 /
+		 * TASK-1107). Existing reactions still render with counts so
+		 * read-only viewers see who reacted; they just can't react
+		 * themselves. Default true preserves behavior in callers that
+		 * don't pass it.
+		 */
+		canEdit?: boolean;
 		onDelete: (commentId: string) => void;
 		onReply: (commentId: string, body: string) => void | Promise<void>;
 		onReaction: (commentId: string, emoji: string) => void;
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let replyBody = $state('');
@@ -131,17 +140,19 @@
 		<span class="source-badge">{getSourceLabel(comment.source)}</span>
 		<span class="spacer"></span>
 		<span class="timestamp" title={new Date(comment.created_at).toLocaleString()}>{relativeTime(comment.created_at)}</span>
-		<button
-			class="delete-btn"
-			type="button"
-			onclick={() => onDelete(comment.id)}
-			title="Delete comment"
-		>
-			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-				<polyline points="3 6 5 6 21 6" />
-				<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-			</svg>
-		</button>
+		{#if canEdit}
+			<button
+				class="delete-btn"
+				type="button"
+				onclick={() => onDelete(comment.id)}
+				title="Delete comment"
+			>
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<polyline points="3 6 5 6 21 6" />
+					<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+				</svg>
+			</button>
+		{/if}
 	</div>
 
 	{#if comment.activity_id}
@@ -153,6 +164,11 @@
 	</div>
 
 	<div class="comment-footer">
+		<!--
+			Existing reactions render with counts for everyone (read-only
+			viewers see who reacted). The toggle / picker are gated on
+			canEdit (PLAN-1100 / TASK-1107) — viewers cannot react.
+		-->
 		<div class="reactions-row">
 				{#each reactionGroups as group (group.emoji)}
 					<button
@@ -160,20 +176,25 @@
 						class:mine={hasMyReaction(comment.reactions, group.emoji)}
 						type="button"
 						title={group.actors.join(', ')}
-						onclick={() => toggleReaction(group.emoji)}
+						disabled={!canEdit}
+						onclick={canEdit ? () => toggleReaction(group.emoji) : undefined}
 					>
 						<span class="reaction-emoji">{group.emoji}</span>
 						<span class="reaction-count">{group.count}</span>
 					</button>
 				{/each}
-				<ReactionPicker onSelect={handleAddReaction} />
+				{#if canEdit}
+					<ReactionPicker onSelect={handleAddReaction} />
+				{/if}
 		</div>
-		<button class="reply-btn" type="button" onclick={() => { showReplyForm = !showReplyForm; }}>
-			Reply
-		</button>
+		{#if canEdit}
+			<button class="reply-btn" type="button" onclick={() => { showReplyForm = !showReplyForm; }}>
+				Reply
+			</button>
+		{/if}
 	</div>
 
-	{#if showReplyForm}
+	{#if showReplyForm && canEdit}
 		<div class="reply-compose">
 			<textarea
 				class="reply-input"
@@ -206,17 +227,19 @@
 						{/if}
 						<span class="spacer"></span>
 						<span class="timestamp" title={new Date(reply.created_at).toLocaleString()}>{relativeTime(reply.created_at)}</span>
-						<button
-							class="delete-btn"
-							type="button"
-							onclick={() => onDelete(reply.id)}
-							title="Delete reply"
-						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<polyline points="3 6 5 6 21 6" />
-								<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-							</svg>
-						</button>
+						{#if canEdit}
+							<button
+								class="delete-btn"
+								type="button"
+								onclick={() => onDelete(reply.id)}
+								title="Delete reply"
+							>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<polyline points="3 6 5 6 21 6" />
+									<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+								</svg>
+							</button>
+						{/if}
 					</div>
 
 					<div class="reply-body prose">
@@ -230,13 +253,16 @@
 									class:mine={hasMyReaction(reply.reactions, group.emoji)}
 									type="button"
 									title={group.actors.join(', ')}
-									onclick={() => toggleReplyReaction(reply, group.emoji)}
+									disabled={!canEdit}
+									onclick={canEdit ? () => toggleReplyReaction(reply, group.emoji) : undefined}
 								>
 									<span class="reaction-emoji">{group.emoji}</span>
 									<span class="reaction-count">{group.count}</span>
 								</button>
 							{/each}
-							<ReactionPicker onSelect={(emoji) => handleAddReplyReaction(reply, emoji)} />
+							{#if canEdit}
+								<ReactionPicker onSelect={(emoji) => handleAddReplyReaction(reply, emoji)} />
+							{/if}
 						</div>
 				</div>
 			{/each}

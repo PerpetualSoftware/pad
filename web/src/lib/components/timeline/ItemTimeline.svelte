@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -14,9 +15,26 @@
 		currentContent: string;
 		items?: Item[];
 		onRestore?: (item: Item) => void;
+		/**
+		 * itemId + collectionId let the timeline answer
+		 * `workspaceStore.canEditItem(...)` for write-affordance gating.
+		 * Optional — when missing, the composer / reply / reaction / delete
+		 * controls fall back to "no edit" (PLAN-1100 / TASK-1107). The slug
+		 * page already has the full item, so always passes both.
+		 */
+		itemId?: string;
+		collectionId?: string;
 	}
 
-	let { wsSlug, itemSlug, currentContent, items = [], onRestore }: Props = $props();
+	let { wsSlug, itemSlug, currentContent, items = [], onRestore, itemId, collectionId }: Props = $props();
+
+	// Resolve canEditItem reactively; falls to false if itemId/collectionId
+	// aren't supplied (e.g. an older caller).
+	let canEdit = $derived(
+		itemId && collectionId
+			? workspaceStore.canEditItem({ id: itemId, collection_id: collectionId })
+			: false
+	);
 
 	let entries: TimelineEntry[] = $state([]);
 	let hasMore: boolean = $state(false);
@@ -208,27 +226,31 @@
 		{/if}
 	</header>
 
-	<!-- Comment compose -->
-	<div class="compose">
-		<textarea
-			class="compose-input"
-			placeholder="Write a comment..."
-			bind:value={newBody}
-			onkeydown={handleKeydown}
-			disabled={submitting}
-		></textarea>
-		<div class="compose-actions">
-			<span class="shortcut-hint">Ctrl+Enter to submit</span>
-			<button
-				class="submit-btn"
-				type="button"
-				disabled={!newBody.trim() || submitting}
-				onclick={submitComment}
-			>
-				{submitting ? 'Posting...' : 'Comment'}
-			</button>
+	<!-- Comment compose — gated on canEditItem (PLAN-1100 / TASK-1107).
+	     Read-only viewers / guests with view-only grants see the timeline
+	     thread but cannot post; the composer is hidden entirely. -->
+	{#if canEdit}
+		<div class="compose">
+			<textarea
+				class="compose-input"
+				placeholder="Write a comment..."
+				bind:value={newBody}
+				onkeydown={handleKeydown}
+				disabled={submitting}
+			></textarea>
+			<div class="compose-actions">
+				<span class="shortcut-hint">Ctrl+Enter to submit</span>
+				<button
+					class="submit-btn"
+					type="button"
+					disabled={!newBody.trim() || submitting}
+					onclick={submitComment}
+				>
+					{submitting ? 'Posting...' : 'Comment'}
+				</button>
+			</div>
 		</div>
-	</div>
+	{/if}
 
 	{#if loading && entries.length === 0}
 		<div class="loading">
@@ -256,6 +278,7 @@
 								{wsSlug}
 								{items}
 								{currentUserId}
+								{canEdit}
 								onDelete={handleDelete}
 								onReply={handleReply}
 								onReaction={handleReaction}
