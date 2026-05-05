@@ -1036,7 +1036,15 @@
 						<RawMarkdownEditor content={item.content ?? ''} onUpdate={handleRawContentUpdate} readonly={!canEdit} />
 					{/key}
 				{:else}
-					{#key item.id}
+					<!--
+						Key on canEdit so the Editor is reconstructed when the user
+						gains/loses edit permission. BlockDragHandle (and any future
+						extensions whose registration is gated on `editable`) are
+						decided at construction time — without re-keying, an editor
+						mounted before /me resolves would never gain the drag handle
+						even after canEdit flips true. Per Codex review round 4.
+					-->
+					{#key `${item.id}:${canEdit}`}
 						<Editor content={editorContent} onUpdate={handleContentUpdate} editable={canEdit} onEditor={(e) => editorInstance = e} />
 					{/key}
 					{#if canEdit}
