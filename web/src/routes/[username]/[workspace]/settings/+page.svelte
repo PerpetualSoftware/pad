@@ -45,16 +45,36 @@
 	let accessLoading = $state(false);
 	let accessSaving = $state(false);
 
-	// Tabs
+	// Tabs \u2014 Danger Zone is owner-only (PLAN-1100 / TASK-1102). All other
+	// tabs remain visible to every member; their content is gated within.
 	let activeTab = $state('general');
-	const tabs = [
-		{ id: 'general', label: 'General', icon: '\u2699\uFE0F' },
-		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65' },
-		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1' },
-		{ id: 'storage', label: 'Storage', icon: '\uD83D\uDCBE' },
-		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F' },
+	const allTabs = [
+		{ id: 'general', label: 'General', icon: '\u2699\uFE0F', ownerOnly: false },
+		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65', ownerOnly: false },
+		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1', ownerOnly: false },
+		{ id: 'storage', label: 'Storage', icon: '\uD83D\uDCBE', ownerOnly: false },
+		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F', ownerOnly: true },
 	];
+	let tabs = $derived(allTabs.filter(t => !t.ownerOnly || workspaceStore.canEditWorkspace));
 	let validTabIds = $derived(tabs.map(t => t.id));
+
+	// Hash-driven tab restoration. The hash is captured once on mount, but
+	// validTabIds is reactive (depends on workspaceStore.canEditWorkspace,
+	// which arrives async from /me). So we re-evaluate when validTabIds
+	// expands \u2014 otherwise an owner deep-linking to #danger lands on
+	// General because /me hadn't loaded yet at mount time.
+	let pendingHash = $state<string | null>(null);
+	$effect(() => {
+		// If a non-owner has activeTab on a now-forbidden id, snap back.
+		if (!validTabIds.includes(activeTab)) {
+			activeTab = 'general';
+		}
+		// If a hash is pending and is now valid, apply it.
+		if (pendingHash && validTabIds.includes(pendingHash)) {
+			activeTab = pendingHash;
+			pendingHash = null;
+		}
+	});
 
 	function switchTab(tabId: string) {
 		activeTab = tabId;
@@ -73,7 +93,11 @@
 			theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 		}
 		const hash = window.location.hash.slice(1);
-		if (validTabIds.includes(hash)) activeTab = hash;
+		if (hash) {
+			// Stash for the validTabIds-aware effect — /me is still in flight,
+			// so an owner-only tab in the hash won't be in validTabIds yet.
+			pendingHash = hash;
+		}
 	});
 	async function load(slug: string) {
 		loading = true;
@@ -311,6 +335,12 @@
 	}
 
 	let isOwner = $derived(workspaceStore.isOwner);
+	// Editor-or-owner predicate for affordances that fall outside the
+	// strict canEditWorkspace owner-only line (e.g. Export bundle is a
+	// read-side action that we still gate to editor+ per project policy).
+	let canExport = $derived(
+		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
+	);
 
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
@@ -387,14 +417,22 @@
 					<div class="field-row">
 						<label for="ws-name">Name</label>
 						<div class="inline-edit">
-							<input id="ws-name" type="text" bind:value={wsName} onkeydown={(e) => e.key === 'Enter' && saveName()} />
-							<button class="btn btn-small" onclick={saveName} disabled={savingName}>
-								{savingName ? 'Saving...' : 'Save'}
-							</button>
-							{#if nameStatus === 'saved'}
-								<span class="status-saved">Saved</span>
-							{:else if nameStatus === 'error'}
-								<span class="status-error">Error</span>
+							<input
+								id="ws-name"
+								type="text"
+								bind:value={wsName}
+								readonly={!isOwner}
+								onkeydown={(e) => isOwner && e.key === 'Enter' && saveName()}
+							/>
+							{#if isOwner}
+								<button class="btn btn-small" onclick={saveName} disabled={savingName}>
+									{savingName ? 'Saving...' : 'Save'}
+								</button>
+								{#if nameStatus === 'saved'}
+									<span class="status-saved">Saved</span>
+								{:else if nameStatus === 'error'}
+									<span class="status-error">Error</span>
+								{/if}
 							{/if}
 						</div>
 					</div>
@@ -408,17 +446,19 @@
 							<span class="field-value">{createdDate}</span>
 						</div>
 					{/if}
-					<div class="field-row">
-						<span class="field-label">Export bundle</span>
-						<a
-							href="/api/v1/workspaces/{wsSlug}/export?format=tar"
-							download="{wsSlug}-export.tar.gz"
-							class="btn btn-small"
-							title="Includes items, comments, version history, and attachment blobs. Re-importable via the Create Workspace dialog."
-						>
-							Download .tar.gz
-						</a>
-					</div>
+					{#if canExport}
+						<div class="field-row">
+							<span class="field-label">Export bundle</span>
+							<a
+								href="/api/v1/workspaces/{wsSlug}/export?format=tar"
+								download="{wsSlug}-export.tar.gz"
+								class="btn btn-small"
+								title="Includes items, comments, version history, and attachment blobs. Re-importable via the Create Workspace dialog."
+							>
+								Download .tar.gz
+							</a>
+						</div>
+					{/if}
 				</div>
 			</section>
 			<section class="section">
@@ -453,28 +493,31 @@
 						class="context-editor mono"
 						bind:value={contextEditor}
 						spellcheck="false"
+						readonly={!isOwner}
 						rows="18"
 					></textarea>
 					<p class="context-help">Use a JSON object with keys like <code>repositories</code>, <code>paths</code>, <code>commands</code>, <code>stack</code>, <code>deployment</code>, and <code>assumptions</code>.</p>
 					{#if contextError}
 						<p class="context-error">{contextError}</p>
 					{/if}
-					<div class="context-actions">
-						<button class="btn btn-primary" onclick={saveContext} disabled={savingContext}>
-							{savingContext ? 'Saving...' : 'Save Context'}
-						</button>
-						<button class="btn" onclick={resetContextEditor} disabled={savingContext}>
-							Reset
-						</button>
-						<button class="btn" onclick={clearContextEditor} disabled={savingContext}>
-							Clear
-						</button>
-						{#if contextStatus === 'saved'}
-							<span class="status-saved">Saved</span>
-						{:else if contextStatus === 'error' && !contextError}
-							<span class="status-error">Error</span>
-						{/if}
-					</div>
+					{#if isOwner}
+						<div class="context-actions">
+							<button class="btn btn-primary" onclick={saveContext} disabled={savingContext}>
+								{savingContext ? 'Saving...' : 'Save Context'}
+							</button>
+							<button class="btn" onclick={resetContextEditor} disabled={savingContext}>
+								Reset
+							</button>
+							<button class="btn" onclick={clearContextEditor} disabled={savingContext}>
+								Clear
+							</button>
+							{#if contextStatus === 'saved'}
+								<span class="status-saved">Saved</span>
+							{:else if contextStatus === 'error' && !contextError}
+								<span class="status-error">Error</span>
+							{/if}
+						</div>
+					{/if}
 				</div>
 			</section>
 		{:else if activeTab === 'members'}
