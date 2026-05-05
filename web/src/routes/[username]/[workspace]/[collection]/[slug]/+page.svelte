@@ -296,10 +296,10 @@
 
 			// Capture the auto-edit intent — actual trigger lives in the
 			// $effect below so it can fire even if /me (which feeds canEdit)
-			// resolves AFTER loadData() finishes. One-shot.
-			if (page.url.searchParams.get('new') === '1') {
-				pendingNewItemEdit = true;
-			}
+			// resolves AFTER loadData() finishes. One-shot. Always reassign
+			// (true OR false) so a stale flag from a previous ?new=1 load
+			// can't fire on a subsequent non-new item load — Codex round 6.
+			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
 		}
 	}
 
