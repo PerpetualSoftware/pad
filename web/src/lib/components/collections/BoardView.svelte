@@ -20,9 +20,16 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
+		/**
+		 * canEdit gates drag-to-reorder, drag-to-status-change, column
+		 * reordering, and the archive-column button. See ListView.svelte
+		 * for the rationale (zone-level gate; per-item is a follow-up).
+		 * Default true preserves behavior in callers that don't pass it.
+		 */
+		canEdit?: boolean;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks' }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', canEdit = true }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 	let isMobile = $state(false);
@@ -221,17 +228,19 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="column-header {columnCssClass(colValue)}"
-				draggable="true"
+				draggable={canEdit}
 				role="toolbar"
 				tabindex="0"
-				ondragstart={(e) => handleColumnDragStart(e, colValue)}
-				ondragend={handleColumnDragEnd}
+				ondragstart={canEdit ? (e) => handleColumnDragStart(e, colValue) : undefined}
+				ondragend={canEdit ? handleColumnDragEnd : undefined}
 			>
-				<span class="column-drag-handle" title="Drag to reorder">⠿</span>
+				{#if canEdit}
+					<span class="column-drag-handle" title="Drag to reorder">⠿</span>
+				{/if}
 				<span class="column-name">{formatLabel(colValue)}</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
-					{#if onArchiveColumn && colItems.length > 0}
+					{#if canEdit && onArchiveColumn && colItems.length > 0}
 						{#if confirmArchiveColumn === colValue}
 							<span class="archive-confirm">
 								<button class="archive-yes" onclick={() => { onArchiveColumn(colItems); confirmArchiveColumn = null; }}>Archive {colItems.length}?</button>
@@ -256,7 +265,7 @@
 					type: 'board-card',
 					dropTargetClasses: ['drop-target'],
 					delayTouchStart: touchDragDelayMs,
-					dragDisabled: isMobile
+					dragDisabled: isMobile || !canEdit
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}

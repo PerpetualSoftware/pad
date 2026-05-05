@@ -1276,6 +1276,7 @@
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
+				canEdit={canEditThisCollection}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -1302,6 +1303,7 @@
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
+				canEdit={canEditThisCollection}
 			/>
 		{/if}
 	{/if}

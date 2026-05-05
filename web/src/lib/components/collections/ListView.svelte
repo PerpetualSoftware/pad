@@ -22,6 +22,21 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
+		/**
+		 * canEdit gates drag-to-reorder, drag-to-status-change, and the
+		 * archive-group button. Default true preserves existing behavior in
+		 * call sites that don't pass it. Pass `workspaceStore.canEditCollection(collection.id)`
+		 * (PLAN-1100 / TASK-1106) — the gate is collection-level because
+		 * svelte-dnd-action only supports zone-level dragDisabled.
+		 *
+		 * Per-item gating (e.g. a guest with `ItemGrant.edit` on a single
+		 * item dragging just that one card) would require switching to
+		 * `dragHandleZone` + `dragHandle` actions, which changes the drag
+		 * UX for everyone (whole-card → explicit-handle). Documented as a
+		 * follow-up if needed; the server already enforces per-item edit
+		 * on the resulting mutations, so no security gap here.
+		 */
+		canEdit?: boolean;
 	}
 
 	let {
@@ -37,7 +52,8 @@
 		onGroupReorder,
 		oncreate,
 		itemProgress,
-		progressLabel = 'tasks'
+		progressLabel = 'tasks',
+		canEdit = true
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -214,7 +230,8 @@
 			   (BUG-641): a 500ms long-press is required before drag activates,
 			   which matches the existing intra-group item behaviour and lets
 			   ordinary taps/scrolls pass through unmolested. */
-			delayTouchStart: touchDragDelayMs
+			delayTouchStart: touchDragDelayMs,
+			dragDisabled: !canEdit
 		}}
 		onconsider={handleGroupConsider}
 		onfinalize={handleGroupFinalize}
@@ -231,14 +248,16 @@
 					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
 					aria-expanded={!collapsedGroups.has(groupName)}
 				>
-					<span class="group-drag-handle" title="Drag to reorder">⠿</span>
+					{#if canEdit}
+						<span class="group-drag-handle" title="Drag to reorder">⠿</span>
+					{/if}
 					<span class="collapse-icon" class:collapsed={collapsedGroups.has(groupName)}
 						>&#9662;</span
 					>
 					<span class="group-title">{formatLabel(groupName)}</span>
 					<span class="group-actions">
 						<span class="group-count">{itemCount(grpItems)}</span>
-						{#if onArchiveGroup && itemCount(grpItems) > 0}
+						{#if canEdit && onArchiveGroup && itemCount(grpItems) > 0}
 							{#if confirmArchiveGroup === groupName}
 								<span class="archive-confirm">
 									<button class="archive-yes" onclick={(e) => { e.stopPropagation(); onArchiveGroup(grpItems); confirmArchiveGroup = null; }}>Archive {itemCount(grpItems)}?</button>
@@ -264,7 +283,8 @@
 							flipDurationMs,
 							type: 'list-item',
 							dropTargetClasses: ['drop-target'],
-							delayTouchStart: touchDragDelayMs
+							delayTouchStart: touchDragDelayMs,
+							dragDisabled: !canEdit
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}
