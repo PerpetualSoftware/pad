@@ -7,6 +7,13 @@ let current = $state<Workspace | null>(null);
 let currentMembership = $state<WorkspaceMembership | null>(null);
 let loading = $state(false);
 
+// Monotonic sequence guarding async /me responses against navigation races.
+// Each setCurrent / create call increments the counter; a /me response is
+// only applied if its captured token still matches at resolution time. This
+// prevents a slow /me for workspace A from clobbering a freshly-set
+// membership for workspace B.
+let membershipSeq = 0;
+
 /**
  * Resource-scoped permission helpers (PLAN-1100 / TASK-1101).
  *
@@ -69,6 +76,15 @@ export const workspaceStore = {
 	},
 
 	async setCurrent(ws: Workspace | string) {
+		// Capture a sequence token for this call. Any /me response received
+		// after a later setCurrent / create has run will be discarded — see
+		// membershipSeq comment at top of file.
+		const seq = ++membershipSeq;
+
+		// Clear stale membership immediately so helpers don't briefly answer
+		// "yes" using the previous workspace's grants while /me is in flight.
+		currentMembership = null;
+
 		// Resolve the workspace itself. Membership is fetched once we know
 		// the slug.
 		let resolved: Workspace | null = null;
@@ -89,32 +105,37 @@ export const workspaceStore = {
 				}
 			}
 		}
+
+		// Drop any later writes from a stale call.
+		if (seq !== membershipSeq) return;
 		current = resolved;
 
 		// Fetch the current user's membership context. If the workspace
-		// doesn't resolve (404) or membership fetch fails (403), clear the
-		// membership so helpers return false until/unless a valid context
-		// loads.
+		// doesn't resolve (404) or membership fetch fails (403), leave the
+		// membership null so helpers return false.
 		if (resolved) {
 			try {
-				currentMembership = await api.workspaces.me(slug);
+				const m = await api.workspaces.me(slug);
+				if (seq === membershipSeq) currentMembership = m;
 			} catch {
-				currentMembership = null;
+				if (seq === membershipSeq) currentMembership = null;
 			}
-		} else {
-			currentMembership = null;
 		}
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {
+		const seq = ++membershipSeq;
+		currentMembership = null;
 		const ws = await api.workspaces.create(data);
+		if (seq !== membershipSeq) return ws;
 		workspaces = [...workspaces, ws];
 		current = ws;
 		// New workspace — refresh membership for the just-created context.
 		try {
-			currentMembership = await api.workspaces.me(ws.slug);
+			const m = await api.workspaces.me(ws.slug);
+			if (seq === membershipSeq) currentMembership = m;
 		} catch {
-			currentMembership = null;
+			if (seq === membershipSeq) currentMembership = null;
 		}
 		return ws;
 	}

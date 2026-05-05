@@ -27,6 +27,15 @@ export function canEditWorkspace(m: WorkspaceMembership | null): boolean {
 	return m?.role === 'owner';
 }
 
+/**
+ * canViewCollection — should the collection appear in nav / be browseable?
+ *
+ * This is the broad nav-visibility predicate. It uses
+ * `visible_collection_ids` which deliberately includes collections that
+ * only contain item-granted items (so a guest with one ItemGrant on
+ * TASK-5 sees Tasks in the sidebar). For per-item access, use canViewItem
+ * — which uses the strict `full_access_collection_ids` instead.
+ */
 export function canViewCollection(m: WorkspaceMembership | null, collId: string): boolean {
 	if (!m) return false;
 	if (m.role === 'owner') return true;
@@ -35,6 +44,13 @@ export function canViewCollection(m: WorkspaceMembership | null, collId: string)
 	return m.visible_collection_ids.includes(collId);
 }
 
+/**
+ * canEditCollection — collection-level write affordances (e.g. "+ New").
+ *
+ * Item grants intentionally do not promote here — collection-wide write
+ * requires a collection-level grant or a role that implies write. Server
+ * enforcement matches.
+ */
 export function canEditCollection(m: WorkspaceMembership | null, collId: string): boolean {
 	if (!m) return false;
 	if (m.role === 'owner') return true;
@@ -44,6 +60,21 @@ export function canEditCollection(m: WorkspaceMembership | null, collId: string)
 	return m.role === 'editor';
 }
 
+/**
+ * canViewItem — can the user actually see this specific item?
+ *
+ * Mirrors the server's request-handler filtering (guestResourceFilter +
+ * isItemVisibleToGuest), NOT just the broad nav predicate:
+ *   - owner → true
+ *   - explicit item grant → true
+ *   - explicit collection grant → true (covers all items in that collection)
+ *   - collection_access === "all" → true (member with full access)
+ *   - collection_access === "specific" + collection in
+ *     full_access_collection_ids → true
+ *   - else → false (e.g. guest with single item-grant cannot see siblings,
+ *     and a restricted member cannot see siblings of an item-granted item
+ *     in a collection they don't otherwise have full access to)
+ */
 export function canViewItem(
 	m: WorkspaceMembership | null,
 	item: { id: string; collection_id: string }
@@ -51,9 +82,22 @@ export function canViewItem(
 	if (!m) return false;
 	if (m.role === 'owner') return true;
 	if (m.item_grants.some((g) => g.item_id === item.id)) return true;
-	return canViewCollection(m, item.collection_id);
+	if (m.collection_grants.some((g) => g.collection_id === item.collection_id)) return true;
+	if (m.collection_access === 'all') return true;
+	return m.full_access_collection_ids.includes(item.collection_id);
 }
 
+/**
+ * canEditItem — item-level write affordances (title, content, fields,
+ * delete, status, comment composer, drag handle).
+ *
+ * Mirrors server precedence — item grant beats collection grant beats
+ * membership role. So ItemGrant.view + CollectionGrant.edit on the same
+ * item → false (item grant wins, even though it's less permissive).
+ *
+ * The fallback path uses canViewItem's strict membership-based check so a
+ * guest cannot edit siblings of an item-granted item.
+ */
 export function canEditItem(
 	m: WorkspaceMembership | null,
 	item: { id: string; collection_id: string }
@@ -62,5 +106,13 @@ export function canEditItem(
 	if (m.role === 'owner') return true;
 	const ig = m.item_grants.find((g) => g.item_id === item.id);
 	if (ig) return ig.permission === 'edit';
-	return canEditCollection(m, item.collection_id);
+	const cg = m.collection_grants.find((g) => g.collection_id === item.collection_id);
+	if (cg) return cg.permission === 'edit';
+	// Membership fallback — must (a) be in the strict full-access set when
+	// "specific" access, and (b) have a role that implies write.
+	if (m.collection_access === 'specific'
+		&& !m.full_access_collection_ids.includes(item.collection_id)) {
+		return false;
+	}
+	return m.role === 'editor';
 }

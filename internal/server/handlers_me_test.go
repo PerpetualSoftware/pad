@@ -115,8 +115,10 @@ func TestMe_ViewerWithCollectionGrant(t *testing.T) {
 }
 
 // TestMe_RestrictedMember pins the collection_access="specific" path:
-// VisibleCollectionIDs is materialized into the response so the frontend
-// can answer canViewCollection without re-deriving the cascade.
+// both VisibleCollectionIDs (nav set) and FullAccessCollectionIDs (strict
+// per-item access set) are materialized into the response so the frontend
+// can answer canViewCollection (broad) and canViewItem (strict) without
+// re-deriving the cascade.
 func TestMe_RestrictedMember(t *testing.T) {
 	env := setupRBACEnv(t)
 
@@ -150,19 +152,22 @@ func TestMe_RestrictedMember(t *testing.T) {
 	if resp.CollectionAccess != "specific" {
 		t.Errorf("collection_access: expected specific, got %q", resp.CollectionAccess)
 	}
-	// Must include at least the granted collection. The list also includes
-	// system collections (always visible) and any item-grant collections —
-	// see workspace_members.go:139. The exact size depends on system seeds;
-	// we only assert the granted ID is present.
-	found := false
-	for _, id := range resp.VisibleCollectionIDs {
-		if id == colls[0].ID {
-			found = true
-			break
+	// Must include the granted collection in BOTH the nav set and the
+	// strict full-access set. (Nav also includes system collections; the
+	// granted-only assertion isolates the path under test.)
+	contains := func(ids []string, target string) bool {
+		for _, id := range ids {
+			if id == target {
+				return true
+			}
 		}
+		return false
 	}
-	if !found {
+	if !contains(resp.VisibleCollectionIDs, colls[0].ID) {
 		t.Errorf("visible_collection_ids missing granted collection %s, got %v", colls[0].ID, resp.VisibleCollectionIDs)
+	}
+	if !contains(resp.FullAccessCollectionIDs, colls[0].ID) {
+		t.Errorf("full_access_collection_ids missing granted collection %s, got %v", colls[0].ID, resp.FullAccessCollectionIDs)
 	}
 }
 
@@ -238,6 +243,18 @@ func TestMe_GuestWithItemGrant(t *testing.T) {
 	// so it shows up in workspace navigation.
 	if len(resp.VisibleCollectionIDs) == 0 {
 		t.Errorf("guest with item grant: expected at least one visible collection, got 0")
+	}
+	// CRITICAL: it must NOT appear in FullAccessCollectionIDs. A guest
+	// with only an item grant cannot see siblings of the granted item;
+	// the collection is nav-visible but not fully accessible. Per Codex
+	// review round 1 (P1): canViewItem must use the strict set, not nav.
+	for _, id := range resp.FullAccessCollectionIDs {
+		// item.CollectionID is the granted item's collection; it must NOT
+		// be present in full_access (only collection grants populate that
+		// for guests).
+		if id == item.CollectionID {
+			t.Errorf("full_access_collection_ids must not include item-grant-only collection %s, got %v", item.CollectionID, resp.FullAccessCollectionIDs)
+		}
 	}
 }
 
