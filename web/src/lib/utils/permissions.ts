@@ -48,16 +48,25 @@ export function canViewCollection(m: WorkspaceMembership | null, collId: string)
  * canEditCollection — collection-level write affordances (e.g. "+ New").
  *
  * Item grants intentionally do not promote here — collection-wide write
- * requires a collection-level grant or a role that implies write. Server
- * enforcement matches.
+ * requires a collection-level grant or a role that implies write *and*
+ * full access to this collection. Server enforcement matches.
+ *
+ * NOTE: the membership fallback uses the strict full-access set, NOT the
+ * broader nav set. A restricted editor whose only access to a collection
+ * comes from an item grant has that collection in visible_collection_ids
+ * (so it appears in nav) but NOT in full_access_collection_ids — and must
+ * not see collection-wide affordances like "+ New" because the server
+ * would reject collection-level writes.
  */
 export function canEditCollection(m: WorkspaceMembership | null, collId: string): boolean {
 	if (!m) return false;
 	if (m.role === 'owner') return true;
 	const cg = m.collection_grants.find((g) => g.collection_id === collId);
 	if (cg) return cg.permission === 'edit';
-	if (!canViewCollection(m, collId)) return false;
-	return m.role === 'editor';
+	if (m.role !== 'editor') return false;
+	// Editor membership: needs full access to this collection.
+	if (m.collection_access === 'all') return true;
+	return m.full_access_collection_ids.includes(collId);
 }
 
 /**
