@@ -798,8 +798,29 @@ func logBootstrapBanner(token string, cfg *config.Config, tokenPath string) {
 
   To regenerate, delete %s and restart.
 
-========================================================================`, url, tokenPath)
-	slog.Info(banner)
+========================================================================
+`, url, tokenPath)
+
+	// BUG-1182: bypass slog for the banner. slog's text handler is
+	// contractually one-line-per-record and escapes literal newlines as
+	// `\n`, which renders the multi-line banner as a single wide line in
+	// `docker logs` — exactly the surface where operators look for it.
+	// Banner-style operator output isn't structured logging; stderr is the
+	// conventional channel for it (kubectl / docker / helm / systemd all
+	// do this). docker logs captures stderr alongside stdout, so the
+	// banner stays visible.
+	fmt.Fprint(os.Stderr, banner)
+
+	// Companion structured log so log aggregators that parse slog JSON
+	// still record the event. Deliberately does NOT include the URL or
+	// token — those are in the stderr banner where the operator looks
+	// for them. Repeating the URL as a parseable structured field would
+	// give log aggregators an easy-to-extract token, which is precisely
+	// what the URL-fragment design (TASK-1167 F10) is trying to avoid.
+	// Operators / agents that want the token programmatically should
+	// read the token_path file directly.
+	slog.Info("first-run bootstrap setup banner emitted to stderr — see container logs",
+		"token_path", tokenPath)
 }
 
 // --- stop ---
