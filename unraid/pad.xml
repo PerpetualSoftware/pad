@@ -20,7 +20,7 @@ cloud lock-in.
 
 After install, click the container's [b]Logs[/b] button to grab the
 first-run bootstrap token, then visit the WebUI to claim the first admin.
-See the install guide for screenshots: https://getpad.dev/docs/install/unraid
+See the install guide for screenshots: https://getpad.dev/docs/self-hosting/unraid
   </Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:7777]/</WebUI>

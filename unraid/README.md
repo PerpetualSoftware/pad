@@ -2,7 +2,7 @@
 
 Run [Pad](https://getpad.dev) on your Unraid server — local-first project management for developers and AI coding agents. Single Go binary, SQLite by default, your data stays on your box.
 
-This directory holds the [Community Applications](https://forums.unraid.net/topic/38582-plug-in-community-applications/) (CA) template (`pad.xml`) and supporting docs. The full install walkthrough with screenshots lives at <https://getpad.dev/docs/install/unraid>.
+This directory holds the [Community Applications](https://forums.unraid.net/topic/38582-plug-in-community-applications/) (CA) template (`pad.xml`) and supporting docs. The full install walkthrough lives at <https://getpad.dev/docs/self-hosting/unraid>.
 
 ## Prerequisites
 
@@ -113,7 +113,7 @@ Without these, invitations fall back to copyable join codes you paste into the i
 
 - **Forum thread** *(once opened — see HT-1174)*: link will be added here and in the template's `<Support>` field.
 - **GitHub Issues**: <https://github.com/PerpetualSoftware/pad/issues> for bug reports and feature requests.
-- **Documentation**: <https://getpad.dev/docs/install/unraid> *(coming via TASK-1172)*.
+- **Documentation**: <https://getpad.dev/docs/self-hosting/unraid> *(landing via TASK-1172 / pad-web PR #93)*.
 
 ## Note on the icon
 
