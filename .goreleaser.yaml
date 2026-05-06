@@ -154,6 +154,11 @@ dockers_v2:
     dockerfile: Dockerfile.goreleaser
     extra_files:
       - web/build
+      # docker-entrypoint.sh is the PUID/PGID remapping shim
+      # (TASK-1168). Without listing it here goreleaser builds a
+      # context that lacks the file and Dockerfile.goreleaser's COPY
+      # step fails — the published GHCR image would never build.
+      - docker-entrypoint.sh
     platforms:
       - linux/amd64
       - linux/arm64
