@@ -174,6 +174,24 @@ type Server struct {
 	bootstrapMu        sync.Mutex
 	bootstrapToken     string
 	bootstrapTokenPath string
+
+	// bypassSetupToken, when true, allows the first-admin bootstrap POST to
+	// succeed from any IP without an X-Bootstrap-Token header — i.e. the
+	// /setup form on the web UI works directly, without the operator having
+	// to copy a token out of `docker logs`. Wired from PAD_BYPASS_SETUP_TOKEN
+	// at startup via SetBypassSetupToken (cmd/pad/main.go).
+	//
+	// Self-host only — cloud mode IGNORES this flag entirely (D2/D10 from
+	// the original logs-token design: cloud bootstrap stays loopback-only).
+	// The UserCount==0 gate in handleBootstrap is unchanged: once the first
+	// admin exists, the bootstrap endpoint returns 409 "already initialized"
+	// regardless of bypass. This matches the operator's mental model — the
+	// flag opens up the *first-run* surface, not registration in general.
+	//
+	// Operators on trusted networks (Unraid LAN, Tailscale-only deployments,
+	// homelabs behind a firewall) typically prefer this; operators with
+	// public exposure should leave it off and use the logs-token path.
+	bypassSetupToken bool
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can

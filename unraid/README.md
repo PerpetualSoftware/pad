@@ -53,6 +53,19 @@ Then in the Unraid web UI: **Docker** tab → **Add Container** → **Template**
 
 Functionally identical container behavior; just skips the CA UX surface.
 
+## First-admin setup
+
+By default, the container generates a one-time bootstrap token at first start and logs it inside a banner you grab from **Logs**. That token is required to claim the first admin account from a remote browser.
+
+Two ways to skip the token-copy step on a trusted network:
+
+- **Open setup (web UI form)** — set the **Bypass Setup Token** template field to `true` (env var `PAD_BYPASS_SETUP_TOKEN=true`). Browse to `http://<your-tower>:7777/setup` and create the first admin directly &mdash; no token, no `docker exec`. The setting only matters before any user exists; once you've claimed an admin, the bootstrap surface is closed regardless of this flag.
+- **Local CLI** — `docker exec -it Pad pad auth setup` from the Unraid console. Loopback-only so it works without a token.
+
+WARNING: leaving **Bypass Setup Token** on while the WebUI port is exposed to the open internet means anyone who reaches it first can claim the admin account. Use it on LAN-only / Tailscale-only / firewalled deployments.
+
+Cloud mode (`PAD_CLOUD=true` or `PAD_MODE=cloud`) ignores `PAD_BYPASS_SETUP_TOKEN` &mdash; cloud bootstrap stays loopback-only by design.
+
 ## Where your data lives
 
 All persistent state lives under your appdata path (default `/mnt/user/appdata/pad/`):

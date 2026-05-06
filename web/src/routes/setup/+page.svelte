@@ -37,6 +37,15 @@
 	let token = $state('');
 	let pastedToken = $state('');
 
+	// openMode is true when the server has been started with
+	// PAD_BYPASS_SETUP_TOKEN=true on a self-host deployment with no users
+	// yet. The /setup form works directly — no paste-token step, no
+	// X-Bootstrap-Token header on the bootstrap POST. Resolved via
+	// session.setup_method in onMount; null until the session check
+	// completes so the UI doesn't briefly flash the paste prompt and
+	// then swap to the form.
+	let openMode = $state(false);
+
 	if (typeof window !== 'undefined') {
 		const hash = window.location.hash;
 		if (hash.startsWith('#token=')) {
@@ -77,6 +86,12 @@
 			if (session?.authenticated) {
 				await goto('/');
 				return;
+			}
+			// Self-host operators who set PAD_BYPASS_SETUP_TOKEN=true get
+			// setup_method=open from the server. Skip the paste-token
+			// prompt entirely — the bootstrap POST works without a token.
+			if (session?.setup_method === 'open') {
+				openMode = true;
 			}
 		} catch {
 			// Network / parse error — treat as unauthenticated and let the
@@ -127,13 +142,22 @@
 			// 403: token rejected (expired / already used / wrong). Clear
 			// the in-memory token, drop back to the paste prompt, and
 			// surface an actionable message so the operator can grab a
-			// fresh token from the container logs (F12).
+			// fresh token from the container logs (F12). In open-mode
+			// (PAD_BYPASS_SETUP_TOKEN=true) a 403 means something else —
+			// usually the operator left the bypass off but somehow ended
+			// up here, or a user already exists. Surface the server's
+			// message verbatim instead of pushing the "paste a token"
+			// flow that doesn't apply here.
 			if (err instanceof PadApiError && err.code === 'forbidden') {
-				token = '';
-				password = '';
-				confirmPassword = '';
-				error =
-					'This token is invalid, expired, or already used. Get a fresh token from your container logs and paste it below.';
+				if (openMode) {
+					error = err.message || 'Bootstrap was rejected by the server.';
+				} else {
+					token = '';
+					password = '';
+					confirmPassword = '';
+					error =
+						'This token is invalid, expired, or already used. Get a fresh token from your container logs and paste it below.';
+				}
 			} else if (err instanceof Error) {
 				error = err.message || 'Bootstrap failed.';
 			} else {
@@ -167,7 +191,7 @@
 
 		{#if !sessionChecked}
 			<p class="subtitle">Loading…</p>
-		{:else if !token}
+		{:else if !token && !openMode}
 			<p class="subtitle">Paste your bootstrap token</p>
 			<p class="hint">
 				Look for the token printed in your container logs when the server
@@ -196,6 +220,13 @@
 			<p class="hint">
 				This account will own the workspace and can invite other users.
 			</p>
+			{#if openMode}
+				<p class="hint open-mode-hint">
+					Open setup is enabled on this server
+					(<code>PAD_BYPASS_SETUP_TOKEN=true</code>). The first sign-in
+					here becomes the admin.
+				</p>
+			{/if}
 
 			<div class="form">
 				<input
@@ -296,6 +327,21 @@
 		font-size: 0.8rem;
 		margin-bottom: var(--space-6);
 		line-height: 1.5;
+	}
+
+	.open-mode-hint {
+		text-align: left;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-3);
+		margin-top: calc(var(--space-6) * -1);
+		margin-bottom: var(--space-4);
+	}
+
+	.open-mode-hint code {
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
 	}
 
 	.form {

@@ -179,6 +179,27 @@ func (s *Server) checkBootstrapToken(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.bootstrapToken)) == 1
 }
 
+// SetBypassSetupToken wires the operator's PAD_BYPASS_SETUP_TOKEN choice
+// into the Server. When true, handleBootstrap accepts a self-host
+// first-admin POST from any IP without an X-Bootstrap-Token header.
+// Cloud mode never honors this flag (see Server.bypassSetupToken doc).
+//
+// Called once at startup from cmd/pad/main.go before the HTTP server
+// starts accepting connections, so no concurrent reader can observe a
+// half-set value; the field reads in handleBootstrap and
+// handleSessionCheck are therefore unguarded.
+func (s *Server) SetBypassSetupToken(bypass bool) {
+	s.bypassSetupToken = bypass
+}
+
+// openBootstrapEnabled reports whether open-bootstrap is active for this
+// server: bypass flag is set AND we're not in cloud mode. Cloud mode
+// always wins over the bypass flag; the field on its own is meaningless
+// without that check.
+func (s *Server) openBootstrapEnabled() bool {
+	return s.bypassSetupToken && !s.cloudMode
+}
+
 // consumeBootstrapToken clears the in-memory token and deletes the on-disk
 // file. Called after the first admin is successfully created.
 //
