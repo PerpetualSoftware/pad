@@ -685,6 +685,37 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// First-run bootstrap token (TASK-1167 / PLAN-1166).
+			//
+			// Three branches by current state:
+			//
+			//   1. UserCount > 0 → mop up any stale token file left by a
+			//      previous successful bootstrap whose os.Remove somehow
+			//      failed (D4). No banner.
+			//   2. UserCount == 0 + self-host → ensure a token exists,
+			//      load it into the server, log the banner so the
+			//      operator can grab it from `docker logs`. Failures are
+			//      WARN-and-continue (D7) — never abort startup.
+			//   3. UserCount == 0 + cloud mode → no-op (D10). Cloud
+			//      bootstrap stays loopback-only.
+			if userCount, ucErr := s.UserCount(); ucErr != nil {
+				slog.Warn("could not check user count for bootstrap token wiring", "error", ucErr)
+			} else if userCount > 0 {
+				if cleanupErr := server.CleanupStaleBootstrapToken(cfg.DataDir); cleanupErr != nil {
+					slog.Warn("stale bootstrap token cleanup failed", "error", cleanupErr)
+				}
+			} else if !cfg.IsCloudServer() {
+				token, tokenPath, terr := server.EnsureBootstrapToken(cfg.DataDir)
+				if terr != nil {
+					slog.Warn("first-run bootstrap token unavailable; falling back to loopback-only setup",
+						"error", terr,
+						"hint", "operator can run `pad auth setup` from inside the container")
+				} else {
+					srv.SetBootstrapToken(token, tokenPath)
+					logBootstrapBanner(token, cfg, tokenPath)
+				}
+			}
+
 			// Graceful shutdown: listen for SIGINT/SIGTERM
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -729,6 +760,46 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 7777, "port to listen on")
 
 	return cmd
+}
+
+// logBootstrapBanner emits a single multi-line INFO log entry pointing the
+// operator at the /setup#token=<x> URL they need to visit to claim the
+// first admin. The banner is greppable by "Pad first-run setup" so log
+// aggregators can surface it. Token is in a URL fragment (#token=) so it
+// is never transmitted to the server in HTTP requests — only the
+// browser sees it. The frontend strips it from the URL via
+// history.replaceState on mount and submits via the X-Bootstrap-Token
+// header.
+//
+// See TASK-1167 / PLAN-1166. Called only on first start with zero
+// users in self-host mode.
+func logBootstrapBanner(token string, cfg *config.Config, tokenPath string) {
+	host := cfg.Host
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		// PAD_HOST not bound to a specific interface — render as
+		// <your-host> placeholder in the banner since we don't know
+		// which network interface the operator wants to reach this
+		// instance from.
+		host = "<your-host>"
+	}
+	url := fmt.Sprintf("http://%s:%d/setup#token=%s", host, cfg.Port, token)
+	banner := fmt.Sprintf(`
+========================================================================
+  Pad first-run setup
+========================================================================
+
+  No users exist yet. To create the first admin account, visit:
+
+      %s
+
+  This token is one-time. After the first admin is created the token
+  is consumed and this banner stops appearing.
+
+  To regenerate, delete %s and restart.
+
+========================================================================`, url, tokenPath)
+	slog.Info(banner)
 }
 
 // --- stop ---

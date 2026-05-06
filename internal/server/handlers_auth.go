@@ -22,6 +22,12 @@ const (
 	setupMethodLocalCLI   = "local_cli"
 	setupMethodDockerExec = "docker_exec"
 	setupMethodCloud      = "cloud"
+	// setupMethodLogsToken is returned by handleSessionCheck when a
+	// first-run bootstrap token is loaded (self-host, UserCount==0). It
+	// tells the frontend's SetupRequiredNotice to render the "paste your
+	// bootstrap token from the container logs" branch instead of the
+	// CLI-only instructions. See TASK-1167 / PLAN-1166.
+	setupMethodLogsToken = "logs_token"
 )
 
 var emailRegexp = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -291,9 +297,27 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 }
 
 // handleBootstrap creates the first admin account for a fresh instance.
-// It is only allowed from loopback-local requests so setup must happen
-// on the server host or from inside the container.
+//
+// Default gate is loopback-only: setup must happen on the server host
+// or from inside the container.
+//
+// Self-host (non-cloud) mode also accepts a one-time first-run token
+// supplied via the X-Bootstrap-Token header — the "logs token" path that
+// makes Docker / Unraid bootstrapping possible without `docker exec`.
+// See TASK-1167 / PLAN-1166 and the bootstrap.go file for details.
+//
+// Cloud mode NEVER accepts the token bypass (D2/D10 — F2 from codex
+// review). A cloud bootstrap must come over loopback from the same
+// host as part of the operator's provisioning workflow.
+//
+// The mutex wraps the entire validate → UserCount-check → CreateUser →
+// consume sequence (F5). Without it, two simultaneous valid-token
+// requests with different emails could each pass validation and end up
+// creating two admins from one token.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	s.bootstrapMu.Lock()
+	defer s.bootstrapMu.Unlock()
+
 	if s.cloudMode {
 		// Allow bootstrap in cloud mode ONLY when no users exist yet.
 		// A fresh cloud instance needs at least one admin before OAuth can work.
@@ -302,10 +326,16 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is disabled in cloud mode — users register via OAuth or invitation")
 			return
 		}
-	}
-	if !requestIsLoopback(r) {
-		writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost on the server host")
-		return
+		if !requestIsLoopback(r) {
+			writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost on the server host")
+			return
+		}
+	} else {
+		// Self-host: loopback OR valid first-run token (header-only).
+		if !requestIsLoopback(r) && !s.checkBootstrapToken(r) {
+			writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost or with a valid bootstrap token")
+			return
+		}
 	}
 
 	var input struct {
@@ -371,6 +401,18 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
 		return
+	}
+
+	// Consume the first-run bootstrap token. We hold s.bootstrapMu, so
+	// this serializes with any concurrent bootstrap attempt — that
+	// goroutine will see an empty in-memory token and bail with 403.
+	// Cloud mode never loaded one in the first place; the no-op cost
+	// of calling it there is a single mutex-locked nil string write +
+	// stat-failure rm. File-removal failure is logged but does not
+	// surface to the caller; the bootstrap itself succeeded, and a
+	// stale token file is cleaned up on the next startup (D4).
+	if cerr := s.consumeBootstrapToken(); cerr != nil {
+		slog.Warn("bootstrap token consume: file removal failed (in-memory token cleared regardless)", "error", cerr)
 	}
 
 	token, err := s.createAuthSession(w, r, user, cliSessionTTL)
@@ -657,9 +699,17 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No users → needs setup (first-time experience)
+	// No users → needs setup (first-time experience). Self-host with a
+	// loaded first-run bootstrap token surfaces setup_method=logs_token
+	// so the frontend renders the "paste token from container logs"
+	// branch in SetupRequiredNotice. Cloud mode never loads a token
+	// (D10), so it falls through to the existing local_cli value.
 	if count == 0 {
-		writeJSON(w, http.StatusOK, s.setupStatePayload(setupMethodLocalCLI))
+		method := setupMethodLocalCLI
+		if !s.cloudMode && s.hasBootstrapToken() {
+			method = setupMethodLogsToken
+		}
+		writeJSON(w, http.StatusOK, s.setupStatePayload(method))
 		return
 	}
 
