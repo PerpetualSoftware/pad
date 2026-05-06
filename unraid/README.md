@@ -22,18 +22,26 @@ Once Pad is approved in the CA index (tracked in [PLAN-1166](https://github.com/
 
 ### Pre-CA install (manual, for early adopters)
 
-Before Pad lands in CA, you have two routes — both work as long as your Unraid + CA plugin is current:
+Before Pad lands in the CA index, you have two routes for installing the template manually. The "Add Repository" / "Template Repositories" feature in older Unraid versions [was removed in Unraid 6.10.0-rc1](https://forums.unraid.net/topic/114809-i-want-to-make-my-own-private-template-repository-but-it-doesnt-work/) and is not coming back, so the recommended path is now a direct sideload.
 
-#### Route A — CA "Add Repository" (recommended)
+#### Route A — CA Private Folder (recommended)
 
-1. Open the **Apps** tab → **Settings** (top-right gear) → **Add Repository**.
-2. Paste: `https://github.com/PerpetualSoftware/pad/tree/main/unraid/`
-   - The trailing slash matters; CA scans for `*.xml` under that path.
-3. Save. Pad now appears under **Apps** the same way it will after CA approval.
+The closest experience to what you'll get post-CA-approval. The template appears under CA's **Private** category and uses the same install form CA users will see.
 
-#### Route B — direct sideload (fallback)
+```bash
+ssh root@<your-tower>
+mkdir -p /boot/config/plugins/community.applications/private/perpetualsoftware
+wget -O /boot/config/plugins/community.applications/private/perpetualsoftware/pad.xml \
+  https://raw.githubusercontent.com/PerpetualSoftware/pad/main/unraid/pad.xml
+```
 
-If Route A doesn't pick up the template (older CA plugin, GitHub rate limit, etc.):
+Then in the Unraid web UI: open **Apps**, search for "Pad" (or browse to the **Private** category). The listing shows the icon + Overview just like a CA-published app. Click **Install** → form → **Apply** — same flow as a CA-approved install.
+
+To remove later: delete the file. To update: re-run the `wget` (CA picks up the new file on next page load).
+
+#### Route B — Docker tab sideload (CA-less fallback)
+
+If you don't have CA installed, or want to skip CA's listing UI entirely:
 
 ```bash
 ssh root@<your-tower>
@@ -41,7 +49,9 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-pad.xml \
   https://raw.githubusercontent.com/PerpetualSoftware/pad/main/unraid/pad.xml
 ```
 
-Then reload **Docker → Add Container** in the web UI and pick **Pad** from the template dropdown.
+Then in the Unraid web UI: **Docker** tab → **Add Container** → **Template** dropdown → pick **Pad**.
+
+Functionally identical container behavior; just skips the CA UX surface.
 
 ## Where your data lives
 

@@ -22,7 +22,7 @@ After install, click the container's [b]Logs[/b] button to grab the
 first-run bootstrap token, then visit the WebUI to claim the first admin.
 See the install guide for screenshots: https://getpad.dev/docs/self-hosting/unraid
   </Overview>
-  <Category>Productivity: Tools:</Category>
+  <Category>Productivity: AI:</Category>
   <WebUI>http://[IP]:[PORT:7777]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/PerpetualSoftware/pad/main/unraid/pad.xml</TemplateURL>
   <!-- 256×256 PNG, downsampled with LANCZOS from web/static/icon-512.png
