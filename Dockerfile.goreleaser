@@ -1,19 +1,32 @@
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata
+# Keep this package set in lockstep with Dockerfile (the local build
+# variant) — both images must support the same docker-entrypoint.sh
+# behavior. See Dockerfile for per-package rationale and TASK-1168 /
+# PLAN-1166 for the broader design.
+RUN apk add --no-cache ca-certificates tzdata shadow su-exec
 # dockers_v2 organizes goreleaser-built binaries under ${TARGETPLATFORM}/pad
 # (e.g. linux/amd64/pad, linux/arm64/pad). buildx sets TARGETPLATFORM
 # automatically per platform when the image is built.
 ARG TARGETPLATFORM
 COPY ${TARGETPLATFORM}/pad /usr/local/bin/pad
-RUN adduser -D -u 1000 -h /home/pad pad \
+# docker-entrypoint.sh must be listed in .goreleaser.yaml's
+# `dockers_v2.extra_files` for goreleaser to include it in the build
+# context — without that the COPY below fails.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN addgroup -g 1000 pad \
+    && adduser -D -u 1000 -G pad -h /home/pad pad \
     && mkdir -p /data \
     && chown -R pad:pad /data
 ENV PAD_DATA_DIR=/data
 ENV PAD_HOST=0.0.0.0
-USER pad
+# NO `USER pad` — container starts as root, entrypoint drops privileges.
 EXPOSE 7777
 VOLUME /data
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://localhost:7777/api/v1/health || exit 1
-ENTRYPOINT ["pad"]
+# Conditional healthcheck (root → su-exec; non-root → direct wget) and
+# 60s start-period to absorb a slow chown -R on large data volumes.
+# See Dockerfile for the full rationale.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD sh -c 'if [ "$(id -u)" = "0" ]; then exec su-exec pad wget -q --spider http://localhost:7777/api/v1/health; fi; exec wget -q --spider http://localhost:7777/api/v1/health'
+ENTRYPOINT ["docker-entrypoint.sh", "pad"]
 CMD ["server", "start"]

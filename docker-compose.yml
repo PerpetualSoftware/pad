@@ -20,6 +20,19 @@ services:
       # Override by setting PAD_BIND_ADDR=0.0.0.0 (or a specific LAN IP) in .env.
       - "${PAD_BIND_ADDR:-127.0.0.1}:7777:7777"
     environment:
+      # Container UID/GID for the pad process. Default to 1000/1000 for
+      # backward compat with existing compose deploys whose volumes were
+      # created under the previous USER pad (uid 1000) image. Override to
+      # match your host volume's ownership if different.
+      #
+      # ${VAR-default} (no colon), not ${VAR:-default}. Compose follows
+      # shell-like semantics — colon form would silently convert PUID=
+      # or PGID= in .env to 1000, masking operator typos. Colon-less lets
+      # explicit-empty values reach the entrypoint, which rejects them
+      # with a clear error (matches docker-entrypoint.sh's own
+      # ${VAR-99} convention).
+      PUID: "${PUID-1000}"
+      PGID: "${PGID-1000}"
       PAD_HOST: "0.0.0.0"
       PAD_PORT: "7777"
       PAD_DB_DRIVER: "postgres"
@@ -55,11 +68,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7777/api/v1/health"]
+      # Conditional: root → su-exec to pad; non-root → direct wget.
+      # Mirrors the Dockerfile HEALTHCHECK so `docker run --user 1234`
+      # pass-through still reports healthy.
+      #
+      # NOTE: $$(id -u), not $(id -u) — Compose performs $-interpolation
+      # on YAML strings BEFORE the value reaches the container. Single
+      # `$` would be parsed as a Compose variable reference; `$$` escapes
+      # to a literal `$` so the shell inside the container sees `$(id -u)`.
+      test: ["CMD-SHELL", "if [ \"$$(id -u)\" = \"0\" ]; then exec su-exec pad wget -q --spider http://localhost:7777/api/v1/health; fi; exec wget -q --spider http://localhost:7777/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      # Bumped 10s → 60s. The always-chown-R policy in the entrypoint
+      # means a user restoring a backup with a large attachment store
+      # can spend tens of seconds before pad starts listening — 10s
+      # would mark the container unhealthy mid-startup.
+      start_period: 60s
 
   postgres:
     image: postgres:17-alpine
