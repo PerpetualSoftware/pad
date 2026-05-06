@@ -685,19 +685,34 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
-			// First-run bootstrap token (TASK-1167 / PLAN-1166).
+			// First-run bootstrap token (TASK-1167 / PLAN-1166) +
+			// PAD_BYPASS_SETUP_TOKEN open-mode escape hatch.
 			//
-			// Three branches by current state:
+			// The bypass env-var lets operators on trusted networks
+			// (Unraid behind a firewall, Tailscale-only deployments)
+			// claim the first admin via the web UI without copying a
+			// token out of `docker logs`. Cloud mode always ignores it.
+			//
+			// Branches by current state:
 			//
 			//   1. UserCount > 0 → mop up any stale token file left by a
 			//      previous successful bootstrap whose os.Remove somehow
 			//      failed (D4). No banner.
-			//   2. UserCount == 0 + self-host → ensure a token exists,
-			//      load it into the server, log the banner so the
-			//      operator can grab it from `docker logs`. Failures are
-			//      WARN-and-continue (D7) — never abort startup.
-			//   3. UserCount == 0 + cloud mode → no-op (D10). Cloud
-			//      bootstrap stays loopback-only.
+			//   2. UserCount == 0 + self-host + bypass on → wire the
+			//      bypass into the server, skip token generation
+			//      entirely (no .bootstrap-token file written), log a
+			//      distinct open-mode banner so the operator sees
+			//      explicitly that the surface is unprotected.
+			//   3. UserCount == 0 + self-host + bypass off → ensure a
+			//      token exists, load it into the server, log the
+			//      banner so the operator can grab it from `docker
+			//      logs`. Failures are WARN-and-continue (D7) — never
+			//      abort startup.
+			//   4. UserCount == 0 + cloud mode → no-op (D10). Cloud
+			//      bootstrap stays loopback-only regardless of bypass.
+			bypassEnv := os.Getenv("PAD_BYPASS_SETUP_TOKEN")
+			bypassSetupToken := bypassEnv == "true" || bypassEnv == "1"
+			srv.SetBypassSetupToken(bypassSetupToken && !cfg.IsCloudServer())
 			if userCount, ucErr := s.UserCount(); ucErr != nil {
 				slog.Warn("could not check user count for bootstrap token wiring", "error", ucErr)
 			} else if userCount > 0 {
@@ -705,15 +720,30 @@ func serveCmd() *cobra.Command {
 					slog.Warn("stale bootstrap token cleanup failed", "error", cleanupErr)
 				}
 			} else if !cfg.IsCloudServer() {
-				token, tokenPath, terr := server.EnsureBootstrapToken(cfg.DataDir)
-				if terr != nil {
-					slog.Warn("first-run bootstrap token unavailable; falling back to loopback-only setup",
-						"error", terr,
-						"hint", "operator can run `pad auth setup` from inside the container")
+				if bypassSetupToken {
+					// Don't generate or persist a token; the surface is
+					// already open and a token file would just be a
+					// confusing artifact for the operator.
+					if cleanupErr := server.CleanupStaleBootstrapToken(cfg.DataDir); cleanupErr != nil {
+						slog.Warn("stale bootstrap token cleanup failed", "error", cleanupErr)
+					}
+					logOpenBootstrapBanner(cfg)
 				} else {
-					srv.SetBootstrapToken(token, tokenPath)
-					logBootstrapBanner(token, cfg, tokenPath)
+					token, tokenPath, terr := server.EnsureBootstrapToken(cfg.DataDir)
+					if terr != nil {
+						slog.Warn("first-run bootstrap token unavailable; falling back to loopback-only setup",
+							"error", terr,
+							"hint", "operator can run `pad auth setup` from inside the container")
+					} else {
+						srv.SetBootstrapToken(token, tokenPath)
+						logBootstrapBanner(token, cfg, tokenPath)
+					}
 				}
+			} else if bypassSetupToken {
+				// Cloud mode + bypass: defensively log a warning so a
+				// misconfigured operator notices their flag was ignored.
+				slog.Warn("PAD_BYPASS_SETUP_TOKEN is ignored in cloud mode (PAD_CLOUD/PAD_MODE=cloud)",
+					"hint", "cloud bootstrap stays loopback-only by design")
 			}
 
 			// Graceful shutdown: listen for SIGINT/SIGTERM
@@ -821,6 +851,45 @@ func logBootstrapBanner(token string, cfg *config.Config, tokenPath string) {
 	// read the token_path file directly.
 	slog.Info("first-run bootstrap setup banner emitted to stderr — see container logs",
 		"token_path", tokenPath)
+}
+
+// logOpenBootstrapBanner is the PAD_BYPASS_SETUP_TOKEN companion to
+// logBootstrapBanner. When the operator opts into the bypass, no token
+// is generated — the bootstrap endpoint accepts the first-admin POST
+// from any IP without an X-Bootstrap-Token header. The banner makes
+// the security trade-off explicit so an operator who set the flag
+// without thinking through the implications sees an obvious WARN.
+//
+// Self-host only; cmd/pad/main.go gates this call behind the
+// !cfg.IsCloudServer() branch.
+func logOpenBootstrapBanner(cfg *config.Config) {
+	host := cfg.Host
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "<your-host>"
+	}
+	url := fmt.Sprintf("http://%s:%d/setup", host, cfg.Port)
+	banner := fmt.Sprintf(`
+========================================================================
+  Pad first-run setup (open mode)
+========================================================================
+
+  PAD_BYPASS_SETUP_TOKEN is set. The first admin can be created
+  directly from the web UI — no bootstrap token required:
+
+      %s
+
+  WARNING: anyone who can reach this URL can claim the first admin
+  account until you create one. Only leave this enabled on networks
+  you trust (LAN behind a firewall, Tailscale, etc.).
+
+  To re-enable token-protected setup, unset PAD_BYPASS_SETUP_TOKEN
+  and restart. Once a user exists this banner stops appearing.
+
+========================================================================
+`, url)
+	fmt.Fprint(os.Stderr, banner)
+	slog.Warn("first-run bootstrap is OPEN (PAD_BYPASS_SETUP_TOKEN=true) — anyone reachable on the WebUI port can claim the first admin until one is created")
 }
 
 // --- stop ---

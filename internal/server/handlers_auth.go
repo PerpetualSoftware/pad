@@ -28,6 +28,13 @@ const (
 	// bootstrap token from the container logs" branch instead of the
 	// CLI-only instructions. See TASK-1167 / PLAN-1166.
 	setupMethodLogsToken = "logs_token"
+	// setupMethodOpen is returned by handleSessionCheck when the
+	// operator has enabled PAD_BYPASS_SETUP_TOKEN on a self-host
+	// deployment with no users yet. The frontend renders the bootstrap
+	// form directly — no paste-token prompt — and the bootstrap POST
+	// is accepted without an X-Bootstrap-Token header. Cloud mode
+	// never advertises this value.
+	setupMethodOpen = "open"
 )
 
 var emailRegexp = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -331,8 +338,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Self-host: loopback OR valid first-run token (header-only).
-		if !requestIsLoopback(r) && !s.checkBootstrapToken(r) {
+		// Self-host: loopback OR valid first-run token (header-only) OR
+		// open-bootstrap mode (PAD_BYPASS_SETUP_TOKEN=true). Open mode
+		// is gated to !cloudMode by openBootstrapEnabled(); the
+		// UserCount==0 check below is the second invariant that keeps
+		// the bypass from being a permanent open-registration door.
+		if !requestIsLoopback(r) && !s.checkBootstrapToken(r) && !s.openBootstrapEnabled() {
 			writeError(w, http.StatusForbidden, "forbidden", "Bootstrap is only allowed from localhost or with a valid bootstrap token")
 			return
 		}
@@ -699,14 +710,25 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No users → needs setup (first-time experience). Self-host with a
-	// loaded first-run bootstrap token surfaces setup_method=logs_token
-	// so the frontend renders the "paste token from container logs"
-	// branch in SetupRequiredNotice. Cloud mode never loads a token
-	// (D10), so it falls through to the existing local_cli value.
+	// No users → needs setup (first-time experience). Self-host
+	// surfaces a more specific setup_method when the operator has
+	// chosen one of the homelab-friendly bootstrap modes:
+	//
+	//   - PAD_BYPASS_SETUP_TOKEN=true → "open" (form works directly,
+	//     no token required). Checked first because bypass is the
+	//     more deliberate operator opt-in; if both are configured the
+	//     open path is the relevant one for the user.
+	//   - bootstrap-token loaded → "logs_token" (paste the token from
+	//     `docker logs`).
+	//   - neither → "local_cli" (run `pad auth setup` on the host).
+	//
+	// Cloud mode never advertises "open" or "logs_token" (D10), so it
+	// falls through to local_cli regardless of env-var state.
 	if count == 0 {
 		method := setupMethodLocalCLI
-		if !s.cloudMode && s.hasBootstrapToken() {
+		if s.openBootstrapEnabled() {
+			method = setupMethodOpen
+		} else if !s.cloudMode && s.hasBootstrapToken() {
 			method = setupMethodLogsToken
 		}
 		writeJSON(w, http.StatusOK, s.setupStatePayload(method))

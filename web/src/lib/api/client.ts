@@ -129,7 +129,13 @@ export interface AuthSession {
 	// this value so SetupRequiredNotice renders the "paste your bootstrap
 	// token from the container logs" branch instead of the local-CLI
 	// instructions. Cloud mode never advertises 'logs_token' (D10/F9).
-	setup_method?: 'local_cli' | 'docker_exec' | 'cloud' | 'logs_token';
+	//
+	// 'open' added for PAD_BYPASS_SETUP_TOKEN: self-host operators on
+	// trusted networks who explicitly opted into open-bootstrap. The
+	// /setup form works without a token, and SetupRequiredNotice points
+	// directly at /setup with no copy-from-logs instructions. Cloud
+	// mode also never advertises 'open'.
+	setup_method?: 'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open';
 	auth_method: 'password' | 'cloud';
 	cloud_mode?: boolean;
 	// mcp_public_url is the canonical URL clients paste into their MCP-capable
@@ -713,6 +719,13 @@ export const api = {
 		// browser history (F6 / D9). Same response shape as register, so
 		// the caller can reuse the post-registration redirect logic.
 		//
+		// When token === '' the header is omitted entirely. This is the
+		// PAD_BYPASS_SETUP_TOKEN open-bootstrap path: the server-side
+		// gate accepts the request without a token when bypass is on
+		// AND the user count is still zero. Sending an empty header
+		// would also work (the server treats "" as missing) but the
+		// omitted-header form is more explicit + slightly less weird.
+		//
 		// Content-Type is set explicitly here because request() builds its
 		// default headers BEFORE spreading caller options, so any caller-
 		// provided `headers` object replaces the defaults entirely. The
@@ -723,7 +736,7 @@ export const api = {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'X-Bootstrap-Token': token
+					...(token ? { 'X-Bootstrap-Token': token } : {})
 				},
 				body: JSON.stringify({ email, name, password })
 			}),

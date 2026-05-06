@@ -11,7 +11,7 @@
 	let code = $derived(page.params.code ?? '');
 	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
 	let errorMsg = $state('');
-	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | undefined>(undefined);
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 
 	// Auth form state
 	let mode = $state<'login' | 'register'>('register');

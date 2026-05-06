@@ -22,7 +22,7 @@
 	let confirmPassword = $state('');
 	let error = $state('');
 	let setupRequired = $state(false);
-	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | undefined>(undefined);
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
 
 	let usernameManuallyEdited = $state(false);
