@@ -14,7 +14,7 @@
   <Overview>
 Pad is local-first project management for developers and AI coding agents.
 Single Go binary, SQLite by default, MCP-ready (Claude Code / Cursor / Windsurf).
-Your data stays on your Unraid box — no telemetry, no account required, no
+Your data stays on your Unraid box &#x2014; no telemetry, no account required, no
 cloud lock-in.
 
 After install, click the container's Logs button to grab the
@@ -34,8 +34,8 @@ See the install guide for screenshots: https://getpad.dev/docs/self-hosting/unra
   <Requires/>
   <Config Name="WebUI Port" Target="7777" Default="7777" Mode="tcp" Description="Pad web UI. Browse to http://[your-tower]:[port]/ after install." Type="Port" Display="always" Required="true" Mask="false">7777</Config>
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/pad/" Mode="rw" Description="Pad's persistent data: SQLite database, attachments, encryption key, logs, and config. Back this up to keep your workspace safe." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/pad/</Config>
-  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the pad process runs as. Default 99 (nobody) matches Unraid's appdata permissions. Change only if you know what you're doing — must be a positive integer." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
-  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID the pad process runs as. Default 100 (users) matches Unraid's appdata permissions. Change only if you know what you're doing — must be a positive integer." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the pad process runs as. Default 99 (nobody) matches Unraid's appdata permissions. Change only if you know what you're doing &#x2014; must be a positive integer." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID the pad process runs as. Default 100 (users) matches Unraid's appdata permissions. Change only if you know what you're doing &#x2014; must be a positive integer." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="Log Level" Target="PAD_LOG_LEVEL" Default="info" Mode="" Description="Verbosity for the server log. One of: debug, info, warn, error." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
   <Config Name="Public URL" Target="PAD_URL" Default="" Mode="" Description="External URL when pad is behind a reverse proxy (SWAG / NGINX Proxy Manager / etc.). Required for emailed invitation links to point at the right host. Example: https://pad.example.com" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Maileroo API Key" Target="PAD_MAILEROO_API_KEY" Default="" Mode="" Description="Optional. Enables transactional email (workspace invitations). Without it, invites use copyable join codes via the CLI. Sign up at maileroo.com." Type="Variable" Display="advanced" Required="false" Mask="true"/>
