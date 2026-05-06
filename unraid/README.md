@@ -115,6 +115,6 @@ Without these, invitations fall back to copyable join codes you paste into the i
 - **GitHub Issues**: <https://github.com/PerpetualSoftware/pad/issues> for bug reports and feature requests.
 - **Documentation**: <https://getpad.dev/docs/self-hosting/unraid> *(landing via TASK-1172 / pad-web PR #93)*.
 
-## Note on the icon
+## Icon
 
-The template's `<Icon>` URL points at `unraid/icon.png`, which is delivered by [TASK-1170](https://github.com/PerpetualSoftware/pad). Until that file lands the URL 404s and the CA listing renders without an icon — cosmetic only, doesn't block install.
+`unraid/icon.png` is a 256×256 PNG downsampled (LANCZOS) from `web/static/icon-512.png` — Pad's existing app icon. Reused rather than designed afresh so the CA listing matches getpad.dev favicons + PWA icons. Update both files in lockstep if the brand mark changes.

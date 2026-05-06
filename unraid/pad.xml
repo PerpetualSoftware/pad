@@ -25,9 +25,10 @@ See the install guide for screenshots: https://getpad.dev/docs/self-hosting/unra
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:7777]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/PerpetualSoftware/pad/main/unraid/pad.xml</TemplateURL>
-  <!-- TODO(TASK-1170): unraid/icon.png lands when the icon-design task ships.
-       Until then this URL 404s and the CA listing renders without an icon —
-       cosmetic only, doesn't block install. -->
+  <!-- 256×256 PNG, downsampled with LANCZOS from web/static/icon-512.png
+       (Pad's app icon — clipboard + colored-tile board view). Reusing
+       the existing brand asset rather than designing a one-off, so the
+       Unraid listing matches what users see on getpad.dev / favicons. -->
   <Icon>https://raw.githubusercontent.com/PerpetualSoftware/pad/main/unraid/icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
