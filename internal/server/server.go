@@ -158,6 +158,22 @@ type Server struct {
 	// SQLite WAL write against TempDir RemoveAll, leaving "directory not
 	// empty" cleanup errors in CI. See BUG-842.
 	bg sync.WaitGroup
+
+	// First-run bootstrap token (TASK-1167 / PLAN-1166). When non-empty,
+	// handleBootstrap accepts the value via the X-Bootstrap-Token header
+	// from non-loopback peers (self-host mode only — cloud mode never
+	// loads or honors a token, D2/D10). Wired at startup via
+	// SetBootstrapToken; cleared by consumeBootstrapToken after the first
+	// admin is created.
+	//
+	// The mutex protects the token field AND the entire validate-token →
+	// check-UserCount → CreateUser → consume sequence in handleBootstrap.
+	// Two simultaneous valid-token requests with different emails would
+	// otherwise create two admins from one token (F5). Bootstrap happens
+	// once per install, so the contention window is irrelevant.
+	bootstrapMu        sync.Mutex
+	bootstrapToken     string
+	bootstrapTokenPath string
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can
@@ -699,7 +715,7 @@ func (s *Server) setupRouter() {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins: parseCORSOrigins(s.corsOrigins),
 			AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password"},
+			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password", "X-Bootstrap-Token"},
 			// Credentials flag is gated on an operator explicitly listing
 			// PAD_CORS_ORIGINS. The CLI uses Bearer tokens so the default
 			// "no CORS_ORIGINS set" path doesn't need credential sharing;

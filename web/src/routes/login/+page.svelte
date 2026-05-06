@@ -19,7 +19,7 @@
 	let password = $state('');
 	let error = $state('');
 	let setupRequired = $state(false);
-	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | undefined>(undefined);
+	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | undefined>(undefined);
 	let loading = $state(false);
 
 	let cloudMode = $state(false);

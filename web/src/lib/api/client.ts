@@ -124,7 +124,12 @@ export interface HealthResponse {
 export interface AuthSession {
 	authenticated: boolean;
 	setup_required: boolean;
-	setup_method?: 'local_cli' | 'docker_exec' | 'cloud';
+	// 'logs_token' added in TASK-1167 for the first-run logs-token bootstrap
+	// flow. Self-host servers with no users + a loaded bootstrap token surface
+	// this value so SetupRequiredNotice renders the "paste your bootstrap
+	// token from the container logs" branch instead of the local-CLI
+	// instructions. Cloud mode never advertises 'logs_token' (D10/F9).
+	setup_method?: 'local_cli' | 'docker_exec' | 'cloud' | 'logs_token';
 	auth_method: 'password' | 'cloud';
 	cloud_mode?: boolean;
 	// mcp_public_url is the canonical URL clients paste into their MCP-capable
@@ -701,6 +706,26 @@ export const api = {
 			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({ email, name, password, ...(username ? { username } : {}), ...(invitation_code ? { invitation_code } : {}) })
+			}),
+		// First-run bootstrap with a logs-token (TASK-1167). The token is
+		// transmitted via the X-Bootstrap-Token header — never the URL or
+		// query string — to keep it out of access logs, proxy logs, and
+		// browser history (F6 / D9). Same response shape as register, so
+		// the caller can reuse the post-registration redirect logic.
+		//
+		// Content-Type is set explicitly here because request() builds its
+		// default headers BEFORE spreading caller options, so any caller-
+		// provided `headers` object replaces the defaults entirely. The
+		// /auth/bootstrap endpoint is pre-auth and CSRF-exempt, so no
+		// X-CSRF-Token is needed.
+		bootstrap: (email: string, name: string, password: string, token: string) =>
+			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/bootstrap', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-Bootstrap-Token': token
+				},
+				body: JSON.stringify({ email, name, password })
 			}),
 		checkUsername: (username: string) =>
 			request<{ available: boolean; reason: string | null; message: string | null }>(`/auth/check-username?username=${encodeURIComponent(username)}`),
