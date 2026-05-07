@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 
 func padInitCmd() *cobra.Command {
 	var templateFlag string
+	var cliPromptFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "init [name]",
@@ -147,16 +149,45 @@ Examples:
 					fmt.Println(bold.Sprint("Create admin account"))
 				}
 				fmt.Println()
-				resp, err := promptAndBootstrap(client)
-				if err != nil {
-					return err
+
+				if cliPromptFlag {
+					// Legacy --cli-prompt path: in-terminal email/name/password
+					// prompts. Same Bootstrap call the pre-TASK-1217 flow used,
+					// kept verbatim as a zero-cost hedge per IDEA-1179.
+					resp, err := promptAndBootstrap(client)
+					if err != nil {
+						return err
+					}
+					if err := saveCredentials(cfg, resp); err != nil {
+						return err
+					}
+					green.Print("✓ ")
+					fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
+					fmt.Println()
+				} else {
+					// Default browser path. RunBrowserBootstrap returns once
+					// the server reports setup_required: false but the CLI
+					// has no credentials — the browser owns the session
+					// cookie. Chain doBrowserLogin afterwards so the rest
+					// of pad init (workspace creation, etc.) can hit
+					// authenticated endpoints.
+					//
+					// SIGINT is already handled by installInitCancelHandler
+					// at the top of this RunE — it short-circuits the whole
+					// process via os.Exit(130), so the helper doesn't need
+					// its own signal-aware context. Background suffices.
+					if err := cli.RunBrowserBootstrap(context.Background(), client, cfg); err != nil {
+						return err
+					}
+					green.Print("✓ ")
+					fmt.Println("First admin account created")
+					fmt.Println()
+					fmt.Println("  Authenticating the CLI…")
+					if err := doBrowserLogin(client, cfg); err != nil {
+						return fmt.Errorf("login: %w", err)
+					}
+					fmt.Println()
 				}
-				if err := saveCredentials(cfg, resp); err != nil {
-					return err
-				}
-				green.Print("✓ ")
-				fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
-				fmt.Println()
 
 				// Refresh client with credentials
 				client = cli.NewClientFromURL(cfg.BaseURL())
@@ -234,6 +265,12 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&templateFlag, "template", "", "workspace template (omit for interactive picker; run 'pad workspace init --list-templates' to see all)")
+	// --cli-prompt is the same hedge `pad auth setup` exposes (TASK-1216 /
+	// IDEA-1179). When the browser path won't work — broken X11, headless
+	// box without an SSH tunnel — this falls back to the legacy in-
+	// terminal email/name/password prompts for the admin-creation step.
+	// Workspace creation (cwd-bound) stays CLI in either case.
+	cmd.Flags().BoolVar(&cliPromptFlag, "cli-prompt", false, "Use the legacy in-terminal email/name/password prompts for the admin-account step instead of the browser /setup flow.")
 	return cmd
 }
 
