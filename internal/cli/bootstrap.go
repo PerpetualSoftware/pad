@@ -62,6 +62,11 @@ var bootstrapPollTimeout = 5 * time.Minute
 // setup_required: false), an error if the helper can't proceed (no token
 // configured, token file unreadable, timeout, ctx cancelled).
 //
+// Callers in this PR: only setupCmd (`pad auth setup`). TASK-1217 adds
+// `pad init` as the second caller — until that lands, `pad init` keeps
+// using the legacy promptAndBootstrap path. Splitting the wiring across
+// two PRs is deliberate (CONVE-2 "tasks should be PR-sized").
+//
 // On success the server has a first admin but the CLI has not been issued
 // any credentials — the browser owns the session cookie. Callers that
 // want the CLI to be authenticated afterwards should chain a CLI-auth-
@@ -69,8 +74,8 @@ var bootstrapPollTimeout = 5 * time.Minute
 //
 // The helper is idempotent: if the server already reports
 // setup_required: false on entry, it returns nil immediately without
-// touching the token file or printing anything. That matters for `pad init`
-// against a server where setup is already done.
+// touching the token file or printing anything. That matters for any
+// caller invoking it against a server where setup is already done.
 func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config) error {
 	if client == nil {
 		return errors.New("RunBrowserBootstrap: nil client")
