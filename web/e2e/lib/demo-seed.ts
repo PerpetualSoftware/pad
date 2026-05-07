@@ -1,5 +1,6 @@
 import type { APIRequestContext } from '@playwright/test';
 import type { SuiteFixture } from '../fixtures';
+import { demoIdeas, demoPlan, demoTasks, type DemoTask } from './demo-data';
 
 /**
  * Shared seeding helpers for screenshot specs.
@@ -11,6 +12,11 @@ import type { SuiteFixture } from '../fixtures';
  * Each helper hits the same REST endpoints the web UI uses, so the
  * resulting items behave identically to ones a human creates via the
  * dashboard.
+ *
+ * The static "what a realistic workspace looks like" data lives in
+ * ./demo-data.ts so pad-remotion (sibling repo) can consume the same
+ * shape without depending on Playwright. Update demo-data.ts and mirror
+ * the change in pad-remotion when adding/removing items.
  */
 
 // `fields` is a JSON-encoded string on the wire (see
@@ -25,6 +31,19 @@ function authHeaders(fixture: SuiteFixture) {
 }
 
 /**
+ * Build the on-the-wire `fields` object for a demo task. Filters out
+ * undefined effort so we don't post `effort: undefined` JSON.
+ */
+function taskFields(t: DemoTask): Record<string, string> {
+	const fields: Record<string, string> = {
+		status: t.status,
+		priority: t.priority
+	};
+	if (t.effort) fields.effort = t.effort;
+	return fields;
+}
+
+/**
  * Realistic-looking project: one active plan, half a dozen tasks across
  * statuses + priorities, a couple of ideas. Designed to make the
  * dashboard's "Active Plans" widget show a non-zero progress bar and
@@ -34,6 +53,8 @@ function authHeaders(fixture: SuiteFixture) {
  * each call will create *additional* items, but the screenshots only
  * care that there's *some* content. If you need a clean slate, point
  * Playwright at a fresh PAD_E2E_DATA_DIR.
+ *
+ * Data sourced from ./demo-data.ts.
  */
 export async function seedRealisticContent(fixture: SuiteFixture, request: APIRequestContext) {
 	const ws = fixture.workspaceSlug;
@@ -43,9 +64,9 @@ export async function seedRealisticContent(fixture: SuiteFixture, request: APIRe
 	const planResp = await request.post(`/api/v1/workspaces/${ws}/collections/plans/items`, {
 		headers,
 		data: {
-			title: 'v0.2 — Collaboration',
-			fields: enc({ status: 'active' }),
-			content: 'Real-time multiplayer editing, team invites, and shared views.'
+			title: demoPlan.title,
+			fields: enc({ status: demoPlan.status }),
+			content: demoPlan.content
 		}
 	});
 	if (!planResp.ok()) {
@@ -55,48 +76,14 @@ export async function seedRealisticContent(fixture: SuiteFixture, request: APIRe
 	if (!plan.id) throw new Error('plan create succeeded but response missing id');
 
 	// 2. Tasks — explicit mix of status / priority / parent linkage
-	const tasks: { title: string; fields: Record<string, string>; parent?: string }[] = [
-		{
-			title: 'Fix OAuth redirect bug',
-			fields: { status: 'in-progress', priority: 'high', effort: 'm' },
-			parent: plan.id
-		},
-		{
-			title: 'Add rate limiting to API endpoints',
-			fields: { status: 'in-progress', priority: 'high', effort: 'l' },
-			parent: plan.id
-		},
-		{
-			title: 'Refactor auth middleware',
-			fields: { status: 'open', priority: 'medium', effort: 'm' }
-		},
-		{
-			title: 'Add SSO support for enterprise users',
-			fields: { status: 'open', priority: 'medium', effort: 'xl' },
-			parent: plan.id
-		},
-		{
-			title: 'Document the deploy pipeline',
-			fields: { status: 'open', priority: 'low', effort: 's' }
-		},
-		{
-			title: 'Update Go to 1.26',
-			fields: { status: 'done', priority: 'medium', effort: 's' }
-		},
-		{
-			title: 'Set up CI security scanning',
-			fields: { status: 'done', priority: 'high', effort: 's' },
-			parent: plan.id
-		}
-	];
-
-	for (const t of tasks) {
+	for (const t of demoTasks) {
+		const parent = t.parentToPlan ? plan.id : undefined;
 		const resp = await request.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, {
 			headers,
 			data: {
 				title: t.title,
-				fields: enc(t.fields),
-				...(t.parent ? { parent_id: t.parent } : {})
+				fields: enc(taskFields(t)),
+				...(parent ? { parent_id: parent } : {})
 			}
 		});
 		if (!resp.ok()) {
@@ -105,14 +92,13 @@ export async function seedRealisticContent(fixture: SuiteFixture, request: APIRe
 	}
 
 	// 3. Ideas — a couple, varied state
-	const ideas: { title: string; fields: Record<string, string> }[] = [
-		{ title: 'Real-time presence indicators', fields: { status: 'exploring', impact: 'high' } },
-		{ title: 'Slack integration for notifications', fields: { status: 'new', impact: 'medium' } }
-	];
-	for (const idea of ideas) {
+	for (const idea of demoIdeas) {
 		const resp = await request.post(`/api/v1/workspaces/${ws}/collections/ideas/items`, {
 			headers,
-			data: { title: idea.title, fields: enc(idea.fields) }
+			data: {
+				title: idea.title,
+				fields: enc({ status: idea.status, impact: idea.impact })
+			}
 		});
 		if (!resp.ok()) {
 			throw new Error(`idea ${idea.title} failed (${resp.status()}): ${await resp.text()}`);
