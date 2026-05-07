@@ -951,10 +951,17 @@ func openBrowser(url string) error {
 // --- auth commands ---
 
 func setupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Initialize a fresh Pad instance with the first admin account",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Long: `Initialize a fresh Pad instance with the first admin account.
+
+By default the CLI hands the operator a deep link into the browser-based
+/setup form (which uses password managers, HTML5 email validation, and the
+live strength meter). If the browser path won't work — headless server
+without an SSH tunnel, broken X11, etc. — re-run with --cli-prompt for the
+legacy in-terminal email/name/password prompts.`,
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			cfg := getConfig()
 			if !cfg.IsConfigured() {
 				// Allow host-local bootstrap on a pristine machine before the
@@ -968,6 +975,14 @@ func setupCmd() *cobra.Command {
 					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
 				}
 			}
+
+			// Honour the same Cancelled. + exit-130 path as login when the
+			// user hits Ctrl+C during the browser flow's polling loop.
+			defer func() {
+				if isCancellation(retErr) {
+					cancelInit()
+				}
+			}()
 
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
@@ -987,21 +1002,89 @@ func setupCmd() *cobra.Command {
 				return nil
 			}
 
-			resp, err := promptAndBootstrap(client)
-			if err != nil {
-				return err
+			cliPrompt, _ := cmd.Flags().GetBool("cli-prompt")
+			if cliPrompt {
+				return runCLISetup(cfg, client)
 			}
-			if err := saveCredentials(cfg, resp); err != nil {
-				return err
-			}
-
-			green := color.New(color.FgGreen).SprintFunc()
-			fmt.Printf("%s First admin account created\n", green("✓"))
-			fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
-			printPostSetupNextStepsHint()
-			return nil
+			return runBrowserSetup(cmd.Context(), cfg, client)
 		},
 	}
+	// --cli-prompt is the deliberate hedge from IDEA-1179 / TASK-1216: we
+	// don't believe a CLI fallback is needed (Pad is fundamentally a
+	// network-accessible web service — if the operator can't reach the
+	// browser flow on localhost, their setup is misconfigured), but
+	// keeping the flag is zero-cost and gives users a workaround if a
+	// concrete blocker shows up. Each --cli-prompt usage is a signal we
+	// should rethink the assumption.
+	cmd.Flags().Bool("cli-prompt", false, "Use the legacy in-terminal email/name/password prompts instead of the browser /setup flow.")
+	return cmd
+}
+
+// runBrowserSetup drives the browser-based first-admin bootstrap and then
+// chains a CLI auth-session login so the user ends up authenticated on
+// the CLI — mirroring the post-condition of the legacy --cli-prompt path
+// (Bootstrap returns a token and we save credentials in one shot). Two
+// browser approvals — one to create the admin, one to authorize the CLI
+// — but each is a single click in a browser the operator already has
+// open, and the alternative (telling them to manually run `pad auth
+// login` afterwards) is a worse UX.
+func runBrowserSetup(ctx context.Context, cfg *config.Config, client *cli.Client) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bootstrapCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-bootstrapCtx.Done():
+		}
+	}()
+
+	if err := cli.RunBrowserBootstrap(bootstrapCtx, client, cfg); err != nil {
+		// Map ctx cancellation to the canonical errCancelled sentinel so
+		// the deferred isCancellation() check in the parent RunE routes
+		// us through "Cancelled." + exit 130 instead of cobra's generic
+		// error path.
+		if errors.Is(err, context.Canceled) {
+			return errCancelled
+		}
+		return err
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("  %s First admin account created\n", green("✓"))
+	fmt.Println()
+	fmt.Println("  Authenticating the CLI…")
+	if err := doBrowserLogin(client, cfg); err != nil {
+		return err
+	}
+	printPostSetupNextStepsHint()
+	return nil
+}
+
+// runCLISetup is the legacy in-terminal admin bootstrap, reachable via
+// `pad auth setup --cli-prompt`. Kept verbatim from the pre-TASK-1216
+// behavior so users with broken browser paths have a working escape
+// hatch.
+func runCLISetup(cfg *config.Config, client *cli.Client) error {
+	resp, err := promptAndBootstrap(client)
+	if err != nil {
+		return err
+	}
+	if err := saveCredentials(cfg, resp); err != nil {
+		return err
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s First admin account created\n", green("✓"))
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	printPostSetupNextStepsHint()
+	return nil
 }
 
 // printPostSetupNextStepsHint walks the freshly-bootstrapped admin to the
