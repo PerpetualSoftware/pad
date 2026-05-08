@@ -221,4 +221,3 @@ func TestCollabUpgradeMissingItemIDBadRequest(t *testing.T) {
 		t.Fatalf("expected non-success on missing item segment, got %d", resp.StatusCode)
 	}
 }
-
