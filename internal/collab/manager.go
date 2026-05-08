@@ -251,15 +251,23 @@ func (m *RoomManager) RoomCount() int {
 	return len(m.rooms)
 }
 
+// closeFrameDeadline is the absolute time budget for sending a
+// CloseMessage frame via WriteControl before falling through to a
+// plain Close. Generous enough that a healthy connection always
+// completes; short enough that a stuck-write conn doesn't block
+// the revoke path.
+const closeFrameDeadline = 1 * time.Second
+
 // CloseConn force-closes a single WebSocket connection registered
-// with the manager, optionally sending a close frame with a
-// machine-readable reason first. Used by the auth-revalidation
-// timer in handleCollab (TASK-1256) to evict a peer whose workspace
-// access was revoked mid-stream.
+// with the manager, sending a close frame with a machine-readable
+// reason first. Used by the auth-revalidation timer in
+// handleCollab (TASK-1256) to evict a peer whose workspace access
+// was revoked mid-stream.
 //
-//   - itemID  scopes the lookup to the room the conn belongs to;
-//             linear-search across all rooms would work but
-//             scales poorly with hot-room counts.
+//   - itemID  scopes the lookup; (purely informational here, the
+//             close-frame call doesn't actually need it but the
+//             param keeps the API symmetric for a future
+//             find-by-room metric).
 //   - conn    the *exact* websocket.Conn the manager is tracking;
 //             not a tab/session id.
 //   - code    a websocket.Close* code (e.g. ClosePolicyViolation
@@ -268,31 +276,27 @@ func (m *RoomManager) RoomCount() int {
 //             client. Kept short — the WS spec caps the close
 //             frame's reason at ~123 bytes.
 //
-// Best-effort: if the conn isn't tracked (race window between
-// Join's getOrCreate and addConn, or after the conn already
-// closed), falls back to a plain Close. Either way the conn is
+// CRITICAL: the close frame is sent via conn.WriteControl which
+// is concurrency-safe with the room's writeLoop / replay (per
+// gorilla's documented contract — WriteControl does not contend
+// on the conn's normal write mutex). Acquiring writeMu would
+// instead block the revoke until any in-flight WriteMessage to a
+// slow peer finished, defeating the "evict immediately" goal.
+//
+// Best-effort: WriteControl errors (already-closed conn, deadline
+// exceeded) fall through to plain Close. Either way the conn is
 // not usable when this returns.
 func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, reason string) {
-	m.mu.Lock()
-	room := m.rooms[itemID]
-	m.mu.Unlock()
-
-	var rc *roomConn
-	if room != nil {
-		room.mu.Lock()
-		rc = room.conns[conn]
-		room.mu.Unlock()
+	if conn == nil {
+		return
 	}
-
-	if rc != nil {
-		// Holds writeMu so we don't tear into a frame mid-write
-		// from the room's writeLoop or replay path.
-		_ = rc.writeMessage(
-			websocket.CloseMessage,
-			websocket.FormatCloseMessage(code, reason),
-		)
-	}
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(code, reason),
+		time.Now().Add(closeFrameDeadline),
+	)
 	_ = conn.Close()
+	_ = itemID // reserved for future per-room metrics; see doc above
 }
 
 // Close stops every active room AND blocks until every in-flight

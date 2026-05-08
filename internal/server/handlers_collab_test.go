@@ -463,37 +463,39 @@ func TestCollabMembershipRevalidationClosesOnRevoke(t *testing.T) {
 	}
 
 	// Read with a deadline. The reval goroutine's first tick is
-	// jittered across [0, interval) so worst case is ~30ms; allow a
-	// generous margin against scheduler noise.
+	// jittered across [0, interval) — worst case is ~30ms — so
+	// 2 seconds is wildly generous. A timeout here means the WS is
+	// still open, which is the bug being regression-tested.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _, readErr := conn.ReadMessage()
 	if readErr == nil {
-		t.Fatal("expected read error after membership revocation; got none")
+		t.Fatal("expected read error after membership revocation; got none (WS still open)")
 	}
-	// Must be a CLOSE frame or transport error — both are acceptable
-	// signals that the server tore the conn down.
-	if !websocket.IsCloseError(
-		readErr,
-		websocket.ClosePolicyViolation,
-		websocket.CloseAbnormalClosure,
-		websocket.CloseGoingAway,
-	) && !isTimeoutOrEOF(readErr) {
-		t.Logf("post-revoke read error (acceptable): %v", readErr)
+	if isTimeout(readErr) {
+		t.Fatalf("read timed out before WS was closed — revocation not honoured: %v", readErr)
 	}
+	// We sent ClosePolicyViolation. Accept either an explicit
+	// close frame with that code OR a transport-level error
+	// (gorilla returns io.ErrUnexpectedEOF / net.ErrClosed when
+	// the peer closes the underlying TCP conn before sending a
+	// close frame; either way the server-side teardown happened).
+	if websocket.IsCloseError(readErr, websocket.ClosePolicyViolation) {
+		// Best case: client got the typed reason.
+		return
+	}
+	// Generic close / EOF / connection-reset: also a pass — the
+	// server CLOSED us, just without a clean frame depending on
+	// timing. The test's assertion is "the WS is no longer
+	// readable", which holds.
+	t.Logf("post-revoke read error: %v", readErr)
 }
 
-func isTimeoutOrEOF(err error) bool {
-	if err == nil {
-		return false
-	}
+func isTimeout(err error) bool {
 	type timeout interface{ Timeout() bool }
-	if t, ok := err.(timeout); ok && t.Timeout() {
-		return false // timeout means revocation didn't happen — caller should fail
+	if t, ok := err.(timeout); ok {
+		return t.Timeout()
 	}
-	// Read after server-side close: net.ErrClosed, io.EOF, EOF. Hard
-	// to enumerate exhaustively; the test above already short-circuits
-	// on err != nil so this helper is purely diagnostic.
-	return true
+	return false
 }
 
 // TestCollabUpgradeUnavailableWithoutRoomManager confirms the
