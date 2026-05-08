@@ -89,6 +89,17 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 
 	// Upgrade. After this returns successfully w/r are hijacked — we
 	// MUST NOT touch them; only conn.WriteMessage / conn.Close.
+	if s.collab == nil {
+		// RoomManager wiring is optional — a self-host build that
+		// doesn't enable collab still exposes the route but should
+		// fail loud rather than silently accepting the upgrade and
+		// dropping every byte. 503 mirrors the SSE handler's
+		// "events bus not configured" path.
+		writeError(w, http.StatusServiceUnavailable, "unavailable",
+			"Collaboration is not available on this server")
+		return
+	}
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on
@@ -128,29 +139,23 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		"user_id", userID,
 	)
 
-	// Drain reads until the client disconnects. No protocol logic in
-	// this task — TASK-1255 (room manager) plumbs reads into the
-	// OpBus + op-log. We still need to read so the connection can
-	// detect close cleanly: gorilla/websocket only surfaces close
-	// frames via ReadMessage, and a control frame (ping/pong) only
-	// gets handled if we're actively reading.
-	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			// Normal closure paths (1000, 1001, 1005) are not errors
-			// from the user's perspective — log only the unexpected
-			// codes so operators don't see noise on every disconnect.
-			if websocket.IsUnexpectedCloseError(err,
-				websocket.CloseNormalClosure,
-				websocket.CloseGoingAway,
-				websocket.CloseNoStatusReceived,
-			) {
-				slog.Warn("collab: websocket read ended unexpectedly",
-					"item_id", itemID,
-					"user_id", userID,
-					"error", err,
-				)
-			}
-			return
+	// Hand the connection to the RoomManager. It owns the
+	// op-log replay, fan-out, and lifecycle bookkeeping (lazy create
+	// + grace-TTL reclaim). Returns when the WS closes for any reason.
+	if err := s.collab.Join(itemID, conn); err != nil {
+		// Normal closure paths surface here as websocket.CloseError
+		// values that aren't worth logging. Anything unexpected
+		// (transport failure, room manager hard error) gets a warn.
+		if websocket.IsUnexpectedCloseError(err,
+			websocket.CloseNormalClosure,
+			websocket.CloseGoingAway,
+			websocket.CloseNoStatusReceived,
+		) {
+			slog.Warn("collab: websocket session ended unexpectedly",
+				"item_id", itemID,
+				"user_id", userID,
+				"error", err,
+			)
 		}
 	}
 }

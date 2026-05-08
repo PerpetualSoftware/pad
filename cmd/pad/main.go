@@ -36,6 +36,7 @@ import (
 	"regexp"
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/logging"
@@ -649,6 +650,14 @@ func serveCmd() *cobra.Command {
 			// Wrap event bus with Prometheus instrumentation
 			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
+
+			// Yjs collab room manager (PLAN-1248). Single-instance only
+			// today; multi-replica fanout via Redis is a deferred IDEA.
+			// MemoryOpBus is in-process; the OpBus interface keeps the
+			// door open for a RedisOpBus drop-in later.
+			collabBus := collab.NewMemoryOpBus()
+			srv.SetCollabRoomManager(collab.NewRoomManager(s, collabBus))
+			slog.Info("Collab room manager wired (Yjs over /api/v1/collab/{itemID})")
 
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))

@@ -7,9 +7,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/gorilla/websocket"
 )
+
+// testServerWithCollab wires a RoomManager onto a fresh test server
+// so the collab handler answers 200/101 on the happy path. Tests that
+// only assert on auth / visibility responses (401 / 403 / 404) don't
+// need this — those replies happen BEFORE the s.collab nil-check —
+// but it doesn't hurt to keep the helper centralised.
+func testServerWithCollab(t *testing.T) *Server {
+	t.Helper()
+	srv := testServer(t)
+	bus := collab.NewMemoryOpBus()
+	t.Cleanup(bus.Close)
+	rm := collab.NewRoomManager(srv.store, bus)
+	t.Cleanup(rm.Close)
+	srv.SetCollabRoomManager(rm)
+	return srv
+}
 
 // dialCollab opens a WebSocket against the test server's collab
 // endpoint with the given itemID. Returns the connection and the HTTP
@@ -70,7 +87,7 @@ func seedCollabFixture(t *testing.T, srv *Server, wsName string) string {
 // access in that state. This is the easiest path to assert the
 // upgrade actually works end-to-end without setting up auth.
 func TestCollabUpgradeFreshInstall(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerWithCollab(t)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -260,7 +277,7 @@ func TestCollabUpgradeRejectsRestrictedMemberForeignCollection(t *testing.T) {
 // Strict per-item check (round 4 fix) must surface 404 for the
 // sibling.
 func TestCollabUpgradeRejectsGuestWithSiblingItemGrantOnly(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerWithCollab(t)
 	admin := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	_ = admin
 	ts := httptest.NewServer(srv)
@@ -363,6 +380,29 @@ func TestCollabUpgradeRejectsUnknownItem(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestCollabUpgradeUnavailableWithoutRoomManager confirms the
+// handler returns 503 when no RoomManager is wired (the
+// SetCollabRoomManager call hasn't happened). Self-host builds that
+// don't enable collab should fail loud rather than silently
+// accepting an upgrade and dropping every byte.
+func TestCollabUpgradeUnavailableWithoutRoomManager(t *testing.T) {
+	srv := testServer(t) // NO RoomManager wired
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	itemID := seedCollabFixture(t, srv, "Unwired")
+	_, resp, err := dialCollab(t, ts.URL, itemID, nil, "")
+	if err == nil {
+		t.Fatal("expected dial to fail without a wired RoomManager")
+	}
+	if resp == nil {
+		t.Fatalf("dial returned no response: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
 }
 
