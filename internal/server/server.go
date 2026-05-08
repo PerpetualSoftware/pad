@@ -23,6 +23,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
@@ -39,6 +40,7 @@ type Server struct {
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
+	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
 	emailAPIKey           string               // Maileroo API key (used for unsubscribe HMAC)
@@ -226,6 +228,12 @@ func (s *Server) Stop() {
 	// independent goroutines; we just need the close BEFORE Wait().
 	s.stopMCPSessionTracker()
 	s.bg.Wait()
+	// Close the collab room manager BEFORE the rateLimiter so any
+	// in-flight Join goroutines holding rate-limiter handles can wind
+	// down via their normal close path. nil-safe: collab is optional.
+	if s.collab != nil {
+		s.collab.Close()
+	}
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
 
@@ -383,6 +391,16 @@ func (s *Server) SetBaseURL(rawURL string) {
 // SetEventBus attaches an event bus for real-time SSE streaming.
 func (s *Server) SetEventBus(bus events.EventBus) {
 	s.events = bus
+}
+
+// SetCollabRoomManager attaches a Yjs collab RoomManager (PLAN-1248).
+// When set, the /api/v1/collab/{itemID} WebSocket endpoint hands new
+// connections to the manager for op-log replay + fan-out. When nil,
+// the endpoint exists but answers 503 — that's intentional so a
+// self-host build that wants the editor without collab can leave
+// this unwired without surfacing surprise behaviour.
+func (s *Server) SetCollabRoomManager(rm *collab.RoomManager) {
+	s.collab = rm
 }
 
 // SetWebhookDispatcher attaches a webhook dispatcher for outgoing notifications.
