@@ -38,10 +38,24 @@
 				const id = `mmd-${Math.random().toString(36).slice(2, 10)}`;
 				const { svg } = await m.default.render(id, source);
 				target.innerHTML = svg;
+				// A successful render means the source is now valid — drop any
+				// error styling left over from a prior failed render.
+				target.classList.remove('mermaid-error');
 			} catch {
 				target.textContent = '⚠ Invalid Mermaid syntax';
 				target.classList.add('mermaid-error');
 			}
+		});
+	}
+
+	// Chain a diagram-clear through the shared mermaid render queue so it
+	// executes AFTER any still-pending renders for the same target. Without
+	// this, an in-flight queueMermaidRender() could overwrite a synchronous
+	// clear with stale SVG.
+	function queueMermaidClear(target: HTMLElement) {
+		renderQueue = renderQueue.then(() => {
+			target.textContent = '';
+			target.classList.remove('mermaid-error');
 		});
 	}
 
@@ -278,8 +292,9 @@
 								queueMermaidRender(newSource, diagram);
 							} else {
 								// Empty source: clear any stale SVG / error state.
-								diagram.textContent = '';
-								diagram.classList.remove('mermaid-error');
+								// Routed through the render queue so a pending
+								// queueMermaidRender can't overwrite us afterward.
+								queueMermaidClear(diagram);
 							}
 						}
 						return true;
