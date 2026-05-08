@@ -250,6 +250,101 @@ func TestCollabUpgradeRejectsRestrictedMemberForeignCollection(t *testing.T) {
 	}
 }
 
+// TestCollabUpgradeRejectsGuestWithSiblingItemGrantOnly is a
+// regression test for the round-3 over-grant bug: a guest with an
+// item-level grant on item A could upgrade /api/v1/collab/{B} for a
+// sibling item B in the same collection because VisibleCollectionIDs
+// returns the collection (so the nav can show it) even though the
+// user only has access to one specific item in it.
+//
+// Strict per-item check (round 4 fix) must surface 404 for the
+// sibling.
+func TestCollabUpgradeRejectsGuestWithSiblingItemGrantOnly(t *testing.T) {
+	srv := testServer(t)
+	admin := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	_ = admin
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Workspace + one collection holding two siblings.
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "GuestSibling"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	itemA, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Granted", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem A: %v", err)
+	}
+	itemB, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Sibling (off-limits)", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem B: %v", err)
+	}
+
+	// Guest user who is NOT a workspace member but has an item grant
+	// on itemA only. Pad's grants design says this guest should see
+	// itemA (and the nav for the parent collection) but NOT sibling B.
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "guest@test.com",
+		Name:     "Guest",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser guest: %v", err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, itemA.ID, guest.ID, "edit", guest.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	token, err := srv.store.CreateSession(guest.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "pad_session", Value: token}}
+
+	// Sibling B → 404 (the bug being regression-tested).
+	_, resp, err := dialCollab(t, ts.URL, itemB.ID, cookies, "go-test")
+	if err == nil {
+		t.Fatal("expected dial to fail for guest targeting sibling without grant")
+	}
+	if resp == nil {
+		t.Fatalf("dial returned no response: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("sibling: expected 404, got %d", resp.StatusCode)
+	}
+
+	// Sanity: the granted item itself MUST upgrade successfully.
+	conn, resp, err := dialCollab(t, ts.URL, itemA.ID, cookies, "go-test")
+	if err != nil {
+		body := ""
+		if resp != nil {
+			body = "status=" + resp.Status
+		}
+		t.Fatalf("granted item dial: %v (%s)", err, body)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("granted item: expected 101, got %d", resp.StatusCode)
+	}
+	// Clean close so the server's read loop sees normal closure.
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
+		time.Now().Add(1*time.Second),
+	)
+}
+
 // TestCollabUpgradeRejectsUnknownItem covers the 404 path: a
 // well-formed itemID that doesn't resolve to any item must surface
 // as Not Found, not as a 401 / 403 leakage about the workspace's

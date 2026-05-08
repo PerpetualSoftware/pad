@@ -265,43 +265,89 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 			"You are not a member of this workspace")
 	}
 
-	// Item-level visibility check. Mirrors requireItemVisible but
-	// without depending on middleware-set request context — the WS
-	// path doesn't go through RequireWorkspaceAccess. A restricted
-	// member (collection_access=specific) or a guest must NOT be
-	// able to upgrade for an item in a collection they cannot see,
-	// even if they're a valid member of the workspace.
+	// Item-level visibility check. Mirrors requireItemVisible +
+	// guestResourceFilter without depending on middleware-set request
+	// context — the WS path doesn't go through RequireWorkspaceAccess.
 	//
-	// VisibleCollectionIDs returns:
-	//   nil       "all" access — user sees every collection
-	//   non-nil   the explicit set of visible collection IDs
+	// Two-stage check:
+	//   1. Coarse: the item's collection must be in the user's
+	//      visible set. VisibleCollectionIDs returns nil for "all"
+	//      access; that's the easy grant. A non-nil slice may include
+	//      collections "anchored" by an item-level grant (so the
+	//      collection appears in the nav even though the user only
+	//      has access to a single item in it) — that's NOT enough to
+	//      grant collab access to other items in the same collection.
+	//   2. Strict (only when the user has item-level grants): require
+	//      one of (a) full collection grant, (b) member's "specific"
+	//      access list including this collection, (c) item grant on
+	//      THIS exact item. Otherwise the visible-IDs hit was
+	//      anchored by a sibling's grant and we must 404.
+	//
+	// Without the strict stage, a guest with `item:A` grant could
+	// upgrade /api/v1/collab/{B} for a sibling B in the same
+	// collection — the bug Codex found in round 3.
 	visibleIDs, err := s.store.VisibleCollectionIDs(wsID, fresh.ID)
 	if err != nil {
 		return err
 	}
 	if visibleIDs == nil {
-		return nil
+		return nil // "all" access
 	}
+	collectionIsVisible := false
 	for _, id := range visibleIDs {
 		if id == item.CollectionID {
+			collectionIsVisible = true
+			break
+		}
+	}
+	if !collectionIsVisible {
+		return newStatusError(http.StatusNotFound, "not_found", "Item not found")
+	}
+
+	// Visible-set hit. If the user has NO item-level grants, the
+	// visibility came from full collection access (member's "specific"
+	// access list, or a full collection grant) — grant access to any
+	// item in the collection.
+	collGrants, itemGrants, err := s.store.ListUserGrants(wsID, fresh.ID)
+	if err != nil {
+		return err
+	}
+	if len(itemGrants) == 0 {
+		return nil
+	}
+
+	// User has item grants. The visible-set hit may have been anchored
+	// by a sibling item's grant, so we need a strict check.
+
+	// (a) Full collection grant on this collection.
+	for _, g := range collGrants {
+		if g.CollectionID == item.CollectionID {
 			return nil
 		}
 	}
 
-	// Collection not in the visible set. Last chance: a per-item
-	// grant on this exact item. Used by guests who were given
-	// access to a single item rather than a whole collection.
-	_, itemGrants, err := s.store.ListUserGrants(wsID, fresh.ID)
-	if err != nil {
-		return err
+	// (b) Member's "specific" access list including this collection.
+	// guestResourceFilter only consults this branch for non-guests.
+	if member != nil {
+		memberColls, err := s.store.GetMemberCollectionAccess(wsID, fresh.ID)
+		if err != nil {
+			return err
+		}
+		for _, id := range memberColls {
+			if id == item.CollectionID {
+				return nil
+			}
+		}
 	}
+
+	// (c) Item-level grant on this exact item.
 	for _, g := range itemGrants {
 		if g.ItemID == item.ID {
 			return nil
 		}
 	}
 
-	// Some workspace access, but not to this specific item. Mirror
-	// requireItemVisible's "don't leak existence" → 404 instead of 403.
+	// Visibility was anchored by a sibling grant — 404, mirroring
+	// requireItemVisible's "don't leak existence" pattern.
 	return newStatusError(http.StatusNotFound, "not_found", "Item not found")
 }
