@@ -215,7 +215,16 @@ func (s *Server) collabRevalidationLoop(
 		case <-stop:
 			return
 		case <-timer.C:
-			if err := s.authorizeCollabAccess(r, item); err != nil {
+			err := s.authorizeCollabAccess(r, item)
+			switch {
+			case err == nil:
+				// Still authorised. Re-arm at the regular cadence;
+				// the connect-time jitter has already spread the
+				// fleet so subsequent fires can be evenly spaced.
+				timer.Reset(interval)
+
+			case isAccessDenial(err):
+				// Real revocation — close the conn.
 				slog.Info("collab: access revoked mid-stream, closing connection",
 					"item_id", itemID,
 					"user_id", userID,
@@ -226,12 +235,40 @@ func (s *Server) collabRevalidationLoop(
 					"Your access to this item was revoked.",
 				)
 				return
+
+			default:
+				// Transient internal error (DB blip on GetUser /
+				// grant lookup, etc.). Logging at warn so an
+				// operator notices a sustained pattern, but we
+				// MUST NOT close the conn — a single failed
+				// query shouldn't punt every active editor.
+				// Re-arm and try again on the next tick.
+				slog.Warn("collab: revalidation error; keeping connection open",
+					"item_id", itemID,
+					"user_id", userID,
+					"error", err,
+				)
+				timer.Reset(interval)
 			}
-			// Subsequent fires can be evenly spaced — connect-time
-			// jitter has already spread the fleet.
-			timer.Reset(interval)
 		}
 	}
+}
+
+// isAccessDenial reports whether the given error from
+// authorizeCollabAccess represents a real authorization decision
+// (member removed, role demoted, item-grant revoked) versus an
+// internal / transient error (DB blip on a lookup). Only access
+// denials should close the live WebSocket; transient errors must
+// fall through so a single failed query doesn't punt every active
+// editor in the workspace.
+//
+// authorizeCollabAccess returns *statusError for every "we
+// know they don't have access" branch, and a plain error (without
+// the statusError wrap) for store / internal errors. errors.As is
+// the canonical way to discriminate.
+func isAccessDenial(err error) bool {
+	var sErr *statusError
+	return errors.As(err, &sErr)
 }
 
 // statusError lets authorizeCollabAccess return a typed error that
