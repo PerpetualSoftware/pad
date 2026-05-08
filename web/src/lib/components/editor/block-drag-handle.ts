@@ -13,6 +13,15 @@ import { Extension } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+// Side-effect imports to register tiptap command-type augmentations on
+// `@tiptap/core`'s `ChainedCommands` interface in this file's compilation
+// context. Required since TS 6 stopped propagating module augmentations
+// across files that don't import the augmenting modules themselves —
+// `setParagraph`, `setHeading`, `toggleBulletList`, `toggleOrderedList`,
+// `toggleCodeBlock`, `toggleBlockquote`, `liftListItem` are contributed by
+// starter-kit; `toggleTaskList` is contributed by extension-task-list.
+import '@tiptap/starter-kit';
+import '@tiptap/extension-task-list';
 import { TURN_INTO_ITEMS } from './block-types';
 
 const LIST_CONTAINERS = new Set(['bulletList', 'orderedList', 'taskList']);
