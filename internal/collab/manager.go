@@ -251,6 +251,54 @@ func (m *RoomManager) RoomCount() int {
 	return len(m.rooms)
 }
 
+// closeFrameDeadline is the absolute time budget for sending a
+// CloseMessage frame via WriteControl before falling through to a
+// plain Close. Generous enough that a healthy connection always
+// completes; short enough that a stuck-write conn doesn't block
+// the revoke path.
+const closeFrameDeadline = 1 * time.Second
+
+// CloseConn force-closes a single WebSocket connection registered
+// with the manager, sending a close frame with a machine-readable
+// reason first. Used by the auth-revalidation timer in
+// handleCollab (TASK-1256) to evict a peer whose workspace access
+// was revoked mid-stream.
+//
+//   - itemID  scopes the lookup; (purely informational here, the
+//             close-frame call doesn't actually need it but the
+//             param keeps the API symmetric for a future
+//             find-by-room metric).
+//   - conn    the *exact* websocket.Conn the manager is tracking;
+//             not a tab/session id.
+//   - code    a websocket.Close* code (e.g. ClosePolicyViolation
+//             for "you are no longer authorized").
+//   - reason  human-readable string the close frame carries to the
+//             client. Kept short — the WS spec caps the close
+//             frame's reason at ~123 bytes.
+//
+// CRITICAL: the close frame is sent via conn.WriteControl which
+// is concurrency-safe with the room's writeLoop / replay (per
+// gorilla's documented contract — WriteControl does not contend
+// on the conn's normal write mutex). Acquiring writeMu would
+// instead block the revoke until any in-flight WriteMessage to a
+// slow peer finished, defeating the "evict immediately" goal.
+//
+// Best-effort: WriteControl errors (already-closed conn, deadline
+// exceeded) fall through to plain Close. Either way the conn is
+// not usable when this returns.
+func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, reason string) {
+	if conn == nil {
+		return
+	}
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(code, reason),
+		time.Now().Add(closeFrameDeadline),
+	)
+	_ = conn.Close()
+	_ = itemID // reserved for future per-room metrics; see doc above
+}
+
 // Close stops every active room AND blocks until every in-flight
 // Join goroutine has returned. After Close, Join is undefined —
 // callers must coordinate shutdown so no new Join races happen

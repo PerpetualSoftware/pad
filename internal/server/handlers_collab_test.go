@@ -383,6 +383,121 @@ func TestCollabUpgradeRejectsUnknownItem(t *testing.T) {
 	}
 }
 
+// TestCollabMembershipRevalidationClosesOnRevoke is the
+// auth-revalidation regression test (TASK-1256). With the reval
+// interval shrunk to a few ms, the goroutine ticks shortly after
+// connect; if the user's workspace membership is revoked between
+// the initial upgrade and the next tick, the WS must be closed
+// with a ClosePolicyViolation frame and the read on the client
+// side must return an error.
+func TestCollabMembershipRevalidationClosesOnRevoke(t *testing.T) {
+	// Shrink the cadence so the test runs in tens of ms rather than
+	// 60 seconds. Restore at the end so any later test that runs in
+	// the same process sees the production value.
+	origInterval := collabMembershipRevalInterval
+	collabMembershipRevalInterval = 30 * time.Millisecond
+	defer func() { collabMembershipRevalInterval = origInterval }()
+
+	srv := testServerWithCollab(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Workspace + collection + item.
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "RevalTest"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Item", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// Member user (NOT admin — admin would still pass after removal
+	// because admins see everything). Add them as a workspace
+	// editor, mint a session.
+	u, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "member@test.com",
+		Name:     "Member",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	token, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "pad_session", Value: token}}
+	conn, resp, err := dialCollab(t, ts.URL, item.ID, cookies, "go-test")
+	if err != nil {
+		body := ""
+		if resp != nil {
+			body = "status=" + resp.Status
+		}
+		t.Fatalf("initial dial: %v (%s)", err, body)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols, got %d", resp.StatusCode)
+	}
+
+	// Revoke membership AFTER the connection is established. The
+	// goroutine started in handleCollab will tick within the
+	// shrunk reval interval and close the conn.
+	if err := srv.store.RemoveWorkspaceMember(ws.ID, u.ID); err != nil {
+		t.Fatalf("RemoveWorkspaceMember: %v", err)
+	}
+
+	// Read with a deadline. The reval goroutine's first tick is
+	// jittered across [0, interval) — worst case is ~30ms — so
+	// 2 seconds is wildly generous. A timeout here means the WS is
+	// still open, which is the bug being regression-tested.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, readErr := conn.ReadMessage()
+	if readErr == nil {
+		t.Fatal("expected read error after membership revocation; got none (WS still open)")
+	}
+	if isTimeout(readErr) {
+		t.Fatalf("read timed out before WS was closed — revocation not honoured: %v", readErr)
+	}
+	// We sent ClosePolicyViolation. Accept either an explicit
+	// close frame with that code OR a transport-level error
+	// (gorilla returns io.ErrUnexpectedEOF / net.ErrClosed when
+	// the peer closes the underlying TCP conn before sending a
+	// close frame; either way the server-side teardown happened).
+	if websocket.IsCloseError(readErr, websocket.ClosePolicyViolation) {
+		// Best case: client got the typed reason.
+		return
+	}
+	// Generic close / EOF / connection-reset: also a pass — the
+	// server CLOSED us, just without a clean frame depending on
+	// timing. The test's assertion is "the WS is no longer
+	// readable", which holds.
+	t.Logf("post-revoke read error: %v", readErr)
+}
+
+func isTimeout(err error) bool {
+	type timeout interface{ Timeout() bool }
+	if t, ok := err.(timeout); ok {
+		return t.Timeout()
+	}
+	return false
+}
+
 // TestCollabUpgradeUnavailableWithoutRoomManager confirms the
 // handler returns 503 when no RoomManager is wired (the
 // SetCollabRoomManager call hasn't happened). Self-host builds that
