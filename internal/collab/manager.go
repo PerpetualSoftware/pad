@@ -118,22 +118,36 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 	return errTooManyJoinRetries
 }
 
-// runConn drives one connection through its full lifecycle: replay,
-// spawn writer, run reader, tear down. Returns the WS close error.
+// runConn drives one connection through its full lifecycle: spawn
+// writer (drains the bus subscription concurrently with replay),
+// stream the op-log replay, run reader, tear down.
+//
+// The writer is started BEFORE the replay so live broadcasts that
+// arrive during a long replay can't overflow the 64-event bus
+// channel and silently drop. Yjs CRDTs are commutative — applying
+// op 100 (live) then op 50 (replay) produces the same final Y.Doc
+// as the reverse order — so interleaving replay frames and live
+// updates on the same conn is correct. Both code paths write
+// through rc.writeMessage which holds writeMu, so we never violate
+// gorilla's "one writer at a time per conn" rule.
+//
+// The trade-off: a peer might briefly see updates "out of causal
+// order" during the replay window. That's a UX wobble, not a
+// correctness issue. The alternative — buffer-then-flush — would
+// require an unbounded queue or risk losing live updates the way
+// the original implementation did.
 func (m *RoomManager) runConn(room *Room, rc *roomConn) error {
-	// Replay BEFORE spawning the writer so the initial state arrives
-	// on the wire before any live broadcasts the writer might fan out
-	// (preserving causal order on a fresh peer).
-	if err := room.replayTo(rc); err != nil {
-		room.removeConn(rc)
-		return err
-	}
-
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
 		room.writeLoop(rc)
 	}()
+
+	if err := room.replayTo(rc); err != nil {
+		room.removeConn(rc)
+		<-writerDone
+		return err
+	}
 
 	// Read loop blocks until the WS closes.
 	readErr := room.readLoop(rc)
