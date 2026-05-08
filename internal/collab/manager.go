@@ -23,6 +23,12 @@ const DefaultSchemaVersion = "1"
 // can't deadlock a Join indefinitely.
 var errTooManyJoinRetries = errors.New("collab: too many room-close races; aborting Join")
 
+// errManagerClosed is returned by Join when Close has already run.
+// http.Server.Shutdown does NOT wait for hijacked WS handlers, so a
+// late Join can race a finishing shutdown. Returning a fast error
+// closes the WS cleanly and avoids touching a torn-down store.
+var errManagerClosed = errors.New("collab: room manager is closed")
+
 // RoomManagerConfig collects optional knobs for NewRoomManagerWithConfig.
 // Production callers should use NewRoomManager (which fills in the
 // defaults); the config form exists so tests can drop graceTTL to a
@@ -50,14 +56,19 @@ type RoomManager struct {
 	schemaVersion string
 	graceTTL      time.Duration
 
-	mu    sync.Mutex
-	rooms map[string]*Room
+	mu     sync.Mutex
+	rooms  map[string]*Room
+	closed bool // set under mu by Close; Join short-circuits when true
 
 	// activeJoins tracks every in-flight Join goroutine so Close can
 	// act as a true drain barrier on server shutdown. Without this
 	// Wait, http.Server.Shutdown returns before hijacked WS sessions
 	// finish their tear-down, and a deferred store close races
-	// in-flight AppendYjsUpdate calls.
+	// in-flight AppendYjsUpdate calls. The Add call lives inside
+	// m.mu so it can't interleave with Close's closed=true write —
+	// either the Add happens before closed=true (Wait will block
+	// for it) or closed=true happens first (Join returns
+	// errManagerClosed without ever Add'ing).
 	activeJoins sync.WaitGroup
 }
 
@@ -97,11 +108,26 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
 func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
+	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
+	// hijacked WS handler that didn't enter Join until AFTER Close
+	// returned) can't sneak past the drain barrier.
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errManagerClosed
+	}
 	m.activeJoins.Add(1)
+	m.mu.Unlock()
 	defer m.activeJoins.Done()
 
 	for attempt := 0; attempt < 3; attempt++ {
 		room := m.getOrCreate(itemID)
+		if room == nil {
+			// Close raced in between our closed-check above and
+			// getOrCreate. Bail with the same fast error so the
+			// handler closes the WS cleanly.
+			return errManagerClosed
+		}
 
 		rc := &roomConn{
 			id:   nextConnID(),
@@ -177,10 +203,18 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn) error {
 // under m.mu, mints a new one. Holding m.mu across the lookup +
 // insertion keeps the grace-expiry path (which also takes m.mu)
 // from interleaving and orphaning a freshly-created Room.
+//
+// Returns nil after Close has been called — the caller should
+// translate that to errManagerClosed. In practice Join checks
+// m.closed earlier and bails before reaching here, but this guard
+// keeps a future caller honest if getOrCreate gets reused.
 func (m *RoomManager) getOrCreate(itemID string) *Room {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return nil
+	}
 	if r, ok := m.rooms[itemID]; ok {
 		return r
 	}
@@ -236,6 +270,11 @@ func (m *RoomManager) RoomCount() int {
 //      returns before the goroutines actually exit.
 func (m *RoomManager) Close() {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	rooms := make([]*Room, 0, len(m.rooms))
 	for _, r := range m.rooms {
 		rooms = append(rooms, r)

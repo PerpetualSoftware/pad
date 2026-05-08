@@ -483,6 +483,30 @@ func TestRoomManagerGraceTTLCancelledByReconnect(t *testing.T) {
 	}
 }
 
+// TestRoomManagerJoinAfterCloseFailsFast covers the post-Close race:
+// http.Server.Shutdown does NOT wait for hijacked WS handlers to
+// finish, so a Join can fire AFTER Close has returned. The manager
+// must reject those Joins fast (errManagerClosed) instead of
+// creating a fresh Room against a torn-down store.
+func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+
+	mgr.Close()
+
+	// Direct Join — bypass the WS plumbing since we want to exercise
+	// the closed-flag short-circuit in isolation.
+	err := mgr.Join("item-a", nil) // conn is irrelevant; we never reach the WS path
+	if !errors.Is(err, errManagerClosed) {
+		t.Fatalf("want errManagerClosed, got %v", err)
+	}
+
+	// Idempotent: a second Close must not panic.
+	mgr.Close()
+}
+
 // TestRoomManagerCloseShutsDownAllRooms exercises Close: after the
 // call, any active connections should be closed (their reads
 // terminate with an error) and the manager's room map should be
