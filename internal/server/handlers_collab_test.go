@@ -176,6 +176,80 @@ func TestCollabUpgradeRejectsNonMember(t *testing.T) {
 	}
 }
 
+// TestCollabUpgradeRejectsRestrictedMemberForeignCollection confirms
+// that a member with collection_access="specific" scoped to one
+// collection cannot upgrade for an item in a DIFFERENT collection of
+// the same workspace, even though they're a valid member. Pad's
+// permission cascade applies to live collab too — restricted access
+// has to be honoured at the WS upgrade boundary, not just at the
+// item-level HTTP handlers.
+func TestCollabUpgradeRejectsRestrictedMemberForeignCollection(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Two collections in the same workspace; restrict the test user
+	// to collA only and put the target item in collB.
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Restricted"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	collA, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Allowed", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection A: %v", err)
+	}
+	collB, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Off-limits", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection B: %v", err)
+	}
+	itemB, err := srv.store.CreateItem(ws.ID, collB.ID, models.ItemCreate{
+		Title: "Off-limits", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem B: %v", err)
+	}
+
+	// Create a non-admin user, add them as workspace member with
+	// "specific" access scoped to collA only, then mint a session.
+	u, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "restricted@test.com",
+		Name:     "Restricted",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, u.ID, "specific", []string{collA.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	token, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "pad_session", Value: token}}
+	_, resp, err := dialCollab(t, ts.URL, itemB.ID, cookies, "go-test")
+	if err == nil {
+		t.Fatal("expected dial to fail for restricted member targeting foreign collection")
+	}
+	if resp == nil {
+		t.Fatalf("dial returned no response: %v", err)
+	}
+	// 404 mirrors requireItemVisible's "don't leak existence" pattern.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
 // TestCollabUpgradeRejectsUnknownItem covers the 404 path: a
 // well-formed itemID that doesn't resolve to any item must surface
 // as Not Found, not as a 401 / 403 leakage about the workspace's

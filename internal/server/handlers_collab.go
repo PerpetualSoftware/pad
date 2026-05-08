@@ -242,25 +242,66 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 		return nil
 	}
 
-	// Direct workspace member?
+	// Workspace-level gate: any access at all? Membership OR guest grants.
+	// Without this, a logged-in user with no relationship to this
+	// workspace would silently fall into the item-visibility check below
+	// and 404, which would leak whether the item exists. Reject with
+	// 403 first so non-members see the same shape they always have.
 	member, err := s.store.GetWorkspaceMember(wsID, fresh.ID)
 	if err != nil {
 		return err
 	}
-	if member != nil {
-		return nil
+	hasWorkspaceLevelAccess := member != nil
+	if !hasWorkspaceLevelAccess {
+		hasGrants, err := s.store.UserHasGrantsInWorkspace(wsID, fresh.ID)
+		if err != nil {
+			return err
+		}
+		hasWorkspaceLevelAccess = hasGrants
+	}
+	if !hasWorkspaceLevelAccess {
+		s.recordMCPAuthzDenial(r, "not_a_member")
+		return newStatusError(http.StatusForbidden, "forbidden",
+			"You are not a member of this workspace")
 	}
 
-	// Guest via grants?
-	hasGrants, err := s.store.UserHasGrantsInWorkspace(wsID, fresh.ID)
+	// Item-level visibility check. Mirrors requireItemVisible but
+	// without depending on middleware-set request context — the WS
+	// path doesn't go through RequireWorkspaceAccess. A restricted
+	// member (collection_access=specific) or a guest must NOT be
+	// able to upgrade for an item in a collection they cannot see,
+	// even if they're a valid member of the workspace.
+	//
+	// VisibleCollectionIDs returns:
+	//   nil       "all" access — user sees every collection
+	//   non-nil   the explicit set of visible collection IDs
+	visibleIDs, err := s.store.VisibleCollectionIDs(wsID, fresh.ID)
 	if err != nil {
 		return err
 	}
-	if hasGrants {
+	if visibleIDs == nil {
 		return nil
 	}
+	for _, id := range visibleIDs {
+		if id == item.CollectionID {
+			return nil
+		}
+	}
 
-	s.recordMCPAuthzDenial(r, "not_a_member")
-	return newStatusError(http.StatusForbidden, "forbidden",
-		"You are not a member of this workspace")
+	// Collection not in the visible set. Last chance: a per-item
+	// grant on this exact item. Used by guests who were given
+	// access to a single item rather than a whole collection.
+	_, itemGrants, err := s.store.ListUserGrants(wsID, fresh.ID)
+	if err != nil {
+		return err
+	}
+	for _, g := range itemGrants {
+		if g.ItemID == item.ID {
+			return nil
+		}
+	}
+
+	// Some workspace access, but not to this specific item. Mirror
+	// requireItemVisible's "don't leak existence" → 404 instead of 403.
+	return newStatusError(http.StatusNotFound, "not_found", "Item not found")
 }
