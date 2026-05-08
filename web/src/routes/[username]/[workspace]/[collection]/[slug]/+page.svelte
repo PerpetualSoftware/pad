@@ -677,43 +677,63 @@
 	// surface the in-flight state in the UI on rapid double-clicks.
 	let rawFlushInFlight = false;
 
-	// flushRawIfPending sends the latest unsaved raw markdown
-	// SYNCHRONOUSLY (one PATCH, awaited) and returns whether the
-	// flush succeeded. Callers are expected to gate state
-	// transitions (e.g. enabling collab) on a `true` return so a
-	// failed PATCH doesn't activate the provider with unsaved raw
-	// edits. Per Codex review round 6.
+	// Cap on flushRawIfPending's drain loop. If the user is typing
+	// fast enough to keep rawPendingMarkdown non-null across this
+	// many PATCH round-trips, return false and force them to click
+	// again — better than spinning indefinitely.
+	const RAW_FLUSH_DRAIN_CAP = 5;
+
+	// flushRawIfPending drains every queued raw edit SYNCHRONOUSLY
+	// (one PATCH per drained snapshot, awaited) and returns true
+	// only when rawPendingMarkdown is null on exit. Callers are
+	// expected to gate state transitions (e.g. enabling collab) on
+	// the return value — a stale rawPendingMarkdown left over from
+	// a fast typist or a failed PATCH would otherwise re-introduce
+	// the "collab active with unsaved raw edit" race the guard is
+	// meant to prevent. Per Codex review round 7.
 	async function flushRawIfPending(): Promise<boolean> {
-		if (rawPendingMarkdown === null || !item) return true;
+		if (!item) return rawPendingMarkdown === null;
+
+		// Re-entrancy: another flush is already running. Wait for
+		// it to settle, then re-evaluate from scratch.
 		if (rawFlushInFlight) {
-			// Another flush is already in flight from a previous
-			// double-click. Wait for it to settle before reporting.
 			while (rawFlushInFlight) {
 				await new Promise((r) => setTimeout(r, 50));
 			}
 			return rawPendingMarkdown === null;
 		}
-		clearTimeout(contentDebounceTimer);
-		contentDebounceTimer = undefined;
-		const markdown = rawPendingMarkdown;
+
+		if (rawPendingMarkdown === null) return true;
+
 		rawFlushInFlight = true;
+		let lastError = false;
 		try {
-			saveStatus = 'saving';
-			editorStore.setLastSaveTime(Date.now());
-			const updated = await api.items.update(wsSlug, item.id, { content: markdown });
-			item = updated;
-			// Only clear pending if this exact markdown landed —
-			// concurrent edits during the await may have queued a
-			// newer rawPendingMarkdown.
-			if (rawPendingMarkdown === markdown) rawPendingMarkdown = null;
-			editorStore.setLastSaveTime(Date.now());
-			editorStore.setDirty(false);
-			showSaved();
-			return true;
-		} catch {
-			saveStatus = 'idle';
-			toastStore.show('Failed to save content', 'error');
-			// Keep rawPendingMarkdown set; a future flush can retry.
+			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
+				const markdown: string | null = rawPendingMarkdown;
+				if (markdown === null) break;
+				clearTimeout(contentDebounceTimer);
+				contentDebounceTimer = undefined;
+				try {
+					saveStatus = 'saving';
+					editorStore.setLastSaveTime(Date.now());
+					const updated = await api.items.update(wsSlug, item.id, { content: markdown });
+					item = updated;
+					editorStore.setLastSaveTime(Date.now());
+					// Only clear if no newer edit landed during the
+					// await — equality check, not falsy check.
+					if (rawPendingMarkdown === markdown) rawPendingMarkdown = null;
+				} catch {
+					saveStatus = 'idle';
+					toastStore.show('Failed to save content', 'error');
+					lastError = true;
+					break;
+				}
+			}
+			if (!lastError && rawPendingMarkdown === null) {
+				editorStore.setDirty(false);
+				showSaved();
+				return true;
+			}
 			return false;
 		} finally {
 			rawFlushInFlight = false;
