@@ -322,13 +322,19 @@ func isAccessDenial(err error) bool {
 // loops if joins keep landing during the prune attempts.
 const applyContentMaxRetries = 3
 
-func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string) error {
+// directWriteFn is the caller's items.content writer. Invoked only
+// on the no-room/no-applier paths, INSIDE the per-item setup lock
+// (so a fresh Join cannot replay stale op-log between prune and
+// content write).
+type directWriteFn func() error
+
+func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
 	if s.collab == nil {
 		return errors.New("collab not configured")
 	}
 
 	for attempt := 0; attempt < applyContentMaxRetries; attempt++ {
-		err := s.applyContentViaCollabOnce(r, itemID, markdown)
+		err := s.applyContentViaCollabOnce(r, itemID, markdown, directWrite)
 		if !errors.Is(err, collab.ErrRoomActiveDuringPrune) {
 			return err
 		}
@@ -344,7 +350,7 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 	return collab.ErrRoomActiveDuringPrune
 }
 
-func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown string) error {
+func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
 	err := s.collab.ApplyExternalContent(itemID, markdown)
 	switch {
 	case err == nil:
@@ -374,14 +380,28 @@ func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown str
 		// ErrAllAppliersTimedOut is intentionally NOT pruned
 		// because peers may still be alive there.
 		paErr := s.collab.PruneAndApply(itemID, func() error {
-			_, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture)
-			return perr
+			// Prune the (now-stale) op-log. Failure here is logged
+			// but does NOT block the content write — the prune
+			// matters for FUTURE collab sessions, while the
+			// content write is the user's actual intent.
+			if _, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture); perr != nil {
+				slog.Warn("collab: failed to prune op-log on direct-write fallback",
+					"item_id", itemID,
+					"error", perr,
+				)
+			}
+			// Write items.content under the same per-item lock so
+			// a concurrent Join can't slip in between prune and
+			// write, replay an empty op-log, then later overwrite
+			// our fresh write from its stale Y.Doc state. Per
+			// Codex review round 8.
+			return directWrite()
 		})
 		switch {
 		case paErr == nil:
-			// Pruned cleanly. Caller falls through to direct
-			// items.content write.
-			return err
+			// Prune + direct write completed atomically.
+			// Caller suppresses any subsequent items.content write.
+			return nil
 		case errors.Is(paErr, collab.ErrRoomActiveDuringPrune):
 			// A peer joined between ApplyExternalContent's check
 			// and PruneAndApply's re-check. Surface the error so

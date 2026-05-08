@@ -717,11 +717,23 @@
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
 					const updated = await api.items.update(wsSlug, item.id, { content: markdown });
-					item = updated;
 					editorStore.setLastSaveTime(Date.now());
-					// Only clear if no newer edit landed during the
-					// await — equality check, not falsy check.
-					if (rawPendingMarkdown === markdown) rawPendingMarkdown = null;
+					// Only swap in the server's snapshot when no
+					// newer raw edit arrived during the await.
+					// RawMarkdownEditor mirrors `item.content` into
+					// its textarea unconditionally, so assigning a
+					// stale snapshot here would reset the textarea
+					// from under the user's keystrokes and lose the
+					// queued edit. Per Codex review round 8.
+					if (rawPendingMarkdown === markdown) {
+						item = updated;
+						rawPendingMarkdown = null;
+					} else if (item) {
+						// Newer edit pending — keep our local
+						// content but adopt server-side metadata
+						// (timestamps, version, modified_by).
+						item = { ...updated, content: item.content };
+					}
 				} catch {
 					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');

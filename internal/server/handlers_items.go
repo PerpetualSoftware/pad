@@ -486,15 +486,39 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// Field-only PATCHes (input.Content == nil) skip this branch
 	// entirely; they continue straight to UpdateItem unchanged.
 	if input.Content != nil && s.collab != nil {
-		if err := s.applyContentViaCollab(r, item.ID, *input.Content); err == nil {
-			// Applier propagated the change; suppress the direct
-			// items.content write. Other input fields (title,
-			// fields, status) still flow through UpdateItem below.
+		// directWriteContentFn performs the items.content portion of
+		// this PATCH inside the collab manager's per-item setup
+		// lock — so a concurrent Join's replayTo can't load the
+		// just-pruned op-log and end up holding stale Y.Doc state
+		// that overwrites our fresh write on the next idle flush.
+		// We only write the Content + audit metadata here; the
+		// remaining ItemUpdate fields (title, fields, etc.) flow
+		// through the post-loop UpdateItem below. Two DB roundtrips
+		// in the (rare) "content + other fields in the same PATCH"
+		// case is the price of the race fix. Per Codex review
+		// round 8.
+		contentCopy := *input.Content
+		contentOnly := models.ItemUpdate{
+			Content:        &contentCopy,
+			LastModifiedBy: input.LastModifiedBy,
+			Source:         input.Source,
+			ChangeSummary:  input.ChangeSummary,
+		}
+		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
+			_, uerr := s.store.UpdateItem(item.ID, contentOnly)
+			return uerr
+		})
+		if err == nil {
+			// Either the applier path acked (content propagated via
+			// Y.Doc) or the direct-write callback above ran inside
+			// the per-item lock. Either way, suppress the duplicate
+			// content write below.
 			input.Content = nil
 		}
-		// Any error path (no room, no applier, all timed out, etc.)
-		// falls through to direct write — graceful degradation. The
-		// helper logs the specifics so operators see degraded paths.
+		// Any error path (e.g. ErrAllAppliersTimedOut, retry
+		// exhaustion) falls through to direct write — graceful
+		// degradation. The helper logs the specifics so operators
+		// see degraded paths.
 	}
 
 	updated, err := s.store.UpdateItem(item.ID, input)
