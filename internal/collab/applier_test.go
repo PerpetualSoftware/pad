@@ -217,6 +217,122 @@ func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
 	}
 }
 
+// TestApplyExternalContentCleansPendingAcksOnSuccess ensures the
+// per-room pendingAcks map doesn't leak entries across successful
+// applies — without the cancel-on-success cleanup, every external
+// update would retain a request_id + channel + conn pointer for the
+// rest of the room's lifetime.
+func TestApplyExternalContentCleansPendingAcksOnSuccess(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a")
+	stop := runApplierEcho(t, conn)
+	defer stop()
+
+	for i := 0; i < 200; i++ {
+		if bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := mgr.ApplyExternalContent("item-a", "# rev"); err != nil {
+			t.Fatalf("apply %d: %v", i, err)
+		}
+	}
+
+	// Drill into the room to count pending entries — this is a
+	// white-box assertion against the cleanup contract.
+	mgr.mu.Lock()
+	room := mgr.rooms["item-a"]
+	mgr.mu.Unlock()
+	if room == nil {
+		t.Fatal("room missing after applies")
+	}
+	room.pendingMu.Lock()
+	left := len(room.pendingAcks)
+	room.pendingMu.Unlock()
+	if left != 0 {
+		t.Fatalf("pendingAcks leaked across applies: %d entries left", left)
+	}
+}
+
+// TestApplyExternalContentSendsExpiresAt confirms the server stamps
+// the applier_request with an expires_at_millis. Defends against
+// a regression where the field is silently dropped — the browser
+// (TASK-1263) needs it to refuse late-arriving requests.
+func TestApplyExternalContentSendsExpiresAt(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a")
+	defer conn.Close()
+
+	captured := make(chan ControlMessage, 1)
+	go func() {
+		for {
+			mt, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt != websocket.TextMessage {
+				continue
+			}
+			var ctl ControlMessage
+			if err := json.Unmarshal(data, &ctl); err != nil {
+				continue
+			}
+			if ctl.Type == ControlMessageApplierRequest {
+				select {
+				case captured <- ctl:
+				default:
+				}
+				// Honest ack so ApplyExternalContent returns.
+				ack := ControlMessage{Type: ControlMessageApplierAck, RequestID: ctl.RequestID}
+				payload, _ := json.Marshal(ack)
+				_ = conn.WriteMessage(websocket.TextMessage, payload)
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := mgr.ApplyExternalContent("item-a", "# new"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	select {
+	case msg := <-captured:
+		if msg.ExpiresAtMillis == 0 {
+			t.Errorf("expires_at_millis must be set on applier_request")
+		}
+		// Sanity: must be in the future.
+		if msg.ExpiresAtMillis < time.Now().UnixMilli() {
+			t.Errorf("expires_at_millis must be in the future, got %d (now=%d)",
+				msg.ExpiresAtMillis, time.Now().UnixMilli())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not capture applier_request")
+	}
+}
+
 // TestApplyExternalContentRejectsAckFromUnexpectedConn confirms the
 // expectedConn check in routeApplierAck. We wire two conns; the FIRST
 // is the chosen applier; the SECOND tries to forge an ack for the

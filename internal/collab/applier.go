@@ -83,6 +83,16 @@ type ControlMessage struct {
 	// Markdown carries the new item content for applier_request.
 	// Omitted on applier_ack.
 	Markdown string `json:"markdown,omitempty"`
+
+	// ExpiresAtMillis is the Unix-millis timestamp after which the
+	// browser MUST drop a queued applier_request without applying.
+	// Set by the server on every applier_request to "now +
+	// applierFirstTimeout"; closes the late-apply hazard where a
+	// backgrounded tab eventually wakes up and overwrites newer
+	// edits with stale markdown after the server has already
+	// retried with a different applier (or fallen back). Client
+	// enforcement lives in TASK-1263. Omitted on applier_ack.
+	ExpiresAtMillis int64 `json:"expires_at_millis,omitempty"`
 }
 
 // pendingApplierAck pairs the channel a PATCH handler is waiting on
@@ -159,10 +169,17 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		// traffic uses BinaryMessage exclusively, so the browser's
 		// ws.onmessage handler can branch on event.data type
 		// (string vs ArrayBuffer) without an extra prefix byte.
+		//
+		// ExpiresAt is computed per attempt — the SAME request_id
+		// might be sent on a retry (we cancel + re-register so a
+		// late ack from the previous attempt isn't accidentally
+		// accepted, but the request_id stays stable so log lines
+		// thread together).
 		msg := ControlMessage{
-			Type:      ControlMessageApplierRequest,
-			RequestID: requestID,
-			Markdown:  markdown,
+			Type:            ControlMessageApplierRequest,
+			RequestID:       requestID,
+			Markdown:        markdown,
+			ExpiresAtMillis: time.Now().Add(timeouts[attempt]).UnixMilli(),
 		}
 		payload, err := json.Marshal(msg)
 		if err != nil {
@@ -186,7 +203,10 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		case <-ackCh:
 			// Success: the applier propagated Y.Doc updates via the
 			// regular sync path before sending the ack, so all peers
-			// are now on the new state.
+			// are now on the new state. Drop the pending-ack entry
+			// so the room's pendingAcks map doesn't grow unbounded
+			// across the lifetime of the room.
+			room.cancelPendingAck(requestID)
 			return nil
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
@@ -195,7 +215,11 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 				"client_id", applier.id,
 				"attempt", attempt+1,
 			)
-			// Fall through to next attempt.
+			// Fall through to next attempt. Any late-arriving ack
+			// for this request_id from the timed-out conn is
+			// rejected because we just cancelled the entry; the
+			// browser is also expected to drop the stale request
+			// via its expires_at_millis check (TASK-1263).
 		}
 	}
 
