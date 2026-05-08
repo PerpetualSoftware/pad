@@ -251,6 +251,50 @@ func (m *RoomManager) RoomCount() int {
 	return len(m.rooms)
 }
 
+// CloseConn force-closes a single WebSocket connection registered
+// with the manager, optionally sending a close frame with a
+// machine-readable reason first. Used by the auth-revalidation
+// timer in handleCollab (TASK-1256) to evict a peer whose workspace
+// access was revoked mid-stream.
+//
+//   - itemID  scopes the lookup to the room the conn belongs to;
+//             linear-search across all rooms would work but
+//             scales poorly with hot-room counts.
+//   - conn    the *exact* websocket.Conn the manager is tracking;
+//             not a tab/session id.
+//   - code    a websocket.Close* code (e.g. ClosePolicyViolation
+//             for "you are no longer authorized").
+//   - reason  human-readable string the close frame carries to the
+//             client. Kept short — the WS spec caps the close
+//             frame's reason at ~123 bytes.
+//
+// Best-effort: if the conn isn't tracked (race window between
+// Join's getOrCreate and addConn, or after the conn already
+// closed), falls back to a plain Close. Either way the conn is
+// not usable when this returns.
+func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, reason string) {
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+
+	var rc *roomConn
+	if room != nil {
+		room.mu.Lock()
+		rc = room.conns[conn]
+		room.mu.Unlock()
+	}
+
+	if rc != nil {
+		// Holds writeMu so we don't tear into a frame mid-write
+		// from the room's writeLoop or replay path.
+		_ = rc.writeMessage(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(code, reason),
+		)
+	}
+	_ = conn.Close()
+}
+
 // Close stops every active room AND blocks until every in-flight
 // Join goroutine has returned. After Close, Join is undefined —
 // callers must coordinate shutdown so no new Join races happen

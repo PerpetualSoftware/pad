@@ -3,12 +3,23 @@ package server
 import (
 	"errors"
 	"log/slog"
+	"math/rand"
 	"net/http"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
+
+// collabMembershipRevalInterval is how often an active collab WS
+// re-runs authorizeCollabAccess to catch a mid-stream revocation
+// (member removed, role demoted, item-grant revoked, etc.). 60s
+// matches the SSE membership-revalidation cadence and trades
+// "promptness of revocation visibility" against "per-conn DB
+// load". Exposed as a package var so tests can shrink it without
+// waiting a real minute.
+var collabMembershipRevalInterval = 60 * time.Second
 
 // collabUpgrader is the gorilla/websocket Upgrader used by handleCollab.
 //
@@ -139,6 +150,16 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		"user_id", userID,
 	)
 
+	// Periodic auth revalidation: catch member-removed /
+	// role-demoted / grant-revoked mid-stream and force-close the
+	// WS. Mirrors handlers_events.go's sseSubscriberStillHasAccess
+	// pattern but routed through the room manager so the close
+	// frame goes out under writeMu (no concurrent-write panics
+	// against the room's writeLoop / replay path).
+	revalDone := make(chan struct{})
+	defer close(revalDone)
+	go s.collabRevalidationLoop(r, item, conn, itemID, userID, revalDone)
+
 	// Hand the connection to the RoomManager. It owns the
 	// op-log replay, fan-out, and lifecycle bookkeeping (lazy create
 	// + grace-TTL reclaim). Returns when the WS closes for any reason.
@@ -156,6 +177,59 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 				"user_id", userID,
 				"error", err,
 			)
+		}
+	}
+}
+
+// collabRevalidationLoop ticks every collabMembershipRevalInterval
+// while the WebSocket is open and re-runs authorizeCollabAccess. On
+// access loss it sends a close frame with ClosePolicyViolation +
+// "Your access to this item was revoked." and closes the conn,
+// which propagates through the room manager's read loop and tears
+// the session down cleanly.
+//
+// First fire is jittered across [0, interval) so a fleet of clients
+// that all reconnected after a deploy don't synchronise their reval
+// ticks and storm the auth path together.
+//
+// Stops when stop is closed (handler returning), so a finished
+// session doesn't leak the goroutine + a long-lived ticker.
+func (s *Server) collabRevalidationLoop(
+	r *http.Request,
+	item *models.Item,
+	conn *websocket.Conn,
+	itemID string,
+	userID string,
+	stop <-chan struct{},
+) {
+	interval := collabMembershipRevalInterval
+
+	// First-fire jitter: rand.Int63n is fine for spread purposes —
+	// the security argument doesn't depend on unpredictability.
+	first := time.Duration(rand.Int63n(int64(interval)))
+	timer := time.NewTimer(first)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+			if err := s.authorizeCollabAccess(r, item); err != nil {
+				slog.Info("collab: access revoked mid-stream, closing connection",
+					"item_id", itemID,
+					"user_id", userID,
+				)
+				s.collab.CloseConn(
+					itemID, conn,
+					websocket.ClosePolicyViolation,
+					"Your access to this item was revoked.",
+				)
+				return
+			}
+			// Subsequent fires can be evenly spaced — connect-time
+			// jitter has already spread the fleet.
+			timer.Reset(interval)
 		}
 	}
 }
