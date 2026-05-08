@@ -380,10 +380,12 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					if (newFilename !== currentFilename) {
 						currentFilename = newFilename;
 						refreshFilenameDom();
-						// Filename feeds the fallback icon when MIME is
-						// unknown — re-derive in that case so a rename
-						// shows the right extension icon.
-						if (!currentMime) refreshIcon();
+						// Filename feeds the fallback icon whenever the MIME
+						// path doesn't produce a specific icon — both MIME
+						// unknown AND MIME known-but-unmapped (e.g. generic
+						// application/octet-stream). Always recomputing is
+						// idempotent for MIMEs with a definitive icon.
+						refreshIcon();
 					}
 
 					return true;
