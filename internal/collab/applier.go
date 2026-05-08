@@ -148,11 +148,21 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 	timeouts := []time.Duration{applierFirstTimeout(), applierRetryTimeout()}
 
 	tried := make(map[*websocket.Conn]struct{})
+	// anyWriteSucceeded tracks whether at least one applier_request
+	// reached a peer over the wire. The fallback caller decides
+	// whether to prune the op-log based on the error sentinel; only
+	// "no applier ever received the request" makes pruning safe (no
+	// peer holds an in-memory Y.Doc derived from the now-stale
+	// op-log). Without this distinction a sequence of write failures
+	// followed by no remaining candidates would surface as
+	// ErrAllAppliersTimedOut and skip the safe prune. Per Codex
+	// review round 5.
+	var anyWriteSucceeded bool
 	for attempt := 0; attempt < applierMaxAttempts; attempt++ {
 		applier := room.pickApplier(tried)
 		if applier == nil {
 			// No more candidates left.
-			if attempt == 0 {
+			if !anyWriteSucceeded {
 				return ErrNoApplierAvailable
 			}
 			return ErrAllAppliersTimedOut
@@ -197,6 +207,7 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 			)
 			continue
 		}
+		anyWriteSucceeded = true
 
 		// Wait for the ack OR timeout.
 		select {
@@ -223,6 +234,11 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		}
 	}
 
+	if !anyWriteSucceeded {
+		// applierMaxAttempts exhausted without ever putting bytes on
+		// the wire. Same recovery profile as no-applier-found.
+		return ErrNoApplierAvailable
+	}
 	return ErrAllAppliersTimedOut
 }
 

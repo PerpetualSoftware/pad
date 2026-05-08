@@ -70,6 +70,39 @@ type RoomManager struct {
 	// for it) or closed=true happens first (Join returns
 	// errManagerClosed without ever Add'ing).
 	activeJoins sync.WaitGroup
+
+	// itemLocks is a per-item Mutex pool that serialises Join's
+	// addConn+replayTo critical section with PruneAndApply. Without
+	// this, a CLI/MCP/API direct write that ApplyExternalContent
+	// classified as "no live editors" can race a fresh Join: the new
+	// client's replayTo loads the soon-to-be-pruned op-log and
+	// ends up with stale Y.Doc state, which later overwrites the
+	// freshly-written items.content on the next idle flush.
+	//
+	// The lock is released before Join's readLoop so concurrent
+	// peers can edit simultaneously — only the setup phase (where
+	// op-log staleness matters) is serialised. Per Codex review
+	// round 5.
+	itemLocksMu sync.Mutex
+	itemLocks   map[string]*sync.Mutex
+}
+
+// itemLock returns the lazily-allocated mutex guarding setup-phase
+// operations on itemID. Locks live in the manager for the lifetime of
+// the process — for a workspace with many items this is at most a few
+// hundred bytes per item, which is acceptable.
+func (m *RoomManager) itemLock(itemID string) *sync.Mutex {
+	m.itemLocksMu.Lock()
+	defer m.itemLocksMu.Unlock()
+	if l, ok := m.itemLocks[itemID]; ok {
+		return l
+	}
+	if m.itemLocks == nil {
+		m.itemLocks = make(map[string]*sync.Mutex)
+	}
+	l := &sync.Mutex{}
+	m.itemLocks[itemID] = l
+	return l
 }
 
 // NewRoomManager wires the store + bus together with production defaults.
@@ -120,6 +153,8 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 	m.mu.Unlock()
 	defer m.activeJoins.Done()
 
+	itemLock := m.itemLock(itemID)
+
 	for attempt := 0; attempt < 3; attempt++ {
 		room := m.getOrCreate(itemID)
 		if room == nil {
@@ -136,7 +171,15 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			connectedAt: time.Now(),
 		}
 
+		// Hold the per-item lock across addConn + replayTo so a
+		// concurrent PruneAndApply (CLI / MCP / API direct write
+		// while we're mid-setup) can't pull stale op-log rows out
+		// from under our feet. The lock is released inside runConn
+		// before the long-lived readLoop so concurrent peers can
+		// edit simultaneously. Per Codex review round 5.
+		itemLock.Lock()
 		if err := room.addConn(rc); err != nil {
+			itemLock.Unlock()
 			// Race: the grace timer reclaimed the room between
 			// getOrCreate and addConn. Unsubscribe the channel we
 			// just opened (otherwise the bus leaks the slot until
@@ -150,7 +193,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			return err
 		}
 
-		return m.runConn(room, rc)
+		return m.runConn(room, rc, itemLock)
 	}
 	return errTooManyJoinRetries
 }
@@ -173,17 +216,23 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 // correctness issue. The alternative — buffer-then-flush — would
 // require an unbounded queue or risk losing live updates the way
 // the original implementation did.
-func (m *RoomManager) runConn(room *Room, rc *roomConn) error {
+func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex) error {
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
 		room.writeLoop(rc)
 	}()
 
-	if err := room.replayTo(rc); err != nil {
+	replayErr := room.replayTo(rc)
+	// Release the per-item setup lock before the long-lived readLoop
+	// so concurrent peers + future PruneAndApply calls aren't gated
+	// on this conn's full lifetime.
+	itemLock.Unlock()
+
+	if replayErr != nil {
 		room.removeConn(rc)
 		<-writerDone
-		return err
+		return replayErr
 	}
 
 	// Read loop blocks until the WS closes.
@@ -251,6 +300,56 @@ func (m *RoomManager) RoomCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.rooms)
+}
+
+// ErrRoomActiveDuringPrune is returned by PruneAndApply when a live
+// room (with at least one connected peer) appears for the itemID
+// between the caller's ApplyExternalContent check and PruneAndApply's
+// own re-check under the per-item lock. Callers should fall through
+// to a plain direct write (without pruning the op-log) — the live
+// peers' Y.Doc state cannot be invalidated safely.
+var ErrRoomActiveDuringPrune = errors.New("collab: room became active during prune attempt")
+
+// PruneAndApply runs applyFn under the per-item setup lock so it is
+// strictly serialised with any in-flight Join's addConn+replayTo for
+// the same itemID. Used by the items PATCH handler to prune the
+// op-log + write items.content directly when ApplyExternalContent
+// classifies the request as "no live editors" (ErrNoActiveRoom or
+// ErrNoApplierAvailable).
+//
+// Returns ErrRoomActiveDuringPrune if a room with live conns has
+// appeared since the caller's classification check; otherwise the
+// error from applyFn (if any). The caller is expected to fall
+// through to a plain direct write in the active-room case so the
+// PATCH still completes.
+//
+// Why this matters: ApplyExternalContent's "no room" answer is a
+// point-in-time snapshot. Without serialisation, a fresh Join can
+// slip in between that check and the prune, replay the
+// soon-to-be-pruned op-log into a new client, and end up with stale
+// Y.Doc state that later overwrites the freshly-written
+// items.content on the next idle flush. Per Codex review round 5.
+func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
+	lock := m.itemLock(itemID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-verify under the lock: if a room with live conns has
+	// appeared, refuse to prune (peers' Y.Doc would diverge from
+	// an empty op-log).
+	m.mu.Lock()
+	hasLivePeers := false
+	if r, ok := m.rooms[itemID]; ok {
+		r.mu.Lock()
+		hasLivePeers = len(r.conns) > 0
+		r.mu.Unlock()
+	}
+	m.mu.Unlock()
+	if hasLivePeers {
+		return ErrRoomActiveDuringPrune
+	}
+
+	return applyFn()
 }
 
 // closeFrameDeadline is the absolute time budget for sending a

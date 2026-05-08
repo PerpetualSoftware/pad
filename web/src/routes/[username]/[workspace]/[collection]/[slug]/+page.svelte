@@ -640,16 +640,28 @@
 		}, 1200);
 	}
 
+	// Latest raw markdown that hasn't yet been PATCHed. Tracked
+	// alongside contentDebounceTimer so toggling out of raw mode
+	// (via flushRawIfPending below) can synchronously land the
+	// pending edit BEFORE the collab provider mints — otherwise the
+	// debounced PATCH fires after the provider is up, gets routed
+	// through the applier path, and races peer state. Per Codex
+	// review round 5.
+	let rawPendingMarkdown: string | null = null;
+
 	function handleRawContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
 		editorStore.setDirty(true);
+		rawPendingMarkdown = markdown;
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
 			// Raw mode: content is already in storage format (with [[wiki links]])
-			api.items.update(wsSlug, item.id, { content: markdown }).then((updated) => {
+			const toSave = markdown;
+			api.items.update(wsSlug, item.id, { content: toSave }).then((updated) => {
 				item = updated;
+				if (rawPendingMarkdown === toSave) rawPendingMarkdown = null;
 				editorStore.setLastSaveTime(Date.now());
 				editorStore.setDirty(false);
 				showSaved();
@@ -658,6 +670,26 @@
 				toastStore.show('Failed to save content', 'error');
 			});
 		}, 1200);
+	}
+
+	async function flushRawIfPending(): Promise<void> {
+		if (rawPendingMarkdown === null || !item) return;
+		clearTimeout(contentDebounceTimer);
+		contentDebounceTimer = undefined;
+		const markdown = rawPendingMarkdown;
+		rawPendingMarkdown = null;
+		try {
+			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
+			const updated = await api.items.update(wsSlug, item.id, { content: markdown });
+			item = updated;
+			editorStore.setLastSaveTime(Date.now());
+			editorStore.setDirty(false);
+			showSaved();
+		} catch {
+			saveStatus = 'idle';
+			toastStore.show('Failed to save content', 'error');
+		}
 	}
 
 	let computedOverrides = $state<Record<string, any>>({});
@@ -1231,7 +1263,15 @@
 					<button
 						class="mode-btn"
 						class:active={!rawMode}
-						onclick={() => rawMode = false}
+						onclick={async () => {
+							// Flush any pending raw debounce SYNCHRONOUSLY
+							// before the collab provider mints; otherwise
+							// the deferred PATCH fires post-mint and gets
+							// routed through the applier path. Per Codex
+							// review round 5.
+							await flushRawIfPending();
+							rawMode = false;
+						}}
 						title="Rich text editor"
 					>Rich</button>
 					<button

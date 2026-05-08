@@ -339,14 +339,32 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 		// its 60s grace TTL with zero conns (returns
 		// ErrNoApplierAvailable).
 		//
+		// PruneAndApply runs the prune under the per-item setup
+		// lock so a fresh Join racing in this exact window can't
+		// load the soon-to-be-pruned op-log under our feet.
 		// Pruning is safe in both no-conn cases — there are no
 		// peers in memory whose Y.Doc would diverge.
 		// ErrAllAppliersTimedOut is intentionally NOT pruned
 		// because peers may still be alive there.
-		if _, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture); perr != nil {
+		paErr := s.collab.PruneAndApply(itemID, func() error {
+			_, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture)
+			return perr
+		})
+		switch {
+		case paErr == nil:
+			// Pruned cleanly.
+		case errors.Is(paErr, collab.ErrRoomActiveDuringPrune):
+			// A peer joined between ApplyExternalContent's check
+			// and PruneAndApply's re-check. Skip the prune; the
+			// caller's direct write to items.content still
+			// proceeds, peers will catch up on next flush.
+			slog.Info("collab: room became active during prune; skipping op-log prune",
+				"item_id", itemID,
+			)
+		default:
 			slog.Warn("collab: failed to prune op-log on direct-write fallback",
 				"item_id", itemID,
-				"error", perr,
+				"error", paErr,
 			)
 		}
 		return err
