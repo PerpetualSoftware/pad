@@ -325,8 +325,17 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// synchronously, which handles old-UUID metadata
 				// invalidation + img.src refresh (any source: local
 				// rotate, peer Yjs op, ...).
+				//
+				// Critical: read attrs from the live document, NOT from
+				// the `node` captured at NodeView creation. Now that the
+				// NodeView survives attr updates, the closure-captured
+				// `node` is stale — using it would clobber any concurrent
+				// edits to other attrs (e.g. a peer's alt-text change
+				// landing between two local rotates).
+				const liveNode = editor.state.doc.nodeAt(pos);
+				if (!liveNode) return;
 				const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
-					...node.attrs,
+					...liveNode.attrs,
 					uuid: newId,
 				});
 				editor.view.dispatch(tr);
