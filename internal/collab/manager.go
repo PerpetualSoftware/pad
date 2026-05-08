@@ -52,6 +52,13 @@ type RoomManager struct {
 
 	mu    sync.Mutex
 	rooms map[string]*Room
+
+	// activeJoins tracks every in-flight Join goroutine so Close can
+	// act as a true drain barrier on server shutdown. Without this
+	// Wait, http.Server.Shutdown returns before hijacked WS sessions
+	// finish their tear-down, and a deferred store close races
+	// in-flight AppendYjsUpdate calls.
+	activeJoins sync.WaitGroup
 }
 
 // NewRoomManager wires the store + bus together with production defaults.
@@ -90,6 +97,9 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
 func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
+	m.activeJoins.Add(1)
+	defer m.activeJoins.Done()
+
 	for attempt := 0; attempt < 3; attempt++ {
 		room := m.getOrCreate(itemID)
 
@@ -207,9 +217,23 @@ func (m *RoomManager) RoomCount() int {
 	return len(m.rooms)
 }
 
-// Close stops every active room. After Close, Join is undefined —
+// Close stops every active room AND blocks until every in-flight
+// Join goroutine has returned. After Close, Join is undefined —
 // callers must coordinate shutdown so no new Join races happen
-// alongside Close. Used by Server.Stop on graceful shutdown.
+// alongside Close. Used by Server.Stop on graceful shutdown to
+// ensure no collab goroutine is still running by the time the
+// store is closed.
+//
+// Two phases:
+//
+//   1. closeAll on every room — closes each WebSocket from the
+//      server side, which causes the corresponding readLoop to
+//      return, removeConn to fire, the bus subscription to close,
+//      and writeLoop to exit. The Join goroutine that was running
+//      runConn then returns naturally.
+//   2. activeJoins.Wait — blocks until step 1's effects propagate
+//      through every still-running Join. Without this Wait, Close
+//      returns before the goroutines actually exit.
 func (m *RoomManager) Close() {
 	m.mu.Lock()
 	rooms := make([]*Room, 0, len(m.rooms))
@@ -222,4 +246,6 @@ func (m *RoomManager) Close() {
 	for _, r := range rooms {
 		r.closeAll()
 	}
+
+	m.activeJoins.Wait()
 }

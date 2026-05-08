@@ -32,17 +32,26 @@ func NewMemoryOpBus() *MemoryOpBus {
 	}
 }
 
+// subscriberBufSize is the per-subscriber bus channel buffer. Sized
+// generously so a slow drain (replay holding the conn's writeMu, OS
+// write buffer momentarily backed up, …) doesn't spill over into the
+// drop path under normal editor load.
+//
+// Sizing rationale: a 1k-row op-log replay at ~1ms/row takes ~1
+// second; during that window a chatty 5-peer room produces O(50)
+// live events, so 256 events covers a 5× safety margin. Larger
+// documents (10k+ rows) under sustained write load can still
+// overflow — that's the documented "force-close slow peers" path
+// in the bus's Publish doc comment, deferred to a follow-up task.
+const subscriberBufSize = 256
+
 // Subscribe registers a subscriber for itemID and returns a buffered
-// channel. Buffer size matches internal/events.MemoryBus (64) — tuned
-// against an SSE workload but suitable for collab too: even a chatty
-// editor produces ops at human-keystroke pace, so 64 events of
-// headroom comfortably covers any momentary write-stall on the
-// receiving WebSocket without pushing memory pressure into the bus.
+// channel of size subscriberBufSize.
 func (b *MemoryOpBus) Subscribe(itemID string) chan OpEvent {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := make(chan OpEvent, 64)
+	ch := make(chan OpEvent, subscriberBufSize)
 	b.subscribers[ch] = &memSubscriber{
 		ch:     ch,
 		itemID: itemID,
