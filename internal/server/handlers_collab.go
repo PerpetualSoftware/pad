@@ -24,6 +24,20 @@ import (
 // reads automatically.
 var collabUpgrader = websocket.Upgrader{}
 
+// collabMaxMessageBytes caps the size of a single WebSocket message the
+// server will accept on a collab connection. Without a cap, an
+// authenticated client could send an arbitrarily large frame and force
+// the server to buffer it before ReadMessage returns — the auth
+// middleware's HTTP body limit no longer applies once the connection
+// is upgraded.
+//
+// 1 MiB is generous for everyday Yjs ops (keystroke-rate updates are
+// in the tens-of-bytes range) and still big enough to absorb a full
+// initial-sync state for a typical document. If a future workload
+// needs more headroom (e.g. very large Y.Doc snapshots), bump this
+// alongside any matching CLAUDE.md note.
+const collabMaxMessageBytes = 1 << 20 // 1 MiB
+
 // handleCollab is the WebSocket entry point for real-time collab on a
 // single item.
 //
@@ -86,6 +100,12 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	// Cap incoming message size before any read to bound server-side
+	// memory pressure from a misbehaving / malicious peer. ReadMessage
+	// returns an error when this is exceeded, which our loop handles
+	// like any other read error (close the connection cleanly).
+	conn.SetReadLimit(collabMaxMessageBytes)
 
 	// Identify the connecting principal in logs. currentUser is nil
 	// for legacy workspace-scoped API tokens, fresh-install setups,
