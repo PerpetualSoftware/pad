@@ -64,6 +64,18 @@ function createSyncService() {
 				onTabResume();
 			}
 		});
+
+		// Subscribe to server-driven sync_required events. The callback
+		// inversion (sync subscribes via sseService.onSyncRequired instead
+		// of sse calling syncService.triggerSync directly) is what lets
+		// sse.svelte.ts stay free of any sync.svelte import — sync already
+		// imports sseService statically, so a reverse import would create
+		// a cycle. Previously broken with a dynamic `import('./sync.svelte')`
+		// call inside sse, which Rolldown correctly flagged as ineffective
+		// (see TASK-1242).
+		sseService.onSyncRequired(() => {
+			triggerSync();
+		});
 	}
 
 	async function setWorkspace(slug: string) {

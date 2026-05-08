@@ -16,6 +16,7 @@ export interface ItemEvent {
 }
 
 type ItemEventCallback = (event: ItemEvent) => void;
+type SyncRequiredCallback = () => void;
 
 const ITEM_EVENTS = [
 	'item_created',
@@ -36,6 +37,7 @@ function createSSEService() {
 	let eventSource: EventSource | null = null;
 	let currentWorkspace: string = '';
 	const callbacks = new SvelteSet<ItemEventCallback>();
+	const syncRequiredCallbacks = new SvelteSet<SyncRequiredCallback>();
 
 	function connect(workspaceSlug: string) {
 		// If already connected to the same workspace, don't reconnect.
@@ -74,13 +76,18 @@ function createSSEService() {
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
 		// Trigger an immediate sync rather than waiting for a visibility change,
-		// so the UI stays fresh even when the tab is actively visible.
+		// so the UI stays fresh even when the tab is actively visible. Fires
+		// out via onSyncRequired() subscribers (currently syncService) — the
+		// callback inversion keeps this module free of any sync.svelte import,
+		// breaking the circular dep that previously required a dynamic import
+		// here. (Rolldown flagged the dynamic import as ineffective because
+		// sync.svelte is statically imported from 5 routes/components anyway,
+		// so it's always in the main chunk — see TASK-1242.)
 		eventSource.addEventListener('sync_required', () => {
 			needsSync = true;
-			// Dynamic import to avoid circular dependency
-			import('./sync.svelte').then(({ syncService }) => {
-				syncService.triggerSync();
-			});
+			for (const cb of syncRequiredCallbacks) {
+				cb();
+			}
 		});
 
 		// Handle unauthorized: the server's periodic membership revalidation
@@ -135,6 +142,22 @@ function createSSEService() {
 		};
 	}
 
+	/**
+	 * Subscribe to `sync_required` events from the server. Fires when the
+	 * server's replay buffer couldn't cover a reconnect gap and the client
+	 * needs to do a fresh sync. Returns an unsubscribe function.
+	 *
+	 * Used by syncService to drive `triggerSync()` without sse.svelte
+	 * having to import sync.svelte (which would form a circular dep —
+	 * sync.svelte already statically imports sseService).
+	 */
+	function onSyncRequired(callback: SyncRequiredCallback): () => void {
+		syncRequiredCallbacks.add(callback);
+		return () => {
+			syncRequiredCallbacks.delete(callback);
+		};
+	}
+
 	function clearSyncFlag() {
 		needsSync = false;
 	}
@@ -153,6 +176,7 @@ function createSSEService() {
 		disconnect,
 		reconnect,
 		onItemEvent,
+		onSyncRequired,
 		clearSyncFlag
 	};
 }
