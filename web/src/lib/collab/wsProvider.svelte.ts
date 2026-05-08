@@ -49,9 +49,12 @@ const RECONNECT_MAX_MS = 30_000;
  * "I can't apply right now" — the provider will NOT ack, so the
  * server falls back to a direct write after its applier timeout.
  *
- * The full ExpiresAtMillis-driven late-apply guard lives in TASK-1262;
- * v1 here just bridges the server protocol so a concurrent CLI update
- * doesn't sit blocked for 30s while we wait for that task to ship.
+ * IMPORTANT: handlers that mutate state MUST honour `expiresAtMillis`
+ * BEFORE the mutation. The provider checks expiry before invoking
+ * the handler and re-checks before sending the ack, but the actual
+ * mutation is owned by the caller — only the handler can refuse to
+ * apply once the deadline has passed. Returning `false` after a
+ * stale check keeps the late-apply hazard closed.
  */
 export type ApplierRequestHandler = (
 	markdown: string,

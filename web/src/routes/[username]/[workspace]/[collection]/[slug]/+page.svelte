@@ -451,8 +451,18 @@
 			// applier-timeout fallback (~30s) and then writing
 			// items.content directly. The full ExpiresAtMillis-driven
 			// late-apply guard is TASK-1262's concern.
-			onApplierRequest: async (markdown) => {
+			onApplierRequest: async (markdown, _requestID, expiresAtMillis) => {
 				if (!editorInstance) return false;
+				// Pre-mutation late-apply guard. The provider already
+				// gates the ack on expiry but the actual setContent
+				// is owned here; gating the mutation itself is the
+				// only way to truly prevent a stale apply when the
+				// handler crosses the deadline. Per Codex review
+				// round 3 — the provider's post-check alone only
+				// suppresses the ack, not the side effect.
+				if (expiresAtMillis > 0 && Date.now() > expiresAtMillis) {
+					return false;
+				}
 				try {
 					editorInstance.commands.setContent(markdown);
 					return true;

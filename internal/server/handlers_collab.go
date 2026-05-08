@@ -13,6 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// distantFuture is used as a "prune everything" cutoff for the
+// item_yjs_updates table. PruneYjsUpdatesBefore takes a strict-less-
+// than cutoff, so passing a far-future time sweeps the whole row set.
+var distantFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // collabMembershipRevalInterval is how often an active collab WS
 // re-runs authorizeCollabAccess to catch a mid-stream revocation
 // (member removed, role demoted, item-grant revoked, etc.). 60s
@@ -320,9 +325,27 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 		return nil
 
 	case errors.Is(err, collab.ErrNoActiveRoom):
-		// No live editors — direct write is the right thing.
-		// Common case for CLI updates outside a co-edit session;
-		// no log to keep noise down.
+		// No live editors — direct write is the right thing. We
+		// also prune the op-log here: any prior collab state is
+		// strictly older than the items.content the caller is
+		// about to write, and replaying it on the next collab
+		// session would resurrect stale content and silently
+		// overwrite this update on the next 5s flush. Common
+		// triggers for this path are (a) CLI/MCP/API updates
+		// outside any co-edit session, and (b) raw-mode toggles
+		// that destroy the in-tab provider before saving.
+		//
+		// Pruning is safe in the no-room case specifically — there
+		// are no peers in memory whose Y.Doc would diverge. The
+		// other error paths (ErrNoApplierAvailable,
+		// ErrAllAppliersTimedOut) keep op-log intact because peers
+		// may still be alive there.
+		if _, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture); perr != nil {
+			slog.Warn("collab: failed to prune op-log on direct-write fallback",
+				"item_id", itemID,
+				"error", perr,
+			)
+		}
 		return err
 
 	case errors.Is(err, collab.ErrNoApplierAvailable):
