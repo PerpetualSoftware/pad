@@ -130,9 +130,10 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 		}
 
 		rc := &roomConn{
-			id:   nextConnID(),
-			conn: conn,
-			bus:  m.bus.Subscribe(itemID),
+			id:          nextConnID(),
+			conn:        conn,
+			bus:         m.bus.Subscribe(itemID),
+			connectedAt: time.Now(),
 		}
 
 		if err := room.addConn(rc); err != nil {
@@ -225,6 +226,7 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		schemaVersion: m.schemaVersion,
 		graceTTL:      m.graceTTL,
 		conns:         make(map[*websocket.Conn]*roomConn),
+		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
 	}
 	m.rooms[itemID] = r

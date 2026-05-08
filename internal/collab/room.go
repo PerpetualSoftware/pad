@@ -1,6 +1,7 @@
 package collab
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -48,13 +49,16 @@ var errRoomClosing = errors.New("collab: room is closing")
 // roomConn pairs a single WebSocket connection with the bookkeeping
 // the Room needs around it: a unique server-assigned id (so a peer's
 // own ops aren't echoed back to itself), the OpBus subscription
-// channel that feeds outbound writes, and a write mutex (gorilla's
-// rule — at most one writer goroutine at a time per conn).
+// channel that feeds outbound writes, a write mutex (gorilla's
+// rule — at most one writer goroutine at a time per conn), and the
+// connect timestamp used by the designated-applier election to pick
+// the longest-connected peer.
 type roomConn struct {
-	id      uint64
-	conn    *websocket.Conn
-	bus     chan OpEvent
-	writeMu sync.Mutex
+	id          uint64
+	conn        *websocket.Conn
+	bus         chan OpEvent
+	writeMu     sync.Mutex
+	connectedAt time.Time
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -91,6 +95,17 @@ type Room struct {
 	// AppendYjsUpdate + bus.Publish sequence, so it does NOT
 	// serialise reads, awareness frames, or other rooms.
 	appendMu sync.Mutex
+
+	// pendingMu + pendingAcks track in-flight designated-applier
+	// requests (TASK-1257). Each entry is a request_id → expected
+	// applier conn + ack channel. Server-side PATCH handlers create
+	// an entry, send the applier_request control message to the
+	// chosen conn, and Wait on the channel; the readLoop on that
+	// conn receives an applier_ack JSON frame and signals the
+	// channel. The expectedConn check prevents an unrelated peer
+	// from spoofing acks for someone else's request.
+	pendingMu   sync.Mutex
+	pendingAcks map[string]*pendingApplierAck
 }
 
 // opLogStore is the store surface a Room needs. Pulling it into a
@@ -190,8 +205,18 @@ func (r *Room) readLoop(rc *roomConn) error {
 		if err != nil {
 			return err
 		}
-		// Yjs sends only binary frames. Skip text/control frames defensively
-		// so a bad client cannot break the loop with a malformed packet.
+
+		// TextMessage frames carry JSON control messages (currently
+		// just designated-applier acks; future entries can extend
+		// the same envelope without disturbing the y-protocol path).
+		if msgType == websocket.TextMessage {
+			r.handleControlMessage(rc, data)
+			continue
+		}
+
+		// Yjs sends only binary frames. Skip anything else (control
+		// frames are already handled above) defensively so a bad
+		// client can't break the loop with a malformed packet.
 		if msgType != websocket.BinaryMessage || len(data) == 0 {
 			continue
 		}
@@ -264,6 +289,29 @@ func (r *Room) writeLoop(rc *roomConn) {
 			_ = rc.conn.Close()
 			return
 		}
+	}
+}
+
+// handleControlMessage dispatches a TextMessage frame received from
+// a peer. Today the only valid type is applier_ack (TASK-1257); any
+// other type is dropped silently so a future client extension can
+// add new control types without older servers blowing up.
+func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
+	var ctl ControlMessage
+	if err := json.Unmarshal(data, &ctl); err != nil {
+		// Malformed JSON — drop. We don't log at warn here because
+		// a bad client could otherwise spam logs by sending
+		// arbitrary text frames.
+		return
+	}
+	switch ctl.Type {
+	case ControlMessageApplierAck:
+		if ctl.RequestID == "" {
+			return
+		}
+		r.routeApplierAck(ctl.RequestID, rc.conn)
+	default:
+		// Unknown control type — drop.
 	}
 }
 
