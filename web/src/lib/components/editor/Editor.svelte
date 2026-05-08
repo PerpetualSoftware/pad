@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { Editor, mergeAttributes } from '@tiptap/core';
 	import { Plugin } from '@tiptap/pm/state';
+	import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 	import StarterKit from '@tiptap/starter-kit';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
@@ -248,9 +249,41 @@
 					queueMermaidRender(source, diagram);
 				}
 
+				// Closure state for update(): track last-rendered source + the
+				// language at NodeView creation time. ProseMirror only recreates
+				// the NodeView on node identity change (replace/retype) — text
+				// edits inside the same node hit update(), so we re-queue a
+				// mermaid render whenever the source text changes. See BUG-1246.
+				let lastSource = source;
+				const initialLang = lang;
+
 				return {
 					dom: wrapper,
 					contentDOM: code,
+					// Re-render the diagram when the node's text content changes.
+					// Typed via NodeView['update'] from prosemirror-view: the param
+					// is a ProseMirror Node (not the DOM Node global). Returning
+					// `true` accepts the in-place update; `false` forces ProseMirror
+					// to tear down + recreate this NodeView, which we want when
+					// the language attribute flips into/out of `mermaid` because
+					// the DOM shape (wrapper + diagram + toggle) is mermaid-only.
+					update(updatedNode: ProseMirrorNode) {
+						if (updatedNode.type.name !== 'codeBlock') return false;
+						if (updatedNode.attrs.language !== initialLang) return false;
+
+						const newSource = updatedNode.textContent?.trim() ?? '';
+						if (newSource !== lastSource) {
+							lastSource = newSource;
+							if (newSource) {
+								queueMermaidRender(newSource, diagram);
+							} else {
+								// Empty source: clear any stale SVG / error state.
+								diagram.textContent = '';
+								diagram.classList.remove('mermaid-error');
+							}
+						}
+						return true;
+					},
 					// Critical: tell ProseMirror to ignore DOM mutations outside
 					// the contentDOM (code element). Without this, inserting the
 					// mermaid SVG triggers ProseMirror's MutationObserver → re-parse
