@@ -196,8 +196,11 @@ Examples:
 
 			// ── Step 4: Authentication ────────────────────────────────
 			if !session.Authenticated && !session.SetupRequired {
-				// Check if we have saved credentials that still work
-				creds, _ := cli.LoadCredentials()
+				// Check if we have saved credentials for THIS server that
+				// still work. Per-server lookup (TASK-1228) — credentials
+				// for other servers are silently ignored here.
+				store, _ := cli.LoadStore()
+				creds := store.Get(cfg.BaseURL())
 				if creds != nil && creds.Token != "" {
 					client.SetAuthToken(creds.Token)
 					user, err := client.GetCurrentUser()
@@ -501,8 +504,9 @@ func printInitStatus(client *cli.Client, cfg *config.Config, ws *models.Workspac
 	}
 	fmt.Println(serverAddr)
 
-	// Auth
-	creds, _ := cli.LoadCredentials()
+	// Auth — entry for the configured server only
+	store, _ := cli.LoadStore()
+	creds := store.Get(cfg.BaseURL())
 	if creds != nil && creds.Email != "" {
 		green.Print("  ✓ Logged in  ")
 		fmt.Println(creds.Email)

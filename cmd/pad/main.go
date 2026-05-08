@@ -1126,8 +1126,11 @@ func loginCmd() *cobra.Command {
 			}
 			client := cli.NewClientFromURL(cfg.BaseURL())
 
-			// Check if already logged in with valid session
-			creds, _ := cli.LoadCredentials()
+			// Check if already logged in with valid session for THIS
+			// server. Per-server lookup (TASK-1228) — saved credentials
+			// for other servers don't short-circuit this login.
+			store, _ := cli.LoadStore()
+			creds := store.Get(cfg.BaseURL())
 			if creds != nil && creds.Token != "" {
 				client.SetAuthToken(creds.Token)
 				user, err := client.GetCurrentUser()
@@ -1228,14 +1231,19 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 
 			switch status.Status {
 			case "approved":
-				// Save credentials
-				if err := cli.SaveCredentials(&cli.Credentials{
-					ServerURL: cfg.BaseURL(),
-					Token:     status.Token,
-					UserID:    status.User.ID,
-					Email:     status.User.Email,
-					Name:      status.User.Name,
-				}); err != nil {
+				// Save credentials keyed by this server URL so other
+				// servers' tokens stay intact (TASK-1228).
+				store, err := cli.LoadStore()
+				if err != nil {
+					return fmt.Errorf("load credentials: %w", err)
+				}
+				store.Set(cfg.BaseURL(), &cli.Credentials{
+					Token:  status.Token,
+					UserID: status.User.ID,
+					Email:  status.User.Email,
+					Name:   status.User.Name,
+				})
+				if err := store.Save(); err != nil {
 					return fmt.Errorf("save credentials: %w", err)
 				}
 
@@ -1420,13 +1428,17 @@ func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
 }
 
 func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
-	if err := cli.SaveCredentials(&cli.Credentials{
-		ServerURL: cfg.BaseURL(),
-		Token:     resp.Token,
-		UserID:    resp.User.ID,
-		Email:     resp.User.Email,
-		Name:      resp.User.Name,
-	}); err != nil {
+	store, err := cli.LoadStore()
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
+	}
+	store.Set(cfg.BaseURL(), &cli.Credentials{
+		Token:  resp.Token,
+		UserID: resp.User.ID,
+		Email:  resp.User.Email,
+		Name:   resp.User.Name,
+	})
+	if err := store.Save(); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
 	return nil
@@ -1471,9 +1483,18 @@ func logoutCmd() *cobra.Command {
 			// Try to invalidate server-side session
 			_ = client.Logout()
 
-			// Delete local credentials
-			if err := cli.DeleteCredentials(); err != nil {
-				return fmt.Errorf("delete credentials: %w", err)
+			// Delete only the entry for THIS server. Other servers'
+			// credentials stay intact (TASK-1228 — pre-fix behavior wiped
+			// the whole file). If the entry isn't present, Delete is a
+			// silent no-op which matches what the user expects from
+			// `pad auth logout` against an unauthed server.
+			store, err := cli.LoadStore()
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
+			store.Delete(cfg.BaseURL())
+			if err := store.Save(); err != nil {
+				return fmt.Errorf("save credentials: %w", err)
 			}
 
 			green := color.New(color.FgGreen).SprintFunc()
@@ -1488,16 +1509,20 @@ func whoamiCmd() *cobra.Command {
 		Use:   "whoami",
 		Short: "Show current user info",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			creds, err := cli.LoadCredentials()
+			cfg := getConfiguredConfig()
+
+			// Per-server lookup (TASK-1228). The store may have entries
+			// for other servers — we only care about the configured one.
+			store, err := cli.LoadStore()
 			if err != nil {
 				return fmt.Errorf("load credentials: %w", err)
 			}
+			creds := store.Get(cfg.BaseURL())
 			if creds == nil || creds.Token == "" {
 				fmt.Println("Not logged in. Run 'pad auth login'.")
 				return nil
 			}
 
-			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}

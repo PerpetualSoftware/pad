@@ -54,9 +54,15 @@ func NewClientFromURL(baseURL string) *Client {
 		},
 	}
 
-	// Auto-load credentials if available
-	if creds, err := LoadCredentials(); err == nil && creds != nil {
-		c.authToken = creds.Token
+	// Auto-load credentials for THIS server URL if any are saved. We use
+	// the original baseURL (without the /api/v1 suffix added below) so
+	// the lookup matches what login/save commands key on. Credentials
+	// for other servers are left untouched in the store — see TASK-1228
+	// / IDEA-1226 for the per-server design.
+	if store, err := LoadStore(); err == nil {
+		if creds := store.Get(baseURL); creds != nil {
+			c.authToken = creds.Token
+		}
 	}
 
 	// Auto-load agent name from .pad.toml if available
