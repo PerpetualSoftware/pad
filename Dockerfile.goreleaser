@@ -1,4 +1,4 @@
-FROM alpine:3.21
+FROM alpine:3.23
 # Keep this package set in lockstep with Dockerfile (the local build
 # variant) — both images must support the same docker-entrypoint.sh
 # behavior. See Dockerfile for per-package rationale and TASK-1168 /
