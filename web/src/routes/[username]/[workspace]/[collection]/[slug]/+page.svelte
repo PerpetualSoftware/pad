@@ -598,6 +598,21 @@
 	}
 
 	function handleContentUpdate(markdown: string) {
+		// Suppress the legacy 1.2s autosave when the collab provider
+		// owns this editor's content. Routing the PATCH through the
+		// server while a provider is connected would loop the
+		// applier protocol back to this same tab (a no-op
+		// round-trip), then set input.Content = nil server-side so
+		// items.content never gets the snapshot — leaving canonical
+		// markdown stale for search / share-page / API consumers.
+		// TASK-1260 introduces the proper 5s idle flush that bypasses
+		// applier with a `?source=collab-flush` semantic; this guard
+		// is the temporary stop-gap for the inter-PR window. Per
+		// Codex review round 4.
+		if (collabProvider) {
+			editorStore.setDirty(true);
+			return;
+		}
 		clearTimeout(contentDebounceTimer);
 		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {

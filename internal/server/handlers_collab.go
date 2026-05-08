@@ -324,7 +324,8 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 		// Caller suppresses the direct write.
 		return nil
 
-	case errors.Is(err, collab.ErrNoActiveRoom):
+	case errors.Is(err, collab.ErrNoActiveRoom),
+		errors.Is(err, collab.ErrNoApplierAvailable):
 		// No live editors — direct write is the right thing. We
 		// also prune the op-log here: any prior collab state is
 		// strictly older than the items.content the caller is
@@ -332,25 +333,22 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 		// session would resurrect stale content and silently
 		// overwrite this update on the next 5s flush. Common
 		// triggers for this path are (a) CLI/MCP/API updates
-		// outside any co-edit session, and (b) raw-mode toggles
-		// that destroy the in-tab provider before saving.
+		// outside any co-edit session, (b) raw-mode toggles that
+		// destroy the in-tab provider before saving, and (c) raw
+		// saves that hit the server while the room is still in
+		// its 60s grace TTL with zero conns (returns
+		// ErrNoApplierAvailable).
 		//
-		// Pruning is safe in the no-room case specifically — there
-		// are no peers in memory whose Y.Doc would diverge. The
-		// other error paths (ErrNoApplierAvailable,
-		// ErrAllAppliersTimedOut) keep op-log intact because peers
-		// may still be alive there.
+		// Pruning is safe in both no-conn cases — there are no
+		// peers in memory whose Y.Doc would diverge.
+		// ErrAllAppliersTimedOut is intentionally NOT pruned
+		// because peers may still be alive there.
 		if _, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture); perr != nil {
 			slog.Warn("collab: failed to prune op-log on direct-write fallback",
 				"item_id", itemID,
 				"error", perr,
 			)
 		}
-		return err
-
-	case errors.Is(err, collab.ErrNoApplierAvailable):
-		// Room exists (mid-grace-TTL) but has no live conn to
-		// apply through. Direct write is correct.
 		return err
 
 	case errors.Is(err, collab.ErrAllAppliersTimedOut):
