@@ -39,6 +39,26 @@ const MESSAGE_AWARENESS = 1;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+/**
+ * Handler invoked when the server delivers an `applier_request`
+ * (designated-applier protocol from TASK-1257). Receives the markdown
+ * the CLI / MCP / API caller is trying to apply; should call
+ * `editor.commands.setContent(markdown)` (which routes through the
+ * y-tiptap binding and propagates as Y.Doc ops) and return `true`
+ * once the content is applied. Returning `false` (or throwing) means
+ * "I can't apply right now" — the provider will NOT ack, so the
+ * server falls back to a direct write after its applier timeout.
+ *
+ * The full ExpiresAtMillis-driven late-apply guard lives in TASK-1262;
+ * v1 here just bridges the server protocol so a concurrent CLI update
+ * doesn't sit blocked for 30s while we wait for that task to ship.
+ */
+export type ApplierRequestHandler = (
+	markdown: string,
+	requestID: string,
+	expiresAtMillis: number,
+) => boolean | Promise<boolean>;
+
 export interface CollabProviderOptions {
 	/**
 	 * Override the WebSocket URL. Defaults to a same-origin URL based
@@ -50,6 +70,12 @@ export interface CollabProviderOptions {
 	 * Override `WebSocket` — used by tests to stub the network layer.
 	 */
 	WebSocketImpl?: typeof WebSocket;
+	/**
+	 * Designated-applier handler. See `ApplierRequestHandler`.
+	 * If unset, applier_request frames are dropped (server falls back
+	 * after timeout). Production callers always set this.
+	 */
+	onApplierRequest?: ApplierRequestHandler;
 }
 
 export class CollabProvider {
@@ -73,6 +99,7 @@ export class CollabProvider {
 
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
+	private readonly onApplierRequest?: ApplierRequestHandler;
 	private destroyed = false;
 	private reconnectAttempts = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -88,6 +115,7 @@ export class CollabProvider {
 
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
 		this.url = options.url ?? defaultCollabUrl(itemID);
+		this.onApplierRequest = options.onApplierRequest;
 
 		this.handleDocUpdate = (update, origin) => {
 			// Skip ops that came from us applying a server message —
@@ -204,6 +232,22 @@ export class CollabProvider {
 		syncProtocol.writeSyncStep1(enc, this.ydoc);
 		this.send(encoding.toUint8Array(enc));
 
+		// Push our current Y.Doc state as a single update. This is
+		// how local-only edits made while disconnected reach the
+		// server: handleDocUpdate's `send()` is a no-op when the
+		// socket is closed (no buffering), so without this catch-up
+		// frame those ops would never persist or broadcast on
+		// reconnect. Yjs CRDT updates are idempotent — when the
+		// server already has these ops via op-log replay this is a
+		// harmless no-op for peers. For very large docs this is
+		// wasteful and TASK-1265's mobile-reconnect work can replace
+		// it with a buffered-queue approach; for v1 the simplicity
+		// wins.
+		const enc3 = encoding.createEncoder();
+		encoding.writeVarUint(enc3, MESSAGE_SYNC);
+		syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
+		this.send(encoding.toUint8Array(enc3));
+
 		// Broadcast our local awareness state (if any) so peers see
 		// us right away. With no local state set this is a no-op.
 		const localState = this.awareness.getLocalState();
@@ -220,6 +264,16 @@ export class CollabProvider {
 
 	private readonly onMessage = (e: MessageEvent): void => {
 		const data = e.data;
+
+		// TextMessage frames carry JSON control envelopes (today:
+		// `applier_request` from the designated-applier protocol).
+		// Mirrors the server's read-loop branching in
+		// `internal/collab/room.go`.
+		if (typeof data === 'string') {
+			this.handleControlMessage(data);
+			return;
+		}
+
 		if (!(data instanceof ArrayBuffer) || data.byteLength === 0) return;
 
 		const decoder = decoding.createDecoder(new Uint8Array(data));
@@ -258,6 +312,54 @@ export class CollabProvider {
 				break;
 		}
 	};
+
+	private async handleControlMessage(raw: string): Promise<void> {
+		let msg: { type?: string; request_id?: string; markdown?: string; expires_at_millis?: number };
+		try {
+			msg = JSON.parse(raw);
+		} catch {
+			console.warn('collab: dropping malformed control message');
+			return;
+		}
+
+		switch (msg.type) {
+			case 'applier_request': {
+				if (!msg.request_id || typeof msg.markdown !== 'string') {
+					console.warn('collab: applier_request missing required fields');
+					return;
+				}
+				if (!this.onApplierRequest) {
+					// No handler installed — server falls back after timeout.
+					return;
+				}
+				let applied = false;
+				try {
+					applied = await this.onApplierRequest(
+						msg.markdown,
+						msg.request_id,
+						msg.expires_at_millis ?? 0,
+					);
+				} catch (err) {
+					console.warn('collab: applier handler threw, treating as not-applied', err);
+					applied = false;
+				}
+				if (applied) {
+					const ack = JSON.stringify({
+						type: 'applier_ack',
+						request_id: msg.request_id,
+					});
+					if (this.ws && this.ws.readyState === this.WebSocketImpl.OPEN) {
+						this.ws.send(ack);
+					}
+				}
+				return;
+			}
+			default:
+				// Unknown / future control type — silently ignore so
+				// older clients survive a server that grows new ones.
+				return;
+		}
+	}
 
 	private readonly onClose = (): void => {
 		const wasConnected = this.connected;

@@ -427,7 +427,29 @@
 		const itemId = collabKey;
 
 		const doc = new Y.Doc();
-		const provider = new CollabProvider(itemId, doc);
+		const provider = new CollabProvider(itemId, doc, {
+			// Designated-applier handler: when a CLI / MCP / API caller
+			// PATCHes content while this tab is connected, the server
+			// asks one tab to apply the markdown via the editor's
+			// y-tiptap binding (which translates setContent into Y.Doc
+			// ops, propagating to all peers without overwriting the
+			// canonical items.content from a stale source). Returning
+			// `true` triggers an applier_ack so the server's PATCH
+			// returns 200 immediately instead of waiting for the
+			// applier-timeout fallback (~30s) and then writing
+			// items.content directly. The full ExpiresAtMillis-driven
+			// late-apply guard is TASK-1262's concern.
+			onApplierRequest: async (markdown) => {
+				if (!editorInstance) return false;
+				try {
+					editorInstance.commands.setContent(markdown);
+					return true;
+				} catch (err) {
+					console.warn('collab: setContent failed', err);
+					return false;
+				}
+			},
+		});
 
 		ydoc = doc;
 		collabProvider = provider;
@@ -1195,15 +1217,42 @@
 						mounted before /me resolves would never gain the drag handle
 						even after canEdit flips true. Per Codex review round 4.
 					-->
-					{#key `${item.id}:${canEdit}`}
-						<Editor
-							content={editorContent}
-							onUpdate={handleContentUpdate}
-							editable={canEdit}
-							ydoc={ydoc ?? undefined}
-							onEditor={(e) => editorInstance = e}
-						/>
-					{/key}
+					<!--
+						Editable users mount the Editor only AFTER the Y.Doc
+						is constructed by the $effect above — Editor.svelte
+						decides its extension list once at onMount time
+						(StarterKit history vs Collaboration), so a mount
+						with `ydoc=undefined` would never gain Collaboration
+						even after the prop later flips. The conditional
+						gate adds at most a single sub-frame delay (the
+						$effect runs in the same reactive cycle) and
+						guarantees the first mount has the binding
+						registered. Per Codex review round 1.
+
+						View-only viewers (canEdit === false) keep mounting
+						immediately under the legacy non-collab path; their
+						read-only y-binding is deferred to TASK-1266.
+					-->
+					{#if !canEdit}
+						{#key `${item.id}:false`}
+							<Editor
+								content={editorContent}
+								onUpdate={handleContentUpdate}
+								editable={false}
+								onEditor={(e) => editorInstance = e}
+							/>
+						{/key}
+					{:else if ydoc}
+						{#key `${item.id}:true`}
+							<Editor
+								content={editorContent}
+								onUpdate={handleContentUpdate}
+								editable={true}
+								ydoc={ydoc}
+								onEditor={(e) => editorInstance = e}
+							/>
+						{/key}
+					{/if}
 					{#if canEdit}
 						<EditorBubbleMenu
 							editor={editorInstance}
