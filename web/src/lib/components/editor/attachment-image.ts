@@ -342,9 +342,19 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const runRotate = async (degrees: 90 | 180 | 270): Promise<void> => {
-				if (!currentUuid) return;
+				// Snapshot uuid at click time. Now that update() keeps the
+				// NodeView alive, currentUuid can shift while transform is
+				// in flight (e.g. peer rotates the same image). Without the
+				// snapshot we'd swap based on the OLD-uuid's transform
+				// result while the live node already points at a different
+				// image.
+				const startUuid = currentUuid;
+				if (!startUuid) return;
 				try {
-					const result = await opts.transform(currentUuid, { operation: 'rotate', degrees });
+					const result = await opts.transform(startUuid, { operation: 'rotate', degrees });
+					// If currentUuid drifted while transform was awaiting,
+					// our result corresponds to a stale base — discard it.
+					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : 'Rotation failed';
@@ -354,17 +364,25 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const runCrop = async (): Promise<void> => {
-				if (!currentUuid) return;
+				// Snapshot uuid + alt at click time. The crop rect the user
+				// chooses is bound to the IMAGE-AT-OPEN-TIME, so any drift
+				// (peer rotated/cropped while the modal is open) must
+				// invalidate the result rather than apply it to a different
+				// image. Same hazard as runRotate but compounded by the
+				// modal's longer await window.
+				const startUuid = currentUuid;
+				const startAlt = currentAlt;
+				if (!startUuid) return;
 				// Open the crop modal pointing at the original-resolution
 				// variant — the user is composing pixel-precise rect
 				// coordinates, so we can't show the thumb-md downscale.
 				// The modal returns rect coordinates already translated
 				// to natural-image pixel space, ready to send to the
 				// server unchanged.
-				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
+				const fullUrl = opts.getDownloadUrl(startUuid, 'original');
 				let rect: CropResult | null = null;
 				try {
-					rect = await openCropModal({ imageUrl: fullUrl, alt: currentAlt });
+					rect = await openCropModal({ imageUrl: fullUrl, alt: startAlt });
 				} catch {
 					// openCropModal never rejects today, but defensive
 					// catch keeps the editor responsive if that contract
@@ -372,8 +390,13 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					rect = null;
 				}
 				if (rect == null) return;
+				// Live node moved to a different uuid while the modal was
+				// open — the rect doesn't apply. Drop silently rather than
+				// mis-cropping the new image.
+				if (currentUuid !== startUuid) return;
 				try {
-					const result = await opts.transform(currentUuid, { operation: 'crop', rect });
+					const result = await opts.transform(startUuid, { operation: 'crop', rect });
+					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : 'Crop failed';
