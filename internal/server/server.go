@@ -228,6 +228,12 @@ func (s *Server) Stop() {
 	// independent goroutines; we just need the close BEFORE Wait().
 	s.stopMCPSessionTracker()
 	s.bg.Wait()
+	// Close the collab room manager BEFORE the rateLimiter so any
+	// in-flight Join goroutines holding rate-limiter handles can wind
+	// down via their normal close path. nil-safe: collab is optional.
+	if s.collab != nil {
+		s.collab.Close()
+	}
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
 

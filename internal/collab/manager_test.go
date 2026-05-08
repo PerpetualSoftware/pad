@@ -288,6 +288,91 @@ func TestRoomManagerAwarenessNotPersisted(t *testing.T) {
 	}
 }
 
+// TestRoomManagerSerializesSyncAppends is a regression test for the
+// "concurrent peers race AppendYjsUpdate" bug. With the per-room
+// appendMu in place, N peers each writing M sync frames must produce
+// exactly N*M op-log rows AND each peer must see every other peer's
+// frames at least once. Without serialisation this could surface
+// missing rows / out-of-order ids on Postgres.
+func TestRoomManagerSerializesSyncAppends(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	const peers = 4
+	const writesEach = 10
+	wantRows := peers * writesEach
+
+	conns := make([]*websocket.Conn, peers)
+	for i := 0; i < peers; i++ {
+		conns[i] = dialWS(t, srv, "item-a")
+	}
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+
+	// Wait for all subscriptions to register.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bus.SubscriberCount("item-a") == peers {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := bus.SubscriberCount("item-a"); got != peers {
+		t.Fatalf("subscriber count: want %d, got %d", peers, got)
+	}
+
+	// Drain readers so the subscriber channels stay empty (otherwise
+	// the slow-consumer drop kicks in and the bus loses events).
+	for _, c := range conns {
+		go func(c *websocket.Conn) {
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}(c)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < peers; i++ {
+		wg.Add(1)
+		go func(c *websocket.Conn, base byte) {
+			defer wg.Done()
+			for j := 0; j < writesEach; j++ {
+				if err := c.WriteMessage(
+					websocket.BinaryMessage,
+					[]byte{yMessageSync, base, byte(j)},
+				); err != nil {
+					t.Errorf("peer %d write %d: %v", base, j, err)
+					return
+				}
+			}
+		}(conns[i], byte(i))
+	}
+	wg.Wait()
+
+	// Allow the read loops on each peer's roomConn to drain the in-flight
+	// frames into the op-log. Poll instead of fixed sleep so the test
+	// stays fast on a quiet machine and only waits as long as needed.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if store.rowCount() == wantRows {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := store.rowCount(); got != wantRows {
+		t.Fatalf("op-log rowCount: want %d, got %d", wantRows, got)
+	}
+}
+
 // TestRoomManagerCrossItemIsolation makes sure events for item-a do
 // not leak to peers connected to item-b. Without per-item bus
 // filtering this would silently scramble unrelated documents.

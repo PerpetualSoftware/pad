@@ -82,6 +82,15 @@ type Room struct {
 	conns      map[*websocket.Conn]*roomConn
 	graceTimer *time.Timer
 	closing    bool // set after the grace timer reclaims this Room
+
+	// appendMu serialises the persist+publish path for sync frames.
+	// Each peer's readLoop runs in its own goroutine — without this,
+	// concurrent AppendYjsUpdate calls would violate TASK-1252's
+	// "single writer per item" contract and risk a Postgres
+	// allocation-vs-commit-order cursor gap. Held only across the
+	// AppendYjsUpdate + bus.Publish sequence, so it does NOT
+	// serialise reads, awareness frames, or other rooms.
+	appendMu sync.Mutex
 }
 
 // opLogStore is the store surface a Room needs. Pulling it into a
@@ -189,9 +198,19 @@ func (r *Room) readLoop(rc *roomConn) error {
 
 		switch data[0] {
 		case yMessageSync:
-			// Persist before broadcast so a server crash between persist
-			// and broadcast loses at most a live keystroke that the
-			// originating peer will replay on reconnect anyway.
+			// Hold appendMu across the persist+publish sequence so we
+			// uphold TASK-1252's single-writer-per-item contract. The
+			// dumb-relay design intends one writer per Room, but each
+			// peer has its own readLoop — without serialisation here,
+			// two peers' sync frames would race AppendYjsUpdate and
+			// could surface a Postgres cursor gap (allocation order ≠
+			// commit order). awareness frames and OTHER rooms are
+			// unaffected by this lock.
+			r.appendMu.Lock()
+			// Persist before broadcast so a server crash between
+			// persist and broadcast loses at most a live keystroke
+			// that the originating peer will replay on reconnect
+			// anyway.
 			if _, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion); err != nil {
 				slog.Error("collab: append op-log",
 					"item_id", r.itemID,
@@ -207,6 +226,7 @@ func (r *Room) readLoop(rc *roomConn) error {
 				Type:     OpTypeSync,
 				Data:     data,
 			})
+			r.appendMu.Unlock()
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
