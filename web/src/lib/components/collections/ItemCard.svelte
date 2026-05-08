@@ -196,11 +196,18 @@
 		text-decoration: none;
 		color: inherit;
 		transition: background 0.1s;
+		/* When the card is a flex/grid item (board columns, list rows),
+		   allow it to shrink below its intrinsic content width so a long
+		   unbreakable title can wrap inside instead of pushing the card
+		   past its container. Pairs with overflow-wrap on .card-title.
+		   We deliberately do NOT set overflow: hidden here because the
+		   .pr-badge protrudes (right: -6px) and would get clipped. */
+		min-width: 0;
 	}
 
 	.pr-badge {
 		position: absolute;
-		top: -6px;
+		top: 8px;
 		right: -6px;
 		z-index: 1;
 		border: 1px solid var(--bg-primary);
@@ -269,6 +276,12 @@
 		color: var(--text-primary);
 		line-height: 1.45;
 		font-weight: 600;
+		/* Long titles without spaces (URLs, identifiers like
+		   `WorkspaceTemplateRegistryConfiguration`, code snippets pasted
+		   into a title) used to push the card past its container. Allow
+		   breaks at any character when there's no other option. */
+		overflow-wrap: anywhere;
+		min-width: 0;
 	}
 
 	.compact .card-title {
