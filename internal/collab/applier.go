@@ -197,9 +197,16 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 			return fmt.Errorf("marshal applier_request: %w", err)
 		}
 		if err := applier.writeMessage(websocket.TextMessage, payload); err != nil {
-			// Conn write failed (slow / dead). Drop the pending ack
-			// and try the next applier.
+			// Conn write failed (slow / dead). Drop the pending
+			// ack, evict the broken conn from the room (otherwise
+			// it would still count as a "live peer" against
+			// PruneAndApply's len(r.conns) > 0 check, blocking the
+			// safe op-log prune), force-close the underlying WS
+			// so the conn's readLoop wakes up cleanly, and try
+			// the next applier. Per Codex review round 6.
 			room.cancelPendingAck(requestID)
+			room.removeConn(applier)
+			_ = applier.conn.Close()
 			slog.Warn("collab: applier_request write failed; trying next",
 				"item_id", itemID,
 				"client_id", applier.id,

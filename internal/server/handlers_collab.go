@@ -314,10 +314,37 @@ func isAccessDenial(err error) bool {
 // can see when degraded paths fire. Returning the error rather than
 // silently swallowing lets callers add their own telemetry / metrics
 // later without re-deriving the categorisation.
+//
+// Retries internally when the no-room classification races a fresh
+// Join (PruneAndApply returns ErrRoomActiveDuringPrune): the room
+// is now active, so we re-call ApplyExternalContent against the
+// live peer. Capped at applyContentMaxRetries to prevent runaway
+// loops if joins keep landing during the prune attempts.
+const applyContentMaxRetries = 3
+
 func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string) error {
 	if s.collab == nil {
 		return errors.New("collab not configured")
 	}
+
+	for attempt := 0; attempt < applyContentMaxRetries; attempt++ {
+		err := s.applyContentViaCollabOnce(r, itemID, markdown)
+		if !errors.Is(err, collab.ErrRoomActiveDuringPrune) {
+			return err
+		}
+		// A fresh Join slipped in during PruneAndApply's check.
+		// Loop and re-try ApplyExternalContent against the now-
+		// active room rather than direct-writing past the live
+		// peer (whose Y.Doc would otherwise outvote the direct
+		// write on next flush). Per Codex review round 6.
+	}
+	slog.Warn("collab: exhausted prune retries; falling back to direct write",
+		"item_id", itemID,
+	)
+	return collab.ErrRoomActiveDuringPrune
+}
+
+func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown string) error {
 	err := s.collab.ApplyExternalContent(itemID, markdown)
 	switch {
 	case err == nil:
@@ -352,22 +379,25 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string)
 		})
 		switch {
 		case paErr == nil:
-			// Pruned cleanly.
+			// Pruned cleanly. Caller falls through to direct
+			// items.content write.
+			return err
 		case errors.Is(paErr, collab.ErrRoomActiveDuringPrune):
 			// A peer joined between ApplyExternalContent's check
-			// and PruneAndApply's re-check. Skip the prune; the
-			// caller's direct write to items.content still
-			// proceeds, peers will catch up on next flush.
-			slog.Info("collab: room became active during prune; skipping op-log prune",
-				"item_id", itemID,
-			)
+			// and PruneAndApply's re-check. Surface the error so
+			// the outer retry loop in applyContentViaCollab
+			// re-routes through the now-active applier — direct-
+			// writing past a live peer would let its Y.Doc
+			// outvote our update on the next flush. Per Codex
+			// review round 6.
+			return paErr
 		default:
 			slog.Warn("collab: failed to prune op-log on direct-write fallback",
 				"item_id", itemID,
 				"error", paErr,
 			)
+			return err
 		}
-		return err
 
 	case errors.Is(err, collab.ErrAllAppliersTimedOut):
 		slog.Warn("collab: all designated appliers timed out; falling back to direct items.content write",

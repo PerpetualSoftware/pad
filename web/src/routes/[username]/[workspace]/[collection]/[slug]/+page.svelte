@@ -672,23 +672,51 @@
 		}, 1200);
 	}
 
-	async function flushRawIfPending(): Promise<void> {
-		if (rawPendingMarkdown === null || !item) return;
+	// True while flushRawIfPending is awaiting a PATCH response.
+	// Used to make the Rich-mode toggle re-entrant-safe and to
+	// surface the in-flight state in the UI on rapid double-clicks.
+	let rawFlushInFlight = false;
+
+	// flushRawIfPending sends the latest unsaved raw markdown
+	// SYNCHRONOUSLY (one PATCH, awaited) and returns whether the
+	// flush succeeded. Callers are expected to gate state
+	// transitions (e.g. enabling collab) on a `true` return so a
+	// failed PATCH doesn't activate the provider with unsaved raw
+	// edits. Per Codex review round 6.
+	async function flushRawIfPending(): Promise<boolean> {
+		if (rawPendingMarkdown === null || !item) return true;
+		if (rawFlushInFlight) {
+			// Another flush is already in flight from a previous
+			// double-click. Wait for it to settle before reporting.
+			while (rawFlushInFlight) {
+				await new Promise((r) => setTimeout(r, 50));
+			}
+			return rawPendingMarkdown === null;
+		}
 		clearTimeout(contentDebounceTimer);
 		contentDebounceTimer = undefined;
 		const markdown = rawPendingMarkdown;
-		rawPendingMarkdown = null;
+		rawFlushInFlight = true;
 		try {
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
 			const updated = await api.items.update(wsSlug, item.id, { content: markdown });
 			item = updated;
+			// Only clear pending if this exact markdown landed —
+			// concurrent edits during the await may have queued a
+			// newer rawPendingMarkdown.
+			if (rawPendingMarkdown === markdown) rawPendingMarkdown = null;
 			editorStore.setLastSaveTime(Date.now());
 			editorStore.setDirty(false);
 			showSaved();
+			return true;
 		} catch {
 			saveStatus = 'idle';
 			toastStore.show('Failed to save content', 'error');
+			// Keep rawPendingMarkdown set; a future flush can retry.
+			return false;
+		} finally {
+			rawFlushInFlight = false;
 		}
 	}
 
@@ -1267,10 +1295,12 @@
 							// Flush any pending raw debounce SYNCHRONOUSLY
 							// before the collab provider mints; otherwise
 							// the deferred PATCH fires post-mint and gets
-							// routed through the applier path. Per Codex
-							// review round 5.
-							await flushRawIfPending();
-							rawMode = false;
+							// routed through the applier path.
+							// Stay in raw mode if the flush failed — the
+							// user retains their unsaved edits to retry
+							// or copy out. Per Codex review round 6.
+							const ok = await flushRawIfPending();
+							if (ok) rawMode = false;
 						}}
 						title="Rich text editor"
 					>Rich</button>
