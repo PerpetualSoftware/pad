@@ -120,14 +120,20 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 	}
 	report.Auth.CredentialsPath = credsPath
 
-	creds, err := cli.LoadCredentials()
+	// Per-server lookup (TASK-1228). credentials.json may contain entries
+	// for other servers; we only consider the one matching cfg.BaseURL().
+	// CredentialsMatchServer is structurally true-when-present here —
+	// kept in the report for backward compat with consumers/tests
+	// asserting on the field.
+	store, err := cli.LoadStore()
 	if err != nil {
 		return nil, fmt.Errorf("load credentials: %w", err)
 	}
+	creds := store.Get(cfg.BaseURL())
 	if creds != nil {
 		report.Auth.CredentialsPresent = true
 		report.Auth.CredentialsServerURL = creds.ServerURL
-		report.Auth.CredentialsMatchServer = normalizeURL(creds.ServerURL) == normalizeURL(cfg.BaseURL())
+		report.Auth.CredentialsMatchServer = true
 	}
 
 	client := cli.NewClientFromURL(cfg.BaseURL())
@@ -200,10 +206,6 @@ func readPID(path string) (int, bool) {
 		return 0, false
 	}
 	return pid, true
-}
-
-func normalizeURL(raw string) string {
-	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 func printServerInfo(report *serverInfoReport) {

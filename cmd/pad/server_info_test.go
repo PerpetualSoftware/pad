@@ -55,13 +55,14 @@ func TestCollectServerInfoRemoteAuthenticated(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := cli.SaveCredentials(&cli.Credentials{
-		ServerURL: server.URL,
-		Token:     "padsess_test",
-		UserID:    "user-1",
-		Email:     "dave@example.com",
-		Name:      "Dave",
-	}); err != nil {
+	store := &cli.CredentialStore{}
+	store.Set(server.URL, &cli.Credentials{
+		Token:  "padsess_test",
+		UserID: "user-1",
+		Email:  "dave@example.com",
+		Name:   "Dave",
+	})
+	if err := store.Save(); err != nil {
 		t.Fatalf("save credentials: %v", err)
 	}
 
