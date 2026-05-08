@@ -796,9 +796,26 @@
 		});
 	});
 
-	// Sync content when prop changes (e.g. doc switch, external update)
+	// Sync content when prop changes (e.g. doc switch, external update).
+	//
+	// CRITICAL: when ydoc is set, this path MUST NOT run. Y.Doc is the
+	// authoritative state under collab; calling editor.commands.setContent
+	// would route through the y-tiptap binding as a LOCAL ProseMirror
+	// change and overwrite peers' state with stale REST markdown on
+	// every prop refresh / item switch. Markdown→Y.Doc seeding for the
+	// first-edit-on-empty case is TASK-1262's concern; it goes through
+	// Y.Doc's own primitives, not setContent.
 	const tracker: { prev: string | undefined } = { prev: undefined };
 	$effect(() => {
+		if (ydoc) {
+			// Capture the initial value so a future ydoc=undefined render
+			// (host route swapping back to non-collab mode) doesn't see
+			// `prev === undefined` and skip the first sync. In practice
+			// the host route doesn't switch ydoc on/off mid-editor today,
+			// but the cheap update here keeps the contract honest.
+			tracker.prev = content;
+			return;
+		}
 		if (tracker.prev === undefined) {
 			// First run: capture initial value without syncing
 			tracker.prev = content;
