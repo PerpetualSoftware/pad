@@ -215,7 +215,34 @@ func (s *Server) collabRevalidationLoop(
 		case <-stop:
 			return
 		case <-timer.C:
-			err := s.authorizeCollabAccess(r, item)
+			// Re-fetch the item every tick so a mid-session move
+			// (item collection changed to one the user can't see)
+			// or hard-delete is honoured as an access change. The
+			// snapshot captured at upgrade time isn't enough.
+			fresh, ferr := s.store.GetItem(itemID)
+			if ferr != nil {
+				slog.Warn("collab: revalidation GetItem failed; keeping connection open",
+					"item_id", itemID,
+					"user_id", userID,
+					"error", ferr,
+				)
+				timer.Reset(interval)
+				continue
+			}
+			if fresh == nil {
+				slog.Info("collab: item disappeared mid-stream, closing connection",
+					"item_id", itemID,
+					"user_id", userID,
+				)
+				s.collab.CloseConn(
+					itemID, conn,
+					websocket.ClosePolicyViolation,
+					"This item is no longer available.",
+				)
+				return
+			}
+
+			err := s.authorizeCollabAccess(r, fresh)
 			switch {
 			case err == nil:
 				// Still authorised. Re-arm at the regular cadence;
