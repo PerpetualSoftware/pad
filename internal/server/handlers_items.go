@@ -470,6 +470,33 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Designated-applier routing (PLAN-1248 TASK-1257). When the
+	// PATCH body sets the content field AND an active collab room
+	// exists for this item, route the new markdown through a
+	// connected browser tab instead of writing items.content
+	// directly. The chosen tab does editor.commands.setContent,
+	// which the y-tiptap binding translates into Y.Doc updates that
+	// propagate via the regular sync path; items.content gets
+	// refreshed via the next 5s idle flush (TASK-1261).
+	//
+	// Without this hop, the connected browsers' Y.Doc state would
+	// silently overwrite items.content on the next flush and the
+	// CLI / API caller's update would be lost.
+	//
+	// Field-only PATCHes (input.Content == nil) skip this branch
+	// entirely; they continue straight to UpdateItem unchanged.
+	if input.Content != nil && s.collab != nil {
+		if err := s.applyContentViaCollab(r, item.ID, *input.Content); err == nil {
+			// Applier propagated the change; suppress the direct
+			// items.content write. Other input fields (title,
+			// fields, status) still flow through UpdateItem below.
+			input.Content = nil
+		}
+		// Any error path (no room, no applier, all timed out, etc.)
+		// falls through to direct write — graceful degradation. The
+		// helper logs the specifics so operators see degraded paths.
+	}
+
 	updated, err := s.store.UpdateItem(item.ID, input)
 	if err != nil {
 		writeInternalError(w, err)

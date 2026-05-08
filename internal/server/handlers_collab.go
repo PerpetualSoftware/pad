@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -296,6 +297,67 @@ func (s *Server) collabRevalidationLoop(
 func isAccessDenial(err error) bool {
 	var sErr *statusError
 	return errors.As(err, &sErr)
+}
+
+// applyContentViaCollab routes an external content update through a
+// connected browser tab via the collab room manager's
+// designated-applier protocol. Returns nil when an applier acked
+// successfully (caller should suppress the direct items.content
+// write); any error means "fall back to direct write".
+//
+// Errors are categorised + logged at the right level so operators
+// can see when degraded paths fire. Returning the error rather than
+// silently swallowing lets callers add their own telemetry / metrics
+// later without re-deriving the categorisation.
+func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string) error {
+	if s.collab == nil {
+		return errors.New("collab not configured")
+	}
+	err := s.collab.ApplyExternalContent(itemID, markdown)
+	switch {
+	case err == nil:
+		// Caller suppresses the direct write.
+		return nil
+
+	case errors.Is(err, collab.ErrNoActiveRoom):
+		// No live editors — direct write is the right thing.
+		// Common case for CLI updates outside a co-edit session;
+		// no log to keep noise down.
+		return err
+
+	case errors.Is(err, collab.ErrNoApplierAvailable):
+		// Room exists (mid-grace-TTL) but has no live conn to
+		// apply through. Direct write is correct.
+		return err
+
+	case errors.Is(err, collab.ErrAllAppliersTimedOut):
+		slog.Warn("collab: all designated appliers timed out; falling back to direct items.content write",
+			"item_id", itemID,
+			"actor", actorIDFromRequest(r),
+		)
+		return err
+
+	default:
+		slog.Warn("collab: applier path failed; falling back to direct items.content write",
+			"item_id", itemID,
+			"error", err,
+		)
+		return err
+	}
+}
+
+// actorIDFromRequest returns a non-empty identity string for the
+// caller when one is available — user id, token id, or empty. Used
+// in slog calls where we want SOMETHING actor-shaped without
+// caring about the precise auth path.
+func actorIDFromRequest(r *http.Request) string {
+	if u := currentUser(r); u != nil {
+		return u.ID
+	}
+	if tw := tokenWorkspaceID(r); tw != "" {
+		return "token-ws:" + tw
+	}
+	return ""
 }
 
 // statusError lets authorizeCollabAccess return a typed error that
