@@ -62,7 +62,14 @@ const (
 // If a valid token is found, the associated workspace ID is stored in the
 // request context. If no token header is present the request passes through
 // unchanged (existing localhost behaviour). Invalid or expired tokens
-// receive a 401 response.
+// receive a 401 response — UNLESS the request targets a path in
+// isPublicAPIPath (login, /auth/session, password reset, share links,
+// health), in which case the request falls through unauthenticated so
+// the caller can recover from a stale token. Without that fallthrough a
+// developer with a stale `~/.pad/credentials.json` (e.g. after wiping a
+// test DB) would see "Invalid or expired session" on every CLI command,
+// including the very endpoints needed to log in again. See BUG-1227 and
+// the matching IP-change-revoked branch below for the same pattern.
 func (s *Server) TokenAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
@@ -74,7 +81,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		// Expect "Bearer pad_<64 hex chars>" or "Bearer padsess_<64 hex chars>"
 		if !strings.HasPrefix(auth, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid authorization header format")
+			rejectInvalidBearer(w, r, next, "unauthorized", "Invalid authorization header format")
 			return
 		}
 
@@ -89,7 +96,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				return
 			}
 			if session == nil {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired session")
+				rejectInvalidBearer(w, r, next, "unauthorized", "Invalid or expired session")
 				return
 			}
 			// Session binding: validate User-Agent hasn't changed
@@ -126,7 +133,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		// API token
 		if !strings.HasPrefix(token, "pad_") || len(token) != 68 {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid token format")
+			rejectInvalidBearer(w, r, next, "unauthorized", "Invalid token format")
 			return
 		}
 
@@ -136,7 +143,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			return
 		}
 		if apiToken == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired token")
+			rejectInvalidBearer(w, r, next, "unauthorized", "Invalid or expired token")
 			return
 		}
 
@@ -232,6 +239,23 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// rejectInvalidBearer writes a 401 with the given code/message UNLESS
+// the request targets a path in isPublicAPIPath, in which case it falls
+// through to the next handler unauthenticated. The fallthrough is the
+// recovery hatch that lets a stale Bearer token still reach
+// /api/v1/auth/session, /login, /forgot-password, etc. — without it a
+// stale `~/.pad/credentials.json` (e.g. after wiping a test DB) would
+// 401 every CLI command, including the ones needed to recover. Mirrors
+// the existing isPublicAPIPath fallthrough in the IP-change-revoked
+// branch (BUG-1227).
+func rejectInvalidBearer(w http.ResponseWriter, r *http.Request, next http.Handler, code, message string) {
+	if isPublicAPIPath(r.URL.Path) {
+		next.ServeHTTP(w, r)
+		return
+	}
+	writeError(w, http.StatusUnauthorized, code, message)
 }
 
 // isPublicAPIPath reports whether the given request path is an API
