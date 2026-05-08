@@ -315,15 +315,6 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 	}
 }
 
-// peerCount is a test hook — production callers go through the bus's
-// SubscriberCount. Holds r.mu so a concurrent removeConn doesn't
-// produce a torn read.
-func (r *Room) peerCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.conns)
-}
-
 // closeAll closes every active connection on this room and waits for
 // the readers to drain. Used by RoomManager.Close on server shutdown.
 // Holds r.mu only while collecting the conn set; the actual Close

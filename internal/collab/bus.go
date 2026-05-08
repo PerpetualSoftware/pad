@@ -31,15 +31,15 @@ package collab
 // Fields:
 //   - ItemID    target item; the bus filters subscribers by this.
 //   - ClientID  Yjs client id of the originating peer. The dumb relay
-//               does not interpret it, but the designated-applier
-//               election (TASK-1257) uses it to break ties when
-//               multiple peers could supply a markdown snapshot.
+//     does not interpret it, but the designated-applier
+//     election (TASK-1257) uses it to break ties when
+//     multiple peers could supply a markdown snapshot.
 //   - Type      coarse classifier — "sync" carries Y.Doc updates that
-//               must be persisted to the op-log; "awareness" carries
-//               cursor/presence ephemera that must NOT be persisted.
+//     must be persisted to the op-log; "awareness" carries
+//     cursor/presence ephemera that must NOT be persisted.
 //   - Data      raw y-protocol message; opaque to the server.
 //   - Timestamp UnixMilli when the message entered the bus. Set
-//               automatically on Publish if zero.
+//     automatically on Publish if zero.
 type OpEvent struct {
 	ItemID    string
 	ClientID  uint64

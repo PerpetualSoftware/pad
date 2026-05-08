@@ -320,19 +320,10 @@ func (r *Room) routeApplierAck(requestID string, fromConn *websocket.Conn) {
 	}
 }
 
-// applierConnCount is a test/debug accessor — number of conns in
-// the room that could be picked as appliers. Holds r.mu so a
-// concurrent removeConn doesn't produce a torn read.
-func (r *Room) applierConnCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.conns)
-}
-
 // applierMutexLockOrder is a documentation marker — the mutex order
 // for the designated-applier paths is:
 //
-//   r.mu (room state) > r.pendingMu (ack tracking)
+//	r.mu (room state) > r.pendingMu (ack tracking)
 //
 // Acquire in that order; release in reverse. registerPendingAck and
 // routeApplierAck hold ONLY pendingMu (no r.mu reentry), so no

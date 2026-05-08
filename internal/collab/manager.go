@@ -267,16 +267,16 @@ const closeFrameDeadline = 1 * time.Second
 // was revoked mid-stream.
 //
 //   - itemID  scopes the lookup; (purely informational here, the
-//             close-frame call doesn't actually need it but the
-//             param keeps the API symmetric for a future
-//             find-by-room metric).
+//     close-frame call doesn't actually need it but the
+//     param keeps the API symmetric for a future
+//     find-by-room metric).
 //   - conn    the *exact* websocket.Conn the manager is tracking;
-//             not a tab/session id.
+//     not a tab/session id.
 //   - code    a websocket.Close* code (e.g. ClosePolicyViolation
-//             for "you are no longer authorized").
+//     for "you are no longer authorized").
 //   - reason  human-readable string the close frame carries to the
-//             client. Kept short — the WS spec caps the close
-//             frame's reason at ~123 bytes.
+//     client. Kept short — the WS spec caps the close
+//     frame's reason at ~123 bytes.
 //
 // CRITICAL: the close frame is sent via conn.WriteControl which
 // is concurrency-safe with the room's writeLoop / replay (per
@@ -310,14 +310,14 @@ func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, r
 //
 // Two phases:
 //
-//   1. closeAll on every room — closes each WebSocket from the
-//      server side, which causes the corresponding readLoop to
-//      return, removeConn to fire, the bus subscription to close,
-//      and writeLoop to exit. The Join goroutine that was running
-//      runConn then returns naturally.
-//   2. activeJoins.Wait — blocks until step 1's effects propagate
-//      through every still-running Join. Without this Wait, Close
-//      returns before the goroutines actually exit.
+//  1. closeAll on every room — closes each WebSocket from the
+//     server side, which causes the corresponding readLoop to
+//     return, removeConn to fire, the bus subscription to close,
+//     and writeLoop to exit. The Join goroutine that was running
+//     runConn then returns naturally.
+//  2. activeJoins.Wait — blocks until step 1's effects propagate
+//     through every still-running Join. Without this Wait, Close
+//     returns before the goroutines actually exit.
 func (m *RoomManager) Close() {
 	m.mu.Lock()
 	if m.closed {

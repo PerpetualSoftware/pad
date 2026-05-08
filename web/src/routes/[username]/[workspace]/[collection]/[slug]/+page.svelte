@@ -10,6 +10,8 @@
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
 	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
 	import type { Editor as EditorType } from '@tiptap/core';
+	import * as Y from 'yjs';
+	import { CollabProvider } from '$lib/collab/wsProvider.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
@@ -398,6 +400,48 @@
 			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
 		}
 	}
+
+	// ── Yjs / collab provider lifecycle (PLAN-1248 / TASK-1259) ────────
+	// Per loaded item with edit access, mint a fresh Y.Doc and attach a
+	// CollabProvider that opens a WebSocket to /api/v1/collab/{itemID}.
+	// The Y.Doc is passed down to <Editor /> via the `ydoc` prop, which
+	// disables StarterKit history and registers the Collaboration
+	// extension instead (TASK-1258 wiring).
+	//
+	// The lifecycle is keyed on `${item.id}:${canEdit}` — the same key
+	// used to re-mount <Editor /> below. When either changes (item swap
+	// or permission flip) the previous Y.Doc + provider tear down
+	// cleanly and a new pair is constructed. The cleanup function on
+	// $effect runs both on key change and on page unmount.
+	//
+	// View-only viewers (canEdit === false) get the legacy non-collab
+	// editor; they can still observe the markdown snapshot persisted
+	// by the canonical 5s flush (TASK-1260). Wiring a read-only
+	// y-binding for them is a polish step deferred to TASK-1266.
+	let ydoc = $state<Y.Doc | null>(null);
+	let collabProvider = $state<CollabProvider | null>(null);
+	const collabKey = $derived(item && canEdit ? item.id : null);
+
+	$effect(() => {
+		if (!collabKey) return;
+		const itemId = collabKey;
+
+		const doc = new Y.Doc();
+		const provider = new CollabProvider(itemId, doc);
+
+		ydoc = doc;
+		collabProvider = provider;
+
+		return () => {
+			provider.destroy();
+			doc.destroy();
+			// Defensive — only clear the slot if it still holds the
+			// pair we created. A reactive churn that swapped a new
+			// pair in before this cleanup ran shouldn't get clobbered.
+			if (ydoc === doc) ydoc = null;
+			if (collabProvider === provider) collabProvider = null;
+		};
+	});
 
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
 	// from false → true after loadData() resolves (workspace layout fires
@@ -1152,7 +1196,13 @@
 						even after canEdit flips true. Per Codex review round 4.
 					-->
 					{#key `${item.id}:${canEdit}`}
-						<Editor content={editorContent} onUpdate={handleContentUpdate} editable={canEdit} onEditor={(e) => editorInstance = e} />
+						<Editor
+							content={editorContent}
+							onUpdate={handleContentUpdate}
+							editable={canEdit}
+							ydoc={ydoc ?? undefined}
+							onEditor={(e) => editorInstance = e}
+						/>
 					{/key}
 					{#if canEdit}
 						<EditorBubbleMenu
