@@ -332,25 +332,46 @@ export class CollabProvider {
 					// No handler installed — server falls back after timeout.
 					return;
 				}
+
+				// Late-apply guard. The server stamps each applier_request
+				// with an expires_at_millis specifically so backgrounded
+				// tabs that wake up after the timeout don't overwrite
+				// peers' newer edits with stale markdown. Check before
+				// invoking the handler AND again before acking — the
+				// handler is awaited and could span the deadline.
+				const expiresAt = msg.expires_at_millis ?? 0;
+				if (expiresAt > 0 && Date.now() > expiresAt) {
+					console.warn('collab: dropping expired applier_request', msg.request_id);
+					return;
+				}
+
 				let applied = false;
 				try {
 					applied = await this.onApplierRequest(
 						msg.markdown,
 						msg.request_id,
-						msg.expires_at_millis ?? 0,
+						expiresAt,
 					);
 				} catch (err) {
 					console.warn('collab: applier handler threw, treating as not-applied', err);
 					applied = false;
 				}
-				if (applied) {
-					const ack = JSON.stringify({
-						type: 'applier_ack',
-						request_id: msg.request_id,
-					});
-					if (this.ws && this.ws.readyState === this.WebSocketImpl.OPEN) {
-						this.ws.send(ack);
-					}
+
+				if (!applied) return;
+				if (expiresAt > 0 && Date.now() > expiresAt) {
+					// Awaited handler crossed the deadline. The server
+					// has likely retried or fallen back; don't ack a
+					// late apply.
+					console.warn('collab: applier_request acked too late, suppressing', msg.request_id);
+					return;
+				}
+
+				const ack = JSON.stringify({
+					type: 'applier_ack',
+					request_id: msg.request_id,
+				});
+				if (this.ws && this.ws.readyState === this.WebSocketImpl.OPEN) {
+					this.ws.send(ack);
 				}
 				return;
 			}

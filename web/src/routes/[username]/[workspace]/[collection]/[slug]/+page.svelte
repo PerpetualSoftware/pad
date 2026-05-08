@@ -418,9 +418,21 @@
 	// editor; they can still observe the markdown snapshot persisted
 	// by the canonical 5s flush (TASK-1260). Wiring a read-only
 	// y-binding for them is a polish step deferred to TASK-1266.
+	// rawMode is included in the collab key because raw-markdown saves
+	// bypass the y-binding entirely (PATCH writes to items.content
+	// directly). Leaving the provider connected during raw mode would
+	// (a) tell the server an applier exists for the item, (b) leave
+	// the in-memory Y.Doc holding pre-raw-save state, and (c) on the
+	// next 5s flush after toggling back, push that stale Y.Doc state
+	// over the user's fresh raw save. Destroying the provider while
+	// rawMode is active gives the CLI/MCP applier path the right
+	// "no active room" answer and lets the regular direct-write path
+	// take care of items.content. Switching back mints a fresh Y.Doc
+	// + reseeds via op-log replay (and TASK-1261's lazy seed for the
+	// post-raw-save markdown). Per Codex review round 2.
 	let ydoc = $state<Y.Doc | null>(null);
 	let collabProvider = $state<CollabProvider | null>(null);
-	const collabKey = $derived(item && canEdit ? item.id : null);
+	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
 
 	$effect(() => {
 		if (!collabKey) return;
