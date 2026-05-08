@@ -27,6 +27,7 @@
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
 	type AttachmentUrlBuilder,
 	type AttachmentVariant,
@@ -231,20 +232,74 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 	addNodeView() {
 		return ({ node }) => {
-			const uuid = (node.attrs.uuid as string | null) ?? '';
-			const filename = (node.attrs.filename as string | null) ?? '';
+			// Mutable closure state — kept in sync via update() so attr
+			// changes (peer Yjs ops once collab lands, future programmatic
+			// rename/swap commands, etc.) refresh the live chip in place
+			// instead of forcing ProseMirror to destroy and recreate the
+			// NodeView. Same hazard pattern as BUG-1246 / TASK-1250.
+			let currentUuid = (node.attrs.uuid as string | null) ?? '';
+			let currentFilename = (node.attrs.filename as string | null) ?? '';
+			let currentMime: string | null = null;
 
 			const wrapper = document.createElement('a');
 			wrapper.className = 'file-chip';
 			wrapper.target = '_blank';
 			wrapper.rel = 'noopener noreferrer';
 			wrapper.contentEditable = 'false';
-			if (uuid) {
-				wrapper.href = this.options.getDownloadUrl(uuid);
-				wrapper.setAttribute('data-attachment-id', uuid);
-			}
-			if (filename) wrapper.setAttribute('data-filename', filename);
-			if (filename) wrapper.download = filename;
+
+			const iconEl = document.createElement('span');
+			iconEl.className = 'file-chip-icon';
+			iconEl.setAttribute('aria-hidden', 'true');
+
+			const nameEl = document.createElement('span');
+			nameEl.className = 'file-chip-name';
+
+			const sizeEl = document.createElement('span');
+			sizeEl.className = 'file-chip-size';
+			// Empty until metadata resolves; CSS hides empty separator span.
+
+			wrapper.append(iconEl, nameEl, sizeEl);
+
+			const refreshHref = (): void => {
+				if (currentUuid) {
+					wrapper.href = this.options.getDownloadUrl(currentUuid);
+					wrapper.setAttribute('data-attachment-id', currentUuid);
+				} else {
+					wrapper.removeAttribute('href');
+					wrapper.removeAttribute('data-attachment-id');
+				}
+			};
+
+			const refreshFilenameDom = (): void => {
+				if (currentFilename) {
+					wrapper.setAttribute('data-filename', currentFilename);
+					wrapper.download = currentFilename;
+				} else {
+					wrapper.removeAttribute('data-filename');
+					wrapper.removeAttribute('download');
+				}
+				nameEl.textContent = currentFilename || 'attachment';
+			};
+
+			// Icon resolution mirrors the original logic: prefer the MIME
+			// category icon when HEAD has resolved AND it produced a
+			// non-empty result (iconForMime returns '' for unknown MIME).
+			// Otherwise fall back to the filename-extension heuristic so
+			// the chip is never left iconless.
+			const refreshIcon = (): void => {
+				if (currentMime) {
+					const refined = iconForMime(currentMime);
+					if (refined) {
+						iconEl.textContent = refined;
+						return;
+					}
+				}
+				iconEl.textContent = iconForFilename(currentFilename);
+			};
+
+			refreshHref();
+			refreshFilenameDom();
+			refreshIcon();
 
 			// Explicit click handler → window.open. Editor.svelte installs a
 			// global anchor-click suppressor that calls preventDefault on
@@ -252,36 +307,21 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// in edit mode); without this handler the chip's anchor
 			// navigation would also be eaten and clicking the chip would
 			// silently do nothing. Mirrors the pattern AttachmentImage uses
-			// for its lightbox click. stopImmediatePropagation prevents the
-			// global suppressor from running afterwards.
+			// for its lightbox click. Reads currentUuid (mutable) so a peer
+			// Yjs op swapping the chip's target is honoured at click time.
 			wrapper.addEventListener('click', (event) => {
 				if (event.detail > 1) return; // double-click → fall through
-				if (!uuid) return;
+				if (!currentUuid) return;
 				event.preventDefault();
 				event.stopPropagation();
 				if (typeof window !== 'undefined') {
 					window.open(
-						this.options.getDownloadUrl(uuid),
+						this.options.getDownloadUrl(currentUuid),
 						'_blank',
 						'noopener,noreferrer',
 					);
 				}
 			});
-
-			const iconEl = document.createElement('span');
-			iconEl.className = 'file-chip-icon';
-			iconEl.setAttribute('aria-hidden', 'true');
-			iconEl.textContent = iconForFilename(filename);
-
-			const nameEl = document.createElement('span');
-			nameEl.className = 'file-chip-name';
-			nameEl.textContent = filename || 'attachment';
-
-			const sizeEl = document.createElement('span');
-			sizeEl.className = 'file-chip-size';
-			// Empty until metadata resolves; CSS hides empty separator span.
-
-			wrapper.append(iconEl, nameEl, sizeEl);
 
 			// Async metadata enrichment via HEAD. Server registers HEAD
 			// alongside GET (chi doesn't auto-route HEAD to GET handlers),
@@ -291,21 +331,66 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// survives undo/redo. Skip the fetch when no workspace context
 			// is available (e.g. headless rendering) — the chip still works,
 			// just without size/icon refinement.
-			if (uuid && this.options.workspaceSlug) {
+			//
+			// `forUuid` is captured at call time so a probe in flight does
+			// not trample state for a NEW uuid that landed via update()
+			// while we were awaiting HEAD.
+			const probeMetadata = (forUuid: string): void => {
+				if (!forUuid || !this.options.workspaceSlug) return;
 				fetchAttachmentMetadata(
 					this.options.workspaceSlug,
-					uuid,
+					forUuid,
 					this.options.getDownloadUrl,
 				).then((meta) => {
 					if (!meta) return;
-					const refined = iconForMime(meta.mime);
-					if (refined) iconEl.textContent = refined;
+					if (currentUuid !== forUuid) return; // superseded
+					currentMime = meta.mime;
+					refreshIcon();
 					const size = formatBytes(meta.size);
-					if (size) sizeEl.textContent = `· ${size}`;
+					sizeEl.textContent = size ? `· ${size}` : '';
 				});
-			}
+			};
 
-			return { dom: wrapper };
+			probeMetadata(currentUuid);
+
+			return {
+				dom: wrapper,
+				// Refresh the live chip in place when attrs change. Without
+				// this, ProseMirror destroys + recreates the NodeView on any
+				// attr update — fine today (no in-tab attr-change source for
+				// chips), but the upcoming Yjs collab work makes peer-driven
+				// uuid/filename changes the common case. Same shape as
+				// AttachmentImage's update() hook (TASK-1250).
+				update(updatedNode: ProseMirrorNode) {
+					if (updatedNode.type.name !== node.type.name) return false;
+
+					const newUuid = (updatedNode.attrs.uuid as string | null) ?? '';
+					const newFilename = (updatedNode.attrs.filename as string | null) ?? '';
+
+					if (newUuid !== currentUuid) {
+						currentUuid = newUuid;
+						// New uuid ⇒ stale MIME / size; reset until HEAD probe
+						// returns for the new identifier.
+						currentMime = null;
+						sizeEl.textContent = '';
+						refreshHref();
+						refreshIcon();
+						probeMetadata(newUuid);
+					}
+					if (newFilename !== currentFilename) {
+						currentFilename = newFilename;
+						refreshFilenameDom();
+						// Filename feeds the fallback icon whenever the MIME
+						// path doesn't produce a specific icon — both MIME
+						// unknown AND MIME known-but-unmapped (e.g. generic
+						// application/octet-stream). Always recomputing is
+						// idempotent for MIMEs with a definitive icon.
+						refreshIcon();
+					}
+
+					return true;
+				},
+			};
 		};
 	},
 
