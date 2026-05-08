@@ -64,15 +64,58 @@ func (b *MemoryOpBus) Unsubscribe(ch chan OpEvent) {
 }
 
 // Publish fans an event out to every subscriber whose itemID matches.
+//
 // Non-blocking: a slow subscriber whose buffer is full has new events
 // dropped (logged at warn level so operators can spot a stuck client)
-// rather than back-pressuring the broadcast loop. The room manager
-// (TASK-1255) is responsible for closing genuinely unhealthy peers;
-// the bus only protects itself from one bad consumer poisoning every
-// other.
+// rather than back-pressuring the broadcast loop. One stuck consumer
+// must NEVER poison every other peer in the same room.
+//
+// Recovery contract for dropped sync events:
+//
+// The room manager (TASK-1255) is the bus's only consumer in
+// production. It reads from each subscriber channel and writes to the
+// owning peer's WebSocket. A full channel means that peer's
+// WebSocket write is backed up — slow network, blocked client,
+// half-broken socket, etc. The room manager is responsible for
+// detecting that condition (e.g. via the channel-len threshold
+// exposed by the room health check, TASK-1255 + TASK-1256) and
+// force-closing the slow peer's WebSocket. A fresh reconnect then
+// replays everything the peer missed by loading op-log rows since
+// the peer's last known id (TASK-1252 + Yjs state-vector
+// negotiation). Awareness drops are unrecoverable, but presence is
+// ephemeral so that's fine — sync drops are the only case that
+// matters for correctness, and they're recoverable via the
+// op-log + reconnect path.
+//
+// The bus deliberately does NOT take corrective action itself: it
+// has no concept of WHICH peer owns which channel and no way to
+// signal a force-close. That's the room manager's domain.
+//
+// Mutation contract for OpEvent.Data:
+//
+// Data is cloned at the publish boundary so subscribers (and any
+// other publisher) cannot affect each other through a shared backing
+// array. Subscribers MUST treat their received Data as read-only —
+// mutating one subscriber's view would still mutate every other
+// subscriber's, since they share the same clone. Cloning per
+// subscriber would push that cost onto every fan-out; the chosen
+// trade-off is "one allocation per Publish, immutability by
+// convention on the read side".
 func (b *MemoryOpBus) Publish(event OpEvent) {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
+	}
+
+	// Clone Data so a publisher's later buffer reuse cannot mutate
+	// what subscribers observe. One allocation per Publish is cheaper
+	// than a corrupted Yjs decode somewhere downstream — and the
+	// gorilla/websocket ReadMessage caller IS allowed to reuse its
+	// read buffer between messages, so we must not assume the input
+	// slice is owned by us.
+	if event.Data != nil {
+		cloned := make([]byte, len(event.Data))
+		copy(cloned, event.Data)
+		event.Data = cloned
 	}
 
 	b.mu.RLock()
