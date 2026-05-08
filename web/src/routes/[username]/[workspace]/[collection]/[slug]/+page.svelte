@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
+	import { sseService } from '$lib/services/sse.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -146,6 +147,7 @@
 
 	// Sync coordinator — refresh item data on tab resume
 	let unsubscribeSync: (() => void) | null = null;
+	let unsubscribeSSE: (() => void) | null = null;
 	let unsubscribeBeforePrint: (() => void) | null = null;
 
 	// Print header/footer state (PLAN-620 / TASK-623). Initialized on mount
@@ -169,6 +171,64 @@
 		const handler = () => refreshPrintMeta();
 		window.addEventListener('beforeprint', handler);
 		unsubscribeBeforePrint = () => window.removeEventListener('beforeprint', handler);
+
+		// Live SSE updates for THIS item's title / fields / archive state.
+		// Mirrors the onSync handler below — same edit-conflict guards
+		// (saveStatus / editingTitle) and same content-preservation
+		// pattern (the editor owns content; replacing it would clobber
+		// in-flight edits). The detail page previously had no live
+		// subscription, so title/field changes from another client (or
+		// session) didn't propagate until a manual refresh — TASK-1243.
+		//
+		// Comments, reactions, timeline events, and child-item updates
+		// already have their own subscriptions inside CommentThread.svelte,
+		// ItemTimeline.svelte, and ChildItems.svelte respectively — we
+		// only handle item_updated / item_archived / item_restored for
+		// the parent item itself here.
+		//
+		// KNOWN LIMITATION: live content-sync is intentionally NOT handled.
+		// Replacing item.content while the editor is mounted would clobber
+		// the user's in-flight document. A proper fix needs editor-dirty-
+		// state integration; tracked separately.
+		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			if (!item || event.item_id !== item.id) return;
+
+			// Same edit-conflict guards as the onSync handler below. While
+			// the user is actively editing the title or has a pending
+			// content save in flight, skip the update — they'll catch up
+			// on the next idle event (and the syncService onTabResume
+			// path also covers anything they miss).
+			if (saveStatus === 'saving' || editingTitle) return;
+
+			switch (event.type) {
+				case 'item_updated': {
+					try {
+						const updated = await api.items.get(wsSlug, itemSlug);
+						item = { ...updated, content: item.content };
+						itemLinks = await api.links.list(wsSlug, updated.slug).catch(() => []);
+					} catch {
+						// Ignore — will catch up on next event
+					}
+					break;
+				}
+				case 'item_archived': {
+					// Match onSync's deletion behavior — the item is no
+					// longer addressable here; bounce back to the
+					// collection list.
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+					break;
+				}
+				case 'item_restored': {
+					try {
+						const updated = await api.items.get(wsSlug, itemSlug);
+						item = { ...updated, content: item.content };
+					} catch {
+						// Ignore — will catch up on next event
+					}
+					break;
+				}
+			}
+		});
 
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !itemSlug || !item) return;
@@ -213,6 +273,7 @@
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
