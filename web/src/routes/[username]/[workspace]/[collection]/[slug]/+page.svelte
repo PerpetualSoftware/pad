@@ -193,11 +193,21 @@
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
 			if (!item || event.item_id !== item.id) return;
 
-			// Same edit-conflict guards as the onSync handler below. While
-			// the user is actively editing the title or has a pending
-			// content save in flight, skip the update — they'll catch up
-			// on the next idle event (and the syncService onTabResume
-			// path also covers anything they miss).
+			// Archive is destructive and must NOT be gated by the
+			// edit-conflict guard below — a user editing a since-archived
+			// item should be redirected immediately. Their in-flight save
+			// will fail against the archived row, and silently keeping
+			// them on a non-existent item is worse than discarding the
+			// edit. Per Codex review round 2.
+			if (event.type === 'item_archived') {
+				goto(`/${username}/${wsSlug}/${collSlug}`);
+				return;
+			}
+
+			// Non-destructive updates: skip if the user is actively
+			// editing the title or has a pending content save in flight.
+			// They'll catch up on the next idle event (and the
+			// syncService onTabResume path also covers anything missed).
 			if (saveStatus === 'saving' || editingTitle) return;
 
 			// Capture the item this event was scoped to *before* awaiting.
@@ -223,13 +233,6 @@
 					}
 					break;
 				}
-				case 'item_archived': {
-					// Match onSync's deletion behavior — the item is no
-					// longer addressable here; bounce back to the
-					// collection list.
-					goto(`/${username}/${wsSlug}/${collSlug}`);
-					break;
-				}
 				case 'item_restored': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
@@ -245,10 +248,20 @@
 
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !itemSlug || !item) return;
-			// Don't refresh if the user is actively editing
-			if (saveStatus === 'saving' || editingTitle) return;
 
 			if (result.type === 'caught_up') return;
+
+			// Deletion is destructive and must run even if the user is
+			// editing — same reasoning as the SSE handler's archive case.
+			// Check this BEFORE the edit-conflict guard so a deleted item
+			// doesn't sit there gated by an in-flight save.
+			if (result.type === 'incremental' && result.changes.deleted.includes(item.id)) {
+				goto(`/${username}/${wsSlug}/${collSlug}`);
+				return;
+			}
+
+			// Don't refresh non-destructive updates if the user is actively editing
+			if (saveStatus === 'saving' || editingTitle) return;
 
 			// Capture the item this sync was scoped to *before* awaiting.
 			// Same race guard as the SSE handler above and loadData() —
@@ -271,11 +284,6 @@
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 					if (!item || item.id !== reqItemId) return;
 					itemLinks = links;
-				}
-				// Check if our item was deleted
-				if (result.changes.deleted.includes(reqItemId)) {
-					// Item was deleted — navigate back to collection
-					goto(`/${username}/${wsSlug}/${collSlug}`);
 				}
 				return;
 			}
