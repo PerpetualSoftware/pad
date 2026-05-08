@@ -5,6 +5,8 @@
 	import { Plugin } from '@tiptap/pm/state';
 	import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 	import StarterKit from '@tiptap/starter-kit';
+	import { Collaboration } from '@tiptap/extension-collaboration';
+	import type * as Y from 'yjs';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
 	import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -342,11 +344,29 @@
 	let {
 		content = '',
 		editable = true,
+		ydoc,
 		onUpdate,
 		onEditor,
 	}: {
 		content?: string;
 		editable?: boolean;
+		/**
+		 * Optional Yjs document to bind this editor to via the Tiptap
+		 * Collaboration extension (PLAN-1248). When set, the y-tiptap
+		 * binding takes ownership of document state and undo/redo —
+		 * StarterKit's history is disabled below so the two systems
+		 * don't fight over keystrokes.
+		 *
+		 * When undefined (the default), the editor behaves exactly as
+		 * it did pre-collab: a single ProseMirror Y-Doc-less Doc with
+		 * StarterKit's built-in undoRedo. This keeps every existing
+		 * call site backward-compatible.
+		 *
+		 * The WebSocket provider that syncs ydoc with the server is
+		 * wired by the editor's host route (TASK-1260); this prop just
+		 * accepts the constructed Y.Doc from there.
+		 */
+		ydoc?: Y.Doc;
 		onUpdate?: (markdown: string) => void;
 		onEditor?: (editor: Editor) => void;
 	} = $props();
@@ -488,10 +508,16 @@
 		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
 			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
+		// When a Y.Doc is supplied, the Collaboration extension owns
+		// undo/redo (Yjs maintains its own history that survives peer
+		// edits correctly) and StarterKit's undoRedo would fight it.
+		// In Tiptap v3 the option is `undoRedo: false`; v2's `history`
+		// key was renamed during the v3 migration.
 		const extensions = [
 			StarterKit.configure({
 				codeBlock: false,
 				link: false, // We use our own SafeLink extension below
+				...(ydoc ? { undoRedo: false } : {}),
 			}),
 			MermaidCodeBlock.configure({
 				HTMLAttributes: { class: 'code-block' },
@@ -550,6 +576,15 @@
 				},
 			}),
 			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
+			// When a Y.Doc is provided, register the Collaboration
+			// extension so the y-tiptap binding takes over document
+			// state. Without ydoc this slot is empty and the editor
+			// behaves exactly as it did pre-collab. The `field` option
+			// defaults to "default" which matches what the WS provider
+			// (TASK-1260) and tests will use; explicit here so the
+			// shape is grep-able from a future RedisOpBus / multi-Doc
+			// path that might want a different field name per item.
+			...(ydoc ? [Collaboration.configure({ document: ydoc, field: 'default' })] : []),
 			AttachmentUpload.configure({
 				upload: async (file) => {
 					if (!wsSlug) {
