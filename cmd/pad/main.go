@@ -789,6 +789,16 @@ func serveCmd() *cobra.Command {
 					slog.Error("HTTP server shutdown error", "error", err)
 				}
 
+				// http.Server.Shutdown doesn't terminate hijacked
+				// connections (WebSockets), so collab sessions keep
+				// running until something explicitly closes them.
+				// srv.Stop() runs the collab RoomManager.Close path
+				// (TASK-1255) plus the other long-running background
+				// loops (orphan GC, MCP audit writer, etc.). Without
+				// this, an open collab WS would race the deferred
+				// store close on process exit.
+				srv.Stop()
+
 				slog.Info("Server stopped")
 				return nil
 			}
