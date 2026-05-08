@@ -100,7 +100,7 @@
 	}
 </script>
 
-<a href={itemUrl} class="item-card" class:compact class:focused>
+<a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest}>
 	{#if pullRequest}
 		<button
 			type="button"
@@ -252,6 +252,22 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
+	}
+
+	/* Reserve horizontal room on the right of the top row for the
+	   absolutely-positioned PR badge. Without this, on cards with
+	   showCollection=true (dashboard active items, role board) or long
+	   item refs, the badge can overlap the collection chip / item ref
+	   and intercept clicks. The reservation only applies when a PR
+	   badge is actually present so non-PR cards keep their full width.
+
+	   Width budget: pill is ~0.7em monospace, up to 6 chars (e.g.
+	   "#12345") + 14px padding + 1px border × 2 ≈ 50px, plus the
+	   badge protrudes 6px to the right (right: -6px) so the inner
+	   gap from the card's right edge is ~50 − 6 = 44px. Round up to
+	   52px for breathing room. */
+	.item-card.has-pr .card-top-row {
+		padding-right: 52px;
 	}
 
 	.collection-badge {
