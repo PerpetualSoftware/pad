@@ -100,7 +100,7 @@
 	}
 </script>
 
-<a href={itemUrl} class="item-card" class:compact class:focused>
+<a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest}>
 	{#if pullRequest}
 		<button
 			type="button"
@@ -196,11 +196,18 @@
 		text-decoration: none;
 		color: inherit;
 		transition: background 0.1s;
+		/* When the card is a flex/grid item (board columns, list rows),
+		   allow it to shrink below its intrinsic content width so a long
+		   unbreakable title can wrap inside instead of pushing the card
+		   past its container. Pairs with overflow-wrap on .card-title.
+		   We deliberately do NOT set overflow: hidden here because the
+		   .pr-badge protrudes (right: -6px) and would get clipped. */
+		min-width: 0;
 	}
 
 	.pr-badge {
 		position: absolute;
-		top: -6px;
+		top: 8px;
 		right: -6px;
 		z-index: 1;
 		border: 1px solid var(--bg-primary);
@@ -247,6 +254,22 @@
 		gap: var(--space-2);
 	}
 
+	/* Reserve horizontal room on the right of the top row for the
+	   absolutely-positioned PR badge. Without this, on cards with
+	   showCollection=true (dashboard active items, role board) or long
+	   item refs, the badge can overlap the collection chip / item ref
+	   and intercept clicks. The reservation only applies when a PR
+	   badge is actually present so non-PR cards keep their full width.
+
+	   Width budget: pill is ~0.7em monospace, up to 6 chars (e.g.
+	   "#12345") + 14px padding + 1px border × 2 ≈ 50px, plus the
+	   badge protrudes 6px to the right (right: -6px) so the inner
+	   gap from the card's right edge is ~50 − 6 = 44px. Round up to
+	   52px for breathing room. */
+	.item-card.has-pr .card-top-row {
+		padding-right: 52px;
+	}
+
 	.collection-badge {
 		background: var(--bg-tertiary);
 		padding: 1px 7px;
@@ -269,6 +292,12 @@
 		color: var(--text-primary);
 		line-height: 1.45;
 		font-weight: 600;
+		/* Long titles without spaces (URLs, identifiers like
+		   `WorkspaceTemplateRegistryConfiguration`, code snippets pasted
+		   into a title) used to push the card past its container. Allow
+		   breaks at any character when there's no other option. */
+		overflow-wrap: anywhere;
+		min-width: 0;
 	}
 
 	.compact .card-title {
