@@ -200,12 +200,24 @@
 			// path also covers anything they miss).
 			if (saveStatus === 'saving' || editingTitle) return;
 
+			// Capture the item this event was scoped to *before* awaiting.
+			// Otherwise a navigation that completes during the in-flight
+			// request would let the resolved fetch clobber the new item
+			// (TASK-754-style race guard, mirrored from loadData()).
+			const reqItemId = item.id;
+			const reqWsSlug = wsSlug;
+			const reqItemSlug = itemSlug;
+
 			switch (event.type) {
 				case 'item_updated': {
 					try {
-						const updated = await api.items.get(wsSlug, itemSlug);
+						const updated = await api.items.get(reqWsSlug, reqItemSlug);
+						// Bail if the user navigated away before this resolved.
+						if (!item || item.id !== reqItemId) return;
 						item = { ...updated, content: item.content };
-						itemLinks = await api.links.list(wsSlug, updated.slug).catch(() => []);
+						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+						if (!item || item.id !== reqItemId) return;
+						itemLinks = links;
 					} catch {
 						// Ignore — will catch up on next event
 					}
@@ -220,7 +232,8 @@
 				}
 				case 'item_restored': {
 					try {
-						const updated = await api.items.get(wsSlug, itemSlug);
+						const updated = await api.items.get(reqWsSlug, reqItemSlug);
+						if (!item || item.id !== reqItemId) return;
 						item = { ...updated, content: item.content };
 					} catch {
 						// Ignore — will catch up on next event
@@ -237,33 +250,47 @@
 
 			if (result.type === 'caught_up') return;
 
+			// Capture the item this sync was scoped to *before* awaiting.
+			// Same race guard as the SSE handler above and loadData() —
+			// a navigation that completes mid-flight must not let a stale
+			// resolution clobber the newly-loaded item.
+			const reqItemId = item.id;
+			const reqWsSlug = wsSlug;
+			const reqItemSlug = itemSlug;
+
 			if (result.type === 'incremental') {
 				// Check if our item is in the changed set
-				const updated = result.changes.updated.find(i => i.id === item!.id);
+				const updated = result.changes.updated.find(i => i.id === reqItemId);
 				if (updated) {
 					// Merge server state without disrupting the editor
+					if (!item || item.id !== reqItemId) return;
 					item = {
 						...updated,
-						content: item!.content
+						content: item.content
 					};
-					itemLinks = await api.links.list(wsSlug, updated.slug).catch(() => []);
+					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+					if (!item || item.id !== reqItemId) return;
+					itemLinks = links;
 				}
 				// Check if our item was deleted
-				if (result.changes.deleted.includes(item!.id)) {
+				if (result.changes.deleted.includes(reqItemId)) {
 					// Item was deleted — navigate back to collection
 					goto(`/${username}/${wsSlug}/${collSlug}`);
-}
+				}
 				return;
 			}
 
 			// Full refresh fallback
 			try {
-				const updated = await api.items.get(wsSlug, itemSlug);
+				const updated = await api.items.get(reqWsSlug, reqItemSlug);
+				if (!item || item.id !== reqItemId) return;
 				item = {
 					...updated,
-					content: item!.content
+					content: item.content
 				};
-				itemLinks = await api.links.list(wsSlug, updated.slug).catch(() => []);
+				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+				if (!item || item.id !== reqItemId) return;
+				itemLinks = links;
 				syncService.markSynced(); // Advance cursor now that reload succeeded
 			} catch {
 				// Ignore — will catch up on next event
