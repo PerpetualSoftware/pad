@@ -27,6 +27,7 @@
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
 	type AttachmentUrlBuilder,
 	type AttachmentVariant,
@@ -239,13 +240,18 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			const img = document.createElement('img');
 			img.classList.add('attachment-image');
 			img.loading = 'lazy';
-			const uuid = (node.attrs.uuid as string | null) ?? '';
-			const alt = (node.attrs.alt as string | null) ?? '';
-			if (uuid) {
-				img.src = opts.getDownloadUrl(uuid, 'thumb-md');
-				img.setAttribute('data-attachment-id', uuid);
+			// Mutable closure state — kept in sync via update() so attr
+			// changes (rotate/crop swap, future peer Yjs ops, etc.) refresh
+			// the live <img> without forcing ProseMirror to destroy and
+			// recreate the NodeView (which would flicker locally and jump
+			// the cursor under live collab).
+			let currentUuid = (node.attrs.uuid as string | null) ?? '';
+			let currentAlt = (node.attrs.alt as string | null) ?? '';
+			if (currentUuid) {
+				img.src = opts.getDownloadUrl(currentUuid, 'thumb-md');
+				img.setAttribute('data-attachment-id', currentUuid);
 			}
-			if (alt) img.alt = alt;
+			if (currentAlt) img.alt = currentAlt;
 
 			img.addEventListener('click', (event) => {
 				// In a contenteditable, ProseMirror handles selection on
@@ -257,9 +263,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (event.detail > 1) return;
 				event.preventDefault();
 				event.stopPropagation();
-				if (!uuid) return;
-				const fullUrl = opts.getDownloadUrl(uuid, 'original');
-				openImageLightbox(fullUrl, alt);
+				if (!currentUuid) return;
+				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
+				openImageLightbox(fullUrl, currentAlt);
 			});
 
 			// Build the toolbar lazily — only when the node is first
@@ -291,10 +297,14 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// (e.g. SSR / preview surfaces) — the toolbar's state
 				// falls back to the supportedFormats list alone, with
 				// the MIME left null.
-				if (uuid && opts.workspaceSlug) {
-					fetchAttachmentMetadata(opts.workspaceSlug, uuid, opts.getDownloadUrl).then(
+				if (currentUuid && opts.workspaceSlug) {
+					const probeUuid = currentUuid;
+					fetchAttachmentMetadata(opts.workspaceSlug, probeUuid, opts.getDownloadUrl).then(
 						(meta) => {
-							if (!toolbar) return;
+							// Bail if the NodeView's uuid changed (rotate/peer
+							// op) while the probe was in flight — otherwise
+							// we'd cache stale MIME state for the new image.
+							if (!toolbar || currentUuid !== probeUuid) return;
 							toolbarMime = meta?.mime ?? null;
 							refresh();
 						}
@@ -311,24 +321,40 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// setNodeMarkup keeps the same node type and only
 				// rewrites attributes, which is what we want — the
 				// transform produced a NEW attachment row, but it's
-				// still an attachmentImage.
+				// still an attachmentImage. The dispatch fires update()
+				// synchronously, which handles old-UUID metadata
+				// invalidation + img.src refresh (any source: local
+				// rotate, peer Yjs op, ...).
+				//
+				// Critical: read attrs from the live document, NOT from
+				// the `node` captured at NodeView creation. Now that the
+				// NodeView survives attr updates, the closure-captured
+				// `node` is stale — using it would clobber any concurrent
+				// edits to other attrs (e.g. a peer's alt-text change
+				// landing between two local rotates).
+				const liveNode = editor.state.doc.nodeAt(pos);
+				if (!liveNode) return;
 				const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
-					...node.attrs,
+					...liveNode.attrs,
 					uuid: newId,
 				});
 				editor.view.dispatch(tr);
-				// Drop the cached metadata for the OLD UUID — the
-				// editor may render the original elsewhere later and
-				// we want the next probe to refresh.
-				if (uuid && opts.workspaceSlug) {
-					invalidateAttachmentMetadata(opts.workspaceSlug, uuid);
-				}
 			};
 
 			const runRotate = async (degrees: 90 | 180 | 270): Promise<void> => {
-				if (!uuid) return;
+				// Snapshot uuid at click time. Now that update() keeps the
+				// NodeView alive, currentUuid can shift while transform is
+				// in flight (e.g. peer rotates the same image). Without the
+				// snapshot we'd swap based on the OLD-uuid's transform
+				// result while the live node already points at a different
+				// image.
+				const startUuid = currentUuid;
+				if (!startUuid) return;
 				try {
-					const result = await opts.transform(uuid, { operation: 'rotate', degrees });
+					const result = await opts.transform(startUuid, { operation: 'rotate', degrees });
+					// If currentUuid drifted while transform was awaiting,
+					// our result corresponds to a stale base — discard it.
+					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : 'Rotation failed';
@@ -338,17 +364,25 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const runCrop = async (): Promise<void> => {
-				if (!uuid) return;
+				// Snapshot uuid + alt at click time. The crop rect the user
+				// chooses is bound to the IMAGE-AT-OPEN-TIME, so any drift
+				// (peer rotated/cropped while the modal is open) must
+				// invalidate the result rather than apply it to a different
+				// image. Same hazard as runRotate but compounded by the
+				// modal's longer await window.
+				const startUuid = currentUuid;
+				const startAlt = currentAlt;
+				if (!startUuid) return;
 				// Open the crop modal pointing at the original-resolution
 				// variant — the user is composing pixel-precise rect
 				// coordinates, so we can't show the thumb-md downscale.
 				// The modal returns rect coordinates already translated
 				// to natural-image pixel space, ready to send to the
 				// server unchanged.
-				const fullUrl = opts.getDownloadUrl(uuid, 'original');
+				const fullUrl = opts.getDownloadUrl(startUuid, 'original');
 				let rect: CropResult | null = null;
 				try {
-					rect = await openCropModal({ imageUrl: fullUrl, alt });
+					rect = await openCropModal({ imageUrl: fullUrl, alt: startAlt });
 				} catch {
 					// openCropModal never rejects today, but defensive
 					// catch keeps the editor responsive if that contract
@@ -356,8 +390,13 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					rect = null;
 				}
 				if (rect == null) return;
+				// Live node moved to a different uuid while the modal was
+				// open — the rect doesn't apply. Drop silently rather than
+				// mis-cropping the new image.
+				if (currentUuid !== startUuid) return;
 				try {
-					const result = await opts.transform(uuid, { operation: 'crop', rect });
+					const result = await opts.transform(startUuid, { operation: 'crop', rect });
+					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : 'Crop failed';
@@ -369,6 +408,64 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			wrapper.appendChild(img);
 			return {
 				dom: wrapper,
+				// Refresh the live <img> in place when attrs change. Without
+				// this, ProseMirror destroys + recreates the NodeView on any
+				// attr change — fine for single-user rotate (the destroy was
+				// invisible), but a hard regression once Yjs collab lands
+				// (a remote peer's rotate would jump the local cursor + flicker
+				// the image). Returning true keeps the NodeView alive across
+				// in-place updates; returning false forces recreate when the
+				// node type itself changed (shouldn't normally happen for an
+				// attachmentImage, but covered defensively).
+				update(updatedNode: ProseMirrorNode) {
+					if (updatedNode.type.name !== node.type.name) return false;
+
+					const newUuid = (updatedNode.attrs.uuid as string | null) ?? '';
+					const newAlt = (updatedNode.attrs.alt as string | null) ?? '';
+
+					if (newUuid !== currentUuid) {
+						// Drop cached metadata for the OLD uuid — next probe
+						// (e.g. on the same image rendered elsewhere) will
+						// re-fetch. Triggers for any source of the change:
+						// local rotate via swapNodeUuid OR a peer Yjs op.
+						if (currentUuid && opts.workspaceSlug) {
+							invalidateAttachmentMetadata(opts.workspaceSlug, currentUuid);
+						}
+						currentUuid = newUuid;
+						if (newUuid) {
+							img.src = opts.getDownloadUrl(newUuid, 'thumb-md');
+							img.setAttribute('data-attachment-id', newUuid);
+						} else {
+							img.removeAttribute('src');
+							img.removeAttribute('data-attachment-id');
+						}
+						// Toolbar's MIME probe was for the old uuid; reset
+						// gating to "still loading" + re-probe so per-format
+						// state stays correct across the swap.
+						toolbarMime = null;
+						refresh();
+						if (toolbar && newUuid && opts.workspaceSlug) {
+							const probeUuid = newUuid;
+							fetchAttachmentMetadata(
+								opts.workspaceSlug,
+								probeUuid,
+								opts.getDownloadUrl
+							).then((meta) => {
+								if (!toolbar || currentUuid !== probeUuid) return;
+								toolbarMime = meta?.mime ?? null;
+								refresh();
+							});
+						}
+					}
+
+					if (newAlt !== currentAlt) {
+						currentAlt = newAlt;
+						if (newAlt) img.alt = newAlt;
+						else img.removeAttribute('alt');
+					}
+
+					return true;
+				},
 				selectNode() {
 					wrapper.classList.add('attachment-image-selected');
 					const tb = ensureToolbar();
