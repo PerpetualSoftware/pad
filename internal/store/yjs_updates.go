@@ -21,6 +21,20 @@ import (
 // server-side NOT NULL — a Yjs update of zero bytes is a no-op (its
 // presence in the op-log would be misleading) and a blank itemID would
 // cascade-detach if the item were ever deleted.
+//
+// CONTRACT: callers MUST serialize AppendYjsUpdate per item_id.
+// Concurrent appends to the same item across multiple goroutines /
+// transactions can produce cursor gaps under Postgres because BIGSERIAL
+// ids are allocation-ordered, not commit-order: a slower transaction
+// can hold a smaller id while a faster one commits a larger id first.
+// A reader that advances its cursor past the visible larger id would
+// later miss the smaller id when it eventually commits. The dumb-relay
+// room manager (TASK-1255) is the sole writer per item by design, so
+// the contract is upheld at the application layer; this method does
+// NOT take an advisory lock or otherwise serialize internally so it
+// stays cheap when the caller already holds the per-room mutex. If a
+// future multi-replica deployment lands (deferred IDEA), this contract
+// must be re-enforced via Redis-side leadership or per-item locks.
 func (s *Store) AppendYjsUpdate(itemID string, data []byte, schemaVersion string) (int64, error) {
 	if itemID == "" {
 		return 0, errors.New("AppendYjsUpdate: itemID is required")
