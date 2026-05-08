@@ -753,6 +753,14 @@ func (s *Server) setupRouter() {
 		// SSE endpoint (outside jsonContentType middleware — but inherits auth)
 		r.Get("/api/v1/events", s.handleSSE)
 
+		// WebSocket endpoint for Yjs-based collaborative editing on a
+		// single item (PLAN-1248). Lives outside jsonContentType for
+		// the same reason as SSE: the response is a WS upgrade, not
+		// JSON. Inherits the auth middleware chain — handleCollab
+		// then re-checks workspace access keyed on the item's
+		// workspace ID (the URL only carries itemID).
+		r.Get("/api/v1/collab/{itemID}", s.handleCollab)
+
 		// API routes
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Get("/health", s.handleHealth)
