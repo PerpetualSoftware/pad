@@ -33,7 +33,27 @@
 		!!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
 	);
 
+	let pullRequest = $derived(item.code_context?.pull_request);
+
 	let pulsing = $state(false);
+
+	function prStateColor(state: string): string {
+		switch (state?.toUpperCase()) {
+			case 'OPEN': return 'var(--accent-green)';
+			case 'MERGED': return 'var(--accent-purple, #8b5cf6)';
+			case 'CLOSED': return 'var(--accent-red, #ef4444)';
+			case 'DRAFT': return 'var(--text-muted)';
+			default: return 'var(--text-muted)';
+		}
+	}
+
+	function openPullRequest(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		if (pullRequest?.url) {
+			window.open(pullRequest.url, '_blank', 'noopener,noreferrer');
+		}
+	}
 
 	function cycleStatus(e: MouseEvent) {
 		e.preventDefault();
@@ -81,6 +101,17 @@
 </script>
 
 <a href={itemUrl} class="item-card" class:compact class:focused>
+	{#if pullRequest}
+		<button
+			type="button"
+			class="pr-badge"
+			style:background={prStateColor(pullRequest.state)}
+			onclick={openPullRequest}
+			title="#{pullRequest.number} {pullRequest.title} ({(pullRequest.state ?? '').toLowerCase()})"
+		>
+			#{pullRequest.number}
+		</button>
+	{/if}
 	<div class="card-top-row">
 		<button
 			class="star-btn"
@@ -154,6 +185,7 @@
 
 <style>
 	.item-card {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
@@ -164,6 +196,34 @@
 		text-decoration: none;
 		color: inherit;
 		transition: background 0.1s;
+	}
+
+	.pr-badge {
+		position: absolute;
+		top: -6px;
+		right: -6px;
+		z-index: 1;
+		border: 1px solid var(--bg-primary);
+		border-radius: 10px;
+		padding: 1px 7px;
+		font-family: var(--font-mono);
+		font-size: 0.7em;
+		font-weight: 600;
+		line-height: 1.4;
+		color: #fff;
+		cursor: pointer;
+		white-space: nowrap;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+		transition: transform 0.1s, filter 0.1s;
+	}
+
+	.pr-badge:hover {
+		filter: brightness(1.1);
+		transform: scale(1.05);
+	}
+
+	.pr-badge:active {
+		transform: scale(0.95);
 	}
 
 	.item-card:hover,
