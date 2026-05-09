@@ -619,7 +619,41 @@
 				// Codex round 2 [P1].
 				clearTimeout(collabFlushTimer);
 				collabFlushTimer = undefined;
-				forceRefreshNonce += 1;
+				// Refresh items.content from the server BEFORE
+				// rebuilding the Y.Doc. Without this, the lazy
+				// seed (TASK-1261) on the new doc reads the
+				// possibly-stale page-state cache of item.content
+				// and re-encodes that into a fresh op-log; the
+				// next flush then overwrites canonical server
+				// content with our stale view. The await is
+				// fire-and-forget at the call site; we bump the
+				// nonce only after the GET resolves so the
+				// cleanup→rebuild sequence sees fresh content. A
+				// failed fetch falls through to the bump anyway
+				// (better an editor session against possibly-
+				// stale content than no editor session at all);
+				// the user is already showing the toast about a
+				// refresh. Per Codex round 4 [P1].
+				const refreshCtx = ctx;
+				void api.items
+					.get(refreshCtx.wsSlug, refreshCtx.itemId)
+					.then((fresh) => {
+						// Apply only if the user is still on this
+						// item; a navigation away should not stamp
+						// fresh content into the OTHER item's slot.
+						if (item && item.id === refreshCtx.itemId) {
+							item = fresh;
+						}
+					})
+					.catch((err) => {
+						console.warn(
+							'collab: force_refresh item refetch failed; rebuilding against cached content',
+							err,
+						);
+					})
+					.finally(() => {
+						forceRefreshNonce += 1;
+					});
 			},
 		});
 
