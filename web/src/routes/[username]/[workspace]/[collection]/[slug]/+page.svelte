@@ -754,27 +754,44 @@
 		// tabs would otherwise each fire a redundant PATCH after
 		// every shared edit converges.
 		if (lastFlushedContent === toSave) return false;
-		try {
+
+		// UI mutations only fire when:
+		//   - This is a foreground (user-driven) flush (!keepalive),
+		//     AND
+		//   - The user is still looking at the item we're flushing
+		//     (item.id === itemId).
+		// Background (keepalive=true) cleanup flushes after
+		// navigation MUST NOT touch saveStatus / lastSaveTime —
+		// those slots belong to whatever item the user is now on,
+		// and stamping them from a stale flush leaves the new page
+		// pinned in 'Saving...' indefinitely. Per Codex review
+		// round 2.
+		const isForegroundCurrent = (): boolean =>
+			!keepalive && !!item && item.id === itemId;
+
+		if (isForegroundCurrent()) {
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
+		}
+		try {
 			await api.items.flushCollabContent(ws, itemId, toSave, { keepalive });
-			lastFlushedContent = toSave;
-			// UI-state updates only matter when the user is still
-			// looking at this item. After navigation, item.id has
-			// already moved on and the new item owns saveStatus.
+			// lastFlushedContent is per-item; only seed it if the
+			// item we just flushed is still the active one.
+			// Otherwise a stale flush could pollute the new page's
+			// dedupe state.
 			if (item && item.id === itemId) {
+				lastFlushedContent = toSave;
+			}
+			if (isForegroundCurrent()) {
 				editorStore.setLastSaveTime(Date.now());
 				editorStore.setDirty(false);
 				showSaved();
 			}
 			return true;
 		} catch {
-			if (item && item.id === itemId) {
+			if (isForegroundCurrent()) {
 				saveStatus = 'idle';
-				// Quiet on the unmount path (no UI to show toast in)
-				// but visible during foreground edits so a stuck
-				// save is diagnosable.
-				if (!keepalive) toastStore.show('Failed to save content', 'error');
+				toastStore.show('Failed to save content', 'error');
 			}
 			return false;
 		}
