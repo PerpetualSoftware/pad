@@ -746,17 +746,29 @@
 		}, COLLAB_FLUSH_IDLE_MS);
 	}
 
+	// CollabFlushResult discriminates the three outcomes runCollabFlush
+	// can produce so callers can act on them differently:
+	//   - 'flushed' — PATCH succeeded; items.content now matches.
+	//   - 'deduped' — skipped because lastFlushedContent already
+	//     matched; items.content is ALREADY at this content (the
+	//     previous successful flush put it there). Treated by the
+	//     rich→raw toggle as equivalent to 'flushed' for seeding
+	//     purposes — both mean "server has this markdown."
+	//   - 'failed' — PATCH errored. The toggle path bails so we
+	//     don't enter raw mode with stale state.
+	// Per Codex review round 8.
+	type CollabFlushResult = 'flushed' | 'deduped' | 'failed';
+
 	// runCollabFlush PATCHes items.content via the
 	// `?source=collab-snapshot` bypass. Takes ws/item from the
 	// captured context (NOT live reactive state) so a navigation in
-	// flight doesn't mis-route the PATCH to a different item. Returns
-	// true if a request fired, false if dedupe skipped it.
+	// flight doesn't mis-route the PATCH to a different item.
 	async function runCollabFlush(
 		ws: string,
 		itemId: string,
 		markdown: string,
 		keepalive: boolean,
-	): Promise<boolean> {
+	): Promise<CollabFlushResult> {
 		const allItems = collectionStore.items ?? [];
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
@@ -766,8 +778,10 @@
 		// Dedupe: skip the PATCH if our last successful flush
 		// already landed this exact content. Multiple connected
 		// tabs would otherwise each fire a redundant PATCH after
-		// every shared edit converges.
-		if (lastFlushedContent === toSave) return false;
+		// every shared edit converges. Returns 'deduped' (NOT
+		// 'failed') so callers can distinguish "no work needed"
+		// from a real error. Per Codex review round 8.
+		if (lastFlushedContent === toSave) return 'deduped';
 
 		// UI mutations only fire when:
 		//   - This is a foreground (user-driven) flush (!keepalive),
@@ -801,13 +815,13 @@
 				editorStore.setDirty(false);
 				showSaved();
 			}
-			return true;
+			return 'flushed';
 		} catch {
 			if (isForegroundCurrent()) {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			}
-			return false;
+			return 'failed';
 		}
 	}
 
@@ -1615,28 +1629,46 @@
 								const itemId = item.id;
 								const ed = editorInstance;
 								try {
-									// lastFlushed tracks markdown we
-									// have actually PATCHed to
-									// items.content (runCollabFlush
-									// returns true). On PATCH failure
-									// it stays at its prior value so
-									// rawSeedMarkdown never holds
-									// state the server never
-									// received. Per Codex review
-									// round 7.
+									// keepalive=false on the explicit
+									// toggle — the await is
+									// foreground/synchronous and
+									// keepalive's ~64KB body cap can
+									// reject larger payloads,
+									// silently leaving items.content
+									// stale. Cleanup-driven flushes
+									// still use keepalive=true; this
+									// path doesn't need it because
+									// the user clicked a button and
+									// is expecting to wait. Per
+									// Codex review round 8.
 									let md = (ed.storage as any).markdown?.getMarkdown?.();
 									let lastFlushed: string | null = null;
+									let aborted = false;
 									for (let i = 0; i < 3; i++) {
 										if (typeof md !== 'string') break;
-										// keepalive=true so the
-										// PATCH outlives a fast
-										// post-toggle navigation.
-										const ok = await runCollabFlush(ws, itemId, md, true);
-										if (ok) lastFlushed = md;
+										const result = await runCollabFlush(ws, itemId, md, false);
+										if (result === 'failed') {
+											// PATCH errored — refuse
+											// to enter raw mode
+											// rather than silently
+											// seed from stale state.
+											// runCollabFlush already
+											// surfaced the toast.
+											// Per Codex review round 8.
+											aborted = true;
+											break;
+										}
+										// 'flushed' or 'deduped' —
+										// items.content matches md.
+										// Treat both as a successful
+										// flush for seeding purposes.
+										lastFlushed = md;
+										if (result === 'deduped') break;
 										const mdAfter = (ed.storage as any).markdown?.getMarkdown?.();
 										if (mdAfter === md) break;
 										md = mdAfter;
 									}
+									if (aborted) return;
 									// Bail if the user navigated to a
 									// different item while we were
 									// awaiting flushes — applying
