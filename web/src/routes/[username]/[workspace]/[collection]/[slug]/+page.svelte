@@ -1042,6 +1042,13 @@
 		markdown: string,
 		keepalive: boolean,
 	): Promise<CollabFlushResult> {
+		// Force-refresh recovery is in flight: any markdown derived
+		// from the soon-to-be-discarded Y.Doc is, by definition,
+		// stale relative to the canonical server content. Skipping
+		// here covers every direct caller (beforeunload, raw-toggle,
+		// flushCollabNow) without needing per-call-site guards. Per
+		// Codex round 8 [P1] of TASK-1319.
+		if (forceRefreshInFlight) return 'deduped';
 		const allItems = collectionStore.items ?? [];
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
