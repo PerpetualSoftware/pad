@@ -27,6 +27,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
+import { SCHEMA_VERSION } from './schemaVersion';
 
 /** First-byte discriminators on the wire. Must match the constants in
  *  `internal/collab/room.go` (yMessageSync / yMessageAwareness). */
@@ -728,5 +729,12 @@ function defaultCollabUrl(itemID: string): string {
 		throw new Error('CollabProvider: cannot derive URL outside the browser');
 	}
 	const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-	return `${proto}//${location.host}/api/v1/collab/${encodeURIComponent(itemID)}`;
+	// Always announce the client's SCHEMA_VERSION (TASK-1268). The
+	// server validates this BEFORE upgrading the WebSocket; a
+	// mismatch returns an HTTP 400 so the user sees a real error
+	// rather than a silently-degraded session. The server also uses
+	// the per-item rebuild path internally if any persisted op-log
+	// rows are stamped with an older version.
+	const params = new URLSearchParams({ schema_version: SCHEMA_VERSION });
+	return `${proto}//${location.host}/api/v1/collab/${encodeURIComponent(itemID)}?${params.toString()}`;
 }

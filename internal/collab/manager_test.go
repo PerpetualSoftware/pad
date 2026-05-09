@@ -58,6 +58,41 @@ func (f *fakeOpLog) LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.
 	return out, nil
 }
 
+// LatestYjsUpdateSchemaVersion mirrors the production store: returns
+// the most recent op-log row's schema_version for an item, or
+// (false) when no rows exist. The fake walks rows[] in append order
+// and returns the latest matching entry — same semantic as the
+// store's `ORDER BY id DESC LIMIT 1`.
+func (f *fakeOpLog) LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.rows) - 1; i >= 0; i-- {
+		if f.rows[i].ItemID == itemID {
+			return f.rows[i].SchemaVersion, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// PruneYjsUpdatesBefore deletes every row for itemID whose CreatedAt
+// is strictly less than the cutoff. The schema-mismatch rebuild path
+// passes a far-future cutoff so this becomes "delete every row".
+func (f *fakeOpLog) PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.rows[:0]
+	var pruned int64
+	for _, r := range f.rows {
+		if r.ItemID == itemID && r.CreatedAt.Before(before) {
+			pruned++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	f.rows = kept
+	return pruned, nil
+}
+
 func (f *fakeOpLog) appendCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -541,4 +576,149 @@ func TestRoomManagerCloseShutsDownAllRooms(t *testing.T) {
 	if _, _, err := c.ReadMessage(); err == nil {
 		t.Errorf("expected read error after manager.Close")
 	}
+}
+
+// TestRoomManagerSchemaMismatchPrunes is the TASK-1268 happy-path
+// regression test. When a peer joins an item whose persisted op-log
+// rows are stamped with a different schema version than the
+// manager's current one, the room manager prunes the entire op-log
+// for that item before replay so the new client doesn't replay
+// (potentially incompatible) old-schema ops.
+func TestRoomManagerSchemaMismatchPrunes(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	// Pre-seed two rows stamped with the OLD schema version.
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x01}, "1"); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x02}, "1"); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+
+	// Manager runs at version "2" — first new-version client to
+	// arrive should trigger the prune.
+	mgr := NewRoomManagerWithConfig(store, bus, RoomManagerConfig{
+		SchemaVersion: "2",
+	})
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	c := dialWS(t, srv, "item-a")
+	defer c.Close()
+
+	// After the prune, the op-log replay sends NOTHING. Confirm by
+	// setting a short read deadline and asserting we time out
+	// rather than receiving stale rows.
+	c.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Errorf("expected no replay frames after schema-mismatch prune; got one")
+	}
+
+	// Op-log should be empty for item-a. The store's rowCount
+	// reflects the post-prune state (we pruned in maybeRebuildOnSchemaMismatch).
+	if rc := store.rowCount(); rc != 0 {
+		t.Errorf("after schema-mismatch prune: want 0 rows, got %d", rc)
+	}
+}
+
+// TestRoomManagerSchemaCleanVersionPreservesOpLog is the negative
+// case: when the persisted version matches the manager's, no prune
+// runs and the replay path is undisturbed.
+func TestRoomManagerSchemaCleanVersionPreservesOpLog(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x01}, "1"); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+
+	// Manager and persisted rows agree on "1".
+	mgr := NewRoomManagerWithConfig(store, bus, RoomManagerConfig{
+		SchemaVersion: "1",
+	})
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	c := dialWS(t, srv, "item-a")
+	defer c.Close()
+
+	// Replay should land normally — single row.
+	first := readBinaryWithin(t, c, 2*time.Second)
+	if len(first) < 2 || first[1] != 0x01 {
+		t.Errorf("replay row 1 mismatch: got %v", first)
+	}
+
+	if rc := store.rowCount(); rc != 1 {
+		t.Errorf("on clean-version connect: op-log should be untouched (want 1 row), got %d", rc)
+	}
+}
+
+// TestRoomManagerSchemaPostRebuildClean confirms that after a
+// rebuild fires once, subsequent connects on the same item are
+// clean: the post-prune append carries the new schema version,
+// LatestYjsUpdateSchemaVersion now reads as "2", and a second peer
+// connecting with version "2" does NOT re-trigger the prune.
+func TestRoomManagerSchemaPostRebuildClean(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x01}, "1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	mgr := NewRoomManagerWithConfig(store, bus, RoomManagerConfig{
+		SchemaVersion: "2",
+	})
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	// First connect: triggers the prune.
+	c1 := dialWS(t, srv, "item-a")
+
+	// Wait for the prune to actually land. RoomCount() == 1 isn't a
+	// prune-completion barrier (getOrCreate publishes the room
+	// BEFORE maybeRebuildOnSchemaMismatch runs), so poll the store
+	// state directly. Per Codex review round 1 NIT.
+	for i := 0; i < 200; i++ {
+		if store.rowCount() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if rc := store.rowCount(); rc != 0 {
+		t.Errorf("after first join (mismatch): want 0 rows, got %d", rc)
+	}
+
+	// Have c1 send a sync frame so the post-prune op-log gets a row
+	// stamped at the manager's "2".
+	if err := c1.WriteMessage(websocket.BinaryMessage, []byte{yMessageSync, 0x55}); err != nil {
+		t.Fatalf("write live frame: %v", err)
+	}
+	for i := 0; i < 200; i++ {
+		if store.rowCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if rc := store.rowCount(); rc != 1 {
+		t.Fatalf("post-rebuild append: want 1 row, got %d", rc)
+	}
+
+	// Second connect on the same item: persisted version is now
+	// "2", manager is "2", so no prune. The single row must
+	// replay to the new peer untouched.
+	c2 := dialWS(t, srv, "item-a")
+	defer c2.Close()
+
+	got := readBinaryWithin(t, c2, 2*time.Second)
+	if len(got) < 2 || got[1] != 0x55 {
+		t.Errorf("post-rebuild replay row mismatch: got %v", got)
+	}
+
+	c1.Close()
 }

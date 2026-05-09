@@ -117,6 +117,30 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Schema-version handshake (TASK-1268, PLAN-1248). The client
+	// announces its SCHEMA_VERSION via `?schema_version=...`; if it
+	// doesn't match the server's current value we reject the upgrade
+	// outright. Admitting a mismatched client and silently letting it
+	// stamp old (or future) ops onto the op-log would corrupt the
+	// rebuild flow's ability to detect mismatches — the server's
+	// stamp is supposed to mark the era of every persisted row.
+	//
+	// The empty-query path is treated as legacy-compatible "version
+	// 1" rather than a hard error so older bundles served from a
+	// browser cache during a deploy don't fail with cryptic 400s
+	// before the user has a chance to refresh. The compatibility
+	// shim only covers v1 — once we ever bump past it, missing
+	// schema_version is rejected.
+	clientSchemaVersion := r.URL.Query().Get("schema_version")
+	if clientSchemaVersion == "" {
+		clientSchemaVersion = "1"
+	}
+	if clientSchemaVersion != s.collab.SchemaVersion() {
+		writeError(w, http.StatusBadRequest, "schema_mismatch",
+			"This editor is incompatible with the server. Please refresh the page.")
+		return
+	}
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on

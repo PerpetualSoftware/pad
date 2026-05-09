@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -127,6 +128,42 @@ func (s *Store) LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsU
 		return nil, fmt.Errorf("iterate yjs updates: %w", err)
 	}
 	return updates, nil
+}
+
+// LatestYjsUpdateSchemaVersion returns the `schema_version` of the
+// most recently appended op-log row for an item. The boolean is false
+// when no rows exist yet (a fresh item, or one whose op-log was just
+// pruned). Used by the schema-mismatch rebuild flow (TASK-1268,
+// PLAN-1248): if the latest persisted version differs from the
+// server's current SCHEMA_VERSION, the room manager prunes the
+// op-log before replaying so the new-schema client doesn't replay
+// old-schema ops that may be incompatible.
+//
+// We pick "most recent" rather than "any row" so a server that wrote
+// some old-version rows then was rolled back, then forward again,
+// still detects the mismatch from the row(s) that matter most.
+func (s *Store) LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error) {
+	if itemID == "" {
+		return "", false, errors.New("LatestYjsUpdateSchemaVersion: itemID is required")
+	}
+	query := s.dialect.Rebind(`
+		SELECT schema_version
+		FROM item_yjs_updates
+		WHERE item_id = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`)
+	var version string
+	if err := s.db.QueryRow(query, itemID).Scan(&version); err != nil {
+		// sql.ErrNoRows is the well-known "no rows" path; surface it
+		// as ok=false rather than an error so callers don't have to
+		// import database/sql just for this check.
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("latest yjs schema version: %w", err)
+	}
+	return version, true, nil
 }
 
 // PruneYjsUpdatesBefore deletes op-log rows for an item with created_at
