@@ -520,7 +520,21 @@
 			// doesn't mis-route this flush to a different item.
 			// keepalive=true lets the request outlive the page
 			// lifecycle. Per TASK-1260.
-			flushCollabNow(ctx, true);
+			//
+			// EXCEPTION: skip the flush if the cleanup is firing
+			// because the user just toggled INTO raw mode. The
+			// raw-button onclick already pre-populated
+			// rawPendingMarkdown with the live editor markdown, so
+			// the 1.2s raw debounce will land items.content cleanly.
+			// A keepalive collab-snapshot PATCH from here is
+			// fire-and-forget and can arrive AFTER the raw save —
+			// clobbering newer raw edits with the older Y.Doc
+			// snapshot. The other cleanup triggers (item nav,
+			// canEdit flip, page unmount) all benefit from the
+			// flush. Per Codex review round 3.
+			if (!rawMode) {
+				flushCollabNow(ctx, true);
+			}
 			provider.destroy();
 			doc.destroy();
 			if (activeCollabContext === ctx) activeCollabContext = null;
