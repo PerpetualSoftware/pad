@@ -12,6 +12,8 @@
 	import type { Editor as EditorType } from '@tiptap/core';
 	import * as Y from 'yjs';
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
+	import { userColor } from '$lib/collab/cursorColor';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
@@ -488,6 +490,26 @@
 	let ydoc = $state<Y.Doc | null>(null);
 	let collabProvider = $state<CollabProvider | null>(null);
 	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
+
+	// Local user identity broadcast over awareness for the
+	// CollaborationCaret extension (TASK-1263). Colour is a
+	// deterministic hash of user.id so the same user gets the same
+	// hue across sessions / tabs / devices. The route is gated by
+	// the root auth check, so by the time the editor mounts
+	// `authStore.user` is reliably populated; we still return
+	// `undefined` for the unauthenticated path so the editor can
+	// safely omit the cursor extension. If the auth race ever does
+	// matter in practice we'd add `authStore.user?.id` to the
+	// Editor's `{#key}` so a late user load remounts with cursors
+	// enabled.
+	const collabUserState = $derived(
+		authStore.user
+			? {
+					name: authStore.user.name || authStore.user.username || 'Someone',
+					color: userColor(authStore.user.id),
+				}
+			: undefined,
+	);
 
 	$effect(() => {
 		if (!collabKey) return;
@@ -1902,6 +1924,8 @@
 								onUpdate={handleContentUpdate}
 								editable={true}
 								ydoc={ydoc}
+								awareness={collabProvider?.awareness}
+								collabUser={collabUserState}
 								onEditor={(e) => editorInstance = e}
 							/>
 						{/key}
