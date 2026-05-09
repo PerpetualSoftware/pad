@@ -503,6 +503,16 @@
 	// teardown still runs its flush. Per Codex review round 1 [P1]
 	// of TASK-1319.
 	let skipFlushOnNextCleanup = false;
+	// forceRefreshInFlight blocks any new collab-snapshot flush from
+	// being scheduled (or surviving) while the page is mid-recovery
+	// from a server force_refresh. Without it, an in-flight refetch +
+	// pending nonce bump leaves the stale editor mounted; a local
+	// edit during that window arms a NEW collabFlushTimer that fires
+	// before cleanup runs and PATCHes stale Y.Doc-derived markdown
+	// back to canonical items.content. Reset to false at the END of
+	// the new collab $effect run (after rebuild completes). Per
+	// Codex round 7 [P1] of TASK-1319.
+	let forceRefreshInFlight = false;
 	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
@@ -611,6 +621,7 @@
 				// canonical items.content the fresh provider is
 				// supposed to lazy-seed from.
 				skipFlushOnNextCleanup = true;
+				forceRefreshInFlight = true;
 				// Cancel any in-flight 5s flush timer too. The
 				// cleanup-skip flag only covers the cleanup path;
 				// a timer that already armed before force_refresh
@@ -659,6 +670,11 @@
 
 		ydoc = doc;
 		collabProvider = provider;
+		// A fresh provider has been wired; the force-refresh
+		// recovery window (if any) has closed. Local edits from
+		// this point can safely schedule flushes again. Per Codex
+		// round 7 [P1] of TASK-1319.
+		forceRefreshInFlight = false;
 
 		return () => {
 			// Best-effort flush of items.content BEFORE we tear the
@@ -989,6 +1005,12 @@
 
 	function scheduleCollabFlush(markdown: string) {
 		clearTimeout(collabFlushTimer);
+		// Force-refresh recovery in flight: block any new flush
+		// scheduling. The provider is destroyed but the editor
+		// component is still mounted (cleanup hasn't run yet); a
+		// local edit during this window must NOT arm a flush timer
+		// against the stale Y.Doc state. Per Codex round 7 [P1].
+		if (forceRefreshInFlight) return;
 		const ctx = activeCollabContext;
 		if (!ctx) return;
 		collabFlushTimer = setTimeout(() => {
