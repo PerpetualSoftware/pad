@@ -16,7 +16,7 @@
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import { goto } from '$app/navigation';
-	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
+	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
@@ -464,6 +464,11 @@
 	$effect(() => {
 		if (!collabKey) return;
 		const itemId = collabKey;
+		// Snapshot the workspace alongside the itemId. activeCollabContext
+		// is what the timer-driven + cleanup-driven flushes target so
+		// they always PATCH the right URL even after navigation.
+		const ctx = { wsSlug, itemId };
+		activeCollabContext = ctx;
 
 		const doc = new Y.Doc();
 		const provider = new CollabProvider(itemId, doc, {
@@ -509,12 +514,16 @@
 			// downstream consumers (search, share-page, exports,
 			// API readers) read items.content; without this flush a
 			// user closing the tab right after typing would leave
-			// items.content frozen at the prior 5s tick. keepalive=
-			// true lets the request outlive the page lifecycle.
-			// Per TASK-1260.
-			flushCollabNow(true);
+			// items.content frozen at the prior 5s tick. We pass
+			// the captured ctx (NOT live reactive state) so a
+			// navigation that already updated `item` and `wsSlug`
+			// doesn't mis-route this flush to a different item.
+			// keepalive=true lets the request outlive the page
+			// lifecycle. Per TASK-1260.
+			flushCollabNow(ctx, true);
 			provider.destroy();
 			doc.destroy();
+			if (activeCollabContext === ctx) activeCollabContext = null;
 			// Defensive — only clear the slot if it still holds the
 			// pair we created. A reactive churn that swapped a new
 			// pair in before this cleanup ran shouldn't get clobbered.
@@ -532,7 +541,8 @@
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const onBeforeUnload = () => {
-			if (collabProvider) flushCollabNow(true);
+			const ctx = activeCollabContext;
+			if (ctx) flushCollabNow(ctx, true);
 		};
 		window.addEventListener('beforeunload', onBeforeUnload);
 		return () => window.removeEventListener('beforeunload', onBeforeUnload);
@@ -702,51 +712,68 @@
 		}, 1200);
 	}
 
+	// activeCollabContext holds the (workspace, item) the currently-
+	// connected provider was minted against. Capturing this at
+	// $effect-body time (NOT at flush time) makes the flush path
+	// resistant to navigation: if the user moves to a new item
+	// between schedule and fire, the timer-driven and cleanup-driven
+	// flushes still PATCH the OLD item's URL with its OLD markdown,
+	// so we never cross-write one item's content into another. Per
+	// Codex review round 1.
+	let activeCollabContext: { wsSlug: string; itemId: string } | null = null;
+
 	function scheduleCollabFlush(markdown: string) {
 		clearTimeout(collabFlushTimer);
+		const ctx = activeCollabContext;
+		if (!ctx) return;
 		collabFlushTimer = setTimeout(() => {
 			collabFlushTimer = undefined;
-			void runCollabFlush(markdown, false);
+			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false);
 		}, COLLAB_FLUSH_IDLE_MS);
 	}
 
 	// runCollabFlush PATCHes items.content via the
-	// `?source=collab-snapshot` bypass. Returns true if a request
-	// actually fired (markdown differed from lastFlushedContent),
-	// false if the dedupe skipped it. Set `keepalive` for the
-	// unmount / beforeunload path so the request can outlive the
-	// page lifecycle.
-	async function runCollabFlush(markdown: string, keepalive: boolean): Promise<boolean> {
-		if (!item) return false;
+	// `?source=collab-snapshot` bypass. Takes ws/item from the
+	// captured context (NOT live reactive state) so a navigation in
+	// flight doesn't mis-route the PATCH to a different item. Returns
+	// true if a request fired, false if dedupe skipped it.
+	async function runCollabFlush(
+		ws: string,
+		itemId: string,
+		markdown: string,
+		keepalive: boolean,
+	): Promise<boolean> {
 		const allItems = collectionStore.items ?? [];
-		let toSave = markdown;
+		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
 			toSave = markdownToWikiLinks(toSave, allItems);
 		}
 		toSave = cleanBrokenLinks(toSave);
-		// Dedupe: skip the PATCH if our last successful flush already
-		// landed this exact content. Multiple connected tabs would
-		// otherwise each fire a redundant PATCH after every shared
-		// edit converges.
+		// Dedupe: skip the PATCH if our last successful flush
+		// already landed this exact content. Multiple connected
+		// tabs would otherwise each fire a redundant PATCH after
+		// every shared edit converges.
 		if (lastFlushedContent === toSave) return false;
-		const reqItemId = item.id;
 		try {
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
-			await api.items.flushCollabContent(wsSlug, reqItemId, toSave, { keepalive });
+			await api.items.flushCollabContent(ws, itemId, toSave, { keepalive });
 			lastFlushedContent = toSave;
-			if (item && item.id === reqItemId) {
+			// UI-state updates only matter when the user is still
+			// looking at this item. After navigation, item.id has
+			// already moved on and the new item owns saveStatus.
+			if (item && item.id === itemId) {
 				editorStore.setLastSaveTime(Date.now());
 				editorStore.setDirty(false);
 				showSaved();
 			}
 			return true;
 		} catch {
-			if (item && item.id === reqItemId) {
+			if (item && item.id === itemId) {
 				saveStatus = 'idle';
 				// Quiet on the unmount path (no UI to show toast in)
-				// but log so dropped flushes are diagnosable from
-				// devtools when investigating "items.content stale".
+				// but visible during foreground edits so a stuck
+				// save is diagnosable.
 				if (!keepalive) toastStore.show('Failed to save content', 'error');
 			}
 			return false;
@@ -754,9 +781,13 @@
 	}
 
 	// flushCollabNow fires the pending flush IMMEDIATELY (cancelling
-	// the 5s timer). Used by $effect cleanup + beforeunload to land
-	// any in-flight markdown before the provider tears down.
-	function flushCollabNow(keepalive: boolean): boolean {
+	// the 5s timer). Takes the explicit ctx the cleanup captured —
+	// reading editorInstance.storage at this instant is correct
+	// because Svelte runs parent $effect cleanups BEFORE child
+	// {#key}-driven unmounts, so the OLD editor (whose markdown we
+	// want) is still mounted. Used by $effect cleanup + beforeunload
+	// to land any in-flight markdown before the provider tears down.
+	function flushCollabNow(ctx: { wsSlug: string; itemId: string }, keepalive: boolean): boolean {
 		clearTimeout(collabFlushTimer);
 		collabFlushTimer = undefined;
 		if (!editorInstance) return false;
@@ -767,9 +798,9 @@
 			return false;
 		}
 		// runCollabFlush is async but its return value is irrelevant
-		// for the synchronous callers — fire-and-forget under
+		// for synchronous callers — fire-and-forget under
 		// keepalive=true is the contract on the unmount path.
-		void runCollabFlush(md, keepalive);
+		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive);
 		return true;
 	}
 
