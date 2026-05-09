@@ -329,6 +329,15 @@
 		contentDebounceTimer = undefined;
 		rawSeedMarkdown = null;
 		rawPendingMarkdown = null;
+		// Reset transient save UI state too. Without this, a stale
+		// raw PATCH that gets discarded by the new race guard
+		// (item.id mismatch) leaves saveStatus pinned at 'saving' on
+		// the next item, which then suppresses SSE/sync refreshes
+		// (the `if (saveStatus === 'saving')` guards above).
+		// Per Codex review round 12.
+		clearTimeout(saveStatusTimer);
+		saveStatusTimer = undefined;
+		saveStatus = 'idle';
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
 		// request rejected — without this the stale catch would clobber a
