@@ -496,6 +496,13 @@
 	// from items.content via the lazy-seed path. The previous
 	// provider's onForceRefresh handler does the bumping.
 	let forceRefreshNonce = $state(0);
+	// skipFlushOnNextCleanup is the flag the provider's onForceRefresh
+	// handler sets so the next collab $effect cleanup tears down
+	// without flushing the (known-stale) Y.Doc-derived markdown.
+	// Reset at the start of each cleanup so a subsequent normal
+	// teardown still runs its flush. Per Codex review round 1 [P1]
+	// of TASK-1319.
+	let skipFlushOnNextCleanup = false;
 	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
@@ -593,6 +600,17 @@
 					'Editor refreshed — rejoining with the latest content from the server.',
 					'info',
 				);
+				// Mark this provider's effect cleanup as a
+				// force-refresh tear-down so the cleanup path
+				// SKIPS the trailing collab-snapshot flush. Per
+				// Codex review round 1 [P1] of TASK-1319: a
+				// force_refresh means the local Y.Doc state is
+				// known stale (its cursor was below MIN, so the
+				// rows it would replay no longer exist); flushing
+				// the Y.Doc-derived markdown would overwrite the
+				// canonical items.content the fresh provider is
+				// supposed to lazy-seed from.
+				skipFlushOnNextCleanup = true;
 				forceRefreshNonce += 1;
 			},
 		});
@@ -624,7 +642,13 @@
 			// snapshot. The other cleanup triggers (item nav,
 			// canEdit flip, page unmount) all benefit from the
 			// flush. Per Codex review round 3.
-			if (!rawMode) {
+			// Force-refresh tear-down skips the flush — the local
+			// Y.Doc is known stale and flushing it would overwrite
+			// canonical items.content. Per Codex review round 1
+			// [P1] of TASK-1319.
+			const skipFlush = skipFlushOnNextCleanup;
+			skipFlushOnNextCleanup = false;
+			if (!rawMode && !skipFlush) {
 				flushCollabNow(ctx, true);
 			}
 			provider.destroy();
