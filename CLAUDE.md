@@ -74,6 +74,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by, parent/child)
 - `GET /search?q=query&workspace=slug` — full-text search
 - `GET /api/v1/events?workspace=slug` — SSE real-time events
+- `GET /api/v1/collab/{itemID}?schema_version=N` — WebSocket upgrade for real-time collaborative editing (Yjs binary protocol; client must announce schema version)
 - `GET /workspaces/{ws}/members` — list members + pending invitations
 - `POST /workspaces/{ws}/members/invite` — invite user to workspace
 - `GET /api/v1/auth/session` — auth status (`setup_required`, `setup_method`, `auth_method`, `authenticated`, `user`)
@@ -258,3 +259,41 @@ cd web && npm run build    # Verify frontend compiles
 2. Update models in `internal/models/`
 3. Update store methods in `internal/store/`
 4. `make install` (migrations run automatically on server start)
+
+## Real-time collaboration (Yjs / Tiptap)
+
+Collab is wired through `/api/v1/collab/{itemID}` (WebSocket, Yjs
+binary protocol). The relevant code lives in:
+
+- `internal/collab/` — RoomManager, room lifecycle, dumb-relay
+- `internal/store/yjs_updates.go` — op-log persistence
+- `web/src/lib/collab/wsProvider.svelte.ts` — client provider
+- `web/src/lib/collab/schemaVersion.ts` — client schema-version stamp
+
+### Tiptap multi-package coordinated bumps
+
+The Y.Doc/ProseMirror schema is shared across three Tiptap packages:
+
+- `@tiptap/core`
+- `@tiptap/extension-collaboration`
+- `@tiptap/y-tiptap`
+
+**Rule: bump all three together, exact-pinned to the same version.**
+Mixing minor versions across these can change the persisted Y.Doc
+shape silently — peers running mismatched bundles produce divergent
+ops that the relay can't reconcile. The `web/package.json` pins
+each one explicitly (e.g. `"@tiptap/extension-collaboration": "3.22.5"`)
+rather than using `^` ranges so npm can't slide one out of sync.
+
+A coordinated bump that changes the ProseMirror node-spec MUST also
+bump `web/src/lib/collab/schemaVersion.ts::SCHEMA_VERSION` AND
+`internal/collab/manager.go::DefaultSchemaVersion` in lockstep. The
+client announces the version on every WS connect; mismatch returns
+HTTP 400 and the room manager prunes the per-item op-log so the new
+client doesn't replay incompatible old-schema ops. items.content is
+canonical and untouched, so no edit history is lost.
+
+Pure UI/CSS/behavioural changes that don't alter the persisted
+document shape DO NOT bump the schema version. When in doubt, load
+an item edited under the old version after your change and confirm
+the rendered tree is identical.
