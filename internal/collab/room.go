@@ -145,15 +145,18 @@ type opLogStore interface {
 	// references).
 	ListDormantOpLogItemsBefore(before time.Time) ([]string, error)
 	PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error)
-	// MinOpLogID + MaxOpLogID power the resume-cursor / force-refresh
-	// + watermark-advancement protocol (TASK-1319). MinOpLogID is
-	// consulted when a reconnecting client announces `?since=<id>`:
-	// id < MIN means rows it expected to replay have been pruned, so
-	// the server sends ControlMessageForceRefresh and closes. MaxOpLogID
-	// powers the initial cursor frame after replay so the client knows
-	// where the head is even when no rows existed at replay time.
+	// MinOpLogID powers the resume-cursor / force-refresh check
+	// (TASK-1319): when a reconnecting client announces `?since=<id>`
+	// and that id is below MIN, rows it expected to replay have
+	// been pruned and the server sends ControlMessageForceRefresh.
+	// MaxOpLogID is intentionally NOT on this interface — earlier
+	// versions used it to populate the initial cursor when replay
+	// produced no rows, but Codex round 6 [P1] caught the race
+	// between MaxOpLogID and an in-flight broadcast: the cursor
+	// could advertise an id whose binary frame hadn't been
+	// delivered through this conn's writeLoop yet. The initial
+	// cursor now strictly uses `max(highestReplayed, since)`.
 	MinOpLogID(itemID string) (int64, bool, error)
-	MaxOpLogID(itemID string) (int64, bool, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels

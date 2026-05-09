@@ -530,31 +530,24 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 		return replayErr
 	}
 
-	// Anchor the client's resume cursor (TASK-1319). If the replay
-	// produced rows, advertise the highest id we sent. If not — a
-	// fresh item, an empty op-log after a recent prune, or an
-	// up-to-date `since` cursor that already covered every row —
-	// look up the current MAX and use that. Best-effort: a write
-	// error here mirrors any other writeMessage error and the read
-	// loop will tear the conn down.
+	// Anchor the client's resume cursor (TASK-1319). The cursor
+	// MUST NEVER advertise an id whose binary frame this conn
+	// hasn't actually delivered, otherwise a disconnect right after
+	// the cursor leaves the client's persisted resume cursor
+	// pointing past unreplayed rows. Two safe sources only:
+	//   - `highestReplayed`: an id we just sent the binary frame
+	//     for during replayTo.
+	//   - `since`: the client's announced cursor — the client has
+	//     already applied that op-log id locally, so re-advertising
+	//     it never regresses past content.
+	// We deliberately do NOT consult MAX(op-log.id) here: a live
+	// op that landed during replay would be reflected in MAX but
+	// hasn't been broadcast through this conn's writeLoop yet, and
+	// a cursor=MAX would let the client persist a value that
+	// outpaces its received binary frames. Per Codex round 6 [P1].
 	cursorID := highestReplayed
-	if cursorID == 0 {
-		if maxID, ok, merr := m.store.MaxOpLogID(room.itemID); merr != nil {
-			slog.Warn("collab: lookup MaxOpLogID for initial cursor failed",
-				"item_id", room.itemID,
-				"error", merr,
-			)
-		} else if ok {
-			cursorID = maxID
-		}
-		// `since > 0` callers might already be ahead of the
-		// server's MAX (e.g. they had ops the server didn't —
-		// the on-open state push will reconcile). Fall back to
-		// `since` so we don't accidentally regress the client's
-		// stored cursor.
-		if cursorID < since {
-			cursorID = since
-		}
+	if cursorID < since {
+		cursorID = since
 	}
 	// cursorID == 0 is a legitimate value for a never-touched item;
 	// emit it anyway so the client clears any stale sessionStorage

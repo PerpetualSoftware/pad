@@ -715,11 +715,25 @@ export class CollabProvider {
 				// continue (our `?since=<id>` was below MIN). Clear
 				// the persisted cursor so a downstream rebuild
 				// starts fresh, then notify the page so it can
-				// recreate the editor on a clean Y.Doc. The server
-				// closes the conn after this frame; our onClose
-				// fires regardless of order.
+				// recreate the editor on a clean Y.Doc.
 				clearStoredCursor(this.itemID);
 				this.lastOpLogID = 0;
+				// Destroy this provider SYNCHRONOUSLY before
+				// invoking the page-level handler. Without this,
+				// the consumer's recovery path is async (e.g.
+				// awaits an items.get refetch before swapping
+				// providers); meanwhile our own onClose handler
+				// schedules a reconnect that races the recovery,
+				// re-opens with `?since=0`, and pushes
+				// `Y.encodeStateAsUpdate` of the (still-stale)
+				// local Y.Doc — recreating exactly the
+				// stale-content corruption force_refresh was
+				// meant to prevent. destroy() sets
+				// `this.destroyed = true` so scheduleReconnect
+				// short-circuits, removes window/document
+				// listeners, and closes the socket. Per Codex
+				// round 6 [P1].
+				this.destroy();
 				if (this.onForceRefresh) {
 					try {
 						this.onForceRefresh();
