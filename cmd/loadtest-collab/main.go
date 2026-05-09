@@ -66,8 +66,8 @@ const (
 
 func main() {
 	url := flag.String("url", "", "WebSocket URL, e.g. ws://localhost:7777/api/v1/collab/<itemID>")
-	cookie := flag.String("cookie", "", "Cookie header to send (e.g. \"pad_session=abc123\").")
-	token := flag.String("token", "", "Bearer token for Authorization header. Either -token or -cookie is required when the server has been bootstrapped.")
+	cookie := flag.String("cookie", "", "Cookie header to send (e.g. \"pad_session=abc123\"). Pass either -cookie OR -token (or both — they set independent headers and don't conflict).")
+	token := flag.String("token", "", "Bearer token for Authorization header. Pass either -token OR -cookie when the server has been bootstrapped; both can be set together.")
 	clients := flag.Int("clients", 5, "Number of concurrent simulated editors")
 	dur := flag.Duration("duration", 30*time.Second, "How long to run the test")
 	opsPerSec := flag.Float64("ops-per-sec", 2.0, "Per-client op send rate (Hz)")
@@ -132,6 +132,14 @@ func main() {
 type runContext struct {
 	done chan struct{}
 
+	// startedAt is captured at construction. readSendTimestamp uses
+	// it as a cutoff so op-log replay frames from PRIOR test runs
+	// (whose embedded timestamps predate this run) don't inflate
+	// the latency percentiles. Without this, every fresh connect's
+	// replay would record ages-old "latencies" and the p95/p99
+	// numbers would be junk. Per Codex review [P2].
+	startedAt time.Time
+
 	totalSent     atomic.Int64
 	totalReceived atomic.Int64
 	totalErrors   atomic.Int64
@@ -147,6 +155,7 @@ type runContext struct {
 func newRunContext(d time.Duration) *runContext {
 	return &runContext{
 		done:      make(chan struct{}),
+		startedAt: time.Now(),
 		latencies: make([]time.Duration, 0, 100_000),
 	}
 }
@@ -175,8 +184,12 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 	defer conn.Close()
 
 	// Reader goroutine: every frame received counts toward
-	// totalReceived; if the frame was tagged by another client, we
-	// extract the embedded send-timestamp and record the latency.
+	// totalReceived; if the frame was tagged by another client AND
+	// its embedded timestamp falls within this run's window, we
+	// record the latency. Frames whose embedded timestamp predates
+	// `rc.startedAt` are op-log replay rows from a prior session
+	// and would inflate percentiles if recorded. Per Codex review
+	// [P2].
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -186,11 +199,32 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 				return
 			}
 			rc.totalReceived.Add(1)
-			if t := readSendTimestamp(data); !t.IsZero() {
+			if t := readSendTimestamp(data); !t.IsZero() && !t.Before(rc.startedAt) {
 				rc.recordLatency(time.Since(t))
 			}
 		}
 	}()
+
+	// Watchdog: when shutdown is signalled, close the conn from
+	// outside the writer's loop. The writer can be blocked inside
+	// `conn.WriteMessage` under server backpressure; if the only
+	// path to `conn.Close()` were the writer's own select-case,
+	// `wg.Wait()` would hang forever in that scenario. Closing the
+	// conn from a watchdog unblocks both the writer (next send
+	// errors) and the reader (ReadMessage returns), so the
+	// goroutines can drain. Per Codex review [P2].
+	go func() {
+		<-rc.done
+		_ = conn.Close()
+	}()
+
+	// Write deadline per send acts as a second line of defence: if
+	// the watchdog hasn't fired but the server is backpressuring
+	// individual frames, the writer wakes up periodically rather
+	// than wedging indefinitely. 5s is generous enough that healthy
+	// servers never trip it but tight enough that a stuck send
+	// fails fast.
+	const writeDeadline = 5 * time.Second
 
 	period := time.Duration(float64(time.Second) / opsPerSec)
 	ticker := time.NewTicker(period)
@@ -199,12 +233,27 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 	for {
 		select {
 		case <-rc.done:
-			_ = conn.Close()
+			// Watchdog above already closed the conn; just wait
+			// for the reader to drain and exit.
 			<-readerDone
 			return
 		case <-ticker.C:
-			frame := buildFrame(id, frameBytes)
+			frame, err := buildFrame(id, frameBytes)
+			if err != nil {
+				log.Printf("client %d: build frame: %v", id, err)
+				rc.totalErrors.Add(1)
+				return
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(writeDeadline))
 			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				// If shutdown is signalled, the watchdog above
+				// closed the conn from under us — this write error
+				// is expected, not a real failure. Don't pollute
+				// the errors counter with it. Per Codex review
+				// round 2 NIT.
+				if isClosedDone(rc.done) {
+					return
+				}
 				rc.totalErrors.Add(1)
 				return
 			}
@@ -213,33 +262,55 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 	}
 }
 
-// buildFrame builds a synthetic sync frame:
+// isClosedDone is a non-blocking check for "has rc.done been
+// closed?". Used by the writer's error path to distinguish a
+// real network error from a watchdog-induced close during shutdown.
+func isClosedDone(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// buildFrame builds a synthetic sync frame. Layout (offsets into the
+// returned []byte, NOT into the user-facing frameBytes parameter):
 //
-//	[0]:        yMessageSync (0x00)
-//	[1..9]:     little-endian unix-nano timestamp (used for latency)
-//	[9..17]:    little-endian client id (informational)
-//	[17..]:     random bytes padded to frameBytes total payload size
+//	[0]:       yMessageSync (0x00) — the relay's first-byte discriminator
+//	[1..9]:    little-endian unix-nano timestamp (used for latency)
+//	[9..17]:   little-endian client id (informational)
+//	[17..]:    random padding so the total length is `frameBytes+1`
+//
+// `frameBytes` is the documented "payload size excluding the 1-byte
+// sync header". The 16-byte tagged metadata occupies bytes [1..17] of
+// the returned buffer, so a `frameBytes < 16` request gets bumped to
+// 16. The buffer length is `frameBytes+1` (header byte + payload).
 //
 // The server's relay is type-0/type-1 byte-discriminator only — it
 // doesn't parse the rest. Real Yjs updates would be y-protocol
 // VarUint structures here; we use a tagged random blob because
 // load-testing the relay's persist+broadcast path doesn't require
 // real Y.Doc semantics.
-func buildFrame(clientID, frameBytes int) []byte {
-	if frameBytes < 17 {
-		frameBytes = 17 // minimum to fit our header
+//
+// Returns an error rather than killing the process via log.Fatalf
+// when crypto/rand fails — a test goroutine that exits via Fatalf
+// skips the wg.Done deferred in the caller and would also drop the
+// summary print. Per Codex review NIT.
+func buildFrame(clientID, frameBytes int) ([]byte, error) {
+	if frameBytes < 16 {
+		frameBytes = 16 // minimum to fit the tagged metadata
 	}
 	buf := make([]byte, frameBytes+1)
 	buf[0] = yMessageSync
 	binary.LittleEndian.PutUint64(buf[1:9], uint64(time.Now().UnixNano()))
 	binary.LittleEndian.PutUint64(buf[9:17], uint64(clientID))
-	if _, err := rand.Read(buf[17:]); err != nil {
-		// crypto/rand.Read failing on Linux is essentially impossible
-		// outside of EOF on /dev/urandom; treat as fatal in the
-		// load-test context.
-		log.Fatalf("rand.Read: %v", err)
+	if frameBytes > 16 {
+		if _, err := rand.Read(buf[17:]); err != nil {
+			return nil, fmt.Errorf("rand.Read: %w", err)
+		}
 	}
-	return buf
+	return buf, nil
 }
 
 // readSendTimestamp extracts the embedded ts from a frame produced
