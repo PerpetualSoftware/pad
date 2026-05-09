@@ -6,6 +6,8 @@
 	import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 	import StarterKit from '@tiptap/starter-kit';
 	import { Collaboration } from '@tiptap/extension-collaboration';
+	import { CollaborationCaret } from '@tiptap/extension-collaboration-caret';
+	import type { Awareness } from 'y-protocols/awareness';
 	import type * as Y from 'yjs';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
@@ -345,6 +347,8 @@
 		content = '',
 		editable = true,
 		ydoc,
+		awareness,
+		collabUser,
 		onUpdate,
 		onEditor,
 	}: {
@@ -367,6 +371,25 @@
 		 * accepts the constructed Y.Doc from there.
 		 */
 		ydoc?: Y.Doc;
+		/**
+		 * Optional y-protocols `Awareness` instance from the same
+		 * provider that owns `ydoc` (TASK-1263). When supplied
+		 * alongside `collabUser`, the editor registers the
+		 * CollaborationCaret extension to render remote peers'
+		 * carets + selections. Without it (or without a `ydoc`),
+		 * the cursor extension is omitted and the editor behaves
+		 * identically to single-user mode.
+		 */
+		awareness?: Awareness;
+		/**
+		 * Local user identity broadcast over awareness so peers can
+		 * label our caret. `name` is what shows in the cursor label;
+		 * `color` is the deterministic `#rrggbb` from `cursorColor.ts`
+		 * (hex is required because y-tiptap's default selectionRender
+		 * appends an alpha-hex byte and only validates hex). Both
+		 * are required when `awareness` is set.
+		 */
+		collabUser?: { name: string; color: string };
 		onUpdate?: (markdown: string) => void;
 		onEditor?: (editor: Editor) => void;
 	} = $props();
@@ -585,6 +608,26 @@
 			// shape is grep-able from a future RedisOpBus / multi-Doc
 			// path that might want a different field name per item.
 			...(ydoc ? [Collaboration.configure({ document: ydoc, field: 'default' })] : []),
+			// Presence cursors + remote selections (TASK-1263). Only
+			// register when both ydoc AND a usable awareness/user
+			// pair are present — `awareness` alone with no ydoc is
+			// nonsensical (the y-tiptap binding needs a Y.Doc) and
+			// missing user info would render an unlabelled stranger.
+			// CollaborationCaret v3 (the renamed
+			// extension-collaboration-cursor — see docs) takes a
+			// `provider`-shaped object exposing `awareness`. The full
+			// CollabProvider qualifies, but tiptap only reads
+			// `.awareness`, so we hand a minimal duck-typed object
+			// instead — keeps the editor decoupled from our
+			// CollabProvider class shape.
+			...(ydoc && awareness && collabUser
+				? [
+						CollaborationCaret.configure({
+							provider: { awareness },
+							user: collabUser,
+						}),
+					]
+				: []),
 			AttachmentUpload.configure({
 				upload: async (file) => {
 					if (!wsSlug) {
@@ -1407,5 +1450,52 @@
 	.mt-btn-add {
 		font-size: 1.1em;
 		color: var(--accent-blue);
+	}
+
+	/* CollaborationCaret presence (TASK-1263 / PLAN-1248). Styles
+	   the remote-peer carets and selections rendered by the
+	   @tiptap/extension-collaboration-caret default builders. The
+	   user's color comes through inline via `border-color` /
+	   `background-color` on the caret span and a light tint on the
+	   selection wrapper. */
+	.editor-content :global(.collaboration-carets__caret) {
+		position: relative;
+		margin-left: -1px;
+		margin-right: -1px;
+		border-left: 1px solid;
+		border-right: 1px solid;
+		word-break: normal;
+		/* `pointer-events: none` would make the caret unhoverable
+		   AND hide it from selection toolbars but that's fine — we
+		   no longer rely on hover for the label (Codex review
+		   round 1 [P2]: the caret is 1-2px wide so hover is
+		   effectively unreachable anyway). The label is now always
+		   visible while the peer is active, and the caret stays
+		   click-through so it doesn't intercept text-selection or
+		   click-to-place-cursor. */
+		pointer-events: none;
+	}
+	.editor-content :global(.collaboration-carets__label) {
+		position: absolute;
+		top: -1.4em;
+		left: -1px;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1;
+		color: #fff;
+		padding: 0.2em 0.4em;
+		border-radius: 3px 3px 3px 0;
+		white-space: nowrap;
+		user-select: none;
+		pointer-events: none;
+	}
+	/* Remote-peer selection highlight. y-tiptap's default
+	   selection builder applies `ProseMirror-yjs-selection` AND an
+	   inline `background-color: <userColor>70` (where `70` is alpha
+	   hex). We don't override the inline color here — that's
+	   already coloured per-user — but a base rule keeps the
+	   selection visible if the inline style fails to parse. */
+	.editor-content :global(.ProseMirror-yjs-selection) {
+		background-color: rgba(125, 125, 125, 0.18);
 	}
 </style>
