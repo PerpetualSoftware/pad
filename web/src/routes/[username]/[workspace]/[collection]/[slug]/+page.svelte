@@ -872,6 +872,14 @@
 			api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
 				if (!item || item.id !== reqItemId) return;
 				editorStore.setLastSaveTime(Date.now());
+				// Raw saves change items.content via a path the
+				// collab dedupe doesn't see. Without resetting
+				// lastFlushedContent, a later collab flush could
+				// dedupe a content == lastFlushedContent that no
+				// longer reflects server state and skip the PATCH,
+				// leaving items.content stuck on the raw save.
+				// Per Codex review round 7.
+				lastFlushedContent = null;
 				// Stale-response guard: only swap in the server's
 				// snapshot when no newer raw edit landed during the
 				// PATCH. Otherwise RawMarkdownEditor's content-prop
@@ -954,6 +962,12 @@
 						return false;
 					}
 					editorStore.setLastSaveTime(Date.now());
+					// Raw saves change items.content via a path the
+					// collab dedupe doesn't see; reset
+					// lastFlushedContent so a future collab flush
+					// can't skip a real PATCH. Per Codex review
+					// round 7.
+					lastFlushedContent = null;
 					// Only swap in the server's snapshot when no
 					// newer raw edit arrived during the await.
 					// RawMarkdownEditor mirrors `item.content` into
@@ -1601,26 +1615,15 @@
 								const itemId = item.id;
 								const ed = editorInstance;
 								try {
-									// lastFlushed tracks the markdown
-									// we have actually PATCHed to
-									// items.content. Seeding raw mode
-									// from anything else would let
-									// rapid concurrent peer edits
-									// (e.g. same user's other tab
-									// typing) leave the raw editor
-									// holding state that doesn't exist
-									// server-side; an immediate
-									// navigation would lose those
-									// edits. Only the LAST FLUSHED
-									// markdown is safe to seed; if a
-									// peer is still typing past our
-									// 3-iteration cap, items.content
-									// lags Y.Doc briefly until the
-									// peer's own 5s flush catches up
-									// — but at least raw mode shows
-									// state consistent with
-									// items.content. Per Codex review
-									// round 6.
+									// lastFlushed tracks markdown we
+									// have actually PATCHed to
+									// items.content (runCollabFlush
+									// returns true). On PATCH failure
+									// it stays at its prior value so
+									// rawSeedMarkdown never holds
+									// state the server never
+									// received. Per Codex review
+									// round 7.
 									let md = (ed.storage as any).markdown?.getMarkdown?.();
 									let lastFlushed: string | null = null;
 									for (let i = 0; i < 3; i++) {
@@ -1628,12 +1631,19 @@
 										// keepalive=true so the
 										// PATCH outlives a fast
 										// post-toggle navigation.
-										await runCollabFlush(ws, itemId, md, true);
-										lastFlushed = md;
+										const ok = await runCollabFlush(ws, itemId, md, true);
+										if (ok) lastFlushed = md;
 										const mdAfter = (ed.storage as any).markdown?.getMarkdown?.();
 										if (mdAfter === md) break;
 										md = mdAfter;
 									}
+									// Bail if the user navigated to a
+									// different item while we were
+									// awaiting flushes — applying
+									// rawMode + rawSeedMarkdown to
+									// the new page would be wrong.
+									// Per Codex review round 7.
+									if (!item || item.id !== itemId) return;
 									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
 								} catch {
 									// Fall through; RawMarkdownEditor
