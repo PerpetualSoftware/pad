@@ -337,6 +337,33 @@ export const api = {
 				body: JSON.stringify(data)
 			}),
 
+		/**
+		 * flushCollabContent PATCHes items.content with the
+		 * `?source=collab-snapshot` query param so the server
+		 * skips the applier-routing path. Used by the editor's
+		 * 5s-idle + on-disconnect flush (TASK-1260) — the
+		 * connected tab IS the canonical source of truth for
+		 * Y.Doc state, and routing through the applier would
+		 * loop the request back to itself.
+		 *
+		 * `keepalive` is passed straight to fetch so the
+		 * unmount / beforeunload flush path can outlive the
+		 * page lifecycle (browser holds the request open until
+		 * it completes or hits the ~64KB body cap; markdown
+		 * bodies are well under that for typical items).
+		 */
+		flushCollabContent: (
+			ws: string,
+			slug: string,
+			content: string,
+			opts?: { keepalive?: boolean },
+		) =>
+			request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
+				method: 'PATCH',
+				body: JSON.stringify({ content }),
+				keepalive: opts?.keepalive,
+			}),
+
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'DELETE'

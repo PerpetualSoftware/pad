@@ -327,8 +327,16 @@
 		// debounce too. Per Codex review round 10.
 		clearTimeout(contentDebounceTimer);
 		contentDebounceTimer = undefined;
+		clearTimeout(collabFlushTimer);
+		collabFlushTimer = undefined;
 		rawSeedMarkdown = null;
 		rawPendingMarkdown = null;
+		// lastFlushedContent is per-item; resetting prevents the
+		// dedupe from incorrectly suppressing the first flush on
+		// the next item (which happens to share the same markdown
+		// as the last flush of the previous item — vanishingly
+		// unlikely but trivial to defend).
+		lastFlushedContent = null;
 		// Reset transient save UI state too. Without this, a stale
 		// raw PATCH that gets discarded by the new race guard
 		// (item.id mismatch) leaves saveStatus pinned at 'saving' on
@@ -496,6 +504,15 @@
 		collabProvider = provider;
 
 		return () => {
+			// Best-effort flush of items.content BEFORE we tear the
+			// provider down. The Y.Doc + op-log are canonical, but
+			// downstream consumers (search, share-page, exports,
+			// API readers) read items.content; without this flush a
+			// user closing the tab right after typing would leave
+			// items.content frozen at the prior 5s tick. keepalive=
+			// true lets the request outlive the page lifecycle.
+			// Per TASK-1260.
+			flushCollabNow(true);
 			provider.destroy();
 			doc.destroy();
 			// Defensive — only clear the slot if it still holds the
@@ -504,6 +521,21 @@
 			if (ydoc === doc) ydoc = null;
 			if (collabProvider === provider) collabProvider = null;
 		};
+	});
+
+	// beforeunload: same flush as $effect cleanup, but routed
+	// through the page lifecycle so navigation off-site (close tab,
+	// reload, follow external link) lands the markdown snapshot
+	// before the WS dies. fetch keepalive: true is the modern
+	// equivalent of sendBeacon for non-POST requests; supports up to
+	// ~64KB body which dwarfs typical markdown items.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const onBeforeUnload = () => {
+			if (collabProvider) flushCollabNow(true);
+		};
+		window.addEventListener('beforeunload', onBeforeUnload);
+		return () => window.removeEventListener('beforeunload', onBeforeUnload);
 	});
 
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
@@ -616,20 +648,31 @@
 		}
 	}
 
+	// Tracks the last markdown we successfully PATCHed to items.content
+	// in collab-flush mode. Lets the idle-fire dedupe redundant flushes
+	// across multiple connected tabs that all converge on the same
+	// Y.Doc state — without this, every tab fires its own 5s flush
+	// after every shared edit, multiplying server PATCH load by the
+	// peer count.
+	let lastFlushedContent: string | null = null;
+
+	// 5s-idle timer for the collab flush path. Distinct from
+	// contentDebounceTimer (which the legacy non-collab and raw-mode
+	// paths still use) so the two firings don't trample each other on
+	// rapid mode toggles.
+	let collabFlushTimer: ReturnType<typeof setTimeout> | undefined;
+	const COLLAB_FLUSH_IDLE_MS = 5_000;
+
 	function handleContentUpdate(markdown: string) {
-		// Suppress the legacy 1.2s autosave when the collab provider
-		// owns this editor's content. Routing the PATCH through the
-		// server while a provider is connected would loop the
-		// applier protocol back to this same tab (a no-op
-		// round-trip), then set input.Content = nil server-side so
-		// items.content never gets the snapshot — leaving canonical
-		// markdown stale for search / share-page / API consumers.
-		// TASK-1260 introduces the proper 5s idle flush that bypasses
-		// applier with a `?source=collab-flush` semantic; this guard
-		// is the temporary stop-gap for the inter-PR window. Per
-		// Codex review round 4.
+		// Collab-active path: 5s idle flush of items.content via the
+		// `?source=collab-snapshot` bypass (server skips the applier
+		// loop, writes items.content directly). Y.Doc op-log is
+		// canonical for live state; items.content stays "reasonably
+		// fresh" for search / share-page / API consumers. Per
+		// TASK-1260 / PLAN-1248.
 		if (collabProvider) {
 			editorStore.setDirty(true);
+			scheduleCollabFlush(markdown);
 			return;
 		}
 		clearTimeout(contentDebounceTimer);
@@ -657,6 +700,77 @@
 				toastStore.show('Failed to save content', 'error');
 			});
 		}, 1200);
+	}
+
+	function scheduleCollabFlush(markdown: string) {
+		clearTimeout(collabFlushTimer);
+		collabFlushTimer = setTimeout(() => {
+			collabFlushTimer = undefined;
+			void runCollabFlush(markdown, false);
+		}, COLLAB_FLUSH_IDLE_MS);
+	}
+
+	// runCollabFlush PATCHes items.content via the
+	// `?source=collab-snapshot` bypass. Returns true if a request
+	// actually fired (markdown differed from lastFlushedContent),
+	// false if the dedupe skipped it. Set `keepalive` for the
+	// unmount / beforeunload path so the request can outlive the
+	// page lifecycle.
+	async function runCollabFlush(markdown: string, keepalive: boolean): Promise<boolean> {
+		if (!item) return false;
+		const allItems = collectionStore.items ?? [];
+		let toSave = markdown;
+		if (allItems.length > 0) {
+			toSave = markdownToWikiLinks(toSave, allItems);
+		}
+		toSave = cleanBrokenLinks(toSave);
+		// Dedupe: skip the PATCH if our last successful flush already
+		// landed this exact content. Multiple connected tabs would
+		// otherwise each fire a redundant PATCH after every shared
+		// edit converges.
+		if (lastFlushedContent === toSave) return false;
+		const reqItemId = item.id;
+		try {
+			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
+			await api.items.flushCollabContent(wsSlug, reqItemId, toSave, { keepalive });
+			lastFlushedContent = toSave;
+			if (item && item.id === reqItemId) {
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
+				showSaved();
+			}
+			return true;
+		} catch {
+			if (item && item.id === reqItemId) {
+				saveStatus = 'idle';
+				// Quiet on the unmount path (no UI to show toast in)
+				// but log so dropped flushes are diagnosable from
+				// devtools when investigating "items.content stale".
+				if (!keepalive) toastStore.show('Failed to save content', 'error');
+			}
+			return false;
+		}
+	}
+
+	// flushCollabNow fires the pending flush IMMEDIATELY (cancelling
+	// the 5s timer). Used by $effect cleanup + beforeunload to land
+	// any in-flight markdown before the provider tears down.
+	function flushCollabNow(keepalive: boolean): boolean {
+		clearTimeout(collabFlushTimer);
+		collabFlushTimer = undefined;
+		if (!editorInstance) return false;
+		let md: string;
+		try {
+			md = (editorInstance.storage as any).markdown?.getMarkdown?.() ?? '';
+		} catch {
+			return false;
+		}
+		// runCollabFlush is async but its return value is irrelevant
+		// for the synchronous callers — fire-and-forget under
+		// keepalive=true is the contract on the unmount path.
+		void runCollabFlush(md, keepalive);
+		return true;
 	}
 
 	// Latest raw markdown that hasn't yet been PATCHed. Tracked

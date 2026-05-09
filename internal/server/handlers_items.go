@@ -493,7 +493,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// post-write snapshot for the response. Per Codex review round 9.
 	var fullWriteHandled bool
 	var fullWriteUpdated *models.Item
-	if input.Content != nil && s.collab != nil {
+	// `?source=collab-snapshot` opts out of the applier-routing path so
+	// a connected collab tab can flush its Y.Doc-derived markdown to
+	// items.content WITHOUT looping back through ApplyExternalContent
+	// (which would ask this same tab to apply, ack, and then strip
+	// input.Content — leaving items.content unchanged). The flag is
+	// trustworthy because the caller already has edit access (else the
+	// PATCH would 401/403); the bypass just skips a defensive
+	// re-routing that's only useful for EXTERNAL content updates.
+	// Per TASK-1260 / PLAN-1248.
+	collabSnapshot := r.URL.Query().Get("source") == "collab-snapshot"
+
+	if input.Content != nil && s.collab != nil && !collabSnapshot {
 		// applyContentViaCollab calls directWrite ONLY on the no-
 		// room/no-applier paths (where pruning the op-log is safe
 		// and we need to land items.content under the per-item
