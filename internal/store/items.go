@@ -866,7 +866,13 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		if createdBy == "" {
 			createdBy = "user"
 		}
-		source := input.Source
+		// VersionSource takes precedence so the per-version-row
+		// attribution can differ from the (persisted) item source.
+		// See ItemUpdate.VersionSource doc comment + TASK-1267.
+		source := input.VersionSource
+		if source == "" {
+			source = input.Source
+		}
 		if source == "" {
 			source = "web"
 		}

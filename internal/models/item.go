@@ -535,8 +535,18 @@ type ItemUpdate struct {
 	AgentRoleID    *string `json:"agent_role_id,omitempty"`
 	LastModifiedBy string  `json:"last_modified_by,omitempty"`
 	Source         string  `json:"source,omitempty"`
-	ChangeSummary  string  `json:"change_summary,omitempty"`
-	Comment        *string `json:"comment,omitempty"`
+	// VersionSource overrides the per-version-row Source attribution
+	// without mutating `items.source`. When unset (the common case),
+	// the version row inherits the same value as `items.source`
+	// (whatever Source ends up being). When set, the version row
+	// uses VersionSource and `items.source` is left alone — used by
+	// the collab 5s-flush PATCH handler so an auto-flush doesn't
+	// re-attribute a CLI/MCP-created item to "collab-snapshot" and
+	// silently flip it out of `WorkspaceHasAgentActivity`'s count.
+	// Per Codex review round 3 of TASK-1267 [P2].
+	VersionSource string  `json:"version_source,omitempty"`
+	ChangeSummary string  `json:"change_summary,omitempty"`
+	Comment       *string `json:"comment,omitempty"`
 	// ClearAssignedUser / ClearAgentRole allow explicitly setting to NULL
 	// (since nil pointer means "don't change" in partial updates)
 	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`

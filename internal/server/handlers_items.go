@@ -504,6 +504,25 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// Per TASK-1260 / PLAN-1248.
 	collabSnapshot := r.URL.Query().Get("source") == "collab-snapshot"
 
+	// Stamp the per-version-row attribution so the Versions panel /
+	// `pad history` views can distinguish auto-flush snapshots from
+	// the user's explicit edits. Without this, every collab-driven
+	// 5s flush would land as Source="web" (UpdateItem's default
+	// when input.Source is empty — see store/items.go's UpdateItem),
+	// triggering the per-(actor, source) throttle and silently
+	// suppressing follow-up snapshots from a long editing session.
+	//
+	// IMPORTANT: this uses VersionSource (not Source) so the
+	// attribution lands on the version row only and does NOT mutate
+	// `items.source`. Mutating items.source would silently flip a
+	// CLI/MCP-created item out of `WorkspaceHasAgentActivity`'s
+	// `source IN ('cli', 'mcp')` filter just because the user
+	// happened to open the editor and trigger a 5s auto-flush. Per
+	// Codex round 3 of TASK-1267 [P2].
+	if collabSnapshot && input.VersionSource == "" {
+		input.VersionSource = "collab-snapshot"
+	}
+
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
 		// applyContentViaCollab calls directWrite ONLY on the no-
 		// room/no-applier paths (where pruning the op-log is safe
