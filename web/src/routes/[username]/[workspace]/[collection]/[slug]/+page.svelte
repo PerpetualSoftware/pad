@@ -538,6 +538,10 @@
 			provider.destroy();
 			doc.destroy();
 			if (activeCollabContext === ctx) activeCollabContext = null;
+			// Reset seededProvider so a future provider for this
+			// item (e.g. raw→rich toggle) is re-eligible for the
+			// lazy seed if its op-log was pruned in the interim.
+			if (seededProvider === provider) seededProvider = null;
 			// Defensive — only clear the slot if it still holds the
 			// pair we created. A reactive churn that swapped a new
 			// pair in before this cleanup ran shouldn't get clobbered.
@@ -560,6 +564,57 @@
 		};
 		window.addEventListener('beforeunload', onBeforeUnload);
 		return () => window.removeEventListener('beforeunload', onBeforeUnload);
+	});
+
+	// Lazy seed (TASK-1261 / PLAN-1248). When a fresh collab session
+	// completes its initial sync against an EMPTY op-log, the editor
+	// renders a blank document — even if items.content holds existing
+	// markdown. This effect fires once per provider, after the
+	// `synced` reactive flag flips true: if the Y.Doc fragment is
+	// genuinely empty AND items.content is non-empty, it calls
+	// editor.commands.setContent with the markdown. The y-tiptap
+	// binding turns that into Y.Doc ops which persist to the op-log
+	// + propagate to peers — so subsequent connects (and other live
+	// peers) see the content via the normal replay path.
+	//
+	// Idempotence: seededProvider tracks which provider instance we
+	// already tried. A new provider (item swap, canEdit flip, etc.)
+	// resets eligibility automatically because its reference !==
+	// seededProvider.
+	//
+	// Multi-tab race: if two tabs finish their initial sync in the
+	// same microsecond and both find the fragment empty, both fire
+	// setContent. Y.Doc CRDT merges the two replace-ops with
+	// last-write-wins semantics on the same content — the worst-case
+	// outcome is one wasted op. Acceptable for v1; a designated-
+	// seeder lock (Y.Map flag) is a follow-up if observed in the
+	// wild.
+	$effect(() => {
+		if (!collabProvider || !ydoc || !editorInstance || !item) return;
+		if (!collabProvider.synced) return;
+		if (seededProvider === collabProvider) return;
+		seededProvider = collabProvider;
+
+		// Y.Doc emptiness check. The Collaboration extension binds
+		// to the fragment named 'default' (TASK-1258 / Editor.svelte
+		// configure). Length 0 means no XML nodes — i.e. the
+		// underlying ProseMirror doc is empty.
+		const fragment = ydoc.getXmlFragment('default');
+		if (fragment.length > 0) return;
+
+		const seedRaw = item.content ?? '';
+		if (!seedRaw.trim()) return;
+
+		// Match Editor's onUpdate path: seed in URL-form markdown so
+		// wiki-links resolve to clickable refs. The 5s flush will
+		// later round-trip back to canonical [[wiki-link]] form via
+		// markdownToWikiLinks.
+		const allItems = collectionStore.items ?? [];
+		const seedMd =
+			allItems.length > 0 && seedRaw.includes('[[')
+				? wikiLinksToMarkdown(seedRaw, allItems, wsSlug, username)
+				: seedRaw;
+		editorInstance.commands.setContent(seedMd);
 	});
 
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
@@ -735,6 +790,12 @@
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
 	let activeCollabContext: { wsSlug: string; itemId: string } | null = null;
+
+	// Provider we've already attempted the lazy seed against. Reset
+	// implicitly when collabProvider is replaced (the new provider
+	// !== seededProvider, so the seed effect re-fires). Per
+	// TASK-1261 / PLAN-1248.
+	let seededProvider: CollabProvider | null = null;
 
 	function scheduleCollabFlush(markdown: string) {
 		clearTimeout(collabFlushTimer);
