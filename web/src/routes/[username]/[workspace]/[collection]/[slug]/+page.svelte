@@ -1578,35 +1578,39 @@
 					<button
 						class="mode-btn"
 						class:active={rawMode}
-						onclick={() => {
+						onclick={async () => {
 							// When toggling FROM rich+collab TO raw,
 							// the editor's live markdown is the
-							// canonical state — items.content has
-							// been intentionally stale since
-							// handleContentUpdate is suppressed
-							// while the provider is connected
-							// (TASK-1260 will close this with a
-							// proper 5s flush). Capture the live
-							// markdown so RawMarkdownEditor seeds
-							// from Y.Doc state rather than stale
-							// items.content. Per Codex review round
-							// 9.
-							if (collabProvider && editorInstance) {
+							// canonical state. Synchronously flush
+							// it to items.content via the collab-
+							// snapshot bypass BEFORE activating raw
+							// mode. Without this, a user who toggles
+							// to raw and immediately navigates away
+							// (without typing) would never persist
+							// the live Y.Doc snapshot — items.content
+							// would stay frozen at the prior 5s
+							// tick. The await ensures the PATCH is
+							// in flight (and lastFlushedContent is
+							// seeded) before any subsequent raw
+							// debounce can race it. Per Codex review
+							// round 4.
+							//
+							// rawSeedMarkdown is also set so
+							// RawMarkdownEditor mounts with the live
+							// markdown rather than stale
+							// items.content (in case the user types
+							// before the flush response lands).
+							if (collabProvider && editorInstance && item) {
 								try {
 									const md = (editorInstance.storage as any).markdown?.getMarkdown?.();
 									if (typeof md === 'string') {
 										rawSeedMarkdown = md;
-										// Pre-populate the pending
-										// queue so the first
-										// auto-save actually
-										// persists the live state
-										// to items.content (the
-										// no-room path will then
-										// prune the op-log + write
-										// items.content under the
-										// per-item lock).
-										rawPendingMarkdown = md;
-										editorStore.setDirty(true);
+										const ws = wsSlug;
+										const itemId = item.id;
+										// keepalive=true so the
+										// PATCH outlives a fast
+										// post-toggle navigation.
+										await runCollabFlush(ws, itemId, md, true);
 									}
 								} catch {
 									// Fall through; RawMarkdownEditor
