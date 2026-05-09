@@ -1601,18 +1601,40 @@
 								const itemId = item.id;
 								const ed = editorInstance;
 								try {
+									// lastFlushed tracks the markdown
+									// we have actually PATCHed to
+									// items.content. Seeding raw mode
+									// from anything else would let
+									// rapid concurrent peer edits
+									// (e.g. same user's other tab
+									// typing) leave the raw editor
+									// holding state that doesn't exist
+									// server-side; an immediate
+									// navigation would lose those
+									// edits. Only the LAST FLUSHED
+									// markdown is safe to seed; if a
+									// peer is still typing past our
+									// 3-iteration cap, items.content
+									// lags Y.Doc briefly until the
+									// peer's own 5s flush catches up
+									// — but at least raw mode shows
+									// state consistent with
+									// items.content. Per Codex review
+									// round 6.
 									let md = (ed.storage as any).markdown?.getMarkdown?.();
+									let lastFlushed: string | null = null;
 									for (let i = 0; i < 3; i++) {
 										if (typeof md !== 'string') break;
 										// keepalive=true so the
 										// PATCH outlives a fast
 										// post-toggle navigation.
 										await runCollabFlush(ws, itemId, md, true);
+										lastFlushed = md;
 										const mdAfter = (ed.storage as any).markdown?.getMarkdown?.();
 										if (mdAfter === md) break;
 										md = mdAfter;
 									}
-									if (typeof md === 'string') rawSeedMarkdown = md;
+									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
 								} catch {
 									// Fall through; RawMarkdownEditor
 									// will seed from item.content.
