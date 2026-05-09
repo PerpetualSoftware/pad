@@ -16,7 +16,7 @@
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import { goto } from '$app/navigation';
-	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
+	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
@@ -327,8 +327,16 @@
 		// debounce too. Per Codex review round 10.
 		clearTimeout(contentDebounceTimer);
 		contentDebounceTimer = undefined;
+		clearTimeout(collabFlushTimer);
+		collabFlushTimer = undefined;
 		rawSeedMarkdown = null;
 		rawPendingMarkdown = null;
+		// lastFlushedContent is per-item; resetting prevents the
+		// dedupe from incorrectly suppressing the first flush on
+		// the next item (which happens to share the same markdown
+		// as the last flush of the previous item — vanishingly
+		// unlikely but trivial to defend).
+		lastFlushedContent = null;
 		// Reset transient save UI state too. Without this, a stale
 		// raw PATCH that gets discarded by the new race guard
 		// (item.id mismatch) leaves saveStatus pinned at 'saving' on
@@ -456,6 +464,11 @@
 	$effect(() => {
 		if (!collabKey) return;
 		const itemId = collabKey;
+		// Snapshot the workspace alongside the itemId. activeCollabContext
+		// is what the timer-driven + cleanup-driven flushes target so
+		// they always PATCH the right URL even after navigation.
+		const ctx = { wsSlug, itemId };
+		activeCollabContext = ctx;
 
 		const doc = new Y.Doc();
 		const provider = new CollabProvider(itemId, doc, {
@@ -496,14 +509,57 @@
 		collabProvider = provider;
 
 		return () => {
+			// Best-effort flush of items.content BEFORE we tear the
+			// provider down. The Y.Doc + op-log are canonical, but
+			// downstream consumers (search, share-page, exports,
+			// API readers) read items.content; without this flush a
+			// user closing the tab right after typing would leave
+			// items.content frozen at the prior 5s tick. We pass
+			// the captured ctx (NOT live reactive state) so a
+			// navigation that already updated `item` and `wsSlug`
+			// doesn't mis-route this flush to a different item.
+			// keepalive=true lets the request outlive the page
+			// lifecycle. Per TASK-1260.
+			//
+			// EXCEPTION: skip the flush if the cleanup is firing
+			// because the user just toggled INTO raw mode. The
+			// raw-button onclick already pre-populated
+			// rawPendingMarkdown with the live editor markdown, so
+			// the 1.2s raw debounce will land items.content cleanly.
+			// A keepalive collab-snapshot PATCH from here is
+			// fire-and-forget and can arrive AFTER the raw save —
+			// clobbering newer raw edits with the older Y.Doc
+			// snapshot. The other cleanup triggers (item nav,
+			// canEdit flip, page unmount) all benefit from the
+			// flush. Per Codex review round 3.
+			if (!rawMode) {
+				flushCollabNow(ctx, true);
+			}
 			provider.destroy();
 			doc.destroy();
+			if (activeCollabContext === ctx) activeCollabContext = null;
 			// Defensive — only clear the slot if it still holds the
 			// pair we created. A reactive churn that swapped a new
 			// pair in before this cleanup ran shouldn't get clobbered.
 			if (ydoc === doc) ydoc = null;
 			if (collabProvider === provider) collabProvider = null;
 		};
+	});
+
+	// beforeunload: same flush as $effect cleanup, but routed
+	// through the page lifecycle so navigation off-site (close tab,
+	// reload, follow external link) lands the markdown snapshot
+	// before the WS dies. fetch keepalive: true is the modern
+	// equivalent of sendBeacon for non-POST requests; supports up to
+	// ~64KB body which dwarfs typical markdown items.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const onBeforeUnload = () => {
+			const ctx = activeCollabContext;
+			if (ctx) flushCollabNow(ctx, true);
+		};
+		window.addEventListener('beforeunload', onBeforeUnload);
+		return () => window.removeEventListener('beforeunload', onBeforeUnload);
 	});
 
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
@@ -616,20 +672,31 @@
 		}
 	}
 
+	// Tracks the last markdown we successfully PATCHed to items.content
+	// in collab-flush mode. Lets the idle-fire dedupe redundant flushes
+	// across multiple connected tabs that all converge on the same
+	// Y.Doc state — without this, every tab fires its own 5s flush
+	// after every shared edit, multiplying server PATCH load by the
+	// peer count.
+	let lastFlushedContent: string | null = null;
+
+	// 5s-idle timer for the collab flush path. Distinct from
+	// contentDebounceTimer (which the legacy non-collab and raw-mode
+	// paths still use) so the two firings don't trample each other on
+	// rapid mode toggles.
+	let collabFlushTimer: ReturnType<typeof setTimeout> | undefined;
+	const COLLAB_FLUSH_IDLE_MS = 5_000;
+
 	function handleContentUpdate(markdown: string) {
-		// Suppress the legacy 1.2s autosave when the collab provider
-		// owns this editor's content. Routing the PATCH through the
-		// server while a provider is connected would loop the
-		// applier protocol back to this same tab (a no-op
-		// round-trip), then set input.Content = nil server-side so
-		// items.content never gets the snapshot — leaving canonical
-		// markdown stale for search / share-page / API consumers.
-		// TASK-1260 introduces the proper 5s idle flush that bypasses
-		// applier with a `?source=collab-flush` semantic; this guard
-		// is the temporary stop-gap for the inter-PR window. Per
-		// Codex review round 4.
+		// Collab-active path: 5s idle flush of items.content via the
+		// `?source=collab-snapshot` bypass (server skips the applier
+		// loop, writes items.content directly). Y.Doc op-log is
+		// canonical for live state; items.content stays "reasonably
+		// fresh" for search / share-page / API consumers. Per
+		// TASK-1260 / PLAN-1248.
 		if (collabProvider) {
 			editorStore.setDirty(true);
+			scheduleCollabFlush(markdown);
 			return;
 		}
 		clearTimeout(contentDebounceTimer);
@@ -657,6 +724,129 @@
 				toastStore.show('Failed to save content', 'error');
 			});
 		}, 1200);
+	}
+
+	// activeCollabContext holds the (workspace, item) the currently-
+	// connected provider was minted against. Capturing this at
+	// $effect-body time (NOT at flush time) makes the flush path
+	// resistant to navigation: if the user moves to a new item
+	// between schedule and fire, the timer-driven and cleanup-driven
+	// flushes still PATCH the OLD item's URL with its OLD markdown,
+	// so we never cross-write one item's content into another. Per
+	// Codex review round 1.
+	let activeCollabContext: { wsSlug: string; itemId: string } | null = null;
+
+	function scheduleCollabFlush(markdown: string) {
+		clearTimeout(collabFlushTimer);
+		const ctx = activeCollabContext;
+		if (!ctx) return;
+		collabFlushTimer = setTimeout(() => {
+			collabFlushTimer = undefined;
+			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false);
+		}, COLLAB_FLUSH_IDLE_MS);
+	}
+
+	// CollabFlushResult discriminates the three outcomes runCollabFlush
+	// can produce so callers can act on them differently:
+	//   - 'flushed' — PATCH succeeded; items.content now matches.
+	//   - 'deduped' — skipped because lastFlushedContent already
+	//     matched; items.content is ALREADY at this content (the
+	//     previous successful flush put it there). Treated by the
+	//     rich→raw toggle as equivalent to 'flushed' for seeding
+	//     purposes — both mean "server has this markdown."
+	//   - 'failed' — PATCH errored. The toggle path bails so we
+	//     don't enter raw mode with stale state.
+	// Per Codex review round 8.
+	type CollabFlushResult = 'flushed' | 'deduped' | 'failed';
+
+	// runCollabFlush PATCHes items.content via the
+	// `?source=collab-snapshot` bypass. Takes ws/item from the
+	// captured context (NOT live reactive state) so a navigation in
+	// flight doesn't mis-route the PATCH to a different item.
+	async function runCollabFlush(
+		ws: string,
+		itemId: string,
+		markdown: string,
+		keepalive: boolean,
+	): Promise<CollabFlushResult> {
+		const allItems = collectionStore.items ?? [];
+		let toSave = unescapeDocLinks(markdown);
+		if (allItems.length > 0) {
+			toSave = markdownToWikiLinks(toSave, allItems);
+		}
+		toSave = cleanBrokenLinks(toSave);
+		// Dedupe: skip the PATCH if our last successful flush
+		// already landed this exact content. Multiple connected
+		// tabs would otherwise each fire a redundant PATCH after
+		// every shared edit converges. Returns 'deduped' (NOT
+		// 'failed') so callers can distinguish "no work needed"
+		// from a real error. Per Codex review round 8.
+		if (lastFlushedContent === toSave) return 'deduped';
+
+		// UI mutations only fire when:
+		//   - This is a foreground (user-driven) flush (!keepalive),
+		//     AND
+		//   - The user is still looking at the item we're flushing
+		//     (item.id === itemId).
+		// Background (keepalive=true) cleanup flushes after
+		// navigation MUST NOT touch saveStatus / lastSaveTime —
+		// those slots belong to whatever item the user is now on,
+		// and stamping them from a stale flush leaves the new page
+		// pinned in 'Saving...' indefinitely. Per Codex review
+		// round 2.
+		const isForegroundCurrent = (): boolean =>
+			!keepalive && !!item && item.id === itemId;
+
+		if (isForegroundCurrent()) {
+			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
+		}
+		try {
+			await api.items.flushCollabContent(ws, itemId, toSave, { keepalive });
+			// lastFlushedContent is per-item; only seed it if the
+			// item we just flushed is still the active one.
+			// Otherwise a stale flush could pollute the new page's
+			// dedupe state.
+			if (item && item.id === itemId) {
+				lastFlushedContent = toSave;
+			}
+			if (isForegroundCurrent()) {
+				editorStore.setLastSaveTime(Date.now());
+				editorStore.setDirty(false);
+				showSaved();
+			}
+			return 'flushed';
+		} catch {
+			if (isForegroundCurrent()) {
+				saveStatus = 'idle';
+				toastStore.show('Failed to save content', 'error');
+			}
+			return 'failed';
+		}
+	}
+
+	// flushCollabNow fires the pending flush IMMEDIATELY (cancelling
+	// the 5s timer). Takes the explicit ctx the cleanup captured —
+	// reading editorInstance.storage at this instant is correct
+	// because Svelte runs parent $effect cleanups BEFORE child
+	// {#key}-driven unmounts, so the OLD editor (whose markdown we
+	// want) is still mounted. Used by $effect cleanup + beforeunload
+	// to land any in-flight markdown before the provider tears down.
+	function flushCollabNow(ctx: { wsSlug: string; itemId: string }, keepalive: boolean): boolean {
+		clearTimeout(collabFlushTimer);
+		collabFlushTimer = undefined;
+		if (!editorInstance) return false;
+		let md: string;
+		try {
+			md = (editorInstance.storage as any).markdown?.getMarkdown?.() ?? '';
+		} catch {
+			return false;
+		}
+		// runCollabFlush is async but its return value is irrelevant
+		// for synchronous callers — fire-and-forget under
+		// keepalive=true is the contract on the unmount path.
+		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive);
+		return true;
 	}
 
 	// Latest raw markdown that hasn't yet been PATCHed. Tracked
@@ -696,6 +886,14 @@
 			api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
 				if (!item || item.id !== reqItemId) return;
 				editorStore.setLastSaveTime(Date.now());
+				// Raw saves change items.content via a path the
+				// collab dedupe doesn't see. Without resetting
+				// lastFlushedContent, a later collab flush could
+				// dedupe a content == lastFlushedContent that no
+				// longer reflects server state and skip the PATCH,
+				// leaving items.content stuck on the raw save.
+				// Per Codex review round 7.
+				lastFlushedContent = null;
 				// Stale-response guard: only swap in the server's
 				// snapshot when no newer raw edit landed during the
 				// PATCH. Otherwise RawMarkdownEditor's content-prop
@@ -778,6 +976,12 @@
 						return false;
 					}
 					editorStore.setLastSaveTime(Date.now());
+					// Raw saves change items.content via a path the
+					// collab dedupe doesn't see; reset
+					// lastFlushedContent so a future collab flush
+					// can't skip a real PATCH. Per Codex review
+					// round 7.
+					lastFlushedContent = null;
 					// Only swap in the server's snapshot when no
 					// newer raw edit arrived during the await.
 					// RawMarkdownEditor mirrors `item.content` into
@@ -1402,41 +1606,90 @@
 					<button
 						class="mode-btn"
 						class:active={rawMode}
-						onclick={() => {
-							// When toggling FROM rich+collab TO raw,
-							// the editor's live markdown is the
-							// canonical state — items.content has
-							// been intentionally stale since
-							// handleContentUpdate is suppressed
-							// while the provider is connected
-							// (TASK-1260 will close this with a
-							// proper 5s flush). Capture the live
-							// markdown so RawMarkdownEditor seeds
-							// from Y.Doc state rather than stale
-							// items.content. Per Codex review round
-							// 9.
-							if (collabProvider && editorInstance) {
+						onclick={async () => {
+							// Toggle rich+collab → raw. We need to
+							// land the live Y.Doc state in
+							// items.content BEFORE activating raw
+							// mode so the raw editor (and any
+							// subsequent navigation) sees the
+							// current markdown. The provider stays
+							// connected during the await, which means
+							// a concurrent peer (e.g. same user's
+							// other tab) can keep editing the Y.Doc
+							// while we flush — those edits would be
+							// lost from the seed if we captured md
+							// once. Loop-flush until stable: re-read
+							// the editor's current markdown after
+							// each PATCH; if it changed, flush again.
+							// Capped at 3 iterations to bound the
+							// transition under aggressive concurrent
+							// typing. Per Codex review round 5.
+							if (collabProvider && editorInstance && item) {
+								const ws = wsSlug;
+								const itemId = item.id;
+								const ed = editorInstance;
 								try {
-									const md = (editorInstance.storage as any).markdown?.getMarkdown?.();
-									if (typeof md === 'string') {
-										rawSeedMarkdown = md;
-										// Pre-populate the pending
-										// queue so the first
-										// auto-save actually
-										// persists the live state
-										// to items.content (the
-										// no-room path will then
-										// prune the op-log + write
-										// items.content under the
-										// per-item lock).
-										rawPendingMarkdown = md;
-										editorStore.setDirty(true);
+									// keepalive=false on the explicit
+									// toggle — the await is
+									// foreground/synchronous and
+									// keepalive's ~64KB body cap can
+									// reject larger payloads,
+									// silently leaving items.content
+									// stale. Cleanup-driven flushes
+									// still use keepalive=true; this
+									// path doesn't need it because
+									// the user clicked a button and
+									// is expecting to wait. Per
+									// Codex review round 8.
+									let md = (ed.storage as any).markdown?.getMarkdown?.();
+									let lastFlushed: string | null = null;
+									let aborted = false;
+									for (let i = 0; i < 3; i++) {
+										if (typeof md !== 'string') break;
+										const result = await runCollabFlush(ws, itemId, md, false);
+										if (result === 'failed') {
+											// PATCH errored — refuse
+											// to enter raw mode
+											// rather than silently
+											// seed from stale state.
+											// runCollabFlush already
+											// surfaced the toast.
+											// Per Codex review round 8.
+											aborted = true;
+											break;
+										}
+										// 'flushed' or 'deduped' —
+										// items.content matches md.
+										// Treat both as a successful
+										// flush for seeding purposes.
+										lastFlushed = md;
+										if (result === 'deduped') break;
+										const mdAfter = (ed.storage as any).markdown?.getMarkdown?.();
+										if (mdAfter === md) break;
+										md = mdAfter;
 									}
+									if (aborted) return;
+									// Bail if the user navigated to a
+									// different item while we were
+									// awaiting flushes — applying
+									// rawMode + rawSeedMarkdown to
+									// the new page would be wrong.
+									// Per Codex review round 7.
+									if (!item || item.id !== itemId) return;
+									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
 								} catch {
 									// Fall through; RawMarkdownEditor
 									// will seed from item.content.
 								}
 							}
+							// Cancel any pending timer-driven flush
+							// scheduled by edits during the await
+							// window — left armed, it would fire
+							// post-rawMode and PATCH a stale rich
+							// markdown over a subsequent raw save.
+							// Per Codex review round 5.
+							clearTimeout(collabFlushTimer);
+							collabFlushTimer = undefined;
 							rawMode = true;
 						}}
 						title="Raw markdown editor"
