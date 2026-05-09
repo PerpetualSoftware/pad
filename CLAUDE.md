@@ -270,6 +270,16 @@ binary protocol). The relevant code lives in:
 - `web/src/lib/collab/wsProvider.svelte.ts` — client provider
 - `web/src/lib/collab/schemaVersion.ts` — client schema-version stamp
 
+**Collab requires no additional container deps; the single Go binary
+remains the self-hosted shape.** The dumb-relay design (server
+persists raw Yjs binary updates without parsing them) means there's
+no Yjs Go port to vendor and no separate sync-server process to run.
+The op-log lives in the same SQLite/Postgres as everything else, and
+the WebSocket relay is part of the main HTTP listener. Multi-instance
+Redis fanout is deliberately out of scope for v1 (single-instance
+everywhere); when horizontal scaling is needed it lands as a separate
+IDEA, not a self-host complication.
+
 ### Tiptap multi-package coordinated bumps
 
 The Y.Doc/ProseMirror schema is shared across three Tiptap packages:
