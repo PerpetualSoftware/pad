@@ -1,6 +1,7 @@
 # Binary
 /pad
 /pad.exe
+/loadtest-collab
 
 # Web build output
 web/build/
