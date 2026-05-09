@@ -11,7 +11,7 @@
 	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
 	import type { Editor as EditorType } from '@tiptap/core';
 	import * as Y from 'yjs';
-	import { CollabProvider } from '$lib/collab/wsProvider.svelte';
+	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
@@ -1385,6 +1385,26 @@
 			moving = false;
 		}
 	}
+
+	// TASK-1264: human-readable label + tooltip for the four-state
+	// CollabConnectionState. Centralized here so the markup branches on
+	// the variant only once.
+	function collabStateLabel(s: CollabConnectionState): string {
+		switch (s) {
+			case 'synced': return 'Synced';
+			case 'connecting': return 'Connecting…';
+			case 'reconnecting': return 'Reconnecting…';
+			case 'offline': return 'Offline';
+		}
+	}
+	function collabStateTitle(s: CollabConnectionState): string {
+		switch (s) {
+			case 'synced': return 'Real-time collaboration active. Changes sync instantly.';
+			case 'connecting': return 'Connecting to the collaboration server…';
+			case 'reconnecting': return 'Connection dropped. Trying to reconnect…';
+			case 'offline': return 'Could not reconnect. Edits are saved locally and will sync when the connection is restored.';
+		}
+	}
 </script>
 
 {#if loading}
@@ -1466,6 +1486,21 @@
 			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
 				{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
 			</span>
+			{#if collabProvider}
+				<!-- Pending-sync indicator (TASK-1264). Visible only while
+				     the WS provider exists, which means: canEdit && !rawMode.
+				     Read-only / share-page / raw mode never see this badge.
+				     Colour map matches the four-state machine in
+				     wsProvider.svelte.ts: green=synced, yellow=connecting/
+				     reconnecting, red=offline. -->
+				<span
+					class="collab-state collab-state-{collabProvider.state}"
+					title={collabStateTitle(collabProvider.state)}
+				>
+					<span class="collab-state-dot" aria-hidden="true"></span>
+					<span class="collab-state-label">{collabStateLabel(collabProvider.state)}</span>
+				</span>
+			{/if}
 		</div>
 
 		<!-- Actions -->
@@ -2224,6 +2259,38 @@
 	.save-status.saving { color: var(--text-muted); }
 	.save-status.saved { color: var(--accent-green); }
 
+	/* Collab connection state badge (TASK-1264). Always-visible while
+	   the WS provider exists; colour communicates state. The dot is the
+	   primary signal, the label exists for accessibility and clarity
+	   but is small and unobtrusive per the Plan body's "no flashing,
+	   green dot" guidance. */
+	.collab-state {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35em;
+		font-size: 0.85em;
+		margin-left: var(--space-2);
+		color: var(--text-muted);
+	}
+	.collab-state-dot {
+		width: 0.55em;
+		height: 0.55em;
+		border-radius: 50%;
+		background: var(--text-muted);
+	}
+	.collab-state-synced { color: var(--accent-green); }
+	.collab-state-synced .collab-state-dot { background: var(--accent-green); }
+	.collab-state-connecting,
+	.collab-state-reconnecting { color: var(--accent-yellow, #d4a017); }
+	.collab-state-connecting .collab-state-dot,
+	.collab-state-reconnecting .collab-state-dot {
+		background: var(--accent-yellow, #d4a017);
+	}
+	.collab-state-offline { color: var(--accent-red, #c0392b); }
+	.collab-state-offline .collab-state-dot {
+		background: var(--accent-red, #c0392b);
+	}
+
 	/* Layout variants */
 	.item-body {
 		display: flex;
@@ -2825,6 +2892,7 @@
 		.editor-mode-toggle,
 		.add-relationship-section,
 		.save-status,
+		.collab-state,
 		.copy-ref-btn,
 		.copied-tooltip,
 		.link-delete-btn {

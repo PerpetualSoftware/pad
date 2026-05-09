@@ -39,6 +39,15 @@ const MESSAGE_AWARENESS = 1;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+/** After this many consecutive failed reconnect attempts, the public
+ *  `state` signal flips to `'offline'` so UX (TASK-1264 indicator) can
+ *  surface a hard failure rather than a perpetual yellow "reconnecting"
+ *  spinner. The provider keeps trying — backoff continues — but the
+ *  user-visible state is honest about the situation.
+ *
+ *  Three attempts ≈ 1s + 2s + 4s of failure before declaring offline. */
+const OFFLINE_THRESHOLD = 3;
+
 /** Fallback grace before declaring `synced` true on connections that
  *  never receive an explicit syncStep2. The dumb-relay server replays
  *  the op-log as a sequence of BinaryMessage frames but doesn't
@@ -71,6 +80,24 @@ export type ApplierRequestHandler = (
 	requestID: string,
 	expiresAtMillis: number,
 ) => boolean | Promise<boolean>;
+
+/**
+ * Public connection state surfaced to UX (TASK-1264 pending-sync
+ * indicator). Strictly more informative than `connected` + `synced`
+ * because it distinguishes the initial handshake from a mid-session
+ * reconnect from a hard "we've given up trying" failure:
+ *
+ *   - `connecting`   — socket attempting initial open OR open but
+ *                      handshake not yet done. Show a neutral spinner.
+ *   - `synced`       — socket open AND server has answered our
+ *                      syncStep1 (or grace expired). Show green dot.
+ *   - `reconnecting` — socket dropped after a successful session;
+ *                      backoff retry in flight. Show yellow.
+ *   - `offline`     — multiple consecutive reconnect failures past
+ *                     `OFFLINE_THRESHOLD`. Provider keeps trying but
+ *                     the UI surfaces a hard-failure colour (red).
+ */
+export type CollabConnectionState = 'connecting' | 'synced' | 'reconnecting' | 'offline';
 
 export interface CollabProviderOptions {
 	/**
@@ -109,6 +136,15 @@ export class CollabProvider {
 	 * indicator (TASK-1264).
 	 */
 	synced = $state(false);
+
+	/**
+	 * Public connection state for UX consumers (TASK-1264). Always
+	 * derive UI from this instead of `connected` + `synced`
+	 * separately — the four-state machine encodes "we never made it"
+	 * vs "we made it then dropped" vs "we've given up", which the
+	 * two-bool combination loses.
+	 */
+	state = $state<CollabConnectionState>('connecting');
 
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
@@ -235,8 +271,23 @@ export class CollabProvider {
 	}
 
 	private readonly onOpen = (): void => {
-		this.reconnectAttempts = 0;
 		this.connected = true;
+		// Public state ONLY moves on real progress: an OPEN socket
+		// alone is not progress (a flaky proxy can OPEN→CLOSE-before-
+		// sync repeatedly). State stays at whatever the most recent
+		// close handler set it to (or 'connecting' on first attempt)
+		// until the sync handshake or grace timer below flips it to
+		// 'synced'. Specifically:
+		//   - 'offline' stays 'offline' (don't flicker to 'connecting'
+		//     until the proxy actually delivers a sync). Per Codex
+		//     round 2 [P2].
+		//   - 'connecting'/'reconnecting' stay as-is, awaiting sync.
+		// 'synced' is unreachable here in practice because onClose
+		// always demotes it before scheduling a reconnect, so we
+		// don't need an explicit guard.
+		// NB: reconnectAttempts is also NOT reset here — same reason.
+		// Reset is owned by the actual-sync paths (syncStep2 branch +
+		// syncGraceTimer below). Per Codex round 1 [P2].
 
 		// Initial syncStep1: send our current state vector. Server
 		// replays the op-log (which contains all prior peer ops) so
@@ -288,6 +339,15 @@ export class CollabProvider {
 		clearTimeout(this.syncGraceTimer);
 		this.syncGraceTimer = setTimeout(() => {
 			if (!this.synced) this.synced = true;
+			if (this.connected) {
+				this.state = 'synced';
+				// Treat the grace expiry as a successful sync —
+				// the dumb-relay design means an empty/pruned op-log
+				// + first peer is the canonical "everything is fine"
+				// case. Reset backoff so a subsequent disconnect
+				// starts fresh. Per Codex review round 1 [P2].
+				this.reconnectAttempts = 0;
+			}
 		}, SYNC_GRACE_MS);
 	};
 
@@ -323,6 +383,13 @@ export class CollabProvider {
 				}
 				if (subtype === syncProtocol.messageYjsSyncStep2) {
 					this.synced = true;
+					if (this.connected) {
+						this.state = 'synced';
+						// Successful sync — reset the backoff counter
+						// so a subsequent disconnect starts fresh.
+						// Per Codex review round 1 [P2].
+						this.reconnectAttempts = 0;
+					}
 				}
 				break;
 			}
@@ -412,7 +479,6 @@ export class CollabProvider {
 	}
 
 	private readonly onClose = (): void => {
-		const wasConnected = this.connected;
 		this.connected = false;
 		// The sync-grace timer is per-open; if it hasn't fired yet
 		// it would set synced=true even after we lost the socket.
@@ -433,11 +499,26 @@ export class CollabProvider {
 
 		if (this.destroyed) return;
 
-		// If we never even completed an open, this counts as a failed
-		// attempt and bumps the backoff. wasConnected==true means we
-		// had a real session that dropped — start backoff at the floor.
-		if (wasConnected) {
-			this.reconnectAttempts = 0;
+		// NB: do NOT reset reconnectAttempts based on `wasConnected`
+		// here. Reaching OPEN is not proof of a real working session
+		// (a flaky proxy can ESTABLISH then immediately CLOSE before
+		// any sync frame lands); only `synced` is. The reset is owned
+		// by the syncStep2 branch and the grace timer in onOpen — the
+		// actual successful-sync edges of the state machine. Per Codex
+		// review round 1 [P2].
+		// Drop the public state to a backoff variant unless we already
+		// declared 'offline' on a prior cycle — preserving 'offline'
+		// across the close→scheduleReconnect handoff prevents a
+		// visible 'offline'→'reconnecting'→'offline' flicker on every
+		// backoff retry. The variant depends on whether we ever
+		// actually synced: pre-first-sync failures stay 'connecting'
+		// (we never reached a working session, so calling it
+		// "reconnecting" would be misleading); post-sync drops become
+		// 'reconnecting'. Per Codex round 2 [NIT].
+		// scheduleReconnect re-confirms the final state once it's done
+		// bumping reconnectAttempts.
+		if (this.state !== 'offline') {
+			this.state = this.synced ? 'reconnecting' : 'connecting';
 		}
 		this.scheduleReconnect();
 	};
@@ -455,6 +536,17 @@ export class CollabProvider {
 			RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
 		);
 		this.reconnectAttempts++;
+		// Public state stays at the close-time variant
+		// ('connecting' before any sync, 'reconnecting' after) until
+		// we've burned through OFFLINE_THRESHOLD attempts; after that
+		// the UX flips to 'offline' so the user knows it's not coming
+		// back on its own. Provider keeps trying in the background.
+		// Per Codex rounds 1-2 [P2/NIT].
+		if (this.reconnectAttempts > OFFLINE_THRESHOLD) {
+			this.state = 'offline';
+		} else if (this.state !== 'offline') {
+			this.state = this.synced ? 'reconnecting' : 'connecting';
+		}
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = undefined;
 			this.connect();
