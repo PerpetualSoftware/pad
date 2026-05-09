@@ -319,6 +319,16 @@
 	async function loadData() {
 		loading = true;
 		error = '';
+		// Clear per-item state that must NOT leak across navigation.
+		// Without this, navigating from item A (mid-raw-edit) to item B
+		// would either (a) seed B's raw editor with A's live markdown
+		// via rawSeedMarkdown, or (b) cause flushRawIfPending on B to
+		// PATCH A's queued markdown into B. Cancel any in-flight raw
+		// debounce too. Per Codex review round 10.
+		clearTimeout(contentDebounceTimer);
+		contentDebounceTimer = undefined;
+		rawSeedMarkdown = null;
+		rawPendingMarkdown = null;
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
 		// request rejected — without this the stale catch would clobber a
