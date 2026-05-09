@@ -83,6 +83,80 @@ export type ApplierRequestHandler = (
 ) => boolean | Promise<boolean>;
 
 /**
+ * Callback fired when the server sends a `force_refresh` control
+ * frame (TASK-1319). The reconnecting client's `?since=<id>` was
+ * below the server's MIN(item_yjs_updates.id) — rows it expected
+ * to replay have been pruned (op-log GC, schema rebuild, or
+ * PruneAndApply), so reconnecting from local Y.Doc state would
+ * produce a corrupt patch. The handler should:
+ *
+ *   1. Call `provider.destroy()`.
+ *   2. Discard the local `Y.Doc` and create a fresh one.
+ *   3. Build a new provider against the fresh doc — its lazy-seed
+ *      path (TASK-1261) will re-encode `items.content` into ops at
+ *      the current schema version.
+ *   4. Show the user a toast explaining what happened.
+ *
+ * Receiving this callback means the provider has already cleared
+ * its sessionStorage cursor; do NOT try to keep using the existing
+ * provider/doc after it fires.
+ */
+export type ForceRefreshHandler = () => void;
+
+/**
+ * Per-tab op-log cursor protocol (TASK-1319).
+ *
+ * `sessionStorage` is per-tab and survives page reload (which
+ * matches the "the editor reload should pick up where the user
+ * left off" UX) but dies with the tab — no cross-tab leakage of
+ * a stale cursor that might force-refresh a different tab. Keys
+ * are namespaced + scoped to the item id so multi-item editing
+ * sessions in the same tab don't collide.
+ *
+ * `localStorage` was deliberately rejected: shared between tabs of
+ * the same item, Tab A advancing the cursor would leave Tab B with
+ * a value that doesn't match Tab B's Y.Doc state, and B's next
+ * reconnect would land on a stale-cursor force_refresh even though
+ * B has been a stable session the whole time.
+ */
+const CURSOR_STORAGE_PREFIX = 'pad:collab:cursor:';
+
+function cursorStorageKey(itemID: string): string {
+	return `${CURSOR_STORAGE_PREFIX}${itemID}`;
+}
+
+function readStoredCursor(itemID: string): number {
+	if (typeof sessionStorage === 'undefined') return 0;
+	try {
+		const raw = sessionStorage.getItem(cursorStorageKey(itemID));
+		if (!raw) return 0;
+		const n = Number.parseInt(raw, 10);
+		return Number.isFinite(n) && n >= 0 ? n : 0;
+	} catch {
+		// sessionStorage can throw in privacy-mode iframes / quota cases.
+		return 0;
+	}
+}
+
+function writeStoredCursor(itemID: string, id: number): void {
+	if (typeof sessionStorage === 'undefined') return;
+	try {
+		sessionStorage.setItem(cursorStorageKey(itemID), String(id));
+	} catch {
+		// Quota / privacy mode — best effort.
+	}
+}
+
+function clearStoredCursor(itemID: string): void {
+	if (typeof sessionStorage === 'undefined') return;
+	try {
+		sessionStorage.removeItem(cursorStorageKey(itemID));
+	} catch {
+		// Best effort.
+	}
+}
+
+/**
  * Public connection state surfaced to UX (TASK-1264 pending-sync
  * indicator). Strictly more informative than `connected` + `synced`
  * because it distinguishes the initial handshake from a mid-session
@@ -117,6 +191,13 @@ export interface CollabProviderOptions {
 	 * after timeout). Production callers always set this.
 	 */
 	onApplierRequest?: ApplierRequestHandler;
+	/**
+	 * Force-refresh handler (TASK-1319). See `ForceRefreshHandler`.
+	 * Required for production: without it, a force_refresh frame
+	 * silently destroys the socket without telling the page,
+	 * leaving the editor on stale state.
+	 */
+	onForceRefresh?: ForceRefreshHandler;
 }
 
 export class CollabProvider {
@@ -147,9 +228,27 @@ export class CollabProvider {
 	 */
 	state = $state<CollabConnectionState>('connecting');
 
+	/**
+	 * Highest op-log id this provider has been notified of by the
+	 * server (TASK-1319). Initialised from sessionStorage so a page
+	 * reload picks up where the previous incarnation left off, and
+	 * persisted on every op_log_cursor control frame so a subsequent
+	 * reconnect can announce `?since=<id>` and either get a delta
+	 * replay (efficient) or a force_refresh (the rows it expected
+	 * have been pruned).
+	 *
+	 * Reactive so a future UX consumer can show "X ops applied" or
+	 * gate a flush button on `lastOpLogID === serverMaxOpLogID`. Read
+	 * by the items-PATCH `?source=collab-snapshot` flush so the
+	 * server can advance the GC watermark when this cursor matches
+	 * MAX(op-log.id).
+	 */
+	lastOpLogID = $state(0);
+
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
+	private readonly onForceRefresh?: ForceRefreshHandler;
 	private destroyed = false;
 	private reconnectAttempts = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -168,8 +267,21 @@ export class CollabProvider {
 		this.awareness = new awarenessProtocol.Awareness(ydoc);
 
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
-		this.url = options.url ?? defaultCollabUrl(itemID);
 		this.onApplierRequest = options.onApplierRequest;
+		this.onForceRefresh = options.onForceRefresh;
+		// Restore the per-tab cursor BEFORE the first connect. The
+		// `since=<id>` query string is appended in connect() each
+		// time so a reconnect after some live edits announces a
+		// fresher cursor than the page-load value.
+		this.lastOpLogID = readStoredCursor(itemID);
+		// `url` is the BASE URL (no `since=` appended). connect()
+		// re-derives the connect URL on every attempt so the
+		// `since=<id>` parameter reflects the current cursor. Test
+		// callers passing `options.url` get to override with their
+		// own URL — the test stub doesn't care about the cursor
+		// query string, and re-deriving from a custom URL would be
+		// wrong (we'd append `since=` to whatever they provided).
+		this.url = options.url ?? defaultCollabBaseUrl(itemID);
 
 		this.handleDocUpdate = (update, origin) => {
 			// Skip ops that came from us applying a server message —
@@ -393,7 +505,7 @@ export class CollabProvider {
 
 		let ws: WebSocket;
 		try {
-			ws = new this.WebSocketImpl(this.url);
+			ws = new this.WebSocketImpl(this.connectUrl());
 		} catch (err) {
 			// Construction can throw on a malformed URL; reschedule
 			// instead of swallowing — same surface the runtime would
@@ -560,7 +672,13 @@ export class CollabProvider {
 	};
 
 	private async handleControlMessage(raw: string, sourceWs: WebSocket | null): Promise<void> {
-		let msg: { type?: string; request_id?: string; markdown?: string; expires_at_millis?: number };
+		let msg: {
+			type?: string;
+			request_id?: string;
+			markdown?: string;
+			expires_at_millis?: number;
+			op_log_id?: number;
+		};
 		try {
 			msg = JSON.parse(raw);
 		} catch {
@@ -569,6 +687,52 @@ export class CollabProvider {
 		}
 
 		switch (msg.type) {
+			case 'op_log_cursor': {
+				// TASK-1319: server announces the highest persisted
+				// op-log id we should now consider applied. Persist
+				// per-tab so a reconnect (or page reload) can
+				// announce `?since=<id>` and either get a delta
+				// replay or a force_refresh.
+				if (typeof msg.op_log_id !== 'number' || !Number.isFinite(msg.op_log_id)) {
+					console.warn('collab: op_log_cursor missing op_log_id');
+					return;
+				}
+				if (msg.op_log_id < 0) return;
+				// Never regress the cursor: the server's INITIAL
+				// post-replay cursor frame can in theory follow a
+				// MORE-RECENT live op the previous incarnation
+				// already wrote out (race window between the
+				// async post-replay cursor write and a concurrent
+				// AppendYjsUpdate that the bus already broadcast).
+				// Taking the max guards against that.
+				if (msg.op_log_id <= this.lastOpLogID) return;
+				this.lastOpLogID = msg.op_log_id;
+				writeStoredCursor(this.itemID, msg.op_log_id);
+				return;
+			}
+			case 'force_refresh': {
+				// TASK-1319: server has decided we can't safely
+				// continue (our `?since=<id>` was below MIN). Clear
+				// the persisted cursor so a downstream rebuild
+				// starts fresh, then notify the page so it can
+				// recreate the editor on a clean Y.Doc. The server
+				// closes the conn after this frame; our onClose
+				// fires regardless of order.
+				clearStoredCursor(this.itemID);
+				this.lastOpLogID = 0;
+				if (this.onForceRefresh) {
+					try {
+						this.onForceRefresh();
+					} catch (err) {
+						console.warn('collab: onForceRefresh threw', err);
+					}
+				} else {
+					console.warn(
+						'collab: received force_refresh but no onForceRefresh handler is installed; editor will be on stale state',
+					);
+				}
+				return;
+			}
 			case 'applier_request': {
 				if (!msg.request_id || typeof msg.markdown !== 'string') {
 					console.warn('collab: applier_request missing required fields');
@@ -706,6 +870,25 @@ export class CollabProvider {
 		}
 	}
 
+	/**
+	 * Compute the URL to connect to on this attempt. The base URL
+	 * is the (immutable) collab endpoint with `schema_version`
+	 * already encoded; we additionally append `since=<id>` whenever
+	 * `lastOpLogID > 0` so the server can:
+	 *   - replay only the rows past our cursor (efficient resume), OR
+	 *   - send `force_refresh` if our cursor is below MIN (rows
+	 *     pruned out from under us) and close the conn.
+	 *
+	 * Skipping the param when `lastOpLogID === 0` matches the
+	 * server's "treat as fresh client" branch and keeps test fixtures
+	 * that hard-code the base URL working as-is.
+	 */
+	private connectUrl(): string {
+		if (this.lastOpLogID <= 0) return this.url;
+		const sep = this.url.includes('?') ? '&' : '?';
+		return `${this.url}${sep}since=${this.lastOpLogID}`;
+	}
+
 	private closeSocket(code: number, reason: string): void {
 		const ws = this.ws;
 		if (!ws) return;
@@ -724,7 +907,7 @@ export class CollabProvider {
 	}
 }
 
-function defaultCollabUrl(itemID: string): string {
+function defaultCollabBaseUrl(itemID: string): string {
 	if (typeof window === 'undefined' || typeof location === 'undefined') {
 		throw new Error('CollabProvider: cannot derive URL outside the browser');
 	}
@@ -735,6 +918,10 @@ function defaultCollabUrl(itemID: string): string {
 	// rather than a silently-degraded session. The server also uses
 	// the per-item rebuild path internally if any persisted op-log
 	// rows are stamped with an older version.
+	//
+	// `since=<id>` is NOT in the base URL; it's appended per-attempt
+	// by `connectUrl()` so a reconnect after live edits announces the
+	// freshest cursor available. Per TASK-1319.
 	const params = new URLSearchParams({ schema_version: SCHEMA_VERSION });
 	return `${proto}//${location.host}/api/v1/collab/${encodeURIComponent(itemID)}?${params.toString()}`;
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -141,6 +142,22 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// `?since=<id>` is the resume-cursor announce (TASK-1319). The
+	// client tells us the highest item_yjs_updates.id its local
+	// Y.Doc has applied; if that id is below the current MIN, the
+	// expected suffix has been pruned and the room manager sends a
+	// `force_refresh` JSON control frame after the upgrade (we need
+	// the conn to write the JSON, hence post-upgrade). Empty / blank
+	// / unparseable values are tolerated as 0 (treat as fresh
+	// client) so older bundles served from a browser cache during a
+	// deploy still get a working session.
+	var sinceID int64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		if v, perr := strconv.ParseInt(raw, 10, 64); perr == nil && v > 0 {
+			sinceID = v
+		}
+	}
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on
@@ -193,7 +210,13 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// Hand the connection to the RoomManager. It owns the
 	// op-log replay, fan-out, and lifecycle bookkeeping (lazy create
 	// + grace-TTL reclaim). Returns when the WS closes for any reason.
-	if err := s.collab.Join(itemID, conn); err != nil {
+	if err := s.collab.Join(itemID, conn, sinceID); err != nil {
+		// ErrForceRefreshSent is the protocol's normal close-after-
+		// notify path — the JSON frame is already on the wire and
+		// the client knows what to do. Don't warn.
+		if errors.Is(err, collab.ErrForceRefreshSent) {
+			return
+		}
 		// Normal closure paths surface here as websocket.CloseError
 		// values that aren't worth logging. Anything unexpected
 		// (transport failure, room manager hard error) gets a warn.

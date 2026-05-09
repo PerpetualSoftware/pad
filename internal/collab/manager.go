@@ -139,6 +139,13 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 	}
 }
 
+// ErrForceRefreshSent is returned by Join when the client's
+// announced `?since=<id>` was below MIN(item_yjs_updates.id) — rows
+// it expected to replay have been pruned. The handler has already
+// emitted a force_refresh JSON control frame; the caller should
+// close the conn cleanly. Per TASK-1319.
+var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; force_refresh sent")
+
 // Join attaches a freshly-upgraded WebSocket connection to the room
 // for itemID. Replays the op-log to the new peer, spins up an inbound
 // reader and an outbound writer, and blocks until the WebSocket
@@ -146,10 +153,17 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 // typically the HTTP handler — should defer conn.Close so that any
 // resources held by the WS upgrader are released after this returns.
 //
+// `since` is the client's announced highest-applied op-log id (parsed
+// from `?since=<id>` on the upgrade URL). When non-zero AND below
+// MIN(item_yjs_updates.id) for this item, Join sends a force_refresh
+// control frame and returns ErrForceRefreshSent — the client must
+// discard local Y.Doc state and reconnect with `?since=0`. Per
+// TASK-1319.
+//
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -206,6 +220,34 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			return err
 		}
 
+		// Resume-cursor / force_refresh check (TASK-1319). Run
+		// inside the per-item lock AFTER the schema rebuild so a
+		// post-rebuild empty op-log (which has no MIN) is treated
+		// the same as a fresh item — `since` is harmless because
+		// nothing was pruned out from under it. When MIN exists
+		// AND the announced cursor is below it, the client's
+		// expected suffix is unrecoverable: send force_refresh
+		// and bail. The conn is the caller's to Close.
+		if since > 0 {
+			minID, hasMin, merr := m.store.MinOpLogID(itemID)
+			if merr != nil {
+				itemLock.Unlock()
+				m.bus.Unsubscribe(rc.bus)
+				return merr
+			}
+			if hasMin && since < minID {
+				slog.Info("collab: client cursor below op-log MIN; sending force_refresh",
+					"item_id", itemID,
+					"since", since,
+					"min_id", minID,
+				)
+				_ = sendForceRefreshFrame(conn)
+				itemLock.Unlock()
+				m.bus.Unsubscribe(rc.bus)
+				return ErrForceRefreshSent
+			}
+		}
+
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
 			// Race: the grace timer reclaimed the room between
@@ -221,7 +263,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			return err
 		}
 
-		return m.runConn(room, rc, itemLock)
+		return m.runConn(room, rc, itemLock, since)
 	}
 	return errTooManyJoinRetries
 }
@@ -465,14 +507,14 @@ func (m *RoomManager) PruneSweep(minAge time.Duration) (PruneSweepResult, error)
 // correctness issue. The alternative — buffer-then-flush — would
 // require an unbounded queue or risk losing live updates the way
 // the original implementation did.
-func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex) error {
+func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, since int64) error {
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
 		room.writeLoop(rc)
 	}()
 
-	replayErr := room.replayTo(rc)
+	highestReplayed, replayErr := room.replayTo(rc, since)
 	// Release the per-item setup lock before the long-lived readLoop
 	// so concurrent peers + future PruneAndApply calls aren't gated
 	// on this conn's full lifetime.
@@ -482,6 +524,43 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex) er
 		room.removeConn(rc)
 		<-writerDone
 		return replayErr
+	}
+
+	// Anchor the client's resume cursor (TASK-1319). If the replay
+	// produced rows, advertise the highest id we sent. If not — a
+	// fresh item, an empty op-log after a recent prune, or an
+	// up-to-date `since` cursor that already covered every row —
+	// look up the current MAX and use that. Best-effort: a write
+	// error here mirrors any other writeMessage error and the read
+	// loop will tear the conn down.
+	cursorID := highestReplayed
+	if cursorID == 0 {
+		if maxID, ok, merr := m.store.MaxOpLogID(room.itemID); merr != nil {
+			slog.Warn("collab: lookup MaxOpLogID for initial cursor failed",
+				"item_id", room.itemID,
+				"error", merr,
+			)
+		} else if ok {
+			cursorID = maxID
+		}
+		// `since > 0` callers might already be ahead of the
+		// server's MAX (e.g. they had ops the server didn't —
+		// the on-open state push will reconcile). Fall back to
+		// `since` so we don't accidentally regress the client's
+		// stored cursor.
+		if cursorID < since {
+			cursorID = since
+		}
+	}
+	// cursorID == 0 is a legitimate value for a never-touched item;
+	// emit it anyway so the client clears any stale sessionStorage
+	// entry from an earlier life of this item id.
+	if err := room.sendOpLogCursor(rc, cursorID); err != nil {
+		// Treat a cursor write failure the same as a replay
+		// write failure — the conn is doomed.
+		room.removeConn(rc)
+		<-writerDone
+		return err
 	}
 
 	// Read loop blocks until the WS closes.

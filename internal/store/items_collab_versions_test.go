@@ -253,3 +253,146 @@ func TestCollabSnapshotDoesNotAdvanceOpLogWatermark(t *testing.T) {
 		t.Errorf("after server-driven write: watermark must advance past 0 (got %d, ok=%v)", id2, ok)
 	}
 }
+
+// TestCollabSnapshotCursorMatchesMaxAdvancesWatermark is the TASK-1319
+// happy path: a browser flush whose `OpLogCursor` matches the current
+// MAX(op-log.id) demonstrates the markdown captures every persisted
+// op, so the GC watermark advances. Closes the browser-only-edited-
+// items-never-GC'd hole left by TASK-1309.
+func TestCollabSnapshotCursorMatchesMaxAdvancesWatermark(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Cursor Watermark Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Item", "v1")
+
+	// Seed two ops; MAX(id) will be 2 after this.
+	id1, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x01}, "1")
+	if err != nil {
+		t.Fatalf("AppendYjsUpdate 1: %v", err)
+	}
+	id2, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x02}, "1")
+	if err != nil {
+		t.Fatalf("AppendYjsUpdate 2: %v", err)
+	}
+	_ = id1
+
+	// Browser flush with cursor = MAX → watermark advances.
+	v2 := "v2"
+	cursor := id2
+	_, err = s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &v2,
+		LastModifiedBy: "user",
+		VersionSource:  "collab-snapshot",
+		OpLogCursor:    &cursor,
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem (collab-snapshot, cursor==MAX): %v", err)
+	}
+	got, ok, err := s.GetItemContentFlushedOpLogID(item.ID)
+	if err != nil {
+		t.Fatalf("GetItemContentFlushedOpLogID: %v", err)
+	}
+	if !ok || got != id2 {
+		t.Errorf("cursor==MAX flush: want watermark=%d, got %d (ok=%v)", id2, got, ok)
+	}
+}
+
+// TestCollabSnapshotCursorBelowMaxLeavesWatermark confirms a cursor
+// below the current MAX (peer ops the flusher hasn't seen) does NOT
+// advance the watermark — the SQL CASE clause's equality check fails
+// and the column keeps its prior value. Per TASK-1319.
+func TestCollabSnapshotCursorBelowMaxLeavesWatermark(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Cursor Below Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Item", "v1")
+
+	id1, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x01}, "1")
+	if err != nil {
+		t.Fatalf("AppendYjsUpdate 1: %v", err)
+	}
+	if _, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x02}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate 2: %v", err)
+	}
+
+	// Cursor=id1 (one row behind MAX). Watermark should NOT advance.
+	v2 := "v2"
+	cursor := id1
+	_, err = s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &v2,
+		LastModifiedBy: "user",
+		VersionSource:  "collab-snapshot",
+		OpLogCursor:    &cursor,
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem (collab-snapshot, cursor<MAX): %v", err)
+	}
+	got, ok, err := s.GetItemContentFlushedOpLogID(item.ID)
+	if err != nil {
+		t.Fatalf("GetItemContentFlushedOpLogID: %v", err)
+	}
+	if !ok || got != 0 {
+		t.Errorf("cursor<MAX flush: watermark must stay at 0 (got %d, ok=%v); peer ops outside the flusher's view exist", got, ok)
+	}
+}
+
+// TestCollabSnapshotNoCursorLeavesWatermark — backwards-compat check:
+// a collab-snapshot PATCH without OpLogCursor (older client) preserves
+// the conservative TASK-1309 behaviour (watermark unchanged).
+func TestCollabSnapshotNoCursorLeavesWatermark(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "No Cursor Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Item", "v1")
+
+	if _, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate: %v", err)
+	}
+
+	v2 := "v2"
+	_, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &v2,
+		LastModifiedBy: "user",
+		VersionSource:  "collab-snapshot",
+		// OpLogCursor: nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+	got, ok, _ := s.GetItemContentFlushedOpLogID(item.ID)
+	if !ok || got != 0 {
+		t.Errorf("no cursor: watermark must stay at 0 (got %d, ok=%v)", got, ok)
+	}
+}
+
+// TestMinAndMaxOpLogIDEmptyAndPopulated covers the two store helpers
+// the resume-cursor protocol depends on.
+func TestMinAndMaxOpLogIDEmptyAndPopulated(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Min Max Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Item", "v1")
+
+	if _, ok, err := s.MinOpLogID(item.ID); err != nil || ok {
+		t.Errorf("empty MinOpLogID: want ok=false, got ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := s.MaxOpLogID(item.ID); err != nil || ok {
+		t.Errorf("empty MaxOpLogID: want ok=false, got ok=%v err=%v", ok, err)
+	}
+
+	id1, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x01}, "1")
+	if err != nil {
+		t.Fatalf("append 1: %v", err)
+	}
+	id2, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x02}, "1")
+	if err != nil {
+		t.Fatalf("append 2: %v", err)
+	}
+
+	if got, ok, err := s.MinOpLogID(item.ID); err != nil || !ok || got != id1 {
+		t.Errorf("MinOpLogID after seed: want %d, got %d (ok=%v err=%v)", id1, got, ok, err)
+	}
+	if got, ok, err := s.MaxOpLogID(item.ID); err != nil || !ok || got != id2 {
+		t.Errorf("MaxOpLogID after seed: want %d, got %d (ok=%v err=%v)", id2, got, ok, err)
+	}
+}

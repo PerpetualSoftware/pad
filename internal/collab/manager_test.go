@@ -1,11 +1,13 @@
 package collab
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +187,41 @@ func (f *fakeOpLog) PruneItemOpLogIfDormantBefore(itemID string, before time.Tim
 	return deleted, nil
 }
 
+// MinOpLogID + MaxOpLogID power TASK-1319's resume-cursor protocol.
+func (f *fakeOpLog) MinOpLogID(itemID string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var minID int64
+	found := false
+	for _, r := range f.rows {
+		if r.ItemID != itemID {
+			continue
+		}
+		if !found || r.ID < minID {
+			minID = r.ID
+			found = true
+		}
+	}
+	return minID, found, nil
+}
+
+func (f *fakeOpLog) MaxOpLogID(itemID string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var maxID int64
+	found := false
+	for _, r := range f.rows {
+		if r.ItemID != itemID {
+			continue
+		}
+		if !found || r.ID > maxID {
+			maxID = r.ID
+			found = true
+		}
+	}
+	return maxID, found, nil
+}
+
 func (f *fakeOpLog) appendCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -212,15 +249,33 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 			return
 		}
 		defer conn.Close()
-		_ = mgr.Join(itemID, conn)
+		// `?since=N` forwards the resume cursor into Join (TASK-1319).
+		// Empty / unparseable → 0, matching the production handler.
+		var since int64
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			if v, perr := strconv.ParseInt(raw, 10, 64); perr == nil && v > 0 {
+				since = v
+			}
+		}
+		_ = mgr.Join(itemID, conn, since)
 	})
 	return httptest.NewServer(mux)
 }
 
 func dialWS(t *testing.T, server *httptest.Server, itemID string) *websocket.Conn {
 	t.Helper()
+	return dialWSSince(t, server, itemID, 0)
+}
+
+// dialWSSince is the resume-cursor variant: appends `?since=<id>` to
+// the WS URL so the test exercises the TASK-1319 force_refresh path.
+func dialWSSince(t *testing.T, server *httptest.Server, itemID string, since int64) *websocket.Conn {
+	t.Helper()
 	u, _ := url.Parse(server.URL)
 	wsURL := "ws://" + u.Host + "/ws/" + itemID
+	if since > 0 {
+		wsURL += "?since=" + strconv.FormatInt(since, 10)
+	}
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -249,25 +304,47 @@ func sendAwareness(t *testing.T, c *websocket.Conn, payload byte) {
 // payload bytes or fails the test on timeout.
 func readBinaryWithin(t *testing.T, c *websocket.Conn, d time.Duration) []byte {
 	t.Helper()
-	c.SetReadDeadline(time.Now().Add(d))
+	deadline := time.Now().Add(d)
+	c.SetReadDeadline(deadline)
 	defer c.SetReadDeadline(time.Time{})
-	mt, data, err := c.ReadMessage()
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	for {
+		mt, data, err := c.ReadMessage()
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		// Drain TASK-1319 op_log_cursor TextMessage frames so the
+		// existing binary-frame assertions stay focused on Y.Doc
+		// payload semantics.
+		if mt == websocket.TextMessage {
+			c.SetReadDeadline(deadline)
+			continue
+		}
+		if mt != websocket.BinaryMessage {
+			t.Fatalf("expected binary frame, got %d", mt)
+		}
+		return data
 	}
-	if mt != websocket.BinaryMessage {
-		t.Fatalf("expected binary frame, got %d", mt)
-	}
-	return data
 }
 
-// expectNoMessage checks that no frame arrives within d.
+// expectNoMessage checks that no NON-cursor frame arrives within d.
+// Cursor TextMessage frames (TASK-1319) are drained without failing
+// the assertion — they're metadata, not Y.Doc payload — and the
+// caller's intent is "no peer ops leaked through."
 func expectNoMessage(t *testing.T, c *websocket.Conn, d time.Duration) {
 	t.Helper()
-	c.SetReadDeadline(time.Now().Add(d))
+	deadline := time.Now().Add(d)
+	c.SetReadDeadline(deadline)
 	defer c.SetReadDeadline(time.Time{})
-	if mt, data, err := c.ReadMessage(); err == nil {
-		t.Fatalf("expected no frame, got mt=%d data=%v", mt, data)
+	for {
+		mt, data, err := c.ReadMessage()
+		if err != nil {
+			return // timeout / close — exactly what we expected
+		}
+		if mt == websocket.TextMessage {
+			c.SetReadDeadline(deadline)
+			continue
+		}
+		t.Fatalf("expected no payload frame, got mt=%d data=%v", mt, data)
 	}
 }
 
@@ -625,7 +702,7 @@ func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
 
 	// Direct Join — bypass the WS plumbing since we want to exercise
 	// the closed-flag short-circuit in isolation.
-	err := mgr.Join("item-a", nil) // conn is irrelevant; we never reach the WS path
+	err := mgr.Join("item-a", nil, 0) // conn is irrelevant; we never reach the WS path
 	if !errors.Is(err, errManagerClosed) {
 		t.Fatalf("want errManagerClosed, got %v", err)
 	}
@@ -663,10 +740,18 @@ func TestRoomManagerCloseShutsDownAllRooms(t *testing.T) {
 		t.Fatalf("after Close: want 0 rooms, got %d", mgr.RoomCount())
 	}
 	// Read should fail because Close closed the conn from the server
-	// side.
+	// side. Drain the post-replay op_log_cursor TextMessage
+	// (TASK-1319) so we hit the close, not a normal read.
 	c.SetReadDeadline(time.Now().Add(1 * time.Second))
-	if _, _, err := c.ReadMessage(); err == nil {
-		t.Errorf("expected read error after manager.Close")
+	for {
+		mt, _, err := c.ReadMessage()
+		if err != nil {
+			break
+		}
+		if mt == websocket.BinaryMessage {
+			t.Errorf("unexpected payload frame after manager.Close")
+			break
+		}
 	}
 }
 
@@ -700,12 +785,19 @@ func TestRoomManagerSchemaMismatchPrunes(t *testing.T) {
 	c := dialWS(t, srv, "item-a")
 	defer c.Close()
 
-	// After the prune, the op-log replay sends NOTHING. Confirm by
-	// setting a short read deadline and asserting we time out
-	// rather than receiving stale rows.
+	// After the prune, the op-log replay sends NO BINARY frames.
+	// The post-replay op_log_cursor TextMessage (TASK-1319) is
+	// expected; everything else means the prune didn't take.
 	c.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	if _, _, err := c.ReadMessage(); err == nil {
-		t.Errorf("expected no replay frames after schema-mismatch prune; got one")
+	for {
+		mt, _, err := c.ReadMessage()
+		if err != nil {
+			break
+		}
+		if mt == websocket.BinaryMessage {
+			t.Errorf("expected no replay binary frames after schema-mismatch prune; got one")
+			break
+		}
 	}
 
 	// Op-log should be empty for item-a. The store's rowCount
@@ -1103,5 +1195,228 @@ func fakeYjsRow(itemID string, data []byte, schemaVersion string, createdAt time
 		UpdateData:    cp,
 		SchemaVersion: schemaVersion,
 		CreatedAt:     createdAt.UTC(),
+	}
+}
+
+// readControlWithin reads frames off the conn within d, drains
+// payload (binary) frames, and returns the FIRST TextMessage parsed
+// as a ControlMessage. Tests use this to assert the post-replay
+// op_log_cursor frame and force_refresh frame land cleanly.
+func readControlWithin(t *testing.T, c *websocket.Conn, d time.Duration) ControlMessage {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	c.SetReadDeadline(deadline)
+	defer c.SetReadDeadline(time.Time{})
+	for {
+		mt, data, err := c.ReadMessage()
+		if err != nil {
+			t.Fatalf("read control: %v", err)
+		}
+		if mt == websocket.TextMessage {
+			var msg ControlMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatalf("unmarshal control: %v (raw=%q)", err, data)
+			}
+			return msg
+		}
+		// Skip binary replay frames; the cursor is what we want.
+		c.SetReadDeadline(deadline)
+	}
+}
+
+// TestRoomManagerInitialOpLogCursorAfterReplay confirms a fresh peer
+// receives an op_log_cursor TextMessage after replay so its
+// sessionStorage cursor is anchored without a round trip. Per TASK-1319.
+func TestRoomManagerInitialOpLogCursorAfterReplay(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x01}, "1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x02}, "1"); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	c := dialWS(t, srv, "item-a")
+	defer c.Close()
+
+	// Drain the two replay binary frames.
+	_ = readBinaryWithin(t, c, time.Second)
+	_ = readBinaryWithin(t, c, time.Second)
+
+	// Now the cursor frame must arrive, anchored at the highest
+	// replayed id (2 after two seeds).
+	cursor := readControlWithin(t, c, time.Second)
+	if cursor.Type != ControlMessageOpLogCursor {
+		t.Fatalf("type: want %q, got %q", ControlMessageOpLogCursor, cursor.Type)
+	}
+	if cursor.OpLogID != 2 {
+		t.Errorf("op_log_id: want 2, got %d", cursor.OpLogID)
+	}
+}
+
+// TestRoomManagerInitialCursorEmptyOpLog confirms a fresh peer joining
+// an item with no persisted ops still receives an op_log_cursor frame
+// with id 0 — clears any stale sessionStorage cursor from an earlier
+// life of this item id. Per TASK-1319.
+func TestRoomManagerInitialCursorEmptyOpLog(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	c := dialWS(t, srv, "item-a")
+	defer c.Close()
+
+	cursor := readControlWithin(t, c, time.Second)
+	if cursor.Type != ControlMessageOpLogCursor {
+		t.Fatalf("type: want %q, got %q", ControlMessageOpLogCursor, cursor.Type)
+	}
+	if cursor.OpLogID != 0 {
+		t.Errorf("op_log_id: want 0 (empty op-log), got %d", cursor.OpLogID)
+	}
+}
+
+// TestRoomManagerForceRefreshOnStaleSince exercises the resume-cursor
+// safety path: a client announcing `?since=N` where N is below
+// MIN(item_yjs_updates.id) gets a force_refresh frame and a closed
+// conn. Per TASK-1319.
+func TestRoomManagerForceRefreshOnStaleSince(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	// Seed two rows then prune the older one so MIN(id) > 1.
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x01}, "1"); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, 0x02}, "1"); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+	// Manually drop row id=1 to simulate a partial prune. The fake's
+	// rows slice is in-place; we reuse the same field write semantics
+	// as PruneYjsUpdatesBefore would.
+	store.mu.Lock()
+	kept := store.rows[:0]
+	for _, r := range store.rows {
+		if r.ID != 1 {
+			kept = append(kept, r)
+		}
+	}
+	store.rows = kept
+	store.mu.Unlock()
+
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	// Client claims it has applied id=0 (no rows seen) but server's
+	// MIN is now 2 — wait, since=0 is special-cased as "fresh client"
+	// and skips the force_refresh check. Use since=1 instead — below
+	// MIN=2 so the protocol fires.
+	c := dialWSSince(t, srv, "item-a", 1)
+	defer c.Close()
+
+	cursor := readControlWithin(t, c, time.Second)
+	if cursor.Type != ControlMessageForceRefresh {
+		t.Fatalf("type: want %q, got %q", ControlMessageForceRefresh, cursor.Type)
+	}
+	// After the force_refresh frame the server closes; the next
+	// read should error.
+	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Errorf("expected close after force_refresh; got another frame")
+	}
+}
+
+// TestRoomManagerSinceAtOrAboveMinReplaysDelta confirms a client
+// resuming with `?since=N` where N >= MIN gets only the rows with
+// id > N (delta replay), not the entire op-log. Per TASK-1319.
+func TestRoomManagerSinceAtOrAboveMinReplaysDelta(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	for i := byte(1); i <= 4; i++ {
+		if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, i}, "1"); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	// since=2 → expect rows id 3 and 4 only (two binary frames),
+	// then a cursor frame at id 4.
+	c := dialWSSince(t, srv, "item-a", 2)
+	defer c.Close()
+
+	got1 := readBinaryWithin(t, c, time.Second)
+	if len(got1) < 2 || got1[1] != 0x03 {
+		t.Errorf("first replayed payload: want byte 0x03, got %v", got1)
+	}
+	got2 := readBinaryWithin(t, c, time.Second)
+	if len(got2) < 2 || got2[1] != 0x04 {
+		t.Errorf("second replayed payload: want byte 0x04, got %v", got2)
+	}
+
+	// No more binary frames — the cursor should be next.
+	cursor := readControlWithin(t, c, time.Second)
+	if cursor.Type != ControlMessageOpLogCursor || cursor.OpLogID != 4 {
+		t.Errorf("cursor: want type=op_log_cursor id=4, got type=%q id=%d", cursor.Type, cursor.OpLogID)
+	}
+}
+
+// TestRoomManagerSyncCursorBroadcast confirms that after a peer
+// pushes a sync frame, the originator gets an op_log_cursor frame
+// with the new id (so it can advance its session-storage cursor)
+// AND every other peer also gets one piggybacked on the broadcast
+// (so they stay in lockstep without a round trip).
+func TestRoomManagerSyncCursorBroadcast(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	a := dialWS(t, srv, "item-a")
+	defer a.Close()
+	b := dialWS(t, srv, "item-a")
+	defer b.Close()
+
+	// Drain initial cursor frames on both peers.
+	_ = readControlWithin(t, a, time.Second)
+	_ = readControlWithin(t, b, time.Second)
+
+	// Wait for both subscriptions to register so the broadcast is
+	// guaranteed to reach B.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bus.SubscriberCount("item-a") == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	sendSync(t, a, 0x42)
+
+	// A (originator) gets a cursor frame with the new id (1).
+	cursorA := readControlWithin(t, a, time.Second)
+	if cursorA.Type != ControlMessageOpLogCursor || cursorA.OpLogID != 1 {
+		t.Errorf("originator cursor: want op_log_cursor id=1, got type=%q id=%d", cursorA.Type, cursorA.OpLogID)
+	}
+
+	// B receives the binary fan-out plus a cursor frame at id=1.
+	gotB := readBinaryWithin(t, b, time.Second)
+	if len(gotB) < 2 || gotB[1] != 0x42 {
+		t.Errorf("peer payload: %v", gotB)
+	}
+	cursorB := readControlWithin(t, b, time.Second)
+	if cursorB.Type != ControlMessageOpLogCursor || cursorB.OpLogID != 1 {
+		t.Errorf("peer cursor: want op_log_cursor id=1, got type=%q id=%d", cursorB.Type, cursorB.OpLogID)
 	}
 }

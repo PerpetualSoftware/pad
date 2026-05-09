@@ -52,6 +52,29 @@ const (
 	// might add later goes through the same TextMessage envelope.
 	ControlMessageApplierRequest = "applier_request"
 	ControlMessageApplierAck     = "applier_ack"
+
+	// ControlMessageOpLogCursor advertises the highest item_yjs_updates.id
+	// the receiving peer should now consider applied. Sent by the server:
+	//   - immediately after a fresh peer's replay completes (cursor =
+	//     highest replayed id, or current MAX if no rows existed),
+	//   - after every successful AppendYjsUpdate (cursor = the new id),
+	//     so each peer's persisted-state knowledge stays current without
+	//     a polling round-trip.
+	// Clients persist the value per-tab in sessionStorage and announce
+	// it on reconnect via `?since=<id>`. Per TASK-1319.
+	ControlMessageOpLogCursor = "op_log_cursor"
+
+	// ControlMessageForceRefresh tells the client to discard its local
+	// Y.Doc, recreate an empty one, and rely on the lazy-seed path
+	// (TASK-1261) to re-encode items.content into ops. Sent when a
+	// reconnecting client's `?since=<id>` is below MIN(item_yjs_updates.id)
+	// — the rows it expected to replay have been pruned (op-log GC,
+	// schema-rebuild, or PruneAndApply), and replaying from the new
+	// MIN would be a corrupt patch on a stale Y.Doc state. The server
+	// closes the WebSocket immediately after sending the frame; the
+	// client is expected to surface a toast and reconnect with
+	// `?since=0`. Per TASK-1319.
+	ControlMessageForceRefresh = "force_refresh"
 )
 
 // applierFirstTimeoutVar / applierRetryTimeoutVar are vars (rather
@@ -93,6 +116,11 @@ type ControlMessage struct {
 	// retried with a different applier (or fallen back). Client
 	// enforcement lives in TASK-1263. Omitted on applier_ack.
 	ExpiresAtMillis int64 `json:"expires_at_millis,omitempty"`
+
+	// OpLogID carries the highest item_yjs_updates.id the receiving
+	// peer should treat as applied. Set on op_log_cursor frames
+	// (TASK-1319). Omitted on every other control type.
+	OpLogID int64 `json:"op_log_id,omitempty"`
 }
 
 // pendingApplierAck pairs the channel a PATCH handler is waiting on

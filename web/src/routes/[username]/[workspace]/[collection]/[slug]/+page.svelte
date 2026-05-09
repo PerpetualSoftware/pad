@@ -489,6 +489,13 @@
 	// post-raw-save markdown). Per Codex review round 2.
 	let ydoc = $state<Y.Doc | null>(null);
 	let collabProvider = $state<CollabProvider | null>(null);
+	// forceRefreshNonce drives Y.Doc/provider recreation when the
+	// server signals our resume cursor was stale (TASK-1319). The
+	// collab $effect reads it as a reactive dependency, so bumping
+	// the value tears down the current provider+doc and rebuilds
+	// from items.content via the lazy-seed path. The previous
+	// provider's onForceRefresh handler does the bumping.
+	let forceRefreshNonce = $state(0);
 	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
@@ -514,6 +521,14 @@
 	$effect(() => {
 		if (!collabKey) return;
 		const itemId = collabKey;
+		// Track forceRefreshNonce so a bump from the provider's
+		// onForceRefresh handler tears this effect's old provider+doc
+		// down via the cleanup return and rebuilds fresh. Reading
+		// the rune is enough — Svelte 5 records the dependency. The
+		// _ underscore name silences "unused" lints; the side effect
+		// is the dependency tracking itself. Per TASK-1319.
+		const _refreshNonce = forceRefreshNonce;
+		void _refreshNonce;
 		// Snapshot the workspace alongside the itemId. activeCollabContext
 		// is what the timer-driven + cleanup-driven flushes target so
 		// they always PATCH the right URL even after navigation.
@@ -558,6 +573,27 @@
 					console.warn('collab: setContent failed', err);
 					return false;
 				}
+			},
+			// Force-refresh handler (TASK-1319). Fires when the
+			// server detects our `?since=<id>` is below the current
+			// MIN(item_yjs_updates.id) — the rows we expected to
+			// replay have been pruned (op-log GC, schema rebuild,
+			// PruneAndApply), so reconnecting from local state
+			// would corrupt the Y.Doc. Recovery: bump the
+			// `collabKey` so the $effect cleanup tears down the
+			// provider+doc, then a fresh provider+doc rebuilds from
+			// items.content via the lazy-seed path (TASK-1261).
+			//
+			// We don't explicitly call `provider.destroy()` here —
+			// the WS is already closing on the server side and the
+			// $effect cleanup runs that destroy as part of swapping
+			// in the new provider.
+			onForceRefresh: () => {
+				toastStore.show(
+					'Editor refreshed — rejoining with the latest content from the server.',
+					'info',
+				);
+				forceRefreshNonce += 1;
 			},
 		});
 
@@ -951,7 +987,23 @@
 			editorStore.setLastSaveTime(Date.now());
 		}
 		try {
-			await api.items.flushCollabContent(ws, itemId, toSave, { keepalive });
+			// Pass the provider's per-tab op-log cursor (TASK-1319) so
+			// the server can advance the GC watermark when this tab is
+			// caught up to MAX(op-log.id). When the cursor is below
+			// MAX (peer ops not yet applied here) the server leaves
+			// the watermark untouched — the GC sweeper must not delete
+			// rows this markdown doesn't reflect. The cursor reflects
+			// the provider tracking THIS item; if a navigation has
+			// already swapped to another item the foreground flush
+			// path bails earlier on dedupe and this code doesn't run.
+			const opLogCursor =
+				collabProvider && collabProvider.itemID === itemId
+					? collabProvider.lastOpLogID
+					: undefined;
+			await api.items.flushCollabContent(ws, itemId, toSave, {
+				keepalive,
+				opLogCursor,
+			});
 			// lastFlushedContent is per-item; only seed it if the
 			// item we just flushed is still the active one.
 			// Otherwise a stale flush could pollute the new page's

@@ -136,6 +136,15 @@ type opLogStore interface {
 	// references).
 	ListDormantOpLogItemsBefore(before time.Time) ([]string, error)
 	PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error)
+	// MinOpLogID + MaxOpLogID power the resume-cursor / force-refresh
+	// + watermark-advancement protocol (TASK-1319). MinOpLogID is
+	// consulted when a reconnecting client announces `?since=<id>`:
+	// id < MIN means rows it expected to replay have been pruned, so
+	// the server sends ControlMessageForceRefresh and closes. MaxOpLogID
+	// powers the initial cursor frame after replay so the client knows
+	// where the head is even when no rows existed at replay time.
+	MinOpLogID(itemID string) (int64, bool, error)
+	MaxOpLogID(itemID string) (int64, bool, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels
@@ -194,26 +203,82 @@ func (r *Room) onGraceExpired() {
 	r.onIdle(r.itemID)
 }
 
-// replayTo sends every persisted op-log update for this room to the
-// given connection in order. Each row goes out as its own binary
-// WebSocket frame so a Yjs peer applies them via the same y-protocol
-// path it uses for live updates. Stops on the first WS write error
-// (the connection is doomed); the caller's read loop will surface
-// the same error and tear the connection down cleanly.
-func (r *Room) replayTo(rc *roomConn) error {
-	updates, err := r.store.LoadYjsUpdatesSince(r.itemID, 0)
+// replayTo sends every persisted op-log update for this room with id
+// strictly greater than `since` to the given connection in order. Each
+// row goes out as its own binary WebSocket frame so a Yjs peer applies
+// them via the same y-protocol path it uses for live updates. Stops on
+// the first WS write error (the connection is doomed); the caller's
+// read loop will surface the same error and tear the connection down
+// cleanly.
+//
+// `since == 0` is the fresh-client path (replay everything). The
+// caller is responsible for the prerequisite check that `since`
+// isn't below the current MIN(id) — an out-of-range cursor means
+// rows the client expected have been pruned and the response should
+// be a force_refresh, not a partial replay.
+//
+// Returns the highest replayed id (or 0 when no rows landed) so the
+// caller can emit a follow-on op_log_cursor frame anchoring the
+// client's resume point. Per TASK-1319.
+func (r *Room) replayTo(rc *roomConn, since int64) (int64, error) {
+	updates, err := r.store.LoadYjsUpdatesSince(r.itemID, since)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var highest int64
 	for _, u := range updates {
 		if len(u.UpdateData) == 0 {
 			continue
 		}
 		if werr := rc.writeMessage(websocket.BinaryMessage, u.UpdateData); werr != nil {
-			return werr
+			return highest, werr
+		}
+		if u.ID > highest {
+			highest = u.ID
 		}
 	}
-	return nil
+	return highest, nil
+}
+
+// sendOpLogCursor emits an op_log_cursor JSON control frame to the
+// given conn. Best-effort: any write error is returned to the caller
+// (typically discarded — a doomed conn will surface the same error
+// elsewhere and the read loop will tear down). Per TASK-1319.
+func (r *Room) sendOpLogCursor(rc *roomConn, opLogID int64) error {
+	payload, err := json.Marshal(ControlMessage{
+		Type:    ControlMessageOpLogCursor,
+		OpLogID: opLogID,
+	})
+	if err != nil {
+		// json.Marshal of a pure-scalar struct cannot fail in
+		// practice; log defensively rather than swallow.
+		slog.Warn("collab: marshal op_log_cursor failed",
+			"item_id", r.itemID,
+			"client_id", rc.id,
+			"error", err,
+		)
+		return err
+	}
+	return rc.writeMessage(websocket.TextMessage, payload)
+}
+
+// sendForceRefreshFrame writes a force_refresh control message on the
+// conn. Used by the resume-cursor protocol when the client's
+// announced `?since=<id>` is below MIN(item_yjs_updates.id) — the
+// only safe response is to tell the client to discard local Y.Doc
+// state and lazy-seed from items.content. The caller closes the
+// conn after this returns. Per TASK-1319.
+func sendForceRefreshFrame(conn *websocket.Conn) error {
+	payload, err := json.Marshal(ControlMessage{
+		Type: ControlMessageForceRefresh,
+	})
+	if err != nil {
+		return err
+	}
+	// Set a short write deadline: a doomed conn shouldn't block the
+	// upgrade-time check indefinitely.
+	_ = conn.SetWriteDeadline(time.Now().Add(closeFrameDeadline))
+	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
 // readLoop is the inbound side: pull frames off the WebSocket, route
@@ -258,22 +323,44 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// persist and broadcast loses at most a live keystroke
 			// that the originating peer will replay on reconnect
 			// anyway.
-			if _, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion); err != nil {
+			persistedID, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion)
+			if err != nil {
 				slog.Error("collab: append op-log",
 					"item_id", r.itemID,
 					"client_id", rc.id,
 					"error", err,
 				)
 				// Continue: broadcast keeps the live mesh consistent
-				// even when persistence is blipping.
+				// even when persistence is blipping. persistedID == 0
+				// → no cursor frame is emitted by writeLoop for this
+				// event (we'd be advertising a fictional id).
 			}
 			r.bus.Publish(OpEvent{
 				ItemID:   r.itemID,
 				ClientID: rc.id,
 				Type:     OpTypeSync,
 				Data:     data,
+				OpLogID:  persistedID,
 			})
 			r.appendMu.Unlock()
+
+			// Notify the originator of its new cursor. writeLoop
+			// skips self events (no echo of the binary frame) so
+			// without this the originating peer would never see the
+			// id its own ops were assigned. Best-effort: a write
+			// error here is the same signal the readLoop would hit
+			// on its next ReadMessage and tear down cleanly.
+			if persistedID > 0 {
+				if cerr := r.sendOpLogCursor(rc, persistedID); cerr != nil {
+					// readLoop will hit the same conn error on its
+					// next iteration; just record at debug.
+					slog.Debug("collab: send op_log_cursor to originator failed",
+						"item_id", r.itemID,
+						"client_id", rc.id,
+						"error", cerr,
+					)
+				}
+			}
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
@@ -310,6 +397,16 @@ func (r *Room) writeLoop(rc *roomConn) {
 			// Force the read side to wake up and return.
 			_ = rc.conn.Close()
 			return
+		}
+		// Track the receiver's applied cursor when a sync frame
+		// has a persisted id. Awareness frames and frames whose
+		// AppendYjsUpdate failed (OpLogID == 0) do NOT advance the
+		// receiver's cursor — neither was persisted. Per TASK-1319.
+		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
+			if err := r.sendOpLogCursor(rc, ev.OpLogID); err != nil {
+				_ = rc.conn.Close()
+				return
+			}
 		}
 	}
 }

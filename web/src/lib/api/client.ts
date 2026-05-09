@@ -356,13 +356,28 @@ export const api = {
 			ws: string,
 			slug: string,
 			content: string,
-			opts?: { keepalive?: boolean },
-		) =>
-			request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
+			opts?: { keepalive?: boolean; opLogCursor?: number },
+		) => {
+			const body: { content: string; op_log_cursor?: number } = { content };
+			// `op_log_cursor` (TASK-1319) is the highest
+			// item_yjs_updates.id this tab has applied. The server
+			// advances `items.content_flushed_op_log_id` only when
+			// the cursor matches the current MAX(op-log.id) — proving
+			// the markdown captures every persisted op. Cursors below
+			// MAX leave the watermark untouched (peer ops outside this
+			// tab's view exist; the GC sweeper must not delete them).
+			// Omit the field entirely on legacy callers / cursors of 0
+			// (the server treats absent as "no claim", same outcome
+			// as the conservative TASK-1309 default).
+			if (opts?.opLogCursor !== undefined && opts.opLogCursor > 0) {
+				body.op_log_cursor = opts.opLogCursor;
+			}
+			return request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
 				method: 'PATCH',
-				body: JSON.stringify({ content }),
+				body: JSON.stringify(body),
 				keepalive: opts?.keepalive,
-			}),
+			});
+		},
 
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/items/${slug}`, {
