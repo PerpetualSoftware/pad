@@ -1030,7 +1030,13 @@
 	//   - 'failed' — PATCH errored. The toggle path bails so we
 	//     don't enter raw mode with stale state.
 	// Per Codex review round 8.
-	type CollabFlushResult = 'flushed' | 'deduped' | 'failed';
+	// 'skipped' is the TASK-1319 force_refresh-recovery path: the
+	// flush was blocked because the local Y.Doc state is known
+	// stale relative to the canonical server content. Distinct
+	// from 'deduped' (server already has this markdown) so callers
+	// like the rich→raw toggle can refuse to seed from the stale
+	// markdown rather than silently propagate it.
+	type CollabFlushResult = 'flushed' | 'deduped' | 'failed' | 'skipped';
 
 	// runCollabFlush PATCHes items.content via the
 	// `?source=collab-snapshot` bypass. Takes ws/item from the
@@ -1048,7 +1054,7 @@
 		// here covers every direct caller (beforeunload, raw-toggle,
 		// flushCollabNow) without needing per-call-site guards. Per
 		// Codex round 8 [P1] of TASK-1319.
-		if (forceRefreshInFlight) return 'deduped';
+		if (forceRefreshInFlight) return 'skipped';
 		const allItems = collectionStore.items ?? [];
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
@@ -1978,14 +1984,27 @@
 									for (let i = 0; i < 3; i++) {
 										if (typeof md !== 'string') break;
 										const result = await runCollabFlush(ws, itemId, md, false);
-										if (result === 'failed') {
-											// PATCH errored — refuse
-											// to enter raw mode
-											// rather than silently
-											// seed from stale state.
-											// runCollabFlush already
-											// surfaced the toast.
-											// Per Codex review round 8.
+										if (result === 'failed' || result === 'skipped') {
+											// 'failed' — PATCH errored;
+											//   runCollabFlush already
+											//   surfaced the toast.
+											// 'skipped' — force_refresh
+											//   recovery is in flight,
+											//   the Y.Doc-derived md is
+											//   known stale (TASK-1319
+											//   round 9 [P1]); seeding
+											//   raw mode from it would
+											//   silently overwrite the
+											//   canonical server content
+											//   on the next raw save.
+											// Either way, refuse to
+											// enter raw mode.
+											if (result === 'skipped') {
+												toastStore.show(
+													'Editor is recovering — try Markdown again in a moment.',
+													'info',
+												);
+											}
 											aborted = true;
 											break;
 										}
