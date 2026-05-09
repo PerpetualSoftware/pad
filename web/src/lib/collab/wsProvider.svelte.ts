@@ -157,6 +157,9 @@ export class CollabProvider {
 	private readonly handleDocUpdate: (update: Uint8Array, origin: unknown) => void;
 	private readonly handleAwarenessUpdate: (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void;
 	private readonly handleBeforeUnload: () => void;
+	private readonly handleVisibilityChange: () => void;
+	private readonly handleOnline: () => void;
+	private readonly handleOffline: () => void;
 
 	constructor(itemID: string, ydoc: Y.Doc, options: CollabProviderOptions = {}) {
 		this.itemID = itemID;
@@ -201,14 +204,148 @@ export class CollabProvider {
 			);
 		};
 
+		// Mobile-survival listeners (TASK-1265 / PLAN-1248). Mobile is
+		// the known-fragile WS environment: iOS Safari can suspend the
+		// JS runtime in the background, the OS may silently drop the
+		// connection, and the user expects the editor to "just work"
+		// when they swipe back to the tab.
+		this.handleVisibilityChange = () => {
+			if (typeof document === 'undefined') return;
+			if (document.visibilityState !== 'visible') return;
+			// Tab returned to foreground. Force a reconnect even if
+			// the socket reports OPEN: iOS Safari (and other mobile
+			// suspends) can silently kill the WS transport, leaving
+			// `readyState === OPEN` until the next send fails.
+			// `forceReconnect()` always closes + reconnects from a
+			// clean slate. The 30s backoff ceiling would otherwise
+			// dominate UX after a long iOS Safari background period.
+			this.forceReconnect();
+		};
+		this.handleOnline = () => {
+			// Network came back. Cancel any pending backoff timer
+			// and try connecting now instead of waiting for the next
+			// scheduled tick. The current `reconnectAttempts` counter
+			// is preserved — a failing online-recovery attempt should
+			// honour prior failures' backoff, not reset to zero.
+			this.forceReconnect();
+		};
+		this.handleOffline = () => {
+			// We lost network connectivity. Surface the offline state
+			// immediately so the badge doesn't claim 'synced' while
+			// no traffic is moving, and tear down the live socket so
+			// no in-flight sync frame can flip `synced/state` back
+			// after the offline event lands. closeSocket() removes
+			// the message listener (so onMessage can't process a
+			// stale syncStep2) AND removes the close listener (so
+			// scheduleReconnect won't fire from the natural close);
+			// we therefore have to inline our own scheduleReconnect
+			// call. Per Codex rounds 3-4 [P2].
+			this.state = 'offline';
+			if (this.ws) {
+				this.closeSocket(1000, 'network-offline');
+				this.runDisconnectCleanup({ demoteState: false });
+				// Keep the backoff alive in case the 'online' event
+				// never fires (some browsers / edge cases) — the
+				// connect() inside scheduleReconnect will keep
+				// failing while truly offline and will succeed once
+				// the network is back. De-dup any existing timer to
+				// avoid leaking parallel backoffs.
+				if (this.reconnectTimer !== undefined) {
+					clearTimeout(this.reconnectTimer);
+					this.reconnectTimer = undefined;
+				}
+				this.scheduleReconnect();
+			} else {
+				// No live socket — still kill any stray sync-grace
+				// timer so it can't fire and contradict 'offline'.
+				clearTimeout(this.syncGraceTimer);
+				this.syncGraceTimer = undefined;
+			}
+		};
+
 		this.ydoc.on('update', this.handleDocUpdate);
 		this.awareness.on('update', this.handleAwarenessUpdate);
 
 		if (typeof window !== 'undefined') {
 			window.addEventListener('beforeunload', this.handleBeforeUnload);
+			window.addEventListener('online', this.handleOnline);
+			window.addEventListener('offline', this.handleOffline);
+		}
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', this.handleVisibilityChange);
 		}
 
 		this.connect();
+	}
+
+	/**
+	 * Cancel any pending backoff timer, tear down any existing
+	 * socket (including an apparently-OPEN one), and try connecting
+	 * fresh. Idempotent. Safe to call when destroyed (no-op).
+	 *
+	 * The motivating case for "even when OPEN" is iOS Safari (and
+	 * similar mobile suspends): the OS can silently kill the WS
+	 * transport while leaving JS state intact, so `readyState` may
+	 * read OPEN long after the connection is dead. The browser only
+	 * notices on the next send → eventual close, by which time the
+	 * user has been staring at a stale "Synced" badge for seconds.
+	 * On visibility-resume / online events we therefore close
+	 * unconditionally and reconnect from a clean slate. Per Codex
+	 * review round 1 [P2].
+	 *
+	 * `closeSocket()` removes the close listener BEFORE calling
+	 * `ws.close()`, which means `onClose`'s bookkeeping (clearing
+	 * `connected` / `syncGraceTimer`, dropping stale peer awareness)
+	 * never runs. We have to do that bookkeeping inline — but
+	 * deliberately skip the `scheduleReconnect()` step, because the
+	 * explicit `connect()` call below replaces it.
+	 */
+	private forceReconnect(): void {
+		if (this.destroyed) return;
+
+		if (this.reconnectTimer !== undefined) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = undefined;
+		}
+
+		if (this.ws) {
+			this.closeSocket(1000, 'force-reconnect');
+			this.runDisconnectCleanup({ demoteState: true });
+		}
+
+		this.connect();
+	}
+
+	/**
+	 * Cleanup shared by `onClose` and the paths that bypass it via
+	 * `closeSocket()` (which removes the close listener before calling
+	 * `ws.close()`): `forceReconnect`, `handleOffline`, plus any
+	 * future teardown that needs the same end state.
+	 *
+	 * - Always: clear `connected`, kill the per-open syncGraceTimer,
+	 *   drop stale non-self awareness so peer cursors don't linger.
+	 * - With `demoteState: true`: also mirror `onClose`'s state demote
+	 *   (keep 'offline' sticky; otherwise pre-sync→'connecting',
+	 *   post-sync→'reconnecting'). `handleOffline` skips this because
+	 *   it has already set state='offline' explicitly.
+	 *
+	 * Per Codex round 5 NIT — extracting this helper so a future
+	 * teardown path doesn't drift out of sync.
+	 */
+	private runDisconnectCleanup(opts: { demoteState: boolean }): void {
+		this.connected = false;
+		clearTimeout(this.syncGraceTimer);
+		this.syncGraceTimer = undefined;
+		if (opts.demoteState && this.state !== 'offline') {
+			this.state = this.synced ? 'reconnecting' : 'connecting';
+		}
+		const peerIds: number[] = [];
+		this.awareness.getStates().forEach((_state, clientID) => {
+			if (clientID !== this.ydoc.clientID) peerIds.push(clientID);
+		});
+		if (peerIds.length > 0) {
+			awarenessProtocol.removeAwarenessStates(this.awareness, peerIds, this);
+		}
 	}
 
 	/** Cleanly close the WS, unbind doc/awareness handlers, and
@@ -239,6 +376,11 @@ export class CollabProvider {
 
 		if (typeof window !== 'undefined') {
 			window.removeEventListener('beforeunload', this.handleBeforeUnload);
+			window.removeEventListener('online', this.handleOnline);
+			window.removeEventListener('offline', this.handleOffline);
+		}
+		if (typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.handleVisibilityChange);
 		}
 
 		this.closeSocket(1000, 'destroyed');
@@ -359,7 +501,14 @@ export class CollabProvider {
 		// Mirrors the server's read-loop branching in
 		// `internal/collab/room.go`.
 		if (typeof data === 'string') {
-			this.handleControlMessage(data);
+			// Pin the source socket so a force-reconnect (TASK-1265)
+			// during the awaited applier handler doesn't ack on a
+			// different connection — the server keys pending acks by
+			// the conn that delivered the request. `e.currentTarget`
+			// is the socket the listener was bound to, which is more
+			// strictly correct than reading `this.ws` (the latter is
+			// also our current socket, but only by current invariant).
+			this.handleControlMessage(data, e.currentTarget as WebSocket | null);
 			return;
 		}
 
@@ -409,7 +558,7 @@ export class CollabProvider {
 		}
 	};
 
-	private async handleControlMessage(raw: string): Promise<void> {
+	private async handleControlMessage(raw: string, sourceWs: WebSocket | null): Promise<void> {
 		let msg: { type?: string; request_id?: string; markdown?: string; expires_at_millis?: number };
 		try {
 			msg = JSON.parse(raw);
@@ -466,8 +615,23 @@ export class CollabProvider {
 					type: 'applier_ack',
 					request_id: msg.request_id,
 				});
-				if (this.ws && this.ws.readyState === this.WebSocketImpl.OPEN) {
-					this.ws.send(ack);
+				// MUST send the ack on the same socket that delivered
+				// the request — the server keys pending acks by conn,
+				// so an ack sent on a post-force-reconnect new socket
+				// is silently ignored and the external write waits
+				// for the applier-timeout fallback (TASK-1257). Per
+				// Codex review round 2 [P2] of TASK-1265.
+				if (
+					sourceWs &&
+					sourceWs === this.ws &&
+					sourceWs.readyState === this.WebSocketImpl.OPEN
+				) {
+					sourceWs.send(ack);
+				} else {
+					console.warn(
+						'collab: applier source socket gone, suppressing late ack',
+						msg.request_id,
+					);
 				}
 				return;
 			}
@@ -479,23 +643,13 @@ export class CollabProvider {
 	}
 
 	private readonly onClose = (): void => {
-		this.connected = false;
-		// The sync-grace timer is per-open; if it hasn't fired yet
-		// it would set synced=true even after we lost the socket.
-		// Cancel so reconnect's onOpen can install a fresh one.
-		clearTimeout(this.syncGraceTimer);
-		this.syncGraceTimer = undefined;
-
-		// Clear ALL non-self awareness states. Without this, peer
-		// cursors would linger after the socket drops and reappear
-		// in stale positions on reconnect.
-		const ids: number[] = [];
-		this.awareness.getStates().forEach((_state, clientID) => {
-			if (clientID !== this.ydoc.clientID) ids.push(clientID);
-		});
-		if (ids.length > 0) {
-			awarenessProtocol.removeAwarenessStates(this.awareness, ids, this);
-		}
+		// Shared cleanup with forceReconnect / handleOffline:
+		// connected=false, syncGraceTimer cleared, peer awareness
+		// dropped, and (with demoteState) the state demote that
+		// preserves 'offline' across backoff retries while splitting
+		// pre-sync→'connecting' from post-sync→'reconnecting'.
+		// Per Codex rounds 1-5 of TASK-1264/-1265.
+		this.runDisconnectCleanup({ demoteState: true });
 
 		if (this.destroyed) return;
 
@@ -505,21 +659,7 @@ export class CollabProvider {
 		// any sync frame lands); only `synced` is. The reset is owned
 		// by the syncStep2 branch and the grace timer in onOpen — the
 		// actual successful-sync edges of the state machine. Per Codex
-		// review round 1 [P2].
-		// Drop the public state to a backoff variant unless we already
-		// declared 'offline' on a prior cycle — preserving 'offline'
-		// across the close→scheduleReconnect handoff prevents a
-		// visible 'offline'→'reconnecting'→'offline' flicker on every
-		// backoff retry. The variant depends on whether we ever
-		// actually synced: pre-first-sync failures stay 'connecting'
-		// (we never reached a working session, so calling it
-		// "reconnecting" would be misleading); post-sync drops become
-		// 'reconnecting'. Per Codex round 2 [NIT].
-		// scheduleReconnect re-confirms the final state once it's done
-		// bumping reconnectAttempts.
-		if (this.state !== 'offline') {
-			this.state = this.synced ? 'reconnecting' : 'connecting';
-		}
+		// review round 1 [P2] of TASK-1264.
 		this.scheduleReconnect();
 	};
 
