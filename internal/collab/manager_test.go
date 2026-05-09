@@ -2,6 +2,7 @@ package collab
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,26 @@ type fakeOpLog struct {
 	nextID  int64
 	failOn  string // if non-empty, AppendYjsUpdate returns this as an error message for any row
 	appendN int
+
+	// contentFlushedIDs simulates the items.content_flushed_op_log_id
+	// watermark per item (TASK-1309 round 4). Tests populate this
+	// to exercise the schema-mismatch + sweeper paths that consult
+	// it. Missing key = NULL watermark = "never flushed".
+	contentFlushedIDs map[string]int64
+
+	// onListDormantHook fires once per call to
+	// ListDormantOpLogItemsBefore, AFTER the listing scan but BEFORE
+	// the result is returned to the caller. Used by tests that
+	// simulate a row being appended in the race window between
+	// "candidate query returns" and "PruneItemOpLogIfDormantBefore
+	// runs under the per-item lock". The hook receives the locked
+	// store so it can mutate rows directly. nil = no-op.
+	//
+	// Per Codex review of TASK-1309 round 2 NIT:
+	// TestPruneSweepSkipsRowAddedMidSweep wasn't actually exercising
+	// the conditional-DELETE path because it inserted the recent row
+	// before the listing query.
+	onListDormantHook func(f *fakeOpLog)
 }
 
 func (f *fakeOpLog) AppendYjsUpdate(itemID string, data []byte, schemaVersion string) (int64, error) {
@@ -59,19 +80,32 @@ func (f *fakeOpLog) LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.
 }
 
 // LatestYjsUpdateSchemaVersion mirrors the production store: returns
-// the most recent op-log row's schema_version for an item, or
+// the most recent op-log row's schema_version AND id for an item, or
 // (false) when no rows exist. The fake walks rows[] in append order
 // and returns the latest matching entry — same semantic as the
 // store's `ORDER BY id DESC LIMIT 1`.
-func (f *fakeOpLog) LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error) {
+func (f *fakeOpLog) LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := len(f.rows) - 1; i >= 0; i-- {
 		if f.rows[i].ItemID == itemID {
-			return f.rows[i].SchemaVersion, true, nil
+			return f.rows[i].SchemaVersion, f.rows[i].ID, true, nil
 		}
 	}
-	return "", false, nil
+	return "", 0, false, nil
+}
+
+// GetItemContentFlushedOpLogID returns the per-item watermark as
+// configured by the test via fakeOpLog.contentFlushedIDs (a map
+// itemID → id). Missing key = NULL watermark, returned as (0, false).
+func (f *fakeOpLog) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.contentFlushedIDs == nil {
+		return 0, false, nil
+	}
+	v, ok := f.contentFlushedIDs[itemID]
+	return v, ok, nil
 }
 
 // PruneYjsUpdatesBefore deletes every row for itemID whose CreatedAt
@@ -91,6 +125,64 @@ func (f *fakeOpLog) PruneYjsUpdatesBefore(itemID string, before time.Time) (int6
 	}
 	f.rows = kept
 	return pruned, nil
+}
+
+// ListDormantOpLogItemsBefore returns item_ids whose entire op-log
+// is older than the cutoff. Mirrors the production store's
+// `GROUP BY item_id HAVING MAX(created_at) < ?`. The fake doesn't
+// model the items.content_flushed_op_log_id watermark — tests that need it
+// run against the real store via the server-level GC test.
+func (f *fakeOpLog) ListDormantOpLogItemsBefore(before time.Time) ([]string, error) {
+	f.mu.Lock()
+	// Compute MAX(created_at) per item_id; collect items where MAX < cutoff.
+	maxByItem := map[string]time.Time{}
+	for _, r := range f.rows {
+		if cur, ok := maxByItem[r.ItemID]; !ok || r.CreatedAt.After(cur) {
+			maxByItem[r.ItemID] = r.CreatedAt
+		}
+	}
+	var ids []string
+	for id, mx := range maxByItem {
+		if mx.Before(before) {
+			ids = append(ids, id)
+		}
+	}
+	hook := f.onListDormantHook
+	f.mu.Unlock()
+	// Fire the test hook (if any) AFTER the listing has been
+	// computed but BEFORE returning, simulating a row appended in
+	// the candidate-query→DELETE race window.
+	if hook != nil {
+		hook(f)
+	}
+	return ids, nil
+}
+
+// PruneItemOpLogIfDormantBefore atomically deletes every row for
+// itemID iff no row exists with CreatedAt >= cutoff. Returns the
+// count deleted.
+func (f *fakeOpLog) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// First pass: is the item still dormant?
+	for _, r := range f.rows {
+		if r.ItemID == itemID && !r.CreatedAt.Before(before) {
+			// A recent row exists — abort, don't delete anything.
+			return 0, nil
+		}
+	}
+	// Second pass: delete every row for this item.
+	kept := f.rows[:0]
+	var deleted int64
+	for _, r := range f.rows {
+		if r.ItemID == itemID {
+			deleted++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	f.rows = kept
+	return deleted, nil
 }
 
 func (f *fakeOpLog) appendCount() int {
@@ -721,4 +813,295 @@ func TestRoomManagerSchemaPostRebuildClean(t *testing.T) {
 	}
 
 	c1.Close()
+}
+
+// TestPruneSweepRemovesDormantItems is the TASK-1309 happy-path test:
+// a sweep finds items whose entire op-log is older than minAge and
+// prunes them whole. Items with ANY recent activity are preserved
+// completely (no prefix-pruning — Yjs causal references would break
+// per the Codex P1 finding).
+func TestPruneSweepRemovesDormantItems(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	// Item A: two old rows + one fresh row → mixed, NOT dormant.
+	// Whole-log prune is unsafe here (suffix references prefix
+	// structs in real Yjs). All three rows must survive.
+	now := time.Now()
+	store.mu.Lock()
+	store.rows = append(store.rows,
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x01}, "1", now.Add(-48*time.Hour)),
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x02}, "1", now.Add(-30*time.Hour)),
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x03}, "1", now.Add(-1*time.Hour)),
+	)
+	// Item B: one fresh row → not dormant. Survives.
+	store.rows = append(store.rows,
+		fakeYjsRow("item-b", []byte{yMessageSync, 0x04}, "1", now.Add(-2*time.Hour)),
+	)
+	// Item C: two old rows, no recent activity → DORMANT. Whole
+	// op-log gets pruned; cold reconnect lazy-seeds from
+	// items.content (TASK-1261).
+	store.rows = append(store.rows,
+		fakeYjsRow("item-c", []byte{yMessageSync, 0x05}, "1", now.Add(-72*time.Hour)),
+		fakeYjsRow("item-c", []byte{yMessageSync, 0x06}, "1", now.Add(-50*time.Hour)),
+	)
+	store.mu.Unlock()
+
+	res, err := mgr.PruneSweep(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+
+	// Only item-c is dormant (MAX(created_at) < cutoff).
+	if got := res.ItemsScanned; got != 1 {
+		t.Errorf("ItemsScanned: want 1 (only c is dormant), got %d", got)
+	}
+	if got := res.ItemsPruned; got != 1 {
+		t.Errorf("ItemsPruned: want 1, got %d", got)
+	}
+	if got := res.RowsPruned; got != 2 {
+		t.Errorf("RowsPruned: want 2 (c's whole op-log), got %d", got)
+	}
+	if got := res.Errors; got != 0 {
+		t.Errorf("Errors: want 0, got %d", got)
+	}
+
+	// Surviving rows: item-a's three + item-b's one. item-c gone.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := len(store.rows); got != 4 {
+		t.Fatalf("after prune: want 4 surviving rows (3 from item-a + 1 from item-b), got %d", got)
+	}
+	byItem := map[string]int{}
+	for _, r := range store.rows {
+		byItem[r.ItemID]++
+	}
+	if byItem["item-a"] != 3 {
+		t.Errorf("item-a: want 3 surviving rows (whole-log preserved because non-dormant), got %d", byItem["item-a"])
+	}
+	if byItem["item-b"] != 1 {
+		t.Errorf("item-b: want 1 surviving row, got %d", byItem["item-b"])
+	}
+	if byItem["item-c"] != 0 {
+		t.Errorf("item-c: want 0 surviving rows (dormant, whole-log pruned), got %d", byItem["item-c"])
+	}
+}
+
+// TestPruneSweepDefaultMinAge verifies that passing minAge=0 falls
+// back to DefaultPruneMinAge rather than treating the cutoff as
+// "now" (which would prune every row in the table).
+func TestPruneSweepDefaultMinAge(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	// One row, 1 hour old. With DefaultPruneMinAge=24h this row
+	// should be PRESERVED. If the implementation accidentally used
+	// `time.Now()` as the cutoff, the row would be deleted.
+	now := time.Now()
+	store.mu.Lock()
+	store.rows = append(store.rows,
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x01}, "1", now.Add(-1*time.Hour)),
+	)
+	store.mu.Unlock()
+
+	res, err := mgr.PruneSweep(0)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+	if res.RowsPruned != 0 {
+		t.Errorf("with default minAge, 1-hour-old row should survive; got RowsPruned=%d", res.RowsPruned)
+	}
+	if got := store.rowCount(); got != 1 {
+		t.Errorf("rows after sweep: want 1, got %d", got)
+	}
+}
+
+// TestPruneSweepEmpty handles the no-eligible-rows case cleanly.
+func TestPruneSweepEmpty(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	res, err := mgr.PruneSweep(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+	if res.ItemsScanned != 0 || res.RowsPruned != 0 || res.Errors != 0 {
+		t.Errorf("empty store should produce zero counters, got %+v", res)
+	}
+}
+
+// TestPruneSweepBailsOnClose ensures a sweep mid-loop respects a
+// concurrent Close — once the manager is closed, the sweep stops
+// iterating remaining items rather than continuing to touch a
+// torn-down store.
+func TestPruneSweepBailsOnClose(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+
+	now := time.Now()
+	store.mu.Lock()
+	for i := 0; i < 10; i++ {
+		itemID := fmt.Sprintf("item-%d", i)
+		store.rows = append(store.rows,
+			fakeYjsRow(itemID, []byte{yMessageSync, byte(i)}, "1", now.Add(-48*time.Hour)),
+		)
+	}
+	store.mu.Unlock()
+
+	// Pre-close the manager: the sweep should bail on the first
+	// per-item iteration. Close() runs synchronously here so the
+	// closed flag is set before PruneSweep starts.
+	mgr.Close()
+
+	res, err := mgr.PruneSweep(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+	// ItemsScanned reflects the initial query (which ran before
+	// the closed-flag check), but no items should have been
+	// pruned because the per-item loop bailed immediately.
+	if res.ItemsScanned != 10 {
+		t.Errorf("ItemsScanned: want 10 (query ran), got %d", res.ItemsScanned)
+	}
+	if res.RowsPruned != 0 {
+		t.Errorf("RowsPruned after Close: want 0, got %d", res.RowsPruned)
+	}
+}
+
+// TestPruneSweepSkipsActiveRoom verifies the dormant-item check
+// honours an in-memory active Room — even if the database query
+// returned the item as dormant, an existing Room means we shouldn't
+// prune. (Active rooms can buffer awareness state, hold a grace
+// timer, etc.; a fresh peer reconnecting via grace would expect to
+// find the prior op-log intact.)
+func TestPruneSweepSkipsActiveRoom(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	// Seed one dormant item.
+	now := time.Now()
+	store.mu.Lock()
+	store.rows = append(store.rows,
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x01}, "1", now.Add(-48*time.Hour)),
+	)
+	store.mu.Unlock()
+
+	// Create a room for item-a directly. We don't need a real WS;
+	// just having the entry in m.rooms is enough to trigger the
+	// active-room skip.
+	mgr.mu.Lock()
+	mgr.rooms["item-a"] = &Room{
+		itemID: "item-a",
+		store:  store,
+		bus:    bus,
+		conns:  make(map[*websocket.Conn]*roomConn),
+	}
+	mgr.mu.Unlock()
+
+	res, err := mgr.PruneSweep(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+
+	if res.ItemsPruned != 0 {
+		t.Errorf("ItemsPruned: want 0 (active room blocks prune), got %d", res.ItemsPruned)
+	}
+	if res.ItemsSkipped != 1 {
+		t.Errorf("ItemsSkipped: want 1 (item-a skipped due to active room), got %d", res.ItemsSkipped)
+	}
+	if got := store.rowCount(); got != 1 {
+		t.Errorf("rows after sweep: want 1 (active room preserved), got %d", got)
+	}
+}
+
+// TestPruneSweepSkipsRowAddedMidSweep exercises the mid-sweep race
+// window: the dormancy listing returns item-a (it WAS dormant at
+// query time), but a row gets appended before PruneItemOpLogIfDormantBefore
+// runs under the per-item lock. The conditional DELETE in the store
+// must re-check dormancy at SQL level and refuse to delete.
+//
+// We simulate the race via the onListDormantHook on fakeOpLog,
+// which fires after the listing is computed but before
+// PruneSweep iterates. The hook injects a recent row that the
+// candidate-list already committed to but that the conditional
+// DELETE must catch.
+//
+// Per Codex review of TASK-1309 round 2 NIT.
+func TestPruneSweepSkipsRowAddedMidSweep(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	// Seed a single old row → item-a IS dormant at query time.
+	now := time.Now()
+	store.mu.Lock()
+	store.rows = append(store.rows,
+		fakeYjsRow("item-a", []byte{yMessageSync, 0x01}, "1", now.Add(-48*time.Hour)),
+	)
+	// Inject a recent row in the race window — listing already
+	// computed, but per-item DELETE hasn't run yet.
+	store.onListDormantHook = func(f *fakeOpLog) {
+		f.mu.Lock()
+		f.rows = append(f.rows,
+			fakeYjsRow("item-a", []byte{yMessageSync, 0x02}, "1", now.Add(-1*time.Hour)),
+		)
+		f.mu.Unlock()
+	}
+	store.mu.Unlock()
+
+	res, err := mgr.PruneSweep(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneSweep: %v", err)
+	}
+
+	// item-a was returned by the listing (1 candidate scanned),
+	// but the conditional DELETE saw the newly-appended row and
+	// refused. Expect 1 scanned, 0 pruned, 1 skipped.
+	if res.ItemsScanned != 1 {
+		t.Errorf("ItemsScanned: want 1 (listing saw dormant item), got %d", res.ItemsScanned)
+	}
+	if res.ItemsPruned != 0 {
+		t.Errorf("ItemsPruned: want 0 (conditional DELETE refused), got %d", res.ItemsPruned)
+	}
+	if res.ItemsSkipped != 1 {
+		t.Errorf("ItemsSkipped: want 1 (DELETE returned 0 rows), got %d", res.ItemsSkipped)
+	}
+	if got := store.rowCount(); got != 2 {
+		t.Errorf("rows after sweep: want 2 (both preserved), got %d", got)
+	}
+}
+
+// fakeYjsRow constructs a single row for the fakeOpLog seeding helpers.
+// The store assigns ids in production; tests don't depend on them.
+func fakeYjsRow(itemID string, data []byte, schemaVersion string, createdAt time.Time) models.YjsUpdate {
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	return models.YjsUpdate{
+		ItemID:        itemID,
+		UpdateData:    cp,
+		SchemaVersion: schemaVersion,
+		CreatedAt:     createdAt.UTC(),
+	}
 }

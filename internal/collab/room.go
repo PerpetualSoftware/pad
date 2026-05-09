@@ -118,9 +118,24 @@ type opLogStore interface {
 	// schema-mismatch rebuild flow (TASK-1268). The room manager
 	// checks the most recent op-log row's stamp on Join and prunes
 	// the entire item's op-log when the persisted version no longer
-	// matches the server's current SCHEMA_VERSION.
-	LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error)
+	// matches the server's current SCHEMA_VERSION. The latest row's
+	// id is returned alongside the version so the rebuild can detect
+	// when it's about to drop unflushed edits and log a warning.
+	LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool, error)
 	PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error)
+	// GetItemContentFlushedOpLogID returns the per-item flush
+	// watermark (TASK-1309). Returns (0, false) for items with NULL
+	// watermark or no row.
+	GetItemContentFlushedOpLogID(itemID string) (int64, bool, error)
+	// ListDormantOpLogItemsBefore + PruneItemOpLogIfDormantBefore
+	// power the periodic prune sweep (TASK-1309). Selects items
+	// whose ENTIRE op-log is older than cutoff AND whose
+	// items.content has captured every op-log row (id watermark);
+	// conditional DELETE re-checks dormancy atomically. See
+	// yjs_updates.go for why prefix-pruning is unsafe (Yjs causal
+	// references).
+	ListDormantOpLogItemsBefore(before time.Time) ([]string, error)
+	PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels

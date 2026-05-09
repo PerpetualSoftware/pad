@@ -137,16 +137,34 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 	}
 
 	// Compute and insert the next item_number atomically within the lock.
+	// content_flushed_at + content_flushed_op_log_id are the op-log GC
+	// watermarks (TASK-1309). The id column is authoritative — sweeper
+	// uses strict id comparison to avoid second-granularity timestamp
+	// false positives. Both set iff content is non-empty:
+	//   - timestamp = creation time (informational)
+	//   - id = 0 (vacuously safe — there are no op-log rows yet, so
+	//     "covers all rows up to id 0" never gates anything until the
+	//     first op-log row arrives, at which point this item is
+	//     non-dormant by virtue of having a recent row)
+	// Empty content → both NULL; sweeper treats NULL as "never flushed"
+	// and skips pruning.
+	var contentFlushedAt interface{}
+	var contentFlushedOpLogID interface{}
+	if input.Content != "" {
+		contentFlushedAt = ts
+		contentFlushedOpLogID = int64(0)
+	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
-		                   created_by, last_modified_by, source, item_number, created_at, updated_at)
+		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
+		                   content_flushed_at, content_flushed_op_log_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
-		        ?, ?)
+		        ?, ?, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
-		createdBy, createdBy, source, workspaceID, ts, ts)
+		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID)
 	if err != nil {
 		return err
 	}
@@ -927,6 +945,34 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	if input.Content != nil {
 		sets = append(sets, "content = ?")
 		args = append(args, *input.Content)
+		// Bump the human-readable timestamp on every content
+		// update — this is informational and never gates GC.
+		sets = append(sets, "content_flushed_at = ?")
+		args = append(args, ts)
+
+		// Op-log GC watermark policy (TASK-1309 round 5 [P1]):
+		// only advance content_flushed_op_log_id from server-driven
+		// full-content writes (CLI / MCP / applier-direct-write /
+		// version-restore / PruneAndApply). Browser collab-snapshot
+		// PATCHes are NOT eligible because they can't prove their
+		// markdown captures every peer op:
+		//
+		//   Tab A's Y.Doc is at op N. Peer B's op N+1 commits to
+		//   the op-log. Tab A's 5s flush PATCHes stale markdown
+		//   derived from its op-N view. If we advanced the watermark
+		//   to MAX(op-log.id) = N+1 here, the sweeper would later
+		//   prune op N+1 — the only durable copy of peer B's edit.
+		//
+		// VersionSource == "collab-snapshot" is the marker the
+		// HTTP handler sets for browser flushes (TASK-1267). All
+		// other content writes either rebuild content from full
+		// op-log state (PruneAndApply) or replace it wholesale
+		// (CLI / version restore) — those CAN safely stamp the
+		// watermark to MAX(op-log.id) at write time.
+		if input.VersionSource != "collab-snapshot" {
+			sets = append(sets, "content_flushed_op_log_id = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)")
+			args = append(args, id)
+		}
 	}
 	if input.Fields != nil {
 		sets = append(sets, "fields = ?")

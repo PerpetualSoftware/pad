@@ -190,3 +190,66 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 		t.Errorf("expected at least one version row stored as a reverse-patch (IsDiff=true); test contents are too small or too dissimilar to exercise the diff path. Bump the filler size.")
 	}
 }
+
+// TestCollabSnapshotDoesNotAdvanceOpLogWatermark is a regression
+// guard for TASK-1309 round 5 [P1]: a browser collab-snapshot
+// PATCH (VersionSource="collab-snapshot") must NOT advance the
+// items.content_flushed_op_log_id watermark, because the flusher's
+// markdown can't be proven to capture every peer's ops.
+//
+// Other content writes (no VersionSource, or any other value) DO
+// advance the watermark — those paths reconstruct content from the
+// full op-log state (PruneAndApply) or replace it wholesale (CLI
+// write, version restore).
+func TestCollabSnapshotDoesNotAdvanceOpLogWatermark(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Watermark Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Item", "v1")
+
+	// Seed an op-log row directly so the item has a non-zero
+	// MAX(op-log.id). Production AppendYjsUpdate stamps an id via
+	// AUTOINCREMENT/BIGSERIAL.
+	if _, err := s.AppendYjsUpdate(item.ID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate: %v", err)
+	}
+
+	// Browser collab-snapshot PATCH path: VersionSource="collab-snapshot".
+	// items.content gets updated, but content_flushed_op_log_id
+	// must stay at 0 (the value CreateItem set with no ops at the time).
+	v2 := "v2"
+	_, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &v2,
+		LastModifiedBy: "user",
+		VersionSource:  "collab-snapshot",
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem (collab-snapshot): %v", err)
+	}
+	id1, ok, err := s.GetItemContentFlushedOpLogID(item.ID)
+	if err != nil {
+		t.Fatalf("GetItemContentFlushedOpLogID: %v", err)
+	}
+	if !ok || id1 != 0 {
+		t.Errorf("after collab-snapshot PATCH: watermark must stay at 0 (got %d, ok=%v); browser flushes can't prove peer-op coverage", id1, ok)
+	}
+
+	// Server-driven write (no VersionSource): watermark MUST advance
+	// to MAX(op-log.id). Our seeded row has id 1 (or close to it).
+	v3 := "v3"
+	_, err = s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &v3,
+		LastModifiedBy: "user",
+		Source:         "cli",
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem (cli): %v", err)
+	}
+	id2, ok, err := s.GetItemContentFlushedOpLogID(item.ID)
+	if err != nil {
+		t.Fatalf("GetItemContentFlushedOpLogID after cli: %v", err)
+	}
+	if !ok || id2 < 1 {
+		t.Errorf("after server-driven write: watermark must advance past 0 (got %d, ok=%v)", id2, ok)
+	}
+}
