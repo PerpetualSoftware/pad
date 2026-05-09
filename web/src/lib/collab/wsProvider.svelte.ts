@@ -39,6 +39,16 @@ const MESSAGE_AWARENESS = 1;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+/** Fallback grace before declaring `synced` true on connections that
+ *  never receive an explicit syncStep2. The dumb-relay server replays
+ *  the op-log as a sequence of BinaryMessage frames but doesn't
+ *  generate its own step2; an empty/pruned op-log + first-peer
+ *  connect therefore never arrives at the explicit-sync signal. The
+ *  grace lets any actual replay land first; after it, downstream
+ *  consumers (lazy seed in TASK-1261) can safely treat
+ *  `synced` as "the server has shown us everything it has." */
+const SYNC_GRACE_MS = 1_000;
+
 /**
  * Handler invoked when the server delivers an `applier_request`
  * (designated-applier protocol from TASK-1257). Receives the markdown
@@ -106,6 +116,7 @@ export class CollabProvider {
 	private destroyed = false;
 	private reconnectAttempts = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	private syncGraceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	private readonly handleDocUpdate: (update: Uint8Array, origin: unknown) => void;
 	private readonly handleAwarenessUpdate: (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void;
@@ -175,6 +186,8 @@ export class CollabProvider {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = undefined;
 		}
+		clearTimeout(this.syncGraceTimer);
+		this.syncGraceTimer = undefined;
 
 		// Best-effort presence cleanup before tearing the socket down.
 		// If we're already disconnected the awareness send is a no-op.
@@ -263,6 +276,19 @@ export class CollabProvider {
 			);
 			this.send(encoding.toUint8Array(enc2));
 		}
+
+		// Grace fallback: if we don't see an explicit syncStep2 within
+		// SYNC_GRACE_MS, flip `synced` true anyway. The dumb-relay
+		// server replays the op-log as BinaryMessage frames but never
+		// sends its own step2, so an empty/pruned op-log + first-peer
+		// connect would otherwise leave `synced` stuck at false —
+		// blocking the lazy seed in TASK-1261. The grace gives any
+		// real replay rows time to land first. Per Codex review
+		// round 1.
+		clearTimeout(this.syncGraceTimer);
+		this.syncGraceTimer = setTimeout(() => {
+			if (!this.synced) this.synced = true;
+		}, SYNC_GRACE_MS);
 	};
 
 	private readonly onMessage = (e: MessageEvent): void => {
@@ -388,6 +414,11 @@ export class CollabProvider {
 	private readonly onClose = (): void => {
 		const wasConnected = this.connected;
 		this.connected = false;
+		// The sync-grace timer is per-open; if it hasn't fired yet
+		// it would set synced=true even after we lost the socket.
+		// Cancel so reconnect's onOpen can install a fresh one.
+		clearTimeout(this.syncGraceTimer);
+		this.syncGraceTimer = undefined;
 
 		// Clear ALL non-self awareness states. Without this, peer
 		// cursors would linger after the socket drops and reappear

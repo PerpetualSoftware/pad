@@ -605,6 +605,24 @@
 		const seedRaw = item.content ?? '';
 		if (!seedRaw.trim()) return;
 
+		// Multi-tab seed election: among connected peers visible
+		// in awareness, only the lowest clientID seeds. Yjs
+		// concurrent inserts MERGE rather than dedupe, so two
+		// tabs both calling setContent would produce duplicated
+		// content. Election + recheck shrink the race window to
+		// the time between checking awareness and dispatching
+		// setContent. Per Codex review round 1.
+		const localId = ydoc.clientID;
+		const peerIds = Array.from(collabProvider.awareness.getStates().keys());
+		// Awareness must include at least our own ID; if it's
+		// empty the awareness handshake hasn't completed yet —
+		// skip this tick and let the next $effect run try again
+		// (a peer's awareness arrival re-triggers via the
+		// `synced` dependency edge).
+		if (peerIds.length === 0) return;
+		const lowestId = peerIds.reduce((min, id) => (id < min ? id : min), peerIds[0]);
+		if (lowestId !== localId) return;
+
 		// Match Editor's onUpdate path: seed in URL-form markdown so
 		// wiki-links resolve to clickable refs. The 5s flush will
 		// later round-trip back to canonical [[wiki-link]] form via
@@ -614,7 +632,21 @@
 			allItems.length > 0 && seedRaw.includes('[[')
 				? wikiLinksToMarkdown(seedRaw, allItems, wsSlug, username)
 				: seedRaw;
-		editorInstance.commands.setContent(seedMd);
+
+		// Microtask-yield + recheck: a concurrent peer's seed may
+		// have already propagated and just hasn't been applied to
+		// our fragment yet. Yielding once gives the y-protocol
+		// inbound queue a tick to flush. After yield, re-check
+		// emptiness AND re-check election (peer set may have
+		// changed).
+		queueMicrotask(() => {
+			if (fragment.length > 0) return;
+			const peerIds2 = Array.from(collabProvider!.awareness.getStates().keys());
+			if (peerIds2.length === 0) return;
+			const lowest2 = peerIds2.reduce((min, id) => (id < min ? id : min), peerIds2[0]);
+			if (lowest2 !== localId) return;
+			editorInstance!.commands.setContent(seedMd);
+		});
 	});
 
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
