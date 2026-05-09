@@ -243,14 +243,54 @@ var distantFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 // Returns nil on the no-rows path and on the matched-version path —
 // both are "nothing to do". A real DB error from either step short-
 // circuits Join with the same error so the WS upgrade fails loudly.
+//
+// **Data loss disclosure.** When the latest op-log row's id exceeds
+// `items.content_flushed_op_log_id` for the item (i.e. unflushed
+// edits exist), the prune is unrecoverable: those ops are stamped
+// with the OLD schema and can't be replayed against the new schema
+// regardless of where they're stored. Lazy-seed (TASK-1261) will
+// repopulate the Y.Doc from items.content, which is stale relative
+// to the unflushed ops. We log a warn so operators see when a
+// schema bump is dropping unsaved client edits. Per Codex review of
+// TASK-1309 round 4 [P2].
 func (m *RoomManager) maybeRebuildOnSchemaMismatch(itemID string) error {
-	latest, ok, err := m.store.LatestYjsUpdateSchemaVersion(itemID)
+	latest, latestID, ok, err := m.store.LatestYjsUpdateSchemaVersion(itemID)
 	if err != nil {
 		return err
 	}
 	if !ok || latest == m.schemaVersion {
 		return nil
 	}
+
+	// Pre-prune watermark check. Unflushed ops would be lost; we
+	// can't avoid the loss (old-schema ops can't migrate forward),
+	// but we surface it.
+	flushedID, flushedOK, err := m.store.GetItemContentFlushedOpLogID(itemID)
+	if err != nil {
+		// Watermark read failed — proceed with the prune (we still
+		// have to: the schema-mismatch case is non-negotiable) but
+		// log the failure separately.
+		slog.Warn("collab: schema-mismatch rebuild: watermark read failed",
+			"item_id", itemID,
+			"error", err,
+		)
+	} else if !flushedOK || latestID > flushedID {
+		// flushedOK==false → never flushed, every op is unflushed.
+		// latestID > flushedID → some ops past the watermark.
+		// We can't avoid the prune here (old-schema ops can't replay
+		// in the new schema regardless of where they're stored), but
+		// the WARN tells operators a schema bump dropped some
+		// unsaved client edits — they may want to investigate which
+		// items were affected and contact the affected users.
+		// Per Codex review of TASK-1309 round 4 [P2].
+		slog.Warn("collab: schema-mismatch rebuild will drop unflushed ops",
+			"item_id", itemID,
+			"latest_op_log_id", latestID,
+			"content_flushed_op_log_id", flushedID,
+			"watermark_set", flushedOK,
+		)
+	}
+
 	pruned, err := m.store.PruneYjsUpdatesBefore(itemID, distantFuture)
 	if err != nil {
 		return err
@@ -262,6 +302,149 @@ func (m *RoomManager) maybeRebuildOnSchemaMismatch(itemID string) error {
 		"rows_pruned", pruned,
 	)
 	return nil
+}
+
+// DefaultPruneMinAge is the floor age for op-log dormancy in the
+// periodic prune sweeper (TASK-1309). An item must have NO op-log
+// rows newer than `now - minAge` to be eligible. 24 hours covers
+// every realistic mobile-suspend / network-blip / lock-screen
+// interval and leaves headroom for travel-on-flaky-wifi reconnects.
+//
+// Pass `0` (or any non-positive value) to PruneSweep to fall back
+// to this default.
+const DefaultPruneMinAge = 24 * time.Hour
+
+// PruneSweepResult records what one PruneSweep accomplished. Surfaced
+// to the server-level periodic ticker so it can log a one-line
+// summary per sweep.
+type PruneSweepResult struct {
+	// ItemsScanned: items returned by the dormancy query at sweep
+	// start. Some of these may turn out to be non-dormant by the
+	// time we acquire their per-item lock and run the conditional
+	// delete; those count toward ItemsSkipped, not ItemsPruned.
+	ItemsScanned int
+	// ItemsPruned: items where the conditional DELETE actually
+	// removed rows (i.e. confirmed dormant under the lock).
+	ItemsPruned int
+	// ItemsSkipped: items that became non-dormant between the
+	// candidate query and the conditional DELETE (a peer reconnected
+	// and wrote a row), or that were skipped because an active
+	// in-memory Room exists (covers the grace-TTL window after the
+	// last peer disconnected).
+	ItemsSkipped int
+	// RowsPruned: total rows deleted across all pruned items.
+	RowsPruned int64
+	// Errors: per-item prune failures. Sweep continues past errors
+	// so a single broken item doesn't block GC for the whole table.
+	Errors int
+}
+
+// PruneSweep finds every item whose ENTIRE op-log is older than
+// `minAge` and prunes the whole op-log for those items under the
+// per-item lock. Returns a summary.
+//
+// **Why whole-log only.** Yjs op streams are causally linked: a
+// recent op can reference structs created in older ops. Prefix-
+// pruning (delete old rows, keep recent) corrupts replay because
+// the suffix's references can't be resolved. Per Codex review of
+// the original TASK-1309 [P1]. Whole-log prune is safe because the
+// next cold connect lazy-seeds from items.content (TASK-1261),
+// producing a fresh self-consistent Y.Doc.
+//
+// `minAge` is the minimum age of the NEWEST op-log row for an item
+// to be considered dormant. Pass 0 to use DefaultPruneMinAge.
+//
+// Coordination:
+//   - Per-item lock matches the lock Join takes for its addConn +
+//     replayTo critical section; a fresh peer can't race the
+//     prune-then-replay sequence.
+//   - In-memory active Room check before the prune skips items
+//     where peers are still attached (the grace-TTL window after
+//     the last conn dropped also counts as "active" — the room
+//     could come back via grace-cancel-on-reconnect).
+//   - Conditional DELETE in the store re-checks dormancy
+//     atomically. If a row was appended between the candidate
+//     query and the DELETE (e.g. a sneaky readLoop write under
+//     appendMu), the DELETE deletes nothing.
+//
+// Per TASK-1309 (PLAN-1248).
+func (m *RoomManager) PruneSweep(minAge time.Duration) (PruneSweepResult, error) {
+	var res PruneSweepResult
+
+	if minAge <= 0 {
+		minAge = DefaultPruneMinAge
+	}
+	cutoff := time.Now().Add(-minAge)
+
+	items, err := m.store.ListDormantOpLogItemsBefore(cutoff)
+	if err != nil {
+		return res, err
+	}
+	res.ItemsScanned = len(items)
+
+	for _, itemID := range items {
+		// Bail early if Close has fired — no point pruning a
+		// store the manager is winding down.
+		m.mu.Lock()
+		closed := m.closed
+		hasRoom := m.rooms[itemID] != nil
+		m.mu.Unlock()
+		if closed {
+			return res, nil
+		}
+		if hasRoom {
+			// Active Room (or grace-TTL pending). Skip — the
+			// next sweep can pick this item up if the room
+			// goes idle by then. Active rooms naturally accrue
+			// new op-log rows that would defeat dormancy
+			// anyway; skipping here is just a fast-path before
+			// taking the per-item lock.
+			res.ItemsSkipped++
+			continue
+		}
+
+		lock := m.itemLock(itemID)
+		lock.Lock()
+
+		// Re-check active room under the lock. A Join could have
+		// raced between our outer check and this lock acquisition;
+		// the lock now serialises us against any in-flight Join's
+		// addConn+replayTo, but a Join that has already created
+		// the Room and released the lock could have left m.rooms
+		// non-nil. (Joins hold the lock across replay; once
+		// released, the room is live.)
+		m.mu.Lock()
+		hasRoom = m.rooms[itemID] != nil
+		m.mu.Unlock()
+		if hasRoom {
+			lock.Unlock()
+			res.ItemsSkipped++
+			continue
+		}
+
+		// Conditional DELETE: deletes everything for itemID iff
+		// no row >= cutoff exists. n=0 means a recent row was
+		// appended between the candidate query and now; that's
+		// fine, just a skip.
+		n, err := m.store.PruneItemOpLogIfDormantBefore(itemID, cutoff)
+		lock.Unlock()
+
+		if err != nil {
+			slog.Warn("collab: prune sweep: per-item prune failed",
+				"item_id", itemID,
+				"error", err,
+			)
+			res.Errors++
+			continue
+		}
+		if n == 0 {
+			res.ItemsSkipped++
+			continue
+		}
+		res.RowsPruned += n
+		res.ItemsPruned++
+	}
+	return res, nil
 }
 
 // runConn drives one connection through its full lifecycle: spawn

@@ -138,6 +138,12 @@ type Server struct {
 	// the loop to exit and waits for it via the bg WaitGroup.
 	orphanGC orphanGCConfig
 
+	// opLogGC holds the periodic-sweep config + lifecycle for the
+	// Yjs op-log prune sweeper (TASK-1309). Mirrors orphanGC's
+	// pattern. Configured via SetOpLogGCConfig + started via
+	// StartOpLogGC; Stop() signals the loop via stopOpLogGC.
+	opLogGC opLogGCConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -218,6 +224,9 @@ func (s *Server) Stop() {
 	// Each loop registers itself on s.bg, so the Wait() below blocks
 	// until they actually finish and any in-flight goroutines drain.
 	s.stopOrphanGC()
+	// Yjs op-log prune sweeper (TASK-1309). Same lifecycle pattern;
+	// signals BEFORE Wait() so the goroutine sees the close and exits.
+	s.stopOpLogGC()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking
@@ -227,13 +236,20 @@ func (s *Server) Stop() {
 	// Order with the audit writer doesn't matter — both are
 	// independent goroutines; we just need the close BEFORE Wait().
 	s.stopMCPSessionTracker()
-	s.bg.Wait()
-	// Close the collab room manager BEFORE the rateLimiter so any
-	// in-flight Join goroutines holding rate-limiter handles can wind
-	// down via their normal close path. nil-safe: collab is optional.
+	// Close the collab room manager BEFORE bg.Wait() so any in-flight
+	// op-log GC sweep (TASK-1309) blocked on a per-item lock behind
+	// an active Join can drain. collab.Close() tears down the Joins
+	// (their WS readLoops return, runConn unwinds, itemLocks
+	// release), which unblocks the GC's per-item PruneItemOpLogIfDormantBefore
+	// call. Without this ordering, Stop() can deadlock: GC waits on
+	// itemLock; Join holds itemLock until WS closes; WS only closes
+	// when collab.Close() runs; collab.Close() only runs after
+	// bg.Wait(); bg.Wait() never returns because GC is stuck.
+	// Per Codex review of TASK-1309 [P2]. nil-safe: collab is optional.
 	if s.collab != nil {
 		s.collab.Close()
 	}
+	s.bg.Wait()
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
 

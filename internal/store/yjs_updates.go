@@ -130,50 +130,213 @@ func (s *Store) LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsU
 	return updates, nil
 }
 
-// LatestYjsUpdateSchemaVersion returns the `schema_version` of the
-// most recently appended op-log row for an item. The boolean is false
-// when no rows exist yet (a fresh item, or one whose op-log was just
-// pruned). Used by the schema-mismatch rebuild flow (TASK-1268,
-// PLAN-1248): if the latest persisted version differs from the
-// server's current SCHEMA_VERSION, the room manager prunes the
-// op-log before replaying so the new-schema client doesn't replay
-// old-schema ops that may be incompatible.
+// LatestYjsUpdateSchemaVersion returns the `schema_version` AND `id`
+// of the most recently appended op-log row for an item. The boolean
+// is false when no rows exist yet (a fresh item, or one whose op-log
+// was just pruned).
 //
-// We pick "most recent" rather than "any row" so a server that wrote
-// some old-version rows then was rolled back, then forward again,
-// still detects the mismatch from the row(s) that matter most.
-func (s *Store) LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error) {
+// Used by the schema-mismatch rebuild flow (TASK-1268, PLAN-1248):
+// if the latest persisted version differs from the server's current
+// SCHEMA_VERSION, the room manager prunes the op-log before
+// replaying so the new-schema client doesn't replay old-schema ops
+// that may be incompatible. The id is also returned so the rebuild
+// can compare against items.content_flushed_op_log_id and log
+// loudly when the prune is dropping unflushed edits — the user
+// can't recover them (old-schema ops can't replay in new schema)
+// but operators should see when this happens. Per Codex review of
+// TASK-1309 round 4 [P2].
+//
+// We pick "most recent" rather than "any row" so a server that
+// wrote some old-version rows then was rolled back, then forward
+// again, still detects the mismatch from the row(s) that matter
+// most.
+func (s *Store) LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool, error) {
 	if itemID == "" {
-		return "", false, errors.New("LatestYjsUpdateSchemaVersion: itemID is required")
+		return "", 0, false, errors.New("LatestYjsUpdateSchemaVersion: itemID is required")
 	}
 	query := s.dialect.Rebind(`
-		SELECT schema_version
+		SELECT schema_version, id
 		FROM item_yjs_updates
 		WHERE item_id = ?
 		ORDER BY id DESC
 		LIMIT 1
 	`)
 	var version string
-	if err := s.db.QueryRow(query, itemID).Scan(&version); err != nil {
+	var rowID int64
+	if err := s.db.QueryRow(query, itemID).Scan(&version, &rowID); err != nil {
 		// sql.ErrNoRows is the well-known "no rows" path; surface it
 		// as ok=false rather than an error so callers don't have to
 		// import database/sql just for this check.
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", false, nil
+			return "", 0, false, nil
 		}
-		return "", false, fmt.Errorf("latest yjs schema version: %w", err)
+		return "", 0, false, fmt.Errorf("latest yjs schema version: %w", err)
 	}
-	return version, true, nil
+	return version, rowID, true, nil
+}
+
+// GetItemContentFlushedOpLogID returns the value of
+// items.content_flushed_op_log_id for an item — the highest op-log
+// id known to be reflected in items.content, or (0, false) if the
+// item has never been flushed (NULL column value or item missing).
+//
+// Used by the schema-mismatch rebuild path (TASK-1268) to detect
+// when an unsafe prune is about to drop unflushed edits. Per Codex
+// review of TASK-1309 round 4 [P2].
+func (s *Store) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error) {
+	if itemID == "" {
+		return 0, false, errors.New("GetItemContentFlushedOpLogID: itemID is required")
+	}
+	query := s.dialect.Rebind(`
+		SELECT content_flushed_op_log_id FROM items WHERE id = ?
+	`)
+	var (
+		v   sql.NullInt64
+		err = s.db.QueryRow(query, itemID).Scan(&v)
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("get content flushed op log id: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
+// ListDormantOpLogItemsBefore returns the distinct item_ids whose
+// ENTIRE op-log is older than the given cutoff AND whose
+// items.content_flushed_op_log_id covers every persisted op-log
+// row's id. Both conditions are required for the periodic prune
+// sweeper (TASK-1309) to safely delete the op-log:
+//
+//  1. **Dormancy** (`MAX(op-log.created_at) < cutoff`): no recent
+//     edits, so any new connect should pick up the canonical state
+//     from items.content via lazy-seed (TASK-1261) rather than
+//     replaying the live op stream.
+//
+//  2. **Flush coverage** (`MAX(op-log.id) <=
+//     items.content_flushed_op_log_id`): items.content actually
+//     contains every edit the op-log persisted. The id is a
+//     monotonic AUTOINCREMENT/BIGSERIAL — strict id comparison
+//     avoids the false-positive that wall-clock timestamp
+//     comparison admits at second granularity (Codex review of
+//     TASK-1309 round 4 [P1]).
+//
+// Without the flush-coverage check, a browser/process death between
+// an op-log append and the next 5s collab-snapshot flush would
+// leave unflushed edits stuck in the op-log; the GC would delete
+// them on the dormancy threshold and the next cold connect would
+// lazy-seed stale markdown.
+//
+// Items with NULL content_flushed_op_log_id are excluded (never-
+// flushed, can't safely prune). Items with non-NULL but stale id
+// (older than MAX op-log id) are also excluded.
+//
+// IMPORTANT: returns "all rows are dormant AND flushed" candidates
+// only. Yjs op streams are causally linked, so prefix-pruning
+// corrupts replay. Whole-log prune of dormant+flushed items is the
+// safe operation — future cold connects then lazy-seed from
+// items.content, producing a fresh, self-consistent Y.Doc.
+//
+// Returns an empty slice when no item qualifies (no error). Caller
+// iterates the list, takes per-item locks, and calls
+// PruneItemOpLogIfDormantBefore — which atomically re-checks
+// dormancy. The id watermark is monotonically non-decreasing so
+// the JOIN-time check trivially holds under the lock.
+func (s *Store) ListDormantOpLogItemsBefore(before time.Time) ([]string, error) {
+	cutoff := before.UTC().Format(time.RFC3339)
+	query := s.dialect.Rebind(`
+		SELECT u.item_id
+		FROM item_yjs_updates u
+		JOIN items i ON u.item_id = i.id
+		WHERE i.content_flushed_op_log_id IS NOT NULL
+		GROUP BY u.item_id, i.content_flushed_op_log_id
+		HAVING MAX(u.created_at) < ?
+		   AND MAX(u.id) <= i.content_flushed_op_log_id
+	`)
+	rows, err := s.db.Query(query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list dormant op-log items: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan item id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate item ids: %w", err)
+	}
+	return ids, nil
+}
+
+// PruneItemOpLogIfDormantBefore atomically deletes every op-log row
+// for itemID IFF no row exists with created_at >= cutoff. Returns
+// the count deleted (0 if the item turned out to be non-dormant).
+//
+// This is the safe replacement for "list-then-prune" in the GC
+// sweeper. Without the conditional NOT EXISTS check, a row appended
+// by a live readLoop between the candidate-list query and the
+// per-item DELETE would be deleted along with the older rows,
+// corrupting the active session's op stream. The conditional DELETE
+// is atomic at the SQL layer: either every row of the item gets
+// deleted (no recent row at evaluation time) or none do.
+//
+// Per Codex review of TASK-1309 [P1].
+func (s *Store) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error) {
+	if itemID == "" {
+		return 0, errors.New("PruneItemOpLogIfDormantBefore: itemID is required")
+	}
+	cutoff := before.UTC().Format(time.RFC3339)
+	query := s.dialect.Rebind(`
+		DELETE FROM item_yjs_updates
+		WHERE item_id = ?
+		  AND NOT EXISTS (
+		    SELECT 1 FROM item_yjs_updates
+		    WHERE item_id = ? AND created_at >= ?
+		  )
+	`)
+	res, err := s.db.Exec(query, itemID, itemID, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune dormant op-log: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune dormant op-log (rows affected): %w", err)
+	}
+	return n, nil
 }
 
 // PruneYjsUpdatesBefore deletes op-log rows for an item with created_at
 // strictly before the given cutoff and returns the row count removed.
 //
-// Used by the eventual GC sweeper (out of scope for this task) to
-// reclaim space after a successful markdown snapshot makes the older
-// op-log rows redundant. items.content remains canonical, so pruning
-// is safe — at most we lose the ability to do live op-replay for very
-// old peer reconnects, who will fall back to the markdown snapshot.
+// **Not safe as a generic GC primitive** — Yjs op streams are
+// causally linked, so deleting older rows while keeping newer ones
+// corrupts replay (the suffix's references to pruned-prefix structs
+// can't be resolved). This method is retained ONLY for callers that
+// guarantee the suffix doesn't depend on the prefix:
+//
+//   - The schema-mismatch rebuild path (TASK-1268) calls it with a
+//     far-future cutoff to wipe the entire op-log on a version
+//     change — same effective behaviour as the GC sweeper, just
+//     reached via a different signal.
+//   - PruneAndApply's direct-write fallback (TASK-1257) — the
+//     caller guarantees no live readLoop is appending while the
+//     prune+items.content-write runs.
+//
+// New callers SHOULD use ListDormantOpLogItemsBefore +
+// PruneItemOpLogIfDormantBefore, which enforce the dormant-only
+// invariant + flush-watermark check at the SQL layer.
+//
+// Per Codex review of TASK-1309 — comment was previously stale,
+// describing future GC use that turned out to be unsafe.
 func (s *Store) PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error) {
 	if itemID == "" {
 		return 0, errors.New("PruneYjsUpdatesBefore: itemID is required")

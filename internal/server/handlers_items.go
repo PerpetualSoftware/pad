@@ -519,7 +519,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// `source IN ('cli', 'mcp')` filter just because the user
 	// happened to open the editor and trigger a 5s auto-flush. Per
 	// Codex round 3 of TASK-1267 [P2].
-	if collabSnapshot && input.VersionSource == "" {
+	//
+	// **Force-override** when the query param is set, even if the
+	// body sent a different VersionSource. Otherwise a buggy or
+	// malicious client could send `?source=collab-snapshot` (which
+	// triggers the applier-bypass) with `"version_source":"cli"`
+	// in the body, sneaking a stale browser snapshot through the
+	// op-log GC watermark check (TASK-1309 round 5 [P1] keys on
+	// VersionSource to gate watermark advancement). The query
+	// param is the trustworthy server-side signal; the body
+	// VersionSource is client-attacker-controlled. Per Codex round
+	// 6 of TASK-1309 [P2].
+	if collabSnapshot {
 		input.VersionSource = "collab-snapshot"
 	}
 

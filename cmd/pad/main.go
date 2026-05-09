@@ -659,6 +659,18 @@ func serveCmd() *cobra.Command {
 			srv.SetCollabRoomManager(collab.NewRoomManager(s, collabBus))
 			slog.Info("Collab room manager wired (Yjs over /api/v1/collab/{itemID})")
 
+			// Op-log prune sweeper (TASK-1309). Periodic background
+			// loop that deletes Yjs op-log rows older than minAge.
+			// Defaults: 1h interval, 24h minAge — both override-able
+			// via env (PAD_OPLOG_GC_INTERVAL=5m for tests where you
+			// want to see the sweep land within a CI run, etc.).
+			oplogGCInterval := parseDurationEnv("PAD_OPLOG_GC_INTERVAL", 0)
+			oplogGCMinAge := parseDurationEnv("PAD_OPLOG_GC_MIN_AGE", 0)
+			if oplogGCInterval != 0 || oplogGCMinAge != 0 {
+				srv.SetOpLogGCConfig(oplogGCInterval, oplogGCMinAge)
+			}
+			srv.StartOpLogGC()
+
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
 

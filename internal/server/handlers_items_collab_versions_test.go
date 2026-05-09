@@ -140,6 +140,77 @@ func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 	}
 }
 
+// TestCollabSnapshotQueryOverridesBodyVersionSource is the TASK-1309
+// round-6 [P2] regression: a `?source=collab-snapshot` query MUST
+// override any `version_source` field in the PATCH body. Otherwise
+// a buggy/malicious client could send the query (which triggers
+// the applier-bypass path and reaches Store.UpdateItem directly)
+// with `version_source: "cli"` in the body, sneaking a stale
+// browser snapshot through the op-log GC watermark policy
+// (TASK-1309 round 5 only advances the watermark when
+// VersionSource != "collab-snapshot").
+//
+// We assert the version row's Source column is "collab-snapshot"
+// even when the body claims something else.
+func TestCollabSnapshotQueryOverridesBodyVersionSource(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Override test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	time.Sleep(1100 * time.Millisecond)
+
+	// PATCH with the dangerous combo: query says collab-snapshot,
+	// body claims version_source=cli (which would otherwise sneak
+	// past the gate and advance the watermark).
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":        "v2",
+			"version_source": "cli", // attacker / buggy override
+		},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// The version row written for this PATCH must record source as
+	// "collab-snapshot" — the query-param signal wins.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug+"/versions", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list versions: %d", rr.Code)
+	}
+	var versions []models.Version
+	parseJSON(t, rr, &versions)
+
+	var foundCollabRow bool
+	for _, v := range versions {
+		if v.Source == "collab-snapshot" {
+			foundCollabRow = true
+			break
+		}
+	}
+	if !foundCollabRow {
+		t.Errorf(
+			"query-param `?source=collab-snapshot` must override body "+
+				"`version_source`; got version sources: %v. The body "+
+				"claimed cli but the trusted query param said "+
+				"collab-snapshot, which is the GC-safe attribution.",
+			sourcesOf(versions),
+		)
+	}
+}
+
 func sourcesOf(versions []models.Version) []string {
 	out := make([]string, 0, len(versions))
 	for _, v := range versions {
