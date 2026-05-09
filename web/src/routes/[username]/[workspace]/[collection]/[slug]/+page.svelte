@@ -1579,44 +1579,53 @@
 						class="mode-btn"
 						class:active={rawMode}
 						onclick={async () => {
-							// When toggling FROM rich+collab TO raw,
-							// the editor's live markdown is the
-							// canonical state. Synchronously flush
-							// it to items.content via the collab-
-							// snapshot bypass BEFORE activating raw
-							// mode. Without this, a user who toggles
-							// to raw and immediately navigates away
-							// (without typing) would never persist
-							// the live Y.Doc snapshot — items.content
-							// would stay frozen at the prior 5s
-							// tick. The await ensures the PATCH is
-							// in flight (and lastFlushedContent is
-							// seeded) before any subsequent raw
-							// debounce can race it. Per Codex review
-							// round 4.
-							//
-							// rawSeedMarkdown is also set so
-							// RawMarkdownEditor mounts with the live
-							// markdown rather than stale
-							// items.content (in case the user types
-							// before the flush response lands).
+							// Toggle rich+collab → raw. We need to
+							// land the live Y.Doc state in
+							// items.content BEFORE activating raw
+							// mode so the raw editor (and any
+							// subsequent navigation) sees the
+							// current markdown. The provider stays
+							// connected during the await, which means
+							// a concurrent peer (e.g. same user's
+							// other tab) can keep editing the Y.Doc
+							// while we flush — those edits would be
+							// lost from the seed if we captured md
+							// once. Loop-flush until stable: re-read
+							// the editor's current markdown after
+							// each PATCH; if it changed, flush again.
+							// Capped at 3 iterations to bound the
+							// transition under aggressive concurrent
+							// typing. Per Codex review round 5.
 							if (collabProvider && editorInstance && item) {
+								const ws = wsSlug;
+								const itemId = item.id;
+								const ed = editorInstance;
 								try {
-									const md = (editorInstance.storage as any).markdown?.getMarkdown?.();
-									if (typeof md === 'string') {
-										rawSeedMarkdown = md;
-										const ws = wsSlug;
-										const itemId = item.id;
+									let md = (ed.storage as any).markdown?.getMarkdown?.();
+									for (let i = 0; i < 3; i++) {
+										if (typeof md !== 'string') break;
 										// keepalive=true so the
 										// PATCH outlives a fast
 										// post-toggle navigation.
 										await runCollabFlush(ws, itemId, md, true);
+										const mdAfter = (ed.storage as any).markdown?.getMarkdown?.();
+										if (mdAfter === md) break;
+										md = mdAfter;
 									}
+									if (typeof md === 'string') rawSeedMarkdown = md;
 								} catch {
 									// Fall through; RawMarkdownEditor
 									// will seed from item.content.
 								}
 							}
+							// Cancel any pending timer-driven flush
+							// scheduled by edits during the await
+							// window — left armed, it would fire
+							// post-rawMode and PATCH a stale rich
+							// markdown over a subsequent raw save.
+							// Per Codex review round 5.
+							clearTimeout(collabFlushTimer);
+							collabFlushTimer = undefined;
 							rawMode = true;
 						}}
 						title="Raw markdown editor"
