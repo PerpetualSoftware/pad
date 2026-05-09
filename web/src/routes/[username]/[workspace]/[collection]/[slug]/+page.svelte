@@ -676,9 +676,16 @@
 			if (!item) return;
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
+			// Capture the item id this PATCH was scoped to so a
+			// late-arriving response after navigation to a new item
+			// can't apply the old item's snapshot to the new
+			// page state (cross-item bleed). Per Codex review round
+			// 11.
+			const reqItemId = item.id;
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
-			api.items.update(wsSlug, item.id, { content: toSave }).then((updated) => {
+			api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
+				if (!item || item.id !== reqItemId) return;
 				editorStore.setLastSaveTime(Date.now());
 				// Stale-response guard: only swap in the server's
 				// snapshot when no newer raw edit landed during the
@@ -691,13 +698,14 @@
 					rawPendingMarkdown = null;
 					editorStore.setDirty(false);
 					showSaved();
-				} else if (item) {
+				} else {
 					// Newer pending edit; keep local content, adopt
 					// server-side metadata only. The next debounce
 					// cycle will land the queued edit.
 					item = { ...updated, content: item.content };
 				}
 			}).catch(() => {
+				if (!item || item.id !== reqItemId) return;
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
@@ -738,6 +746,11 @@
 		if (rawPendingMarkdown === null) return true;
 
 		rawFlushInFlight = true;
+		// Capture the item id once for the entire drain. If the user
+		// navigates away mid-flush, every iteration's stale response
+		// (including the in-flight one) is discarded so it can't
+		// clobber the newly-loaded item. Per Codex review round 11.
+		const reqItemId = item.id;
 		let lastError = false;
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
@@ -748,7 +761,13 @@
 				try {
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
-					const updated = await api.items.update(wsSlug, item.id, { content: markdown });
+					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown });
+					if (!item || item.id !== reqItemId) {
+						// Navigation completed during the await;
+						// abort and let the new item's state take
+						// over.
+						return false;
+					}
 					editorStore.setLastSaveTime(Date.now());
 					// Only swap in the server's snapshot when no
 					// newer raw edit arrived during the await.
@@ -760,7 +779,7 @@
 					if (rawPendingMarkdown === markdown) {
 						item = updated;
 						rawPendingMarkdown = null;
-					} else if (item) {
+					} else {
 						// Newer edit pending — keep our local
 						// content but adopt server-side metadata
 						// (timestamps, version, modified_by).
