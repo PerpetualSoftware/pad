@@ -2002,7 +2002,7 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#key `${item.id}:true`}
+						{#key `${item.id}:true:${forceRefreshNonce}`}
 							<Editor
 								content={editorContent}
 								onUpdate={handleContentUpdate}
