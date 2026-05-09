@@ -226,7 +226,27 @@
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						// Bail if the user navigated away before this resolved.
 						if (!item || item.id !== reqItemId) return;
-						item = { ...updated, content: item.content };
+						// Drop TASK-1243's conservative content-skip
+						// when collab is active (TASK-1262). Under
+						// collab the editor reads from Y.Doc, NOT
+						// from the `content` prop — Editor.svelte's
+						// `if (ydoc) return` gate at the prop $effect
+						// makes adopting updated.content harmless to
+						// the live editor while keeping item.content
+						// fresh for downstream consumers (UI summaries,
+						// search index hints, etc.).
+						//
+						// Non-collab still preserves the local content
+						// to avoid clobbering an unsaved typing burst —
+						// the saveStatus guard above already skips when
+						// a debounced save is in flight, but a user
+						// mid-keystroke with no save yet pending would
+						// still lose chars without this branch.
+						if (collabProvider) {
+							item = updated;
+						} else {
+							item = { ...updated, content: item.content };
+						}
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 						if (!item || item.id !== reqItemId) return;
 						itemLinks = links;
@@ -239,7 +259,11 @@
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						if (!item || item.id !== reqItemId) return;
-						item = { ...updated, content: item.content };
+						if (collabProvider) {
+							item = updated;
+						} else {
+							item = { ...updated, content: item.content };
+						}
 					} catch {
 						// Ignore — will catch up on next event
 					}
@@ -277,12 +301,15 @@
 				// Check if our item is in the changed set
 				const updated = result.changes.updated.find(i => i.id === reqItemId);
 				if (updated) {
-					// Merge server state without disrupting the editor
+					// Merge server state without disrupting the editor.
+					// Same collab-aware adoption rule as the SSE
+					// handler above (TASK-1262).
 					if (!item || item.id !== reqItemId) return;
-					item = {
-						...updated,
-						content: item.content
-					};
+					if (collabProvider) {
+						item = updated;
+					} else {
+						item = { ...updated, content: item.content };
+					}
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 					if (!item || item.id !== reqItemId) return;
 					itemLinks = links;
@@ -294,10 +321,11 @@
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
 				if (!item || item.id !== reqItemId) return;
-				item = {
-					...updated,
-					content: item.content
-				};
+				if (collabProvider) {
+					item = updated;
+				} else {
+					item = { ...updated, content: item.content };
+				}
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 				if (!item || item.id !== reqItemId) return;
 				itemLinks = links;
@@ -497,6 +525,12 @@
 				}
 				try {
 					editorInstance.commands.setContent(markdown);
+					// Brief notification so users see WHY their editor
+					// just changed under them. The applier path is
+					// triggered by external (CLI / MCP / API) writes
+					// — a silent setContent would otherwise look like
+					// a glitch. Per TASK-1262 acceptance criteria.
+					toastStore.show('External edit applied', 'info');
 					return true;
 				} catch (err) {
 					console.warn('collab: setContent failed', err);
