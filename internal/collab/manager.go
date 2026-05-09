@@ -10,11 +10,20 @@ import (
 )
 
 // DefaultSchemaVersion is the schema-version stamp used by all rooms
-// today. TASK-1268 will add a real client-driven version with a
-// snapshot-and-rebuild flow on mismatch; for now every persisted
-// op-log row carries the same value, which is exactly what
-// LoadYjsUpdatesSince expects.
+// today. TASK-1268 plumbs the rebuild flow: each Join's announced
+// client version is checked against the latest op-log row's stamp
+// and the room manager prunes the op-log when they diverge. The
+// constant itself bumps in lockstep with the web client's
+// `web/src/lib/collab/schemaVersion.ts` SCHEMA_VERSION on any
+// breaking change to the Tiptap extension set or Y.Doc shape.
 const DefaultSchemaVersion = "1"
+
+// SchemaVersion exposes the version this manager stamps on persisted
+// op-log rows. The HTTP collab handler uses it to validate incoming
+// `?schema_version=...` query params before upgrading the WebSocket —
+// a client running a different version is rejected at the upgrade
+// stage rather than admitted and silently corrupting the op-log.
+func (m *RoomManager) SchemaVersion() string { return m.schemaVersion }
 
 // errTooManyJoinRetries surfaces when RoomManager.Join lost the
 // addConn-vs-grace-expiry race more times than feels like a real
@@ -178,6 +187,25 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 		// before the long-lived readLoop so concurrent peers can
 		// edit simultaneously. Per Codex review round 5.
 		itemLock.Lock()
+
+		// Schema-mismatch rebuild (TASK-1268). Inside the per-item
+		// setup lock so a concurrent PruneAndApply / fresh Join
+		// can't race the prune-then-replay sequence: any peer that
+		// arrives in this window blocks here until we either prune
+		// or proceed cleanly. We check the LATEST persisted
+		// schema_version (LatestYjsUpdateSchemaVersion), and if it
+		// disagrees with our current m.schemaVersion we wipe the
+		// op-log for this item via PruneYjsUpdatesBefore with a
+		// far-future cutoff. items.content is canonical and is
+		// preserved — the client's lazy-seed path (TASK-1261) will
+		// re-encode it into ops at the new schema version on its
+		// next idle tick.
+		if err := m.maybeRebuildOnSchemaMismatch(itemID); err != nil {
+			itemLock.Unlock()
+			m.bus.Unsubscribe(rc.bus)
+			return err
+		}
+
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
 			// Race: the grace timer reclaimed the room between
@@ -196,6 +224,44 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 		return m.runConn(room, rc, itemLock)
 	}
 	return errTooManyJoinRetries
+}
+
+// distantFuture is the prune-everything cutoff we hand to
+// PruneYjsUpdatesBefore. The store's prune is a strict-less-than on
+// created_at; any row written with a sane RFC3339 timestamp will
+// satisfy `created_at < 9999-01-01`.
+var distantFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// maybeRebuildOnSchemaMismatch implements the TASK-1268 rebuild flow.
+//
+// Reads the latest persisted op-log row's schema_version for itemID.
+// If a row exists AND its version differs from the manager's current
+// `schemaVersion`, the entire op-log for the item is pruned. Caller
+// MUST hold the per-item setup lock so a concurrent peer's replayTo
+// can't load the soon-to-be-pruned rows.
+//
+// Returns nil on the no-rows path and on the matched-version path —
+// both are "nothing to do". A real DB error from either step short-
+// circuits Join with the same error so the WS upgrade fails loudly.
+func (m *RoomManager) maybeRebuildOnSchemaMismatch(itemID string) error {
+	latest, ok, err := m.store.LatestYjsUpdateSchemaVersion(itemID)
+	if err != nil {
+		return err
+	}
+	if !ok || latest == m.schemaVersion {
+		return nil
+	}
+	pruned, err := m.store.PruneYjsUpdatesBefore(itemID, distantFuture)
+	if err != nil {
+		return err
+	}
+	slog.Info("collab: schema-version mismatch; pruned op-log",
+		"item_id", itemID,
+		"server_version", m.schemaVersion,
+		"persisted_version", latest,
+		"rows_pruned", pruned,
+	)
+	return nil
 }
 
 // runConn drives one connection through its full lifecycle: spawn

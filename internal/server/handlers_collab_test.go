@@ -521,6 +521,73 @@ func TestCollabUpgradeUnavailableWithoutRoomManager(t *testing.T) {
 	}
 }
 
+// TestCollabUpgradeRejectsSchemaVersionMismatch is the TASK-1268
+// negative-handshake regression: a client announcing a different
+// SCHEMA_VERSION than the server runs must be 400'd before the WS
+// upgrade. Admitting a mismatched client and letting it stamp ops
+// onto the op-log would corrupt the rebuild flow's mismatch
+// detection (the server's stamp is supposed to mark each op-log
+// row's era).
+func TestCollabUpgradeRejectsSchemaVersionMismatch(t *testing.T) {
+	srv := testServerWithCollab(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	itemID := seedCollabFixture(t, srv, "SchemaMismatch")
+
+	// Server's RoomManager is at "1" (DefaultSchemaVersion); send "9"
+	// to force a mismatch. We hit the HTTP path directly rather than
+	// through dialCollab so we can read the JSON error body.
+	resp, err := http.Get(ts.URL + "/api/v1/collab/" + itemID + "?schema_version=9")
+	if err != nil {
+		t.Fatalf("http get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on schema mismatch, got %d", resp.StatusCode)
+	}
+	// We deliberately don't lock to the exact JSON shape (which
+	// could shift if the writeError envelope changes) — the
+	// status code is the load-bearing assertion.
+}
+
+// TestCollabUpgradeAcceptsExplicitMatchingSchemaVersion confirms the
+// happy path of the handshake: a client that sends a schema_version
+// matching the server's value is upgraded normally.
+func TestCollabUpgradeAcceptsExplicitMatchingSchemaVersion(t *testing.T) {
+	srv := testServerWithCollab(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	itemID := seedCollabFixture(t, srv, "SchemaMatch")
+
+	// Server's RoomManager runs at "1" (DefaultSchemaVersion). The
+	// client announces "1" too — must be accepted.
+	u, _ := url.Parse(ts.URL)
+	wsURL := "ws://" + u.Host + "/api/v1/collab/" + itemID + "?schema_version=1"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		body := ""
+		if resp != nil {
+			body = "status=" + resp.Status
+		}
+		t.Fatalf("dial: %v (%s)", err, body)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols, got %d", resp.StatusCode)
+	}
+	if err := conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"),
+		time.Now().Add(1*time.Second),
+	); err != nil {
+		t.Fatalf("write close: %v", err)
+	}
+}
+
 // TestCollabUpgradeMissingItemIDBadRequest exercises the bad-request
 // branch — chi's URL pattern requires the {itemID} segment to be
 // present, so the route just won't match without it. This test is

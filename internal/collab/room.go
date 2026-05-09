@@ -114,6 +114,13 @@ type Room struct {
 type opLogStore interface {
 	AppendYjsUpdate(itemID string, data []byte, schemaVersion string) (int64, error)
 	LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsUpdate, error)
+	// LatestYjsUpdateSchemaVersion + PruneYjsUpdatesBefore power the
+	// schema-mismatch rebuild flow (TASK-1268). The room manager
+	// checks the most recent op-log row's stamp on Join and prunes
+	// the entire item's op-log when the persisted version no longer
+	// matches the server's current SCHEMA_VERSION.
+	LatestYjsUpdateSchemaVersion(itemID string) (string, bool, error)
+	PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels
