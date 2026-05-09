@@ -235,11 +235,27 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 				m.bus.Unsubscribe(rc.bus)
 				return merr
 			}
-			if hasMin && since < minID {
-				slog.Info("collab: client cursor below op-log MIN; sending force_refresh",
+			// `since > 0` means the client claims to have applied
+			// at least one persisted op locally. Two ways that
+			// claim is incompatible with the current op-log:
+			//   - No rows exist (`!hasMin`): the entire op-log
+			//     was pruned (PruneAndApply, schema rebuild, or
+			//     dormant GC). The client's Y.Doc is built on top
+			//     of ops that no longer exist; admitting it would
+			//     let its on-open `Y.encodeStateAsUpdate` write
+			//     resurrect the stale pre-prune document and
+			//     overwrite items.content on the next flush.
+			//   - `since < minID`: rows the client expected to
+			//     replay have been pruned (the same hazard, just
+			//     with a non-empty post-prune suffix).
+			// Both branches force_refresh. Per Codex round 2 [P1].
+			needsRefresh := !hasMin || since < minID
+			if needsRefresh {
+				slog.Info("collab: client cursor incompatible with op-log; sending force_refresh",
 					"item_id", itemID,
 					"since", since,
 					"min_id", minID,
+					"has_min", hasMin,
 				)
 				_ = sendForceRefreshFrame(conn)
 				itemLock.Unlock()

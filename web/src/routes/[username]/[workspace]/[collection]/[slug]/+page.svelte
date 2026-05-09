@@ -611,6 +611,14 @@
 				// canonical items.content the fresh provider is
 				// supposed to lazy-seed from.
 				skipFlushOnNextCleanup = true;
+				// Cancel any in-flight 5s flush timer too. The
+				// cleanup-skip flag only covers the cleanup path;
+				// a timer that already armed before force_refresh
+				// fired would otherwise PATCH the (stale) Y.Doc-
+				// derived markdown after the cleanup ran. Per
+				// Codex round 2 [P1].
+				clearTimeout(collabFlushTimer);
+				collabFlushTimer = undefined;
 				forceRefreshNonce += 1;
 			},
 		});

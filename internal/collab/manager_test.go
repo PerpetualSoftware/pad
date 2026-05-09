@@ -1420,3 +1420,29 @@ func TestRoomManagerSyncCursorBroadcast(t *testing.T) {
 		t.Errorf("peer cursor: want op_log_cursor id=1, got type=%q id=%d", cursorB.Type, cursorB.OpLogID)
 	}
 }
+
+// TestRoomManagerForceRefreshOnEmptyOpLogWithSince exercises the
+// branch added in Codex round 2 [P1] of TASK-1319: a client
+// announces `?since=N>0` against an item whose ENTIRE op-log has
+// been pruned (PruneAndApply, schema rebuild, or dormant GC). MIN
+// is undefined, so the original `hasMin && since < minID` predicate
+// would have admitted the connection — and the client's on-open
+// `Y.encodeStateAsUpdate` write would have resurrected the stale
+// pre-prune document.
+func TestRoomManagerForceRefreshOnEmptyOpLogWithSince(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	// No seed rows — empty op-log, simulating post-prune state.
+	c := dialWSSince(t, srv, "item-a", 5)
+	defer c.Close()
+
+	cursor := readControlWithin(t, c, time.Second)
+	if cursor.Type != ControlMessageForceRefresh {
+		t.Fatalf("type: want %q, got %q", ControlMessageForceRefresh, cursor.Type)
+	}
+}
