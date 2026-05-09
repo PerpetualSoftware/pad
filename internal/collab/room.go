@@ -59,6 +59,15 @@ type roomConn struct {
 	bus         chan OpEvent
 	writeMu     sync.Mutex
 	connectedAt time.Time
+	// replayDone is set after replayTo + the initial post-replay
+	// op_log_cursor frame have been written. writeLoop suppresses
+	// op_log_cursor frames before this flips so live ops broadcast
+	// during the replay window don't advance the client's cursor
+	// past replay rows it hasn't yet seen — disconnecting mid-replay
+	// after a single live cursor would otherwise leave the client's
+	// resume cursor pointing past unreplayed rows. Per Codex round
+	// 5 [P1] of TASK-1319.
+	replayDone atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -402,7 +411,14 @@ func (r *Room) writeLoop(rc *roomConn) {
 		// has a persisted id. Awareness frames and frames whose
 		// AppendYjsUpdate failed (OpLogID == 0) do NOT advance the
 		// receiver's cursor — neither was persisted. Per TASK-1319.
-		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
+		//
+		// During replay (replayDone == false) we suppress cursor
+		// frames so a live op broadcast mid-replay can't bump the
+		// client's persisted cursor past replay rows it hasn't
+		// received yet. The post-replay cursor frame in runConn
+		// flips replayDone, after which live ops resume cursor
+		// advancement. Per Codex round 5 [P1].
+		if ev.Type == OpTypeSync && ev.OpLogID > 0 && rc.replayDone.Load() {
 			if err := r.sendOpLogCursor(rc, ev.OpLogID); err != nil {
 				_ = rc.conn.Close()
 				return

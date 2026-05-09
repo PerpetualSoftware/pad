@@ -1446,3 +1446,88 @@ func TestRoomManagerForceRefreshOnEmptyOpLogWithSince(t *testing.T) {
 		t.Fatalf("type: want %q, got %q", ControlMessageForceRefresh, cursor.Type)
 	}
 }
+
+// TestRoomManagerCursorSuppressedDuringReplay is the round 5 [P1]
+// regression: a live op broadcast during the replay window MUST NOT
+// generate an op_log_cursor TextMessage to a peer mid-replay. If it
+// did, a client disconnecting after that cursor but before the rest
+// of the replay rows would persist a cursor pointing past unreplayed
+// rows.
+//
+// We exercise the path by:
+//   - seeding 3 rows so peer B's replay has work to do,
+//   - waiting for B to subscribe AND start replay,
+//   - sending a sync from peer A (live op id=4) — broadcast lands in
+//     B's bus channel, processed by B's writeLoop concurrently with
+//     replayTo's writes.
+// The assertion is loose-but-decisive: B sees no op_log_cursor frame
+// with id == 4 BEFORE all four binary frames have arrived. After
+// replay completes the post-replay cursor (id=3) and then live cursor
+// (id=4) flow normally.
+func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	for i := byte(1); i <= 3; i++ {
+		if _, err := store.AppendYjsUpdate("item-a", []byte{yMessageSync, i}, "1"); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	mgr := NewRoomManager(store, bus)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	a := dialWS(t, srv, "item-a")
+	defer a.Close()
+	// Drain A's replay (3 binary) + post-replay cursor frame.
+	_ = readBinaryWithin(t, a, time.Second)
+	_ = readBinaryWithin(t, a, time.Second)
+	_ = readBinaryWithin(t, a, time.Second)
+	_ = readControlWithin(t, a, time.Second)
+
+	b := dialWS(t, srv, "item-a")
+	defer b.Close()
+
+	// Push a live op from A while B is still in setup.
+	sendSync(t, a, 0xFF)
+
+	// B is racing replay + the live op fan-out. Read frames in
+	// order until we've collected all 4 expected binary frames
+	// (3 replayed + 1 live) and the post-replay + live cursor
+	// frames. If a cursor frame for id=4 arrives BEFORE all
+	// binary frames are accounted for, this is the regression.
+	binarySeen := 0
+	cursorIDsAtPoint := make([]int64, 0, 3)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		b.SetReadDeadline(deadline)
+		mt, data, err := b.ReadMessage()
+		if err != nil {
+			break
+		}
+		if mt == websocket.BinaryMessage {
+			binarySeen++
+			continue
+		}
+		if mt != websocket.TextMessage {
+			continue
+		}
+		var msg ControlMessage
+		if jerr := json.Unmarshal(data, &msg); jerr != nil {
+			continue
+		}
+		if msg.Type != ControlMessageOpLogCursor {
+			continue
+		}
+		// Snapshot how many binaries we'd seen at the time this
+		// cursor arrived. A live cursor with id=4 must only come
+		// AFTER all 4 binaries are accounted for.
+		cursorIDsAtPoint = append(cursorIDsAtPoint, msg.OpLogID)
+		if msg.OpLogID == 4 && binarySeen < 4 {
+			t.Errorf("cursor id=4 arrived after only %d/4 binary frames; replay-mid cursor leaked", binarySeen)
+		}
+	}
+	if binarySeen != 4 {
+		t.Errorf("binary frames seen: want 4, got %d", binarySeen)
+	}
+}

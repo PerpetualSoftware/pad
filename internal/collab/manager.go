@@ -179,76 +179,49 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 	itemLock := m.itemLock(itemID)
 
 	for attempt := 0; attempt < 3; attempt++ {
-		room := m.getOrCreate(itemID)
-		if room == nil {
-			// Close raced in between our closed-check above and
-			// getOrCreate. Bail with the same fast error so the
-			// handler closes the WS cleanly.
-			return errManagerClosed
-		}
-
-		rc := &roomConn{
-			id:          nextConnID(),
-			conn:        conn,
-			bus:         m.bus.Subscribe(itemID),
-			connectedAt: time.Now(),
-		}
-
-		// Hold the per-item lock across addConn + replayTo so a
-		// concurrent PruneAndApply (CLI / MCP / API direct write
-		// while we're mid-setup) can't pull stale op-log rows out
-		// from under our feet. The lock is released inside runConn
-		// before the long-lived readLoop so concurrent peers can
-		// edit simultaneously. Per Codex review round 5.
+		// Acquire the per-item setup lock BEFORE creating the room
+		// so the schema-rebuild + force_refresh checks below can
+		// run without leaking an empty m.rooms entry on bail-out.
+		// Per Codex round 5 [P2] of TASK-1319.
 		itemLock.Lock()
 
-		// Schema-mismatch rebuild (TASK-1268). Inside the per-item
-		// setup lock so a concurrent PruneAndApply / fresh Join
-		// can't race the prune-then-replay sequence: any peer that
-		// arrives in this window blocks here until we either prune
-		// or proceed cleanly. We check the LATEST persisted
-		// schema_version (LatestYjsUpdateSchemaVersion), and if it
-		// disagrees with our current m.schemaVersion we wipe the
-		// op-log for this item via PruneYjsUpdatesBefore with a
-		// far-future cutoff. items.content is canonical and is
-		// preserved — the client's lazy-seed path (TASK-1261) will
-		// re-encode it into ops at the new schema version on its
-		// next idle tick.
+		// Schema-mismatch rebuild (TASK-1268). Runs before the
+		// room is created so a rebuild-then-bail path can't leave
+		// an orphan room behind; the rebuild itself is a store-
+		// only mutation that doesn't depend on the in-memory Room.
+		// Concurrent fresh Joins for this item block on itemLock,
+		// so a peer arriving in this window sees the post-rebuild
+		// op-log when it gets its turn.
 		if err := m.maybeRebuildOnSchemaMismatch(itemID); err != nil {
 			itemLock.Unlock()
-			m.bus.Unsubscribe(rc.bus)
 			return err
 		}
 
 		// Resume-cursor / force_refresh check (TASK-1319). Run
-		// inside the per-item lock AFTER the schema rebuild so a
-		// post-rebuild empty op-log (which has no MIN) is treated
-		// the same as a fresh item — `since` is harmless because
-		// nothing was pruned out from under it. When MIN exists
-		// AND the announced cursor is below it, the client's
-		// expected suffix is unrecoverable: send force_refresh
-		// and bail. The conn is the caller's to Close.
+		// AFTER the schema rebuild so a post-rebuild empty op-log
+		// (which has no MIN) is treated correctly.
+		//
+		// `since > 0` means the client claims to have applied at
+		// least one persisted op locally. Two ways that claim is
+		// incompatible with the current op-log:
+		//   - No rows exist (`!hasMin`): the entire op-log was
+		//     pruned (PruneAndApply, schema rebuild, or dormant
+		//     GC). The client's Y.Doc is built on top of ops that
+		//     no longer exist; admitting it would let its on-open
+		//     `Y.encodeStateAsUpdate` write resurrect the stale
+		//     pre-prune document and overwrite items.content on
+		//     the next flush.
+		//   - `since < minID`: rows the client expected to replay
+		//     have been pruned (the same hazard, just with a
+		//     non-empty post-prune suffix).
+		// Both branches force_refresh and bail BEFORE we touch
+		// m.rooms — no orphan-room leak. Per Codex round 5 [P2].
 		if since > 0 {
 			minID, hasMin, merr := m.store.MinOpLogID(itemID)
 			if merr != nil {
 				itemLock.Unlock()
-				m.bus.Unsubscribe(rc.bus)
 				return merr
 			}
-			// `since > 0` means the client claims to have applied
-			// at least one persisted op locally. Two ways that
-			// claim is incompatible with the current op-log:
-			//   - No rows exist (`!hasMin`): the entire op-log
-			//     was pruned (PruneAndApply, schema rebuild, or
-			//     dormant GC). The client's Y.Doc is built on top
-			//     of ops that no longer exist; admitting it would
-			//     let its on-open `Y.encodeStateAsUpdate` write
-			//     resurrect the stale pre-prune document and
-			//     overwrite items.content on the next flush.
-			//   - `since < minID`: rows the client expected to
-			//     replay have been pruned (the same hazard, just
-			//     with a non-empty post-prune suffix).
-			// Both branches force_refresh. Per Codex round 2 [P1].
 			needsRefresh := !hasMin || since < minID
 			if needsRefresh {
 				slog.Info("collab: client cursor incompatible with op-log; sending force_refresh",
@@ -259,9 +232,24 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 				)
 				_ = sendForceRefreshFrame(conn)
 				itemLock.Unlock()
-				m.bus.Unsubscribe(rc.bus)
 				return ErrForceRefreshSent
 			}
+		}
+
+		room := m.getOrCreate(itemID)
+		if room == nil {
+			// Close raced in between our closed-check above and
+			// getOrCreate. Bail with the same fast error so the
+			// handler closes the WS cleanly.
+			itemLock.Unlock()
+			return errManagerClosed
+		}
+
+		rc := &roomConn{
+			id:          nextConnID(),
+			conn:        conn,
+			bus:         m.bus.Subscribe(itemID),
+			connectedAt: time.Now(),
 		}
 
 		if err := room.addConn(rc); err != nil {
@@ -578,6 +566,10 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 		<-writerDone
 		return err
 	}
+	// Replay + initial cursor are committed; allow writeLoop to
+	// resume cursor advancement on subsequent live ops. Per Codex
+	// round 5 [P1] of TASK-1319.
+	rc.replayDone.Store(true)
 
 	// Read loop blocks until the WS closes.
 	readErr := room.readLoop(rc)
