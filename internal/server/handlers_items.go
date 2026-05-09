@@ -485,34 +485,37 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	//
 	// Field-only PATCHes (input.Content == nil) skip this branch
 	// entirely; they continue straight to UpdateItem unchanged.
+	// fullWriteHandled is set when applyContentViaCollab's directWrite
+	// callback ran the FULL UpdateItem (content + title + fields +
+	// everything) inside the per-item lock. In that case we must not
+	// re-run UpdateItem below — we'd duplicate the write and could
+	// produce two version-history rows. Instead we re-fetch the
+	// post-write snapshot for the response. Per Codex review round 9.
+	var fullWriteHandled bool
+	var fullWriteUpdated *models.Item
 	if input.Content != nil && s.collab != nil {
-		// directWriteContentFn performs the items.content portion of
-		// this PATCH inside the collab manager's per-item setup
-		// lock — so a concurrent Join's replayTo can't load the
-		// just-pruned op-log and end up holding stale Y.Doc state
-		// that overwrites our fresh write on the next idle flush.
-		// We only write the Content + audit metadata here; the
-		// remaining ItemUpdate fields (title, fields, etc.) flow
-		// through the post-loop UpdateItem below. Two DB roundtrips
-		// in the (rare) "content + other fields in the same PATCH"
-		// case is the price of the race fix. Per Codex review
-		// round 8.
-		contentCopy := *input.Content
-		contentOnly := models.ItemUpdate{
-			Content:        &contentCopy,
-			LastModifiedBy: input.LastModifiedBy,
-			Source:         input.Source,
-			ChangeSummary:  input.ChangeSummary,
-		}
+		// applyContentViaCollab calls directWrite ONLY on the no-
+		// room/no-applier paths (where pruning the op-log is safe
+		// and we need to land items.content under the per-item
+		// lock). The callback owns the full UpdateItem so a mixed
+		// content + title + fields PATCH stays atomic — Round 8's
+		// content-only split lost atomicity and broke
+		// Store.UpdateItem's content-versioning peek at Title.
+		// Per Codex review round 9.
 		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
-			_, uerr := s.store.UpdateItem(item.ID, contentOnly)
-			return uerr
+			updated, uerr := s.store.UpdateItem(item.ID, input)
+			if uerr != nil {
+				return uerr
+			}
+			fullWriteHandled = true
+			fullWriteUpdated = updated
+			return nil
 		})
 		if err == nil {
 			// Either the applier path acked (content propagated via
-			// Y.Doc) or the direct-write callback above ran inside
-			// the per-item lock. Either way, suppress the duplicate
-			// content write below.
+			// Y.Doc; UpdateItem still needs to run for other fields)
+			// or directWrite ran the full UpdateItem inside the
+			// lock (fullWriteHandled tracks which).
 			input.Content = nil
 		}
 		// Any error path (e.g. ErrAllAppliersTimedOut, retry
@@ -521,7 +524,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// see degraded paths.
 	}
 
-	updated, err := s.store.UpdateItem(item.ID, input)
+	var updated *models.Item
+	if fullWriteHandled {
+		updated = fullWriteUpdated
+	} else {
+		updated, err = s.store.UpdateItem(item.ID, input)
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

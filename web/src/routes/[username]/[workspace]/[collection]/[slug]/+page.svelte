@@ -649,6 +649,15 @@
 	// review round 5.
 	let rawPendingMarkdown: string | null = null;
 
+	// One-shot seed for the raw editor when toggling from rich+collab.
+	// items.content stays stale under collab (handleContentUpdate is
+	// suppressed when the provider is active); without this seed,
+	// RawMarkdownEditor would mount with the pre-collab markdown and
+	// any subsequent save would silently lose the live Y.Doc state.
+	// Reset to null on rich-mode toggle and on item swap. Per Codex
+	// review round 9.
+	let rawSeedMarkdown = $state<string | null>(null);
+
 	function handleRawContentUpdate(markdown: string) {
 		clearTimeout(contentDebounceTimer);
 		editorStore.setDirty(true);
@@ -660,11 +669,24 @@
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
 			api.items.update(wsSlug, item.id, { content: toSave }).then((updated) => {
-				item = updated;
-				if (rawPendingMarkdown === toSave) rawPendingMarkdown = null;
 				editorStore.setLastSaveTime(Date.now());
-				editorStore.setDirty(false);
-				showSaved();
+				// Stale-response guard: only swap in the server's
+				// snapshot when no newer raw edit landed during the
+				// PATCH. Otherwise RawMarkdownEditor's content-prop
+				// mirror would reset the textarea mid-keystroke and
+				// drop the queued edit. Mirrors the Round 8 fix in
+				// flushRawIfPending. Per Codex review round 9.
+				if (rawPendingMarkdown === toSave) {
+					item = updated;
+					rawPendingMarkdown = null;
+					editorStore.setDirty(false);
+					showSaved();
+				} else if (item) {
+					// Newer pending edit; keep local content, adopt
+					// server-side metadata only. The next debounce
+					// cycle will land the queued edit.
+					item = { ...updated, content: item.content };
+				}
 			}).catch(() => {
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
@@ -1332,20 +1354,59 @@
 							// user retains their unsaved edits to retry
 							// or copy out. Per Codex review round 6.
 							const ok = await flushRawIfPending();
-							if (ok) rawMode = false;
+							if (ok) {
+								rawSeedMarkdown = null;
+								rawMode = false;
+							}
 						}}
 						title="Rich text editor"
 					>Rich</button>
 					<button
 						class="mode-btn"
 						class:active={rawMode}
-						onclick={() => rawMode = true}
+						onclick={() => {
+							// When toggling FROM rich+collab TO raw,
+							// the editor's live markdown is the
+							// canonical state — items.content has
+							// been intentionally stale since
+							// handleContentUpdate is suppressed
+							// while the provider is connected
+							// (TASK-1260 will close this with a
+							// proper 5s flush). Capture the live
+							// markdown so RawMarkdownEditor seeds
+							// from Y.Doc state rather than stale
+							// items.content. Per Codex review round
+							// 9.
+							if (collabProvider && editorInstance) {
+								try {
+									const md = (editorInstance.storage as any).markdown?.getMarkdown?.();
+									if (typeof md === 'string') {
+										rawSeedMarkdown = md;
+										// Pre-populate the pending
+										// queue so the first
+										// auto-save actually
+										// persists the live state
+										// to items.content (the
+										// no-room path will then
+										// prune the op-log + write
+										// items.content under the
+										// per-item lock).
+										rawPendingMarkdown = md;
+										editorStore.setDirty(true);
+									}
+								} catch {
+									// Fall through; RawMarkdownEditor
+									// will seed from item.content.
+								}
+							}
+							rawMode = true;
+						}}
 						title="Raw markdown editor"
 					>Markdown</button>
 				</div>
 				{#if rawMode}
 					{#key item.id}
-						<RawMarkdownEditor content={item.content ?? ''} onUpdate={handleRawContentUpdate} readonly={!canEdit} />
+						<RawMarkdownEditor content={rawSeedMarkdown ?? item.content ?? ''} onUpdate={handleRawContentUpdate} readonly={!canEdit} />
 					{/key}
 				{:else}
 					<!--
