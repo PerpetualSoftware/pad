@@ -791,7 +791,23 @@ export class CollabProvider {
 				// reply — encoder still has the leading message-type
 				// byte (length == 1) and we skip the send.
 				if (encoding.length(enc) > 1) {
-					this.send(encoding.toUint8Array(enc));
+					// readSyncMessage writes a reply only on
+					// inbound syncStep1 (the encoder gets a
+					// syncStep2 payload appended). Suppress that
+					// reply while the session is unanchored — the
+					// reply embeds our current Y.Doc state, and
+					// pushing it pre-anchor would let stale
+					// Y.Doc state reach the server before the
+					// cursor=0 + remoteSyncApplied force_refresh
+					// recovery has a chance to fire. The peer
+					// will pick up our state via the buffered
+					// pre-anchor flush once the cursor anchors,
+					// or via the lazy-seed rebuild after
+					// force_refresh. Per Codex round 20 [P1] of
+					// TASK-1319.
+					if (this.cursorAnchored) {
+						this.send(encoding.toUint8Array(enc));
+					}
 				}
 				if (subtype === syncProtocol.messageYjsSyncStep2) {
 					this.synced = true;
