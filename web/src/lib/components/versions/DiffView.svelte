@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { diffLines, type Change } from 'diff';
+	import { SvelteSet } from 'svelte/reactivity';
 
 	interface Props {
 		oldContent: string;
@@ -24,10 +25,18 @@
 		newLineNum: number | null;
 	}
 
+	type MidEntry =
+		| { kind: 'line'; line: DiffLine }
+		| { kind: 'htmlBlock'; lines: DiffLine[]; added: number; removed: number; unchanged: number };
+
 	interface DisplayEntry {
-		kind: 'line' | 'separator';
+		kind: 'line' | 'separator' | 'htmlBlock';
 		line?: DiffLine;
 		skipped?: number;
+		lines?: DiffLine[];
+		added?: number;
+		removed?: number;
+		unchanged?: number;
 	}
 
 	/**
@@ -64,57 +73,138 @@
 	}
 
 	/**
-	 * Collapse unchanged lines outside the context window into
-	 * separator entries showing how many lines were skipped.
+	 * Group runs of `\`\`\`html` ... `\`\`\`` lines into a single htmlBlock chunk
+	 * when they contain any added/removed line. Entirely-unchanged blocks are
+	 * passed through as individual lines so the standard context-collapse can
+	 * handle them. Unbalanced fences degrade to plain lines.
 	 */
-	function collapseContext(lines: DiffLine[]): DisplayEntry[] {
-		// Find indices of all changed lines
-		const changedIndices = new Set<number>();
-		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].type !== 'unchanged') {
-				changedIndices.add(i);
-			}
-		}
-
-		// If there are no changes at all, show a short message
-		if (changedIndices.size === 0) {
-			return [{ kind: 'separator', skipped: lines.length }];
-		}
-
-		// Mark which lines should be visible (within CONTEXT_LINES of a change)
-		const visible = new Set<number>();
-		for (const idx of changedIndices) {
-			for (let offset = -CONTEXT_LINES; offset <= CONTEXT_LINES; offset++) {
-				const target = idx + offset;
-				if (target >= 0 && target < lines.length) {
-					visible.add(target);
-				}
-			}
-		}
-
-		const entries: DisplayEntry[] = [];
+	function chunkHtmlBlocks(lines: DiffLine[]): MidEntry[] {
+		const entries: MidEntry[] = [];
+		const fenceOpenRe = /^(`{3,})html$/;
 		let i = 0;
+
 		while (i < lines.length) {
-			if (visible.has(i)) {
-				entries.push({ kind: 'line', line: lines[i] });
-				i++;
-			} else {
-				// Count consecutive hidden lines
-				let skippedCount = 0;
-				while (i < lines.length && !visible.has(i)) {
-					skippedCount++;
-					i++;
+			const match = lines[i].text.match(fenceOpenRe);
+			if (match) {
+				const fence = match[1];
+				// Search forward for matching close fence (exact backtick run, no language)
+				let close = -1;
+				for (let j = i + 1; j < lines.length; j++) {
+					if (lines[j].text === fence) {
+						close = j;
+						break;
+					}
 				}
-				entries.push({ kind: 'separator', skipped: skippedCount });
+
+				if (close !== -1) {
+					const blockLines = lines.slice(i, close + 1);
+					let added = 0;
+					let removed = 0;
+					let unchanged = 0;
+					for (const line of blockLines) {
+						if (line.type === 'added') added++;
+						else if (line.type === 'removed') removed++;
+						else unchanged++;
+					}
+
+					if (added > 0 || removed > 0) {
+						entries.push({ kind: 'htmlBlock', lines: blockLines, added, removed, unchanged });
+					} else {
+						// Entirely unchanged — let context-collapse handle them
+						for (const line of blockLines) {
+							entries.push({ kind: 'line', line });
+						}
+					}
+					i = close + 1;
+					continue;
+				}
+				// Unbalanced fence — fall through to plain line
 			}
+
+			entries.push({ kind: 'line', line: lines[i] });
+			i++;
 		}
 
 		return entries;
 	}
 
+	/**
+	 * Collapse unchanged lines outside the context window into
+	 * separator entries showing how many lines were skipped.
+	 */
+	function collapseContext(entries: MidEntry[]): DisplayEntry[] {
+		// Find indices of all "change" entries (htmlBlock chunks or non-unchanged lines)
+		const changedIndices = new Set<number>();
+		for (let i = 0; i < entries.length; i++) {
+			const e = entries[i];
+			if (e.kind === 'htmlBlock' || (e.kind === 'line' && e.line.type !== 'unchanged')) {
+				changedIndices.add(i);
+			}
+		}
+
+		// If there are no changes at all, count total raw lines and show a single message
+		if (changedIndices.size === 0) {
+			let total = 0;
+			for (const e of entries) {
+				if (e.kind === 'line') total++;
+			}
+			return [{ kind: 'separator', skipped: total }];
+		}
+
+		// Mark which entries should be visible (within CONTEXT_LINES of a change)
+		const visible = new Set<number>();
+		for (const idx of changedIndices) {
+			for (let offset = -CONTEXT_LINES; offset <= CONTEXT_LINES; offset++) {
+				const target = idx + offset;
+				if (target >= 0 && target < entries.length) {
+					visible.add(target);
+				}
+			}
+		}
+
+		const out: DisplayEntry[] = [];
+		let i = 0;
+		while (i < entries.length) {
+			if (visible.has(i)) {
+				const e = entries[i];
+				if (e.kind === 'htmlBlock') {
+					out.push({
+						kind: 'htmlBlock',
+						lines: e.lines,
+						added: e.added,
+						removed: e.removed,
+						unchanged: e.unchanged
+					});
+				} else {
+					out.push({ kind: 'line', line: e.line });
+				}
+				i++;
+			} else {
+				// Count consecutive hidden entries — only `line` entries can be hidden
+				// because htmlBlock entries are always changes (and thus visible).
+				let skippedCount = 0;
+				while (i < entries.length && !visible.has(i)) {
+					if (entries[i].kind === 'line') skippedCount++;
+					i++;
+				}
+				out.push({ kind: 'separator', skipped: skippedCount });
+			}
+		}
+
+		return out;
+	}
+
 	let changes = $derived(diffLines(oldContent, newContent));
 	let diffLineEntries = $derived(buildDiffLines(changes));
-	let displayEntries = $derived(collapseContext(diffLineEntries));
+	let chunkedEntries = $derived(chunkHtmlBlocks(diffLineEntries));
+	let displayEntries = $derived(collapseContext(chunkedEntries));
+
+	const expandedBlocks = new SvelteSet<number>();
+
+	function toggleBlock(idx: number) {
+		if (expandedBlocks.has(idx)) expandedBlocks.delete(idx);
+		else expandedBlocks.add(idx);
+	}
 
 	let stats = $derived.by(() => {
 		let added = 0;
@@ -148,10 +238,44 @@
 	</div>
 
 	<div class="diff-body">
-		{#each displayEntries as entry (entry.kind === 'separator' ? `sep-${displayEntries.indexOf(entry)}` : `line-${entry.line?.oldLineNum ?? 'n'}-${entry.line?.newLineNum ?? 'n'}-${entry.line?.type}`)}
+		{#each displayEntries as entry, idx (idx)}
 			{#if entry.kind === 'separator'}
 				<div class="separator">
 					<span class="separator-text">... {entry.skipped} unchanged {entry.skipped === 1 ? 'line' : 'lines'} ...</span>
+				</div>
+			{:else if entry.kind === 'htmlBlock' && entry.lines}
+				<div class="html-block-chunk">
+					<button
+						type="button"
+						class="html-block-chunk-summary"
+						onclick={() => toggleBlock(idx)}
+						aria-expanded={expandedBlocks.has(idx)}
+					>
+						<span class="html-block-chunk-caret" class:expanded={expandedBlocks.has(idx)}>&#9654;</span>
+						<span>HTML block changed</span>
+						<span class="html-block-chunk-stats">
+							{#if (entry.added ?? 0) > 0}
+								<span class="html-block-chunk-stat-added">+{entry.added}</span>
+							{/if}
+							{#if (entry.removed ?? 0) > 0}
+								<span class="html-block-chunk-stat-removed">-{entry.removed}</span>
+							{/if}
+							({entry.unchanged ?? 0} unchanged)
+						</span>
+						<span class="html-block-chunk-stats">— click to {expandedBlocks.has(idx) ? 'collapse' : 'expand'}</span>
+					</button>
+					{#if expandedBlocks.has(idx)}
+						<div class="html-block-chunk-lines">
+							{#each entry.lines as innerLine (`${idx}-${innerLine.oldLineNum ?? 'n'}-${innerLine.newLineNum ?? 'n'}-${innerLine.type}`)}
+								<div class="diff-line {innerLine.type}">
+									<span class="line-num old-num">{innerLine.oldLineNum ?? ''}</span>
+									<span class="line-num new-num">{innerLine.newLineNum ?? ''}</span>
+									<span class="line-prefix">{innerLine.type === 'added' ? '+' : innerLine.type === 'removed' ? '-' : ' '}</span>
+									<span class="line-content">{innerLine.text}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{:else if entry.line}
 				<div class="diff-line {entry.line.type}">
@@ -312,5 +436,52 @@
 		font-size: 0.8em;
 		color: var(--text-muted);
 		font-family: var(--font-ui);
+	}
+
+	.html-block-chunk {
+		background: var(--bg-secondary);
+		border-top: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+	}
+	.html-block-chunk-summary {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		cursor: pointer;
+		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: 0.85em;
+		background: transparent;
+		border: none;
+		width: 100%;
+		text-align: left;
+	}
+	.html-block-chunk-summary:hover {
+		background: var(--bg-tertiary);
+	}
+	.html-block-chunk-caret {
+		display: inline-block;
+		width: 0.8em;
+		color: var(--text-muted);
+		transition: transform 0.12s;
+	}
+	.html-block-chunk-caret.expanded {
+		transform: rotate(90deg);
+	}
+	.html-block-chunk-stats {
+		color: var(--text-muted);
+		font-size: 0.95em;
+	}
+	.html-block-chunk-stat-added {
+		color: var(--accent-green);
+		font-weight: 600;
+	}
+	.html-block-chunk-stat-removed {
+		color: var(--accent-red, #ef4444);
+		font-weight: 600;
+	}
+	.html-block-chunk-lines {
+		border-top: 1px solid var(--border);
 	}
 </style>
