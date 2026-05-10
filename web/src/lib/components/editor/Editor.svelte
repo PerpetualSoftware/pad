@@ -445,9 +445,11 @@
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
 			case 'htmlBlock':
 				c.setHtmlBlock({ html: '' }).run();
-				// After insertion, the cursor lands just after the atom node, so
-				// selection.from - 1 is the start position of the new htmlBlock.
-				if (editor) flipHtmlBlockToSource(editor, editor.state.selection.from - 1);
+				// flipHtmlBlockToSource defers one frame and scans adjacent
+				// positions to locate the just-inserted node — handles the
+				// NodeSelection / TextSelection / paragraph-collapse cases
+				// uniformly.
+				if (editor) flipHtmlBlockToSource(editor);
 				break;
 			case 'blockquote': c.toggleBlockquote().run(); break;
 			case 'horizontalRule': c.setHorizontalRule().run(); break;

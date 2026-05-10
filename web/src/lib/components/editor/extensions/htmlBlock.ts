@@ -24,19 +24,34 @@ import { sanitizeHtmlBlock } from '$lib/utils/markdown';
  * After inserting an htmlBlock node, defer one frame and synthesise a
  * click on the new block's preview pane so the user lands directly in
  * source mode (matches the spec: all three insertion paths land in
- * source). `pos` is the document position where the new node starts.
+ * source).
  *
- * Targeting by position (rather than `querySelector(.html-block-empty)`)
- * is critical: the document may already contain earlier empty blocks,
- * and we must flip the *newly inserted* one — not the first one that
- * happens to be empty.
+ * Walks adjacent positions around the current selection rather than
+ * trusting `selection.from - 1` arithmetic — selection placement after
+ * atom-node insertion varies by call site (NodeSelection vs
+ * TextSelection vs paragraph-collapse for input rules), and an earlier
+ * `querySelector('.html-block-empty')` was unreliable when the document
+ * already contained earlier empty blocks.
  */
-export function flipHtmlBlockToSource(editor: Editor, pos: number): void {
+export function flipHtmlBlockToSource(editor: Editor): void {
 	requestAnimationFrame(() => {
-		const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
-		if (!dom || !dom.classList.contains('html-block')) return;
-		const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
-		previewPane?.click();
+		const { state, view } = editor;
+		const { selection, doc } = state;
+		// Candidates cover NodeSelection (from = node start), TextSelection
+		// past atom (from - 1 = node start), and any 1-step drift from
+		// transaction-mapping. doc.nodeAt is bounds-safe by itself but
+		// guard < 0 to avoid an unnecessary call.
+		const candidates = [selection.from, selection.from - 1, selection.from + 1];
+		for (const pos of candidates) {
+			if (pos < 0) continue;
+			const node = doc.nodeAt(pos);
+			if (node?.type.name !== 'htmlBlock') continue;
+			const dom = view.nodeDOM(pos) as HTMLElement | null;
+			if (!dom || !dom.classList.contains('html-block')) continue;
+			const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
+			previewPane?.click();
+			return;
+		}
 	});
 }
 
@@ -306,22 +321,28 @@ export const HtmlBlock = Node.create({
 		// an atom node (the htmlBlock leaf) instead of a wrapped textblock.
 		// Higher extension priority (1000, set above) ensures this fires
 		// before CodeBlock's broader `^```([a-z]+)?…` rule.
+		//
+		// `this.editor` is captured via lexical scope — TipTap's InputRule
+		// handler config does NOT pass `editor` directly. By the time the
+		// rule fires, the extension instance has been bound to the editor.
+		const extension = this;
 		return [
 			new InputRule({
 				find: /^```html[\s\n]$/,
-				handler: ({ state, range, ...ctx }) => {
+				handler: ({ state, range }) => {
 					// Modify state.tr in-place; ProseMirror's input-rules
 					// plugin picks up the transaction and dispatches it.
 					state.tr.replaceRangeWith(
 						range.from,
 						range.to,
-						this.type.create({ html: '' }),
+						extension.type.create({ html: '' }),
 					);
-					// Auto-flip into source mode after dispatch. range.from
-					// is the position where the new node starts in the
-					// post-dispatch document.
-					const editor = (ctx as { editor?: Editor }).editor;
-					if (editor) flipHtmlBlockToSource(editor, range.from);
+					// Defer to next frame so the dispatched transaction
+					// has landed and the post-dispatch selection is
+					// readable; the helper scans adjacent positions to
+					// find the new node regardless of where ProseMirror
+					// placed the selection.
+					if (extension.editor) flipHtmlBlockToSource(extension.editor);
 				},
 			}),
 		];

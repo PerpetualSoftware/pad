@@ -33,7 +33,7 @@
 			btn('⊞', () => editor!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(), false),
 			btn('HTML', () => {
 				editor!.chain().focus().setHtmlBlock({ html: '' }).run();
-				flipHtmlBlockToSource(editor!, editor!.state.selection.from - 1);
+				flipHtmlBlockToSource(editor!);
 			}, false),
 		]},
 	] : []);
