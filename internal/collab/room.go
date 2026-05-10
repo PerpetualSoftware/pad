@@ -415,35 +415,48 @@ func (r *Room) writeLoop(rc *roomConn) {
 		if ev.ClientID == rc.id {
 			continue
 		}
-		if err := rc.writeMessage(websocket.BinaryMessage, ev.Data); err != nil {
-			// Force the read side to wake up and return.
+
+		// Hold writeMu across the entire per-event sequence —
+		// binary frame, replayDone observation, AND either cursor
+		// send (replayDone) or maxLive record (!replayDone). With
+		// the same lock used by runConn's post-replay cursor
+		// write, runConn observes either:
+		//   - this event's record (we ran first), OR
+		//   - this event's send (replayDone flipped before we
+		//     got the lock, so we publish a normal live cursor).
+		// Without the wider lock, runConn could read maxLive
+		// AFTER we wrote the binary but BEFORE we recorded — the
+		// record would be lost. Per Codex round 22 [P1] of
+		// TASK-1319.
+		rc.writeMu.Lock()
+		if err := rc.conn.WriteMessage(websocket.BinaryMessage, ev.Data); err != nil {
+			rc.writeMu.Unlock()
 			_ = rc.conn.Close()
 			return
 		}
-		// Track the receiver's applied cursor when a sync frame
-		// has a persisted id. Awareness frames and frames whose
-		// AppendYjsUpdate failed (OpLogID == 0) do NOT advance the
-		// receiver's cursor — neither was persisted. Per TASK-1319.
-		//
-		// During replay (replayDone == false) we suppress cursor
-		// frames so a live op broadcast mid-replay can't bump the
-		// client's persisted cursor past replay rows it hasn't
-		// received yet. The post-replay cursor frame in runConn
-		// flips replayDone, after which live ops resume cursor
-		// advancement. Per Codex round 5 [P1].
-		//
-		// The suppressed id is recorded so runConn can fold the
-		// highest live id into the post-replay cursor. Otherwise
-		// a live op that landed binary-applied client-side during
-		// the replay window would leave the client's cursor below
-		// its applied state. Per Codex round 21 [P1].
 		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
 			if rc.replayDone.Load() {
-				if err := r.sendOpLogCursor(rc, ev.OpLogID); err != nil {
+				payload, perr := json.Marshal(ControlMessage{
+					Type:    ControlMessageOpLogCursor,
+					OpLogID: ev.OpLogID,
+				})
+				if perr != nil {
+					slog.Warn("collab: marshal op_log_cursor failed",
+						"item_id", r.itemID,
+						"client_id", rc.id,
+						"error", perr,
+					)
+				} else if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+					rc.writeMu.Unlock()
 					_ = rc.conn.Close()
 					return
 				}
 			} else {
+				// CAS-loop into the suppressed-cursor max so
+				// runConn's read after replay sees the latest
+				// id. Held under writeMu so an external read
+				// won't observe a stale value while we're still
+				// in this critical section.
 				for {
 					prev := rc.maxLiveOpLogIDDuringReplay.Load()
 					if ev.OpLogID <= prev {
@@ -455,6 +468,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 				}
 			}
 		}
+		rc.writeMu.Unlock()
 	}
 }
 

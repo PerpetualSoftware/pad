@@ -119,8 +119,15 @@ type ControlMessage struct {
 
 	// OpLogID carries the highest item_yjs_updates.id the receiving
 	// peer should treat as applied. Set on op_log_cursor frames
-	// (TASK-1319). Omitted on every other control type.
-	OpLogID int64 `json:"op_log_id,omitempty"`
+	// (TASK-1319). NO omitempty: a legitimate cursor of 0 (empty
+	// op-log session) would otherwise serialize as
+	// `{"type":"op_log_cursor"}` and the client's strict-type
+	// validation would drop it as 'missing op_log_id', leaving
+	// the session unanchored. Per Codex round 22 [P1] of TASK-1319.
+	// applier_request / applier_ack frames don't read this field;
+	// the trailing `,"op_log_id":0` they carry is ignored by the
+	// client's discriminated dispatch.
+	OpLogID int64 `json:"op_log_id"`
 }
 
 // pendingApplierAck pairs the channel a PATCH handler is waiting on

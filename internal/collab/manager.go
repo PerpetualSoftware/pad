@@ -1,6 +1,7 @@
 package collab
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -545,35 +546,39 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	// hasn't been broadcast through this conn's writeLoop yet, and
 	// a cursor=MAX would let the client persist a value that
 	// outpaces its received binary frames. Per Codex round 6 [P1].
+	// Acquire writeMu across the read-max + cursor-send +
+	// replayDone-flip so writeLoop's per-event critical section
+	// (round 22) cannot interleave a record-vs-read window.
+	// Holding the lock means: any in-flight writeLoop event
+	// finishes its record/send before we read max; any subsequent
+	// event sees replayDone=true and emits its own live cursor.
+	// Per Codex round 22 [P1] of TASK-1319.
+	rc.writeMu.Lock()
 	cursorID := highestReplayed
 	if cursorID < since {
 		cursorID = since
 	}
-	// Fold in the highest live op id whose binary frame writeLoop
-	// fanned out during the replay window. Without this, a live op
-	// landed (applied to the client's Y.Doc) but its cursor was
-	// suppressed (replayDone gate); the initial cursor would still
-	// only cover replay/since, leaving the client cursor below its
-	// applied state. On empty-replay sessions the client would
-	// then trip its `cursor=0 + remoteSyncApplied` force_refresh
-	// path. Per Codex round 21 [P1] of TASK-1319.
 	if liveMax := rc.maxLiveOpLogIDDuringReplay.Load(); liveMax > cursorID {
 		cursorID = liveMax
 	}
-	// cursorID == 0 is a legitimate value for a never-touched item;
-	// emit it anyway so the client clears any stale sessionStorage
-	// entry from an earlier life of this item id.
-	if err := room.sendOpLogCursor(rc, cursorID); err != nil {
-		// Treat a cursor write failure the same as a replay
-		// write failure — the conn is doomed.
+	payload, perr := json.Marshal(ControlMessage{
+		Type:    ControlMessageOpLogCursor,
+		OpLogID: cursorID,
+	})
+	if perr != nil {
+		rc.writeMu.Unlock()
 		room.removeConn(rc)
 		<-writerDone
-		return err
+		return perr
 	}
-	// Replay + initial cursor are committed; allow writeLoop to
-	// resume cursor advancement on subsequent live ops. Per Codex
-	// round 5 [P1] of TASK-1319.
+	if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+		rc.writeMu.Unlock()
+		room.removeConn(rc)
+		<-writerDone
+		return werr
+	}
 	rc.replayDone.Store(true)
+	rc.writeMu.Unlock()
 
 	// Read loop blocks until the WS closes.
 	readErr := room.readLoop(rc)
