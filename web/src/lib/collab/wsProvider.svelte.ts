@@ -264,6 +264,24 @@ export class CollabProvider {
 	 */
 	private cursorAnchored = false;
 
+	/**
+	 * Buffer of local Yjs updates that fired before
+	 * `cursorAnchored` flipped true. Each entry is the raw
+	 * `update` Uint8Array from `ydoc.on('update', ...)`. On
+	 * anchor we flush them in order so the server gets every
+	 * causally-required struct — Yjs ops are incremental and a
+	 * silently-dropped keystroke can leave later ops referencing
+	 * structs no peer has. Per Codex round 15 [P1] of TASK-1319.
+	 *
+	 * Capped because in pathological "anchor never arrives"
+	 * scenarios the buffer could grow unbounded; once we cross
+	 * the cap we trigger `force_refresh`-equivalent recovery via
+	 * the onForceRefresh handler so the user gets a clean
+	 * rebuild rather than a stale-then-divergent session.
+	 */
+	private preAnchorUpdates: Uint8Array[] = [];
+	private static readonly MAX_PRE_ANCHOR_UPDATES = 1000;
+
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
@@ -348,7 +366,37 @@ export class CollabProvider {
 			// way; the provider's reconnect loop will eventually
 			// either (a) resync and propagate, or (b) trigger
 			// force_refresh and the user gets a clean rebuild.
-			if (!this.cursorAnchored) return;
+			if (!this.cursorAnchored) {
+				// Buffer for replay on anchor (round 15 [P1]).
+				// Yjs updates are causal — silently dropping one
+				// keystroke makes later ops reference structs no
+				// peer can resolve. Saving them ensures the full
+				// chain reaches the server once it confirms our
+				// position.
+				if (this.preAnchorUpdates.length >= CollabProvider.MAX_PRE_ANCHOR_UPDATES) {
+					// Pathological case: anchor never arrives. The
+					// buffer would grow unbounded. Trigger a
+					// force-refresh-equivalent rebuild so the user
+					// recovers instead of accumulating un-flushable
+					// state. Clearing the buffer here prevents a
+					// runaway memory leak; the rebuild path is the
+					// authoritative recovery.
+					this.preAnchorUpdates = [];
+					console.warn(
+						'collab: pre-anchor buffer overflow; triggering recovery',
+					);
+					clearStoredCursor(this.itemID);
+					this.lastOpLogID = 0;
+					try {
+						this.onForceRefresh?.();
+					} catch (err) {
+						console.warn('collab: onForceRefresh threw on overflow', err);
+					}
+					return;
+				}
+				this.preAnchorUpdates.push(update);
+				return;
+			}
 			const enc = encoding.createEncoder();
 			encoding.writeVarUint(enc, MESSAGE_SYNC);
 			syncProtocol.writeUpdate(enc, update);
@@ -783,7 +831,23 @@ export class CollabProvider {
 				// gates on this so local edits can't propagate
 				// before the server has weighed in. Per Codex
 				// round 14 [P1].
+				const wasAnchored = this.cursorAnchored;
 				this.cursorAnchored = true;
+				// Flush buffered pre-anchor updates in order so
+				// causal Yjs ops aren't silently dropped — sending
+				// only later updates would let the server (and
+				// peers) miss intervening structs. Per Codex round
+				// 15 [P1].
+				if (!wasAnchored && this.preAnchorUpdates.length > 0) {
+					const buffered = this.preAnchorUpdates;
+					this.preAnchorUpdates = [];
+					for (const upd of buffered) {
+						const enc = encoding.createEncoder();
+						encoding.writeVarUint(enc, MESSAGE_SYNC);
+						syncProtocol.writeUpdate(enc, upd);
+						this.send(encoding.toUint8Array(enc));
+					}
+				}
 				// Never regress the cursor: the server's INITIAL
 				// post-replay cursor frame can in theory follow a
 				// MORE-RECENT live op the previous incarnation
