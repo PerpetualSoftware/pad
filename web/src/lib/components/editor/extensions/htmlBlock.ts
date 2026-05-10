@@ -20,19 +20,34 @@ import type MarkdownIt from 'markdown-it';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { sanitizeHtmlBlock } from '$lib/utils/markdown';
 
+/** A single htmlBlock node's identity for snapshot comparison. */
+export interface HtmlBlockSnapshotEntry {
+	pos: number;
+	html: string;
+}
+
 /**
- * Snapshot the document positions of every htmlBlock node currently in
- * the editor. The caller pairs this with `flipHtmlBlockToSource` to
- * disambiguate the just-inserted block from any pre-existing ones —
- * critical when a new block is inserted adjacent to an existing one,
- * where forward-scanning alone would pick up the wrong node.
+ * Snapshot every htmlBlock node currently in the editor, recording
+ * BOTH position and `attrs.html` content. The caller pairs this with
+ * `flipHtmlBlockToSource` to disambiguate a just-inserted (or
+ * just-replaced) block from any pre-existing ones.
+ *
+ * Capturing content (not just position) is what makes the helper
+ * correct in the "NodeSelection replaces an existing htmlBlock" case
+ * — `insertContent` over a NodeSelection swaps the existing block
+ * for the new one, leaving `after.length === before.length` but with
+ * the replaced block's content changed (commonly to ''). A
+ * position-only snapshot can't see that change; the content snapshot
+ * does.
  */
-export function captureHtmlBlockPositions(editor: Editor): number[] {
-	const positions: number[] = [];
+export function captureHtmlBlockSnapshot(editor: Editor): HtmlBlockSnapshotEntry[] {
+	const snapshot: HtmlBlockSnapshotEntry[] = [];
 	editor.state.doc.descendants((node, pos) => {
-		if (node.type.name === 'htmlBlock') positions.push(pos);
+		if (node.type.name !== 'htmlBlock') return;
+		const html = typeof node.attrs.html === 'string' ? (node.attrs.html as string) : '';
+		snapshot.push({ pos, html });
 	});
-	return positions;
+	return snapshot;
 }
 
 /**
@@ -42,52 +57,55 @@ export function captureHtmlBlockPositions(editor: Editor): number[] {
  * source).
  *
  * Identifies the new block by walking the post-dispatch htmlBlock
- * positions in document order and finding the first one that doesn't
- * correspond to a pre-existing position from `before`. Pre-existing
- * positions get shifted by ProseMirror's transaction mapping; the
- * tolerance window {-1, 0, 1, 3} covers the observed shifts:
+ * snapshot in document order and matching each entry against the
+ * before-snapshot. A pre-existing block matches an after entry when:
  *
- *   - 0  → block was before the insertion point (unshifted)
- *   - 1  → atom-block insertion shifts later positions by +1
- *   - 3  → mid-paragraph split adds 2 paragraph tokens + 1 atom = +3
- *   - -1 → empty-paragraph collapse drops a paragraph token = -1
+ *   - Their `html` content is identical, AND
+ *   - The position is plausibly the before position shifted by
+ *     ProseMirror's transaction mapping. Tolerance window:
+ *       0  → block was before the insertion point (unshifted)
+ *       1  → atom-block insertion shifts later positions by +1
+ *       3  → mid-paragraph split adds 2 paragraph tokens + 1 atom = +3
+ *      -1  → empty-paragraph collapse drops a paragraph token = -1
  *
- * If no new block is found (e.g. the insert failed for some reason),
- * the helper is a silent no-op.
+ * The first after entry that *doesn't* match a before entry is the
+ * inserted (or replaced) block. This works uniformly for:
+ *   - Plain insert at empty paragraph / end of paragraph / mid-paragraph
+ *   - Insert adjacent to an existing htmlBlock
+ *   - Insert that replaces a NodeSelection on an existing htmlBlock
+ *     (after.length === before.length but the replaced entry's html
+ *     differs from its before image)
+ *
+ * Silent no-op if no new block is found (e.g. the insert failed).
  */
 export function flipHtmlBlockToSource(
 	editor: Editor,
 	insertionPoint: number,
-	before: number[],
+	before: HtmlBlockSnapshotEntry[],
 ): void {
 	requestAnimationFrame(() => {
 		const { state, view } = editor;
-		const after: number[] = [];
-		state.doc.descendants((node, pos) => {
-			if (node.type.name === 'htmlBlock') after.push(pos);
-		});
-		if (after.length !== before.length + 1) return;
+		const after = captureHtmlBlockSnapshot(editor);
 
-		// Walk both arrays in document order, advancing the `before`
-		// pointer whenever the current `after` position is a plausible
-		// shifted image of the next pre-existing position. The first
-		// `after` position that *isn't* a plausible image is the new
-		// block.
 		let bi = 0;
 		let newPos: number | null = null;
 		for (const a of after) {
+			let matched = false;
 			if (bi < before.length) {
 				const b = before[bi];
-				const shift = a - b;
-				const isUnshifted = b < insertionPoint && shift === 0;
-				const isShifted = b >= insertionPoint && (shift === -1 || shift === 1 || shift === 3);
-				if (isUnshifted || isShifted) {
+				const shift = a.pos - b.pos;
+				const isUnshifted = b.pos < insertionPoint && shift === 0;
+				const isShifted =
+					b.pos >= insertionPoint && (shift === -1 || shift === 1 || shift === 3);
+				if ((isUnshifted || isShifted) && a.html === b.html) {
 					bi++;
-					continue;
+					matched = true;
 				}
 			}
-			newPos = a;
-			break;
+			if (!matched) {
+				newPos = a.pos;
+				break;
+			}
 		}
 		if (newPos === null) return;
 
@@ -373,13 +391,16 @@ export const HtmlBlock = Node.create({
 			new InputRule({
 				find: /^```html[\s\n]$/,
 				handler: ({ state, range }) => {
-					// Snapshot pre-dispatch htmlBlock positions so the
-					// flip helper can disambiguate the new block from
-					// any existing ones. state.doc here is the
-					// pre-dispatch document — exactly what we want.
-					const before: number[] = [];
+					// Snapshot pre-dispatch htmlBlock entries (pos + html)
+					// so the flip helper can disambiguate the new block
+					// from any existing ones, including the replace-existing
+					// case where after.length === before.length. state.doc
+					// here is the pre-dispatch document.
+					const before: HtmlBlockSnapshotEntry[] = [];
 					state.doc.descendants((node, pos) => {
-						if (node.type.name === 'htmlBlock') before.push(pos);
+						if (node.type.name !== 'htmlBlock') return;
+						const html = typeof node.attrs.html === 'string' ? (node.attrs.html as string) : '';
+						before.push({ pos, html });
 					});
 					state.tr.replaceRangeWith(
 						range.from,

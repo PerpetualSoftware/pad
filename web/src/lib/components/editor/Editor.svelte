@@ -334,7 +334,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
-	import { HtmlBlock, captureHtmlBlockPositions, flipHtmlBlockToSource } from './extensions/htmlBlock';
+	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
 	import {
 		AttachmentImage,
@@ -444,13 +444,13 @@
 			case 'taskList': c.toggleTaskList().run(); break;
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
 			case 'htmlBlock': {
-				// Snapshot existing htmlBlock positions before insertion
-				// so flipHtmlBlockToSource can identify the new block by
-				// elimination — handles cases where the cursor sits next
-				// to an existing block (forward-scan-only would mistake
-				// the existing block for the new one).
+				// Snapshot existing htmlBlock (pos, html) entries before
+				// insertion so flipHtmlBlockToSource can identify the new
+				// block by elimination — handles all cases including
+				// NodeSelection-replace (after.length === before.length
+				// but the replaced entry's html content differs).
 				if (!editor) break;
-				const before = captureHtmlBlockPositions(editor);
+				const before = captureHtmlBlockSnapshot(editor);
 				const insertionPoint = editor.state.selection.from;
 				c.setHtmlBlock({ html: '' }).run();
 				flipHtmlBlockToSource(editor, insertionPoint, before);
