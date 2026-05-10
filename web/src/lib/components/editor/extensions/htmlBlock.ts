@@ -21,39 +21,76 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { sanitizeHtmlBlock } from '$lib/utils/markdown';
 
 /**
+ * Snapshot the document positions of every htmlBlock node currently in
+ * the editor. The caller pairs this with `flipHtmlBlockToSource` to
+ * disambiguate the just-inserted block from any pre-existing ones —
+ * critical when a new block is inserted adjacent to an existing one,
+ * where forward-scanning alone would pick up the wrong node.
+ */
+export function captureHtmlBlockPositions(editor: Editor): number[] {
+	const positions: number[] = [];
+	editor.state.doc.descendants((node, pos) => {
+		if (node.type.name === 'htmlBlock') positions.push(pos);
+	});
+	return positions;
+}
+
+/**
  * After inserting an htmlBlock node, defer one frame and synthesise a
  * click on the new block's preview pane so the user lands directly in
  * source mode (matches the spec: all three insertion paths land in
  * source).
  *
- * The caller passes `insertionPoint` — the document position where the
- * cursor was BEFORE the insert ran. After `.run()` / input-rule dispatch,
- * the new htmlBlock is the first htmlBlock node at or after that
- * position in the post-dispatch doc. This handles all the tricky cases:
- * NodeSelection vs TextSelection placement, empty-paragraph collapse,
- * mid-paragraph splits (where the new block lands a few positions past
- * where the cursor was), and end-of-doc insertion.
+ * Identifies the new block by walking the post-dispatch htmlBlock
+ * positions in document order and finding the first one that doesn't
+ * correspond to a pre-existing position from `before`. Pre-existing
+ * positions get shifted by ProseMirror's transaction mapping; the
+ * tolerance window {-1, 0, 1, 3} covers the observed shifts:
  *
- * The `Math.max(0, insertionPoint - 1)` start guards against
- * empty-paragraph collapse, where ProseMirror can drop the empty
- * paragraph token and the new block lands at insertionPoint - 1.
+ *   - 0  → block was before the insertion point (unshifted)
+ *   - 1  → atom-block insertion shifts later positions by +1
+ *   - 3  → mid-paragraph split adds 2 paragraph tokens + 1 atom = +3
+ *   - -1 → empty-paragraph collapse drops a paragraph token = -1
+ *
+ * If no new block is found (e.g. the insert failed for some reason),
+ * the helper is a silent no-op.
  */
-export function flipHtmlBlockToSource(editor: Editor, insertionPoint: number): void {
+export function flipHtmlBlockToSource(
+	editor: Editor,
+	insertionPoint: number,
+	before: number[],
+): void {
 	requestAnimationFrame(() => {
 		const { state, view } = editor;
-		const startPos = Math.max(0, insertionPoint - 1);
-		const endPos = state.doc.content.size;
-		if (startPos >= endPos) return;
-		let newPos: number | null = null;
-		state.doc.nodesBetween(startPos, endPos, (node, pos) => {
-			if (newPos !== null) return false;
-			if (node.type.name === 'htmlBlock') {
-				newPos = pos;
-				return false;
-			}
-			return true;
+		const after: number[] = [];
+		state.doc.descendants((node, pos) => {
+			if (node.type.name === 'htmlBlock') after.push(pos);
 		});
+		if (after.length !== before.length + 1) return;
+
+		// Walk both arrays in document order, advancing the `before`
+		// pointer whenever the current `after` position is a plausible
+		// shifted image of the next pre-existing position. The first
+		// `after` position that *isn't* a plausible image is the new
+		// block.
+		let bi = 0;
+		let newPos: number | null = null;
+		for (const a of after) {
+			if (bi < before.length) {
+				const b = before[bi];
+				const shift = a - b;
+				const isUnshifted = b < insertionPoint && shift === 0;
+				const isShifted = b >= insertionPoint && (shift === -1 || shift === 1 || shift === 3);
+				if (isUnshifted || isShifted) {
+					bi++;
+					continue;
+				}
+			}
+			newPos = a;
+			break;
+		}
 		if (newPos === null) return;
+
 		const dom = view.nodeDOM(newPos) as HTMLElement | null;
 		if (!dom || !dom.classList.contains('html-block')) return;
 		const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
@@ -336,19 +373,22 @@ export const HtmlBlock = Node.create({
 			new InputRule({
 				find: /^```html[\s\n]$/,
 				handler: ({ state, range }) => {
-					// Modify state.tr in-place; ProseMirror's input-rules
-					// plugin picks up the transaction and dispatches it.
+					// Snapshot pre-dispatch htmlBlock positions so the
+					// flip helper can disambiguate the new block from
+					// any existing ones. state.doc here is the
+					// pre-dispatch document — exactly what we want.
+					const before: number[] = [];
+					state.doc.descendants((node, pos) => {
+						if (node.type.name === 'htmlBlock') before.push(pos);
+					});
 					state.tr.replaceRangeWith(
 						range.from,
 						range.to,
 						extension.type.create({ html: '' }),
 					);
-					// Pass range.from as the insertion point so the
-					// next-frame search starts there. Even if the new
-					// node lands a step away (paragraph collapse), the
-					// helper's startPos = max(0, insertionPoint - 1)
-					// covers it.
-					if (extension.editor) flipHtmlBlockToSource(extension.editor, range.from);
+					if (extension.editor) {
+						flipHtmlBlockToSource(extension.editor, range.from, before);
+					}
 				},
 			}),
 		];

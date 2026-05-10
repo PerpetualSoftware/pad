@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import { flipHtmlBlockToSource } from './extensions/htmlBlock';
+	import { captureHtmlBlockPositions, flipHtmlBlockToSource } from './extensions/htmlBlock';
 
 	let { editor }: { editor: Editor | null } = $props();
 
@@ -32,13 +32,14 @@
 			btn('──', () => editor!.chain().focus().setHorizontalRule().run(), false),
 			btn('⊞', () => editor!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(), false),
 			btn('HTML', () => {
-				// Capture the cursor position BEFORE insertion so the
-				// helper can find the new block reliably (handles
-				// mid-paragraph splits where the block lands a few
-				// positions past the original cursor).
+				// Snapshot existing htmlBlock positions before insertion
+				// so flipHtmlBlockToSource can disambiguate the new block
+				// from any pre-existing ones (handles cursor-adjacent-to-
+				// existing-block edge case).
+				const before = captureHtmlBlockPositions(editor!);
 				const insertionPoint = editor!.state.selection.from;
 				editor!.chain().focus().setHtmlBlock({ html: '' }).run();
-				flipHtmlBlockToSource(editor!, insertionPoint);
+				flipHtmlBlockToSource(editor!, insertionPoint, before);
 			}, false),
 		]},
 	] : []);

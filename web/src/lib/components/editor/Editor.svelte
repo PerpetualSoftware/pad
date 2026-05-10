@@ -334,7 +334,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
-	import { HtmlBlock, flipHtmlBlockToSource } from './extensions/htmlBlock';
+	import { HtmlBlock, captureHtmlBlockPositions, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
 	import {
 		AttachmentImage,
@@ -444,14 +444,16 @@
 			case 'taskList': c.toggleTaskList().run(); break;
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
 			case 'htmlBlock': {
-				// Capture the cursor position BEFORE the insert. The new
-				// block lands at-or-after this position in the post-dispatch
-				// doc — works for empty-paragraph (block lands at point),
-				// end-of-paragraph (block lands at point), and mid-paragraph
-				// (paragraph splits; block lands a few positions past point).
-				const insertionPoint = editor?.state.selection.from ?? 0;
+				// Snapshot existing htmlBlock positions before insertion
+				// so flipHtmlBlockToSource can identify the new block by
+				// elimination — handles cases where the cursor sits next
+				// to an existing block (forward-scan-only would mistake
+				// the existing block for the new one).
+				if (!editor) break;
+				const before = captureHtmlBlockPositions(editor);
+				const insertionPoint = editor.state.selection.from;
 				c.setHtmlBlock({ html: '' }).run();
-				if (editor) flipHtmlBlockToSource(editor, insertionPoint);
+				flipHtmlBlockToSource(editor, insertionPoint, before);
 				break;
 			}
 			case 'blockquote': c.toggleBlockquote().run(); break;
