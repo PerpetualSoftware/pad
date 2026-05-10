@@ -829,6 +829,42 @@ export class CollabProvider {
 					return;
 				}
 				if (msg.op_log_id < 0) return;
+				// Pre-anchor sanity check: cursor=0 means the
+				// server's op-log is currently empty. If this Y.Doc
+				// already has state at this moment, those ops came
+				// from somewhere — almost certainly replay binaries
+				// from a previous connection within this provider's
+				// life that didn't reach the post-replay cursor
+				// frame, followed by a server-side prune
+				// (PruneAndApply, schema rebuild, dormant GC) during
+				// our disconnect. Letting this anchor would mark a
+				// stale Y.Doc as authoritative; the next send-on-open
+				// or flush would resurrect pre-prune state and
+				// overwrite canonical items.content.
+				//
+				// Trigger force-refresh recovery instead. Per Codex
+				// round 18 [P1] of TASK-1319.
+				if (!this.cursorAnchored && msg.op_log_id === 0) {
+					const sv = Y.encodeStateVector(this.ydoc);
+					if (sv.length > 1) {
+						console.warn(
+							'collab: cursor=0 received against non-empty Y.Doc; treating as force_refresh',
+						);
+						clearStoredCursor(this.itemID);
+						this.lastOpLogID = 0;
+						this.preAnchorUpdates = [];
+						this.destroy();
+						try {
+							this.onForceRefresh?.();
+						} catch (err) {
+							console.warn(
+								'collab: onForceRefresh threw on stale cursor=0',
+								err,
+							);
+						}
+						return;
+					}
+				}
 				// Anchor the session: any cursor frame — including
 				// the initial post-replay cursor=0 against an empty
 				// op-log — proves the server has finished its
