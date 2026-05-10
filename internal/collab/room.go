@@ -262,28 +262,6 @@ func (r *Room) replayTo(rc *roomConn, since int64) (int64, error) {
 	return highest, nil
 }
 
-// sendOpLogCursor emits an op_log_cursor JSON control frame to the
-// given conn. Best-effort: any write error is returned to the caller
-// (typically discarded — a doomed conn will surface the same error
-// elsewhere and the read loop will tear down). Per TASK-1319.
-func (r *Room) sendOpLogCursor(rc *roomConn, opLogID int64) error {
-	payload, err := json.Marshal(ControlMessage{
-		Type:    ControlMessageOpLogCursor,
-		OpLogID: opLogID,
-	})
-	if err != nil {
-		// json.Marshal of a pure-scalar struct cannot fail in
-		// practice; log defensively rather than swallow.
-		slog.Warn("collab: marshal op_log_cursor failed",
-			"item_id", r.itemID,
-			"client_id", rc.id,
-			"error", err,
-		)
-		return err
-	}
-	return rc.writeMessage(websocket.TextMessage, payload)
-}
-
 // sendForceRefreshFrame writes a force_refresh control message on the
 // conn. Used by the resume-cursor protocol when the client's
 // announced `?since=<id>` is below MIN(item_yjs_updates.id) — the
@@ -365,24 +343,13 @@ func (r *Room) readLoop(rc *roomConn) error {
 				OpLogID:  persistedID,
 			})
 			r.appendMu.Unlock()
-
-			// Notify the originator of its new cursor. writeLoop
-			// skips self events (no echo of the binary frame) so
-			// without this the originating peer would never see the
-			// id its own ops were assigned. Best-effort: a write
-			// error here is the same signal the readLoop would hit
-			// on its next ReadMessage and tear down cleanly.
-			if persistedID > 0 {
-				if cerr := r.sendOpLogCursor(rc, persistedID); cerr != nil {
-					// readLoop will hit the same conn error on its
-					// next iteration; just record at debug.
-					slog.Debug("collab: send op_log_cursor to originator failed",
-						"item_id", r.itemID,
-						"client_id", rc.id,
-						"error", cerr,
-					)
-				}
-			}
+			// Originator cursor delivery is handled by writeLoop:
+			// it processes the self event from rc.bus, skips the
+			// binary echo, and emits the cursor frame for OpLogID.
+			// Sending the cursor from here (the original design)
+			// could overtake older peer ops queued in rc.bus and
+			// let the client persist a cursor past undelivered
+			// binaries — the round-23 [P1] hazard.
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
@@ -412,9 +379,15 @@ func (r *Room) readLoop(rc *roomConn) error {
 // other goroutine surfaces an error and tears down cleanly.
 func (r *Room) writeLoop(rc *roomConn) {
 	for ev := range rc.bus {
-		if ev.ClientID == rc.id {
-			continue
-		}
+		isSelf := ev.ClientID == rc.id
+		// `isSelf`: we skip the binary echo (the originator already
+		// has the Y.Doc state) but STILL process the cursor logic
+		// below. Routing the originator's cursor through the bus
+		// FIFO is what enforces "older peer ops dispatched first."
+		// Sending it from readLoop directly (the previous design)
+		// could overtake a peer op already buffered in this conn's
+		// rc.bus, letting the client persist a cursor past
+		// undelivered binaries. Per Codex round 23 [P1] of TASK-1319.
 
 		// Hold writeMu across the entire per-event sequence —
 		// binary frame, replayDone observation, AND either cursor
@@ -429,10 +402,12 @@ func (r *Room) writeLoop(rc *roomConn) {
 		// record would be lost. Per Codex round 22 [P1] of
 		// TASK-1319.
 		rc.writeMu.Lock()
-		if err := rc.conn.WriteMessage(websocket.BinaryMessage, ev.Data); err != nil {
-			rc.writeMu.Unlock()
-			_ = rc.conn.Close()
-			return
+		if !isSelf {
+			if err := rc.conn.WriteMessage(websocket.BinaryMessage, ev.Data); err != nil {
+				rc.writeMu.Unlock()
+				_ = rc.conn.Close()
+				return
+			}
 		}
 		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
 			if rc.replayDone.Load() {
