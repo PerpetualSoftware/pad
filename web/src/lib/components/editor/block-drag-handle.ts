@@ -357,7 +357,20 @@ export const BlockDragHandle = Extension.create({
 						menuOpen = true;
 						editorView.dom.blur();
 
-						// Highlight current block type
+						// "Turn into" doesn't apply to atom blocks (e.g. htmlBlock)
+						// — applyBlockType focuses block.pos + 1 which is outside a
+						// leaf atom, so the action would silently target the
+						// adjacent block. Hide the entire turn-into section for
+						// atoms; Duplicate / Delete still work.
+						const isAtom = activeBlock.node.isAtom;
+						turnIntoLabel.style.display = isAtom ? 'none' : '';
+						divider.style.display = isAtom ? 'none' : '';
+						for (const mi of menuItems) {
+							mi.el.style.display = isAtom ? 'none' : '';
+						}
+
+						// Highlight current block type (no-op visually for atoms
+						// since all turn-into entries are hidden)
 						const curType = currentBlockType(activeBlock);
 						for (const mi of menuItems) {
 							mi.el.classList.toggle('active', mi.type === curType);
