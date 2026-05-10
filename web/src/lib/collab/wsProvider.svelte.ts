@@ -677,21 +677,24 @@ export class CollabProvider {
 		// it with a buffered-queue approach; for v1 the simplicity
 		// wins.
 		//
-		// **Skip when cursor is unanchored** (lastOpLogID === 0).
-		// A non-empty Y.Doc with no server-acked cursor is a known-
-		// stale combination (network blip during the post-replay
-		// cursor write left us holding replay-applied state that
-		// the server may have since pruned). Sending
+		// **Skip when the session is unanchored** (cursorAnchored
+		// false). A non-empty Y.Doc with no server-acked cursor is
+		// a known-stale combination (network blip during the
+		// post-replay cursor write left us holding replay-applied
+		// state that the server may have since pruned). Sending
 		// Y.encodeStateAsUpdate in that case can resurrect ops the
 		// server has pruned and corrupt items.content on the next
 		// flush. The server's replay (and the lazy-seed path's
 		// items.content fallback) repopulates Y.Doc canonically;
-		// we don't need to push our state to recover. Truly local-
-		// only edits from before any successful sync are uncommon
-		// (the editor only mounts after the route loads, by which
-		// time we've at least connected once); the trade-off here
-		// favours correctness. Per Codex round 13 [P1] of TASK-1319.
-		if (this.lastOpLogID > 0) {
+		// we don't need to push our state to recover.
+		//
+		// Anchored at cursor=0 IS valid — that's the legitimate
+		// 'server has nothing in op-log yet' case. Local edits
+		// made during a brief offline window before reconnect
+		// MUST go out via this catch-up path; gating on
+		// `lastOpLogID > 0` instead would leave them stranded.
+		// Per Codex round 17 [P2] of TASK-1319.
+		if (this.cursorAnchored) {
 			const enc3 = encoding.createEncoder();
 			encoding.writeVarUint(enc3, MESSAGE_SYNC);
 			syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));

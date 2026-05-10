@@ -655,15 +655,33 @@
 						if (item && item.id === refreshCtx.itemId) {
 							item = fresh;
 						}
+						// Refetch succeeded → safe to rebuild.
+						forceRefreshNonce += 1;
 					})
 					.catch((err) => {
+						// Refetch failed — we cannot guarantee the
+						// cached `item.content` reflects canonical
+						// server state. Rebuilding here would
+						// lazy-seed a fresh Y.Doc from the cached
+						// (possibly-stale) content, then the next
+						// flush would PATCH that stale content
+						// back to the server — recreating the
+						// corruption force_refresh was meant to
+						// prevent. Surface a hard error and ask
+						// the user to reload manually instead.
+						// The provider is already destroyed so
+						// the editor is read-only effectively;
+						// forceRefreshInFlight stays true so any
+						// in-flight or scheduled flush is blocked.
+						// Per Codex round 17 [P1] of TASK-1319.
 						console.warn(
-							'collab: force_refresh item refetch failed; rebuilding against cached content',
+							'collab: force_refresh item refetch failed; refusing to auto-rebuild',
 							err,
 						);
-					})
-					.finally(() => {
-						forceRefreshNonce += 1;
+						toastStore.show(
+							'Could not refresh editor — please reload the page.',
+							'error',
+						);
 					});
 			},
 		});
