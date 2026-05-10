@@ -375,18 +375,20 @@ export class CollabProvider {
 				// position.
 				if (this.preAnchorUpdates.length >= CollabProvider.MAX_PRE_ANCHOR_UPDATES) {
 					// Pathological case: anchor never arrives. The
-					// buffer would grow unbounded. Trigger a
-					// force-refresh-equivalent rebuild so the user
-					// recovers instead of accumulating un-flushable
-					// state. Clearing the buffer here prevents a
-					// runaway memory leak; the rebuild path is the
-					// authoritative recovery.
-					this.preAnchorUpdates = [];
+					// buffer would grow unbounded. Destroy this
+					// provider SYNCHRONOUSLY before invoking the
+					// recovery callback so a late op_log_cursor
+					// can't anchor and flush the partial buffer
+					// (the dropped prefix would reintroduce the
+					// causal-missing-update bug). Per Codex round
+					// 16 [P2] of TASK-1319.
 					console.warn(
 						'collab: pre-anchor buffer overflow; triggering recovery',
 					);
 					clearStoredCursor(this.itemID);
 					this.lastOpLogID = 0;
+					this.preAnchorUpdates = [];
+					this.destroy();
 					try {
 						this.onForceRefresh?.();
 					} catch (err) {
