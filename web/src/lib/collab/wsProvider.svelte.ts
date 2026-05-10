@@ -282,6 +282,18 @@ export class CollabProvider {
 	private preAnchorUpdates: Uint8Array[] = [];
 	private static readonly MAX_PRE_ANCHOR_UPDATES = 1000;
 
+	/**
+	 * Tracks whether the server has applied a sync update to our
+	 * Y.Doc (replay binary or live peer op). Distinguishes
+	 * "Y.Doc has remote-derived state" (suspect on cursor=0
+	 * because the server's op-log is now empty — points to a
+	 * mid-session prune) from "Y.Doc has only local pre-anchor
+	 * edits" (safe — those were typed locally and the buffer
+	 * holds them for replay on anchor). Per Codex round 19 [P1]
+	 * of TASK-1319.
+	 */
+	private remoteSyncApplied = false;
+
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
@@ -763,6 +775,13 @@ export class CollabProvider {
 
 		switch (messageType) {
 			case MESSAGE_SYNC: {
+				// Mark that the server applied SOMETHING to our
+				// Y.Doc. Distinguishes "remote replay landed" from
+				// "only local edits in Y.Doc" so the cursor=0 +
+				// non-empty-Y.Doc safety check (round 18) doesn't
+				// false-positive on legitimate local pre-anchor
+				// edits. Per Codex round 19 [P1].
+				this.remoteSyncApplied = true;
 				const enc = encoding.createEncoder();
 				encoding.writeVarUint(enc, MESSAGE_SYNC);
 				const subtype = syncProtocol.readSyncMessage(decoder, enc, this.ydoc, this);
@@ -844,12 +863,21 @@ export class CollabProvider {
 				//
 				// Trigger force-refresh recovery instead. Per Codex
 				// round 18 [P1] of TASK-1319.
-				if (!this.cursorAnchored && msg.op_log_id === 0) {
-					const sv = Y.encodeStateVector(this.ydoc);
-					if (sv.length > 1) {
-						console.warn(
-							'collab: cursor=0 received against non-empty Y.Doc; treating as force_refresh',
-						);
+				if (!this.cursorAnchored && msg.op_log_id === 0 && this.remoteSyncApplied) {
+					// Remote replay binaries reached us before this
+					// cursor=0 frame, but the server now reports an
+					// empty op-log — a prune happened mid-session.
+					// Y.Doc holds pre-prune state. Recover.
+					//
+					// We GATE on remoteSyncApplied so legitimate
+					// local pre-anchor edits (user typed before the
+					// initial cursor=0 of an empty op-log arrived)
+					// don't trip this branch — those updates live in
+					// preAnchorUpdates and will flush on anchor.
+					// Per Codex round 19 [P1] of TASK-1319.
+					console.warn(
+						'collab: cursor=0 received against remote-applied Y.Doc; treating as force_refresh',
+					);
 						clearStoredCursor(this.itemID);
 						this.lastOpLogID = 0;
 						this.preAnchorUpdates = [];
