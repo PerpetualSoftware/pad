@@ -76,9 +76,19 @@
 		<nav class="console-nav">
 			<div class="nav-left">
 				<a href="/console" class="nav-logo">Pad</a>
+				<!--
+					stopPropagation: this toggle click MUST NOT reach
+					handleWindowClick. See the BUG-1330 note on the SVG below
+					for the full explanation. The CSS `pointer-events: none`
+					already moves the click target onto the button, but
+					stopping propagation is belt-and-braces — if a future
+					change adds another element inside the button without the
+					same pointer-events guard, the outside-click handler still
+					won't fire on the toggle itself.
+				-->
 				<button
 					class="mobile-hamburger"
-					onclick={() => (mobileMenuOpen = !mobileMenuOpen)}
+					onclick={(e) => { e.stopPropagation(); mobileMenuOpen = !mobileMenuOpen; }}
 					aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
 					aria-expanded={mobileMenuOpen}
 					aria-controls="console-nav-links"
@@ -231,6 +241,26 @@
 	.mobile-hamburger:hover {
 		color: var(--text-primary);
 		background: var(--bg-hover);
+	}
+
+	/*
+		BUG-1330: clicks on the hamburger MUST always land on the button,
+		never on the SVG/rect/path inside it. The SVG content swaps between
+		closed-state (three rects) and open-state (X paths) on toggle, and
+		Svelte 5 syncs the DOM update synchronously between the delegated
+		button onclick and the bubbled `<svelte:window onclick>`. If the
+		click target is one of the inner SVG primitives, by the time
+		handleWindowClick runs the original target is already detached
+		(`isConnected === false`) — `target.closest('.console-nav')` walks
+		up an orphaned subtree and returns null, the "outside-click" branch
+		fires, and the menu slams shut as fast as it opened. Forcing the
+		hamburger SVG and its children to be pointer-event-transparent
+		makes the button the click target, which is never re-rendered.
+		Verified with a Svelte 5 playground repro.
+	*/
+	.mobile-hamburger svg,
+	.mobile-hamburger svg * {
+		pointer-events: none;
 	}
 
 	.nav-links {
