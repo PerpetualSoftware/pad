@@ -357,3 +357,44 @@ func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
 		t.Fatalf("expected 409 Conflict for non-zero cursor on empty op-log; got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog (round 12
+// [P1] of TASK-1319): a stateful tab whose previous session
+// disconnected before receiving any op_log_cursor frame ends up
+// with sessionStorage cursor=0 but a non-empty Y.Doc derived from
+// prior replay binaries. On flush, it carries cursor=0 alongside
+// Y.Doc-derived markdown. Without the gate, items.content would
+// be overwritten by the stale view.
+func TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Cursor zero stale test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// Seed an op-log row so MIN is non-zero.
+	if _, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cursor := int64(0)
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "stale-zero-cursor-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for cursor=0 on non-empty op-log; got %d %s", rr.Code, rr.Body.String())
+	}
+}

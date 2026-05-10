@@ -551,19 +551,32 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, merr)
 			return
 		}
-		// Mirror the WS-upgrade force_refresh predicate: a
-		// non-zero cursor is incompatible with the current op-log
-		// when EITHER the op-log is empty (entire log pruned —
-		// PruneAndApply, schema rebuild, dormant GC) OR the cursor
-		// is below MIN. Either way the flushing tab's Y.Doc was
-		// built on rows that no longer exist; its markdown is
-		// stale relative to canonical content.
-		//
-		// A cursor of 0 falls through (older clients, fresh
-		// editor with no ops yet) — the store's CASE clause leaves
-		// the watermark alone in that case, so no over-advancement
-		// is possible. Per Codex round 11 [P1] of TASK-1319.
-		if *input.OpLogCursor > 0 && (!hasMin || *input.OpLogCursor < minID) {
+		// Reject any incompatible cursor:
+		//   - cursor > 0 against an empty op-log (entire log
+		//     pruned: PruneAndApply, schema rebuild, dormant GC).
+		//     The flushing tab's Y.Doc was built on rows that no
+		//     longer exist.
+		//   - cursor < MIN against a non-empty op-log. The cursor
+		//     points below the surviving prefix; rows the client
+		//     expected to anchor against have been pruned. This
+		//     branch ALSO catches cursor=0 against a non-empty
+		//     op-log: a stateful Y.Doc whose previous session
+		//     never received a cursor frame (network blip during
+		//     the post-replay cursor write) reconnects with
+		//     cursor=0, sends Y.encodeStateAsUpdate of stale
+		//     local state on the WS open, then the next 5s flush
+		//     PATCHes that stale-derived markdown back to
+		//     canonical items.content. Rejecting cursor=0 +
+		//     hasMin closes the corruption path. Per Codex round
+		//     12 [P1] of TASK-1319.
+		var stale bool
+		switch {
+		case !hasMin && *input.OpLogCursor > 0:
+			stale = true
+		case hasMin && *input.OpLogCursor < minID:
+			stale = true
+		}
+		if stale {
 			slog.Info("collab-snapshot: rejecting PATCH; cursor incompatible with op-log",
 				"item_id", item.ID,
 				"cursor", *input.OpLogCursor,
