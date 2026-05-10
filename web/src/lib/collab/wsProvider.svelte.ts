@@ -878,20 +878,19 @@ export class CollabProvider {
 					console.warn(
 						'collab: cursor=0 received against remote-applied Y.Doc; treating as force_refresh',
 					);
-						clearStoredCursor(this.itemID);
-						this.lastOpLogID = 0;
-						this.preAnchorUpdates = [];
-						this.destroy();
-						try {
-							this.onForceRefresh?.();
-						} catch (err) {
-							console.warn(
-								'collab: onForceRefresh threw on stale cursor=0',
-								err,
-							);
-						}
-						return;
+					clearStoredCursor(this.itemID);
+					this.lastOpLogID = 0;
+					this.preAnchorUpdates = [];
+					this.destroy();
+					try {
+						this.onForceRefresh?.();
+					} catch (err) {
+						console.warn(
+							'collab: onForceRefresh threw on stale cursor=0',
+							err,
+						);
 					}
+					return;
 				}
 				// Anchor the session: any cursor frame — including
 				// the initial post-replay cursor=0 against an empty
