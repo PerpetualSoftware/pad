@@ -245,6 +245,25 @@ export class CollabProvider {
 	 */
 	lastOpLogID = $state(0);
 
+	/**
+	 * True after the server has sent ANY op_log_cursor control frame
+	 * in this provider's lifetime — including the initial post-
+	 * replay cursor of 0 against an empty op-log. The boolean
+	 * distinguishes "I've heard from the server about its op-log
+	 * state" (safe to send local edits) from "I've heard nothing"
+	 * (network drop happened between replay binaries and the
+	 * post-replay cursor frame; my Y.Doc may be populated by
+	 * server rows but I have no anchor — propagating local edits
+	 * derived from this state can corrupt items.content via the
+	 * next 5s flush). Gating `handleDocUpdate` on this flag closes
+	 * the residual "stale Y.Doc + cursor 0" send path. Per Codex
+	 * round 14 [P1] of TASK-1319.
+	 *
+	 * Reset on `force_refresh` (the provider is destroyed there
+	 * anyway) and on construction.
+	 */
+	private cursorAnchored = false;
+
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
@@ -309,6 +328,27 @@ export class CollabProvider {
 			// otherwise we'd echo every remote keystroke back to the
 			// server (which would persist + rebroadcast it again).
 			if (origin === this) return;
+			// Cursor-anchor gate (TASK-1319 round 14 [P1]). If the
+			// server has not yet confirmed our position in its op-log
+			// (no op_log_cursor frame received in this session), our
+			// Y.Doc may be populated by replay binaries whose
+			// trailing cursor frame got lost to a network blip.
+			// Sending local edits in that state lets the server
+			// append + originator-cursor back, after which the next
+			// flush would carry an "anchored" cursor and pass the
+			// server's MIN check — overwriting items.content with
+			// markdown derived from the stale-Y.Doc base. Buffer
+			// edits locally instead; when a cursor arrives (or the
+			// provider rebuilds via force_refresh), the next user
+			// input fires handleDocUpdate again and we send normally.
+			//
+			// The trade-off: if a network blip persists indefinitely,
+			// local edits sit in the editor but never reach the
+			// server. That's acceptable — the user is offline either
+			// way; the provider's reconnect loop will eventually
+			// either (a) resync and propagate, or (b) trigger
+			// force_refresh and the user gets a clean rebuild.
+			if (!this.cursorAnchored) return;
 			const enc = encoding.createEncoder();
 			encoding.writeVarUint(enc, MESSAGE_SYNC);
 			syncProtocol.writeUpdate(enc, update);
@@ -736,6 +776,14 @@ export class CollabProvider {
 					return;
 				}
 				if (msg.op_log_id < 0) return;
+				// Anchor the session: any cursor frame — including
+				// the initial post-replay cursor=0 against an empty
+				// op-log — proves the server has finished its
+				// replay-time view of the op-log. handleDocUpdate
+				// gates on this so local edits can't propagate
+				// before the server has weighed in. Per Codex
+				// round 14 [P1].
+				this.cursorAnchored = true;
 				// Never regress the cursor: the server's INITIAL
 				// post-replay cursor frame can in theory follow a
 				// MORE-RECENT live op the previous incarnation
