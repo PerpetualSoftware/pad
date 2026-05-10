@@ -551,17 +551,24 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, merr)
 			return
 		}
-		// Only reject when MIN exists AND cursor is below it. An
-		// empty op-log (`!hasMin`) means no peer ops exist —
-		// every browser-flush is trivially caught up. A cursor of
-		// 0 is also fine (older clients, or fresh editor) — the
-		// store's CASE clause leaves the watermark alone in that
-		// case.
-		if hasMin && *input.OpLogCursor < minID {
-			slog.Info("collab-snapshot: rejecting PATCH; cursor below op-log MIN",
+		// Mirror the WS-upgrade force_refresh predicate: a
+		// non-zero cursor is incompatible with the current op-log
+		// when EITHER the op-log is empty (entire log pruned —
+		// PruneAndApply, schema rebuild, dormant GC) OR the cursor
+		// is below MIN. Either way the flushing tab's Y.Doc was
+		// built on rows that no longer exist; its markdown is
+		// stale relative to canonical content.
+		//
+		// A cursor of 0 falls through (older clients, fresh
+		// editor with no ops yet) — the store's CASE clause leaves
+		// the watermark alone in that case, so no over-advancement
+		// is possible. Per Codex round 11 [P1] of TASK-1319.
+		if *input.OpLogCursor > 0 && (!hasMin || *input.OpLogCursor < minID) {
+			slog.Info("collab-snapshot: rejecting PATCH; cursor incompatible with op-log",
 				"item_id", item.ID,
 				"cursor", *input.OpLogCursor,
 				"min_id", minID,
+				"has_min", hasMin,
 			)
 			writeError(w, http.StatusConflict, "stale_collab_snapshot",
 				"This editor's view is out of sync with the server; please reload.")

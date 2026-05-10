@@ -321,3 +321,39 @@ func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
 		t.Fatalf("expected 200 OK for cursor>=MIN; got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestCollabSnapshotRejectsCursorOnEmptyOpLog mirrors the WS
+// force_refresh predicate at the HTTP layer (Codex round 11 [P1]
+// of TASK-1319). A non-zero cursor against an item whose op-log
+// is entirely empty is, by construction, stale: the rows the
+// client claims to have applied no longer exist. Reject 409.
+func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Empty oplog test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// No op-log seed — the table is empty for this item. Cursor=42
+	// is a non-zero claim that can't be reconciled.
+	cursor := int64(42)
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "stale-empty-oplog-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for non-zero cursor on empty op-log; got %d %s", rr.Code, rr.Body.String())
+	}
+}
