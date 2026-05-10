@@ -334,6 +334,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
+	import { HtmlBlock } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
 	import {
 		AttachmentImage,
@@ -545,6 +546,7 @@
 			MermaidCodeBlock.configure({
 				HTMLAttributes: { class: 'code-block' },
 			}),
+			HtmlBlock,
 			TaskList,
 			TaskItem.configure({ nested: true }),
 			Table.extend({
