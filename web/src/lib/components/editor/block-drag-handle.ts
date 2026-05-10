@@ -97,13 +97,45 @@ function blockAtPos(view: EditorView, pos: number): BlockInfo | null {
 			if (LIST_ITEMS.has(node.type.name)) break;
 			depth--;
 		}
-		if (depth < 1) return null;
-		const startPos = $pos.before(depth);
-		const node = view.state.doc.nodeAt(startPos);
-		if (!node) return null;
-		const dom = view.nodeDOM(startPos);
-		if (!(dom instanceof HTMLElement)) return null;
-		return { pos: startPos, node, dom, size: node.nodeSize };
+		if (depth >= 1) {
+			const startPos = $pos.before(depth);
+			const node = view.state.doc.nodeAt(startPos);
+			if (!node) return null;
+			const dom = view.nodeDOM(startPos);
+			if (!(dom instanceof HTMLElement)) return null;
+			return { pos: startPos, node, dom, size: node.nodeSize };
+		}
+		// depth === 0 means `pos` is at a top-level doc boundary, which is
+		// what `posAtCoords` returns when the cursor is over an atom block
+		// (e.g. htmlBlock — contenteditable=false leaf). Look at the node
+		// directly at or just before `pos`. The node AT `pos` (after the
+		// boundary) is preferred because it's where the cursor visually
+		// landed; fall back to the node just before for the boundary
+		// after the last child.
+		const doc = view.state.doc;
+		const candidates: Array<{ pos: number; node: ReturnType<typeof doc.nodeAt> }> = [
+			{ pos, node: doc.nodeAt(pos) },
+		];
+		if (pos > 0) {
+			// nodeAt(pos - 1) of an atom returns null since atoms have no
+			// content positions; instead, find the immediate previous
+			// sibling by walking the doc's children until we cross `pos`.
+			let offset = 0;
+			doc.forEach((child) => {
+				if (offset + child.nodeSize === pos) {
+					candidates.push({ pos: offset, node: child });
+				}
+				offset += child.nodeSize;
+			});
+		}
+		for (const { pos: nodePos, node } of candidates) {
+			if (!node) continue;
+			if (!node.isBlock || !node.isAtom) continue;
+			const dom = view.nodeDOM(nodePos);
+			if (!(dom instanceof HTMLElement)) continue;
+			return { pos: nodePos, node, dom, size: node.nodeSize };
+		}
+		return null;
 	} catch {
 		return null;
 	}
@@ -325,27 +357,52 @@ export const BlockDragHandle = Extension.create({
 						menuOpen = true;
 						editorView.dom.blur();
 
-						// Highlight current block type
+						// "Turn into" doesn't apply to atom blocks (e.g. htmlBlock)
+						// — applyBlockType focuses block.pos + 1 which is outside a
+						// leaf atom, so the action would silently target the
+						// adjacent block. Hide the entire turn-into section for
+						// atoms; Duplicate / Delete still work.
+						const isAtom = activeBlock.node.isAtom;
+						turnIntoLabel.style.display = isAtom ? 'none' : '';
+						divider.style.display = isAtom ? 'none' : '';
+						for (const mi of menuItems) {
+							mi.el.style.display = isAtom ? 'none' : '';
+						}
+
+						// Highlight current block type (no-op visually for atoms
+						// since all turn-into entries are hidden)
 						const curType = currentBlockType(activeBlock);
 						for (const mi of menuItems) {
 							mi.el.classList.toggle('active', mi.type === curType);
 						}
 
-						// Position menu next to handle
-						const handleRect = handle.getBoundingClientRect();
-						const menuHeight = 380; // approximate
-						const spaceBelow = window.innerHeight - handleRect.bottom;
-
+						// Reveal the menu BEFORE measuring — offsetHeight is 0
+						// while display:none. Measuring after the visibility
+						// toggle gives us the real height for the current set
+						// of visible rows (different for atom vs. non-atom).
 						menu.style.display = 'block';
 						menuBackdrop.style.display = 'block';
 
-						if (spaceBelow > menuHeight || spaceBelow > handleRect.top) {
-							// Show below
-							menu.style.top = `${handleRect.bottom + 4}px`;
+						// Position menu next to handle. Use measured height
+						// rather than a fixed estimate so the atom menu (only
+						// Duplicate / Delete, ~80px) doesn't get pushed
+						// offscreen by the 380px assumption.
+						const handleRect = handle.getBoundingClientRect();
+						const menuHeight = menu.offsetHeight || 80;
+						const spaceBelow = window.innerHeight - handleRect.bottom;
+						const spaceAbove = handleRect.top;
+						const margin = 4;
+
+						let top: number;
+						if (spaceBelow >= menuHeight + margin) {
+							top = handleRect.bottom + margin;
+						} else if (spaceAbove >= menuHeight + margin) {
+							top = handleRect.top - menuHeight - margin;
 						} else {
-							// Show above
-							menu.style.top = `${handleRect.top - menuHeight - 4}px`;
+							// Neither side fits comfortably — clamp to viewport.
+							top = Math.max(margin, window.innerHeight - menuHeight - margin);
 						}
+						menu.style.top = `${top}px`;
 						menu.style.left = `${Math.max(8, handleRect.left - 8)}px`;
 					}
 
