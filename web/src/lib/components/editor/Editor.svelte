@@ -1385,7 +1385,79 @@
 		border-color: var(--accent-blue);
 	}
 
-
+	/* Hidden-content authoring warning (TASK-1327 / PLAN-1322) */
+	.editor-content :global(.html-block-warning) {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-warning, rgba(255, 180, 50, 0.12));
+		border: none;
+		border-bottom: 1px solid var(--border);
+		color: var(--accent-orange, #d68a3a);
+		font-size: 0.85em;
+		font-family: var(--font-mono);
+		cursor: pointer;
+		transition: background 0.12s;
+	}
+	.editor-content :global(.html-block-warning:hover) {
+		background: var(--bg-warning-hover, rgba(255, 180, 50, 0.22));
+	}
+	.editor-content :global(.html-block-inspector) {
+		padding: var(--space-3);
+		border-top: 1px solid var(--border);
+		background: var(--bg-secondary);
+		font-size: 0.9em;
+	}
+	.editor-content :global(.html-block-inspector-heading) {
+		font-weight: 600;
+		color: var(--text-primary);
+		margin-bottom: var(--space-2);
+	}
+	.editor-content :global(.html-block-inspector-list) {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 var(--space-2) 0;
+	}
+	.editor-content :global(.html-block-inspector-item) {
+		padding: var(--space-2) 0;
+		border-bottom: 1px solid var(--border);
+	}
+	.editor-content :global(.html-block-inspector-item:last-child) {
+		border-bottom: none;
+	}
+	.editor-content :global(.html-block-inspector-rule) {
+		color: var(--text-secondary);
+	}
+	.editor-content :global(.html-block-inspector-rule code) {
+		color: var(--accent-blue);
+		font-family: var(--font-mono);
+		font-size: 0.95em;
+	}
+	.editor-content :global(.html-block-inspector-snippet) {
+		margin-top: 4px;
+		padding: 4px var(--space-2);
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		background: var(--bg-tertiary);
+		border-radius: var(--radius-sm);
+		overflow-wrap: anywhere;
+	}
+	.editor-content :global(.html-block-dismiss) {
+		padding: 4px 12px;
+		font-size: 0.85em;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: color 0.12s, border-color 0.12s;
+	}
+	.editor-content :global(.html-block-dismiss:hover) {
+		color: var(--text-primary);
+		border-color: var(--accent-blue);
+	}
 
 	/* Mobile keyboard toolbar */
 	.mobile-toolbar {
