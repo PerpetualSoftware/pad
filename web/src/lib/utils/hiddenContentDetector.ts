@@ -80,11 +80,24 @@ export function detectHiddenContent(html: string): HiddenSegment[] {
 	const segments: HiddenSegment[] = [];
 	const doc = new DOMParser().parseFromString(html, 'text/html');
 
-	doc.body.querySelectorAll('*').forEach((el) => {
+	// Walk all elements regardless of whether the parser placed them
+	// inside body (the typical case) or moved them to head (e.g. <style>
+	// / <link> at the top of the snippet). We only check elements that
+	// rendered content can hide behind, but element-level checks are
+	// cheap so just walk the whole document.
+	doc.querySelectorAll('*').forEach((el) => {
+		// Skip <html>, <head>, <body> wrappers DOMParser inserts; they
+		// never carry the inline-style hide patterns we look for.
+		const tag = el.tagName.toLowerCase();
+		if (tag === 'html' || tag === 'head' || tag === 'body') return;
 		segments.push(...checkElement(el as HTMLElement));
 	});
 
-	const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_COMMENT);
+	// Walk comments anywhere in the document. DOMParser can place
+	// comments at document level (siblings of <html>) when the input
+	// has a leading `<!-- ... -->`; walking only doc.body would miss
+	// those. createTreeWalker on `doc` is the inclusive root.
+	const walker = doc.createTreeWalker(doc, NodeFilter.SHOW_COMMENT);
 	let node = walker.nextNode();
 	while (node) {
 		const text = node.textContent ?? '';
@@ -190,8 +203,17 @@ function checkElement(el: HTMLElement): HiddenSegment[] {
 
 /**
  * Parse an inline `style` attribute value into a {prop: value} map.
- * Property names are lowercased; values are trimmed but otherwise
- * preserved verbatim (so callers see what the author actually typed).
+ *
+ * Property names are lowercased. Values are normalised:
+ *   - trailing `!important` (with optional whitespace, case-insensitive)
+ *     is stripped so `display:none !important` matches `display:none`
+ *   - lowercased so `DISPLAY: NONE` matches `display:none`
+ *
+ * Lowercasing is safe for the value forms we inspect: keyword values
+ * (`none`, `hidden`, `absolute`) and px / number / hex / rgb forms.
+ * `transform` regex / unit-suffixed lengths still match correctly
+ * after lowercasing because the patterns we look for don't depend on
+ * case.
  */
 function parseStyleAttribute(style: string): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -199,7 +221,11 @@ function parseStyleAttribute(style: string): Record<string, string> {
 		const idx = decl.indexOf(':');
 		if (idx < 0) continue;
 		const prop = decl.slice(0, idx).trim().toLowerCase();
-		const value = decl.slice(idx + 1).trim();
+		const value = decl
+			.slice(idx + 1)
+			.replace(/\s*!\s*important\s*$/i, '')
+			.trim()
+			.toLowerCase();
 		if (prop) out[prop] = value;
 	}
 	return out;
