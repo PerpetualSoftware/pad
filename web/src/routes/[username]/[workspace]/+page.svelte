@@ -10,6 +10,7 @@
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
 	import OnboardingIdeaBanner from '$lib/components/OnboardingIdeaBanner.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
+	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
@@ -22,6 +23,7 @@
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
+	let showCreateCollection = $state(false);
 
 	// The dashboard response carries an `onboarding_seed` field when the
 	// workspace has a seeded onboarding primary (IDEA-1 / BACK-1 / FEAT-1
@@ -370,7 +372,11 @@
 						</div>
 					</a>
 				{/each}
-				<a href="/{username}/{wsSlug}/settings" class="coll-card coll-card-new">
+				<button
+					type="button"
+					class="coll-card coll-card-new"
+					onclick={() => { showCreateCollection = true; }}
+				>
 					<div class="coll-card-header">
 						<span class="coll-card-name">
 							<span class="coll-icon">+</span>
@@ -380,7 +386,7 @@
 					<div class="coll-statuses">
 						<span class="coll-status-empty">Create a custom collection</span>
 					</div>
-				</a>
+				</button>
 			</div>
 		</section>
 
@@ -474,6 +480,16 @@
 	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
 	workspaceSlug={wsSlug}
 	workspaceName={workspaceStore.current?.name ?? ''}
+/>
+
+<CreateCollectionModal
+	open={showCreateCollection}
+	{wsSlug}
+	oncreated={() => {
+		showCreateCollection = false;
+		if (wsSlug) load(wsSlug, true);
+	}}
+	onclose={() => { showCreateCollection = false; }}
 />
 
 <style>
@@ -879,6 +895,13 @@
 	}
 	.coll-card-new:hover {
 		opacity: 1;
+	}
+	/* Reset <button> defaults so the trigger card matches its sibling <a> cards. */
+	button.coll-card-new {
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		width: 100%;
 	}
 
 	/* ── Dual section (Attention + Up Next) ─────────────────────────────── */
