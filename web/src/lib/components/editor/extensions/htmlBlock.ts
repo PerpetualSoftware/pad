@@ -84,17 +84,139 @@ export const HtmlBlock = Node.create({
 	},
 
 	addNodeView() {
-		return ({ node }) => {
+		return ({ node, editor, getPos }) => {
 			const wrapper = document.createElement('div');
 			wrapper.className = 'html-block';
 			wrapper.setAttribute('data-pad-html-block', '');
 			// contenteditable=false: atom: true means the user can't edit
 			// the rendered preview character-by-character. Editing flows
-			// through TASK-1325's source-view UI.
+			// through the source-view textarea below.
 			wrapper.setAttribute('contenteditable', 'false');
 
+			// Preview pane — sanitized live HTML.
+			const preview = document.createElement('div');
+			preview.className = 'html-block-preview';
+
+			// Source pane — raw HTML editor. Hidden in CSS until
+			// `.html-block--editing` is set on the wrapper.
+			const source = document.createElement('div');
+			source.className = 'html-block-source';
+
+			const textarea = document.createElement('textarea');
+			textarea.className = 'html-block-source-input';
+			textarea.spellcheck = false;
+			textarea.setAttribute('aria-label', 'Edit raw HTML for this block');
+
+			const actions = document.createElement('div');
+			actions.className = 'html-block-actions';
+
+			const doneBtn = document.createElement('button');
+			doneBtn.type = 'button';
+			doneBtn.className = 'html-block-done-btn';
+			doneBtn.textContent = 'Done';
+			doneBtn.title = 'Save and return to preview (⌘/Ctrl+Enter or Esc)';
+
+			actions.append(doneBtn);
+			source.append(textarea, actions);
+			wrapper.append(preview, source);
+
 			let lastHtml = (node.attrs.html as string | undefined) ?? '';
-			wrapper.innerHTML = sanitizeHtmlBlock(lastHtml);
+			let mode: 'preview' | 'source' = 'preview';
+
+			const renderPreview = () => {
+				if (!lastHtml.trim()) {
+					// Empty block: show a placeholder so the user can find it
+					// and click into source mode. Without this, an empty block
+					// is an invisible atom and effectively unreachable.
+					preview.innerHTML =
+						'<span class="html-block-empty">Empty HTML block — click to edit</span>';
+				} else {
+					preview.innerHTML = sanitizeHtmlBlock(lastHtml);
+				}
+			};
+			renderPreview();
+
+			function flipToSource() {
+				if (mode === 'source') return;
+				mode = 'source';
+				textarea.value = lastHtml;
+				wrapper.classList.add('html-block--editing');
+				// Defer focus to the next frame so the click that triggered
+				// the flip finishes processing (otherwise some browsers swallow
+				// the focus call mid-event).
+				requestAnimationFrame(() => {
+					textarea.focus();
+					// Place caret at end of content for natural editing flow.
+					const len = textarea.value.length;
+					textarea.setSelectionRange(len, len);
+				});
+			}
+
+			function commit() {
+				const next = textarea.value;
+				const pos = typeof getPos === 'function' ? getPos() : null;
+				if (typeof pos !== 'number') return;
+				if (next === lastHtml) return;
+				const tr = editor.view.state.tr.setNodeMarkup(pos, undefined, { html: next });
+				editor.view.dispatch(tr);
+				// `update()` will fire when the dispatched transaction lands,
+				// updating lastHtml and re-rendering the preview.
+			}
+
+			function flipToPreview() {
+				if (mode === 'preview') return;
+				mode = 'preview';
+				wrapper.classList.remove('html-block--editing');
+				// Defensive re-render in case lastHtml was the same as
+				// textarea.value (commit was a no-op) — preview state needs
+				// to reflect lastHtml regardless.
+				renderPreview();
+			}
+
+			function commitAndFlip() {
+				commit();
+				flipToPreview();
+			}
+
+			preview.addEventListener('click', (e) => {
+				// Don't flip if the user clicked an interactive element
+				// inside the rendered preview (links, iframes, embedded
+				// form controls). Those are part of the legitimate use case
+				// and should respond to clicks naturally.
+				const target = e.target as Element | null;
+				if (target?.closest('a, button, iframe, input, textarea, select, video, audio')) {
+					return;
+				}
+				flipToSource();
+			});
+
+			textarea.addEventListener('blur', () => {
+				// Blur fires both when the user clicks outside AND when the
+				// Done button click triggers commitAndFlip. The handler is
+				// idempotent: a second commit with the same text is a no-op
+				// (commit early-returns on next === lastHtml).
+				commitAndFlip();
+			});
+
+			textarea.addEventListener('keydown', (e) => {
+				if (e.key === 'Escape') {
+					e.preventDefault();
+					commitAndFlip();
+				} else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+					e.preventDefault();
+					commitAndFlip();
+				}
+			});
+
+			// `mousedown.preventDefault` keeps focus on the textarea so the
+			// subsequent click handler runs in the same selection context;
+			// without this, the button steals focus → blur fires first →
+			// commitAndFlip → click fires on a hidden element → no-op.
+			doneBtn.addEventListener('mousedown', (e) => e.preventDefault());
+			doneBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				commitAndFlip();
+			});
 
 			return {
 				dom: wrapper,
@@ -103,14 +225,17 @@ export const HtmlBlock = Node.create({
 					const next = (updatedNode.attrs.html as string | undefined) ?? '';
 					if (next !== lastHtml) {
 						lastHtml = next;
-						wrapper.innerHTML = sanitizeHtmlBlock(next);
+						// Only re-render the preview pane. Don't touch the
+						// textarea — the user might be mid-edit. They'll see
+						// fresh content on the next flipToSource call.
+						renderPreview();
 					}
 					return true;
 				},
-				// Mutations inside our sanitized innerHTML are render-only —
-				// we own the wrapper. Skip ProseMirror's MutationObserver
-				// to avoid re-parse loops (mirrors the MermaidCodeBlock
-				// pattern in Editor.svelte).
+				// Mutations inside our sanitized innerHTML / textarea are
+				// render-only — we own the wrapper. Skip ProseMirror's
+				// MutationObserver to avoid re-parse loops (mirrors the
+				// MermaidCodeBlock pattern in Editor.svelte).
 				ignoreMutation() {
 					return true;
 				},

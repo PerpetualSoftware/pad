@@ -1300,6 +1300,78 @@
 		border-radius: 0 !important;
 	}
 
+	/* HTML blocks (inline via NodeView — TASK-1325 / PLAN-1322) */
+	.editor-content :global(.html-block) {
+		position: relative;
+		margin: 0.8em 0;
+		background: var(--bg-tertiary);
+		border-radius: var(--radius);
+		overflow: hidden;
+		transition: outline 0.12s;
+	}
+	.editor-content :global(.html-block--editing) {
+		outline: 1px solid var(--accent-blue);
+		outline-offset: 0;
+	}
+	.editor-content :global(.html-block-preview) {
+		padding: var(--space-3);
+		cursor: text;
+	}
+	.editor-content :global(.html-block--editing .html-block-preview) {
+		display: none;
+	}
+	.editor-content :global(.html-block-empty) {
+		color: var(--text-muted);
+		font-style: italic;
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+	}
+	.editor-content :global(.html-block-source) {
+		display: none;
+		padding: var(--space-2);
+	}
+	.editor-content :global(.html-block--editing .html-block-source) {
+		display: block;
+	}
+	.editor-content :global(.html-block-source-input) {
+		width: 100%;
+		min-height: 120px;
+		max-height: 60vh;
+		padding: var(--space-2);
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+		line-height: 1.5;
+		resize: vertical;
+		box-sizing: border-box;
+	}
+	.editor-content :global(.html-block-source-input:focus) {
+		outline: none;
+		border-color: var(--accent-blue);
+	}
+	.editor-content :global(.html-block-actions) {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: var(--space-2);
+	}
+	.editor-content :global(.html-block-done-btn) {
+		padding: 4px 12px;
+		font-size: 0.85em;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: color 0.12s, border-color 0.12s;
+	}
+	.editor-content :global(.html-block-done-btn:hover) {
+		color: var(--text-primary);
+		border-color: var(--accent-blue);
+	}
+
 
 
 	/* Mobile keyboard toolbar */
