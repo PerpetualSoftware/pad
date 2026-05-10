@@ -443,14 +443,17 @@
 			case 'orderedList': c.toggleOrderedList().run(); break;
 			case 'taskList': c.toggleTaskList().run(); break;
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
-			case 'htmlBlock':
+			case 'htmlBlock': {
+				// Capture the cursor position BEFORE the insert. The new
+				// block lands at-or-after this position in the post-dispatch
+				// doc — works for empty-paragraph (block lands at point),
+				// end-of-paragraph (block lands at point), and mid-paragraph
+				// (paragraph splits; block lands a few positions past point).
+				const insertionPoint = editor?.state.selection.from ?? 0;
 				c.setHtmlBlock({ html: '' }).run();
-				// flipHtmlBlockToSource defers one frame and scans adjacent
-				// positions to locate the just-inserted node — handles the
-				// NodeSelection / TextSelection / paragraph-collapse cases
-				// uniformly.
-				if (editor) flipHtmlBlockToSource(editor);
+				if (editor) flipHtmlBlockToSource(editor, insertionPoint);
 				break;
+			}
 			case 'blockquote': c.toggleBlockquote().run(); break;
 			case 'horizontalRule': c.setHorizontalRule().run(); break;
 			case 'table': c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break;

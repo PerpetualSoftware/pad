@@ -26,32 +26,38 @@ import { sanitizeHtmlBlock } from '$lib/utils/markdown';
  * source mode (matches the spec: all three insertion paths land in
  * source).
  *
- * Walks adjacent positions around the current selection rather than
- * trusting `selection.from - 1` arithmetic — selection placement after
- * atom-node insertion varies by call site (NodeSelection vs
- * TextSelection vs paragraph-collapse for input rules), and an earlier
- * `querySelector('.html-block-empty')` was unreliable when the document
- * already contained earlier empty blocks.
+ * The caller passes `insertionPoint` — the document position where the
+ * cursor was BEFORE the insert ran. After `.run()` / input-rule dispatch,
+ * the new htmlBlock is the first htmlBlock node at or after that
+ * position in the post-dispatch doc. This handles all the tricky cases:
+ * NodeSelection vs TextSelection placement, empty-paragraph collapse,
+ * mid-paragraph splits (where the new block lands a few positions past
+ * where the cursor was), and end-of-doc insertion.
+ *
+ * The `Math.max(0, insertionPoint - 1)` start guards against
+ * empty-paragraph collapse, where ProseMirror can drop the empty
+ * paragraph token and the new block lands at insertionPoint - 1.
  */
-export function flipHtmlBlockToSource(editor: Editor): void {
+export function flipHtmlBlockToSource(editor: Editor, insertionPoint: number): void {
 	requestAnimationFrame(() => {
 		const { state, view } = editor;
-		const { selection, doc } = state;
-		// Candidates cover NodeSelection (from = node start), TextSelection
-		// past atom (from - 1 = node start), and any 1-step drift from
-		// transaction-mapping. doc.nodeAt is bounds-safe by itself but
-		// guard < 0 to avoid an unnecessary call.
-		const candidates = [selection.from, selection.from - 1, selection.from + 1];
-		for (const pos of candidates) {
-			if (pos < 0) continue;
-			const node = doc.nodeAt(pos);
-			if (node?.type.name !== 'htmlBlock') continue;
-			const dom = view.nodeDOM(pos) as HTMLElement | null;
-			if (!dom || !dom.classList.contains('html-block')) continue;
-			const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
-			previewPane?.click();
-			return;
-		}
+		const startPos = Math.max(0, insertionPoint - 1);
+		const endPos = state.doc.content.size;
+		if (startPos >= endPos) return;
+		let newPos: number | null = null;
+		state.doc.nodesBetween(startPos, endPos, (node, pos) => {
+			if (newPos !== null) return false;
+			if (node.type.name === 'htmlBlock') {
+				newPos = pos;
+				return false;
+			}
+			return true;
+		});
+		if (newPos === null) return;
+		const dom = view.nodeDOM(newPos) as HTMLElement | null;
+		if (!dom || !dom.classList.contains('html-block')) return;
+		const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
+		previewPane?.click();
 	});
 }
 
@@ -337,12 +343,12 @@ export const HtmlBlock = Node.create({
 						range.to,
 						extension.type.create({ html: '' }),
 					);
-					// Defer to next frame so the dispatched transaction
-					// has landed and the post-dispatch selection is
-					// readable; the helper scans adjacent positions to
-					// find the new node regardless of where ProseMirror
-					// placed the selection.
-					if (extension.editor) flipHtmlBlockToSource(extension.editor);
+					// Pass range.from as the insertion point so the
+					// next-frame search starts there. Even if the new
+					// node lands a step away (paragraph collapse), the
+					// helper's startPos = max(0, insertionPoint - 1)
+					// covers it.
+					if (extension.editor) flipHtmlBlockToSource(extension.editor, range.from);
 				},
 			}),
 		];

@@ -32,8 +32,13 @@
 			btn('──', () => editor!.chain().focus().setHorizontalRule().run(), false),
 			btn('⊞', () => editor!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(), false),
 			btn('HTML', () => {
+				// Capture the cursor position BEFORE insertion so the
+				// helper can find the new block reliably (handles
+				// mid-paragraph splits where the block lands a few
+				// positions past the original cursor).
+				const insertionPoint = editor!.state.selection.from;
 				editor!.chain().focus().setHtmlBlock({ html: '' }).run();
-				flipHtmlBlockToSource(editor!);
+				flipHtmlBlockToSource(editor!, insertionPoint);
 			}, false),
 		]},
 	] : []);
