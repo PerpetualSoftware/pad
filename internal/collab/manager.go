@@ -639,6 +639,33 @@ func (m *RoomManager) RoomCount() int {
 // peers' Y.Doc state cannot be invalidated safely.
 var ErrRoomActiveDuringPrune = errors.New("collab: room became active during prune attempt")
 
+// UnderItemLock runs fn while the per-item setup lock for itemID is
+// held — the SAME lock Join's addConn+replayTo acquires and the SAME
+// lock PruneAndApply runs its prune+write under. Used by the items
+// PATCH handler's collab-snapshot validation path so the
+// MIN(op-log.id) check and the items.content write are atomic
+// w.r.t. concurrent prunes (PruneAndApply, schema rebuild, dormant
+// GC's per-item DELETE). Without this serialization, a prune
+// landing between the check and the write lets the stale
+// collab-snapshot overwrite canonical content. Per Codex round 13
+// [P1] of TASK-1319.
+//
+// Best-effort with a fast bail-out: if Close has fired the lock
+// goroutine returns ErrManagerClosed without invoking fn. fn's
+// own error (if any) is returned verbatim.
+func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errManagerClosed
+	}
+	m.mu.Unlock()
+	lock := m.itemLock(itemID)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
+}
+
 // PruneAndApply runs applyFn under the per-item setup lock so it is
 // strictly serialised with any in-flight Join's addConn+replayTo for
 // the same itemID. Used by the items PATCH handler to prune the

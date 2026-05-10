@@ -273,7 +273,28 @@ export class CollabProvider {
 		// `since=<id>` query string is appended in connect() each
 		// time so a reconnect after some live edits announces a
 		// fresher cursor than the page-load value.
-		this.lastOpLogID = readStoredCursor(itemID);
+		//
+		// **Cursor invariant**: lastOpLogID > 0 IFF Y.Doc has applied
+		// server-acked ops. The Y.Doc isn't persisted across page
+		// reload — every `new CollabProvider(itemID, new Y.Doc(), ...)`
+		// mints an empty Y.Doc. A non-zero stored cursor against a
+		// fresh empty Y.Doc would announce `?since=N`, the server
+		// would replay only id > N, and the client would be missing
+		// rows 1..N from its Y.Doc. Reset the stored cursor to 0 in
+		// that case so the server replays from scratch. Per Codex
+		// round 13 [P1] of TASK-1319.
+		const storedCursor = readStoredCursor(itemID);
+		const ydocStateVector = Y.encodeStateVector(ydoc);
+		// An empty Y.Doc's state vector is the single VARINT 0 byte
+		// (0x00); anything longer means at least one client id has
+		// state.
+		const ydocIsEmpty = ydocStateVector.length <= 1;
+		if (storedCursor > 0 && ydocIsEmpty) {
+			clearStoredCursor(itemID);
+			this.lastOpLogID = 0;
+		} else {
+			this.lastOpLogID = storedCursor;
+		}
 		// `url` is the BASE URL (no `since=` appended). connect()
 		// re-derives the connect URL on every attempt so the
 		// `since=<id>` parameter reflects the current cursor. Test
@@ -565,10 +586,27 @@ export class CollabProvider {
 		// wasteful and TASK-1265's mobile-reconnect work can replace
 		// it with a buffered-queue approach; for v1 the simplicity
 		// wins.
-		const enc3 = encoding.createEncoder();
-		encoding.writeVarUint(enc3, MESSAGE_SYNC);
-		syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
-		this.send(encoding.toUint8Array(enc3));
+		//
+		// **Skip when cursor is unanchored** (lastOpLogID === 0).
+		// A non-empty Y.Doc with no server-acked cursor is a known-
+		// stale combination (network blip during the post-replay
+		// cursor write left us holding replay-applied state that
+		// the server may have since pruned). Sending
+		// Y.encodeStateAsUpdate in that case can resurrect ops the
+		// server has pruned and corrupt items.content on the next
+		// flush. The server's replay (and the lazy-seed path's
+		// items.content fallback) repopulates Y.Doc canonically;
+		// we don't need to push our state to recover. Truly local-
+		// only edits from before any successful sync are uncommon
+		// (the editor only mounts after the route loads, by which
+		// time we've at least connected once); the trade-off here
+		// favours correctness. Per Codex round 13 [P1] of TASK-1319.
+		if (this.lastOpLogID > 0) {
+			const enc3 = encoding.createEncoder();
+			encoding.writeVarUint(enc3, MESSAGE_SYNC);
+			syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
+			this.send(encoding.toUint8Array(enc3));
+		}
 
 		// Broadcast our local awareness state (if any) so peers see
 		// us right away. With no local state set this is a no-op.

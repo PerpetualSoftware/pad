@@ -366,10 +366,16 @@ export const api = {
 			// the markdown captures every persisted op. Cursors below
 			// MAX leave the watermark untouched (peer ops outside this
 			// tab's view exist; the GC sweeper must not delete them).
-			// Omit the field entirely on legacy callers / cursors of 0
-			// (the server treats absent as "no claim", same outcome
-			// as the conservative TASK-1309 default).
-			if (opts?.opLogCursor !== undefined && opts.opLogCursor > 0) {
+			//
+			// Always include the cursor when the caller passed it,
+			// INCLUDING zero. The server's stale-snapshot gate
+			// (round 12 [P1]) needs to see cursor=0 explicitly to
+			// reject flushes from clients whose Y.Doc is populated
+			// but whose cursor was never anchored (network blip
+			// during the post-replay cursor write). Omitting on 0
+			// would silently bypass the gate. Per Codex round 13
+			// [P1] of TASK-1319.
+			if (opts?.opLogCursor !== undefined) {
 				body.op_log_cursor = opts.opLogCursor;
 			}
 			return request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {

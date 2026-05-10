@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,14 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// errStaleCollabSnapshot signals an UnderItemLock-wrapped
+// collab-snapshot validation rejected the PATCH because the
+// caller's op_log_cursor was incompatible with the current op-log
+// (cursor>0 + empty op-log, or cursor<MIN). The handler unwraps
+// this via errors.Is and returns 409 Conflict. Per Codex round 13
+// [P1] of TASK-1319.
+var errStaleCollabSnapshot = errors.New("collab-snapshot: cursor incompatible with op-log")
 
 // handleListItems lists all items across collections in a workspace.
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
@@ -545,30 +554,71 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// (`forceRefreshInFlight`) covers the common case but an
 	// already-in-flight fetch can race a force_refresh and reach
 	// this handler with stale content. Per Codex round 10 [P1].
-	if collabSnapshot && input.Content != nil && input.OpLogCursor != nil {
+	// Collab-snapshot path (TASK-1319). Run validation + UpdateItem
+	// under the per-item collab setup lock so concurrent prunes
+	// (PruneAndApply, schema rebuild, dormant GC) cannot land
+	// between the cursor check and the items.content write — that
+	// race would let a stale snapshot overwrite canonical content
+	// the prune just installed. Per Codex round 13 [P1].
+	if collabSnapshot && input.Content != nil && s.collab != nil {
+		err := s.collab.UnderItemLock(item.ID, func() error {
+			if input.OpLogCursor != nil {
+				minID, hasMin, merr := s.store.MinOpLogID(item.ID)
+				if merr != nil {
+					return merr
+				}
+				// Reject any incompatible cursor:
+				//   - cursor > 0 against an empty op-log (entire
+				//     log pruned). Flushing tab's Y.Doc was built
+				//     on rows that no longer exist.
+				//   - cursor < MIN against a non-empty op-log
+				//     (includes cursor=0 + non-empty: a Y.Doc
+				//     populated by replay binaries whose previous
+				//     session never received the post-replay
+				//     cursor frame). Per round 12 [P1].
+				var stale bool
+				switch {
+				case !hasMin && *input.OpLogCursor > 0:
+					stale = true
+				case hasMin && *input.OpLogCursor < minID:
+					stale = true
+				}
+				if stale {
+					slog.Info("collab-snapshot: rejecting PATCH; cursor incompatible with op-log",
+						"item_id", item.ID,
+						"cursor", *input.OpLogCursor,
+						"min_id", minID,
+						"has_min", hasMin,
+					)
+					return errStaleCollabSnapshot
+				}
+			}
+			updated, uerr := s.store.UpdateItem(item.ID, input)
+			if uerr != nil {
+				return uerr
+			}
+			fullWriteHandled = true
+			fullWriteUpdated = updated
+			return nil
+		})
+		if err != nil {
+			if errors.Is(err, errStaleCollabSnapshot) {
+				writeError(w, http.StatusConflict, "stale_collab_snapshot",
+					"This editor's view is out of sync with the server; please reload.")
+				return
+			}
+			writeInternalError(w, err)
+			return
+		}
+	} else if collabSnapshot && input.Content != nil && input.OpLogCursor != nil {
+		// Fallback for the collab-disabled build (s.collab == nil): no
+		// concurrent prunes happen, so the un-locked check is
+		// race-free here. The cursor gate semantics are unchanged.
 		minID, hasMin, merr := s.store.MinOpLogID(item.ID)
 		if merr != nil {
 			writeInternalError(w, merr)
 			return
 		}
-		// Reject any incompatible cursor:
-		//   - cursor > 0 against an empty op-log (entire log
-		//     pruned: PruneAndApply, schema rebuild, dormant GC).
-		//     The flushing tab's Y.Doc was built on rows that no
-		//     longer exist.
-		//   - cursor < MIN against a non-empty op-log. The cursor
-		//     points below the surviving prefix; rows the client
-		//     expected to anchor against have been pruned. This
-		//     branch ALSO catches cursor=0 against a non-empty
-		//     op-log: a stateful Y.Doc whose previous session
-		//     never received a cursor frame (network blip during
-		//     the post-replay cursor write) reconnects with
-		//     cursor=0, sends Y.encodeStateAsUpdate of stale
-		//     local state on the WS open, then the next 5s flush
-		//     PATCHes that stale-derived markdown back to
-		//     canonical items.content. Rejecting cursor=0 +
-		//     hasMin closes the corruption path. Per Codex round
-		//     12 [P1] of TASK-1319.
 		var stale bool
 		switch {
 		case !hasMin && *input.OpLogCursor > 0:
