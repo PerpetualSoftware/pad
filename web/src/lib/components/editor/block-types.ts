@@ -23,6 +23,7 @@ export const BLOCK_TYPES: BlockType[] = [
 	{ id: 'orderedList', icon: '1.', label: 'Numbered List', description: 'Ordered list' },
 	{ id: 'taskList', icon: '☐', label: 'Checklist', description: 'Task list' },
 	{ id: 'codeBlock', icon: '<>', label: 'Code Block', description: 'Fenced code block' },
+	{ id: 'htmlBlock', icon: 'HTML', label: 'HTML Block', description: 'Sanitized HTML embed (live preview)', insertOnly: true },
 	{ id: 'blockquote', icon: '❝', label: 'Blockquote', description: 'Quote block' },
 	{ id: 'horizontalRule', icon: '——', label: 'Divider', description: 'Horizontal rule', insertOnly: true },
 	{ id: 'table', icon: '⊞', label: 'Table', description: '3×3 table', insertOnly: true },

@@ -15,7 +15,7 @@
  * collapse in TASK-1328.
  */
 
-import { Node } from '@tiptap/core';
+import { InputRule, Node } from '@tiptap/core';
 import type MarkdownIt from 'markdown-it';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { sanitizeHtmlBlock } from '$lib/utils/markdown';
@@ -53,6 +53,11 @@ export const HtmlBlock = Node.create({
 	selectable: true,
 	draggable: true,
 	defining: true,
+	// Higher than the default extension priority (100) so the markdown
+	// shortcut input rule below fires BEFORE CodeBlock's `^```([a-z]+)?…`
+	// rule. Without this, typing ` ```html ` would create a code block
+	// (language=html) instead of an htmlBlock node.
+	priority: 1000,
 
 	addAttributes() {
 		return {
@@ -272,6 +277,29 @@ export const HtmlBlock = Node.create({
 						attrs: { html: options?.html ?? '' },
 					}),
 		};
+	},
+
+	addInputRules() {
+		// Markdown shortcut: typing ` ```html ` followed by a space or newline
+		// at the start of an empty paragraph creates a new htmlBlock node.
+		// Mirrors CodeBlock's textblockTypeInputRule pattern but materialises
+		// an atom node (the htmlBlock leaf) instead of a wrapped textblock.
+		// Higher extension priority (1000, set above) ensures this fires
+		// before CodeBlock's broader `^```([a-z]+)?…` rule.
+		return [
+			new InputRule({
+				find: /^```html[\s\n]$/,
+				handler: ({ state, range }) => {
+					// Modify state.tr in-place; ProseMirror's input-rules
+					// plugin picks up the transaction and dispatches it.
+					state.tr.replaceRangeWith(
+						range.from,
+						range.to,
+						this.type.create({ html: '' }),
+					);
+				},
+			}),
+		];
 	},
 
 	addStorage() {

@@ -443,6 +443,19 @@
 			case 'orderedList': c.toggleOrderedList().run(); break;
 			case 'taskList': c.toggleTaskList().run(); break;
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
+			case 'htmlBlock':
+				c.setHtmlBlock({ html: '' }).run();
+				// After the node is inserted, find its DOM and synthesise a click on
+				// the empty-state placeholder so the user lands directly in source
+				// mode (matches the spec: all three insertion paths land in source).
+				requestAnimationFrame(() => {
+					const empty = editor?.view.dom.querySelector(
+						'.html-block:not(.html-block--editing) .html-block-empty'
+					);
+					const previewPane = empty?.parentElement;
+					(previewPane as HTMLElement | null)?.click();
+				});
+				break;
 			case 'blockquote': c.toggleBlockquote().run(); break;
 			case 'horizontalRule': c.setHorizontalRule().run(); break;
 			case 'table': c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break;
