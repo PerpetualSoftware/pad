@@ -549,6 +549,17 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	if cursorID < since {
 		cursorID = since
 	}
+	// Fold in the highest live op id whose binary frame writeLoop
+	// fanned out during the replay window. Without this, a live op
+	// landed (applied to the client's Y.Doc) but its cursor was
+	// suppressed (replayDone gate); the initial cursor would still
+	// only cover replay/since, leaving the client cursor below its
+	// applied state. On empty-replay sessions the client would
+	// then trip its `cursor=0 + remoteSyncApplied` force_refresh
+	// path. Per Codex round 21 [P1] of TASK-1319.
+	if liveMax := rc.maxLiveOpLogIDDuringReplay.Load(); liveMax > cursorID {
+		cursorID = liveMax
+	}
 	// cursorID == 0 is a legitimate value for a never-touched item;
 	// emit it anyway so the client clears any stale sessionStorage
 	// entry from an earlier life of this item id.

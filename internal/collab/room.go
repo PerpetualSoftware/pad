@@ -68,6 +68,16 @@ type roomConn struct {
 	// resume cursor pointing past unreplayed rows. Per Codex round
 	// 5 [P1] of TASK-1319.
 	replayDone atomic.Bool
+	// maxLiveOpLogIDDuringReplay records the highest persisted op-log
+	// id whose binary frame this conn's writeLoop fanned out before
+	// `replayDone` flipped true. The post-replay initial cursor uses
+	// max(highestReplayed, since, this) so a live op that was applied
+	// to the client's Y.Doc during the replay window doesn't leave
+	// the client cursor pointing below the highest applied op — that
+	// mismatch would trip the client's `cursor=0 + remoteSyncApplied`
+	// force_refresh path on empty-replay sessions and discard
+	// buffered pre-anchor edits. Per Codex round 21 [P1] of TASK-1319.
+	maxLiveOpLogIDDuringReplay atomic.Int64
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -421,10 +431,28 @@ func (r *Room) writeLoop(rc *roomConn) {
 		// received yet. The post-replay cursor frame in runConn
 		// flips replayDone, after which live ops resume cursor
 		// advancement. Per Codex round 5 [P1].
-		if ev.Type == OpTypeSync && ev.OpLogID > 0 && rc.replayDone.Load() {
-			if err := r.sendOpLogCursor(rc, ev.OpLogID); err != nil {
-				_ = rc.conn.Close()
-				return
+		//
+		// The suppressed id is recorded so runConn can fold the
+		// highest live id into the post-replay cursor. Otherwise
+		// a live op that landed binary-applied client-side during
+		// the replay window would leave the client's cursor below
+		// its applied state. Per Codex round 21 [P1].
+		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
+			if rc.replayDone.Load() {
+				if err := r.sendOpLogCursor(rc, ev.OpLogID); err != nil {
+					_ = rc.conn.Close()
+					return
+				}
+			} else {
+				for {
+					prev := rc.maxLiveOpLogIDDuringReplay.Load()
+					if ev.OpLogID <= prev {
+						break
+					}
+					if rc.maxLiveOpLogIDDuringReplay.CompareAndSwap(prev, ev.OpLogID) {
+						break
+					}
+				}
 			}
 		}
 	}

@@ -775,16 +775,23 @@ export class CollabProvider {
 
 		switch (messageType) {
 			case MESSAGE_SYNC: {
-				// Mark that the server applied SOMETHING to our
-				// Y.Doc. Distinguishes "remote replay landed" from
-				// "only local edits in Y.Doc" so the cursor=0 +
-				// non-empty-Y.Doc safety check (round 18) doesn't
-				// false-positive on legitimate local pre-anchor
-				// edits. Per Codex round 19 [P1].
-				this.remoteSyncApplied = true;
 				const enc = encoding.createEncoder();
 				encoding.writeVarUint(enc, MESSAGE_SYNC);
 				const subtype = syncProtocol.readSyncMessage(decoder, enc, this.ydoc, this);
+				// Mark that the server applied an UPDATE to our
+				// Y.Doc, NOT just a sync handshake. syncStep1 only
+				// carries a state vector — it doesn't apply state
+				// — so flagging it would false-positive the
+				// cursor=0 + non-empty-Y.Doc safety check on a
+				// peer's syncStep1 arriving pre-anchor. Only the
+				// step2 / update subtypes mutate Y.Doc state.
+				// Per Codex round 21 [P1] of TASK-1319.
+				if (
+					subtype === syncProtocol.messageYjsSyncStep2 ||
+					subtype === syncProtocol.messageYjsUpdate
+				) {
+					this.remoteSyncApplied = true;
+				}
 				// readSyncMessage writes a reply only when the inbound
 				// frame was a syncStep1 (encoder gets a syncStep2
 				// payload appended). For step2 / update there's no
