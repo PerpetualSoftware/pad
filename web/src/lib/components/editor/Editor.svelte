@@ -334,7 +334,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
-	import { HtmlBlock } from './extensions/htmlBlock';
+	import { HtmlBlock, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
 	import {
 		AttachmentImage,
@@ -445,16 +445,9 @@
 			case 'codeBlock': c.toggleCodeBlock().run(); break;
 			case 'htmlBlock':
 				c.setHtmlBlock({ html: '' }).run();
-				// After the node is inserted, find its DOM and synthesise a click on
-				// the empty-state placeholder so the user lands directly in source
-				// mode (matches the spec: all three insertion paths land in source).
-				requestAnimationFrame(() => {
-					const empty = editor?.view.dom.querySelector(
-						'.html-block:not(.html-block--editing) .html-block-empty'
-					);
-					const previewPane = empty?.parentElement;
-					(previewPane as HTMLElement | null)?.click();
-				});
+				// After insertion, the cursor lands just after the atom node, so
+				// selection.from - 1 is the start position of the new htmlBlock.
+				if (editor) flipHtmlBlockToSource(editor, editor.state.selection.from - 1);
 				break;
 			case 'blockquote': c.toggleBlockquote().run(); break;
 			case 'horizontalRule': c.setHorizontalRule().run(); break;

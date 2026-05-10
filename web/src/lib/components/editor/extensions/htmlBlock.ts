@@ -15,10 +15,30 @@
  * collapse in TASK-1328.
  */
 
-import { InputRule, Node } from '@tiptap/core';
+import { InputRule, Node, type Editor } from '@tiptap/core';
 import type MarkdownIt from 'markdown-it';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { sanitizeHtmlBlock } from '$lib/utils/markdown';
+
+/**
+ * After inserting an htmlBlock node, defer one frame and synthesise a
+ * click on the new block's preview pane so the user lands directly in
+ * source mode (matches the spec: all three insertion paths land in
+ * source). `pos` is the document position where the new node starts.
+ *
+ * Targeting by position (rather than `querySelector(.html-block-empty)`)
+ * is critical: the document may already contain earlier empty blocks,
+ * and we must flip the *newly inserted* one — not the first one that
+ * happens to be empty.
+ */
+export function flipHtmlBlockToSource(editor: Editor, pos: number): void {
+	requestAnimationFrame(() => {
+		const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
+		if (!dom || !dom.classList.contains('html-block')) return;
+		const previewPane = dom.querySelector('.html-block-preview') as HTMLElement | null;
+		previewPane?.click();
+	});
+}
 
 declare module '@tiptap/core' {
 	interface Commands<ReturnType> {
@@ -289,7 +309,7 @@ export const HtmlBlock = Node.create({
 		return [
 			new InputRule({
 				find: /^```html[\s\n]$/,
-				handler: ({ state, range }) => {
+				handler: ({ state, range, ...ctx }) => {
 					// Modify state.tr in-place; ProseMirror's input-rules
 					// plugin picks up the transaction and dispatches it.
 					state.tr.replaceRangeWith(
@@ -297,6 +317,11 @@ export const HtmlBlock = Node.create({
 						range.to,
 						this.type.create({ html: '' }),
 					);
+					// Auto-flip into source mode after dispatch. range.from
+					// is the position where the new node starts in the
+					// post-dispatch document.
+					const editor = (ctx as { editor?: Editor }).editor;
+					if (editor) flipHtmlBlockToSource(editor, range.from);
 				},
 			}),
 		];

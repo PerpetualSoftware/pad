@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
 	import { editorStore } from '$lib/stores/editor.svelte';
+	import { flipHtmlBlockToSource } from './extensions/htmlBlock';
 
 	let { editor }: { editor: Editor | null } = $props();
 
@@ -32,13 +33,7 @@
 			btn('⊞', () => editor!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(), false),
 			btn('HTML', () => {
 				editor!.chain().focus().setHtmlBlock({ html: '' }).run();
-				requestAnimationFrame(() => {
-					const empty = editor!.view.dom.querySelector(
-						'.html-block:not(.html-block--editing) .html-block-empty'
-					);
-					const previewPane = empty?.parentElement;
-					(previewPane as HTMLElement | null)?.click();
-				});
+				flipHtmlBlockToSource(editor!, editor!.state.selection.from - 1);
 			}, false),
 		]},
 	] : []);
