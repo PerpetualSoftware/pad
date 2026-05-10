@@ -118,30 +118,42 @@ export function detectHiddenContent(html: string): HiddenSegment[] {
 function checkElement(el: HTMLElement): HiddenSegment[] {
 	const segments: HiddenSegment[] = [];
 	const tag = el.tagName.toLowerCase();
-	const style = parseStyleAttribute(el.getAttribute('style') ?? '');
+	// `el.style` is the browser-parsed CSSStyleDeclaration for the
+	// inline `style` attribute. The browser handles every CSS edge
+	// case for us:
+	//
+	//   - `!important` priority (display:none!important;display:block
+	//     leaves `el.style.display === 'none'`)
+	//   - CSS comments (display:/**/none parses correctly)
+	//   - case-insensitive keywords (DISPLAY: NONE → 'none')
+	//   - whitespace and unit normalisation
+	//
+	// A hand-rolled `style` attribute parser misses these consistently;
+	// using the CSSOM here is materially more robust.
+	const style = el.style;
 	const text = el.textContent ?? '';
 
-	if (style['display'] === 'none') {
+	if (style.display === 'none') {
 		segments.push({ tag, rule: 'display:none', snippet: snippetFor(text) });
 	}
-	if (style['visibility'] === 'hidden') {
+	if (style.visibility === 'hidden') {
 		segments.push({ tag, rule: 'visibility:hidden', snippet: snippetFor(text) });
 	}
-	if (isZeroOpacity(style['opacity'])) {
-		segments.push({ tag, rule: `opacity:${style['opacity']}`, snippet: snippetFor(text) });
+	if (isZeroOpacity(style.opacity)) {
+		segments.push({ tag, rule: `opacity:${style.opacity}`, snippet: snippetFor(text) });
 	}
-	const fontSize = parseLength(style['font-size']);
+	const fontSize = parseLength(style.fontSize);
 	if (fontSize !== null && fontSize < 6) {
 		segments.push({
 			tag,
-			rule: `font-size:${style['font-size']} (too small)`,
+			rule: `font-size:${style.fontSize} (too small)`,
 			snippet: snippetFor(text),
 		});
 	}
 	if (
-		style['color'] &&
-		style['background-color'] &&
-		normalizeColor(style['color']) === normalizeColor(style['background-color'])
+		style.color &&
+		style.backgroundColor &&
+		normalizeColor(style.color) === normalizeColor(style.backgroundColor)
 	) {
 		segments.push({
 			tag,
@@ -149,21 +161,22 @@ function checkElement(el: HTMLElement): HiddenSegment[] {
 			snippet: snippetFor(text),
 		});
 	}
-	if (style['position'] === 'absolute' || style['position'] === 'fixed') {
+	if (style.position === 'absolute' || style.position === 'fixed') {
 		for (const prop of ['left', 'right', 'top', 'bottom'] as const) {
-			const offset = parseLength(style[prop]);
+			const value = style.getPropertyValue(prop);
+			const offset = parseLength(value);
 			if (offset !== null && offset <= -9000) {
 				segments.push({
 					tag,
-					rule: `${prop}:${style[prop]} (off-screen)`,
+					rule: `${prop}:${value} (off-screen)`,
 					snippet: snippetFor(text),
 				});
 				break;
 			}
 		}
 	}
-	if (style['transform'] && /translate[xy]?\s*\(\s*-?\d+/.test(style['transform'])) {
-		const off = /-\s*9\d{3,}|-\s*\d{5,}/.test(style['transform']);
+	if (style.transform && /translate[xy]?\s*\(\s*-?\d+/i.test(style.transform)) {
+		const off = /-\s*9\d{3,}|-\s*\d{5,}/.test(style.transform);
 		if (off) {
 			segments.push({
 				tag,
@@ -172,12 +185,12 @@ function checkElement(el: HTMLElement): HiddenSegment[] {
 			});
 		}
 	}
-	const w = parseLength(style['width']);
-	const h = parseLength(style['height']);
+	const w = parseLength(style.width);
+	const h = parseLength(style.height);
 	if (w === 0 && h === 0) {
 		segments.push({ tag, rule: 'width:0;height:0', snippet: snippetFor(text) });
 	}
-	if (style['clip'] && /rect\(\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*\)/.test(style['clip'])) {
+	if (style.clip && /rect\(\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*\)/i.test(style.clip)) {
 		segments.push({ tag, rule: 'clip:rect(0,0,0,0)', snippet: snippetFor(text) });
 	}
 
@@ -199,36 +212,6 @@ function checkElement(el: HTMLElement): HiddenSegment[] {
 	}
 
 	return segments;
-}
-
-/**
- * Parse an inline `style` attribute value into a {prop: value} map.
- *
- * Property names are lowercased. Values are normalised:
- *   - trailing `!important` (with optional whitespace, case-insensitive)
- *     is stripped so `display:none !important` matches `display:none`
- *   - lowercased so `DISPLAY: NONE` matches `display:none`
- *
- * Lowercasing is safe for the value forms we inspect: keyword values
- * (`none`, `hidden`, `absolute`) and px / number / hex / rgb forms.
- * `transform` regex / unit-suffixed lengths still match correctly
- * after lowercasing because the patterns we look for don't depend on
- * case.
- */
-function parseStyleAttribute(style: string): Record<string, string> {
-	const out: Record<string, string> = {};
-	for (const decl of style.split(';')) {
-		const idx = decl.indexOf(':');
-		if (idx < 0) continue;
-		const prop = decl.slice(0, idx).trim().toLowerCase();
-		const value = decl
-			.slice(idx + 1)
-			.replace(/\s*!\s*important\s*$/i, '')
-			.trim()
-			.toLowerCase();
-		if (prop) out[prop] = value;
-	}
-	return out;
 }
 
 /**
