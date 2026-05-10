@@ -73,58 +73,106 @@
 	}
 
 	/**
-	 * Group runs of `\`\`\`html` ... `\`\`\`` lines into a single htmlBlock chunk
-	 * when they contain any added/removed line. Entirely-unchanged blocks are
-	 * passed through as individual lines so the standard context-collapse can
-	 * handle them. Unbalanced fences degrade to plain lines.
+	 * Compute the set of 1-indexed line numbers that fall inside any
+	 * `\`\`\`html` ... fenced block in `content`. Looks for openers via
+	 * `^(\`{3,})html$` and matches an EXACT backtick-run closing fence.
+	 *
+	 * Pre-computed once per side (old / new) so chunkHtmlBlocks can
+	 * decide block membership per-line without re-scanning the merged
+	 * diff stream — which avoids the bug where mismatched fence lengths
+	 * across old vs new (e.g. a body-line addition forces the new fence
+	 * to grow from 3→4 backticks) made a body line look like a closing
+	 * fence in the merged stream.
 	 */
-	function chunkHtmlBlocks(lines: DiffLine[]): MidEntry[] {
-		const entries: MidEntry[] = [];
-		const fenceOpenRe = /^(`{3,})html$/;
-		let i = 0;
-
-		while (i < lines.length) {
-			const match = lines[i].text.match(fenceOpenRe);
-			if (match) {
-				const fence = match[1];
-				// Search forward for matching close fence (exact backtick run, no language)
-				let close = -1;
-				for (let j = i + 1; j < lines.length; j++) {
-					if (lines[j].text === fence) {
-						close = j;
-						break;
-					}
+	function findHtmlBlockLineNumbers(content: string): Set<number> {
+		const inBlock = new Set<number>();
+		const lines = content.split('\n');
+		const openRe = /^(`{3,})html$/;
+		let openFence: string | null = null;
+		for (let i = 0; i < lines.length; i++) {
+			const lineNum = i + 1;
+			const text = lines[i];
+			if (openFence === null) {
+				const m = text.match(openRe);
+				if (m) {
+					openFence = m[1];
+					inBlock.add(lineNum);
 				}
-
-				if (close !== -1) {
-					const blockLines = lines.slice(i, close + 1);
-					let added = 0;
-					let removed = 0;
-					let unchanged = 0;
-					for (const line of blockLines) {
-						if (line.type === 'added') added++;
-						else if (line.type === 'removed') removed++;
-						else unchanged++;
-					}
-
-					if (added > 0 || removed > 0) {
-						entries.push({ kind: 'htmlBlock', lines: blockLines, added, removed, unchanged });
-					} else {
-						// Entirely unchanged — let context-collapse handle them
-						for (const line of blockLines) {
-							entries.push({ kind: 'line', line });
-						}
-					}
-					i = close + 1;
-					continue;
+			} else {
+				inBlock.add(lineNum);
+				if (text === openFence) {
+					openFence = null;
 				}
-				// Unbalanced fence — fall through to plain line
 			}
+		}
+		return inBlock;
+	}
 
-			entries.push({ kind: 'line', line: lines[i] });
-			i++;
+	/**
+	 * Group consecutive DiffLines that belong to an HTML block (in
+	 * either old or new) into a single htmlBlock chunk when the run
+	 * contains any added/removed line. Entirely-unchanged blocks pass
+	 * through as individual lines so the standard context-collapse can
+	 * compress them.
+	 *
+	 * Block membership is decided per-line via the precomputed
+	 * `oldBlockLines` / `newBlockLines` sets:
+	 *   - `removed` lines: in a block iff oldLineNum ∈ oldBlockLines
+	 *   - `added`   lines: in a block iff newLineNum ∈ newBlockLines
+	 *   - `unchanged` lines: in a block iff EITHER side puts them in one
+	 *
+	 * This is robust against fence-length changes across old/new because
+	 * we never match fence lines against each other across sides — each
+	 * side's block ranges are derived from its own content.
+	 */
+	function chunkHtmlBlocks(
+		lines: DiffLine[],
+		oldBlockLines: Set<number>,
+		newBlockLines: Set<number>
+	): MidEntry[] {
+		function isInBlock(line: DiffLine): boolean {
+			if (line.type === 'removed') {
+				return line.oldLineNum !== null && oldBlockLines.has(line.oldLineNum);
+			}
+			if (line.type === 'added') {
+				return line.newLineNum !== null && newBlockLines.has(line.newLineNum);
+			}
+			// unchanged — present on both sides; in a block if either side has it.
+			return (
+				(line.oldLineNum !== null && oldBlockLines.has(line.oldLineNum)) ||
+				(line.newLineNum !== null && newBlockLines.has(line.newLineNum))
+			);
 		}
 
+		const entries: MidEntry[] = [];
+		let i = 0;
+		while (i < lines.length) {
+			if (!isInBlock(lines[i])) {
+				entries.push({ kind: 'line', line: lines[i] });
+				i++;
+				continue;
+			}
+			// Run of consecutive in-block lines.
+			const blockLines: DiffLine[] = [];
+			let added = 0;
+			let removed = 0;
+			let unchanged = 0;
+			while (i < lines.length && isInBlock(lines[i])) {
+				const line = lines[i];
+				blockLines.push(line);
+				if (line.type === 'added') added++;
+				else if (line.type === 'removed') removed++;
+				else unchanged++;
+				i++;
+			}
+			if (added > 0 || removed > 0) {
+				entries.push({ kind: 'htmlBlock', lines: blockLines, added, removed, unchanged });
+			} else {
+				for (const line of blockLines) {
+					entries.push({ kind: 'line', line });
+				}
+			}
+		}
 		return entries;
 	}
 
@@ -196,7 +244,9 @@
 
 	let changes = $derived(diffLines(oldContent, newContent));
 	let diffLineEntries = $derived(buildDiffLines(changes));
-	let chunkedEntries = $derived(chunkHtmlBlocks(diffLineEntries));
+	let oldBlockLines = $derived(findHtmlBlockLineNumbers(oldContent));
+	let newBlockLines = $derived(findHtmlBlockLineNumbers(newContent));
+	let chunkedEntries = $derived(chunkHtmlBlocks(diffLineEntries, oldBlockLines, newBlockLines));
 	let displayEntries = $derived(collapseContext(chunkedEntries));
 
 	const expandedBlocks = new SvelteSet<number>();
