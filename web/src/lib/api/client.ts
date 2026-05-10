@@ -356,13 +356,34 @@ export const api = {
 			ws: string,
 			slug: string,
 			content: string,
-			opts?: { keepalive?: boolean },
-		) =>
-			request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
+			opts?: { keepalive?: boolean; opLogCursor?: number },
+		) => {
+			const body: { content: string; op_log_cursor?: number } = { content };
+			// `op_log_cursor` (TASK-1319) is the highest
+			// item_yjs_updates.id this tab has applied. The server
+			// advances `items.content_flushed_op_log_id` only when
+			// the cursor matches the current MAX(op-log.id) — proving
+			// the markdown captures every persisted op. Cursors below
+			// MAX leave the watermark untouched (peer ops outside this
+			// tab's view exist; the GC sweeper must not delete them).
+			//
+			// Always include the cursor when the caller passed it,
+			// INCLUDING zero. The server's stale-snapshot gate
+			// (round 12 [P1]) needs to see cursor=0 explicitly to
+			// reject flushes from clients whose Y.Doc is populated
+			// but whose cursor was never anchored (network blip
+			// during the post-replay cursor write). Omitting on 0
+			// would silently bypass the gate. Per Codex round 13
+			// [P1] of TASK-1319.
+			if (opts?.opLogCursor !== undefined) {
+				body.op_log_cursor = opts.opLogCursor;
+			}
+			return request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
 				method: 'PATCH',
-				body: JSON.stringify({ content }),
+				body: JSON.stringify(body),
 				keepalive: opts?.keepalive,
-			}),
+			});
+		},
 
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/items/${slug}`, {

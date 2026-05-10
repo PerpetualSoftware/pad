@@ -547,6 +547,25 @@ type ItemUpdate struct {
 	VersionSource string  `json:"version_source,omitempty"`
 	ChangeSummary string  `json:"change_summary,omitempty"`
 	Comment       *string `json:"comment,omitempty"`
+	// OpLogCursor is the highest item_yjs_updates.id the calling client
+	// has applied into its local Y.Doc (TASK-1319). Used by the
+	// collab-snapshot flush PATCH to advance the op-log GC watermark
+	// (`items.content_flushed_op_log_id`) when, and only when, the
+	// cursor matches the current MAX(item_yjs_updates.id) for the item.
+	//
+	// **Why a pointer.** A nil cursor means "the caller didn't claim
+	// to know"; the watermark stays put. *0 means "I have nothing"
+	// (e.g. a fresh editor whose op-log is empty); when MAX is also 0
+	// the watermark advances to 0 (a no-op stamp) — but practical
+	// flushes always have *some* op-log id, so this branch rarely
+	// matters.
+	//
+	// Only honoured when VersionSource == "collab-snapshot". Other
+	// content writes (CLI / MCP / version restore / PruneAndApply)
+	// already advance the watermark to MAX(op-log.id) at write time
+	// because they reconstruct or replace items.content wholesale.
+	// Per TASK-1319.
+	OpLogCursor *int64 `json:"op_log_cursor,omitempty"`
 	// ClearAssignedUser / ClearAgentRole allow explicitly setting to NULL
 	// (since nil pointer means "don't change" in partial updates)
 	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`

@@ -1,6 +1,7 @@
 package collab
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -139,6 +140,13 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 	}
 }
 
+// ErrForceRefreshSent is returned by Join when the client's
+// announced `?since=<id>` was below MIN(item_yjs_updates.id) — rows
+// it expected to replay have been pruned. The handler has already
+// emitted a force_refresh JSON control frame; the caller should
+// close the conn cleanly. Per TASK-1319.
+var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; force_refresh sent")
+
 // Join attaches a freshly-upgraded WebSocket connection to the room
 // for itemID. Replays the op-log to the new peer, spins up an inbound
 // reader and an outbound writer, and blocks until the WebSocket
@@ -146,10 +154,17 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 // typically the HTTP handler — should defer conn.Close so that any
 // resources held by the WS upgrader are released after this returns.
 //
+// `since` is the client's announced highest-applied op-log id (parsed
+// from `?since=<id>` on the upgrade URL). When non-zero AND below
+// MIN(item_yjs_updates.id) for this item, Join sends a force_refresh
+// control frame and returns ErrForceRefreshSent — the client must
+// discard local Y.Doc state and reconnect with `?since=0`. Per
+// TASK-1319.
+//
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -165,11 +180,69 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 	itemLock := m.itemLock(itemID)
 
 	for attempt := 0; attempt < 3; attempt++ {
+		// Acquire the per-item setup lock BEFORE creating the room
+		// so the schema-rebuild + force_refresh checks below can
+		// run without leaking an empty m.rooms entry on bail-out.
+		// Per Codex round 5 [P2] of TASK-1319.
+		itemLock.Lock()
+
+		// Schema-mismatch rebuild (TASK-1268). Runs before the
+		// room is created so a rebuild-then-bail path can't leave
+		// an orphan room behind; the rebuild itself is a store-
+		// only mutation that doesn't depend on the in-memory Room.
+		// Concurrent fresh Joins for this item block on itemLock,
+		// so a peer arriving in this window sees the post-rebuild
+		// op-log when it gets its turn.
+		if err := m.maybeRebuildOnSchemaMismatch(itemID); err != nil {
+			itemLock.Unlock()
+			return err
+		}
+
+		// Resume-cursor / force_refresh check (TASK-1319). Run
+		// AFTER the schema rebuild so a post-rebuild empty op-log
+		// (which has no MIN) is treated correctly.
+		//
+		// `since > 0` means the client claims to have applied at
+		// least one persisted op locally. Two ways that claim is
+		// incompatible with the current op-log:
+		//   - No rows exist (`!hasMin`): the entire op-log was
+		//     pruned (PruneAndApply, schema rebuild, or dormant
+		//     GC). The client's Y.Doc is built on top of ops that
+		//     no longer exist; admitting it would let its on-open
+		//     `Y.encodeStateAsUpdate` write resurrect the stale
+		//     pre-prune document and overwrite items.content on
+		//     the next flush.
+		//   - `since < minID`: rows the client expected to replay
+		//     have been pruned (the same hazard, just with a
+		//     non-empty post-prune suffix).
+		// Both branches force_refresh and bail BEFORE we touch
+		// m.rooms — no orphan-room leak. Per Codex round 5 [P2].
+		if since > 0 {
+			minID, hasMin, merr := m.store.MinOpLogID(itemID)
+			if merr != nil {
+				itemLock.Unlock()
+				return merr
+			}
+			needsRefresh := !hasMin || since < minID
+			if needsRefresh {
+				slog.Info("collab: client cursor incompatible with op-log; sending force_refresh",
+					"item_id", itemID,
+					"since", since,
+					"min_id", minID,
+					"has_min", hasMin,
+				)
+				_ = sendForceRefreshFrame(conn)
+				itemLock.Unlock()
+				return ErrForceRefreshSent
+			}
+		}
+
 		room := m.getOrCreate(itemID)
 		if room == nil {
 			// Close raced in between our closed-check above and
 			// getOrCreate. Bail with the same fast error so the
 			// handler closes the WS cleanly.
+			itemLock.Unlock()
 			return errManagerClosed
 		}
 
@@ -178,32 +251,6 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			conn:        conn,
 			bus:         m.bus.Subscribe(itemID),
 			connectedAt: time.Now(),
-		}
-
-		// Hold the per-item lock across addConn + replayTo so a
-		// concurrent PruneAndApply (CLI / MCP / API direct write
-		// while we're mid-setup) can't pull stale op-log rows out
-		// from under our feet. The lock is released inside runConn
-		// before the long-lived readLoop so concurrent peers can
-		// edit simultaneously. Per Codex review round 5.
-		itemLock.Lock()
-
-		// Schema-mismatch rebuild (TASK-1268). Inside the per-item
-		// setup lock so a concurrent PruneAndApply / fresh Join
-		// can't race the prune-then-replay sequence: any peer that
-		// arrives in this window blocks here until we either prune
-		// or proceed cleanly. We check the LATEST persisted
-		// schema_version (LatestYjsUpdateSchemaVersion), and if it
-		// disagrees with our current m.schemaVersion we wipe the
-		// op-log for this item via PruneYjsUpdatesBefore with a
-		// far-future cutoff. items.content is canonical and is
-		// preserved — the client's lazy-seed path (TASK-1261) will
-		// re-encode it into ops at the new schema version on its
-		// next idle tick.
-		if err := m.maybeRebuildOnSchemaMismatch(itemID); err != nil {
-			itemLock.Unlock()
-			m.bus.Unsubscribe(rc.bus)
-			return err
 		}
 
 		if err := room.addConn(rc); err != nil {
@@ -221,7 +268,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn) error {
 			return err
 		}
 
-		return m.runConn(room, rc, itemLock)
+		return m.runConn(room, rc, itemLock, since)
 	}
 	return errTooManyJoinRetries
 }
@@ -465,14 +512,14 @@ func (m *RoomManager) PruneSweep(minAge time.Duration) (PruneSweepResult, error)
 // correctness issue. The alternative — buffer-then-flush — would
 // require an unbounded queue or risk losing live updates the way
 // the original implementation did.
-func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex) error {
+func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, since int64) error {
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
 		room.writeLoop(rc)
 	}()
 
-	replayErr := room.replayTo(rc)
+	highestReplayed, replayErr := room.replayTo(rc, since)
 	// Release the per-item setup lock before the long-lived readLoop
 	// so concurrent peers + future PruneAndApply calls aren't gated
 	// on this conn's full lifetime.
@@ -483,6 +530,55 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex) er
 		<-writerDone
 		return replayErr
 	}
+
+	// Anchor the client's resume cursor (TASK-1319). The cursor
+	// MUST NEVER advertise an id whose binary frame this conn
+	// hasn't actually delivered, otherwise a disconnect right after
+	// the cursor leaves the client's persisted resume cursor
+	// pointing past unreplayed rows. Two safe sources only:
+	//   - `highestReplayed`: an id we just sent the binary frame
+	//     for during replayTo.
+	//   - `since`: the client's announced cursor — the client has
+	//     already applied that op-log id locally, so re-advertising
+	//     it never regresses past content.
+	// We deliberately do NOT consult MAX(op-log.id) here: a live
+	// op that landed during replay would be reflected in MAX but
+	// hasn't been broadcast through this conn's writeLoop yet, and
+	// a cursor=MAX would let the client persist a value that
+	// outpaces its received binary frames. Per Codex round 6 [P1].
+	// Acquire writeMu across the read-max + cursor-send +
+	// replayDone-flip so writeLoop's per-event critical section
+	// (round 22) cannot interleave a record-vs-read window.
+	// Holding the lock means: any in-flight writeLoop event
+	// finishes its record/send before we read max; any subsequent
+	// event sees replayDone=true and emits its own live cursor.
+	// Per Codex round 22 [P1] of TASK-1319.
+	rc.writeMu.Lock()
+	cursorID := highestReplayed
+	if cursorID < since {
+		cursorID = since
+	}
+	if liveMax := rc.maxLiveOpLogIDDuringReplay.Load(); liveMax > cursorID {
+		cursorID = liveMax
+	}
+	payload, perr := json.Marshal(ControlMessage{
+		Type:    ControlMessageOpLogCursor,
+		OpLogID: cursorID,
+	})
+	if perr != nil {
+		rc.writeMu.Unlock()
+		room.removeConn(rc)
+		<-writerDone
+		return perr
+	}
+	if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+		rc.writeMu.Unlock()
+		room.removeConn(rc)
+		<-writerDone
+		return werr
+	}
+	rc.replayDone.Store(true)
+	rc.writeMu.Unlock()
 
 	// Read loop blocks until the WS closes.
 	readErr := room.readLoop(rc)
@@ -558,6 +654,33 @@ func (m *RoomManager) RoomCount() int {
 // to a plain direct write (without pruning the op-log) — the live
 // peers' Y.Doc state cannot be invalidated safely.
 var ErrRoomActiveDuringPrune = errors.New("collab: room became active during prune attempt")
+
+// UnderItemLock runs fn while the per-item setup lock for itemID is
+// held — the SAME lock Join's addConn+replayTo acquires and the SAME
+// lock PruneAndApply runs its prune+write under. Used by the items
+// PATCH handler's collab-snapshot validation path so the
+// MIN(op-log.id) check and the items.content write are atomic
+// w.r.t. concurrent prunes (PruneAndApply, schema rebuild, dormant
+// GC's per-item DELETE). Without this serialization, a prune
+// landing between the check and the write lets the stale
+// collab-snapshot overwrite canonical content. Per Codex round 13
+// [P1] of TASK-1319.
+//
+// Best-effort with a fast bail-out: if Close has fired the lock
+// goroutine returns ErrManagerClosed without invoking fn. fn's
+// own error (if any) is returned verbatim.
+func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errManagerClosed
+	}
+	m.mu.Unlock()
+	lock := m.itemLock(itemID)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
+}
 
 // PruneAndApply runs applyFn under the per-item setup lock so it is
 // strictly serialised with any in-flight Join's addConn+replayTo for

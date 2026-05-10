@@ -489,6 +489,30 @@
 	// post-raw-save markdown). Per Codex review round 2.
 	let ydoc = $state<Y.Doc | null>(null);
 	let collabProvider = $state<CollabProvider | null>(null);
+	// forceRefreshNonce drives Y.Doc/provider recreation when the
+	// server signals our resume cursor was stale (TASK-1319). The
+	// collab $effect reads it as a reactive dependency, so bumping
+	// the value tears down the current provider+doc and rebuilds
+	// from items.content via the lazy-seed path. The previous
+	// provider's onForceRefresh handler does the bumping.
+	let forceRefreshNonce = $state(0);
+	// skipFlushOnNextCleanup is the flag the provider's onForceRefresh
+	// handler sets so the next collab $effect cleanup tears down
+	// without flushing the (known-stale) Y.Doc-derived markdown.
+	// Reset at the start of each cleanup so a subsequent normal
+	// teardown still runs its flush. Per Codex review round 1 [P1]
+	// of TASK-1319.
+	let skipFlushOnNextCleanup = false;
+	// forceRefreshInFlight blocks any new collab-snapshot flush from
+	// being scheduled (or surviving) while the page is mid-recovery
+	// from a server force_refresh. Without it, an in-flight refetch +
+	// pending nonce bump leaves the stale editor mounted; a local
+	// edit during that window arms a NEW collabFlushTimer that fires
+	// before cleanup runs and PATCHes stale Y.Doc-derived markdown
+	// back to canonical items.content. Reset to false at the END of
+	// the new collab $effect run (after rebuild completes). Per
+	// Codex round 7 [P1] of TASK-1319.
+	let forceRefreshInFlight = false;
 	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
@@ -514,6 +538,14 @@
 	$effect(() => {
 		if (!collabKey) return;
 		const itemId = collabKey;
+		// Track forceRefreshNonce so a bump from the provider's
+		// onForceRefresh handler tears this effect's old provider+doc
+		// down via the cleanup return and rebuilds fresh. Reading
+		// the rune is enough — Svelte 5 records the dependency. The
+		// _ underscore name silences "unused" lints; the side effect
+		// is the dependency tracking itself. Per TASK-1319.
+		const _refreshNonce = forceRefreshNonce;
+		void _refreshNonce;
 		// Snapshot the workspace alongside the itemId. activeCollabContext
 		// is what the timer-driven + cleanup-driven flushes target so
 		// they always PATCH the right URL even after navigation.
@@ -559,10 +591,108 @@
 					return false;
 				}
 			},
+			// Force-refresh handler (TASK-1319). Fires when the
+			// server detects our `?since=<id>` is below the current
+			// MIN(item_yjs_updates.id) — the rows we expected to
+			// replay have been pruned (op-log GC, schema rebuild,
+			// PruneAndApply), so reconnecting from local state
+			// would corrupt the Y.Doc. Recovery: bump the
+			// `collabKey` so the $effect cleanup tears down the
+			// provider+doc, then a fresh provider+doc rebuilds from
+			// items.content via the lazy-seed path (TASK-1261).
+			//
+			// We don't explicitly call `provider.destroy()` here —
+			// the WS is already closing on the server side and the
+			// $effect cleanup runs that destroy as part of swapping
+			// in the new provider.
+			onForceRefresh: () => {
+				toastStore.show(
+					'Editor refreshed — rejoining with the latest content from the server.',
+					'info',
+				);
+				// Mark this provider's effect cleanup as a
+				// force-refresh tear-down so the cleanup path
+				// SKIPS the trailing collab-snapshot flush. Per
+				// Codex review round 1 [P1] of TASK-1319: a
+				// force_refresh means the local Y.Doc state is
+				// known stale (its cursor was below MIN, so the
+				// rows it would replay no longer exist); flushing
+				// the Y.Doc-derived markdown would overwrite the
+				// canonical items.content the fresh provider is
+				// supposed to lazy-seed from.
+				skipFlushOnNextCleanup = true;
+				forceRefreshInFlight = true;
+				// Cancel any in-flight 5s flush timer too. The
+				// cleanup-skip flag only covers the cleanup path;
+				// a timer that already armed before force_refresh
+				// fired would otherwise PATCH the (stale) Y.Doc-
+				// derived markdown after the cleanup ran. Per
+				// Codex round 2 [P1].
+				clearTimeout(collabFlushTimer);
+				collabFlushTimer = undefined;
+				// Refresh items.content from the server BEFORE
+				// rebuilding the Y.Doc. Without this, the lazy
+				// seed (TASK-1261) on the new doc reads the
+				// possibly-stale page-state cache of item.content
+				// and re-encodes that into a fresh op-log; the
+				// next flush then overwrites canonical server
+				// content with our stale view. The await is
+				// fire-and-forget at the call site; we bump the
+				// nonce only after the GET resolves so the
+				// cleanup→rebuild sequence sees fresh content. A
+				// failed fetch falls through to the bump anyway
+				// (better an editor session against possibly-
+				// stale content than no editor session at all);
+				// the user is already showing the toast about a
+				// refresh. Per Codex round 4 [P1].
+				const refreshCtx = ctx;
+				void api.items
+					.get(refreshCtx.wsSlug, refreshCtx.itemId)
+					.then((fresh) => {
+						// Apply only if the user is still on this
+						// item; a navigation away should not stamp
+						// fresh content into the OTHER item's slot.
+						if (item && item.id === refreshCtx.itemId) {
+							item = fresh;
+						}
+						// Refetch succeeded → safe to rebuild.
+						forceRefreshNonce += 1;
+					})
+					.catch((err) => {
+						// Refetch failed — we cannot guarantee the
+						// cached `item.content` reflects canonical
+						// server state. Rebuilding here would
+						// lazy-seed a fresh Y.Doc from the cached
+						// (possibly-stale) content, then the next
+						// flush would PATCH that stale content
+						// back to the server — recreating the
+						// corruption force_refresh was meant to
+						// prevent. Surface a hard error and ask
+						// the user to reload manually instead.
+						// The provider is already destroyed so
+						// the editor is read-only effectively;
+						// forceRefreshInFlight stays true so any
+						// in-flight or scheduled flush is blocked.
+						// Per Codex round 17 [P1] of TASK-1319.
+						console.warn(
+							'collab: force_refresh item refetch failed; refusing to auto-rebuild',
+							err,
+						);
+						toastStore.show(
+							'Could not refresh editor — please reload the page.',
+							'error',
+						);
+					});
+			},
 		});
 
 		ydoc = doc;
 		collabProvider = provider;
+		// A fresh provider has been wired; the force-refresh
+		// recovery window (if any) has closed. Local edits from
+		// this point can safely schedule flushes again. Per Codex
+		// round 7 [P1] of TASK-1319.
+		forceRefreshInFlight = false;
 
 		return () => {
 			// Best-effort flush of items.content BEFORE we tear the
@@ -588,7 +718,13 @@
 			// snapshot. The other cleanup triggers (item nav,
 			// canEdit flip, page unmount) all benefit from the
 			// flush. Per Codex review round 3.
-			if (!rawMode) {
+			// Force-refresh tear-down skips the flush — the local
+			// Y.Doc is known stale and flushing it would overwrite
+			// canonical items.content. Per Codex review round 1
+			// [P1] of TASK-1319.
+			const skipFlush = skipFlushOnNextCleanup;
+			skipFlushOnNextCleanup = false;
+			if (!rawMode && !skipFlush) {
 				flushCollabNow(ctx, true);
 			}
 			provider.destroy();
@@ -887,6 +1023,12 @@
 
 	function scheduleCollabFlush(markdown: string) {
 		clearTimeout(collabFlushTimer);
+		// Force-refresh recovery in flight: block any new flush
+		// scheduling. The provider is destroyed but the editor
+		// component is still mounted (cleanup hasn't run yet); a
+		// local edit during this window must NOT arm a flush timer
+		// against the stale Y.Doc state. Per Codex round 7 [P1].
+		if (forceRefreshInFlight) return;
 		const ctx = activeCollabContext;
 		if (!ctx) return;
 		collabFlushTimer = setTimeout(() => {
@@ -906,7 +1048,13 @@
 	//   - 'failed' — PATCH errored. The toggle path bails so we
 	//     don't enter raw mode with stale state.
 	// Per Codex review round 8.
-	type CollabFlushResult = 'flushed' | 'deduped' | 'failed';
+	// 'skipped' is the TASK-1319 force_refresh-recovery path: the
+	// flush was blocked because the local Y.Doc state is known
+	// stale relative to the canonical server content. Distinct
+	// from 'deduped' (server already has this markdown) so callers
+	// like the rich→raw toggle can refuse to seed from the stale
+	// markdown rather than silently propagate it.
+	type CollabFlushResult = 'flushed' | 'deduped' | 'failed' | 'skipped';
 
 	// runCollabFlush PATCHes items.content via the
 	// `?source=collab-snapshot` bypass. Takes ws/item from the
@@ -918,6 +1066,13 @@
 		markdown: string,
 		keepalive: boolean,
 	): Promise<CollabFlushResult> {
+		// Force-refresh recovery is in flight: any markdown derived
+		// from the soon-to-be-discarded Y.Doc is, by definition,
+		// stale relative to the canonical server content. Skipping
+		// here covers every direct caller (beforeunload, raw-toggle,
+		// flushCollabNow) without needing per-call-site guards. Per
+		// Codex round 8 [P1] of TASK-1319.
+		if (forceRefreshInFlight) return 'skipped';
 		const allItems = collectionStore.items ?? [];
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
@@ -951,7 +1106,34 @@
 			editorStore.setLastSaveTime(Date.now());
 		}
 		try {
-			await api.items.flushCollabContent(ws, itemId, toSave, { keepalive });
+			// Pass the provider's per-tab op-log cursor (TASK-1319) so
+			// the server can advance the GC watermark when this tab is
+			// caught up to MAX(op-log.id). When the cursor is below
+			// MAX (peer ops not yet applied here) the server leaves
+			// the watermark untouched — the GC sweeper must not delete
+			// rows this markdown doesn't reflect. The cursor reflects
+			// the provider tracking THIS item; if a navigation has
+			// already swapped to another item the foreground flush
+			// path bails earlier on dedupe and this code doesn't run.
+			const opLogCursor =
+				collabProvider && collabProvider.itemID === itemId
+					? collabProvider.lastOpLogID
+					: undefined;
+			await api.items.flushCollabContent(ws, itemId, toSave, {
+				keepalive,
+				opLogCursor,
+			});
+			// Post-await force_refresh check: a force_refresh
+			// frame can arrive WHILE the PATCH is in flight
+			// (server already accepted, items.content already
+			// overwritten — the server-side gate covers the
+			// happens-before case where MIN had advanced past
+			// our cursor by the time the request landed). At
+			// minimum, refuse to record this flush as
+			// authoritative locally — don't seed lastFlushedContent
+			// or update saveStatus from a known-stale base. Per
+			// Codex round 10 [P1].
+			if (forceRefreshInFlight) return 'skipped';
 			// lastFlushedContent is per-item; only seed it if the
 			// item we just flushed is still the active one.
 			// Otherwise a stale flush could pollute the new page's
@@ -1831,14 +2013,27 @@
 									for (let i = 0; i < 3; i++) {
 										if (typeof md !== 'string') break;
 										const result = await runCollabFlush(ws, itemId, md, false);
-										if (result === 'failed') {
-											// PATCH errored — refuse
-											// to enter raw mode
-											// rather than silently
-											// seed from stale state.
-											// runCollabFlush already
-											// surfaced the toast.
-											// Per Codex review round 8.
+										if (result === 'failed' || result === 'skipped') {
+											// 'failed' — PATCH errored;
+											//   runCollabFlush already
+											//   surfaced the toast.
+											// 'skipped' — force_refresh
+											//   recovery is in flight,
+											//   the Y.Doc-derived md is
+											//   known stale (TASK-1319
+											//   round 9 [P1]); seeding
+											//   raw mode from it would
+											//   silently overwrite the
+											//   canonical server content
+											//   on the next raw save.
+											// Either way, refuse to
+											// enter raw mode.
+											if (result === 'skipped') {
+												toastStore.show(
+													'Editor is recovering — try Markdown again in a moment.',
+													'info',
+												);
+											}
 											aborted = true;
 											break;
 										}
@@ -1918,7 +2113,7 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#key `${item.id}:true`}
+						{#key `${item.id}:true:${forceRefreshNonce}`}
 							<Editor
 								content={editorContent}
 								onUpdate={handleContentUpdate}

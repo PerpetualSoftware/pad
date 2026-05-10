@@ -46,6 +46,15 @@ type OpEvent struct {
 	Type      string
 	Data      []byte
 	Timestamp int64
+	// OpLogID is the persisted item_yjs_updates.id assigned by
+	// AppendYjsUpdate when this event was a sync frame. Zero for
+	// awareness frames (never persisted) and for the rare sync
+	// frame whose append failed (logged at error; broadcast still
+	// fires so the live mesh stays consistent). Used by writeLoop
+	// to piggyback an op_log_cursor control frame after the binary
+	// frame so peers track their applied-cursor without a round
+	// trip. Per TASK-1319.
+	OpLogID int64
 }
 
 // OpEvent.Type values. Kept narrow on purpose — the server should not

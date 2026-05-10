@@ -218,3 +218,183 @@ func sourcesOf(versions []models.Version) []string {
 	}
 	return out
 }
+
+// TestCollabSnapshotRejectsCursorBelowMin is the TASK-1319 round 10
+// [P1] regression: a collab-snapshot PATCH whose op_log_cursor is
+// below the current MIN(item_yjs_updates.id) MUST be rejected at
+// the handler with 409. Such a cursor proves the flushing tab's
+// Y.Doc was built on op-log rows that no longer exist (PruneAndApply,
+// schema rebuild, dormant GC, or the post-force_refresh race window
+// where a server-side rejection is the only authoritative gate).
+// Accepting it would overwrite items.content with markdown derived
+// from a known-bad source.
+func TestCollabSnapshotRejectsCursorBelowMin(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Stale cursor test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// Seed three op-log rows then drop ids 1+2 to simulate a
+	// post-PruneAndApply state where MIN(id) = 3.
+	for i := 1; i <= 3; i++ {
+		if _, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, byte(i)}, "1"); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	// Truncate via the public API: prune everything older than now,
+	// then re-append two rows so MIN advances past the originals.
+	if _, err := srv.store.PruneYjsUpdatesBefore(created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	for i := 4; i <= 5; i++ {
+		if _, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, byte(i)}, "1"); err != nil {
+			t.Fatalf("re-seed %d: %v", i, err)
+		}
+	}
+	// MIN is now id=4. Cursor=2 is below MIN → handler must 409.
+
+	cursor := int64(2)
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "stale-flush-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for stale cursor; got %d %s", rr.Code, rr.Body.String())
+	}
+
+	// items.content must NOT have been written. Re-fetch and assert.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET: %d", rr.Code)
+	}
+	var got models.Item
+	parseJSON(t, rr, &got)
+	if got.Content == "stale-flush-content" {
+		t.Errorf("items.content was overwritten with stale-flush-content; the handler accepted a sub-MIN cursor PATCH")
+	}
+}
+
+// TestCollabSnapshotAcceptsCursorAtOrAboveMin is the negative test:
+// a cursor at or above MIN passes the gate.
+func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Healthy cursor test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	id1, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, 0x01}, "1")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cursor := id1 // cursor == MIN — caught up.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "fresh-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cursor>=MIN; got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCollabSnapshotRejectsCursorOnEmptyOpLog mirrors the WS
+// force_refresh predicate at the HTTP layer (Codex round 11 [P1]
+// of TASK-1319). A non-zero cursor against an item whose op-log
+// is entirely empty is, by construction, stale: the rows the
+// client claims to have applied no longer exist. Reject 409.
+func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Empty oplog test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// No op-log seed — the table is empty for this item. Cursor=42
+	// is a non-zero claim that can't be reconciled.
+	cursor := int64(42)
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "stale-empty-oplog-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for non-zero cursor on empty op-log; got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog (round 12
+// [P1] of TASK-1319): a stateful tab whose previous session
+// disconnected before receiving any op_log_cursor frame ends up
+// with sessionStorage cursor=0 but a non-empty Y.Doc derived from
+// prior replay binaries. On flush, it carries cursor=0 alongside
+// Y.Doc-derived markdown. Without the gate, items.content would
+// be overwritten by the stale view.
+func TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Cursor zero stale test",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// Seed an op-log row so MIN is non-zero.
+	if _, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cursor := int64(0)
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"content":       "stale-zero-cursor-content",
+			"op_log_cursor": cursor,
+		},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for cursor=0 on non-empty op-log; got %d %s", rr.Code, rr.Body.String())
+	}
+}

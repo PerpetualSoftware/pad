@@ -466,8 +466,23 @@ func TestCollabMembershipRevalidationClosesOnRevoke(t *testing.T) {
 	// jittered across [0, interval) — worst case is ~30ms — so
 	// 2 seconds is wildly generous. A timeout here means the WS is
 	// still open, which is the bug being regression-tested.
+	//
+	// Drain initial control frames (the post-replay op_log_cursor
+	// from TASK-1319) until either an error surfaces (the close
+	// we want) or the deadline trips. Without the drain the very
+	// first read returns the cursor TextMessage and the test would
+	// false-pass on a still-open connection.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, readErr := conn.ReadMessage()
+	var readErr error
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			readErr = err
+			break
+		}
+		// A control/data frame slipped through before the close —
+		// keep reading until we see the close.
+	}
 	if readErr == nil {
 		t.Fatal("expected read error after membership revocation; got none (WS still open)")
 	}

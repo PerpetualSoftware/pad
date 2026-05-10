@@ -59,6 +59,25 @@ type roomConn struct {
 	bus         chan OpEvent
 	writeMu     sync.Mutex
 	connectedAt time.Time
+	// replayDone is set after replayTo + the initial post-replay
+	// op_log_cursor frame have been written. writeLoop suppresses
+	// op_log_cursor frames before this flips so live ops broadcast
+	// during the replay window don't advance the client's cursor
+	// past replay rows it hasn't yet seen — disconnecting mid-replay
+	// after a single live cursor would otherwise leave the client's
+	// resume cursor pointing past unreplayed rows. Per Codex round
+	// 5 [P1] of TASK-1319.
+	replayDone atomic.Bool
+	// maxLiveOpLogIDDuringReplay records the highest persisted op-log
+	// id whose binary frame this conn's writeLoop fanned out before
+	// `replayDone` flipped true. The post-replay initial cursor uses
+	// max(highestReplayed, since, this) so a live op that was applied
+	// to the client's Y.Doc during the replay window doesn't leave
+	// the client cursor pointing below the highest applied op — that
+	// mismatch would trip the client's `cursor=0 + remoteSyncApplied`
+	// force_refresh path on empty-replay sessions and discard
+	// buffered pre-anchor edits. Per Codex round 21 [P1] of TASK-1319.
+	maxLiveOpLogIDDuringReplay atomic.Int64
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -136,6 +155,18 @@ type opLogStore interface {
 	// references).
 	ListDormantOpLogItemsBefore(before time.Time) ([]string, error)
 	PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error)
+	// MinOpLogID powers the resume-cursor / force-refresh check
+	// (TASK-1319): when a reconnecting client announces `?since=<id>`
+	// and that id is below MIN, rows it expected to replay have
+	// been pruned and the server sends ControlMessageForceRefresh.
+	// MaxOpLogID is intentionally NOT on this interface — earlier
+	// versions used it to populate the initial cursor when replay
+	// produced no rows, but Codex round 6 [P1] caught the race
+	// between MaxOpLogID and an in-flight broadcast: the cursor
+	// could advertise an id whose binary frame hadn't been
+	// delivered through this conn's writeLoop yet. The initial
+	// cursor now strictly uses `max(highestReplayed, since)`.
+	MinOpLogID(itemID string) (int64, bool, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels
@@ -194,26 +225,60 @@ func (r *Room) onGraceExpired() {
 	r.onIdle(r.itemID)
 }
 
-// replayTo sends every persisted op-log update for this room to the
-// given connection in order. Each row goes out as its own binary
-// WebSocket frame so a Yjs peer applies them via the same y-protocol
-// path it uses for live updates. Stops on the first WS write error
-// (the connection is doomed); the caller's read loop will surface
-// the same error and tear the connection down cleanly.
-func (r *Room) replayTo(rc *roomConn) error {
-	updates, err := r.store.LoadYjsUpdatesSince(r.itemID, 0)
+// replayTo sends every persisted op-log update for this room with id
+// strictly greater than `since` to the given connection in order. Each
+// row goes out as its own binary WebSocket frame so a Yjs peer applies
+// them via the same y-protocol path it uses for live updates. Stops on
+// the first WS write error (the connection is doomed); the caller's
+// read loop will surface the same error and tear the connection down
+// cleanly.
+//
+// `since == 0` is the fresh-client path (replay everything). The
+// caller is responsible for the prerequisite check that `since`
+// isn't below the current MIN(id) — an out-of-range cursor means
+// rows the client expected have been pruned and the response should
+// be a force_refresh, not a partial replay.
+//
+// Returns the highest replayed id (or 0 when no rows landed) so the
+// caller can emit a follow-on op_log_cursor frame anchoring the
+// client's resume point. Per TASK-1319.
+func (r *Room) replayTo(rc *roomConn, since int64) (int64, error) {
+	updates, err := r.store.LoadYjsUpdatesSince(r.itemID, since)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var highest int64
 	for _, u := range updates {
 		if len(u.UpdateData) == 0 {
 			continue
 		}
 		if werr := rc.writeMessage(websocket.BinaryMessage, u.UpdateData); werr != nil {
-			return werr
+			return highest, werr
+		}
+		if u.ID > highest {
+			highest = u.ID
 		}
 	}
-	return nil
+	return highest, nil
+}
+
+// sendForceRefreshFrame writes a force_refresh control message on the
+// conn. Used by the resume-cursor protocol when the client's
+// announced `?since=<id>` is below MIN(item_yjs_updates.id) — the
+// only safe response is to tell the client to discard local Y.Doc
+// state and lazy-seed from items.content. The caller closes the
+// conn after this returns. Per TASK-1319.
+func sendForceRefreshFrame(conn *websocket.Conn) error {
+	payload, err := json.Marshal(ControlMessage{
+		Type: ControlMessageForceRefresh,
+	})
+	if err != nil {
+		return err
+	}
+	// Set a short write deadline: a doomed conn shouldn't block the
+	// upgrade-time check indefinitely.
+	_ = conn.SetWriteDeadline(time.Now().Add(closeFrameDeadline))
+	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
 // readLoop is the inbound side: pull frames off the WebSocket, route
@@ -258,22 +323,33 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// persist and broadcast loses at most a live keystroke
 			// that the originating peer will replay on reconnect
 			// anyway.
-			if _, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion); err != nil {
+			persistedID, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion)
+			if err != nil {
 				slog.Error("collab: append op-log",
 					"item_id", r.itemID,
 					"client_id", rc.id,
 					"error", err,
 				)
 				// Continue: broadcast keeps the live mesh consistent
-				// even when persistence is blipping.
+				// even when persistence is blipping. persistedID == 0
+				// → no cursor frame is emitted by writeLoop for this
+				// event (we'd be advertising a fictional id).
 			}
 			r.bus.Publish(OpEvent{
 				ItemID:   r.itemID,
 				ClientID: rc.id,
 				Type:     OpTypeSync,
 				Data:     data,
+				OpLogID:  persistedID,
 			})
 			r.appendMu.Unlock()
+			// Originator cursor delivery is handled by writeLoop:
+			// it processes the self event from rc.bus, skips the
+			// binary echo, and emits the cursor frame for OpLogID.
+			// Sending the cursor from here (the original design)
+			// could overtake older peer ops queued in rc.bus and
+			// let the client persist a cursor past undelivered
+			// binaries — the round-23 [P1] hazard.
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
@@ -303,14 +379,71 @@ func (r *Room) readLoop(rc *roomConn) error {
 // other goroutine surfaces an error and tears down cleanly.
 func (r *Room) writeLoop(rc *roomConn) {
 	for ev := range rc.bus {
-		if ev.ClientID == rc.id {
-			continue
+		isSelf := ev.ClientID == rc.id
+		// `isSelf`: we skip the binary echo (the originator already
+		// has the Y.Doc state) but STILL process the cursor logic
+		// below. Routing the originator's cursor through the bus
+		// FIFO is what enforces "older peer ops dispatched first."
+		// Sending it from readLoop directly (the previous design)
+		// could overtake a peer op already buffered in this conn's
+		// rc.bus, letting the client persist a cursor past
+		// undelivered binaries. Per Codex round 23 [P1] of TASK-1319.
+
+		// Hold writeMu across the entire per-event sequence —
+		// binary frame, replayDone observation, AND either cursor
+		// send (replayDone) or maxLive record (!replayDone). With
+		// the same lock used by runConn's post-replay cursor
+		// write, runConn observes either:
+		//   - this event's record (we ran first), OR
+		//   - this event's send (replayDone flipped before we
+		//     got the lock, so we publish a normal live cursor).
+		// Without the wider lock, runConn could read maxLive
+		// AFTER we wrote the binary but BEFORE we recorded — the
+		// record would be lost. Per Codex round 22 [P1] of
+		// TASK-1319.
+		rc.writeMu.Lock()
+		if !isSelf {
+			if err := rc.conn.WriteMessage(websocket.BinaryMessage, ev.Data); err != nil {
+				rc.writeMu.Unlock()
+				_ = rc.conn.Close()
+				return
+			}
 		}
-		if err := rc.writeMessage(websocket.BinaryMessage, ev.Data); err != nil {
-			// Force the read side to wake up and return.
-			_ = rc.conn.Close()
-			return
+		if ev.Type == OpTypeSync && ev.OpLogID > 0 {
+			if rc.replayDone.Load() {
+				payload, perr := json.Marshal(ControlMessage{
+					Type:    ControlMessageOpLogCursor,
+					OpLogID: ev.OpLogID,
+				})
+				if perr != nil {
+					slog.Warn("collab: marshal op_log_cursor failed",
+						"item_id", r.itemID,
+						"client_id", rc.id,
+						"error", perr,
+					)
+				} else if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+					rc.writeMu.Unlock()
+					_ = rc.conn.Close()
+					return
+				}
+			} else {
+				// CAS-loop into the suppressed-cursor max so
+				// runConn's read after replay sees the latest
+				// id. Held under writeMu so an external read
+				// won't observe a stale value while we're still
+				// in this critical section.
+				for {
+					prev := rc.maxLiveOpLogIDDuringReplay.Load()
+					if ev.OpLogID <= prev {
+						break
+					}
+					if rc.maxLiveOpLogIDDuringReplay.CompareAndSwap(prev, ev.OpLogID) {
+						break
+					}
+				}
+			}
 		}
+		rc.writeMu.Unlock()
 	}
 }
 

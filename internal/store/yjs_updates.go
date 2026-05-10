@@ -175,6 +175,59 @@ func (s *Store) LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool
 	return version, rowID, true, nil
 }
 
+// MinOpLogID returns MIN(id) of the persisted op-log rows for an
+// item. ok is false when no rows exist (a freshly-pruned or never-
+// touched item). Used by the resume-cursor protocol (TASK-1319): a
+// reconnecting client announces its last known op-log id via
+// `?since=`; if that id is below MIN, rows it expected to replay
+// have been pruned and the server signals a force-refresh instead
+// of a degraded delta replay.
+func (s *Store) MinOpLogID(itemID string) (int64, bool, error) {
+	if itemID == "" {
+		return 0, false, errors.New("MinOpLogID: itemID is required")
+	}
+	query := s.dialect.Rebind(`
+		SELECT MIN(id) FROM item_yjs_updates WHERE item_id = ?
+	`)
+	var v sql.NullInt64
+	if err := s.db.QueryRow(query, itemID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("min op-log id: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
+// MaxOpLogID returns MAX(id) of the persisted op-log rows for an
+// item. ok is false when no rows exist. Used by the watermark-
+// advancement check on collab-snapshot flush (TASK-1319): the
+// server advances `items.content_flushed_op_log_id` only when the
+// caller's claimed cursor matches MAX, proving the flushed markdown
+// captures every persisted op.
+func (s *Store) MaxOpLogID(itemID string) (int64, bool, error) {
+	if itemID == "" {
+		return 0, false, errors.New("MaxOpLogID: itemID is required")
+	}
+	query := s.dialect.Rebind(`
+		SELECT MAX(id) FROM item_yjs_updates WHERE item_id = ?
+	`)
+	var v sql.NullInt64
+	if err := s.db.QueryRow(query, itemID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("max op-log id: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
 // GetItemContentFlushedOpLogID returns the value of
 // items.content_flushed_op_log_id for an item — the highest op-log
 // id known to be reflected in items.content, or (0, false) if the

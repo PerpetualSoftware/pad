@@ -969,9 +969,38 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		// op-log state (PruneAndApply) or replace it wholesale
 		// (CLI / version restore) — those CAN safely stamp the
 		// watermark to MAX(op-log.id) at write time.
+		//
+		// **Cursor-gated browser flush** (TASK-1319). Browser
+		// flushes carry an OpLogCursor recording the highest
+		// op-log id their Y.Doc has applied. When that cursor
+		// equals the current MAX(item_yjs_updates.id), the
+		// flusher has demonstrably captured every persisted op
+		// and we advance the watermark to that id. When the
+		// cursor is below MAX, peer ops outside the flusher's
+		// view exist; the watermark stays put so the GC sweeper
+		// cannot delete them. When the cursor is missing (older
+		// clients, malformed bodies) we behave as before — no
+		// advancement.
 		if input.VersionSource != "collab-snapshot" {
 			sets = append(sets, "content_flushed_op_log_id = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)")
 			args = append(args, id)
+		} else if input.OpLogCursor != nil {
+			// Conditional advance: the SQL UPDATE stamps the
+			// caller's cursor IFF that cursor still matches the
+			// current MAX(op-log.id) at COMMIT time. A peer op
+			// that lands between the client computing its
+			// cursor and this UPDATE running causes MAX to be
+			// strictly greater than the cursor, the predicate
+			// fails, and the watermark expression evaluates to
+			// the existing column value (a no-op). Never
+			// regresses, never over-advances.
+			sets = append(sets,
+				"content_flushed_op_log_id = CASE "+
+					"WHEN ? = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?) "+
+					"THEN ? "+
+					"ELSE content_flushed_op_log_id "+
+					"END")
+			args = append(args, *input.OpLogCursor, id, *input.OpLogCursor)
 		}
 	}
 	if input.Fields != nil {
