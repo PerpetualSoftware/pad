@@ -1105,6 +1105,17 @@
 				keepalive,
 				opLogCursor,
 			});
+			// Post-await force_refresh check: a force_refresh
+			// frame can arrive WHILE the PATCH is in flight
+			// (server already accepted, items.content already
+			// overwritten — the server-side gate covers the
+			// happens-before case where MIN had advanced past
+			// our cursor by the time the request landed). At
+			// minimum, refuse to record this flush as
+			// authoritative locally — don't seed lastFlushedContent
+			// or update saveStatus from a known-stale base. Per
+			// Codex round 10 [P1].
+			if (forceRefreshInFlight) return 'skipped';
 			// lastFlushedContent is per-item; only seed it if the
 			// item we just flushed is still the active one.
 			// Otherwise a stale flush could pollute the new page's

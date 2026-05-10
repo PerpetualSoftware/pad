@@ -534,6 +534,41 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		input.VersionSource = "collab-snapshot"
 	}
 
+	// Server-side gate: reject collab-snapshot PATCHes whose
+	// op_log_cursor is below MIN(item_yjs_updates.id). Such a
+	// cursor proves the flushing tab's Y.Doc was built on op-log
+	// rows that no longer exist (PruneAndApply, schema rebuild,
+	// dormant GC, or post-force_refresh races). The markdown the
+	// PATCH carries is, by definition, stale relative to the
+	// canonical content; accepting it would overwrite items.content
+	// from a known-bad source. The client-side guard
+	// (`forceRefreshInFlight`) covers the common case but an
+	// already-in-flight fetch can race a force_refresh and reach
+	// this handler with stale content. Per Codex round 10 [P1].
+	if collabSnapshot && input.Content != nil && input.OpLogCursor != nil {
+		minID, hasMin, merr := s.store.MinOpLogID(item.ID)
+		if merr != nil {
+			writeInternalError(w, merr)
+			return
+		}
+		// Only reject when MIN exists AND cursor is below it. An
+		// empty op-log (`!hasMin`) means no peer ops exist —
+		// every browser-flush is trivially caught up. A cursor of
+		// 0 is also fine (older clients, or fresh editor) — the
+		// store's CASE clause leaves the watermark alone in that
+		// case.
+		if hasMin && *input.OpLogCursor < minID {
+			slog.Info("collab-snapshot: rejecting PATCH; cursor below op-log MIN",
+				"item_id", item.ID,
+				"cursor", *input.OpLogCursor,
+				"min_id", minID,
+			)
+			writeError(w, http.StatusConflict, "stale_collab_snapshot",
+				"This editor's view is out of sync with the server; please reload.")
+			return
+		}
+	}
+
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
 		// applyContentViaCollab calls directWrite ONLY on the no-
 		// room/no-applier paths (where pruning the op-log is safe

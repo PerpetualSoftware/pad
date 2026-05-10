@@ -1460,6 +1460,7 @@ func TestRoomManagerForceRefreshOnEmptyOpLogWithSince(t *testing.T) {
 //   - sending a sync from peer A (live op id=4) — broadcast lands in
 //     B's bus channel, processed by B's writeLoop concurrently with
 //     replayTo's writes.
+//
 // The assertion is loose-but-decisive: B sees no op_log_cursor frame
 // with id == 4 BEFORE all four binary frames have arrived. After
 // replay completes the post-replay cursor (id=3) and then live cursor
@@ -1497,7 +1498,6 @@ func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
 	// frames. If a cursor frame for id=4 arrives BEFORE all
 	// binary frames are accounted for, this is the regression.
 	binarySeen := 0
-	cursorIDsAtPoint := make([]int64, 0, 3)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		b.SetReadDeadline(deadline)
@@ -1519,10 +1519,9 @@ func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
 		if msg.Type != ControlMessageOpLogCursor {
 			continue
 		}
-		// Snapshot how many binaries we'd seen at the time this
-		// cursor arrived. A live cursor with id=4 must only come
-		// AFTER all 4 binaries are accounted for.
-		cursorIDsAtPoint = append(cursorIDsAtPoint, msg.OpLogID)
+		// A live cursor with id=4 must only arrive AFTER all 4
+		// binary frames are accounted for; otherwise replay-mid
+		// cursor advancement leaked through.
 		if msg.OpLogID == 4 && binarySeen < 4 {
 			t.Errorf("cursor id=4 arrived after only %d/4 binary frames; replay-mid cursor leaked", binarySeen)
 		}
