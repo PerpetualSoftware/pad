@@ -97,13 +97,45 @@ function blockAtPos(view: EditorView, pos: number): BlockInfo | null {
 			if (LIST_ITEMS.has(node.type.name)) break;
 			depth--;
 		}
-		if (depth < 1) return null;
-		const startPos = $pos.before(depth);
-		const node = view.state.doc.nodeAt(startPos);
-		if (!node) return null;
-		const dom = view.nodeDOM(startPos);
-		if (!(dom instanceof HTMLElement)) return null;
-		return { pos: startPos, node, dom, size: node.nodeSize };
+		if (depth >= 1) {
+			const startPos = $pos.before(depth);
+			const node = view.state.doc.nodeAt(startPos);
+			if (!node) return null;
+			const dom = view.nodeDOM(startPos);
+			if (!(dom instanceof HTMLElement)) return null;
+			return { pos: startPos, node, dom, size: node.nodeSize };
+		}
+		// depth === 0 means `pos` is at a top-level doc boundary, which is
+		// what `posAtCoords` returns when the cursor is over an atom block
+		// (e.g. htmlBlock — contenteditable=false leaf). Look at the node
+		// directly at or just before `pos`. The node AT `pos` (after the
+		// boundary) is preferred because it's where the cursor visually
+		// landed; fall back to the node just before for the boundary
+		// after the last child.
+		const doc = view.state.doc;
+		const candidates: Array<{ pos: number; node: ReturnType<typeof doc.nodeAt> }> = [
+			{ pos, node: doc.nodeAt(pos) },
+		];
+		if (pos > 0) {
+			// nodeAt(pos - 1) of an atom returns null since atoms have no
+			// content positions; instead, find the immediate previous
+			// sibling by walking the doc's children until we cross `pos`.
+			let offset = 0;
+			doc.forEach((child) => {
+				if (offset + child.nodeSize === pos) {
+					candidates.push({ pos: offset, node: child });
+				}
+				offset += child.nodeSize;
+			});
+		}
+		for (const { pos: nodePos, node } of candidates) {
+			if (!node) continue;
+			if (!node.isBlock || !node.isAtom) continue;
+			const dom = view.nodeDOM(nodePos);
+			if (!(dom instanceof HTMLElement)) continue;
+			return { pos: nodePos, node, dom, size: node.nodeSize };
+		}
+		return null;
 	} catch {
 		return null;
 	}
