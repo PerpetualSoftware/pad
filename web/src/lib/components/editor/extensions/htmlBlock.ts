@@ -179,6 +179,11 @@ export const HtmlBlock = Node.create({
 			}
 
 			preview.addEventListener('click', (e) => {
+				// Read-only viewers must not enter source mode — the
+				// commit() dispatch would mutate the local document and
+				// trigger save attempts. Preview-only is the right UX
+				// in that case.
+				if (!editor.isEditable) return;
 				// Don't flip if the user clicked an interactive element
 				// inside the rendered preview (links, iframes, embedded
 				// form controls). Those are part of the legitimate use case
@@ -220,6 +225,20 @@ export const HtmlBlock = Node.create({
 
 			return {
 				dom: wrapper,
+				// Tell ProseMirror to ignore events that originated inside
+				// our source pane — without this, typing common HTML like
+				// `</div>` bubbles `/` up to the slash-menu plugin in the
+				// surrounding editor, and Enter / arrow keys can be eaten
+				// by ProseMirror commands instead of editing the textarea.
+				// Preview-pane events still flow through normally so links /
+				// iframes / embedded controls behave as users expect.
+				stopEvent(event: Event) {
+					// `Node` here would otherwise resolve to the TipTap `Node`
+					// class (imported at the top); use `globalThis.Node` to
+					// reach the DOM Node interface that source.contains expects.
+					const target = event.target as globalThis.Node | null;
+					return target !== null && source.contains(target);
+				},
 				update(updatedNode: ProseMirrorNode) {
 					if (updatedNode.type.name !== 'htmlBlock') return false;
 					const next = (updatedNode.attrs.html as string | undefined) ?? '';
