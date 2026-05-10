@@ -376,21 +376,33 @@ export const BlockDragHandle = Extension.create({
 							mi.el.classList.toggle('active', mi.type === curType);
 						}
 
-						// Position menu next to handle
-						const handleRect = handle.getBoundingClientRect();
-						const menuHeight = 380; // approximate
-						const spaceBelow = window.innerHeight - handleRect.bottom;
-
+						// Reveal the menu BEFORE measuring — offsetHeight is 0
+						// while display:none. Measuring after the visibility
+						// toggle gives us the real height for the current set
+						// of visible rows (different for atom vs. non-atom).
 						menu.style.display = 'block';
 						menuBackdrop.style.display = 'block';
 
-						if (spaceBelow > menuHeight || spaceBelow > handleRect.top) {
-							// Show below
-							menu.style.top = `${handleRect.bottom + 4}px`;
+						// Position menu next to handle. Use measured height
+						// rather than a fixed estimate so the atom menu (only
+						// Duplicate / Delete, ~80px) doesn't get pushed
+						// offscreen by the 380px assumption.
+						const handleRect = handle.getBoundingClientRect();
+						const menuHeight = menu.offsetHeight || 80;
+						const spaceBelow = window.innerHeight - handleRect.bottom;
+						const spaceAbove = handleRect.top;
+						const margin = 4;
+
+						let top: number;
+						if (spaceBelow >= menuHeight + margin) {
+							top = handleRect.bottom + margin;
+						} else if (spaceAbove >= menuHeight + margin) {
+							top = handleRect.top - menuHeight - margin;
 						} else {
-							// Show above
-							menu.style.top = `${handleRect.top - menuHeight - 4}px`;
+							// Neither side fits comfortably — clamp to viewport.
+							top = Math.max(margin, window.innerHeight - menuHeight - margin);
 						}
+						menu.style.top = `${top}px`;
 						menu.style.left = `${Math.max(8, handleRect.left - 8)}px`;
 					}
 
