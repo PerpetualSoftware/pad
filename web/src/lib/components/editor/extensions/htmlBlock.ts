@@ -19,6 +19,12 @@ import { InputRule, Node, type Editor } from '@tiptap/core';
 import type MarkdownIt from 'markdown-it';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { sanitizeHtmlBlock } from '$lib/utils/markdown';
+import {
+	detectHiddenContent,
+	isHiddenContentAcknowledged,
+	setHiddenContentAcknowledged,
+	type HiddenSegment,
+} from '$lib/utils/hiddenContentDetector';
 
 /** A single htmlBlock node's identity for snapshot comparison. */
 export interface HtmlBlockSnapshotEntry {
@@ -219,10 +225,91 @@ export const HtmlBlock = Node.create({
 
 			actions.append(doneBtn);
 			source.append(textarea, actions);
-			wrapper.append(preview, source);
+
+			// Hidden-content authoring warning (TASK-1327). The pill is
+			// always created but only revealed when detectHiddenContent
+			// finds segments AND the user hasn't dismissed for this block.
+			const warning = document.createElement('button');
+			warning.type = 'button';
+			warning.className = 'html-block-warning';
+			warning.hidden = true;
+			warning.title = 'Click to inspect hidden segments in this block';
+
+			const inspector = document.createElement('div');
+			inspector.className = 'html-block-inspector';
+			inspector.hidden = true;
+
+			wrapper.append(warning, preview, source, inspector);
 
 			let lastHtml = (node.attrs.html as string | undefined) ?? '';
 			let mode: 'preview' | 'source' = 'preview';
+			let lastSegments: HiddenSegment[] = [];
+
+			const renderInspector = () => {
+				if (lastSegments.length === 0) {
+					inspector.replaceChildren();
+					return;
+				}
+				const heading = document.createElement('div');
+				heading.className = 'html-block-inspector-heading';
+				heading.textContent = `${lastSegments.length} hidden segment${lastSegments.length === 1 ? '' : 's'}`;
+
+				const list = document.createElement('ul');
+				list.className = 'html-block-inspector-list';
+				for (const seg of lastSegments) {
+					const item = document.createElement('li');
+					item.className = 'html-block-inspector-item';
+					const label = document.createElement('div');
+					label.className = 'html-block-inspector-rule';
+					const tagSpan = document.createElement('code');
+					tagSpan.textContent = seg.tag;
+					label.append(tagSpan, document.createTextNode(` — ${seg.rule}`));
+					item.appendChild(label);
+					if (seg.snippet) {
+						const snip = document.createElement('div');
+						snip.className = 'html-block-inspector-snippet';
+						snip.textContent = `"${seg.snippet}"`;
+						item.appendChild(snip);
+					}
+					list.appendChild(item);
+				}
+
+				const dismiss = document.createElement('button');
+				dismiss.type = 'button';
+				dismiss.className = 'html-block-dismiss';
+				dismiss.textContent = 'Dismiss for this block';
+				dismiss.title = 'Mark these segments as reviewed; warning will not re-appear';
+				// mousedown.preventDefault keeps focus where it was so the
+				// click handler runs in-context.
+				dismiss.addEventListener('mousedown', (e) => e.preventDefault());
+				dismiss.addEventListener('click', (e) => {
+					e.preventDefault();
+					if (!editor.isEditable) return;
+					const pos = typeof getPos === 'function' ? getPos() : null;
+					if (typeof pos !== 'number') return;
+					const next = setHiddenContentAcknowledged(lastHtml);
+					if (next === lastHtml) return;
+					editor.view.dispatch(
+						editor.view.state.tr.setNodeMarkup(pos, undefined, { html: next }),
+					);
+				});
+
+				inspector.replaceChildren(heading, list, dismiss);
+			};
+
+			const updateWarning = () => {
+				lastSegments = detectHiddenContent(lastHtml);
+				const acked = isHiddenContentAcknowledged(lastHtml);
+				if (lastSegments.length === 0 || acked) {
+					warning.hidden = true;
+					inspector.hidden = true;
+					wrapper.classList.remove('html-block--has-hidden');
+					return;
+				}
+				warning.textContent = `⚠ ${lastSegments.length} hidden segment${lastSegments.length === 1 ? '' : 's'} — click to inspect`;
+				warning.hidden = false;
+				wrapper.classList.add('html-block--has-hidden');
+			};
 
 			const renderPreview = () => {
 				if (!lastHtml.trim()) {
@@ -234,8 +321,16 @@ export const HtmlBlock = Node.create({
 				} else {
 					preview.innerHTML = sanitizeHtmlBlock(lastHtml);
 				}
+				updateWarning();
+				renderInspector();
 			};
 			renderPreview();
+
+			warning.addEventListener('click', (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				inspector.hidden = !inspector.hidden;
+			});
 
 			function flipToSource() {
 				if (mode === 'source') return;
