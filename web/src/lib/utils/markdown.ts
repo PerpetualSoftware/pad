@@ -160,6 +160,109 @@ export function sanitizeMarkdownHtml(html: string): string {
 	});
 }
 
+// HTML block allowlist. Permits everything markdown allows plus structural
+// elements (section/article/figure/etc.), media (iframe/video/audio), and
+// inline `style`. Used only by `sanitizeHtmlBlock` — the markdown surface
+// (comments + rendered item bodies) keeps the tighter allowlist above.
+const HTML_BLOCK_ALLOWED_TAGS = [
+	...MARKDOWN_ALLOWED_TAGS,
+	'iframe',
+	'section', 'article', 'aside', 'header', 'footer', 'main', 'nav',
+	'figure', 'figcaption', 'picture', 'source',
+	'video', 'audio'
+] as const;
+
+// Additional attributes for HTML blocks. Inline `style` is permitted here
+// (intentionally — styled callouts, custom typography, embed wrappers are
+// the whole point of HTML blocks). Media + iframe attributes cover the
+// embed allowlist hosts. DOMPurify's URL filter still strips javascript:
+// from any href/src.
+const HTML_BLOCK_ALLOWED_ATTR = [
+	...MARKDOWN_ALLOWED_ATTR,
+	'style',
+	// iframe attributes
+	'frameborder', 'allow', 'allowfullscreen', 'loading', 'referrerpolicy', 'sandbox',
+	// media attributes (autoplay deliberately omitted — embedded autoplay
+	// is hostile to the reader and the embed hosts handle it via their own
+	// query parameters when intentional)
+	'controls', 'loop', 'muted', 'playsinline', 'poster', 'preload'
+] as const;
+
+/**
+ * iframe `src` allowlist — only iframes pointing at one of these embed
+ * hosts survive sanitization. Adding a new host = one PR amending this
+ * array + a test case. Keep it small.
+ *
+ * The leading `^https:` is intentional: http: embeds are rejected (no
+ * mixed-content for embeds), and the host literals match the canonical
+ * embed URLs each provider documents.
+ */
+const IFRAME_HOST_ALLOWLIST: readonly RegExp[] = [
+	/^https:\/\/(www\.)?youtube(-nocookie)?\.com\/embed\//,
+	/^https:\/\/player\.vimeo\.com\/video\//,
+	/^https:\/\/(www\.)?loom\.com\/embed\//,
+	/^https:\/\/codesandbox\.io\/embed\//
+];
+
+/**
+ * Returns true iff `src` matches one of the {@link IFRAME_HOST_ALLOWLIST}
+ * regexes. Trims whitespace; case sensitivity is delegated to each regex
+ * (currently all anchored to lowercase `https://`, matching DOMPurify's
+ * URL normalization).
+ */
+export function isAllowedIframeSrc(src: string): boolean {
+	const trimmed = src.trim();
+	return IFRAME_HOST_ALLOWLIST.some(re => re.test(trimmed));
+}
+
+/**
+ * Sanitize raw HTML for rendering inside an HTML block node. Different
+ * from `sanitizeMarkdownHtml`: permits iframes (allowlisted hosts only),
+ * inline `style`, and additional structural/media tags. Strips scripts,
+ * inline event handlers, javascript:/data: URLs, and any iframe whose
+ * `src` fails {@link isAllowedIframeSrc}.
+ *
+ * SSR-safe: returns "" when `window` is undefined, mirroring
+ * `sanitizeMarkdownHtml`.
+ *
+ * Storage is NOT modified — sanitization is render-time only. The user's
+ * raw HTML stays in the editor's node attrs so they can inspect/edit
+ * exactly what they typed (including content this function strips).
+ */
+export function sanitizeHtmlBlock(html: string): string {
+	if (typeof window === 'undefined') return '';
+	// DOMPurify's tag allowlist accepts iframes here, but we need a host
+	// allowlist on top — that lives in this hook. Synchronous sanitize +
+	// try/finally cleanup means the hook never leaks across calls (and
+	// JavaScript's single-threaded execution rules out interleaving with
+	// concurrent sanitizeMarkdownHtml calls).
+	// DOMPurify's UponSanitizeElementHook signature widens currentNode to
+	// Node (not Element) since text/comment nodes also pass through. We
+	// only act on iframes — narrow safely via nodeName before touching
+	// attribute APIs.
+	const hook = (currentNode: Node) => {
+		if (currentNode.nodeName === 'IFRAME') {
+			const el = currentNode as Element;
+			const src = el.getAttribute('src') ?? '';
+			if (!isAllowedIframeSrc(src)) {
+				el.parentNode?.removeChild(el);
+			}
+		}
+	};
+	DOMPurify.addHook('uponSanitizeElement', hook);
+	try {
+		return DOMPurify.sanitize(html, {
+			ALLOWED_TAGS: [...HTML_BLOCK_ALLOWED_TAGS],
+			ALLOWED_ATTR: [...HTML_BLOCK_ALLOWED_ATTR],
+			ALLOW_DATA_ATTR: false,
+			ADD_ATTR: ['target'],
+			ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+		});
+	} finally {
+		DOMPurify.removeHook('uponSanitizeElement');
+	}
+}
+
 /**
  * Escape HTML-significant characters so a user-controlled string can be
  * safely interpolated into attribute values / text nodes.
