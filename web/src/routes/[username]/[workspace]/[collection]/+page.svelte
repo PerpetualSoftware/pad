@@ -290,7 +290,7 @@
 				case 'item_archived':
 				case 'item_restored': {
 					try {
-						items = await api.items.listByCollection(ws, coll);
+						items = await fetchSkinnyItems(ws, coll, false);
 					} catch {
 						// Ignore fetch errors — will retry on next event
 					}
@@ -298,7 +298,7 @@
 				}
 				case 'item_updated': {
 					try {
-						items = await api.items.listByCollection(ws, coll);
+						items = await fetchSkinnyItems(ws, coll, false);
 					} catch {
 						// Ignore fetch errors
 					}
@@ -357,8 +357,7 @@
 
 			// Full refresh fallback
 			try {
-				const listParams = showArchived ? { include_archived: true } : undefined;
-				const freshItems = await api.items.listByCollection(wsSlug, collSlug, listParams);
+				const freshItems = await fetchSkinnyItems(wsSlug, collSlug, showArchived);
 				items = freshItems;
 				await refreshProgress(wsSlug, collSlug, freshItems);
 				syncService.markSynced(); // Advance cursor now that reload succeeded
@@ -381,6 +380,27 @@
 			scrollRestoreRAF = undefined;
 		}
 	});
+
+	/**
+	 * Fetch a collection's items via the skinny /items-index endpoint
+	 * (TASK-1349 / PLAN-1343 Phase 1). The endpoint omits the rich-text
+	 * `content` body, which is the bulk of an item's wire size and is
+	 * only needed when the user opens the detail page.
+	 *
+	 * The result is widened to `Item[]` by setting `content: ''` on
+	 * every row. This satisfies the existing type contract — view
+	 * components and progress code already treat empty content as
+	 * "nothing to compute" — without leaking a custom skinny type
+	 * through the whole call graph. The detail-page fetch still
+	 * returns full items, so opening any item rehydrates `content`.
+	 */
+	async function fetchSkinnyItems(ws: string, coll: string, includeArchived: boolean): Promise<Item[]> {
+		const resp = await api.items.listIndex(ws, {
+			collection: coll,
+			includeArchived,
+		});
+		return resp.items.map((row) => ({ ...row, content: '' }));
+	}
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
 		if (coll === 'plans') {
@@ -406,10 +426,9 @@
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		loading = true;
 		try {
-			const listParams = includeArchived ? { include_archived: true } : undefined;
 			const [collData, itemsData, viewsData, membersData] = await Promise.all([
 				api.collections.get(ws, coll),
-				api.items.listByCollection(ws, coll, listParams),
+				fetchSkinnyItems(ws, coll, includeArchived),
 				api.views.list(ws, coll).catch(() => [] as View[]),
 				api.members.list(ws).catch(() => ({ members: [], invitations: [] }))
 			]);
@@ -433,7 +452,14 @@
 					itemProgress = {};
 				}
 			} else {
-				// Compute checklist progress from item content (markdown checkboxes)
+				// Non-plans collections used to compute progress from
+				// item.content markdown checkboxes. The skinny /items-index
+				// endpoint doesn't return `content`, so this branch produces
+				// no progress entries (the loop below short-circuits on the
+				// empty content set by `fetchSkinnyItems`). Re-introducing
+				// the feature requires either server-side progress
+				// computation or a separate lazy fetch — captured as a
+				// follow-up rather than blocking TASK-1349's bandwidth win.
 				const map: Record<string, { total: number; done: number }> = {};
 				for (const it of itemsData) {
 					if (!it.content) continue;
@@ -449,7 +475,7 @@
 			// Fetch plan names for relation display on task cards
 			if (coll === 'tasks') {
 				try {
-					const plans = await api.items.listByCollection(ws, 'plans');
+					const plans = await fetchSkinnyItems(ws, 'plans', false);
 					const labels: Record<string, string> = {};
 					for (const p of plans) {
 						labels[p.id] = p.title;
