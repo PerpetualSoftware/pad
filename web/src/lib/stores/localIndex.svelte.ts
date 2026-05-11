@@ -230,7 +230,19 @@ export const localIndex = {
 		// namespace. Pass null explicitly for pre-auth / public-share
 		// flows. Codex P? (round 4) caught the leak risk.
 		state.userId = opts.userId;
-		state.bootstrapState = 'loading';
+		// Capture reentry BEFORE flipping bootstrapState to 'loading'
+		// — otherwise the `state.bootstrapState === 'ready'` check
+		// below always reads false and the warm IDB hydrate runs again
+		// on a pendingResync retry. That's bad because IDB writes are
+		// fire-and-forget; re-reading rows whose RAM copy was just
+		// removed but whose IDB delete hasn't landed would resurrect
+		// them. Codex P2 round 7.
+		const reentry =
+			state.bootstrapState === 'ready' && state.pendingResync;
+		// Only flip to 'loading' for first-time bootstrap. A reentry
+		// keeps state='ready' throughout so the UI never blanks while
+		// retrying the reconcile.
+		if (!reentry) state.bootstrapState = 'loading';
 		// Capture the generation at start. If `reset()` runs during
 		// any await below, generation bumps; we then bail out before
 		// re-applying rows or writing the snapshot back, otherwise
@@ -239,13 +251,18 @@ export const localIndex = {
 		const userId = state.userId;
 		const isStale = () => state.generation !== bootstrapGen;
 
-		const p = (async () => {
+		// `slot.p` holds the in-flight promise so the IIFE body's
+		// `finally` can do an identity check against it — see Codex
+		// round 7 P2. We need a level of indirection (the object)
+		// because a bare `const p = ...` puts `p` in the TDZ when the
+		// suspended async body resumes and references it.
+		const slot: { p: Promise<void> | null } = { p: null };
+		slot.p = (async () => {
 			try {
 				// Stage 1: warm path. Always try IDB first. Skip
-				// re-hydration when state is already 'ready' (re-entry
-				// from a `pendingResync` retry); we just need to redo
-				// the reconcile.
-				const reentry = state.bootstrapState === 'ready';
+				// re-hydration when this is a `pendingResync` retry —
+				// the in-RAM state is already authoritative for this
+				// session; we just need to redo the reconcile.
 				const cached = reentry
 					? { items: [], cursor: state.cursor }
 					: await persistHydrate(userId, ws);
@@ -373,11 +390,18 @@ export const localIndex = {
 				state.bootstrapState = 'error';
 				throw err;
 			} finally {
-				inflight.delete(ws);
+				// Identity-checked cleanup: only clear inflight if
+				// THIS promise is the registered one. After a
+				// `reset()` mid-bootstrap, a fresh bootstrap call can
+				// re-occupy the slot before this stale promise's
+				// `finally` runs; deleting unconditionally would
+				// remove the new entry and let a duplicate bootstrap
+				// start (Codex P2 round 7).
+				if (slot.p && inflight.get(ws) === slot.p) inflight.delete(ws);
 			}
 		})();
-		inflight.set(ws, p);
-		return p;
+		inflight.set(ws, slot.p);
+		return slot.p;
 	},
 
 	/**
