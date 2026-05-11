@@ -43,6 +43,16 @@ type Item struct {
 	// Auto-assigned sequential number within collection
 	ItemNumber *int `json:"item_number,omitempty"`
 
+	// Seq is a workspace-scoped monotonically-increasing sequence number
+	// stamped on every mutation (create / update / soft-delete /
+	// restore). It is the cursor mechanic for the local-first read
+	// model's delta sync (PLAN-1343, DOC-1342 design decision #1).
+	// Clients track the max seq they have seen and request
+	// `?since=<seq>` deltas to resume. Robust against clock-skew /
+	// same-millisecond-write / NTP-step correctness holes that an
+	// `updated_at` watermark would carry.
+	Seq int64 `json:"seq,omitempty"`
+
 	// Populated by joins (not stored)
 	AssignedUserName  string `json:"assigned_user_name,omitempty"`
 	AssignedUserEmail string `json:"assigned_user_email,omitempty"`

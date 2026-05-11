@@ -98,7 +98,7 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')

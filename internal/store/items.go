@@ -61,6 +61,36 @@ func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agen
 // concurrent insert claims the same workspace-global item_number.
 const maxItemNumberRetries = 10
 
+// nextWorkspaceSeqSubquery is the SQL fragment used to atomically compute
+// the next workspace-scoped `seq` value inside an INSERT / UPDATE.
+// Every items mutation (create / update / soft-delete / restore) stamps
+// the new row's seq with `MAX(seq) + 1 WHERE workspace_id = ?`, which is
+// the cursor mechanic for the local-first read model's delta sync
+// (PLAN-1343 / DOC-1342 decision #1).
+//
+// Callers must append exactly one `workspaceID` arg for this fragment.
+// SQLite is single-writer so the read-modify-write is naturally
+// serialized; Postgres callers must additionally hold the workspace
+// advisory lock acquired via acquireWorkspaceSeqLock so concurrent
+// writes can't both read the same MAX(seq) and produce duplicates.
+const nextWorkspaceSeqSubquery = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM items WHERE workspace_id = ?)"
+
+// acquireWorkspaceSeqLock takes a Postgres advisory transaction lock
+// keyed on the workspace ID so concurrent seq-bumping mutations
+// serialize. The lock auto-releases on COMMIT / ROLLBACK. On SQLite
+// the single-writer rule already serializes writes, so this is a
+// no-op there. Mirrors the existing advisory-lock pattern in
+// tryCreateItem (which uses the same key for item_number assignment).
+func (s *Store) acquireWorkspaceSeqLock(tx *sql.Tx, workspaceID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext($1))", workspaceID); err != nil {
+		return fmt.Errorf("acquire workspace seq lock: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	// Validate assignment scope before writing
 	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
@@ -154,17 +184,20 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		contentFlushedAt = ts
 		contentFlushedOpLogID = int64(0)
 	}
+	// The workspace advisory lock acquired above for item_number
+	// assignment ALSO serializes the seq subquery below — both read
+	// MAX(...) per workspace and would otherwise race in Postgres.
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
-		                   content_flushed_at, content_flushed_op_log_id)
+		                   content_flushed_at, content_flushed_op_log_id, seq)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
-		        ?, ?, ?, ?)
+		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
-		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID)
+		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -205,7 +238,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -219,7 +252,7 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 		&item.AssignedUserName, &item.AssignedUserEmail,
 		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -346,7 +379,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+			       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
 			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -360,7 +393,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			&item.Content, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-			&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -458,7 +491,7 @@ func (s *Store) GetItemIncludeDeleted(id string) (*models.Item, error) {
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -472,7 +505,7 @@ func (s *Store) GetItemIncludeDeleted(id string) (*models.Item, error) {
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 		&item.AssignedUserName, &item.AssignedUserEmail,
 		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -504,7 +537,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at, i.deleted_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -518,7 +551,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-		&item.ItemNumber, &createdAt, &updatedAt, &deletedAt,
+		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 		&item.AssignedUserName, &item.AssignedUserEmail,
 		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -558,7 +591,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -721,7 +754,7 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -872,7 +905,7 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 			&item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-			&item.ItemNumber, &createdAt, &updatedAt,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -902,7 +935,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.created_at, i.updated_at,
+			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
 			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -928,7 +961,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.created_at, i.updated_at,
+			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
 			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -1080,6 +1113,12 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	}
 	defer tx.Rollback()
 
+	// Serialize concurrent seq assignments per workspace on Postgres
+	// (no-op on SQLite). Held until COMMIT / ROLLBACK.
+	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+		return nil, err
+	}
+
 	ts := now()
 
 	// Create version if content is changing
@@ -1128,9 +1167,11 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		}
 	}
 
-	// Build update query
-	sets := []string{"updated_at = ?"}
-	args := []interface{}{ts}
+	// Build update query. Every mutation bumps seq to MAX(seq)+1 per
+	// workspace; the local-first read model uses that as a cursor (see
+	// nextWorkspaceSeqSubquery / PLAN-1343).
+	sets := []string{"updated_at = ?", "seq = " + nextWorkspaceSeqSubquery}
+	args := []interface{}{ts, existing.WorkspaceID}
 
 	if input.Title != nil {
 		sets = append(sets, "title = ?")
@@ -1262,12 +1303,39 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	return s.GetItem(id)
 }
 
+// DeleteItem soft-deletes the item by stamping deleted_at and bumping
+// the workspace-scoped seq so delta-sync clients see the tombstone.
+// The seq bump uses the same MAX(seq)+1 subquery the other mutations
+// rely on; the advisory lock keeps concurrent Postgres writes from
+// racing on it.
 func (s *Store) DeleteItem(id string) error {
+	// Look up the workspace before the write so we can key the
+	// advisory lock and the seq subquery. The lookup tolerates
+	// already-deleted items (we still need to short-circuit cleanly
+	// in that case) by reading the include-deleted variant.
+	existing, err := s.GetItemIncludeDeleted(id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return sql.ErrNoRows
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+		return err
+	}
+
 	ts := now()
-	result, err := s.db.Exec(s.q(`
-		UPDATE items SET deleted_at = ?, updated_at = ?
+	result, err := tx.Exec(s.q(`
+		UPDATE items SET deleted_at = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL
-	`), ts, ts, id)
+	`), ts, ts, existing.WorkspaceID, id)
 	if err != nil {
 		return fmt.Errorf("delete item: %w", err)
 	}
@@ -1275,21 +1343,45 @@ func (s *Store) DeleteItem(id string) error {
 	if rows == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
+// RestoreItem un-archives a soft-deleted item and bumps the
+// workspace-scoped seq so delta-sync clients re-materialize the row.
+// Same lock + subquery shape as DeleteItem.
 func (s *Store) RestoreItem(id string) (*models.Item, error) {
+	existing, err := s.GetItemIncludeDeleted(id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, sql.ErrNoRows
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+		return nil, err
+	}
+
 	ts := now()
-	result, err := s.db.Exec(s.q(`
-		UPDATE items SET deleted_at = NULL, updated_at = ?
+	result, err := tx.Exec(s.q(`
+		UPDATE items SET deleted_at = NULL, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NOT NULL
-	`), ts, id)
+	`), ts, existing.WorkspaceID, id)
 	if err != nil {
 		return nil, fmt.Errorf("restore item: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.GetItem(id)
 }
@@ -1315,7 +1407,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.created_at, i.updated_at,
+			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
 			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
@@ -1343,7 +1435,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.created_at, i.updated_at,
+			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
 			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
@@ -1389,7 +1481,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
 			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
-			&r.Item.Source, &r.Item.ItemNumber, &createdAt, &updatedAt,
+			&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
 			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
 			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
@@ -2006,7 +2098,7 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -2272,7 +2364,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 			&item.Content, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-			&item.ItemNumber, &createdAt, &updatedAt,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -2305,7 +2397,7 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')

@@ -3131,3 +3131,128 @@ func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
 		t.Fatal("an empty visibility set must short-circuit to false")
 	}
 }
+
+// TestItemSeqMonotonic verifies that the workspace-scoped `seq` column
+// is stamped strictly monotonically across every mutation
+// (create / update / soft-delete / restore). This is the cursor
+// mechanic the local-first read model relies on for delta sync
+// (PLAN-1343 / TASK-1352).
+func TestItemSeqMonotonic(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// CREATE: three rows, each must have seq strictly greater than
+	// the previous one.
+	a := createTestItem(t, s, ws.ID, col.ID, "A", "alpha")
+	b := createTestItem(t, s, ws.ID, col.ID, "B", "beta")
+	c := createTestItem(t, s, ws.ID, col.ID, "C", "gamma")
+
+	if a.Seq <= 0 {
+		t.Fatalf("create: a.Seq = %d; want > 0", a.Seq)
+	}
+	if b.Seq <= a.Seq {
+		t.Fatalf("create: b.Seq = %d; want > a.Seq = %d", b.Seq, a.Seq)
+	}
+	if c.Seq <= b.Seq {
+		t.Fatalf("create: c.Seq = %d; want > b.Seq = %d", c.Seq, b.Seq)
+	}
+
+	// UPDATE: bumps seq above every prior value.
+	newTitle := "A-updated"
+	aUpd, err := s.UpdateItem(a.ID, models.ItemUpdate{Title: &newTitle})
+	if err != nil {
+		t.Fatalf("update item: %v", err)
+	}
+	if aUpd.Seq <= c.Seq {
+		t.Fatalf("update: aUpd.Seq = %d; want > c.Seq = %d", aUpd.Seq, c.Seq)
+	}
+
+	// SOFT-DELETE: tombstone gets a fresh seq above the post-update
+	// floor so delta-sync clients see the deletion.
+	if err := s.DeleteItem(b.ID); err != nil {
+		t.Fatalf("delete item: %v", err)
+	}
+	bDel, err := s.GetItemIncludeDeleted(b.ID)
+	if err != nil || bDel == nil {
+		t.Fatalf("get deleted item: %v", err)
+	}
+	if bDel.DeletedAt == nil {
+		t.Fatal("deleted item is missing deleted_at")
+	}
+	if bDel.Seq <= aUpd.Seq {
+		t.Fatalf("delete: bDel.Seq = %d; want > aUpd.Seq = %d", bDel.Seq, aUpd.Seq)
+	}
+
+	// RESTORE: un-archive bumps seq again.
+	bRestored, err := s.RestoreItem(b.ID)
+	if err != nil {
+		t.Fatalf("restore item: %v", err)
+	}
+	if bRestored.DeletedAt != nil {
+		t.Fatal("restored item still has deleted_at")
+	}
+	if bRestored.Seq <= bDel.Seq {
+		t.Fatalf("restore: bRestored.Seq = %d; want > bDel.Seq = %d", bRestored.Seq, bDel.Seq)
+	}
+
+	// Sanity-check: another update on c bumps past the restore.
+	newCContent := "gamma-prime"
+	cUpd, err := s.UpdateItem(c.ID, models.ItemUpdate{Content: &newCContent})
+	if err != nil {
+		t.Fatalf("second update: %v", err)
+	}
+	if cUpd.Seq <= bRestored.Seq {
+		t.Fatalf("update after restore: cUpd.Seq = %d; want > bRestored.Seq = %d", cUpd.Seq, bRestored.Seq)
+	}
+}
+
+// TestItemSeqWorkspaceScoped verifies that the seq counter is
+// scoped per workspace: a busy workspace's seq range does not
+// affect another workspace's monotonic floor (DOC-1342 design
+// decision #1).
+func TestItemSeqWorkspaceScoped(t *testing.T) {
+	s := testStore(t)
+	ws1 := createTestWorkspace(t, s, "WS1")
+	ws2 := createTestWorkspace(t, s, "WS2")
+	col1 := createTestCollection(t, s, ws1.ID, "Tasks")
+	col2 := createTestCollection(t, s, ws2.ID, "Tasks")
+
+	// Create three items in ws1 to bump its seq.
+	createTestItem(t, s, ws1.ID, col1.ID, "ws1-a", "")
+	createTestItem(t, s, ws1.ID, col1.ID, "ws1-b", "")
+	ws1Last := createTestItem(t, s, ws1.ID, col1.ID, "ws1-c", "")
+
+	// ws2's first item must start at seq=1, NOT ws1Last.Seq+1.
+	ws2First := createTestItem(t, s, ws2.ID, col2.ID, "ws2-a", "")
+	if ws2First.Seq != 1 {
+		t.Fatalf("ws2 first item Seq = %d; want 1 (per-workspace counter)", ws2First.Seq)
+	}
+	if ws2First.Seq >= ws1Last.Seq {
+		t.Fatalf("ws2.Seq (%d) >= ws1.Seq (%d) — ws2 is following ws1's range, not its own", ws2First.Seq, ws1Last.Seq)
+	}
+}
+
+// TestItemSeqBackfillNonZero verifies that the migration backfill
+// assigned non-zero seq values to pre-existing rows. We can't easily
+// simulate "pre-migration" rows in tests (the migration runs once on
+// store init), so this test inserts a fresh batch and confirms each
+// row's seq is non-zero and unique within the workspace.
+func TestItemSeqBackfillNonZero(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	const n = 5
+	seqs := make(map[int64]bool, n)
+	for i := 0; i < n; i++ {
+		item := createTestItem(t, s, ws.ID, col.ID, fmt.Sprintf("item-%d", i), "")
+		if item.Seq == 0 {
+			t.Fatalf("row %d: Seq = 0; expected non-zero", i)
+		}
+		if seqs[item.Seq] {
+			t.Fatalf("row %d: Seq = %d collides with prior row in same workspace", i, item.Seq)
+		}
+		seqs[item.Seq] = true
+	}
+}

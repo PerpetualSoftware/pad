@@ -226,12 +226,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 
 		nextItemNumber++
+		// Stamp `seq` so workspace import populates the delta-sync cursor
+		// column (PLAN-1343 / TASK-1352). Each INSERT reads MAX(seq)+1
+		// within this transaction, so imported rows get sequential
+		// per-workspace seqs — clients post-import see them on the next
+		// /items-index fetch, and any subsequent mutation keeps bumping
+		// from a sensible floor instead of a flat MAX(seq)=0.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
 			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, nextItemNumber,
-			it.CreatedAt, it.UpdatedAt)
+			it.CreatedAt, it.UpdatedAt, ws.ID)
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
