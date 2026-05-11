@@ -366,17 +366,13 @@
 	onMount(() => {
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
-			if (result.type === 'caught_up') return;
 
-			// Both 'incremental' (sync via /changes) and 'full_refresh'
-			// (long absence / error) now route through the same
-			// localIndex delta path: pull /items-changes since the
-			// store's current cursor and applyDelta. The /changes
-			// payload from syncService is the legacy
-			// updated_at-watermark API; the local store is canonical
-			// over the seq-cursor /items-changes endpoint, so we read
-			// directly from there. The local index's per-row seq
-			// guards make this idempotent even when SSE + sync race.
+			// Always run deltaSync, even for `caught_up` — SSE
+			// delivers events, not delta data, and a previous
+			// deltaSync failure (Codex P2 round 2) won't recover
+			// without a fresh fetch attempt. The localIndex cursor is
+			// independent of syncService.lastSyncTime, and per-row
+			// seq guards make repeated calls idempotent.
 			const ok = await deltaSync(wsSlug);
 			await refreshProgress(wsSlug, collSlug, items);
 			if (ok && result.type === 'full_refresh') {
@@ -922,15 +918,23 @@
 			for (const item of itemsToArchive) {
 				await api.items.delete(wsSlug, item.id);
 			}
-			// /items-changes will pick up the soft-delete tombstones and
-			// applyDelta will mark them archived in the local index. We
-			// could trigger an explicit deltaSync here for snappier
-			// feedback, but SSE typically fires within ~50ms and the
-			// derived `items` view picks up the change automatically
-			// when /items-changes lands. Refresh the cache eagerly so
-			// the archive toggle hides them without an extra round-trip.
-			await deltaSync(wsSlug);
-			toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+			// Server-side delete succeeded; pull the soft-delete
+			// tombstones into the local index. Gate the success
+			// toast on a successful deltaSync so the user sees the
+			// rows actually disappear from the view (Codex P3 round 2
+			// of TASK-1357). On deltaSync failure the deletes are
+			// still real server-side — SSE catches the cache up — but
+			// we surface a softer "queued" message so the user knows
+			// the UI hasn't reflected it yet.
+			const ok = await deltaSync(wsSlug);
+			if (ok) {
+				toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+			} else {
+				toastStore.show(
+					`Archived ${count} item${count !== 1 ? 's' : ''} (updating…)`,
+					'success',
+				);
+			}
 		} catch {
 			toastStore.show('Failed to archive some items', 'error');
 		}
