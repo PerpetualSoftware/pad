@@ -468,6 +468,31 @@
 		-webkit-touch-callout: none;
 		-webkit-user-select: none;
 		user-select: none;
+		/*
+		 * Virtualization (TASK-1347 / PLAN-1343 Phase 1) — mirrors the
+		 * approach landed for ListView in TASK-1346. The browser skips
+		 * layout, style, and paint work for off-screen cards while
+		 * leaving every wrapper mounted, so:
+		 *   - svelte-dnd-action keeps every drop target in the tree
+		 *     (drag-between-columns + drop-into-collapsed-section both
+		 *     rely on the wrapper being present for hit-testing)
+		 *   - column horizontal scroll + column reorder operate on
+		 *     `.kanban-column`, which is unaffected by per-card paint
+		 *     skipping
+		 *   - keyboard focus on an off-screen card still finds the node
+		 *     via querySelector and scrollIntoView rehydrates paint
+		 *
+		 * `.column-cards` is the scrolling ancestor here (overflow-y:
+		 * auto), so content-visibility's near-viewport check uses the
+		 * column as its frame — exactly what per-column virtualization
+		 * needs. `contain-intrinsic-size: auto 80px` is slightly taller
+		 * than the ListView placeholder because board cards render in
+		 * compact mode with status + tags stacked, and the `auto`
+		 * keyword caches the real measured height after first paint so
+		 * later scrolls back to that card don't reflow.
+		 */
+		content-visibility: auto;
+		contain-intrinsic-size: auto 80px;
 	}
 
 	.card-wrapper:active {
