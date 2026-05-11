@@ -40,11 +40,30 @@
 // `api.items.create` / `update`) cannot accidentally leak the rich
 // body into the local index.
 //
-// All operations except `bootstrap` are synchronous — readers don't
-// `await`, they just read.
+// All read operations are synchronous — consumers don't `await`,
+// they just read. `bootstrap` is async because it may hit IDB and
+// the network; mutation methods (`upsert`, `applyDelta`, `remove`)
+// are synchronous from the caller's perspective and write through
+// to IDB in the background (fire-and-forget, never throwing — see
+// `localIndexPersistence`).
+//
+// IDB persistence (TASK-1356): on bootstrap, hydrate from IDB FIRST
+// for an immediate paint, then call `/items-changes?since=<idb-cursor>`
+// to reconcile. On cache miss (IDB empty / unavailable), fall through
+// to the cold-path `/items-index` fetch. Every mutation writes through
+// to IDB so a reload picks up the latest state without a network
+// round-trip. Storage failures are silently swallowed — the store
+// keeps working in-memory.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/client';
+import {
+	hydrate as persistHydrate,
+	persistCursor,
+	persistRemovals,
+	persistUpserts,
+	wipe as persistWipe,
+} from './localIndexPersistence';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
@@ -106,25 +125,57 @@ function cursorAsNum(c: string): number {
 	return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Apply a single row to a workspace's items map with the per-row
+ * seq guard. Used by `bootstrap` (both warm and cold paths) and
+ * `upsert`/`applyDelta` indirectly via the existing inline logic.
+ * Returns true if the row was written, false if it was skipped as
+ * stale.
+ */
+function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
+	const next = toSkinny(row);
+	const existing = state.items.get(next.id);
+	if (
+		existing?.seq !== undefined &&
+		next.seq !== undefined &&
+		next.seq <= existing.seq
+	) {
+		return false;
+	}
+	state.items.set(next.id, next);
+	return true;
+}
+
 export const localIndex = {
 	/**
-	 * Hydrate a workspace from `/items-index`. Idempotent: returns the
-	 * same in-flight promise if already loading; resolves immediately
-	 * if already `ready`. On error the state flips to `'error'` and
-	 * the caller can retry by calling `bootstrap` again — the next
-	 * call sees `bootstrapState === 'error'` and proceeds. Archived
-	 * items are included in the snapshot (the store is the canonical
-	 * read model for both live and archived rows; consumers filter
-	 * via `{ includeArchived }`).
+	 * Hydrate a workspace. Idempotent: returns the same in-flight
+	 * promise if already loading; resolves immediately if already
+	 * `'ready'`. On error the state flips to `'error'` and the caller
+	 * can retry by calling `bootstrap` again. Archived items are
+	 * included (the store is the canonical read model for both live
+	 * and archived rows; consumers filter via `{ includeArchived }`).
 	 *
-	 * Merge, don't clear. An optimistic `upsert()` or an SSE-driven
-	 * write can land while the /items-index request is in flight; if
-	 * we cleared and replaced, we'd silently regress those rows to
-	 * the older snapshot value (Codex P2 round 3). Instead, we
-	 * MERGE each response row through the same per-row seq guard
-	 * `upsert` uses, and the cursor only advances forward. The
-	 * cleared-state semantic isn't needed in practice because
-	 * `reset()` is the explicit "drop everything" entry point.
+	 * Two-stage flow (TASK-1356):
+	 *
+	 *   1. WARM PATH — hydrate from IDB. If the cache is populated,
+	 *      copy rows into the in-RAM store, set the cursor from the
+	 *      meta row, and flip `bootstrapState` to `'ready'` *before*
+	 *      any network IO. The UI paints instantly. Then kick off
+	 *      `/items-changes?since=<cursor>` in the background and
+	 *      apply the deltas via `applyDelta` (which write-throughs to
+	 *      IDB on its own). A failed delta-sync doesn't move state
+	 *      back to `'loading'` — the UI keeps working off the cached
+	 *      data and the next reconnect retries.
+	 *
+	 *   2. COLD PATH — IDB miss / unavailable. Fall through to the
+	 *      classic `/items-index` snapshot, then write the result to
+	 *      IDB so the next visit is warm.
+	 *
+	 * Merge-not-clear semantics are preserved: in either path, rows
+	 * are MERGED through the same per-row seq guard `upsert` uses,
+	 * and the cursor only advances forward. An optimistic `upsert()`
+	 * or SSE write that landed while bootstrap was in flight is
+	 * never regressed.
 	 */
 	async bootstrap(ws: string): Promise<void> {
 		const state = ensureState(ws);
@@ -135,27 +186,52 @@ export const localIndex = {
 		state.bootstrapState = 'loading';
 		const p = (async () => {
 			try {
-				const resp = await api.items.listIndex(ws, { includeArchived: true });
-				for (const row of resp.items) {
-					const next = toSkinny(row);
-					const existing = state.items.get(row.id);
-					if (
-						existing?.seq !== undefined &&
-						next.seq !== undefined &&
-						next.seq <= existing.seq
-					) {
-						continue;
+				// Stage 1: warm path. Always try IDB first.
+				const cached = await persistHydrate(ws);
+				const hasCache = cached.items.length > 0;
+				if (hasCache) {
+					for (const row of cached.items) {
+						mergeRow(state, row);
 					}
-					state.items.set(row.id, next);
+					if (cursorAsNum(cached.cursor) > cursorAsNum(state.cursor)) {
+						state.cursor = cached.cursor;
+					}
+					// Flip to ready immediately — the UI paints from
+					// the cache while delta-sync runs.
+					state.bootstrapState = 'ready';
 				}
-				// Cursor moves forward only. A fresh /items-index can
-				// occasionally return a cursor below the in-RAM one
-				// (e.g. an SSE delta advanced it during the request);
-				// don't backslide.
-				if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
-					state.cursor = resp.cursor;
+
+				if (hasCache) {
+					// Reconcile cache against server via /items-changes.
+					// Errors here are non-fatal — the cache is the
+					// floor and the next reconnect retries.
+					try {
+						const delta = await api.items.changes(ws, state.cursor);
+						if (delta.changes.length > 0 || delta.cursor !== state.cursor) {
+							localIndex.applyDelta(ws, delta.changes, delta.cursor);
+						}
+					} catch {
+						/* swallow — cache stands, retry on reconnect */
+					}
+				} else {
+					// Stage 2: cold path. /items-index full snapshot.
+					const resp = await api.items.listIndex(ws, {
+						includeArchived: true,
+					});
+					for (const row of resp.items) {
+						mergeRow(state, row);
+					}
+					if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
+						state.cursor = resp.cursor;
+					}
+					state.bootstrapState = 'ready';
+					// Best-effort persist the cold snapshot to IDB so
+					// the next visit is warm.
+					persistUpserts(ws, resp.items.map(toSkinny)).catch(
+						() => undefined,
+					);
+					persistCursor(ws, state.cursor).catch(() => undefined);
 				}
-				state.bootstrapState = 'ready';
 			} catch (err) {
 				state.bootstrapState = 'error';
 				throw err;
@@ -253,6 +329,7 @@ export const localIndex = {
 		// Guard 1: whole-batch drop on non-advancing cursor.
 		if (newCursorNum <= startCursorNum) return;
 
+		const written: ItemIndexRow[] = [];
 		for (const change of changes) {
 			if (change.seq !== undefined) {
 				// Guard 2: row's seq vs. cursor floor.
@@ -274,10 +351,18 @@ export const localIndex = {
 			// only manages the seq-ordered identity of the row. Hard
 			// deletes (workspace GC / 403 purge) go through the
 			// `remove()` method, not through this batch path.
-			const { deleted: _d, ...row } = change;
-			state.items.set(change.id, toSkinny(row as ItemIndexRow));
+			const { deleted: _d, ...rest } = change;
+			const skinny = toSkinny(rest as ItemIndexRow);
+			state.items.set(change.id, skinny);
+			written.push(skinny);
 		}
 		state.cursor = newCursor;
+		// Write-through to IDB. Fire-and-forget; storage failures
+		// degrade to in-memory only and never break the read path.
+		if (written.length > 0) {
+			persistUpserts(ws, written).catch(() => undefined);
+		}
+		persistCursor(ws, newCursor).catch(() => undefined);
 	},
 
 	/**
@@ -307,6 +392,9 @@ export const localIndex = {
 			return;
 		}
 		state.items.set(row.id, next);
+		// Write-through to IDB. Fire-and-forget; storage failures
+		// degrade silently.
+		persistUpserts(ws, [next]).catch(() => undefined);
 	},
 
 	/**
@@ -318,6 +406,8 @@ export const localIndex = {
 		const state = workspaces.get(ws);
 		if (!state) return;
 		state.items.delete(id);
+		// Write-through hard-delete to IDB.
+		persistRemovals(ws, [id]).catch(() => undefined);
 	},
 
 	/** Current cursor for a workspace, or "0" if unhydrated. */
@@ -344,6 +434,10 @@ export const localIndex = {
 	reset(ws: string): void {
 		workspaces.delete(ws);
 		inflight.delete(ws);
+		// Drop the persisted cache too — the 403-purge / sign-out
+		// path uses this method, and leaving stale rows on disk
+		// would defeat the point. Fire-and-forget.
+		persistWipe(ws).catch(() => undefined);
 	},
 
 	/** Number of items currently held for a workspace. Test/debug aid. */
