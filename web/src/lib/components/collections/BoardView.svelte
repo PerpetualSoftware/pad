@@ -490,9 +490,24 @@
 		 * compact mode with status + tags stacked, and the `auto`
 		 * keyword caches the real measured height after first paint so
 		 * later scrolls back to that card don't reflow.
+		 *
+		 * ItemCard's `.pr-badge` protrudes 6px past the card's right
+		 * edge (right: -6px) and explicitly relies on overflow staying
+		 * visible. Per CSS Containment Module L2 §4 ("content-visibility"),
+		 * `content-visibility: auto` applies paint containment ONLY when
+		 * the element is "not relevant to the user" — i.e. off-screen,
+		 * when the badge isn't painted in any case. On-screen elements
+		 * receive only layout containment, which does not clip ink
+		 * overflow. We declare `overflow: visible` explicitly here both
+		 * as documentation of intent and as a defense against a future
+		 * style sweep that might add `overflow: hidden` to wrappers and
+		 * silently start clipping the badge. Codex round 1 [P2] on
+		 * PR #489 flagged this concern; the explicit declaration plus
+		 * the spec citation makes the contract auditable.
 		 */
 		content-visibility: auto;
 		contain-intrinsic-size: auto 80px;
+		overflow: visible;
 	}
 
 	.card-wrapper:active {
