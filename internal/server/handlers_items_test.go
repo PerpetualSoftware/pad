@@ -1602,6 +1602,258 @@ func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
 	}
 }
 
+// itemsChangesBody mirrors the server-side response wrapper for
+// /items-changes. Local to the test file so the public handler
+// doesn't need to export it. The Changes element embeds Item via
+// the same `models.Item + Deleted bool` shape.
+type itemsChangesBody struct {
+	Changes []struct {
+		models.Item
+		Deleted bool `json:"deleted"`
+	} `json:"changes"`
+	Cursor string `json:"cursor"`
+}
+
+// TestListItemsChanges_FullDeltaFromZero covers the foundational
+// behavior of the delta-fetch endpoint (TASK-1354): three creates,
+// `?since=0`, all three returned in ascending seq order, every row
+// `deleted:false`, cursor = max seq.
+func TestListItemsChanges_FullDeltaFromZero(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "A", "fields": `{"status":"open"}`})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "B", "fields": `{"status":"open"}`})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "C", "fields": `{"status":"open"}`})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=0", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-changes since=0: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsChangesBody
+	parseJSON(t, rr, &resp)
+
+	if len(resp.Changes) != 3 {
+		t.Fatalf("expected 3 changes, got %d", len(resp.Changes))
+	}
+	// Ascending seq order.
+	for i := 1; i < len(resp.Changes); i++ {
+		if resp.Changes[i].Seq <= resp.Changes[i-1].Seq {
+			t.Fatalf("changes not in ascending seq order: changes[%d].Seq=%d <= changes[%d].Seq=%d", i, resp.Changes[i].Seq, i-1, resp.Changes[i-1].Seq)
+		}
+		if resp.Changes[i].Deleted {
+			t.Fatalf("change[%d] unexpectedly marked deleted", i)
+		}
+	}
+	// Cursor == MAX(seq).
+	cursorSeq, err := strconv.ParseInt(resp.Cursor, 10, 64)
+	if err != nil {
+		t.Fatalf("cursor not decimal int: %q", resp.Cursor)
+	}
+	if cursorSeq != resp.Changes[len(resp.Changes)-1].Seq {
+		t.Fatalf("cursor (%d) should equal max seq in response (%d)", cursorSeq, resp.Changes[len(resp.Changes)-1].Seq)
+	}
+	// Skinny projection: no `content` body in the wire payload.
+	if bytes.Contains(rr.Body.Bytes(), []byte(`"content":"some long body"`)) {
+		t.Fatalf("changes response leaked content body: %s", rr.Body.String())
+	}
+}
+
+// TestListItemsChanges_IncrementalUpdateAndDelete walks the typical
+// resume flow: create three, snapshot cursor, update one, soft-delete
+// one. A poll at the snapshot cursor returns exactly those two rows
+// with `deleted` set correctly.
+func TestListItemsChanges_IncrementalUpdateAndDelete(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	a := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "A", "fields": `{"status":"open"}`})
+	b := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "B", "fields": `{"status":"open"}`})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "C", "fields": `{"status":"open"}`})
+
+	// Snapshot the cursor via /items-index after the three creates.
+	rrSnap := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	var snap itemsIndexBody
+	parseJSON(t, rrSnap, &snap)
+	since := snap.Cursor
+
+	// Update A's title.
+	newTitle := "A-updated"
+	rrU := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+a.Slug, map[string]interface{}{"title": newTitle})
+	if rrU.Code != http.StatusOK {
+		t.Fatalf("update A: expected 200, got %d: %s", rrU.Code, rrU.Body.String())
+	}
+
+	// Soft-delete B.
+	rrD := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+b.Slug, nil)
+	if rrD.Code != http.StatusNoContent {
+		t.Fatalf("delete B: expected 204, got %d: %s", rrD.Code, rrD.Body.String())
+	}
+
+	// Delta poll resumes from the snapshot cursor.
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since="+since, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-changes resume: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp itemsChangesBody
+	parseJSON(t, rr, &resp)
+
+	if len(resp.Changes) != 2 {
+		t.Fatalf("expected 2 changes (update + delete), got %d", len(resp.Changes))
+	}
+
+	// Find each by ID and check the deleted flag.
+	var seenA, seenB bool
+	for _, ch := range resp.Changes {
+		switch ch.ID {
+		case a.ID:
+			if ch.Deleted {
+				t.Errorf("A updated: expected deleted=false, got true")
+			}
+			if ch.Title != newTitle {
+				t.Errorf("A updated: expected title=%q, got %q", newTitle, ch.Title)
+			}
+			seenA = true
+		case b.ID:
+			if !ch.Deleted {
+				t.Errorf("B soft-deleted: expected deleted=true, got false")
+			}
+			seenB = true
+		}
+	}
+	if !seenA || !seenB {
+		t.Fatalf("missing expected rows: seenA=%v seenB=%v", seenA, seenB)
+	}
+}
+
+// TestListItemsChanges_CursorRoundtripsCleanly proves "no overlap or
+// gap": after running the delta once, re-polling with the returned
+// cursor as `since` returns zero rows.
+func TestListItemsChanges_CursorRoundtripsCleanly(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "A", "fields": `{"status":"open"}`})
+	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "B", "fields": `{"status":"open"}`})
+
+	rr1 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=0", nil)
+	var first itemsChangesBody
+	parseJSON(t, rr1, &first)
+	if len(first.Changes) != 2 {
+		t.Fatalf("first poll: expected 2 changes, got %d", len(first.Changes))
+	}
+
+	rr2 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since="+first.Cursor, nil)
+	var second itemsChangesBody
+	parseJSON(t, rr2, &second)
+	if len(second.Changes) != 0 {
+		t.Fatalf("second poll at returned cursor should be empty, got %d changes", len(second.Changes))
+	}
+	if second.Cursor != first.Cursor {
+		t.Fatalf("empty poll should preserve cursor: got %q want %q", second.Cursor, first.Cursor)
+	}
+}
+
+// TestListItemsChanges_LimitTruncatesAndCursorResumes covers the
+// `?limit=N` truncation contract: the response holds N rows; cursor
+// equals seq of the last returned row so the client can resume with
+// no overlap or gap.
+func TestListItemsChanges_LimitTruncatesAndCursorResumes(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	for i := 0; i < 5; i++ {
+		createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title":  "item-" + strconv.Itoa(i),
+			"fields": `{"status":"open"}`,
+		})
+	}
+
+	// First page: limit=2 returns 2 rows; cursor sits at the last
+	// row's seq.
+	rr1 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=0&limit=2", nil)
+	var page1 itemsChangesBody
+	parseJSON(t, rr1, &page1)
+	if len(page1.Changes) != 2 {
+		t.Fatalf("page1: expected 2 rows under limit=2, got %d", len(page1.Changes))
+	}
+	cursorSeq, err := strconv.ParseInt(page1.Cursor, 10, 64)
+	if err != nil {
+		t.Fatalf("page1 cursor not int: %q", page1.Cursor)
+	}
+	if cursorSeq != page1.Changes[len(page1.Changes)-1].Seq {
+		t.Fatalf("page1 cursor (%d) should equal last row seq (%d)", cursorSeq, page1.Changes[len(page1.Changes)-1].Seq)
+	}
+
+	// Resume from the cursor: remaining 3 rows in ascending seq order.
+	rr2 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since="+page1.Cursor+"&limit=10", nil)
+	var page2 itemsChangesBody
+	parseJSON(t, rr2, &page2)
+	if len(page2.Changes) != 3 {
+		t.Fatalf("page2: expected 3 remaining rows, got %d", len(page2.Changes))
+	}
+
+	// No overlap: every page2 seq must be strictly greater than the
+	// page1 cursor.
+	for _, ch := range page2.Changes {
+		if ch.Seq <= cursorSeq {
+			t.Errorf("page2 row seq %d <= page1 cursor %d (overlap)", ch.Seq, cursorSeq)
+		}
+	}
+}
+
+// TestListItemsChanges_InvalidParams rejects bad `since` / `limit`
+// values with 400 instead of silently returning the entire workspace.
+func TestListItemsChanges_InvalidParams(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=abc", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid since: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=-5", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("negative since: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?limit=0", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("limit=0: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?limit=-1", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("limit=-1: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestListItemsChanges_EmptyWorkspace returns no rows and preserves
+// the caller's cursor.
+func TestListItemsChanges_EmptyWorkspace(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=0", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("empty workspace: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp itemsChangesBody
+	parseJSON(t, rr, &resp)
+	if len(resp.Changes) != 0 {
+		t.Fatalf("expected 0 changes on empty workspace, got %d", len(resp.Changes))
+	}
+	if resp.Cursor != "0" {
+		t.Fatalf("expected cursor=\"0\" on empty workspace with since=0, got %q", resp.Cursor)
+	}
+
+	// Custom since should round-trip when no changes exist.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-changes?since=42", nil)
+	parseJSON(t, rr, &resp)
+	if resp.Cursor != "42" {
+		t.Fatalf("expected cursor to round-trip caller's since=42, got %q", resp.Cursor)
+	}
+}
+
 // TestListItemsIndex_DoesNotShadowItemSlug confirms /items-index lives in
 // a non-conflicting URL space — an item titled "Index" (slug "index") still
 // resolves through /items/{itemSlug}, while /items-index serves the new

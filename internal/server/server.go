@@ -1040,6 +1040,12 @@ func (s *Server) setupRouter() {
 					// item slug under /items/{itemSlug}.
 					r.Get("/items-index", s.handleListItemsIndex)
 
+					// Delta-fetch sibling of /items-index: returns rows
+					// where seq > since, including tombstones, so a
+					// local-first read-model client can resume without
+					// re-downloading the whole index (PLAN-1343 / TASK-1354).
+					r.Get("/items-changes", s.handleListItemsChanges)
+
 					// User grants (all grants for a specific user in this workspace)
 					r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
