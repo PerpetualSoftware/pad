@@ -3208,6 +3208,64 @@ func stringInSlice(xs []string, want string) bool {
 	return false
 }
 
+// TestMigrateItemFieldValues_PerRowUniqueSeq guards the
+// /items-changes pagination contract on bulk rewrites (Codex
+// review of TASK-1354 round 2 [P1]). Before the fix, the bulk
+// UPDATE assigned every affected row the same `MAX(seq)+1`. A
+// /items-changes?limit=N poll that cut through that equal-seq
+// group would advance the cursor to the shared seq, and the
+// next `seq > cursor` poll would silently skip the rest of the
+// group.
+//
+// The current implementation issues per-row UPDATEs inside the
+// migration transaction so every row ends up with a strictly
+// unique seq.
+func TestMigrateItemFieldValues_PerRowUniqueSeq(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Five items, all in the same select-option bucket so the
+	// rename touches every row in a single migration step.
+	const n = 5
+	for i := 0; i < n; i++ {
+		_, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+			Title:  fmt.Sprintf("row-%d", i),
+			Fields: `{"status":"open"}`,
+		})
+		if err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+
+	affected, err := s.MigrateItemFieldValues(col.ID, []models.FieldMigration{
+		{Field: "status", RenameOptions: map[string]string{"open": "available"}},
+	})
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if affected != int64(n) {
+		t.Fatalf("expected %d rows affected, got %d", n, affected)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: col.Slug})
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != n {
+		t.Fatalf("expected %d items in list, got %d", n, len(items))
+	}
+
+	// Every row must have a unique seq.
+	seen := make(map[int64]string, n)
+	for _, it := range items {
+		if prev, dup := seen[it.Seq]; dup {
+			t.Fatalf("duplicate seq=%d shared by items %q and %q (bulk migrate must assign per-row unique seqs for /items-changes pagination)", it.Seq, prev, it.ID)
+		}
+		seen[it.Seq] = it.ID
+	}
+}
+
 // TestItemSeqMonotonic verifies that the workspace-scoped `seq` column
 // is stamped strictly monotonically across every mutation
 // (create / update / soft-delete / restore). This is the cursor

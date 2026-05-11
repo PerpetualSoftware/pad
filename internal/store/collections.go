@@ -297,12 +297,22 @@ func (s *Store) DeleteCollection(id string) error {
 // options are renamed. Each entry in renames maps old_value → new_value
 // for the given field key.
 //
-// Each migration step bumps the workspace-scoped seq so delta-sync
-// clients see the field rewrite (PLAN-1343 / TASK-1352). All rows
-// affected by a single rename step share the same new seq value
-// (MAX+1 at statement start) — that's fine for the cursor contract:
-// a client at cursor < MAX sees them all in one batch, a client at
-// cursor >= MAX sees none, no overlap or gap.
+// Each affected row gets its OWN fresh seq (no two share the same
+// value) so /items-changes pagination is correct even when a
+// rename touches more rows than the page limit. We do this with a
+// per-row UPDATE loop: an earlier single-statement bulk UPDATE gave
+// every row the same MAX(seq)+1, which broke the cursor contract —
+// `limit=N` could cut through an equal-seq group, the cursor would
+// advance to that shared seq, and the next `seq > cursor` poll
+// would permanently miss the remaining rows in the group (Codex
+// review of TASK-1354 round 2 [P1]).
+//
+// Trade-off: O(N) statements instead of O(1) for the bulk path.
+// A schema-option rename is an admin one-off, so even a few
+// thousand rows is acceptable (~1s/1000 rows on a warm SQLite
+// connection). If a future use case demands a higher row budget,
+// switch to an UPDATE..FROM with a ROW_NUMBER() CTE that assigns
+// sequential per-row seqs in a single statement.
 func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.FieldMigration) (int64, error) {
 	if len(migrations) == 0 {
 		return 0, nil
@@ -339,20 +349,53 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 			}
 			jsonSet := s.dialect.JSONSet("fields", m.Field)
 			jsonExtract := s.dialect.JSONExtractText("fields", m.Field)
-			result, err := tx.Exec(s.q(fmt.Sprintf(`
-				UPDATE items
-				SET fields = %s,
-				    updated_at = ?,
-				    seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM items WHERE workspace_id = ?)
+
+			// Step 1: find all matching item IDs. SELECT inside the
+			// same transaction as the subsequent UPDATEs, so we
+			// observe a consistent snapshot of who needs to migrate.
+			idRows, err := tx.Query(s.q(fmt.Sprintf(`
+				SELECT id FROM items
 				WHERE collection_id = ?
 				  AND %s = ?
 				  AND deleted_at IS NULL
-			`, jsonSet, jsonExtract)), newVal, ts, workspaceID, collectionID, oldVal)
+			`, jsonExtract)), collectionID, oldVal)
 			if err != nil {
-				return totalAffected, fmt.Errorf("migrate field %s (%s → %s): %w", m.Field, oldVal, newVal, err)
+				return totalAffected, fmt.Errorf("migrate field %s (%s → %s) list: %w", m.Field, oldVal, newVal, err)
 			}
-			n, _ := result.RowsAffected()
-			totalAffected += n
+			var ids []string
+			for idRows.Next() {
+				var id string
+				if err := idRows.Scan(&id); err != nil {
+					idRows.Close()
+					return totalAffected, fmt.Errorf("migrate field %s scan: %w", m.Field, err)
+				}
+				ids = append(ids, id)
+			}
+			if err := idRows.Err(); err != nil {
+				idRows.Close()
+				return totalAffected, fmt.Errorf("migrate field %s rows: %w", m.Field, err)
+			}
+			idRows.Close()
+
+			// Step 2: update each row individually. Each UPDATE is
+			// a separate statement, so MAX(seq) advances between
+			// them inside the transaction — every row ends up with
+			// a unique sequential seq.
+			updateSQL := s.q(fmt.Sprintf(`
+				UPDATE items
+				SET fields = %s,
+				    updated_at = ?,
+				    seq = `+nextWorkspaceSeqSubquery+`
+				WHERE id = ?
+			`, jsonSet))
+			for _, id := range ids {
+				result, err := tx.Exec(updateSQL, newVal, ts, workspaceID, id)
+				if err != nil {
+					return totalAffected, fmt.Errorf("migrate field %s (%s → %s) row %s: %w", m.Field, oldVal, newVal, id, err)
+				}
+				n, _ := result.RowsAffected()
+				totalAffected += n
+			}
 		}
 	}
 
