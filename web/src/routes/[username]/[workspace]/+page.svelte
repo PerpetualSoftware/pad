@@ -10,6 +10,8 @@
 	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
 	import OnboardingIdeaBanner from '$lib/components/OnboardingIdeaBanner.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
+	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
@@ -22,6 +24,36 @@
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
+	let showCreateCollection = $state(false);
+
+	// Owner-gate state for the New Collection trigger.
+	//
+	// Reading `workspaceStore.isOwner` directly would make the trigger button
+	// flicker visibility every 30 s: the dashboard's silent poll (and sync
+	// signals) call `load()` → `workspaceStore.setCurrent()`, which clears
+	// `currentMembership` to null before `/me` resolves. During that window
+	// `workspaceStore.isOwner` returns false even for owners, hiding the CTA
+	// and dropping any focus on it.
+	//
+	// Two effects per CONVE-606 (split reactive-state sync from route-change
+	// effects): one resets the cache on a real workspace switch, the other
+	// updates it only when membership is definitively known (non-null).
+	// Initial default is `false` so we never flash owner-only UI before /me
+	// confirms ownership. Server enforcement (handlers_collections.go:48)
+	// remains the security boundary; this is purely a stability fix for the
+	// UX gate.
+	let isOwner = $state(false);
+	let lastOwnerSlug: string | null = null;
+	$effect(() => {
+		if (wsSlug !== lastOwnerSlug) {
+			lastOwnerSlug = wsSlug;
+			isOwner = false;
+		}
+	});
+	$effect(() => {
+		const mem = workspaceStore.currentMembership;
+		if (mem !== null) isOwner = mem.role === 'owner';
+	});
 
 	// The dashboard response carries an `onboarding_seed` field when the
 	// workspace has a seeded onboarding primary (IDEA-1 / BACK-1 / FEAT-1
@@ -370,17 +402,23 @@
 						</div>
 					</a>
 				{/each}
-				<a href="/{username}/{wsSlug}/settings" class="coll-card coll-card-new">
-					<div class="coll-card-header">
-						<span class="coll-card-name">
-							<span class="coll-icon">+</span>
-							New Collection
-						</span>
-					</div>
-					<div class="coll-statuses">
-						<span class="coll-status-empty">Create a custom collection</span>
-					</div>
-				</a>
+				{#if isOwner}
+					<button
+						type="button"
+						class="coll-card coll-card-new"
+						onclick={() => { showCreateCollection = true; }}
+					>
+						<div class="coll-card-header">
+							<span class="coll-card-name">
+								<span class="coll-icon">+</span>
+								New Collection
+							</span>
+						</div>
+						<div class="coll-statuses">
+							<span class="coll-status-empty">Create a custom collection</span>
+						</div>
+					</button>
+				{/if}
 			</div>
 		</section>
 
@@ -475,6 +513,31 @@
 	workspaceSlug={wsSlug}
 	workspaceName={workspaceStore.current?.name ?? ''}
 />
+
+{#if wsSlug}
+	<!--
+		Mount unconditionally (gated on wsSlug, not isOwner) so an owner editing
+		the modal isn't unmounted mid-edit when the 30s dashboard poll or a sync
+		signal calls load() → workspaceStore.setCurrent(), which transiently
+		clears currentMembership and flips isOwner false until /me resolves.
+		The trigger button is owner-gated above; this matches Sidebar.svelte's
+		pattern, and the server-side owner check (handlers_collections.go:48)
+		remains the enforcement boundary.
+	-->
+	<CreateCollectionModal
+		open={showCreateCollection}
+		{wsSlug}
+		oncreated={() => {
+			showCreateCollection = false;
+			// Refresh dashboard-local data (summary + collections grid) AND
+			// the shared collectionStore the Sidebar/quick-add read from,
+			// matching Sidebar.svelte's create-flow pattern.
+			load(wsSlug, true);
+			collectionStore.loadCollections(wsSlug);
+		}}
+		onclose={() => { showCreateCollection = false; }}
+	/>
+{/if}
 
 <style>
 	/* ── Layout ─────────────────────────────────────────────────────────── */
@@ -879,6 +942,13 @@
 	}
 	.coll-card-new:hover {
 		opacity: 1;
+	}
+	/* Reset <button> defaults so the trigger card matches its sibling <a> cards. */
+	button.coll-card-new {
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		width: 100%;
 	}
 
 	/* ── Dual section (Attention + Up Next) ─────────────────────────────── */
