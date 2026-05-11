@@ -472,6 +472,30 @@ export interface ItemIndexResponse {
 	cursor: string;
 }
 
+// ─── Items changes (delta sync) ──────────────────────────────────────────────
+// `ItemChangeRow` is a skinny `ItemIndexRow` with a `deleted` boolean
+// flag so a delta consumer can distinguish upserts from tombstones in
+// one pass. Soft-deleted rows still carry their full skinny payload
+// (deleted_at is populated) — `deleted` is just the derived view of
+// that timestamp.
+export type ItemChangeRow = ItemIndexRow & { deleted: boolean };
+
+// `ItemChangesResponse` wraps a delta-fetch result from
+// `GET /workspaces/{ws}/items-changes?since=<cursor>` (TASK-1354).
+//
+//   - changes: rows where `seq > since`, ascending by `seq`. Each row
+//     includes `deleted` (true when soft-deleted) so the client can
+//     apply or remove without a second roundtrip.
+//   - cursor: the largest `seq` in the response, decimal-encoded.
+//     When the response is empty, the server returns the caller's
+//     `since` unchanged so the client doesn't lose position. Treat
+//     the value as opaque (re-pass as `?since=<cursor>` on the
+//     next poll).
+export interface ItemChangesResponse {
+	changes: ItemChangeRow[];
+	cursor: string;
+}
+
 export interface ItemCreate {
 	title: string;
 	content?: string;

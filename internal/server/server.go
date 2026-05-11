@@ -1040,6 +1040,12 @@ func (s *Server) setupRouter() {
 					// item slug under /items/{itemSlug}.
 					r.Get("/items-index", s.handleListItemsIndex)
 
+					// Delta-fetch sibling of /items-index: returns rows
+					// where seq > since, including tombstones, so a
+					// local-first read-model client can resume without
+					// re-downloading the whole index (PLAN-1343 / TASK-1354).
+					r.Get("/items-changes", s.handleListItemsChanges)
+
 					// User grants (all grants for a specific user in this workspace)
 					r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
@@ -1513,6 +1519,25 @@ func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item 
 // + direct collection grants as fullCollIDs, plus item grants as grantedItemIDs.
 // This ensures item grants are additive to the member's existing access.
 func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
+	return s.guestResourceFilterCore(r, workspaceID, false)
+}
+
+// guestResourceFilterIncludeDeletedItems is the delta-sync variant
+// of guestResourceFilter. It uses GuestVisibleResourcesIncludeDeleted
+// under the hood so soft-deleted granted items still surface in the
+// resulting ID set. Used by /items-changes (TASK-1354) so a guest /
+// restricted member with an item-level grant still receives the
+// `deleted:true` row when their granted item is soft-deleted —
+// without this variant the grant ID vanishes before the delta
+// query runs and the client keeps the stale entry forever (Codex
+// review of TASK-1354 round 1 [P1]).
+func (s *Server) guestResourceFilterIncludeDeletedItems(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
+	return s.guestResourceFilterCore(r, workspaceID, true)
+}
+
+// guestResourceFilterCore is the shared implementation. The
+// includeDeletedItems flag swaps the underlying store query.
+func (s *Server) guestResourceFilterCore(r *http.Request, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
 	if user == nil || user.Role == "admin" {
 		return nil, nil, nil
@@ -1532,8 +1557,14 @@ func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullC
 		}
 	}
 
-	// Get grant-based resources
-	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	// Get grant-based resources — delta-sync callers ask for the
+	// include-deleted variant so tombstones can flow through.
+	var grantCollIDs []string
+	if includeDeletedItems {
+		grantCollIDs, grantedItemIDs, err = s.store.GuestVisibleResourcesIncludeDeleted(workspaceID, user.ID)
+	} else {
+		grantCollIDs, grantedItemIDs, err = s.store.GuestVisibleResources(workspaceID, user.ID)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

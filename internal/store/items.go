@@ -816,6 +816,164 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	return scanItemsIndex(rows)
 }
 
+// ItemChangesParams is the parameter set for ListItemsChangesSince.
+// Mirrors the visibility-filter half of ItemIndexParams (CollectionIDs
+// / ItemIDs) plus the cursor-specific knobs Since / Limit.
+type ItemChangesParams struct {
+	// CollectionIDs is the permission filter for visible collections.
+	// nil = unfiltered. A non-nil empty slice (with empty ItemIDs)
+	// short-circuits to an empty result, matching ListItemsIndex
+	// semantics.
+	CollectionIDs []string
+	// ItemIDs is the item-level grant set (guests / restricted
+	// members can see specific items even outside their collection
+	// scope).
+	ItemIDs []string
+	// Since is the exclusive seq lower bound (returns rows where
+	// `seq > since`).
+	Since int64
+	// Limit caps the returned slice. <=0 means use the default cap
+	// (DefaultItemChangesLimit); values above MaxItemChangesLimit
+	// are clamped.
+	Limit int
+}
+
+// DefaultItemChangesLimit is the default cap on /items-changes
+// responses. 5,000 is enough to drain a typical workspace in one
+// round-trip; clients that need more re-page via the cursor.
+const DefaultItemChangesLimit = 5000
+
+// MaxItemChangesLimit clamps any caller-supplied limit so a runaway
+// `?limit=999999` poll can't materialize the entire workspace
+// (think: months-offline tab).
+const MaxItemChangesLimit = 50000
+
+// ListItemsChangesSince returns the skinny-projection of items that
+// have mutated (create / update / soft-delete / restore) since the
+// given seq cursor, in ascending seq order. Soft-deleted rows ARE
+// included so delta-sync clients can drop tombstoned items from
+// their local index — the scan populates models.Item.DeletedAt for
+// every row so the caller can distinguish upserts from deletes.
+//
+// Auth: same shape as ListItemsIndex — CollectionIDs / ItemIDs gate
+// visibility. A delta from `since=0` over a fully-permitted scope
+// matches the /items-index payload modulo ordering (changes is seq
+// ASC, index is updated_at DESC).
+//
+// Returns at most Limit rows (default DefaultItemChangesLimit,
+// capped at MaxItemChangesLimit). When truncated, the caller's
+// next poll should pass the returned cursor's MAX(seq) as `since`
+// to resume.
+func (s *Store) ListItemsChangesSince(workspaceID string, params ItemChangesParams) ([]models.Item, error) {
+	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 && len(params.ItemIDs) == 0 {
+		return nil, nil
+	}
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = DefaultItemChangesLimit
+	}
+	if limit > MaxItemChangesLimit {
+		limit = MaxItemChangesLimit
+	}
+
+	// Same column list as scanItemsIndex plus deleted_at so the caller
+	// can distinguish upserts from tombstones. There is no
+	// `i.deleted_at IS NULL` filter here — that's the whole point of
+	// the delta: soft-deleted rows propagate so clients can remove
+	// them from their local index.
+	query := `
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.workspace_id = ? AND i.seq > ?
+	`
+	args := []interface{}{workspaceID, params.Since}
+
+	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+		collPlaceholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (i.collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR i.id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(params.CollectionIDs) > 0 {
+		placeholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(params.ItemIDs) > 0 {
+		placeholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	// Ascending seq is the canonical delta order: the next poll passes
+	// the response's MAX(seq) as `since` and resumes with no gap or
+	// overlap. The supporting index is (workspace_id, seq DESC)
+	// (TASK-1352 migration) — the engine can still use it for ASC
+	// scans, just walked in reverse.
+	query += " ORDER BY i.seq ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list items changes: %w", err)
+	}
+	defer rows.Close()
+
+	return scanItemsChanges(rows)
+}
+
+// scanItemsChanges scans rows from ListItemsChangesSince (skinny
+// projection + deleted_at so callers can distinguish tombstones).
+func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
+	var items []models.Item
+	for rows.Next() {
+		var item models.Item
+		var createdAt, updatedAt string
+		var deletedAt *string
+		var pinned bool
+		if err := rows.Scan(
+			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+			&item.Fields, &item.Tags,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
+			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+		); err != nil {
+			return nil, err
+		}
+		item.Pinned = pinned
+		item.CreatedAt = parseTime(createdAt)
+		item.UpdatedAt = parseTime(updatedAt)
+		item.DeletedAt = parseTimePtr(deletedAt)
+		hydrateItemComputedMetadata(&item)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // MaxItemSeq returns the largest items.seq across the workspace, or 0
 // if the workspace has no items. This is the cursor floor for the
 // local-first read model (PLAN-1343 / TASK-1353): /items-index hands

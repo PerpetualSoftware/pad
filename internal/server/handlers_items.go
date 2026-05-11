@@ -186,6 +186,139 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// itemChangeRow embeds the standard skinny Item shape and adds a
+// `deleted: bool` flag so clients can distinguish upserts from
+// tombstones in a single response. The boolean is a derived view of
+// the underlying `deleted_at` so old clients that only key off
+// `deleted_at` still work — both fields are populated.
+type itemChangeRow struct {
+	models.Item
+	Deleted bool `json:"deleted"`
+}
+
+// itemsChangesResponse wraps a delta-fetch result.
+//
+//   - changes: rows where `seq > since`, in ascending seq order. Each
+//     row includes `deleted` (true when the row is soft-deleted) so
+//     clients can apply / remove without a second roundtrip.
+//   - cursor: the largest seq in the response, decimal-encoded.
+//     When the response is empty, the server returns the caller's
+//     `since` unchanged so the client doesn't lose position. Treat
+//     the value as opaque (re-pass as `?since=<cursor>` on the next
+//     poll).
+type itemsChangesResponse struct {
+	Changes []itemChangeRow `json:"changes"`
+	Cursor  string          `json:"cursor"`
+}
+
+// handleListItemsChanges is the delta-fetch sibling of
+// handleListItemsIndex. Returns rows that have mutated since the
+// caller's `?since=<seq>` cursor, including tombstones, so a
+// local-first read-model client can resume a workspace without
+// re-fetching the entire index (PLAN-1343 / TASK-1354).
+//
+// Query params:
+//   - since: exclusive seq lower bound (`seq > since`). Defaults to 0
+//     (full delta == full index modulo ordering). Decimal string;
+//     invalid values are 400.
+//   - limit: cap on returned rows. Defaults to
+//     store.DefaultItemChangesLimit (5000), clamped to
+//     store.MaxItemChangesLimit (50000). Invalid values are 400.
+//
+// Auth: same collection-visibility + item-grant filter as
+// /items-index. Soft-deleted rows propagate so they can be removed
+// from the client's local index.
+func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	q := r.URL.Query()
+	sinceStr := q.Get("since")
+	var since int64
+	if sinceStr != "" {
+		v, err := strconv.ParseInt(sinceStr, 10, 64)
+		if err != nil || v < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "`since` must be a non-negative integer")
+			return
+		}
+		since = v
+	}
+
+	var limit int
+	if limitStr := q.Get("limit"); limitStr != "" {
+		v, err := strconv.Atoi(limitStr)
+		if err != nil || v <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "`limit` must be a positive integer")
+			return
+		}
+		limit = v
+	}
+
+	// Collection visibility filter — same shape as handleListItemsIndex.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	params := store.ItemChangesParams{
+		CollectionIDs: visibleIDs,
+		Since:         since,
+		Limit:         limit,
+	}
+
+	// Item-level grants for guests / restricted members. Delta sync
+	// uses the include-deleted-items variant so a tombstone on a
+	// granted item still flows through — without it the grant ID
+	// disappears as soon as the item is soft-deleted, and the
+	// client never learns the row went away (Codex review of
+	// TASK-1354 round 1 [P1]).
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilterIncludeDeletedItems(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		params.CollectionIDs = fullCollIDs
+		params.ItemIDs = grantedItemIDs
+	}
+
+	rows, err := s.store.ListItemsChangesSince(workspaceID, params)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Enrich with parent metadata so the local cache rows match the
+	// /items-index payload shape. Soft-deleted parents are skipped by
+	// the underlying GetItem (deleted_at IS NULL), so we don't leak
+	// parent title / ref after the parent itself has been archived.
+	s.enrichItemsWithParent(workspaceID, rows, visibleIDs)
+
+	// Cursor: MAX(seq) in the response. When empty, return `since`
+	// unchanged so the client doesn't regress its position. When
+	// truncated by limit, the cursor sits at the last row's seq so
+	// the next poll resumes there (no overlap, no gap — seq is
+	// strictly monotonic per workspace).
+	cursorSeq := since
+	changes := make([]itemChangeRow, 0, len(rows))
+	for _, it := range rows {
+		if it.Seq > cursorSeq {
+			cursorSeq = it.Seq
+		}
+		changes = append(changes, itemChangeRow{
+			Item:    it,
+			Deleted: it.DeletedAt != nil,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, itemsChangesResponse{
+		Changes: changes,
+		Cursor:  strconv.FormatInt(cursorSeq, 10),
+	})
+}
+
 // handleListCollectionItems lists items within a specific collection.
 func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)

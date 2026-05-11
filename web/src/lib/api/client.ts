@@ -6,6 +6,8 @@ import type {
 	CollectionCreate,
 	CollectionUpdate,
 	Item,
+	ItemChangeRow,
+	ItemChangesResponse,
 	ItemCreate,
 	ItemIndexResponse,
 	ItemIndexRow,
@@ -378,6 +380,54 @@ export const api = {
 				return rest;
 			});
 			return { items, total: raw.total, cursor: raw.cursor };
+		},
+
+		/**
+		 * Delta-fetch sibling of `listIndex` (PLAN-1343 / TASK-1354).
+		 *
+		 * Endpoint: `GET /api/v1/workspaces/{ws}/items-changes?since=<cursor>`.
+		 * Returns every row that has mutated since the caller's `since`
+		 * cursor — including soft-deleted tombstones (`deleted: true`) so
+		 * the client can remove them from its local index without a
+		 * second roundtrip. Rows are sorted ascending by `seq`.
+		 *
+		 * Cursor contract: re-pass the response's `cursor` as `since`
+		 * on the next poll for no overlap and no gap. When the response
+		 * is empty the server returns the caller's `since` unchanged
+		 * (position preserved). Treat the value as opaque.
+		 *
+		 * Limit: defaults to the server's `DefaultItemChangesLimit`
+		 * (currently 5000). Clients that need a smaller page (low-RAM
+		 * mobile resume) or a larger one can pass `limit`; the server
+		 * clamps to `MaxItemChangesLimit` (50000). When the response is
+		 * truncated, the returned cursor sits at the last row's seq so
+		 * the client can resume.
+		 */
+		changes: async (
+			ws: string,
+			sinceCursor: string,
+			opts?: { limit?: number }
+		): Promise<ItemChangesResponse> => {
+			const raw = await request<{
+				changes: (ItemChangeRow & { content?: string })[];
+				cursor: string;
+			}>(
+				`/workspaces/${ws}/items-changes${qs({
+					since: sinceCursor,
+					limit: opts?.limit,
+				})}`
+			);
+			// Mirror `listIndex`'s defensive content-strip: the server's
+			// skinny scan omits `i.content`, but the Go zero-value would
+			// serialize as `content: ""` if any non-omitempty wrapper
+			// surfaced it. Strip explicitly so callers never accidentally
+			// spread a delta row into the canonical item store and blank
+			// out the rich-text body.
+			const changes: ItemChangeRow[] = raw.changes.map((row) => {
+				const { content: _ignored, ...rest } = row;
+				return rest;
+			});
+			return { changes, cursor: raw.cursor };
 		},
 
 		create: (ws: string, coll: string, data: ItemCreate) =>
