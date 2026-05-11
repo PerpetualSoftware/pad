@@ -1028,6 +1028,13 @@ func (s *Server) setupRouter() {
 					// Plans progress
 					r.Get("/plans-progress", s.handlePlansProgress)
 
+					// Skinny-projection cross-collection items list for the
+					// local-first read model bootstrap (PLAN-1343 / TASK-1344).
+					// Lives at workspace level — sibling to /plans-progress
+					// and /starred — so the path can't ever collide with an
+					// item slug under /items/{itemSlug}.
+					r.Get("/items-index", s.handleListItemsIndex)
+
 					// User grants (all grants for a specific user in this workspace)
 					r.Get("/users/{userID}/grants", s.handleListUserGrants)
 
@@ -1036,12 +1043,6 @@ func (s *Server) setupRouter() {
 
 					// Items (cross-collection, v2)
 					r.Get("/items", s.handleListItems)
-					// Skinny-projection index for the local-first read model
-					// (PLAN-1343). MUST stay registered before /items/{itemSlug}
-					// — chi's radix tree prefers static segments over wildcards
-					// at the same depth, but keeping the order explicit avoids
-					// surprises if the routing tree is ever refactored.
-					r.Get("/items/index", s.handleListItemsIndex)
 					r.Route("/items/{itemSlug}", func(r chi.Router) {
 						r.Get("/", s.handleGetItem)
 						r.Patch("/", s.handleUpdateItem)

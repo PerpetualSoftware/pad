@@ -1243,7 +1243,7 @@ func TestPatchItem_FlexibleFieldsShape(t *testing.T) {
 	})
 }
 
-// itemsIndexBody mirrors the server-side response wrapper for /items/index.
+// itemsIndexBody mirrors the server-side response wrapper for /items-index.
 // Kept local to the test file so the public handler doesn't need to export it.
 type itemsIndexBody struct {
 	Items  []models.Item `json:"items"`
@@ -1277,9 +1277,9 @@ func TestListItemsIndex_SkinnyProjectionAndShape(t *testing.T) {
 		"fields":  `{"status":"new"}`,
 	})
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1340,9 +1340,9 @@ func TestListItemsIndex_SortByUpdatedAt(t *testing.T) {
 		"fields": `{"status":"new"}`,
 	})
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1365,9 +1365,9 @@ func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index empty: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index empty: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1403,9 +1403,9 @@ func TestListItemsIndex_CollectionFilter(t *testing.T) {
 		"fields": `{"status":"new"}`,
 	})
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index?collection=tasks", nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?collection=tasks", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index?collection=tasks: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index?collection=tasks: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1436,9 +1436,9 @@ func TestListItemsIndex_ParentEnrichment(t *testing.T) {
 		"fields": `{"status":"open","parent":"` + plan.Ref + `"}`,
 	})
 
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index?collection=tasks", nil)
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?collection=tasks", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1476,9 +1476,9 @@ func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
 		t.Fatalf("archive: expected 204, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var resp itemsIndexBody
@@ -1490,9 +1490,9 @@ func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
 	}
 
 	// With include_archived=true, both items must come back.
-	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index?include_archived=true", nil)
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?include_archived=true", nil)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index include_archived: expected 200, got %d", rr.Code)
+		t.Fatalf("items-index include_archived: expected 200, got %d", rr.Code)
 	}
 
 	parseJSON(t, rr, &resp)
@@ -1501,26 +1501,42 @@ func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
 	}
 }
 
-// TestListItemsIndex_DoesNotShadowGetItem confirms /items/index resolves to
-// the index endpoint, not the /items/{itemSlug} catch-all that lives in the
-// same route subtree. A regression here would surface as 404 ("item 'index'
-// not found") or as the item-detail handler being invoked instead.
-func TestListItemsIndex_DoesNotShadowGetItem(t *testing.T) {
+// TestListItemsIndex_DoesNotShadowItemSlug confirms /items-index lives in
+// a non-conflicting URL space — an item titled "Index" (slug "index") still
+// resolves through /items/{itemSlug}, while /items-index serves the new
+// index wrapper. This is the contract that drove the path choice: keeping
+// the endpoint outside the /items/{itemSlug} subtree means no item slug
+// can ever shadow it (or vice versa). See Codex round 1 [P2] on PR #486.
+func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
-	createItem(t, srv, slug, "tasks", map[string]interface{}{
-		"title":  "Only task",
+
+	indexItem := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Index",
 		"fields": `{"status":"open"}`,
 	})
-
-	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("items/index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	if indexItem.Slug != "index" {
+		t.Fatalf("expected slug 'index' for title 'Index', got %q", indexItem.Slug)
 	}
-	// The detail handler would return a bare Item object (no items wrapper);
-	// confirm the wrapper survived.
+
+	// /items-index → index wrapper.
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 	if !bytes.Contains(rr.Body.Bytes(), []byte(`"items":[`)) {
 		t.Fatalf("expected wrapped response, got %s", rr.Body.String())
+	}
+
+	// /items/index → the item titled "Index", same as before this change.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items/index detail: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.ID != indexItem.ID {
+		t.Fatalf("expected item ID %q at /items/index, got %q", indexItem.ID, fetched.ID)
 	}
 }
 
