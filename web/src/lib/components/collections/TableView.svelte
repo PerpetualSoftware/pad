@@ -97,62 +97,87 @@
 		if (days < 30) return `${days}d ago`;
 		return new Date(dateStr).toLocaleDateString();
 	}
+
+	/**
+	 * Virtualization (TASK-1348 / PLAN-1343 Phase 1).
+	 *
+	 * Each row gets `content-visibility: auto` so the browser skips
+	 * layout/style/paint for off-screen rows. The catch: CSS
+	 * Containment L2 §4.4 makes layout/paint containment a no-op on
+	 * internal table boxes (table-row, table-cell, etc.), and
+	 * content-visibility's skip behavior depends on size containment,
+	 * which also no-ops on table rows. So the table-row branch of CSS
+	 * Containment defeats the trick that worked for ListView (PR #488)
+	 * and BoardView (PR #489).
+	 *
+	 * Fix: render the table as a CSS Grid (`<div role="table">` /
+	 * `<div role="row">`) instead of `<table>`. The grid layout
+	 * preserves the table's column alignment, sticky header, hover
+	 * states, and visual fidelity. Rows are no longer "internal table
+	 * boxes," so content-visibility / containment apply normally. ARIA
+	 * roles preserve assistive-tech semantics — Codex round 1 [P2] on
+	 * PR #490 traced through the spec citation to this conclusion.
+	 *
+	 * The grid template is built dynamically because `visibleFields`
+	 * depends on the collection schema. Fixed-width Ref / Updated
+	 * columns bracket a `minmax(200px, 1fr)` Title and `auto`-sized
+	 * field columns, matching the pre-refactor `.col-*` widths.
+	 */
+	let gridTemplate = $derived(
+		['70px', 'minmax(200px, 1fr)', ...visibleFields.map(() => 'auto'), '90px'].join(' ')
+	);
 </script>
 
 {#if items.length === 0}
 	<EmptyState {collection} wsSlug={resolvedWsSlug} {oncreate} />
 {:else}
 <div class="table-scroll">
-	<table class="table-view">
-		<thead>
-			<tr>
-				<th class="col-ref">Ref</th>
-				<th class="col-title">
-					<button class="sort-btn" onclick={() => toggleSort('title')}>
-						Title {sortKey === 'title' ? (sortDir === 'asc' ? '\u2191' : '\u2193') : ''}
+	<div class="table-view" role="table" style:grid-template-columns={gridTemplate}>
+		<div class="table-row table-header" role="row">
+			<div class="table-cell col-ref" role="columnheader">Ref</div>
+			<div class="table-cell col-title" role="columnheader">
+				<button class="sort-btn" onclick={() => toggleSort('title')}>
+					Title {sortKey === 'title' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+				</button>
+			</div>
+			{#each visibleFields as field (field.key)}
+				<div class="table-cell" role="columnheader">
+					<button class="sort-btn" onclick={() => toggleSort(field.key)}>
+						{field.label || field.key} {sortKey === field.key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
 					</button>
-				</th>
-				{#each visibleFields as field (field.key)}
-					<th>
-						<button class="sort-btn" onclick={() => toggleSort(field.key)}>
-							{field.label || field.key} {sortKey === field.key ? (sortDir === 'asc' ? '\u2191' : '\u2193') : ''}
-						</button>
-					</th>
-				{/each}
-				<th class="col-updated">Updated</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each sortedItems as item (item.id)}
-				{@const fields = parseFields(item)}
-				<tr>
-					<td class="col-ref"><span class="ref">{formatItemRef(item) ?? ''}</span></td>
-					<td class="col-title">
-						<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
-						{#if itemProgress?.[item.id]}
-							{@const p = itemProgress[item.id]}
-							<div class="cell-progress">
-								<div class="cell-progress-bar"><div class="cell-progress-fill" style:width="{Math.round((p.done / p.total) * 100)}%"></div></div>
-								<span class="cell-progress-text">{p.done}/{p.total}</span>
-							</div>
-						{/if}
-					</td>
-					{#each visibleFields as field (field.key)}
-						<td>
-							{#if field.key === 'status' && field.options && onStatusChange}
-								<button class="cell-status" onclick={() => cycleStatus(item, field.options!)} title="Click to cycle">
-									{formatLabel(fields[field.key] ?? '')}
-								</button>
-							{:else}
-								<span class="cell-value">{fields[field.key] ?? ''}</span>
-							{/if}
-						</td>
-					{/each}
-					<td class="col-updated"><span class="cell-date">{relativeTime(item.updated_at)}</span></td>
-				</tr>
+				</div>
 			{/each}
-		</tbody>
-	</table>
+			<div class="table-cell col-updated" role="columnheader">Updated</div>
+		</div>
+		{#each sortedItems as item (item.id)}
+			{@const fields = parseFields(item)}
+			<div class="table-row" role="row">
+				<div class="table-cell col-ref" role="cell"><span class="ref">{formatItemRef(item) ?? ''}</span></div>
+				<div class="table-cell col-title" role="cell">
+					<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
+					{#if itemProgress?.[item.id]}
+						{@const p = itemProgress[item.id]}
+						<div class="cell-progress">
+							<div class="cell-progress-bar"><div class="cell-progress-fill" style:width="{Math.round((p.done / p.total) * 100)}%"></div></div>
+							<span class="cell-progress-text">{p.done}/{p.total}</span>
+						</div>
+					{/if}
+				</div>
+				{#each visibleFields as field (field.key)}
+					<div class="table-cell" role="cell">
+						{#if field.key === 'status' && field.options && onStatusChange}
+							<button class="cell-status" onclick={() => cycleStatus(item, field.options!)} title="Click to cycle">
+								{formatLabel(fields[field.key] ?? '')}
+							</button>
+						{:else}
+							<span class="cell-value">{fields[field.key] ?? ''}</span>
+						{/if}
+					</div>
+				{/each}
+				<div class="table-cell col-updated" role="cell"><span class="cell-date">{relativeTime(item.updated_at)}</span></div>
+			</div>
+		{/each}
+	</div>
 </div>
 {/if}
 
@@ -163,70 +188,79 @@
 	}
 
 	.table-view {
+		display: grid;
+		/* grid-template-columns is set inline via style:grid-template-columns
+		   because the column count depends on the collection schema. */
 		width: 100%;
-		border-collapse: collapse;
 		font-size: 0.88em;
 	}
 
-	.table-view th {
-		text-align: left;
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 2px solid var(--border);
-		font-weight: 600;
-		font-size: 0.85em;
-		color: var(--text-secondary);
-		white-space: nowrap;
+	/*
+	 * Each row inherits the parent grid's columns via `subgrid`. This
+	 * keeps cell alignment perfect across rows AND lets the row itself
+	 * be the unit that content-visibility can skip.
+	 *
+	 * subgrid: Chrome 117+ / Firefox 71+ / Safari 16+. Browsers without
+	 * subgrid fall back to the same column template as the parent — see
+	 * the @supports block below.
+	 */
+	.table-row {
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-column: 1 / -1;
+		border-bottom: 1px solid var(--border-subtle, var(--border));
+	}
+
+	@supports not (grid-template-columns: subgrid) {
+		.table-row {
+			grid-template-columns: inherit;
+		}
+	}
+
+	.table-row.table-header {
 		position: sticky;
 		top: 0;
 		background: var(--bg-primary);
 		z-index: 1;
+		border-bottom: 2px solid var(--border);
 	}
 
-	.table-view td {
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 1px solid var(--border-subtle, var(--border));
-		vertical-align: middle;
-	}
-
-	.table-view tbody tr {
-		/*
-		 * Virtualization (TASK-1348 / PLAN-1343 Phase 1) — flat-row
-		 * variant of the approach landed in TASK-1346 (ListView) and
-		 * TASK-1347 (BoardView). The browser skips layout/style/paint
-		 * work for any row that has scrolled out of the table's
-		 * scrolling viewport.
-		 *
-		 * CSS Containment L2 §4.4 historically treated layout/paint
-		 * containment as a no-op on table-row elements, which kept
-		 * `content-visibility: auto` from doing anything on `<tr>`.
-		 * Chrome 122+ (March 2024) and follow-on Firefox/Safari
-		 * releases lifted that limitation for content-visibility
-		 * specifically. The rule is therefore opportunistic: modern
-		 * browsers get virtualization, older engines treat it as a
-		 * no-op and render unchanged (still correct, just no perf
-		 * gain).
-		 *
-		 * `contain-intrinsic-size: auto 36px` is the placeholder
-		 * height for unrendered rows. 36px matches the actual data-
-		 * row height (var(--space-2) padding × 2 + ~20px line-height).
-		 * The `auto` keyword caches the real measured height after
-		 * first paint so rows with progress bars or wrapped titles
-		 * keep their natural height after re-entering the viewport.
-		 *
-		 * The sticky header (`thead th { position: sticky; top: 0; }`)
-		 * lives in `<thead>` and is unaffected by per-`tr` paint
-		 * skipping; it stays pinned regardless of scroll position.
-		 * Column-sort buttons live in `<thead>` too — also untouched.
-		 * No DnD or absolutely-positioned overflow content inside
-		 * rows, so no `overflow-clip-margin` escape hatch is needed
-		 * (cf. PR #489's pr-badge handling on BoardView).
-		 */
+	/*
+	 * Virtualization rule. Applies to every body row (the header row is
+	 * excluded so sticky positioning isn't fought by paint skipping).
+	 *
+	 *   - content-visibility: auto — engine skips work when off-screen
+	 *   - contain-intrinsic-size: auto 36px — placeholder height for
+	 *     unrendered rows; the `auto` keyword caches measured heights
+	 *     so rows with progress bars or wrapped titles keep their real
+	 *     size on re-entry
+	 *
+	 * No DnD, no protruding badges, no absolute-positioned overflow on
+	 * cells, so no `overflow-clip-margin` escape hatch is required (cf.
+	 * PR #489's pr-badge handling on BoardView).
+	 */
+	.table-row:not(.table-header) {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 36px;
 	}
 
-	.table-view tbody tr:hover {
+	.table-row:not(.table-header):hover {
 		background: var(--bg-hover);
+	}
+
+	.table-cell {
+		padding: var(--space-2) var(--space-3);
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
+	.table-header .table-cell {
+		font-weight: 600;
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 
 	.sort-btn {
@@ -238,15 +272,16 @@
 		cursor: pointer;
 		padding: 0;
 		white-space: nowrap;
+		text-align: left;
 	}
 
 	.sort-btn:hover {
 		color: var(--accent-blue);
 	}
 
-	.col-ref { width: 70px; }
-	.col-title { min-width: 200px; }
-	.col-updated { width: 90px; }
+	/* .col-ref and .col-updated widths come from grid-template-columns;
+	   .col-title only needs the column-stack treatment for its progress bar. */
+	.col-title { min-width: 0; flex-direction: column; align-items: flex-start; }
 
 	.ref {
 		font-family: var(--font-mono);
@@ -297,6 +332,7 @@
 		align-items: center;
 		gap: 4px;
 		margin-top: 2px;
+		width: 100%;
 	}
 
 	.cell-progress-bar {
