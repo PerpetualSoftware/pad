@@ -159,7 +159,8 @@ pad item blocked-by <item> <blocker>
 pad item deps <ref>           # Show dependencies
 pad item unblock <source> <target>
 pad collection list           # List collections
-pad collection create "Name" --fields "key:type[:opts]; ..."
+pad collection create "Name" --fields "key:type[:opts]; ..."  # compact DSL for simple schemas
+pad collection create "Name" --schema '<json>'                # full CollectionSchema (terminal_options, defaults, computed, relations)
 pad item edit <ref>           # Open in $EDITOR
 pad workspace init [--template X]  # Create workspace
 pad agent install [tool]      # Install /pad skill for AI tools
