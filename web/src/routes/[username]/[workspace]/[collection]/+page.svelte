@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
@@ -96,13 +96,16 @@
 	// state CTA can flash for non-empty collections while items are
 	// still hydrating, and scroll restore can be consumed against an
 	// empty filteredItems list (Codex P2 round 1).
-	let indexReady = $derived(
-		wsSlug
-			? localIndex.bootstrapStateFor(wsSlug) === 'ready' ||
-				localIndex.bootstrapStateFor(wsSlug) === 'error'
-			: true,
+	let indexState = $derived(
+		wsSlug ? localIndex.bootstrapStateFor(wsSlug) : 'ready',
 	);
-	let loading = $derived(metaLoading || !indexReady);
+	let indexReady = $derived(indexState === 'ready');
+	// `indexError` surfaces a cold-load failure (transient /items-index
+	// failure with no cache to fall back on). The template renders an
+	// error banner with a retry CTA instead of the misleading "No
+	// items yet" empty state (Codex P2 round 4 of TASK-1357).
+	let indexError = $derived(indexState === 'error');
+	let loading = $derived(metaLoading || (!indexReady && !indexError));
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
 	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
@@ -428,7 +431,19 @@
 			// Cap hit — pretend success at the page level so we don't
 			// thrash, but tell the caller it wasn't a clean catch-up.
 			return false;
-		} catch {
+		} catch (err) {
+			// 401 (session expired) / 403 (access revoked) mean the
+			// cache is no longer ours to display. Drop it through the
+			// same path bootstrap uses so the 403 handler (TASK-1360)
+			// + 401 /login redirect (already in api/client.ts) can
+			// react. Other failures stay silent — SSE or the next
+			// tab-resume retries. Codex P1 round 4 of TASK-1357.
+			if (
+				err instanceof PadApiError &&
+				(err.code === 'forbidden' || err.code === 'unauthorized')
+			) {
+				localIndex.reset(ws);
+			}
 			return false;
 		}
 	}
@@ -1334,7 +1349,27 @@
 		</div>
 
 		<!-- Content -->
-		{#if items.length === 0}
+		{#if indexError && items.length === 0}
+			<!-- localIndex bootstrap failed and the cache is empty
+			     (e.g. transient /items-index failure on cold load).
+			     Show a retry path instead of the misleading "No
+			     items yet" empty state — the workspace might have
+			     items the user just can't see yet. -->
+			<div class="empty-state-box">
+				<div class="empty-icon">⚠️</div>
+				<h2>Couldn't load {collection.name.toLowerCase()}</h2>
+				<p>Something went wrong while loading this workspace.</p>
+				<button
+					class="empty-cta"
+					onclick={() => {
+						localIndex.reset(wsSlug);
+						localIndex.bootstrap(wsSlug, { userId: authStore.userId || null });
+					}}
+				>
+					Retry
+				</button>
+			</div>
+		{:else if items.length === 0}
 			<div class="empty-state-box">
 				<div class="empty-icon">{collection.icon || '📦'}</div>
 				<h2>No {collection.name.toLowerCase()} yet</h2>
