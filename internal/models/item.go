@@ -1,7 +1,9 @@
 package models
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -570,6 +572,105 @@ type ItemUpdate struct {
 	// (since nil pointer means "don't change" in partial updates)
 	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`
 	ClearAgentRole    bool `json:"clear_agent_role,omitempty"`
+}
+
+// ErrInvalidFieldsType / ErrInvalidTagsType are returned by
+// ItemUpdate.UnmarshalJSON when the inbound `fields` / `tags` value is
+// neither a JSON-encoded string nor the natural object/array shape.
+// Wire handlers surface the sentinel's message verbatim (without the
+// "invalid JSON: ..." wrapper from decodeJSON) so callers see a clean
+// domain-level error instead of leaked Go internals. See BUG-1144.
+var (
+	ErrInvalidFieldsType = errors.New(`"fields" must be a JSON object or a JSON-encoded string`)
+	ErrInvalidTagsType   = errors.New(`"tags" must be a JSON array or a JSON-encoded string`)
+)
+
+// UnmarshalJSON accepts `fields` / `tags` either as the canonical
+// JSON-encoded string shape (matches models.Item.Fields/Tags storage)
+// OR as the natural nested object/array shape any reasonable HTTP
+// client would send. The struct fields stay `*string` and the rest
+// of the pipeline (validation, store writes, web/CLI consumers) is
+// unchanged — we just normalize the wire input here.
+//
+// In-process callers that construct ItemUpdate{} literals never hit
+// this path, so no internal call site needs to change.
+//
+// See BUG-1144 (input side) and BUG-991 (the symmetric response-side
+// dual-emit, fixed at the MCP boundary in PR #364).
+func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
+	// Use an alias to inherit every other field's default unmarshal
+	// behaviour, while shadowing fields/tags with json.RawMessage so we
+	// can inspect the raw shape. The outer fields shadow the embedded
+	// alias's same-named fields because they are less deeply nested.
+	type alias ItemUpdate
+	aux := struct {
+		Fields json.RawMessage `json:"fields,omitempty"`
+		Tags   json.RawMessage `json:"tags,omitempty"`
+		*alias
+	}{alias: (*alias)(u)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// The alias decode leaves u.Fields / u.Tags nil (the raw bytes were
+	// captured at the outer level). Re-populate them from the flex parser.
+	fieldsStr, err := flexJSONToString(aux.Fields, '{', ErrInvalidFieldsType)
+	if err != nil {
+		return err
+	}
+	u.Fields = fieldsStr
+
+	tagsStr, err := flexJSONToString(aux.Tags, '[', ErrInvalidTagsType)
+	if err != nil {
+		return err
+	}
+	u.Tags = tagsStr
+
+	return nil
+}
+
+// flexJSONToString accepts a raw JSON value and returns it as a
+// canonical JSON-encoded string. Acceptable inbound shapes:
+//
+//   - absent / empty / null → nil (caller leaves the field unchanged)
+//   - JSON string → passthrough (already the canonical shape)
+//   - JSON object or array (matching expectedStart '{' or '[') → re-marshal to string
+//
+// Any other shape returns errInvalid so the handler surfaces a clean
+// domain-level error instead of a leaked Go unmarshal message.
+func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error) (*string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	switch trimmed[0] {
+	case '"':
+		// Already a JSON-encoded string — unmarshal to the underlying Go
+		// string so subsequent code that does json.Unmarshal([]byte(*s), ...)
+		// sees the inner JSON, not a re-quoted string.
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return nil, errInvalid
+		}
+		return &s, nil
+	case expectedStart:
+		// Object or array — re-marshal to a canonical JSON string so
+		// the downstream string-typed pipeline can json.Unmarshal it
+		// back to a map/slice exactly as if the caller had stringified.
+		var v any
+		if err := json.Unmarshal(trimmed, &v); err != nil {
+			return nil, errInvalid
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, errInvalid
+		}
+		s := string(b)
+		return &s, nil
+	default:
+		return nil, errInvalid
+	}
 }
 
 type ItemListParams struct {

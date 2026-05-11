@@ -378,6 +378,17 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 	var input models.ItemUpdate
 	if err := decodeJSON(r, &input); err != nil {
+		// Surface the domain-level errors from ItemUpdate.UnmarshalJSON
+		// (BUG-1144) without the "invalid JSON: ..." wrapper from
+		// decodeJSON, so callers see a clean message naming the field.
+		if errors.Is(err, models.ErrInvalidFieldsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidFieldsType.Error())
+			return
+		}
+		if errors.Is(err, models.ErrInvalidTagsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidTagsType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
