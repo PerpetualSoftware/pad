@@ -446,7 +446,11 @@ func BuildCLIArgs(
 				}
 				continue
 			}
-			flagArgs = append(flagArgs, "--"+name, fmt.Sprint(val))
+			encoded, err := encodeFlagValue(val)
+			if err != nil {
+				return nil, fmt.Errorf("flag %q: %w", name, err)
+			}
+			flagArgs = append(flagArgs, "--"+name, encoded)
 		}
 	}
 
@@ -528,6 +532,35 @@ func toStringSlice(v any) ([]string, error) {
 		return []string{t}, nil
 	}
 	return nil, fmt.Errorf("expected array or string, got %T", v)
+}
+
+// encodeFlagValue stringifies an MCP input value for inclusion as a CLI
+// flag argument. Strings and primitives pass through fmt.Sprint as before;
+// structured values (maps, slices) are JSON-encoded so that flags accepting
+// JSON literals — like `pad collection create --schema '<json>'` — receive
+// a valid JSON string rather than Go's map-print syntax.
+//
+// exec.CommandContext takes []string args directly, so no shell-quoting is
+// involved; the JSON string travels intact to the subprocess and is parsed
+// by the CLI flag's own decoder.
+func encodeFlagValue(v any) (string, error) {
+	switch t := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return t, nil
+	case bool, int, int32, int64, uint, uint32, uint64, float32, float64, json.Number:
+		return fmt.Sprint(v), nil
+	default:
+		// map[string]any, []any, or any other structured type: JSON-encode.
+		// Compact JSON keeps the CLI process-arg list small and avoids any
+		// embedded-newline weirdness.
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("encode value: %w", err)
+		}
+		return string(b), nil
+	}
 }
 
 func toBool(v any) (bool, error) {

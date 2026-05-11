@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // routeSpec is the declarative description of a CLI→HTTP mapping.
@@ -361,13 +362,31 @@ func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
 	}
 
 	dsl, _ := input["fields"].(string)
-	schema, err := parseCollectionFieldsDSL(dsl)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("parse --fields: %w", err)
+	rawSchema, hasSchema := input["schema"]
+	if hasSchema && dsl != "" {
+		return "", "", nil, fmt.Errorf("fields and schema are mutually exclusive")
 	}
-	schemaJSON, err := json.Marshal(schema)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("encode schema: %w", err)
+
+	var schemaJSON []byte
+	if hasSchema {
+		// Schema may arrive as a map (typed object param), as a string
+		// (agent passed a stringified JSON), or — defensively — as nil
+		// when omitted but the key was still set.
+		encoded, err := encodeSchemaForBody(rawSchema)
+		if err != nil {
+			return "", "", nil, err
+		}
+		schemaJSON = encoded
+	} else {
+		schema, err := parseCollectionFieldsDSL(dsl)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse --fields: %w", err)
+		}
+		b, err := json.Marshal(schema)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("encode schema: %w", err)
+		}
+		schemaJSON = b
 	}
 
 	layout, _ := input["layout"].(string)
@@ -468,6 +487,44 @@ func parseCollectionFieldsDSL(dsl string) (map[string]any, error) {
 	}
 	out["fields"] = fields
 	return out, nil
+}
+
+// encodeSchemaForBody converts a `schema` MCP input value into a
+// JSON-encoded CollectionSchema string suitable for the create-collection
+// HTTP body's `schema` field. Accepts either a structured object (the
+// typical typed-param shape an MCP client sends) or a string containing
+// inline JSON (fallback for clients that can't construct typed objects).
+//
+// Backfills missing `label` values on each field using the same
+// Title-Case-of-key heuristic as the CLI (`cmd/pad/main.go`'s
+// collectionSchemaJSONFromFlags) so a schema constructed in either
+// surface renders identically in the web UI.
+func encodeSchemaForBody(raw any) ([]byte, error) {
+	if raw == nil {
+		return json.Marshal(models.CollectionSchema{})
+	}
+	var blob []byte
+	switch t := raw.(type) {
+	case string:
+		blob = []byte(t)
+	default:
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("encode schema: %w", err)
+		}
+		blob = b
+	}
+
+	var schema models.CollectionSchema
+	if err := json.Unmarshal(blob, &schema); err != nil {
+		return nil, fmt.Errorf("invalid schema JSON: %w", err)
+	}
+	for i := range schema.Fields {
+		if schema.Fields[i].Label == "" && schema.Fields[i].Key != "" {
+			schema.Fields[i].Label = titleCaseLabel(schema.Fields[i].Key)
+		}
+	}
+	return json.Marshal(schema)
 }
 
 // titleCaseLabel converts a snake_case key into a Title Case label

@@ -27,7 +27,12 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "fields",
 				Type:        "string",
-				Description: "Field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\".",
+				Description: "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". Use `schema` instead when you need terminal_options, custom defaults, computed fields, suffixes, or relation collections — the DSL cannot express those. Mutually exclusive with `schema`.",
+			},
+			{
+				Name:        "schema",
+				Type:        "object",
+				Description: "Structured CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. Optional for action=create. Use instead of `fields` when you need terminal_options or any FieldDef property the DSL cannot express. Missing `label` values are auto-filled from `key` using Title Case (e.g. due_date → Due Date). Mutually exclusive with `fields`.",
 			},
 			{
 				Name:        "icon",
@@ -71,8 +76,14 @@ Actions:
             Required: workspace.
   create  — Create a new collection.
             Required: workspace, name.
-            Optional: fields, icon, description, layout, default_view, board_group_by.
-            Field DSL example: "status:select:open,done; priority:select:high,medium,low".
+            Optional: fields OR schema (mutually exclusive), icon, description,
+                      layout, default_view, board_group_by.
+            DSL example:    fields="status:select:open,done; priority:select:high,medium,low"
+            Schema example: schema={"fields":[{"key":"status","type":"select","options":["new","done"],"terminal_options":["done"]}]}
+            Prefer schema when terminal_options matters (driving dashboard
+            active/complete counts) or when fields need defaults, computed
+            flags, suffixes, or relation collections — the DSL cannot express
+            those.
 
 Schema for an individual collection is included in the list response — read it
 from there rather than calling list again. v0.2 does not expose a dedicated
