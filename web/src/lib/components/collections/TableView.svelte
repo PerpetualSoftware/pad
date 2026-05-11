@@ -188,6 +188,43 @@
 		vertical-align: middle;
 	}
 
+	.table-view tbody tr {
+		/*
+		 * Virtualization (TASK-1348 / PLAN-1343 Phase 1) — flat-row
+		 * variant of the approach landed in TASK-1346 (ListView) and
+		 * TASK-1347 (BoardView). The browser skips layout/style/paint
+		 * work for any row that has scrolled out of the table's
+		 * scrolling viewport.
+		 *
+		 * CSS Containment L2 §4.4 historically treated layout/paint
+		 * containment as a no-op on table-row elements, which kept
+		 * `content-visibility: auto` from doing anything on `<tr>`.
+		 * Chrome 122+ (March 2024) and follow-on Firefox/Safari
+		 * releases lifted that limitation for content-visibility
+		 * specifically. The rule is therefore opportunistic: modern
+		 * browsers get virtualization, older engines treat it as a
+		 * no-op and render unchanged (still correct, just no perf
+		 * gain).
+		 *
+		 * `contain-intrinsic-size: auto 36px` is the placeholder
+		 * height for unrendered rows. 36px matches the actual data-
+		 * row height (var(--space-2) padding × 2 + ~20px line-height).
+		 * The `auto` keyword caches the real measured height after
+		 * first paint so rows with progress bars or wrapped titles
+		 * keep their natural height after re-entering the viewport.
+		 *
+		 * The sticky header (`thead th { position: sticky; top: 0; }`)
+		 * lives in `<thead>` and is unaffected by per-`tr` paint
+		 * skipping; it stays pinned regardless of scroll position.
+		 * Column-sort buttons live in `<thead>` too — also untouched.
+		 * No DnD or absolutely-positioned overflow content inside
+		 * rows, so no `overflow-clip-margin` escape hatch is needed
+		 * (cf. PR #489's pr-badge handling on BoardView).
+		 */
+		content-visibility: auto;
+		contain-intrinsic-size: auto 36px;
+	}
+
 	.table-view tbody tr:hover {
 		background: var(--bg-hover);
 	}
