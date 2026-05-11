@@ -491,17 +491,21 @@
 		 * keyword caches the real measured height after first paint so
 		 * later scrolls back to that card don't reflow.
 		 *
-		 * `overflow-clip-margin: 6px` is the fix for ItemCard's
+		 * `overflow-clip-margin: 12px` is the fix for ItemCard's
 		 * `.pr-badge`, which positions itself at `right: -6px` and
 		 * deliberately protrudes past the card's right edge. CSS
 		 * Containment L2 §3.4 / §4 specifies that `content-visibility:
 		 * auto` applies paint containment continuously — including
 		 * on-screen — and paint containment clips ink overflow. Without
 		 * `overflow-clip-margin`, the badge would be clipped flush at
-		 * the wrapper's content box. The 6px margin matches the badge's
-		 * outward offset exactly, so the badge renders unchanged from
-		 * the pre-virtualization layout. Codex round 2 [P2] on PR #489
-		 * caught the spec misreading in round 1's first fix attempt.
+		 * the wrapper's content box. The margin budget:
+		 *   - 6px for the badge's outward offset (`right: -6px`)
+		 *   - ~3px for the badge's `box-shadow: 0 1px 3px` blur radius
+		 *   - ~2px for the hover `transform: scale(1.05)` growth at
+		 *     the typical 25-40px badge width
+		 * 12px covers all three with a small safety margin. Codex
+		 * rounds 2 + 3 on PR #489 walked through the spec misreading
+		 * in round 1 and then the under-sized margin in round 2.
 		 *
 		 * Browser support for `overflow-clip-margin`: Chrome 90+,
 		 * Firefox 102+, Safari 16.4+ — all browsers that ship
@@ -511,7 +515,7 @@
 		 */
 		content-visibility: auto;
 		contain-intrinsic-size: auto 80px;
-		overflow-clip-margin: 6px;
+		overflow-clip-margin: 12px;
 	}
 
 	.card-wrapper:active {
