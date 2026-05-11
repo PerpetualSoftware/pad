@@ -475,6 +475,43 @@
 		-webkit-touch-callout: none;
 		-webkit-user-select: none;
 		user-select: none;
+		/*
+		 * Virtualization (TASK-1346 / PLAN-1343 Phase 1).
+		 *
+		 * `content-visibility: auto` lets the browser skip layout, style,
+		 * and paint work for any row that is off-screen, which is the
+		 * dominant cost at large collection sizes (5,000+ items target
+		 * 60fps scroll per the task acceptance). All DOM nodes stay
+		 * mounted so:
+		 *   - svelte-dnd-action keeps every reorder target in the tree
+		 *   - window-level scrollTo (parent page's scroll restoration
+		 *     and keyboard scrollIntoView) finds the right offsets
+		 *   - keyboard focus on an "off-screen" row still works — the
+		 *     browser brings it into view on focus and rehydrates paint
+		 *
+		 * `contain-intrinsic-size: auto 60px` gives the browser a layout
+		 * placeholder for unrendered rows. The `auto` keyword (Chrome 99+,
+		 * Firefox 125+, Safari 18+) caches the last measured size, so a
+		 * row that paints once retains its real height even after it
+		 * scrolls back off-screen — eliminating the layout shift that
+		 * a fixed intrinsic size would cause for taller rows (cards with
+		 * many tags, long titles, or a progress bar). The fallback `60px`
+		 * matches the median ItemCard height for the common
+		 * single-line case.
+		 *
+		 * We evaluated `@tanstack/svelte-virtual` and a hand-rolled
+		 * IntersectionObserver windowing scheme. Both shipping shape
+		 * options remove off-screen rows from the DOM, which collides
+		 * head-on with all three preservation requirements: DnD needs
+		 * the source node mounted on drop; window.scrollTo can't find
+		 * an anchor that isn't there; keyboard nav's
+		 * scrollIntoView(`.item-card.focused`) returns null for a row
+		 * the windowing layer has unmounted. `content-visibility` is
+		 * the only option that hits the perf target without forcing a
+		 * rewrite of those three call sites.
+		 */
+		content-visibility: auto;
+		contain-intrinsic-size: auto 60px;
 	}
 
 	.list-row:active {
