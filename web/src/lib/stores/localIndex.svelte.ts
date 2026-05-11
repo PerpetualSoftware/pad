@@ -82,9 +82,9 @@ class WorkspaceState {
 	bootstrapState = $state<BootstrapState>('cold');
 
 	// `userId` is captured on first bootstrap and used to scope the
-	// IDB database name. Null = anonymous (pre-auth bootstrap). It
-	// never changes once set — a different user signing in goes
-	// through `reset()` first, dropping the state.
+	// IDB database name. Null = anonymous (pre-auth bootstrap). A
+	// later bootstrap call with a different userId triggers a reset
+	// (see `bootstrap`) so we never mix caches across users.
 	userId: string | null = null;
 
 	// `generation` is bumped on every `reset()`. Bootstrap captures
@@ -95,6 +95,14 @@ class WorkspaceState {
 	// completed snapshot resurrect just-purged rows (Codex P1
 	// round 3).
 	generation = 0;
+
+	// `pendingResync` is true when the warm-cache path hydrated rows
+	// from IDB but the follow-up /items-changes reconcile didn't
+	// complete (transient network blip). The cache is usable —
+	// `bootstrapState` is `'ready'` so the UI renders — but a later
+	// `bootstrap()` call will retry the delta sync instead of
+	// no-opping. Cleared on successful sync. Codex P2 round 5.
+	pendingResync = $state(false);
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -197,8 +205,23 @@ export const localIndex = {
 		ws: string,
 		opts: { userId: string | null },
 	): Promise<void> {
+		// User-mismatch reset BEFORE the early-return checks. Otherwise
+		// a different user signing into the same browser would inherit
+		// the previous user's `ready` state and in-flight promise
+		// (Codex P1 round 5). `ensureState` auto-creates a fresh
+		// WorkspaceState after the reset.
+		const prior = workspaces.get(ws);
+		if (prior && prior.bootstrapState !== 'cold' && prior.userId !== opts.userId) {
+			localIndex.reset(ws);
+		}
+
 		const state = ensureState(ws);
-		if (state.bootstrapState === 'ready') return;
+		// Early return for already-ready states ONLY when there's no
+		// outstanding resync work. A transient delta-sync failure
+		// (network blip) leaves `pendingResync = true`; the next
+		// bootstrap call must retry the reconcile, not no-op. Codex P2
+		// round 5.
+		if (state.bootstrapState === 'ready' && !state.pendingResync) return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
 
@@ -218,11 +241,17 @@ export const localIndex = {
 
 		const p = (async () => {
 			try {
-				// Stage 1: warm path. Always try IDB first.
-				const cached = await persistHydrate(userId, ws);
+				// Stage 1: warm path. Always try IDB first. Skip
+				// re-hydration when state is already 'ready' (re-entry
+				// from a `pendingResync` retry); we just need to redo
+				// the reconcile.
+				const reentry = state.bootstrapState === 'ready';
+				const cached = reentry
+					? { items: [], cursor: state.cursor }
+					: await persistHydrate(userId, ws);
 				if (isStale()) return;
-				const hasCache = cached.items.length > 0;
-				if (hasCache) {
+				const hasCache = reentry || cached.items.length > 0;
+				if (!reentry && cached.items.length > 0) {
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -230,8 +259,10 @@ export const localIndex = {
 						state.cursor = cached.cursor;
 					}
 					// Flip to ready immediately — the UI paints from
-					// the cache while delta-sync runs.
+					// the cache while delta-sync runs. `pendingResync`
+					// stays true until the reconcile finishes.
 					state.bootstrapState = 'ready';
+					state.pendingResync = true;
 				}
 
 				if (hasCache) {
@@ -269,6 +300,8 @@ export const localIndex = {
 							localIndex.applyDelta(ws, delta.changes, delta.cursor);
 							if (delta.cursor === since) break;
 						}
+						// Reconcile succeeded — cache is fresh as of now.
+						state.pendingResync = false;
 					} catch (err) {
 						if (isStale()) return;
 						if (err instanceof PadApiError && err.code === 'forbidden') {
@@ -277,12 +310,20 @@ export const localIndex = {
 							// (and any registered 403 handler from
 							// TASK-1360) can react.
 							state.bootstrapState = 'error';
+							state.pendingResync = false;
 							state.items.clear();
 							state.cursor = '0';
 							persistWipe(userId, ws).catch(() => undefined);
 							throw err;
 						}
-						/* swallow — cache stands, retry on reconnect */
+						// Transient network failure. Cache stands and
+						// state stays 'ready' so the UI keeps working.
+						// `pendingResync` remains true so the next
+						// bootstrap() call retries (Codex P2 round 5).
+						// Permission revocation that doesn't change
+						// row data is NOT covered here — TASK-1360 and
+						// DOC-1342 decision #3 explicitly punt that in
+						// favor of the 403-on-click purge path.
 					}
 				} else {
 					// Stage 2: cold path. /items-index full snapshot.
@@ -297,6 +338,8 @@ export const localIndex = {
 						state.cursor = resp.cursor;
 					}
 					state.bootstrapState = 'ready';
+					// Cold path is a full snapshot — nothing pending.
+					state.pendingResync = false;
 					// Best-effort persist the cold snapshot to IDB so
 					// the next visit is warm. We persist the POST-MERGE
 					// in-memory rows (not raw `resp.items`), and use
