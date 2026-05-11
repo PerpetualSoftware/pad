@@ -132,6 +132,32 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		params.ItemIDs = grantedItemIDs
 	}
 
+	// Snapshot the workspace's MAX(seq) BEFORE the list query so the
+	// fallback cursor cannot leapfrog a concurrent insert that
+	// committed between the list query and a post-list MaxItemSeq
+	// read. Per Codex review of TASK-1353 round 1 [P1]:
+	//
+	//   List → empty.
+	//   Concurrent INSERT lands with seq = M+1 (visible to a future
+	//     /items-changes call).
+	//   MaxItemSeq → M+1.
+	//   Cursor = M+1, response = [].
+	//   Client polls /items-changes?since=M+1 → seq > M+1 returns
+	//     nothing. The new row is lost.
+	//
+	// Capturing M BEFORE the list eliminates that window: any insert
+	// after the snapshot has seq > M (workspace counter is strictly
+	// monotonic per TASK-1352), so /items-changes?since=M will return
+	// it. Rows the list DOES see may have seq > M (a concurrent insert
+	// the list query happened to observe); MAX(rows.seq) bumps the
+	// cursor for that case so the client never re-fetches what was
+	// already in the response.
+	wsMaxBefore, err := s.store.MaxItemSeq(workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	result, err := s.store.ListItemsIndex(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -142,25 +168,14 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
-	// Cursor: workspace-scoped MAX(seq) (PLAN-1343 / TASK-1353). We
-	// compute it across the returned set first (cheapest path), and
-	// fall back to the workspace's true MAX(seq) when the result is
-	// empty so a filtered-but-non-empty workspace's clients can still
-	// poll /items-changes?since=<cursor> against a meaningful floor.
-	// Empty workspaces collapse to "0".
-	var cursorSeq int64
+	// Cursor: max(pre-list workspace floor, MAX(returned-rows.seq)).
+	// See the long comment above MaxItemSeq for why the floor is read
+	// BEFORE ListItemsIndex. Empty workspace + empty result → "0".
+	cursorSeq := wsMaxBefore
 	for _, it := range result {
 		if it.Seq > cursorSeq {
 			cursorSeq = it.Seq
 		}
-	}
-	if cursorSeq == 0 {
-		wsMax, err := s.store.MaxItemSeq(workspaceID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		cursorSeq = wsMax
 	}
 	cursor := strconv.FormatInt(cursorSeq, 10)
 
