@@ -1123,3 +1123,121 @@ func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
 		}
 	})
 }
+
+// TestPatchItem_FlexibleFieldsShape covers BUG-1144: PATCH must accept
+// `fields` (and `tags`) as a nested JSON object/array in addition to
+// the historical JSON-encoded-string shape. Wrong shapes return a
+// clean domain-level error instead of leaked Go unmarshal internals.
+func TestPatchItem_FlexibleFieldsShape(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Seed an item to patch.
+	createResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "BUG-1144 fixture",
+		"fields": `{"status":"open","priority":"medium"}`,
+	})
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("seed: expected 201, got %d: %s", createResp.Code, createResp.Body.String())
+	}
+	var seeded models.Item
+	parseJSON(t, createResp, &seeded)
+
+	t.Run("fields as nested object (the BUG-1144 repro)", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"fields": map[string]interface{}{
+				"status":   "in-progress",
+				"priority": "high",
+			},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for nested-object fields, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got models.Item
+		parseJSON(t, rr, &got)
+		var fields map[string]interface{}
+		if err := json.Unmarshal([]byte(got.Fields), &fields); err != nil {
+			t.Fatalf("response fields not valid JSON: %v", err)
+		}
+		if fields["status"] != "in-progress" || fields["priority"] != "high" {
+			t.Fatalf("update didn't apply: %#v", fields)
+		}
+	})
+
+	t.Run("fields as JSON-encoded string still works (back-compat)", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"fields": `{"status":"done","priority":"high"}`,
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for stringified fields, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got models.Item
+		parseJSON(t, rr, &got)
+		var fields map[string]interface{}
+		json.Unmarshal([]byte(got.Fields), &fields)
+		if fields["status"] != "done" {
+			t.Fatalf("update didn't apply: %#v", fields)
+		}
+	})
+
+	t.Run("fields wrong type returns domain-level error, not Go internals", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"fields": 42,
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for numeric fields, got %d: %s", rr.Code, rr.Body.String())
+		}
+		body := rr.Body.String()
+		// Must NOT leak Go internals.
+		if bytes.Contains([]byte(body), []byte("Go struct field")) {
+			t.Fatalf("response leaked Go internals: %s", body)
+		}
+		if bytes.Contains([]byte(body), []byte("ItemUpdate.fields")) {
+			t.Fatalf("response leaked Go field name: %s", body)
+		}
+		// Must guide the caller toward a fix. The error JSON has its
+		// inner double-quotes escaped, so check for the escaped form.
+		if !bytes.Contains([]byte(body), []byte(`\"fields\" must be a JSON object`)) {
+			t.Fatalf("response missing domain-level message: %s", body)
+		}
+	})
+
+	t.Run("tags as nested array", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"tags": []string{"alpha", "beta"},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for nested-array tags, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got models.Item
+		parseJSON(t, rr, &got)
+		var tags []string
+		if err := json.Unmarshal([]byte(got.Tags), &tags); err != nil {
+			t.Fatalf("response tags not valid JSON: %v", err)
+		}
+		if len(tags) != 2 || tags[0] != "alpha" || tags[1] != "beta" {
+			t.Fatalf("update didn't apply: %#v", tags)
+		}
+	})
+
+	t.Run("tags as JSON-encoded string still works", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"tags": `["gamma"]`,
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for stringified tags, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("tags wrong type returns domain-level error", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+seeded.Ref, map[string]interface{}{
+			"tags": map[string]interface{}{"x": 1},
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for object tags, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !bytes.Contains(rr.Body.Bytes(), []byte(`\"tags\" must be a JSON array`)) {
+			t.Fatalf("response missing domain-level tags message: %s", rr.Body.String())
+		}
+	})
+}
