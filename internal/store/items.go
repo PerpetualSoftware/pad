@@ -750,11 +750,18 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 		return nil, nil
 	}
 
+	// `i.deleted_at` is in the projection so the local-first client
+	// (PLAN-1343 / TASK-1355) can distinguish archived rows hydrated
+	// with `IncludeArchived=true` from live rows. When the flag is
+	// false, the WHERE clause filters them out anyway; when it's
+	// true, the field is populated for the soft-deleted subset and
+	// nil for live rows. Mirrors the projection of
+	// ListItemsChangesSince which has always carried this column.
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.seq, i.created_at, i.updated_at,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
@@ -1078,13 +1085,14 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 	for rows.Next() {
 		var item models.Item
 		var createdAt, updatedAt string
+		var deletedAt *string
 		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
@@ -1094,6 +1102,10 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 		item.Pinned = pinned
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
+		if deletedAt != nil {
+			t := parseTime(*deletedAt)
+			item.DeletedAt = &t
+		}
 		hydrateItemComputedMetadata(&item)
 		items = append(items, item)
 	}

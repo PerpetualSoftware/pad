@@ -114,7 +114,17 @@ export const localIndex = {
 	 * the caller can retry by calling `bootstrap` again — the next
 	 * call sees `bootstrapState === 'error'` and proceeds. Archived
 	 * items are included in the snapshot (the store is the canonical
-	 * read model for both live and archived rows; consumers filter).
+	 * read model for both live and archived rows; consumers filter
+	 * via `{ includeArchived }`).
+	 *
+	 * Merge, don't clear. An optimistic `upsert()` or an SSE-driven
+	 * write can land while the /items-index request is in flight; if
+	 * we cleared and replaced, we'd silently regress those rows to
+	 * the older snapshot value (Codex P2 round 3). Instead, we
+	 * MERGE each response row through the same per-row seq guard
+	 * `upsert` uses, and the cursor only advances forward. The
+	 * cleared-state semantic isn't needed in practice because
+	 * `reset()` is the explicit "drop everything" entry point.
 	 */
 	async bootstrap(ws: string): Promise<void> {
 		const state = ensureState(ws);
@@ -126,15 +136,25 @@ export const localIndex = {
 		const p = (async () => {
 			try {
 				const resp = await api.items.listIndex(ws, { includeArchived: true });
-				// Replace, don't merge — bootstrap is the authoritative
-				// snapshot at this point. Anything in flight from SSE
-				// will be reconciled on the next applyDelta via the
-				// per-row seq check.
-				state.items.clear();
 				for (const row of resp.items) {
-					state.items.set(row.id, toSkinny(row));
+					const next = toSkinny(row);
+					const existing = state.items.get(row.id);
+					if (
+						existing?.seq !== undefined &&
+						next.seq !== undefined &&
+						next.seq <= existing.seq
+					) {
+						continue;
+					}
+					state.items.set(row.id, next);
 				}
-				state.cursor = resp.cursor;
+				// Cursor moves forward only. A fresh /items-index can
+				// occasionally return a cursor below the in-RAM one
+				// (e.g. an SSE delta advanced it during the request);
+				// don't backslide.
+				if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
+					state.cursor = resp.cursor;
+				}
 				state.bootstrapState = 'ready';
 			} catch (err) {
 				state.bootstrapState = 'error';
