@@ -383,6 +383,196 @@ func TestParseCollectionFieldsDSL_EmptyReturnsEmptyFields(t *testing.T) {
 	}
 }
 
+// TestMapCollectionCreate_AcceptsStructuredSchema verifies that the MCP
+// dispatcher accepts a typed `schema` object input (the path TASK-1335
+// adds for BUG-1284) and passes it through to the create-collection
+// body with terminal_options preserved — which the DSL path cannot
+// express.
+func TestMapCollectionCreate_AcceptsStructuredSchema(t *testing.T) {
+	_, _, body, err := mapCollectionCreate(map[string]any{
+		"workspace": "docapp",
+		"name":      "Marketing",
+		"schema": map[string]any{
+			"fields": []any{
+				map[string]any{
+					"key":              "status",
+					"label":            "Status",
+					"type":             "select",
+					"options":          []any{"idea", "drafting", "published", "archived"},
+					"terminal_options": []any{"published", "archived"},
+					"default":          "idea",
+					"required":         true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	schemaStr, _ := payload["schema"].(string)
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(schemaStr), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	fields, _ := schema["fields"].([]any)
+	if len(fields) != 1 {
+		t.Fatalf("fields length = %d, want 1", len(fields))
+	}
+	field, _ := fields[0].(map[string]any)
+	termOpts, _ := field["terminal_options"].([]any)
+	if len(termOpts) != 2 || termOpts[0] != "published" || termOpts[1] != "archived" {
+		t.Errorf("terminal_options not preserved through MCP body: %v", termOpts)
+	}
+	if field["default"] != "idea" {
+		t.Errorf("default not preserved: %v", field["default"])
+	}
+	if field["required"] != true {
+		t.Errorf("required not preserved: %v", field["required"])
+	}
+}
+
+// TestMapCollectionCreate_SchemaBackfillsMissingLabel mirrors the CLI's
+// label-backfill heuristic — a schema field omitting `label` should get
+// one auto-filled from `key` so the web UI doesn't render blank headers.
+func TestMapCollectionCreate_SchemaBackfillsMissingLabel(t *testing.T) {
+	_, _, body, err := mapCollectionCreate(map[string]any{
+		"workspace": "docapp",
+		"name":      "Marketing",
+		"schema": map[string]any{
+			"fields": []any{
+				map[string]any{
+					"key":  "due_date",
+					"type": "date",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	schemaStr, _ := payload["schema"].(string)
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(schemaStr), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	fields, _ := schema["fields"].([]any)
+	if len(fields) != 1 {
+		t.Fatalf("fields length = %d, want 1", len(fields))
+	}
+	field, _ := fields[0].(map[string]any)
+	if field["label"] != "Due Date" {
+		t.Errorf("label not backfilled: got %v, want \"Due Date\"", field["label"])
+	}
+}
+
+// TestMapCollectionCreate_SchemaAcceptsStringifiedJSON exercises the
+// fallback shape for clients that can only pass strings — schema arrives
+// as a JSON-encoded string and still round-trips through the body.
+func TestMapCollectionCreate_SchemaAcceptsStringifiedJSON(t *testing.T) {
+	_, _, body, err := mapCollectionCreate(map[string]any{
+		"workspace": "docapp",
+		"name":      "Marketing",
+		"schema":    `{"fields":[{"key":"status","type":"select","options":["a","b"],"terminal_options":["b"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	schemaStr, _ := payload["schema"].(string)
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(schemaStr), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	fields, _ := schema["fields"].([]any)
+	field, _ := fields[0].(map[string]any)
+	termOpts, _ := field["terminal_options"].([]any)
+	if len(termOpts) != 1 || termOpts[0] != "b" {
+		t.Errorf("terminal_options not preserved from stringified schema: %v", termOpts)
+	}
+}
+
+// TestMapCollectionCreate_FieldsAndSchemaMutuallyExclusive ensures the
+// dispatcher rejects requests that set both flags — mirrors the CLI-side
+// guard so MCP clients see the same error shape.
+func TestMapCollectionCreate_FieldsAndSchemaMutuallyExclusive(t *testing.T) {
+	_, _, _, err := mapCollectionCreate(map[string]any{
+		"workspace": "docapp",
+		"name":      "Both",
+		"fields":    "status:select:open,done",
+		"schema":    map[string]any{"fields": []any{}},
+	})
+	if err == nil {
+		t.Fatal("expected error when both fields and schema set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutually-exclusive error, got: %v", err)
+	}
+}
+
+// TestMapCollectionCreate_EmptySchemaFallsThroughToFields verifies the
+// transport-symmetry fix per Codex round 1: when a client sends
+// schema=null or schema="" alongside fields, the dispatcher treats the
+// empty schema as absent and uses the fields DSL — matching how the
+// CLI handles an empty --schema value.
+func TestMapCollectionCreate_EmptySchemaFallsThroughToFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema any
+	}{
+		{name: "nil-schema", schema: nil},
+		{name: "empty-string-schema", schema: ""},
+		{name: "whitespace-string-schema", schema: "  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, body, err := mapCollectionCreate(map[string]any{
+				"workspace": "docapp",
+				"name":      "Falls",
+				"fields":    "status:select:open,done",
+				"schema":    tc.schema,
+			})
+			if err != nil {
+				t.Fatalf("expected fall-through to --fields, got error: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			schemaStr, _ := payload["schema"].(string)
+			if !strings.Contains(schemaStr, `"key":"status"`) {
+				t.Errorf("expected DSL-parsed status field, got schema: %q", schemaStr)
+			}
+		})
+	}
+}
+
+// TestMapCollectionCreate_SchemaMalformedJSON ensures a clear error when
+// the stringified schema is invalid JSON.
+func TestMapCollectionCreate_SchemaMalformedJSON(t *testing.T) {
+	_, _, _, err := mapCollectionCreate(map[string]any{
+		"workspace": "docapp",
+		"name":      "Bad",
+		"schema":    `{not valid json`,
+	})
+	if err == nil {
+		t.Fatal("expected error for malformed schema JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid schema JSON") {
+		t.Errorf("expected 'invalid schema JSON' in error, got: %v", err)
+	}
+}
+
 // --- library list ---
 
 func TestDispatch_LibraryList_BothEndpoints(t *testing.T) {

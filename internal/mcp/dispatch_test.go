@@ -411,3 +411,70 @@ func TestExecDispatcher_NonzeroExitReturnsErrorResult(t *testing.T) {
 		t.Errorf("expected IsError result for non-zero exit")
 	}
 }
+
+// TestBuildCLIArgs_ObjectFlagValueIsJSONEncoded covers TASK-1335: when an
+// MCP client passes a structured object as a flag value (e.g. `schema`
+// for `pad collection create`), BuildCLIArgs must JSON-encode it so the
+// CLI receives a parseable string rather than Go's default `map[...]` print.
+func TestBuildCLIArgs_ObjectFlagValueIsJSONEncoded(t *testing.T) {
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{
+			"schema": {Type: "string"},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"schema": map[string]any{
+			"fields": []any{
+				map[string]any{"key": "status", "type": "select"},
+			},
+		},
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	// Find the --schema value.
+	var schemaVal string
+	for i := 0; i < len(got)-1; i++ {
+		if got[i] == "--schema" {
+			schemaVal = got[i+1]
+			break
+		}
+	}
+	if schemaVal == "" {
+		t.Fatalf("--schema flag not emitted; got %v", got)
+	}
+	// Must be valid JSON.
+	if !strings.HasPrefix(schemaVal, "{") {
+		t.Errorf("expected JSON-encoded value, got %q", schemaVal)
+	}
+	if !strings.Contains(schemaVal, `"status"`) || !strings.Contains(schemaVal, `"select"`) {
+		t.Errorf("encoded value does not preserve field shape: %q", schemaVal)
+	}
+}
+
+// TestBuildCLIArgs_ArrayFlagValueIsJSONEncoded covers the array branch
+// of the same object-encoding path — confirms a top-level array (not just
+// objects) gets JSON-encoded too.
+func TestBuildCLIArgs_ArrayFlagValueIsJSONEncoded(t *testing.T) {
+	cmd := cmdhelp.Command{
+		Flags: map[string]cmdhelp.Flag{
+			"raw": {Type: "string"},
+		},
+	}
+	got, err := BuildCLIArgs(cmd, map[string]any{
+		"raw": []any{"a", "b", "c"},
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildCLIArgs: %v", err)
+	}
+	var rawVal string
+	for i := 0; i < len(got)-1; i++ {
+		if got[i] == "--raw" {
+			rawVal = got[i+1]
+			break
+		}
+	}
+	if rawVal != `["a","b","c"]` {
+		t.Errorf("expected JSON array, got %q", rawVal)
+	}
+}

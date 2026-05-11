@@ -83,10 +83,10 @@ type ToolSchema struct {
 
 // ParamDef declares one parameter on a tool's input schema. Type maps
 // to mcp-go's helper functions (WithString, WithNumber, WithBoolean,
-// WithArray). Enum, when non-empty, constrains string parameters.
+// WithArray, WithObject). Enum, when non-empty, constrains string parameters.
 type ParamDef struct {
 	Name        string
-	Type        string // "string" | "number" | "bool" | "array<string>"
+	Type        string // "string" | "number" | "bool" | "array<string>" | "object"
 	Description string
 	Enum        []string
 }
@@ -316,6 +316,14 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 		return mcp.WithBoolean(p.Name, propOpts...)
 	case "array<string>":
 		return mcp.WithArray(p.Name, append(propOpts, mcp.WithStringItems())...)
+	case "object":
+		// Structured JSON parameter. The MCP host sees a generic object;
+		// per-tool semantics are encoded in the Description. Callers
+		// constructing the value can pass a native JSON object —
+		// BuildCLIArgs json-encodes it before handing it to the CLI as
+		// a string flag value (which the CLI's --schema flag accepts as
+		// inline JSON).
+		return mcp.WithObject(p.Name, propOpts...)
 	default:
 		return mcp.WithString(p.Name, propOpts...)
 	}
