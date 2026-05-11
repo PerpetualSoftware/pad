@@ -2167,14 +2167,41 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 // It updates the collection_id and fields JSON. The item_number is preserved
 // because numbering is workspace-global — the number stays the same, only the
 // collection prefix changes (e.g. IDEA-42 → BUG-42).
+//
+// The move also bumps the workspace-scoped seq so delta-sync clients
+// see the collection change (PLAN-1343 / TASK-1352). Without it a
+// client polling /items-changes?since=cursor would render the item
+// under its old collection until a full refresh.
 func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*models.Item, error) {
-	_, err := s.db.Exec(s.q(`
+	existing, err := s.GetItem(itemID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, sql.ErrNoRows
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(s.q(`
 		UPDATE items
-		SET collection_id = ?, fields = ?, updated_at = ?
+		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, time.Now().UTC().Format(time.RFC3339), itemID)
+		targetCollectionID, newFieldsJSON, time.Now().UTC().Format(time.RFC3339), existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	return s.GetItem(itemID)

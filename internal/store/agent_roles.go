@@ -437,6 +437,10 @@ type RoleSortUpdate struct {
 }
 
 // UpdateRoleSortOrder batch-updates role_sort_order for a list of items.
+// Each updated row also gets a fresh workspace-scoped seq so delta-sync
+// clients see the reorder (PLAN-1343 / TASK-1352). Without this, a
+// client polling /items-changes?since=cursor would miss role-board
+// reorders until a full refresh.
 func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -444,14 +448,25 @@ func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ? WHERE id = ? AND workspace_id = ?"))
+	// Serialize concurrent seq assignments per workspace on Postgres.
+	// Held until COMMIT / ROLLBACK.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return err
+	}
+
+	// Sequential UPDATEs each read MAX(seq)+1 inside the same
+	// transaction so every row in the batch gets a strictly greater
+	// seq than the row before it. Statements within a single
+	// transaction see each other's effects on both SQLite and
+	// Postgres (READ COMMITTED).
+	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ?, seq = " + nextWorkspaceSeqSubquery + " WHERE id = ? AND workspace_id = ?"))
 	if err != nil {
 		return fmt.Errorf("prepare role sort update: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, u := range updates {
-		if _, err := stmt.Exec(u.RoleSortOrder, u.ItemID, workspaceID); err != nil {
+		if _, err := stmt.Exec(u.RoleSortOrder, workspaceID, u.ItemID, workspaceID); err != nil {
 			return fmt.Errorf("update role sort for %s: %w", u.ItemID, err)
 		}
 	}

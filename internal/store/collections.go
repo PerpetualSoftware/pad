@@ -296,9 +296,37 @@ func (s *Store) DeleteCollection(id string) error {
 // MigrateItemFieldValues bulk-updates items in a collection when select
 // options are renamed. Each entry in renames maps old_value → new_value
 // for the given field key.
+//
+// Each migration step bumps the workspace-scoped seq so delta-sync
+// clients see the field rewrite (PLAN-1343 / TASK-1352). All rows
+// affected by a single rename step share the same new seq value
+// (MAX+1 at statement start) — that's fine for the cursor contract:
+// a client at cursor < MAX sees them all in one batch, a client at
+// cursor >= MAX sees none, no overlap or gap.
 func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.FieldMigration) (int64, error) {
 	if len(migrations) == 0 {
 		return 0, nil
+	}
+
+	// Look up the workspace for advisory locking + scoping the seq
+	// subquery. If the collection has vanished out from under the
+	// caller we can short-circuit.
+	var workspaceID string
+	if err := s.db.QueryRow(s.q(`SELECT workspace_id FROM collections WHERE id = ?`), collectionID).Scan(&workspaceID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("lookup workspace for migrate: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return 0, err
 	}
 
 	ts := now()
@@ -311,14 +339,15 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 			}
 			jsonSet := s.dialect.JSONSet("fields", m.Field)
 			jsonExtract := s.dialect.JSONExtractText("fields", m.Field)
-			result, err := s.db.Exec(s.q(fmt.Sprintf(`
+			result, err := tx.Exec(s.q(fmt.Sprintf(`
 				UPDATE items
 				SET fields = %s,
-				    updated_at = ?
+				    updated_at = ?,
+				    seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM items WHERE workspace_id = ?)
 				WHERE collection_id = ?
 				  AND %s = ?
 				  AND deleted_at IS NULL
-			`, jsonSet, jsonExtract)), newVal, ts, collectionID, oldVal)
+			`, jsonSet, jsonExtract)), newVal, ts, workspaceID, collectionID, oldVal)
 			if err != nil {
 				return totalAffected, fmt.Errorf("migrate field %s (%s → %s): %w", m.Field, oldVal, newVal, err)
 			}
@@ -327,6 +356,9 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return totalAffected, err
+	}
 	return totalAffected, nil
 }
 
