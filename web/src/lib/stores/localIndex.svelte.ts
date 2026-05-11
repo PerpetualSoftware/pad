@@ -57,9 +57,10 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/client';
+import { PadApiError } from '$lib/api/client';
 import {
 	hydrate as persistHydrate,
-	persistCursor,
+	persistDelta,
 	persistRemovals,
 	persistUpserts,
 	wipe as persistWipe,
@@ -203,14 +204,50 @@ export const localIndex = {
 
 				if (hasCache) {
 					// Reconcile cache against server via /items-changes.
-					// Errors here are non-fatal — the cache is the
-					// floor and the next reconnect retries.
+					// The endpoint is capped at DefaultItemChangesLimit
+					// (5000) per response, so we loop until the cursor
+					// stops advancing — otherwise a cache that's
+					// behind by more than one page would only catch
+					// up by 5000 rows and then `bootstrapState` would
+					// pin at `ready` forever, with no later trigger
+					// to fetch the rest (Codex P2 round 1).
+					//
+					// Auth/authz failures (403) must NOT be swallowed
+					// — the cache is stale-by-permission and showing
+					// it as live is a real correctness bug. Re-throw
+					// 403 so the registered access-revoked handler
+					// (TASK-1360) sees it; the cache reset is its job.
+					// Other network blips are non-fatal — the cache
+					// stands and the next reconnect retries.
 					try {
-						const delta = await api.items.changes(ws, state.cursor);
-						if (delta.changes.length > 0 || delta.cursor !== state.cursor) {
+						// Cap iterations defensively — a healthy server
+						// drains in < 10 pages even for huge gaps; if
+						// something pathological loops without cursor
+						// advance, give up after 50 and let the user's
+						// next visit retry.
+						for (let i = 0; i < 50; i++) {
+							const since = state.cursor;
+							const delta = await api.items.changes(ws, since);
+							if (delta.changes.length === 0 || delta.cursor === since) {
+								// Server returned no new rows AND no
+								// cursor advance — we're caught up.
+								break;
+							}
 							localIndex.applyDelta(ws, delta.changes, delta.cursor);
+							if (delta.cursor === since) break;
 						}
-					} catch {
+					} catch (err) {
+						if (err instanceof PadApiError && err.code === 'forbidden') {
+							// Cache is stale-by-permission. Drop it
+							// here AND surface the error so the caller
+							// (and any registered 403 handler from
+							// TASK-1360) can react.
+							state.bootstrapState = 'error';
+							state.items.clear();
+							state.cursor = '0';
+							persistWipe(ws).catch(() => undefined);
+							throw err;
+						}
 						/* swallow — cache stands, retry on reconnect */
 					}
 				} else {
@@ -226,11 +263,14 @@ export const localIndex = {
 					}
 					state.bootstrapState = 'ready';
 					// Best-effort persist the cold snapshot to IDB so
-					// the next visit is warm.
-					persistUpserts(ws, resp.items.map(toSkinny)).catch(
-						() => undefined,
-					);
-					persistCursor(ws, state.cursor).catch(() => undefined);
+					// the next visit is warm. Atomic so the cursor
+					// can never write without the rows that produced
+					// it (matches applyDelta's persist invariant).
+					persistDelta(
+						ws,
+						resp.items.map(toSkinny),
+						state.cursor,
+					).catch(() => undefined);
 				}
 			} catch (err) {
 				state.bootstrapState = 'error';
@@ -357,12 +397,12 @@ export const localIndex = {
 			written.push(skinny);
 		}
 		state.cursor = newCursor;
-		// Write-through to IDB. Fire-and-forget; storage failures
-		// degrade to in-memory only and never break the read path.
-		if (written.length > 0) {
-			persistUpserts(ws, written).catch(() => undefined);
-		}
-		persistCursor(ws, newCursor).catch(() => undefined);
+		// Write-through to IDB. ATOMIC: rows + cursor land in a
+		// single transaction so the persisted cursor can never
+		// advance past rows that didn't make it to disk (Codex P2
+		// round 1). Fire-and-forget; storage failures degrade to
+		// in-memory only and never break the read path.
+		persistDelta(ws, written, newCursor).catch(() => undefined);
 	},
 
 	/**

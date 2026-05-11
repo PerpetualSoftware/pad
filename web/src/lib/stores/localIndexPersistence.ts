@@ -144,10 +144,11 @@ export async function hydrate(ws: string): Promise<HydrateResult> {
 }
 
 /**
- * Replace the cursor + schemaVersion meta row. Cheap, called after
- * every cursor-advancing mutation. Schema version is written every
- * time so the row stays self-consistent — there's no separate path
- * to "set version" vs. "set cursor".
+ * Replace the cursor + schemaVersion meta row. Standalone variant
+ * used by the cold-path bootstrap when no row writes are happening
+ * alongside (the snapshot is persisted via `persistUpserts` and the
+ * cursor lands after). For per-delta writes prefer
+ * `persistDelta` which advances rows + cursor atomically.
  */
 export async function persistCursor(ws: string, cursor: string): Promise<void> {
 	if (!isSupported()) return;
@@ -184,6 +185,45 @@ export async function persistUpserts(
 		for (const row of rows) {
 			store.put(row).catch(() => undefined);
 		}
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Atomically advance a delta — write upserted rows AND the new
+ * cursor in a single IDB transaction. If the tx fails or is aborted
+ * (browser eviction, quota, tab freeze), nothing is written so the
+ * persisted cursor never overshoots the persisted rows. The next
+ * warm hydrate sees a consistent floor and `/items-changes?since=`
+ * can pick up from there without skipping rows. Codex P2 (round 1)
+ * caught the divergence risk of separate row/cursor writes.
+ *
+ * Soft deletes flow through `rows` (as upserts with `deleted_at`
+ * populated); hard removals still go through `persistRemovals`.
+ */
+export async function persistDelta(
+	ws: string,
+	rows: ItemIndexRow[],
+	cursor: string,
+): Promise<void> {
+	if (!isSupported()) return;
+	const db = await open(ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction(['items', 'meta'], 'readwrite');
+		const itemsStore = tx.objectStore('items');
+		for (const row of rows) {
+			itemsStore.put(row).catch(() => undefined);
+		}
+		tx.objectStore('meta')
+			.put({
+				key: 'sync',
+				cursor,
+				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+			} satisfies MetaRow)
+			.catch(() => undefined);
 		await tx.done;
 	} catch {
 		/* swallow — best-effort cache */
