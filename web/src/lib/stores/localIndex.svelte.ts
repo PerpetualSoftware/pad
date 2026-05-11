@@ -40,11 +40,31 @@
 // `api.items.create` / `update`) cannot accidentally leak the rich
 // body into the local index.
 //
-// All operations except `bootstrap` are synchronous — readers don't
-// `await`, they just read.
+// All read operations are synchronous — consumers don't `await`,
+// they just read. `bootstrap` is async because it may hit IDB and
+// the network; mutation methods (`upsert`, `applyDelta`, `remove`)
+// are synchronous from the caller's perspective and write through
+// to IDB in the background (fire-and-forget, never throwing — see
+// `localIndexPersistence`).
+//
+// IDB persistence (TASK-1356): on bootstrap, hydrate from IDB FIRST
+// for an immediate paint, then call `/items-changes?since=<idb-cursor>`
+// to reconcile. On cache miss (IDB empty / unavailable), fall through
+// to the cold-path `/items-index` fetch. Every mutation writes through
+// to IDB so a reload picks up the latest state without a network
+// round-trip. Storage failures are silently swallowed — the store
+// keeps working in-memory.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/client';
+import { PadApiError } from '$lib/api/client';
+import {
+	hydrate as persistHydrate,
+	persistDelta,
+	persistRemovals,
+	persistUpserts,
+	wipe as persistWipe,
+} from './localIndexPersistence';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
@@ -60,6 +80,29 @@ class WorkspaceState {
 	items: SvelteMap<string, ItemIndexRow> = new SvelteMap();
 	cursor = $state('0');
 	bootstrapState = $state<BootstrapState>('cold');
+
+	// `userId` is captured on first bootstrap and used to scope the
+	// IDB database name. Null = anonymous (pre-auth bootstrap). A
+	// later bootstrap call with a different userId triggers a reset
+	// (see `bootstrap`) so we never mix caches across users.
+	userId: string | null = null;
+
+	// `generation` is bumped on every `reset()`. Bootstrap captures
+	// the value at start; if it advances during an await, the
+	// in-flight bootstrap bails out instead of writing/reapplying
+	// rows that belong to a stale identity. Without this, a sign-out
+	// or 403 purge during a slow /items-index request would let the
+	// completed snapshot resurrect just-purged rows (Codex P1
+	// round 3).
+	generation = 0;
+
+	// `pendingResync` is true when the warm-cache path hydrated rows
+	// from IDB but the follow-up /items-changes reconcile didn't
+	// complete (transient network blip). The cache is usable —
+	// `bootstrapState` is `'ready'` so the UI renders — but a later
+	// `bootstrap()` call will retry the delta sync instead of
+	// no-opping. Cleared on successful sync. Codex P2 round 5.
+	pendingResync = $state(false);
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -106,65 +149,274 @@ function cursorAsNum(c: string): number {
 	return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Apply a single row to a workspace's items map with the per-row
+ * seq guard. Used by `bootstrap` (both warm and cold paths) and
+ * `upsert`/`applyDelta` indirectly via the existing inline logic.
+ * Returns true if the row was written, false if it was skipped as
+ * stale.
+ */
+function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
+	const next = toSkinny(row);
+	const existing = state.items.get(next.id);
+	if (
+		existing?.seq !== undefined &&
+		next.seq !== undefined &&
+		next.seq <= existing.seq
+	) {
+		return false;
+	}
+	state.items.set(next.id, next);
+	return true;
+}
+
 export const localIndex = {
 	/**
-	 * Hydrate a workspace from `/items-index`. Idempotent: returns the
-	 * same in-flight promise if already loading; resolves immediately
-	 * if already `ready`. On error the state flips to `'error'` and
-	 * the caller can retry by calling `bootstrap` again — the next
-	 * call sees `bootstrapState === 'error'` and proceeds. Archived
-	 * items are included in the snapshot (the store is the canonical
-	 * read model for both live and archived rows; consumers filter
-	 * via `{ includeArchived }`).
+	 * Hydrate a workspace. Idempotent: returns the same in-flight
+	 * promise if already loading; resolves immediately if already
+	 * `'ready'`. On error the state flips to `'error'` and the caller
+	 * can retry by calling `bootstrap` again. Archived items are
+	 * included (the store is the canonical read model for both live
+	 * and archived rows; consumers filter via `{ includeArchived }`).
 	 *
-	 * Merge, don't clear. An optimistic `upsert()` or an SSE-driven
-	 * write can land while the /items-index request is in flight; if
-	 * we cleared and replaced, we'd silently regress those rows to
-	 * the older snapshot value (Codex P2 round 3). Instead, we
-	 * MERGE each response row through the same per-row seq guard
-	 * `upsert` uses, and the cursor only advances forward. The
-	 * cleared-state semantic isn't needed in practice because
-	 * `reset()` is the explicit "drop everything" entry point.
+	 * Two-stage flow (TASK-1356):
+	 *
+	 *   1. WARM PATH — hydrate from IDB. If the cache is populated,
+	 *      copy rows into the in-RAM store, set the cursor from the
+	 *      meta row, and flip `bootstrapState` to `'ready'` *before*
+	 *      any network IO. The UI paints instantly. Then kick off
+	 *      `/items-changes?since=<cursor>` in the background and
+	 *      apply the deltas via `applyDelta` (which write-throughs to
+	 *      IDB on its own). A failed delta-sync doesn't move state
+	 *      back to `'loading'` — the UI keeps working off the cached
+	 *      data and the next reconnect retries.
+	 *
+	 *   2. COLD PATH — IDB miss / unavailable. Fall through to the
+	 *      classic `/items-index` snapshot, then write the result to
+	 *      IDB so the next visit is warm.
+	 *
+	 * Merge-not-clear semantics are preserved: in either path, rows
+	 * are MERGED through the same per-row seq guard `upsert` uses,
+	 * and the cursor only advances forward. An optimistic `upsert()`
+	 * or SSE write that landed while bootstrap was in flight is
+	 * never regressed.
 	 */
-	async bootstrap(ws: string): Promise<void> {
+	async bootstrap(
+		ws: string,
+		opts: { userId: string | null },
+	): Promise<void> {
+		// User-mismatch reset BEFORE the early-return checks. Otherwise
+		// a different user signing into the same browser would inherit
+		// the previous user's `ready` state and in-flight promise
+		// (Codex P1 round 5). `ensureState` auto-creates a fresh
+		// WorkspaceState after the reset.
+		const prior = workspaces.get(ws);
+		if (prior && prior.bootstrapState !== 'cold' && prior.userId !== opts.userId) {
+			localIndex.reset(ws);
+		}
+
 		const state = ensureState(ws);
-		if (state.bootstrapState === 'ready') return;
+		// Early return for already-ready states ONLY when there's no
+		// outstanding resync work. A transient delta-sync failure
+		// (network blip) leaves `pendingResync = true`; the next
+		// bootstrap call must retry the reconcile, not no-op. Codex P2
+		// round 5.
+		if (state.bootstrapState === 'ready' && !state.pendingResync) return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
 
-		state.bootstrapState = 'loading';
-		const p = (async () => {
+		// `userId` is REQUIRED (not defaulted) so authenticated callers
+		// can't silently land their cache in the shared `anon`
+		// namespace. Pass null explicitly for pre-auth / public-share
+		// flows. Codex P? (round 4) caught the leak risk.
+		state.userId = opts.userId;
+		// Capture reentry BEFORE flipping bootstrapState to 'loading'
+		// — otherwise the `state.bootstrapState === 'ready'` check
+		// below always reads false and the warm IDB hydrate runs again
+		// on a pendingResync retry. That's bad because IDB writes are
+		// fire-and-forget; re-reading rows whose RAM copy was just
+		// removed but whose IDB delete hasn't landed would resurrect
+		// them. Codex P2 round 7.
+		const reentry =
+			state.bootstrapState === 'ready' && state.pendingResync;
+		// Only flip to 'loading' for first-time bootstrap. A reentry
+		// keeps state='ready' throughout so the UI never blanks while
+		// retrying the reconcile.
+		if (!reentry) state.bootstrapState = 'loading';
+		// Capture the generation at start. If `reset()` runs during
+		// any await below, generation bumps; we then bail out before
+		// re-applying rows or writing the snapshot back, otherwise
+		// purged data could resurrect (Codex P1 round 3).
+		const bootstrapGen = state.generation;
+		const userId = state.userId;
+		const isStale = () => state.generation !== bootstrapGen;
+
+		// `slot.p` holds the in-flight promise so the IIFE body's
+		// `finally` can do an identity check against it — see Codex
+		// round 7 P2. We need a level of indirection (the object)
+		// because a bare `const p = ...` puts `p` in the TDZ when the
+		// suspended async body resumes and references it.
+		const slot: { p: Promise<void> | null } = { p: null };
+		slot.p = (async () => {
 			try {
-				const resp = await api.items.listIndex(ws, { includeArchived: true });
-				for (const row of resp.items) {
-					const next = toSkinny(row);
-					const existing = state.items.get(row.id);
-					if (
-						existing?.seq !== undefined &&
-						next.seq !== undefined &&
-						next.seq <= existing.seq
-					) {
-						continue;
+				// Stage 1: warm path. Always try IDB first. Skip
+				// re-hydration when this is a `pendingResync` retry —
+				// the in-RAM state is already authoritative for this
+				// session; we just need to redo the reconcile.
+				const cached = reentry
+					? { items: [], cursor: state.cursor }
+					: await persistHydrate(userId, ws);
+				if (isStale()) return;
+				// A populated cache is one we've successfully synced
+				// from before — either there are rows, or the cursor
+				// has moved off the "0" floor (empty workspaces /
+				// guests with item-level grants legitimately have
+				// zero rows but a real cursor). Both deserve the
+				// warm-path fast boot. Codex P2 round 8.
+				const cacheIsPopulated =
+					cached.items.length > 0 || cursorAsNum(cached.cursor) > 0;
+				const hasCache = reentry || cacheIsPopulated;
+				if (!reentry && cacheIsPopulated) {
+					for (const row of cached.items) {
+						mergeRow(state, row);
 					}
-					state.items.set(row.id, next);
+					if (cursorAsNum(cached.cursor) > cursorAsNum(state.cursor)) {
+						state.cursor = cached.cursor;
+					}
+					// Flip to ready immediately — the UI paints from
+					// the cache while delta-sync runs. `pendingResync`
+					// stays true until the reconcile finishes.
+					state.bootstrapState = 'ready';
+					state.pendingResync = true;
 				}
-				// Cursor moves forward only. A fresh /items-index can
-				// occasionally return a cursor below the in-RAM one
-				// (e.g. an SSE delta advanced it during the request);
-				// don't backslide.
-				if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
-					state.cursor = resp.cursor;
+
+				if (hasCache) {
+					// Reconcile cache against server via /items-changes.
+					// The endpoint is capped at DefaultItemChangesLimit
+					// (5000) per response, so we loop until the cursor
+					// stops advancing — otherwise a cache that's
+					// behind by more than one page would only catch
+					// up by 5000 rows and then `bootstrapState` would
+					// pin at `ready` forever, with no later trigger
+					// to fetch the rest (Codex P2 round 1).
+					//
+					// Auth/authz failures (403) must NOT be swallowed
+					// — the cache is stale-by-permission and showing
+					// it as live is a real correctness bug. Re-throw
+					// 403 so the registered access-revoked handler
+					// (TASK-1360) sees it; the cache reset is its job.
+					// Other network blips are non-fatal — the cache
+					// stands and the next reconnect retries.
+					try {
+						// Cap iterations defensively — a healthy server
+						// drains in < 10 pages even for huge gaps; if
+						// something pathological loops without cursor
+						// advance, give up after 50 and let the user's
+						// next visit retry.
+						let caughtUp = false;
+						for (let i = 0; i < 50; i++) {
+							const since = state.cursor;
+							const delta = await api.items.changes(ws, since);
+							if (isStale()) return;
+							if (delta.changes.length === 0 || delta.cursor === since) {
+								// Server returned no new rows AND no
+								// cursor advance — we're caught up.
+								caughtUp = true;
+								break;
+							}
+							localIndex.applyDelta(ws, delta.changes, delta.cursor);
+							if (delta.cursor === since) {
+								caughtUp = true;
+								break;
+							}
+						}
+						// Only mark fresh if the loop reached the
+						// server cursor. Hitting the 50-page cap
+						// without catching up leaves `pendingResync`
+						// true so a later bootstrap call resumes
+						// (Codex P2 round 6). 50 × 5000 = 250,000
+						// rows; we don't expect to hit this in practice
+						// but it's the difference between "stale
+						// forever" and "next visit retries".
+						if (caughtUp) state.pendingResync = false;
+					} catch (err) {
+						if (isStale()) return;
+						// 401 (unauthorized — session expired) and 403
+						// (forbidden — access revoked) both mean the
+						// cached rows are no longer ours to display.
+						// Drop the cache and re-throw so the caller's
+						// redirect / purge handler can react. Other
+						// errors stay transient — cache stands and the
+						// next bootstrap() call retries the reconcile
+						// because `pendingResync` is still true.
+						if (
+							err instanceof PadApiError &&
+							(err.code === 'forbidden' || err.code === 'unauthorized')
+						) {
+							state.bootstrapState = 'error';
+							state.pendingResync = false;
+							state.items.clear();
+							state.cursor = '0';
+							persistWipe(userId, ws).catch(() => undefined);
+							throw err;
+						}
+						// Transient network failure. Cache stands and
+						// state stays 'ready' so the UI keeps working.
+						// `pendingResync` remains true so the next
+						// bootstrap() call retries (Codex P2 round 5).
+						// Permission revocation that doesn't change
+						// row data is NOT covered here — TASK-1360 and
+						// DOC-1342 decision #3 explicitly punt that in
+						// favor of the 403-on-click purge path.
+					}
+				} else {
+					// Stage 2: cold path. /items-index full snapshot.
+					const resp = await api.items.listIndex(ws, {
+						includeArchived: true,
+					});
+					if (isStale()) return;
+					for (const row of resp.items) {
+						mergeRow(state, row);
+					}
+					if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
+						state.cursor = resp.cursor;
+					}
+					state.bootstrapState = 'ready';
+					// Cold path is a full snapshot — nothing pending.
+					state.pendingResync = false;
+					// Best-effort persist the cold snapshot to IDB so
+					// the next visit is warm. We persist the POST-MERGE
+					// in-memory rows (not raw `resp.items`), and use
+					// the same atomic rows+cursor write applyDelta does.
+					// Otherwise an SSE/applyDelta that landed during the
+					// in-flight /items-index request could overwrite a
+					// newer row in IDB while the cursor on disk pointed
+					// past the gap, leaving the cache permanently stale
+					// (Codex P1 round 2). Iterating state.items.values()
+					// yields exactly the merged, winning rows.
+					const snapshot: ItemIndexRow[] = [];
+					for (const row of state.items.values()) snapshot.push(row);
+					persistDelta(userId, ws, snapshot, state.cursor).catch(
+						() => undefined,
+					);
 				}
-				state.bootstrapState = 'ready';
 			} catch (err) {
+				if (isStale()) return;
 				state.bootstrapState = 'error';
 				throw err;
 			} finally {
-				inflight.delete(ws);
+				// Identity-checked cleanup: only clear inflight if
+				// THIS promise is the registered one. After a
+				// `reset()` mid-bootstrap, a fresh bootstrap call can
+				// re-occupy the slot before this stale promise's
+				// `finally` runs; deleting unconditionally would
+				// remove the new entry and let a duplicate bootstrap
+				// start (Codex P2 round 7).
+				if (slot.p && inflight.get(ws) === slot.p) inflight.delete(ws);
 			}
 		})();
-		inflight.set(ws, p);
-		return p;
+		inflight.set(ws, slot.p);
+		return slot.p;
 	},
 
 	/**
@@ -253,6 +505,7 @@ export const localIndex = {
 		// Guard 1: whole-batch drop on non-advancing cursor.
 		if (newCursorNum <= startCursorNum) return;
 
+		const toPersist: ItemIndexRow[] = [];
 		for (const change of changes) {
 			if (change.seq !== undefined) {
 				// Guard 2: row's seq vs. cursor floor.
@@ -263,6 +516,14 @@ export const localIndex = {
 					existing?.seq !== undefined &&
 					change.seq <= existing.seq
 				) {
+					// Existing wins in RAM. Include it in the
+					// persist set so the IDB cursor we're about
+					// to advance doesn't lap a row that may not
+					// be durable yet (upsert's fire-and-forget
+					// IDB write could still be pending / failed
+					// — Codex P? round 4). One redundant put is
+					// cheaper than a missing row on warm boot.
+					toPersist.push(existing);
 					continue;
 				}
 			}
@@ -274,10 +535,22 @@ export const localIndex = {
 			// only manages the seq-ordered identity of the row. Hard
 			// deletes (workspace GC / 403 purge) go through the
 			// `remove()` method, not through this batch path.
-			const { deleted: _d, ...row } = change;
-			state.items.set(change.id, toSkinny(row as ItemIndexRow));
+			const { deleted: _d, ...rest } = change;
+			const skinny = toSkinny(rest as ItemIndexRow);
+			state.items.set(change.id, skinny);
+			toPersist.push(skinny);
 		}
 		state.cursor = newCursor;
+		// Write-through to IDB. ATOMIC: rows + cursor land in a
+		// single transaction so the persisted cursor can never
+		// advance past rows that didn't make it to disk (Codex P2
+		// round 1). Fire-and-forget; storage failures degrade to
+		// in-memory only and never break the read path. Routed
+		// through the workspace's captured `userId` so a different
+		// user signing into the same browser sees their own cache.
+		persistDelta(state.userId, ws, toPersist, newCursor).catch(
+			() => undefined,
+		);
 	},
 
 	/**
@@ -307,6 +580,9 @@ export const localIndex = {
 			return;
 		}
 		state.items.set(row.id, next);
+		// Write-through to IDB. Fire-and-forget; storage failures
+		// degrade silently.
+		persistUpserts(state.userId, ws, [next]).catch(() => undefined);
 	},
 
 	/**
@@ -318,6 +594,8 @@ export const localIndex = {
 		const state = workspaces.get(ws);
 		if (!state) return;
 		state.items.delete(id);
+		// Write-through hard-delete to IDB.
+		persistRemovals(state.userId, ws, [id]).catch(() => undefined);
 	},
 
 	/** Current cursor for a workspace, or "0" if unhydrated. */
@@ -342,8 +620,26 @@ export const localIndex = {
 	 * user's cache. After reset, `bootstrap(ws)` from cold.
 	 */
 	reset(ws: string): void {
+		const prior = workspaces.get(ws);
+		// Bump generation on the prior state object BEFORE deleting
+		// it from the map. Any in-flight bootstrap promise still holds
+		// a reference to `prior` — checking `state.generation !==
+		// bootstrapGen` after each await lets it bail out instead of
+		// writing or re-applying rows that belong to a stale identity
+		// (Codex P1 round 3). Without this, a sign-out / 403 purge
+		// during a slow /items-index request could resurrect just-
+		// purged rows when the snapshot resolved.
+		const priorUserId = prior?.userId ?? null;
+		if (prior) prior.generation += 1;
+
 		workspaces.delete(ws);
 		inflight.delete(ws);
+
+		// Drop the persisted cache for the workspace's last-known
+		// userId. If a different user later bootstraps the same
+		// workspace, their cache is in a different IDB namespace and
+		// remains untouched, by design.
+		persistWipe(priorUserId, ws).catch(() => undefined);
 	},
 
 	/** Number of items currently held for a workspace. Test/debug aid. */
