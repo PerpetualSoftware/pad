@@ -25,7 +25,14 @@
 
 	type ViewMode = 'list' | 'board' | 'table';
 
-	let loading = $state(true);
+	// `metaLoading` tracks the collection-metadata / saved-views /
+	// members fetch. The overall `loading` indicator combines that
+	// with the localIndex bootstrap state so the empty-state CTA
+	// doesn't flash for non-empty collections while items are still
+	// hydrating (Codex P2 round 1 of TASK-1357). Scroll restoration
+	// also gates on `loading`, so this prevents the "attempt-and-fail"
+	// case where filteredItems is briefly empty.
+	let metaLoading = $state(true);
 	let collection = $state<Collection | null>(null);
 	let viewMode = $state<ViewMode>('list');
 	let activeFilters = $state<Record<string, string>>({});
@@ -33,7 +40,20 @@
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
 	let progressLabel = $state('tasks');
-	let relationLabels = $state<Record<string, string>>({});
+	// `relationLabels` maps plan id → plan title for the task-card
+	// "relates to" badge. `$derived` so it picks up plans as they
+	// hydrate through the local index — the previous one-shot fetch
+	// in loadCollection raced the localIndex bootstrap on cold loads
+	// and could leave the badge empty until a manual refresh (Codex
+	// P3 round 1 of TASK-1357).
+	let relationLabels = $derived.by(() => {
+		if (!wsSlug || collSlug !== 'tasks') return {};
+		const labels: Record<string, string> = {};
+		for (const p of localIndex.getByCollection(wsSlug, 'plans')) {
+			labels[p.id] = p.title;
+		}
+		return labels;
+	});
 
 	// Saved views state
 	let savedViews = $state<View[]>([]);
@@ -70,6 +90,19 @@
 					.map((row) => ({ ...row, content: '' }) as Item)
 			: [],
 	);
+
+	// `loading` is true until BOTH the collection metadata fetch AND
+	// the localIndex bootstrap have settled. Without this, the empty-
+	// state CTA can flash for non-empty collections while items are
+	// still hydrating, and scroll restore can be consumed against an
+	// empty filteredItems list (Codex P2 round 1).
+	let indexReady = $derived(
+		wsSlug
+			? localIndex.bootstrapStateFor(wsSlug) === 'ready' ||
+				localIndex.bootstrapStateFor(wsSlug) === 'error'
+			: true,
+	);
+	let loading = $derived(metaLoading || !indexReady);
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
 	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
@@ -344,12 +377,12 @@
 			// over the seq-cursor /items-changes endpoint, so we read
 			// directly from there. The local index's per-row seq
 			// guards make this idempotent even when SSE + sync race.
-			await deltaSync(wsSlug);
+			const ok = await deltaSync(wsSlug);
 			await refreshProgress(wsSlug, collSlug, items);
-			if (result.type === 'full_refresh') {
-				// Advance the legacy syncService cursor so it doesn't
-				// re-fire full_refresh on every tab resume. The local
-				// index's own cursor is what actually matters.
+			if (ok && result.type === 'full_refresh') {
+				// Only advance the legacy syncService cursor on a
+				// clean catch-up. A failed reconcile leaves it where
+				// it is so the next tab-resume retries.
 				syncService.markSynced();
 			}
 		});
@@ -380,20 +413,27 @@
 	 * response; deeply-behind tabs need multiple pages). Hard cap at
 	 * 50 iterations to defend against pathological loops, matching
 	 * localIndex.bootstrap's reconcile loop.
+	 *
+	 * Returns true on a clean catch-up, false on any failure / cap
+	 * trip so the caller can avoid advancing its own cursor against a
+	 * stale local cache (Codex P2 round 1 of TASK-1357).
 	 */
-	async function deltaSync(ws: string): Promise<void> {
+	async function deltaSync(ws: string): Promise<boolean> {
 		try {
 			for (let i = 0; i < 50; i++) {
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
 				if (delta.changes.length === 0 || delta.cursor === since) {
-					return;
+					return true;
 				}
 				localIndex.applyDelta(ws, delta.changes, delta.cursor);
-				if (delta.cursor === since) return;
+				if (delta.cursor === since) return true;
 			}
+			// Cap hit — pretend success at the page level so we don't
+			// thrash, but tell the caller it wasn't a clean catch-up.
+			return false;
 		} catch {
-			/* swallow — next event / syncService retries */
+			return false;
 		}
 	}
 
@@ -429,7 +469,7 @@
 	}
 
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
-		loading = true;
+		metaLoading = true;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -483,20 +523,10 @@
 				progressLabel = 'done';
 			}
 
-			// Fetch plan names for relation display on task cards.
-			// Read directly from localIndex — bootstrap above guarantees
-			// the workspace is hydrated, and 'plans' rows are in the
-			// same per-workspace store as tasks. No extra request.
-			if (coll === 'tasks') {
-				const plans = localIndex.getByCollection(ws, 'plans');
-				const labels: Record<string, string> = {};
-				for (const p of plans) {
-					labels[p.id] = p.title;
-				}
-				relationLabels = labels;
-			} else {
-				relationLabels = {};
-			}
+			// `relationLabels` is computed reactively below — no need
+			// to populate it here. (Pre-localIndex this was a one-shot
+			// fetch; now plans flow into the local store and the
+			// derived map below picks them up as they hydrate.)
 
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
@@ -512,7 +542,7 @@
 			// A missing collection shows the empty / not-found state via
 			// the `collection` null branch in the template.
 		} finally {
-			loading = false;
+			metaLoading = false;
 		}
 	}
 
