@@ -267,8 +267,16 @@ export const localIndex = {
 					? { items: [], cursor: state.cursor }
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
-				const hasCache = reentry || cached.items.length > 0;
-				if (!reentry && cached.items.length > 0) {
+				// A populated cache is one we've successfully synced
+				// from before — either there are rows, or the cursor
+				// has moved off the "0" floor (empty workspaces /
+				// guests with item-level grants legitimately have
+				// zero rows but a real cursor). Both deserve the
+				// warm-path fast boot. Codex P2 round 8.
+				const cacheIsPopulated =
+					cached.items.length > 0 || cursorAsNum(cached.cursor) > 0;
+				const hasCache = reentry || cacheIsPopulated;
+				if (!reentry && cacheIsPopulated) {
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -333,11 +341,18 @@ export const localIndex = {
 						if (caughtUp) state.pendingResync = false;
 					} catch (err) {
 						if (isStale()) return;
-						if (err instanceof PadApiError && err.code === 'forbidden') {
-							// Cache is stale-by-permission. Drop it
-							// here AND surface the error so the caller
-							// (and any registered 403 handler from
-							// TASK-1360) can react.
+						// 401 (unauthorized — session expired) and 403
+						// (forbidden — access revoked) both mean the
+						// cached rows are no longer ours to display.
+						// Drop the cache and re-throw so the caller's
+						// redirect / purge handler can react. Other
+						// errors stay transient — cache stands and the
+						// next bootstrap() call retries the reconcile
+						// because `pendingResync` is still true.
+						if (
+							err instanceof PadApiError &&
+							(err.code === 'forbidden' || err.code === 'unauthorized')
+						) {
 							state.bootstrapState = 'error';
 							state.pendingResync = false;
 							state.items.clear();
