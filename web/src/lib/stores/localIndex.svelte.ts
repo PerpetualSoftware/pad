@@ -10,10 +10,20 @@
 //   - cursor:        the highest workspace-scoped `seq` we have seen
 //   - bootstrapState: 'cold' | 'loading' | 'ready' | 'error'
 //
-// Reactivity: items is a `SvelteMap` (from `svelte/reactivity`) so any
-// `$derived` / `$effect` over `getByCollection` re-runs when the store
-// changes. The per-workspace map itself is `$state`-wrapped so swapping
-// workspaces also triggers downstream reactivity.
+// Reactivity: the outer `workspaces` map is a `SvelteMap`, and
+// `WorkspaceState` is a class whose `cursor` / `bootstrapState`
+// fields are declared with the `$state` rune (Svelte 5 only allows
+// `$state()` at variable-initializer, class-field, or
+// constructor-first-assign sites — not as an arbitrary expression
+// value inside a function). Its `items` is a `SvelteMap`, already
+// reactive in its own right. The in-flight bootstrap promise lives
+// in a separate plain Map — no reason to make a Promise reactive.
+//
+// Archived items are held alongside live items by design (see
+// TASK-1357): the store is a workspace-wide read model, and the
+// archived toggle is a render-time predicate the consumer applies via
+// `fields.status`. `applyDelta` removes rows only on the `deleted`
+// tombstone flag (soft-delete) — `status: 'archived'` items remain.
 //
 // Strip `content` defensively on every ingest path. The server's skinny
 // `/items-index` and `/items-changes` endpoints already exclude the
@@ -32,29 +42,33 @@ import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
 
-interface WorkspaceState {
-	items: SvelteMap<string, ItemIndexRow>;
-	cursor: string;
-	bootstrapState: BootstrapState;
-	// In-flight bootstrap promise so concurrent callers coalesce instead
-	// of firing parallel /items-index requests.
-	inflight: Promise<void> | null;
+// `WorkspaceState` is a class so its scalar fields can use the `$state`
+// rune. `$state()` is not legal as an expression value inside a function
+// in Svelte 5 — only at variable-initializer, class-field, or
+// constructor-first-assign sites — so we can't lazily build a reactive
+// plain object in `ensureState`. Wrapping the scalars in class fields
+// gives us the same shape with reactivity intact. `items` is a
+// `SvelteMap`, already reactive by itself.
+class WorkspaceState {
+	items: SvelteMap<string, ItemIndexRow> = new SvelteMap();
+	cursor = $state('0');
+	bootstrapState = $state<BootstrapState>('cold');
 }
 
-// The state is `$state`-wrapped at the module level so reactive
-// consumers (via the public getters below) re-render when a workspace
-// is added or its bootstrapState flips.
-const workspaces = $state(new Map<string, WorkspaceState>());
+// Outer map: reactive (SvelteMap) so consumers re-render when a fresh
+// workspace is hydrated. Each entry's WorkspaceState owns its own
+// per-field reactivity via the class-field $state runes above.
+const workspaces = new SvelteMap<string, WorkspaceState>();
+
+// In-flight bootstrap promises live outside the reactive state — there
+// is no reason to proxy a Promise, and keeping it separate makes the
+// reactive-vs-internal split explicit.
+const inflight = new Map<string, Promise<void>>();
 
 function ensureState(ws: string): WorkspaceState {
 	let state = workspaces.get(ws);
 	if (!state) {
-		state = {
-			items: new SvelteMap<string, ItemIndexRow>(),
-			cursor: '0',
-			bootstrapState: 'cold',
-			inflight: null,
-		};
+		state = new WorkspaceState();
 		workspaces.set(ws, state);
 	}
 	return state;
@@ -80,34 +94,35 @@ function toSkinny(row: ItemIndexRow | Item): ItemIndexRow {
  * Treat empty / non-numeric input as 0 so a fresh workspace's "0"
  * cursor compares correctly against a real response's "12345".
  */
-function cursorGte(a: string, b: string): boolean {
-	const an = Number(a);
-	const bn = Number(b);
-	const ai = Number.isFinite(an) ? an : 0;
-	const bi = Number.isFinite(bn) ? bn : 0;
-	return ai >= bi;
+function cursorAsNum(c: string): number {
+	const n = Number(c);
+	return Number.isFinite(n) ? n : 0;
 }
 
 export const localIndex = {
 	/**
 	 * Hydrate a workspace from `/items-index`. Idempotent: returns the
 	 * same in-flight promise if already loading; resolves immediately
-	 * if already `ready`. On error the state flips to `'error'` and the
-	 * caller can retry by calling `bootstrap` again (the state is
-	 * cleared back to `cold` on retry-entry).
+	 * if already `ready`. On error the state flips to `'error'` and
+	 * the caller can retry by calling `bootstrap` again — the next
+	 * call sees `bootstrapState === 'error'` and proceeds. Archived
+	 * items are included in the snapshot (the store is the canonical
+	 * read model for both live and archived rows; consumers filter).
 	 */
 	async bootstrap(ws: string): Promise<void> {
 		const state = ensureState(ws);
 		if (state.bootstrapState === 'ready') return;
-		if (state.inflight) return state.inflight;
+		const pending = inflight.get(ws);
+		if (pending) return pending;
 
 		state.bootstrapState = 'loading';
-		state.inflight = (async () => {
+		const p = (async () => {
 			try {
 				const resp = await api.items.listIndex(ws, { includeArchived: true });
 				// Replace, don't merge — bootstrap is the authoritative
-				// snapshot at this point. Anything in flight from SSE will
-				// be reconciled on the next applyDelta via seq ordering.
+				// snapshot at this point. Anything in flight from SSE
+				// will be reconciled on the next applyDelta via the
+				// per-row seq check.
 				state.items.clear();
 				for (const row of resp.items) {
 					state.items.set(row.id, toSkinny(row));
@@ -118,19 +133,19 @@ export const localIndex = {
 				state.bootstrapState = 'error';
 				throw err;
 			} finally {
-				state.inflight = null;
+				inflight.delete(ws);
 			}
 		})();
-
-		return state.inflight;
+		inflight.set(ws, p);
+		return p;
 	},
 
 	/**
-	 * Synchronous filtered read. Returns a freshly-allocated array on
-	 * every call; rely on `$derived` upstream for memoization.
-	 * Filters out items that are missing `collection_slug` (defensive —
-	 * the index endpoint always populates it, but a typed
-	 * non-null guard keeps the consumer code clean).
+	 * Synchronous filtered read by collection slug. Returns a freshly
+	 * allocated array on every call; rely on `$derived` upstream for
+	 * memoization. Includes archived items (they're in the store by
+	 * design) — consumers that want to gate on `fields.status` should
+	 * do so at the render layer (see TASK-1357 wiring).
 	 */
 	getByCollection(ws: string, collSlug: string): ItemIndexRow[] {
 		const state = workspaces.get(ws);
@@ -144,13 +159,42 @@ export const localIndex = {
 
 	/**
 	 * Apply a batch of changes from `/items-changes`. Upserts on
-	 * non-deleted rows, removes on `deleted: true`. Cursor only
-	 * advances forward — a server response that backslides (shouldn't
-	 * happen, but harmless to defend) is ignored at the cursor level.
+	 * non-deleted rows, removes on `deleted: true` (soft-delete
+	 * tombstone). Archived-status rows stay in the store — `deleted`
+	 * is a different concern.
+	 *
+	 * Two guards against stale batches (Codex P2 on initial review):
+	 *
+	 *   1. If `newCursor <= state.cursor`, drop the whole batch. The
+	 *      server returns `cursor === since` on empty responses, so an
+	 *      empty no-op trivially short-circuits here.
+	 *   2. Per-row: skip changes whose `seq <= state.cursor` at the
+	 *      START of the call. In normal /items-changes flow the server
+	 *      filters to `seq > since`, but applyDelta is also a public
+	 *      entry point (tests, future replay callers) — if any row in
+	 *      a batch is stale, dropping it prevents overwriting newer
+	 *      state. Rows missing `seq` (legacy snapshots before TASK-1352)
+	 *      pass through unconditionally since we have no basis to
+	 *      compare.
+	 *
+	 * The cursor only advances forward, so a backslide can never lose
+	 * progress.
 	 */
 	applyDelta(ws: string, changes: ItemChangeRow[], newCursor: string): void {
 		const state = ensureState(ws);
+		const startCursorNum = cursorAsNum(state.cursor);
+		const newCursorNum = cursorAsNum(newCursor);
+
+		// Guard 1: whole-batch drop on non-advancing cursor.
+		if (newCursorNum <= startCursorNum) return;
+
 		for (const change of changes) {
+			// Guard 2: per-row seq check. If a row's seq isn't strictly
+			// greater than what we held at the start, it's stale —
+			// skip. Missing seq is treated as "trust the batch".
+			if (change.seq !== undefined && change.seq <= startCursorNum) {
+				continue;
+			}
 			if (change.deleted) {
 				state.items.delete(change.id);
 			} else {
@@ -158,9 +202,7 @@ export const localIndex = {
 				state.items.set(change.id, toSkinny(row as ItemIndexRow));
 			}
 		}
-		if (cursorGte(newCursor, state.cursor)) {
-			state.cursor = newCursor;
-		}
+		state.cursor = newCursor;
 	},
 
 	/**
@@ -209,6 +251,7 @@ export const localIndex = {
 	 */
 	reset(ws: string): void {
 		workspaces.delete(ws);
+		inflight.delete(ws);
 	},
 
 	/** Number of items currently held for a workspace. Test/debug aid. */
