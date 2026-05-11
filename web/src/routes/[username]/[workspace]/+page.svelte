@@ -489,19 +489,26 @@
 	workspaceName={workspaceStore.current?.name ?? ''}
 />
 
-{#if isOwner}
+{#if wsSlug}
+	<!--
+		Mount unconditionally (gated on wsSlug, not isOwner) so an owner editing
+		the modal isn't unmounted mid-edit when the 30s dashboard poll or a sync
+		signal calls load() → workspaceStore.setCurrent(), which transiently
+		clears currentMembership and flips isOwner false until /me resolves.
+		The trigger button is owner-gated above; this matches Sidebar.svelte's
+		pattern, and the server-side owner check (handlers_collections.go:48)
+		remains the enforcement boundary.
+	-->
 	<CreateCollectionModal
 		open={showCreateCollection}
 		{wsSlug}
 		oncreated={() => {
 			showCreateCollection = false;
-			if (wsSlug) {
-				// Refresh dashboard-local data (summary + collections grid) AND
-				// the shared collectionStore the Sidebar/quick-add read from,
-				// matching Sidebar.svelte's create-flow pattern.
-				load(wsSlug, true);
-				collectionStore.loadCollections(wsSlug);
-			}
+			// Refresh dashboard-local data (summary + collections grid) AND
+			// the shared collectionStore the Sidebar/quick-add read from,
+			// matching Sidebar.svelte's create-flow pattern.
+			load(wsSlug, true);
+			collectionStore.loadCollections(wsSlug);
 		}}
 		onclose={() => { showCreateCollection = false; }}
 	/>
