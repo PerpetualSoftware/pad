@@ -195,14 +195,18 @@ export const localIndex = {
 	 */
 	async bootstrap(
 		ws: string,
-		opts?: { userId?: string | null },
+		opts: { userId: string | null },
 	): Promise<void> {
 		const state = ensureState(ws);
 		if (state.bootstrapState === 'ready') return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
 
-		state.userId = opts?.userId ?? null;
+		// `userId` is REQUIRED (not defaulted) so authenticated callers
+		// can't silently land their cache in the shared `anon`
+		// namespace. Pass null explicitly for pre-auth / public-share
+		// flows. Codex P? (round 4) caught the leak risk.
+		state.userId = opts.userId;
 		state.bootstrapState = 'loading';
 		// Capture the generation at start. If `reset()` runs during
 		// any await below, generation bumps; we then bail out before
@@ -407,7 +411,7 @@ export const localIndex = {
 		// Guard 1: whole-batch drop on non-advancing cursor.
 		if (newCursorNum <= startCursorNum) return;
 
-		const written: ItemIndexRow[] = [];
+		const toPersist: ItemIndexRow[] = [];
 		for (const change of changes) {
 			if (change.seq !== undefined) {
 				// Guard 2: row's seq vs. cursor floor.
@@ -418,6 +422,14 @@ export const localIndex = {
 					existing?.seq !== undefined &&
 					change.seq <= existing.seq
 				) {
+					// Existing wins in RAM. Include it in the
+					// persist set so the IDB cursor we're about
+					// to advance doesn't lap a row that may not
+					// be durable yet (upsert's fire-and-forget
+					// IDB write could still be pending / failed
+					// — Codex P? round 4). One redundant put is
+					// cheaper than a missing row on warm boot.
+					toPersist.push(existing);
 					continue;
 				}
 			}
@@ -432,7 +444,7 @@ export const localIndex = {
 			const { deleted: _d, ...rest } = change;
 			const skinny = toSkinny(rest as ItemIndexRow);
 			state.items.set(change.id, skinny);
-			written.push(skinny);
+			toPersist.push(skinny);
 		}
 		state.cursor = newCursor;
 		// Write-through to IDB. ATOMIC: rows + cursor land in a
@@ -442,7 +454,7 @@ export const localIndex = {
 		// in-memory only and never break the read path. Routed
 		// through the workspace's captured `userId` so a different
 		// user signing into the same browser sees their own cache.
-		persistDelta(state.userId, ws, written, newCursor).catch(
+		persistDelta(state.userId, ws, toPersist, newCursor).catch(
 			() => undefined,
 		);
 	},
