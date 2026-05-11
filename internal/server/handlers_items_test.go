@@ -1613,6 +1613,39 @@ func TestCollectionCheckboxProgress(t *testing.T) {
 	if !bytes.Contains(rr.Body.Bytes(), []byte(`[]`)) {
 		t.Fatalf("expected empty array body, got %s", rr.Body.String())
 	}
+
+	// Archive `allDone` and confirm it drops out of the default response
+	// but reappears with ?include_archived=true. Mirrors the Archived
+	// toggle on the collection page (Codex round 2 [P2] on PR #491).
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+allDone.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive allDone: expected 204, got %d", rr.Code)
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/checkbox-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkbox-progress default: expected 200, got %d", rr.Code)
+	}
+	resp = nil
+	parseJSON(t, rr, &resp)
+	for _, r := range resp {
+		if r.ItemID == allDone.ID {
+			t.Fatalf("archived item should not appear in default checkbox-progress response")
+		}
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 row (mixed) after archiving allDone, got %d", len(resp))
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/checkbox-progress?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkbox-progress include_archived: expected 200, got %d", rr.Code)
+	}
+	resp = nil
+	parseJSON(t, rr, &resp)
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 rows with include_archived, got %d", len(resp))
+	}
 }
 
 func firstID(items []models.Item) string {

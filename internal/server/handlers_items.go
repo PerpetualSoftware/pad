@@ -1112,7 +1112,8 @@ func (s *Server) handleCollectionCheckboxProgress(w http.ResponseWriter, r *http
 		return
 	}
 
-	progress, err := s.store.CollectionCheckboxProgress(workspaceID, coll.ID)
+	includeArchived := r.URL.Query().Get("include_archived") == "true"
+	progress, err := s.store.CollectionCheckboxProgress(workspaceID, coll.ID, includeArchived)
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -418,8 +418,14 @@
 			// the same counts via LENGTH/REPLACE arithmetic on the
 			// stored rows — same shape `{item_id, total, done}` as
 			// /plans-progress.
+			//
+			// Pass `includeArchived` so the toggle-on view (which renders
+			// archived rows alongside live ones) still gets their
+			// progress badges. Per Codex round 2 [P2] on PR #491.
 			const map: Record<string, { total: number; done: number }> = {};
-			const progress = await api.items.collectionCheckboxProgress(ws, coll).catch(() => []);
+			const progress = await api.items
+				.collectionCheckboxProgress(ws, coll, { includeArchived: showArchived })
+				.catch(() => []);
 			for (const p of progress) {
 				map[p.item_id] = { total: p.total, done: p.done };
 			}
@@ -462,9 +468,11 @@
 				// doesn't ship content, so the old client-side parse
 				// would be a no-op; the server-side endpoint computes
 				// the same counts via LENGTH/REPLACE arithmetic on the
-				// stored rows.
+				// stored rows. `includeArchived` is plumbed through so
+				// the toggle-on view keeps progress badges on archived
+				// items (per Codex round 2 [P2] on PR #491).
 				try {
-					const progress = await api.items.collectionCheckboxProgress(ws, coll);
+					const progress = await api.items.collectionCheckboxProgress(ws, coll, { includeArchived });
 					const map: Record<string, { total: number; done: number }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };

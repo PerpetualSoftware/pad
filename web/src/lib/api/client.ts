@@ -481,9 +481,15 @@ export const api = {
 		 * supplies the small derived counts the views need to render
 		 * progress badges.
 		 */
-		collectionCheckboxProgress: (ws: string, coll: string) =>
+		collectionCheckboxProgress: (
+			ws: string,
+			coll: string,
+			opts?: { includeArchived?: boolean }
+		) =>
 			request<{item_id: string; total: number; done: number}[]>(
-				`/workspaces/${ws}/collections/${coll}/checkbox-progress`
+				`/workspaces/${ws}/collections/${coll}/checkbox-progress${qs({
+					include_archived: opts?.includeArchived ? 'true' : undefined,
+				})}`
 			),
 
 		/** Star an item for the current user (idempotent) */

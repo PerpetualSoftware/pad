@@ -794,11 +794,15 @@ type ItemCheckboxProgress struct {
 	Done   int    `json:"done"`
 }
 
-// CountSubstring is the SQL fragment used to count occurrences of a
-// literal substring inside a column. Implemented identically on
-// SQLite and PostgreSQL via the `(LENGTH(col) - LENGTH(REPLACE(col,
-// needle, ”))) / LENGTH(needle)` trick — both dialects support
-// LENGTH and REPLACE on TEXT, and integer division is identical.
+// checkboxCountSQL is the SQL fragment used to count `- [ ]` and
+// `- [x]` markers inside item content. Implemented identically on
+// SQLite and PostgreSQL via the LENGTH/REPLACE arithmetic trick —
+// both dialects support LENGTH and REPLACE on TEXT, and integer
+// division is identical.
+//
+// The `i.deleted_at` clause is appended dynamically in
+// CollectionCheckboxProgress so callers can request progress for
+// archived rows (matches /items-index's include_archived semantics).
 const checkboxCountSQL = `
 	SELECT i.id,
 	       (LENGTH(i.content) - LENGTH(REPLACE(i.content, '- [ ]', ''))) / 5
@@ -807,7 +811,6 @@ const checkboxCountSQL = `
 	FROM items i
 	WHERE i.workspace_id = ?
 	  AND i.collection_id = ?
-	  AND i.deleted_at IS NULL
 	  AND i.content LIKE '%- [%]%'
 `
 
@@ -818,10 +821,21 @@ const checkboxCountSQL = `
 // ints per non-zero item) — much cheaper than shipping every item's
 // rich-text body just so the client can grep for checkboxes.
 //
+// includeArchived controls whether soft-deleted items contribute
+// rows. The default (false) matches the pre-existing client-side
+// parse for the un-toggled view. With the page's Archived toggle
+// on, the collection page renders archived items too — passing
+// true preserves their progress badges (per Codex round 2 [P2] on
+// PR #491).
+//
 // Items with no markers, or with non-positive totals after subtracting
 // done from open, are filtered out. Result order is unspecified.
-func (s *Store) CollectionCheckboxProgress(workspaceID, collectionID string) ([]ItemCheckboxProgress, error) {
-	rows, err := s.db.Query(s.q(checkboxCountSQL), workspaceID, collectionID)
+func (s *Store) CollectionCheckboxProgress(workspaceID, collectionID string, includeArchived bool) ([]ItemCheckboxProgress, error) {
+	query := checkboxCountSQL
+	if !includeArchived {
+		query += " AND i.deleted_at IS NULL"
+	}
+	rows, err := s.db.Query(s.q(query), workspaceID, collectionID)
 	if err != nil {
 		return nil, fmt.Errorf("collection checkbox progress: %w", err)
 	}
