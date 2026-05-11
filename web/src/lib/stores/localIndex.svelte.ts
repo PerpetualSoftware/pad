@@ -19,11 +19,15 @@
 // reactive in its own right. The in-flight bootstrap promise lives
 // in a separate plain Map — no reason to make a Promise reactive.
 //
-// Archived items are held alongside live items by design (see
-// TASK-1357): the store is a workspace-wide read model, and the
-// archived toggle is a render-time predicate the consumer applies via
-// `fields.status`. `applyDelta` removes rows only on the `deleted`
-// tombstone flag (soft-delete) — `status: 'archived'` items remain.
+// Archived items (rows with `deleted_at` set on the server) are held
+// alongside live items by design (see TASK-1357): the store is a
+// workspace-wide read model, and the showArchived toggle is a
+// render-time predicate. `getByCollection` filters them out by default;
+// callers that want to render archived rows pass `{ includeArchived: true }`.
+// `applyDelta` removes a row from the store only when the server flags
+// it as a hard-deleted tombstone (`deleted: true` on the change wire
+// format) — soft-deletes arrive as upserts with `deleted_at` populated,
+// so they stay in the index and just fall out of the default filter.
 //
 // Strip `content` defensively on every ingest path. The server's skinny
 // `/items-index` and `/items-changes` endpoints already exclude the
@@ -143,41 +147,59 @@ export const localIndex = {
 	/**
 	 * Synchronous filtered read by collection slug. Returns a freshly
 	 * allocated array on every call; rely on `$derived` upstream for
-	 * memoization. Includes archived items (they're in the store by
-	 * design) — consumers that want to gate on `fields.status` should
-	 * do so at the render layer (see TASK-1357 wiring).
+	 * memoization.
+	 *
+	 * By default, soft-deleted ("archived") rows are filtered out —
+	 * the store holds them alongside live rows so a `showArchived`
+	 * toggle doesn't need a refetch, but the typical view wants live
+	 * only. Pass `{ includeArchived: true }` for archive views.
 	 */
-	getByCollection(ws: string, collSlug: string): ItemIndexRow[] {
+	getByCollection(
+		ws: string,
+		collSlug: string,
+		opts?: { includeArchived?: boolean },
+	): ItemIndexRow[] {
 		const state = workspaces.get(ws);
 		if (!state) return [];
+		const includeArchived = opts?.includeArchived === true;
 		const out: ItemIndexRow[] = [];
 		for (const row of state.items.values()) {
-			if (row.collection_slug === collSlug) out.push(row);
+			if (row.collection_slug !== collSlug) continue;
+			if (!includeArchived && row.deleted_at) continue;
+			out.push(row);
 		}
 		return out;
 	},
 
 	/**
 	 * Apply a batch of changes from `/items-changes`. Upserts on
-	 * non-deleted rows, removes on `deleted: true` (soft-delete
-	 * tombstone). Archived-status rows stay in the store — `deleted`
-	 * is a different concern.
+	 * non-deleted rows, removes on `deleted: true` (hard-delete
+	 * tombstone). Soft-deleted rows arrive as regular upserts with
+	 * `deleted_at` populated, so they stay in the index.
 	 *
-	 * Two guards against stale batches (Codex P2 on initial review):
+	 * Three guards against stale batches (all three caught by Codex
+	 * across review rounds):
 	 *
 	 *   1. If `newCursor <= state.cursor`, drop the whole batch. The
 	 *      server returns `cursor === since` on empty responses, so an
 	 *      empty no-op trivially short-circuits here.
-	 *   2. Per-row: skip changes whose `seq <= state.cursor` at the
-	 *      START of the call. In normal /items-changes flow the server
-	 *      filters to `seq > since`, but applyDelta is also a public
-	 *      entry point (tests, future replay callers) — if any row in
-	 *      a batch is stale, dropping it prevents overwriting newer
-	 *      state. Rows missing `seq` (legacy snapshots before TASK-1352)
-	 *      pass through unconditionally since we have no basis to
-	 *      compare.
+	 *   2. Per-row vs. cursor: skip changes whose `seq <= state.cursor`
+	 *      at the START of the call. In normal /items-changes flow the
+	 *      server filters to `seq > since`, but applyDelta is also a
+	 *      public entry point (tests, future replay callers) — if any
+	 *      row in a batch is stale, dropping it prevents overwriting
+	 *      newer state.
+	 *   3. Per-row vs. existing row: skip if there is already a row
+	 *      with a higher `seq` in the store. `upsert()` and SSE
+	 *      apply-event paths can store newer rows without touching the
+	 *      cursor, so the cursor alone is not a sufficient floor —
+	 *      a delta that legitimately advances the cursor can still
+	 *      carry a row whose `seq` is older than what we already hold
+	 *      for that id (e.g. SSE arrived first via a different path).
 	 *
-	 * The cursor only advances forward, so a backslide can never lose
+	 * Rows missing `seq` (legacy snapshots before TASK-1352) pass
+	 * through unconditionally — there's no basis to compare. The
+	 * cursor only advances forward, so a backslide can never lose
 	 * progress.
 	 */
 	applyDelta(ws: string, changes: ItemChangeRow[], newCursor: string): void {
@@ -189,11 +211,17 @@ export const localIndex = {
 		if (newCursorNum <= startCursorNum) return;
 
 		for (const change of changes) {
-			// Guard 2: per-row seq check. If a row's seq isn't strictly
-			// greater than what we held at the start, it's stale —
-			// skip. Missing seq is treated as "trust the batch".
-			if (change.seq !== undefined && change.seq <= startCursorNum) {
-				continue;
+			if (change.seq !== undefined) {
+				// Guard 2: row's seq vs. cursor floor.
+				if (change.seq <= startCursorNum) continue;
+				// Guard 3: row's seq vs. existing row.
+				const existing = state.items.get(change.id);
+				if (
+					existing?.seq !== undefined &&
+					change.seq <= existing.seq
+				) {
+					continue;
+				}
 			}
 			if (change.deleted) {
 				state.items.delete(change.id);
