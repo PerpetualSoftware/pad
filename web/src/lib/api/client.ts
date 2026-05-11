@@ -7,6 +7,7 @@ import type {
 	CollectionUpdate,
 	Item,
 	ItemCreate,
+	ItemIndexResponse,
 	ItemUpdate,
 	ItemLink,
 	ItemLinkCreate,
@@ -320,6 +321,31 @@ export const api = {
 		) =>
 			request<Item[]>(
 				`/workspaces/${ws}/collections/${coll}/items${qs(params)}`
+			),
+
+		/**
+		 * Skinny-projection cross-collection listing for the local-first
+		 * read model (PLAN-1343 / TASK-1344). Returns every item in a
+		 * workspace MINUS the rich-text `content` body, plus a `total`
+		 * count and a forward-looking `cursor` placeholder.
+		 *
+		 * Optional filters mirror the server: `collection` narrows to one
+		 * collection slug, `include_archived` flips the soft-delete gate.
+		 *
+		 * Endpoint: `GET /api/v1/workspaces/{ws}/items-index`. The path is
+		 * deliberately at workspace level (sibling to `/plans-progress`)
+		 * rather than `/items/index` to avoid colliding with any item
+		 * whose slug is `"index"` — see PR #486 Codex round 1.
+		 */
+		listIndex: (
+			ws: string,
+			opts?: { collection?: string; includeArchived?: boolean }
+		) =>
+			request<ItemIndexResponse>(
+				`/workspaces/${ws}/items-index${qs({
+					collection: opts?.collection,
+					include_archived: opts?.includeArchived ? 'true' : undefined,
+				})}`
 			),
 
 		create: (ws: string, coll: string, data: ItemCreate) =>

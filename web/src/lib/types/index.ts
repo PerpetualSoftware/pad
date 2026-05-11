@@ -442,6 +442,26 @@ export interface Item {
 	decision_log?: ItemDecisionLogEntry[];
 }
 
+// ─── Items index (skinny projection) ─────────────────────────────────────────
+// `ItemIndexRow` is the row shape returned by `GET /workspaces/{ws}/items-index`
+// (TASK-1344): every column on `Item` EXCEPT the rich-text `content` body, so
+// the local-first read model (PLAN-1343) can hydrate a workspace-wide index
+// without paying the body cost on bootstrap.
+//
+// Derived from `Item` via `Omit<…, 'content'>` so adding a new column to
+// `Item` automatically flows into the index row without a second edit.
+export type ItemIndexRow = Omit<Item, 'content'>;
+
+export interface ItemIndexResponse {
+	items: ItemIndexRow[];
+	total: number;
+	// `cursor` is a placeholder until Phase 2 lands the monotonic `seq`
+	// column — today the server returns the maximum `updated_at` across
+	// the result set (RFC3339Nano), or `"0"` when the workspace is empty.
+	// Clients should treat the value as opaque.
+	cursor: string;
+}
+
 export interface ItemCreate {
 	title: string;
 	content?: string;
