@@ -5,8 +5,15 @@
 // reader path is unaffected — consumers always go through localIndex,
 // never through this module directly.
 //
-// Database shape: one IDB database per workspace, named
-// `pad-local-index-{wsSlug}`. Two object stores:
+// Database shape: one IDB database per (user, workspace) pair, named
+// `pad-local-index-{userId}-{wsSlug}`. Scoping by user is required —
+// the cache is what the user could see last sync, and if a different
+// user signs into the same browser, exposing the previous user's
+// view would be a real correctness/permission leak. Anonymous /
+// bootstrap-time callers (with no user id yet) use the `anon`
+// namespace; those caches are independent of any signed-in user.
+//
+// Two object stores:
 //
 //   items  (keyPath: 'id')   — ItemIndexRow rows, keyed by item.id
 //   meta   (keyPath: 'key')  — { key: 'sync', cursor, schemaVersion }
@@ -52,28 +59,47 @@ interface MetaRow {
 	schemaVersion: number;
 }
 
-// Open IDB connections are cached per workspace. Reopening is a real
-// cost (page-load latency) and only matters when the persistence layer
-// is actually used — most of the test surface lives in memory.
+// Open IDB connections are cached per (user, workspace) pair. The
+// map key matches `dbName()` so cache slots can't collide across
+// user namespaces.
 const dbs = new Map<string, IDBPDatabase>();
 
 function isSupported(): boolean {
 	return typeof indexedDB !== 'undefined';
 }
 
-function dbName(ws: string): string {
-	return `pad-local-index-${ws}`;
+/**
+ * Encode a value so it's safe to embed in an IDB database name.
+ * Names allow any UTF-16 string per spec, but URL-encoding keeps
+ * the on-disk handle predictable in dev tools and avoids surprises
+ * from exotic IDs.
+ */
+function safe(s: string): string {
+	return encodeURIComponent(s);
+}
+
+function dbName(userId: string | null, ws: string): string {
+	const ns = userId ? safe(userId) : 'anon';
+	return `pad-local-index-${ns}-${safe(ws)}`;
+}
+
+function key(userId: string | null, ws: string): string {
+	return dbName(userId, ws);
 }
 
 /**
- * Open the workspace's IDB database, creating object stores on
- * first run. Cached so subsequent calls reuse the connection.
- * Returns null on any storage failure — callers must treat that as
- * "no cache available, fall back to network".
+ * Open the workspace's IDB database for the given user, creating
+ * object stores on first run. Cached so subsequent calls reuse the
+ * connection. Returns null on any storage failure — callers must
+ * treat that as "no cache available, fall back to network".
  */
-async function open(ws: string): Promise<IDBPDatabase | null> {
+async function open(
+	userId: string | null,
+	ws: string,
+): Promise<IDBPDatabase | null> {
 	if (!isSupported()) return null;
-	const cached = dbs.get(ws);
+	const k = key(userId, ws);
+	const cached = dbs.get(k);
 	if (cached) return cached;
 
 	try {
@@ -81,7 +107,7 @@ async function open(ws: string): Promise<IDBPDatabase | null> {
 		// for migrations). We pin it to 1 and use our own
 		// `schemaVersion` row in `meta` for content-shape versioning.
 		// That keeps schema bumps decoupled from idb library quirks.
-		const db = await openDB(dbName(ws), 1, {
+		const db = await openDB(dbName(userId, ws), 1, {
 			upgrade(db) {
 				if (!db.objectStoreNames.contains('items')) {
 					db.createObjectStore('items', { keyPath: 'id' });
@@ -91,7 +117,7 @@ async function open(ws: string): Promise<IDBPDatabase | null> {
 				}
 			},
 		});
-		dbs.set(ws, db);
+		dbs.set(k, db);
 		return db;
 	} catch {
 		return null;
@@ -110,11 +136,14 @@ async function open(ws: string): Promise<IDBPDatabase | null> {
  * Never throws. The caller does the cold-path /items-index fetch when
  * `items` is empty.
  */
-export async function hydrate(ws: string): Promise<HydrateResult> {
+export async function hydrate(
+	userId: string | null,
+	ws: string,
+): Promise<HydrateResult> {
 	const empty: HydrateResult = { items: [], cursor: '0' };
 	if (!isSupported()) return empty;
 
-	const db = await open(ws);
+	const db = await open(userId, ws);
 	if (!db) return empty;
 
 	try {
@@ -128,7 +157,7 @@ export async function hydrate(ws: string): Promise<HydrateResult> {
 		// signal an empty cache. The next bootstrap fully resyncs.
 		if (meta && meta.schemaVersion !== LOCAL_INDEX_SCHEMA_VERSION) {
 			await tx.done.catch(() => undefined);
-			await wipe(ws);
+			await wipe(userId, ws);
 			return empty;
 		}
 
@@ -150,9 +179,13 @@ export async function hydrate(ws: string): Promise<HydrateResult> {
  * cursor lands after). For per-delta writes prefer
  * `persistDelta` which advances rows + cursor atomically.
  */
-export async function persistCursor(ws: string, cursor: string): Promise<void> {
+export async function persistCursor(
+	userId: string | null,
+	ws: string,
+	cursor: string,
+): Promise<void> {
 	if (!isSupported()) return;
-	const db = await open(ws);
+	const db = await open(userId, ws);
 	if (!db) return;
 	try {
 		await db.put('meta', {
@@ -172,11 +205,12 @@ export async function persistCursor(ws: string, cursor: string): Promise<void> {
  * one-shot puts.
  */
 export async function persistUpserts(
+	userId: string | null,
 	ws: string,
 	rows: ItemIndexRow[],
 ): Promise<void> {
 	if (!isSupported() || rows.length === 0) return;
-	const db = await open(ws);
+	const db = await open(userId, ws);
 	if (!db) return;
 	try {
 		const tx = db.transaction('items', 'readwrite');
@@ -204,12 +238,13 @@ export async function persistUpserts(
  * populated); hard removals still go through `persistRemovals`.
  */
 export async function persistDelta(
+	userId: string | null,
 	ws: string,
 	rows: ItemIndexRow[],
 	cursor: string,
 ): Promise<void> {
 	if (!isSupported()) return;
-	const db = await open(ws);
+	const db = await open(userId, ws);
 	if (!db) return;
 	try {
 		const tx = db.transaction(['items', 'meta'], 'readwrite');
@@ -237,11 +272,12 @@ export async function persistDelta(
  * flow through `persistUpserts`.
  */
 export async function persistRemovals(
+	userId: string | null,
 	ws: string,
 	ids: string[],
 ): Promise<void> {
 	if (!isSupported() || ids.length === 0) return;
-	const db = await open(ws);
+	const db = await open(userId, ws);
 	if (!db) return;
 	try {
 		const tx = db.transaction('items', 'readwrite');
@@ -261,20 +297,24 @@ export async function persistRemovals(
  * the schemaVersion doesn't match. Closes the cached connection
  * first so the delete request isn't blocked by a still-open handle.
  */
-export async function wipe(ws: string): Promise<void> {
+export async function wipe(
+	userId: string | null,
+	ws: string,
+): Promise<void> {
 	if (!isSupported()) return;
-	const existing = dbs.get(ws);
+	const k = key(userId, ws);
+	const existing = dbs.get(k);
 	if (existing) {
 		try {
 			existing.close();
 		} catch {
 			/* swallow */
 		}
-		dbs.delete(ws);
+		dbs.delete(k);
 	}
 	try {
 		await new Promise<void>((resolve) => {
-			const req = indexedDB.deleteDatabase(dbName(ws));
+			const req = indexedDB.deleteDatabase(dbName(userId, ws));
 			req.onsuccess = () => resolve();
 			req.onerror = () => resolve();
 			req.onblocked = () => resolve();

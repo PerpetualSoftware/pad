@@ -80,6 +80,21 @@ class WorkspaceState {
 	items: SvelteMap<string, ItemIndexRow> = new SvelteMap();
 	cursor = $state('0');
 	bootstrapState = $state<BootstrapState>('cold');
+
+	// `userId` is captured on first bootstrap and used to scope the
+	// IDB database name. Null = anonymous (pre-auth bootstrap). It
+	// never changes once set — a different user signing in goes
+	// through `reset()` first, dropping the state.
+	userId: string | null = null;
+
+	// `generation` is bumped on every `reset()`. Bootstrap captures
+	// the value at start; if it advances during an await, the
+	// in-flight bootstrap bails out instead of writing/reapplying
+	// rows that belong to a stale identity. Without this, a sign-out
+	// or 403 purge during a slow /items-index request would let the
+	// completed snapshot resurrect just-purged rows (Codex P1
+	// round 3).
+	generation = 0;
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -178,17 +193,30 @@ export const localIndex = {
 	 * or SSE write that landed while bootstrap was in flight is
 	 * never regressed.
 	 */
-	async bootstrap(ws: string): Promise<void> {
+	async bootstrap(
+		ws: string,
+		opts?: { userId?: string | null },
+	): Promise<void> {
 		const state = ensureState(ws);
 		if (state.bootstrapState === 'ready') return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
 
+		state.userId = opts?.userId ?? null;
 		state.bootstrapState = 'loading';
+		// Capture the generation at start. If `reset()` runs during
+		// any await below, generation bumps; we then bail out before
+		// re-applying rows or writing the snapshot back, otherwise
+		// purged data could resurrect (Codex P1 round 3).
+		const bootstrapGen = state.generation;
+		const userId = state.userId;
+		const isStale = () => state.generation !== bootstrapGen;
+
 		const p = (async () => {
 			try {
 				// Stage 1: warm path. Always try IDB first.
-				const cached = await persistHydrate(ws);
+				const cached = await persistHydrate(userId, ws);
+				if (isStale()) return;
 				const hasCache = cached.items.length > 0;
 				if (hasCache) {
 					for (const row of cached.items) {
@@ -228,6 +256,7 @@ export const localIndex = {
 						for (let i = 0; i < 50; i++) {
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
+							if (isStale()) return;
 							if (delta.changes.length === 0 || delta.cursor === since) {
 								// Server returned no new rows AND no
 								// cursor advance — we're caught up.
@@ -237,6 +266,7 @@ export const localIndex = {
 							if (delta.cursor === since) break;
 						}
 					} catch (err) {
+						if (isStale()) return;
 						if (err instanceof PadApiError && err.code === 'forbidden') {
 							// Cache is stale-by-permission. Drop it
 							// here AND surface the error so the caller
@@ -245,7 +275,7 @@ export const localIndex = {
 							state.bootstrapState = 'error';
 							state.items.clear();
 							state.cursor = '0';
-							persistWipe(ws).catch(() => undefined);
+							persistWipe(userId, ws).catch(() => undefined);
 							throw err;
 						}
 						/* swallow — cache stands, retry on reconnect */
@@ -255,6 +285,7 @@ export const localIndex = {
 					const resp = await api.items.listIndex(ws, {
 						includeArchived: true,
 					});
+					if (isStale()) return;
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -274,11 +305,12 @@ export const localIndex = {
 					// yields exactly the merged, winning rows.
 					const snapshot: ItemIndexRow[] = [];
 					for (const row of state.items.values()) snapshot.push(row);
-					persistDelta(ws, snapshot, state.cursor).catch(
+					persistDelta(userId, ws, snapshot, state.cursor).catch(
 						() => undefined,
 					);
 				}
 			} catch (err) {
+				if (isStale()) return;
 				state.bootstrapState = 'error';
 				throw err;
 			} finally {
@@ -407,8 +439,12 @@ export const localIndex = {
 		// single transaction so the persisted cursor can never
 		// advance past rows that didn't make it to disk (Codex P2
 		// round 1). Fire-and-forget; storage failures degrade to
-		// in-memory only and never break the read path.
-		persistDelta(ws, written, newCursor).catch(() => undefined);
+		// in-memory only and never break the read path. Routed
+		// through the workspace's captured `userId` so a different
+		// user signing into the same browser sees their own cache.
+		persistDelta(state.userId, ws, written, newCursor).catch(
+			() => undefined,
+		);
 	},
 
 	/**
@@ -440,7 +476,7 @@ export const localIndex = {
 		state.items.set(row.id, next);
 		// Write-through to IDB. Fire-and-forget; storage failures
 		// degrade silently.
-		persistUpserts(ws, [next]).catch(() => undefined);
+		persistUpserts(state.userId, ws, [next]).catch(() => undefined);
 	},
 
 	/**
@@ -453,7 +489,7 @@ export const localIndex = {
 		if (!state) return;
 		state.items.delete(id);
 		// Write-through hard-delete to IDB.
-		persistRemovals(ws, [id]).catch(() => undefined);
+		persistRemovals(state.userId, ws, [id]).catch(() => undefined);
 	},
 
 	/** Current cursor for a workspace, or "0" if unhydrated. */
@@ -478,12 +514,26 @@ export const localIndex = {
 	 * user's cache. After reset, `bootstrap(ws)` from cold.
 	 */
 	reset(ws: string): void {
+		const prior = workspaces.get(ws);
+		// Bump generation on the prior state object BEFORE deleting
+		// it from the map. Any in-flight bootstrap promise still holds
+		// a reference to `prior` — checking `state.generation !==
+		// bootstrapGen` after each await lets it bail out instead of
+		// writing or re-applying rows that belong to a stale identity
+		// (Codex P1 round 3). Without this, a sign-out / 403 purge
+		// during a slow /items-index request could resurrect just-
+		// purged rows when the snapshot resolved.
+		const priorUserId = prior?.userId ?? null;
+		if (prior) prior.generation += 1;
+
 		workspaces.delete(ws);
 		inflight.delete(ws);
-		// Drop the persisted cache too — the 403-purge / sign-out
-		// path uses this method, and leaving stale rows on disk
-		// would defeat the point. Fire-and-forget.
-		persistWipe(ws).catch(() => undefined);
+
+		// Drop the persisted cache for the workspace's last-known
+		// userId. If a different user later bootstraps the same
+		// workspace, their cache is in a different IDB namespace and
+		// remains untouched, by design.
+		persistWipe(priorUserId, ws).catch(() => undefined);
 	},
 
 	/** Number of items currently held for a workspace. Test/debug aid. */
