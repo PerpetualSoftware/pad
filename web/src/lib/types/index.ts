@@ -424,6 +424,11 @@ export interface Item {
 	source: string;
 	created_at: string;
 	updated_at: string;
+	// `deleted_at` marks soft-deleted ("archived") items. Server `Item.DeletedAt`
+	// uses `omitempty` so this is undefined for live rows and a UTC string for
+	// archived ones. The local-first read model (PLAN-1343) keeps archived
+	// rows alongside live rows; consumers gate on this field at render time.
+	deleted_at?: string | null;
 	collection_slug?: string;
 	collection_name?: string;
 	collection_icon?: string;
