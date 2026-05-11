@@ -520,6 +520,43 @@ func TestMapCollectionCreate_FieldsAndSchemaMutuallyExclusive(t *testing.T) {
 	}
 }
 
+// TestMapCollectionCreate_EmptySchemaFallsThroughToFields verifies the
+// transport-symmetry fix per Codex round 1: when a client sends
+// schema=null or schema="" alongside fields, the dispatcher treats the
+// empty schema as absent and uses the fields DSL — matching how the
+// CLI handles an empty --schema value.
+func TestMapCollectionCreate_EmptySchemaFallsThroughToFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema any
+	}{
+		{name: "nil-schema", schema: nil},
+		{name: "empty-string-schema", schema: ""},
+		{name: "whitespace-string-schema", schema: "  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, body, err := mapCollectionCreate(map[string]any{
+				"workspace": "docapp",
+				"name":      "Falls",
+				"fields":    "status:select:open,done",
+				"schema":    tc.schema,
+			})
+			if err != nil {
+				t.Fatalf("expected fall-through to --fields, got error: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			schemaStr, _ := payload["schema"].(string)
+			if !strings.Contains(schemaStr, `"key":"status"`) {
+				t.Errorf("expected DSL-parsed status field, got schema: %q", schemaStr)
+			}
+		})
+	}
+}
+
 // TestMapCollectionCreate_SchemaMalformedJSON ensures a clear error when
 // the stringified schema is invalid JSON.
 func TestMapCollectionCreate_SchemaMalformedJSON(t *testing.T) {

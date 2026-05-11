@@ -363,6 +363,21 @@ func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
 
 	dsl, _ := input["fields"].(string)
 	rawSchema, hasSchema := input["schema"]
+	// Normalize "schema present but empty" — null and empty string — to
+	// absent. Without this, MCP clients sending `schema: null` (or `""`)
+	// while also setting `fields` would hit the mutually-exclusive guard,
+	// even though the CLI side treats an empty --schema value as a
+	// fall-through to --fields. Keeps the two transports symmetric.
+	if hasSchema {
+		switch v := rawSchema.(type) {
+		case nil:
+			hasSchema = false
+		case string:
+			if strings.TrimSpace(v) == "" {
+				hasSchema = false
+			}
+		}
+	}
 	if hasSchema && dsl != "" {
 		return "", "", nil, fmt.Errorf("fields and schema are mutually exclusive")
 	}
