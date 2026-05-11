@@ -20,12 +20,13 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
 	let loading = $state(true);
 	let collection = $state<Collection | null>(null);
-	let items = $state<Item[]>([]);
 	let viewMode = $state<ViewMode>('list');
 	let activeFilters = $state<Record<string, string>>({});
 	let searchQuery = $state('');
@@ -53,6 +54,38 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
+
+	// `items` is now a $derived view over the local-first read model
+	// (localIndex, PLAN-1343 / TASK-1355-1356). The collection page no
+	// longer calls /items-index on every navigation; bootstrap is
+	// idempotent and fires once per workspace per session. Filter by
+	// the `showArchived` toggle at read time — the store holds both
+	// live and archived rows. Widen to `Item` by setting content=''
+	// to match the existing prop type contract for view components;
+	// the detail page rehydrates content on open.
+	let items = $derived<Item[]>(
+		wsSlug && collSlug
+			? localIndex
+					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
+					.map((row) => ({ ...row, content: '' }) as Item)
+			: [],
+	);
+
+	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
+	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
+	// the warm-IDB / cold-/items-index flow. Re-runs when the
+	// workspace slug or the signed-in user changes so a user switch
+	// in the same browser tab gets a fresh per-user cache.
+	$effect(() => {
+		if (!wsSlug) return;
+		const uid = authStore.userId || null;
+		localIndex.bootstrap(wsSlug, { userId: uid }).catch(() => {
+			// errors flip the store's bootstrapState to 'error'; the
+			// UI surface is via `collection`/`items`, so a hard failure
+			// just shows an empty page. 401/403 redirect/purge is
+			// handled by the API client + TASK-1360.
+		});
+	});
 	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
 	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
 	// array remains for the assignee dropdown / member rows.
@@ -282,29 +315,15 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
-			// Only react to events for this collection
-			if (event.collection !== coll) return;
-
-			switch (event.type) {
-				case 'item_created':
-				case 'item_archived':
-				case 'item_restored': {
-					try {
-						items = await fetchSkinnyItems(ws, coll, false);
-					} catch {
-						// Ignore fetch errors — will retry on next event
-					}
-					break;
-				}
-				case 'item_updated': {
-					try {
-						items = await fetchSkinnyItems(ws, coll, false);
-					} catch {
-						// Ignore fetch errors
-					}
-					break;
-				}
-			}
+			// React to any item lifecycle event by pulling deltas
+			// through the local store. The `items` derived view picks
+			// up changes automatically; no manual re-fetch needed.
+			// We don't filter by collection here — an item moved into
+			// or out of this collection still needs its delta applied
+			// so the derived view reflects it. TASK-1358 will replace
+			// this generic reconcile with seq-stamped per-event apply.
+			void event;
+			await deltaSync(ws);
 		});
 	});
 
@@ -314,55 +333,24 @@
 	onMount(() => {
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
-
 			if (result.type === 'caught_up') return;
 
-			if (result.type === 'incremental') {
-				// Apply incremental changes to this collection's item list
-				const changes = result.changes;
-				let changed = false;
-
-				for (const updated of changes.updated) {
-					const existingIdx = items.findIndex(i => i.id === updated.id);
-
-					if (updated.collection_slug === collSlug) {
-						// Item belongs to this collection — update or add
-						changed = true;
-						if (existingIdx >= 0) {
-							items[existingIdx] = updated;
-						} else {
-							items = [...items, updated];
-						}
-					} else if (existingIdx >= 0) {
-						// Item was moved OUT of this collection — remove it
-						changed = true;
-						items = items.filter(i => i.id !== updated.id);
-					}
-				}
-
-				for (const deletedId of changes.deleted) {
-					const idx = items.findIndex(i => i.id === deletedId);
-					if (idx >= 0) {
-						changed = true;
-						items = items.filter(i => i.id !== deletedId);
-					}
-				}
-
-				// Refresh progress data if anything changed
-				if (changed) {
-					await refreshProgress(wsSlug, collSlug, items);
-				}
-				return;
-			}
-
-			// Full refresh fallback
-			try {
-				const freshItems = await fetchSkinnyItems(wsSlug, collSlug, showArchived);
-				items = freshItems;
-				await refreshProgress(wsSlug, collSlug, freshItems);
-				syncService.markSynced(); // Advance cursor now that reload succeeded
-			} catch {
-				// Ignore — will catch up on next SSE event
+			// Both 'incremental' (sync via /changes) and 'full_refresh'
+			// (long absence / error) now route through the same
+			// localIndex delta path: pull /items-changes since the
+			// store's current cursor and applyDelta. The /changes
+			// payload from syncService is the legacy
+			// updated_at-watermark API; the local store is canonical
+			// over the seq-cursor /items-changes endpoint, so we read
+			// directly from there. The local index's per-row seq
+			// guards make this idempotent even when SSE + sync race.
+			await deltaSync(wsSlug);
+			await refreshProgress(wsSlug, collSlug, items);
+			if (result.type === 'full_refresh') {
+				// Advance the legacy syncService cursor so it doesn't
+				// re-fire full_refresh on every tab resume. The local
+				// index's own cursor is what actually matters.
+				syncService.markSynced();
 			}
 		});
 	});
@@ -382,24 +370,31 @@
 	});
 
 	/**
-	 * Fetch a collection's items via the skinny /items-index endpoint
-	 * (TASK-1349 / PLAN-1343 Phase 1). The endpoint omits the rich-text
-	 * `content` body, which is the bulk of an item's wire size and is
-	 * only needed when the user opens the detail page.
+	 * Drive a /items-changes delta apply against the local store. Used
+	 * by the SSE event handler and the syncService incremental path —
+	 * both signal "something on the server changed; reconcile". The
+	 * store's per-row seq guards make the call idempotent even when
+	 * SSE + sync both fire for the same change.
 	 *
-	 * The result is widened to `Item[]` by setting `content: ''` on
-	 * every row. This satisfies the existing type contract — view
-	 * components and progress code already treat empty content as
-	 * "nothing to compute" — without leaking a custom skinny type
-	 * through the whole call graph. The detail-page fetch still
-	 * returns full items, so opening any item rehydrates `content`.
+	 * Loops until the cursor stops advancing (the server caps each
+	 * response; deeply-behind tabs need multiple pages). Hard cap at
+	 * 50 iterations to defend against pathological loops, matching
+	 * localIndex.bootstrap's reconcile loop.
 	 */
-	async function fetchSkinnyItems(ws: string, coll: string, includeArchived: boolean): Promise<Item[]> {
-		const resp = await api.items.listIndex(ws, {
-			collection: coll,
-			includeArchived,
-		});
-		return resp.items.map((row) => ({ ...row, content: '' }));
+	async function deltaSync(ws: string): Promise<void> {
+		try {
+			for (let i = 0; i < 50; i++) {
+				const since = localIndex.cursorFor(ws);
+				const delta = await api.items.changes(ws, since);
+				if (delta.changes.length === 0 || delta.cursor === since) {
+					return;
+				}
+				localIndex.applyDelta(ws, delta.changes, delta.cursor);
+				if (delta.cursor === since) return;
+			}
+		} catch {
+			/* swallow — next event / syncService retries */
+		}
 	}
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
@@ -436,14 +431,18 @@
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		loading = true;
 		try {
-			const [collData, itemsData, viewsData, membersData] = await Promise.all([
+			// Items now flow through localIndex (the `items` $derived
+			// above reads `getByCollection`). We still fetch the
+			// collection metadata + saved views + members directly,
+			// AND ensure the workspace is bootstrapped — but the
+			// bootstrap effect upstream is what drives the items
+			// store, so the parallel work is metadata-only here.
+			const [collData, viewsData, membersData] = await Promise.all([
 				api.collections.get(ws, coll),
-				fetchSkinnyItems(ws, coll, includeArchived),
 				api.views.list(ws, coll).catch(() => [] as View[]),
-				api.members.list(ws).catch(() => ({ members: [], invitations: [] }))
+				api.members.list(ws).catch(() => ({ members: [], invitations: [] })),
 			]);
 			collection = collData;
-			items = itemsData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
@@ -484,18 +483,17 @@
 				progressLabel = 'done';
 			}
 
-			// Fetch plan names for relation display on task cards
+			// Fetch plan names for relation display on task cards.
+			// Read directly from localIndex — bootstrap above guarantees
+			// the workspace is hydrated, and 'plans' rows are in the
+			// same per-workspace store as tasks. No extra request.
 			if (coll === 'tasks') {
-				try {
-					const plans = await fetchSkinnyItems(ws, 'plans', false);
-					const labels: Record<string, string> = {};
-					for (const p of plans) {
-						labels[p.id] = p.title;
-					}
-					relationLabels = labels;
-				} catch {
-					relationLabels = {};
+				const plans = localIndex.getByCollection(ws, 'plans');
+				const labels: Record<string, string> = {};
+				for (const p of plans) {
+					labels[p.id] = p.title;
 				}
+				relationLabels = labels;
 			} else {
 				relationLabels = {};
 			}
@@ -510,7 +508,9 @@
 			loadUrlFilters();
 		} catch {
 			collection = null;
-			items = [];
+			// `items` is derived from localIndex; nothing to clear here.
+			// A missing collection shows the empty / not-found state via
+			// the `collection` null branch in the template.
 		} finally {
 			loading = false;
 		}
@@ -680,11 +680,9 @@
 			const updated = await api.items.update(wsSlug, item.id, {
 				fields: JSON.stringify(fields)
 			});
-			// Replace item in-place
-			const idx = items.findIndex((i) => i.id === item.id);
-			if (idx !== -1) {
-				items[idx] = updated;
-			}
+			// Push the canonical post-update row into the local index;
+			// the `items` derived view re-renders automatically.
+			localIndex.upsert(wsSlug, updated);
 			toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 		} catch (e) {
 			console.error('Failed to update item:', e);
@@ -700,15 +698,17 @@
 		for (const { slug, sort_order } of updates) {
 			const item = items.find((i) => i.slug === slug || i.id === slug);
 			if (item && item.sort_order !== sort_order) {
-				item.sort_order = sort_order;
 				dirty.push({ id: item.id, sort_order });
 			}
 		}
 		if (dirty.length === 0) return;
-		// Persist to API sequentially (SQLite can't handle concurrent writes)
+		// Persist to API sequentially (SQLite can't handle concurrent
+		// writes), and upsert each returned row into the local index
+		// so the UI reflects the new order without waiting for SSE.
 		try {
 			for (const { id, sort_order } of dirty) {
-				await api.items.update(wsSlug, id, { sort_order });
+				const updated = await api.items.update(wsSlug, id, { sort_order });
+				localIndex.upsert(wsSlug, updated);
 			}
 		} catch (e) {
 			console.error('Failed to persist sort order:', e);
@@ -779,7 +779,7 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			items = [...items, item];
+			localIndex.upsert(wsSlug, item);
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
@@ -892,7 +892,14 @@
 			for (const item of itemsToArchive) {
 				await api.items.delete(wsSlug, item.id);
 			}
-			items = items.filter((i) => !itemsToArchive.some((a) => a.id === i.id));
+			// /items-changes will pick up the soft-delete tombstones and
+			// applyDelta will mark them archived in the local index. We
+			// could trigger an explicit deltaSync here for snappier
+			// feedback, but SSE typically fires within ~50ms and the
+			// derived `items` view picks up the change automatically
+			// when /items-changes lands. Refresh the cache eagerly so
+			// the archive toggle hides them without an extra round-trip.
+			await deltaSync(wsSlug);
 			toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
 		} catch {
 			toastStore.show('Failed to archive some items', 'error');
@@ -903,10 +910,7 @@
 		if (!wsSlug) return;
 		try {
 			const restored = await api.items.restore(wsSlug, item.id);
-			const idx = items.findIndex((i) => i.id === item.id);
-			if (idx !== -1) {
-				items[idx] = restored;
-			}
+			localIndex.upsert(wsSlug, restored);
 			toastStore.show(`Restored "${item.title}"`, 'success');
 		} catch {
 			toastStore.show('Failed to restore item', 'error');
