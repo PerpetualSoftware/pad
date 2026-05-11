@@ -421,6 +421,70 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 	return result, nil
 }
 
+// GuestVisibleResourcesIncludeDeleted is the delta-sync variant of
+// GuestVisibleResources: it does NOT filter out soft-deleted items
+// or collections. /items-changes (TASK-1354) must surface a
+// tombstone for any item the client previously saw, including items
+// the user had an item-level grant on. Without this variant, a
+// grant-only user whose granted item gets soft-deleted would see
+// the row vanish from /items-changes with no `deleted:true` signal,
+// and the client would keep the stale entry in its local index
+// forever (Codex review of TASK-1354 round 1 [P1]).
+//
+// Same shape as GuestVisibleResources so the caller can swap them
+// in/out depending on whether the endpoint needs live-state or
+// tombstone-bearing visibility.
+func (s *Store) GuestVisibleResourcesIncludeDeleted(workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
+	// Collections with direct grants — include soft-deleted
+	// collections so the client can flush their items from its
+	// local index via the items query below.
+	rows, err := s.db.Query(s.q(`
+		SELECT DISTINCT cg.collection_id FROM collection_grants cg
+		WHERE cg.workspace_id = ? AND cg.user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guest collection grants (include deleted): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		fullCollectionIDs = append(fullCollectionIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Item-level grants — INCLUDE soft-deleted items so their
+	// tombstones flow through /items-changes. The grant row itself
+	// is the source of truth for visibility; the item's
+	// deleted_at is what the delta endpoint USES to mark
+	// `deleted:true` on the wire.
+	itemRows, err := s.db.Query(s.q(`
+		SELECT DISTINCT ig.item_id
+		FROM item_grants ig
+		WHERE ig.workspace_id = ? AND ig.user_id = ?
+	`), workspaceID, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guest item grants (include deleted): %w", err)
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var id string
+		if err := itemRows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		grantedItemIDs = append(grantedItemIDs, id)
+	}
+	if err := itemRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return fullCollectionIDs, grantedItemIDs, nil
+}
+
 // GuestVisibleResources returns the two-level visibility for a guest:
 // - fullCollectionIDs: collections where the user has a direct collection grant (full access)
 // - grantedItemIDs: specific item IDs the user has item-level grants on

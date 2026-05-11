@@ -268,9 +268,13 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		Limit:         limit,
 	}
 
-	// Item-level grants for guests / restricted members — same
-	// guestResourceFilter dance as /items-index.
-	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	// Item-level grants for guests / restricted members. Delta sync
+	// uses the include-deleted-items variant so a tombstone on a
+	// granted item still flows through — without it the grant ID
+	// disappears as soon as the item is soft-deleted, and the
+	// client never learns the row went away (Codex review of
+	// TASK-1354 round 1 [P1]).
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilterIncludeDeletedItems(r, workspaceID)
 	if grantErr != nil {
 		writeInternalError(w, grantErr)
 		return

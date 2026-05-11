@@ -3132,6 +3132,82 @@ func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
 	}
 }
 
+// TestGuestVisibleResourcesIncludeDeleted_SurfacesTombstones is the
+// delta-sync correctness test Codex round 1 [P1] on TASK-1354 asked
+// for: when a guest's only access to an item is via an item-level
+// grant, soft-deleting that item must NOT make the grant ID
+// disappear from the delta-sync lookup. Otherwise /items-changes
+// can never emit the `deleted:true` tombstone and the client
+// keeps the stale row forever.
+//
+// We compare both helpers side by side so a future regression on
+// either path fails this test loudly.
+func TestGuestVisibleResourcesIncludeDeleted_SurfacesTombstones(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "guest@example.com", "Guest", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	// We deliberately DON'T call AddWorkspaceMember here — the
+	// helper under test (GuestVisibleResources / *IncludeDeleted)
+	// just looks up grants for the given user ID and is agnostic
+	// to workspace membership. The server-side role gating
+	// (workspaceRole(r) == "guest") happens in
+	// guestResourceFilter, which delegates to these helpers.
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Two items: one stays live, one gets soft-deleted. The guest
+	// has an item-level grant on each.
+	live := createTestItem(t, s, ws.ID, col.ID, "Live", "")
+	doomed := createTestItem(t, s, ws.ID, col.ID, "Doomed", "")
+	if _, err := s.CreateItemGrant(ws.ID, live.ID, user.ID, "viewer", user.ID); err != nil {
+		t.Fatalf("grant live: %v", err)
+	}
+	if _, err := s.CreateItemGrant(ws.ID, doomed.ID, user.ID, "viewer", user.ID); err != nil {
+		t.Fatalf("grant doomed: %v", err)
+	}
+	if err := s.DeleteItem(doomed.ID); err != nil {
+		t.Fatalf("delete doomed: %v", err)
+	}
+
+	// Live variant — filters soft-deleted items. The guest should
+	// only see `live.ID`.
+	_, liveItemIDs, err := s.GuestVisibleResources(ws.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GuestVisibleResources: %v", err)
+	}
+	if got := stringInSlice(liveItemIDs, live.ID); !got {
+		t.Errorf("live variant: missing live item ID %q (got %v)", live.ID, liveItemIDs)
+	}
+	if stringInSlice(liveItemIDs, doomed.ID) {
+		t.Errorf("live variant: should NOT include soft-deleted item, got %v", liveItemIDs)
+	}
+
+	// Delta-sync variant — includes soft-deleted items. The guest
+	// should see BOTH IDs so the tombstone can flow through
+	// /items-changes.
+	_, deltaItemIDs, err := s.GuestVisibleResourcesIncludeDeleted(ws.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GuestVisibleResourcesIncludeDeleted: %v", err)
+	}
+	if !stringInSlice(deltaItemIDs, live.ID) {
+		t.Errorf("delta variant: missing live item ID %q (got %v)", live.ID, deltaItemIDs)
+	}
+	if !stringInSlice(deltaItemIDs, doomed.ID) {
+		t.Errorf("delta variant: MUST include soft-deleted item so client can drop it; got %v", deltaItemIDs)
+	}
+}
+
+// stringInSlice is a tiny test helper — `slices.Contains` would do
+// but keeping the test free of stdlib generics ergonomics so it
+// reads cleanly with the rest of the file.
+func stringInSlice(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestItemSeqMonotonic verifies that the workspace-scoped `seq` column
 // is stamped strictly monotonically across every mutation
 // (create / update / soft-delete / restore). This is the cursor
