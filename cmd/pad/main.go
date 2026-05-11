@@ -4820,11 +4820,123 @@ func collectionsCmd() *cobra.Command {
 	}
 }
 
+// collectionSchemaJSONFromFlags resolves the --schema and --fields flags into
+// a marshaled CollectionSchema JSON string.
+//
+// Exactly one of schemaInput or fieldsDSL may be non-empty. When both are
+// empty, returns "{}" — an empty schema with no fields.
+//
+// schemaInput input modes:
+//   - "" — fall through to fieldsDSL (or empty schema if that is also empty)
+//   - "-" — read full JSON from stdin
+//   - "@<path>" — read full JSON from the file at <path>
+//   - anything else — treat the value itself as an inline JSON literal
+func collectionSchemaJSONFromFlags(schemaInput, fieldsDSL string, stdin io.Reader) (string, error) {
+	if schemaInput != "" && fieldsDSL != "" {
+		return "", fmt.Errorf("--fields and --schema are mutually exclusive")
+	}
+
+	if schemaInput != "" {
+		data, err := readSchemaInputBytes(schemaInput, stdin)
+		if err != nil {
+			return "", err
+		}
+		var schema models.CollectionSchema
+		if err := json.Unmarshal(data, &schema); err != nil {
+			return "", fmt.Errorf("invalid --schema JSON: %w", err)
+		}
+		// Backfill missing labels from keys using the same Title-Case-of-key
+		// heuristic the legacy --fields DSL applies. Without this, schemas
+		// that omit `label` render blank field headers in the web UI — easy
+		// for an agent constructing JSON to forget.
+		for i := range schema.Fields {
+			if schema.Fields[i].Label == "" && schema.Fields[i].Key != "" {
+				schema.Fields[i].Label = cases.Title(language.English).String(strings.ReplaceAll(schema.Fields[i].Key, "_", " "))
+			}
+		}
+		out, err := json.Marshal(schema)
+		if err != nil {
+			return "", fmt.Errorf("re-marshal schema: %w", err)
+		}
+		return string(out), nil
+	}
+
+	schema, err := parseFieldsDSL(fieldsDSL)
+	if err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(schema)
+	if err != nil {
+		return "", fmt.Errorf("marshal schema from --fields: %w", err)
+	}
+	return string(out), nil
+}
+
+// readSchemaInputBytes resolves the --schema flag value into raw JSON bytes,
+// honoring the "-" (stdin), "@path" (file), and inline-literal modes.
+func readSchemaInputBytes(input string, stdin io.Reader) ([]byte, error) {
+	switch {
+	case input == "-":
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read --schema from stdin: %w", err)
+		}
+		return data, nil
+	case strings.HasPrefix(input, "@"):
+		path := input[1:]
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read --schema file %q: %w", path, err)
+		}
+		return data, nil
+	default:
+		return []byte(input), nil
+	}
+}
+
+// parseFieldsDSL parses the legacy --fields DSL (key:type[:options];...) into
+// a CollectionSchema. Empty input returns an empty schema with no error.
+func parseFieldsDSL(fieldsDSL string) (models.CollectionSchema, error) {
+	schema := models.CollectionSchema{}
+	if fieldsDSL == "" {
+		return schema, nil
+	}
+	for _, f := range strings.Split(fieldsDSL, ";") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		parts := strings.SplitN(f, ":", 3)
+		if len(parts) < 2 {
+			return schema, fmt.Errorf("invalid field definition: %q (expected key:type[:options])", f)
+		}
+		fd := models.FieldDef{
+			Key:   parts[0],
+			Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
+			Type:  parts[1],
+		}
+		if len(parts) == 3 && parts[2] != "" {
+			fd.Options = strings.Split(parts[2], ",")
+		}
+		// First select field gets required+default — preserved for
+		// backward compat with the pre-existing DSL behavior.
+		if fd.Type == "select" && fd.Key == "status" {
+			fd.Required = true
+			if len(fd.Options) > 0 {
+				fd.Default = fd.Options[0]
+			}
+		}
+		schema.Fields = append(schema.Fields, fd)
+	}
+	return schema, nil
+}
+
 func collectionsCreateCmd() *cobra.Command {
 	var (
 		icon        string
 		description string
 		fieldsDSL   string
+		schemaInput string
 		layout      string
 		defaultView string
 		boardGroup  string
@@ -4835,12 +4947,30 @@ func collectionsCreateCmd() *cobra.Command {
 		Short: "Create a custom collection",
 		Long: `Create a new collection with custom fields.
 
-Fields DSL format: key:type[:option1,option2,...]
-Separate multiple fields with newlines or semicolons.
+Two ways to define the schema:
+
+  --fields  Compact DSL for the simple case: key:type[:option1,option2,...]
+            Separate multiple fields with semicolons. Does not support
+            terminal_options, custom defaults, computed fields, suffixes,
+            or relation collections.
+
+  --schema  Full CollectionSchema JSON for everything else. Accepts:
+              inline JSON:  --schema '{"fields":[...]}'
+              file path:    --schema @./schema.json
+              stdin:        --schema -
+
+  --fields and --schema are mutually exclusive.
 
 Examples:
   pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
-  pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"`,
+  pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
+  pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
+  pad collection create "Marketing" --schema @./marketing-schema.json
+  cat schema.json | pad collection create "Marketing" --schema -
+
+Tip: if you omit "label" on a --schema field, the CLI auto-fills it from
+the key using Title Case (e.g. "due_date" → "Due Date") — matching what
+the --fields DSL does. Set "label" explicitly when you want a custom display name.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -4848,39 +4978,10 @@ Examples:
 
 			name := args[0]
 
-			// Parse fields DSL into schema JSON
-			schema := models.CollectionSchema{}
-			if fieldsDSL != "" {
-				fields := strings.Split(fieldsDSL, ";")
-				for _, f := range fields {
-					f = strings.TrimSpace(f)
-					if f == "" {
-						continue
-					}
-					parts := strings.SplitN(f, ":", 3)
-					if len(parts) < 2 {
-						return fmt.Errorf("invalid field definition: %q (expected key:type[:options])", f)
-					}
-					fd := models.FieldDef{
-						Key:   parts[0],
-						Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
-						Type:  parts[1],
-					}
-					if len(parts) == 3 && parts[2] != "" {
-						fd.Options = strings.Split(parts[2], ",")
-					}
-					// First select field gets required+default
-					if fd.Type == "select" && fd.Key == "status" {
-						fd.Required = true
-						if len(fd.Options) > 0 {
-							fd.Default = fd.Options[0]
-						}
-					}
-					schema.Fields = append(schema.Fields, fd)
-				}
+			schemaJSON, err := collectionSchemaJSONFromFlags(schemaInput, fieldsDSL, os.Stdin)
+			if err != nil {
+				return err
 			}
-
-			schemaJSON, _ := json.Marshal(schema)
 
 			// Build settings
 			settings := models.CollectionSettings{
@@ -4900,7 +5001,7 @@ Examples:
 				Name:        name,
 				Icon:        icon,
 				Description: description,
-				Schema:      string(schemaJSON),
+				Schema:      schemaJSON,
 				Settings:    string(settingsJSON),
 			}
 
@@ -4924,7 +5025,8 @@ Examples:
 
 	cmd.Flags().StringVar(&icon, "icon", "", "collection emoji icon")
 	cmd.Flags().StringVar(&description, "description", "", "collection description")
-	cmd.Flags().StringVar(&fieldsDSL, "fields", "", "field definitions (key:type[:options]; ...)")
+	cmd.Flags().StringVar(&fieldsDSL, "fields", "", "field definitions DSL (key:type[:options]; ...); use --schema for terminal_options, computed, defaults, etc.")
+	cmd.Flags().StringVar(&schemaInput, "schema", "", "full CollectionSchema JSON: inline, @path, or - for stdin; mutually exclusive with --fields")
 	cmd.Flags().StringVar(&layout, "layout", "fields-primary", "item detail layout: fields-primary, content-primary, balanced")
 	cmd.Flags().StringVar(&defaultView, "default-view", "list", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
