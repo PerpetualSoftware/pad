@@ -491,23 +491,27 @@
 		 * keyword caches the real measured height after first paint so
 		 * later scrolls back to that card don't reflow.
 		 *
-		 * ItemCard's `.pr-badge` protrudes 6px past the card's right
-		 * edge (right: -6px) and explicitly relies on overflow staying
-		 * visible. Per CSS Containment Module L2 §4 ("content-visibility"),
-		 * `content-visibility: auto` applies paint containment ONLY when
-		 * the element is "not relevant to the user" — i.e. off-screen,
-		 * when the badge isn't painted in any case. On-screen elements
-		 * receive only layout containment, which does not clip ink
-		 * overflow. We declare `overflow: visible` explicitly here both
-		 * as documentation of intent and as a defense against a future
-		 * style sweep that might add `overflow: hidden` to wrappers and
-		 * silently start clipping the badge. Codex round 1 [P2] on
-		 * PR #489 flagged this concern; the explicit declaration plus
-		 * the spec citation makes the contract auditable.
+		 * `overflow-clip-margin: 6px` is the fix for ItemCard's
+		 * `.pr-badge`, which positions itself at `right: -6px` and
+		 * deliberately protrudes past the card's right edge. CSS
+		 * Containment L2 §3.4 / §4 specifies that `content-visibility:
+		 * auto` applies paint containment continuously — including
+		 * on-screen — and paint containment clips ink overflow. Without
+		 * `overflow-clip-margin`, the badge would be clipped flush at
+		 * the wrapper's content box. The 6px margin matches the badge's
+		 * outward offset exactly, so the badge renders unchanged from
+		 * the pre-virtualization layout. Codex round 2 [P2] on PR #489
+		 * caught the spec misreading in round 1's first fix attempt.
+		 *
+		 * Browser support for `overflow-clip-margin`: Chrome 90+,
+		 * Firefox 102+, Safari 16.4+ — all browsers that ship
+		 * `content-visibility: auto` already ship this. Older browsers
+		 * ignore the property and fall back to the pre-virtualization
+		 * (no-clip) behavior, which is also correct.
 		 */
 		content-visibility: auto;
 		contain-intrinsic-size: auto 80px;
-		overflow: visible;
+		overflow-clip-margin: 6px;
 	}
 
 	.card-wrapper:active {
