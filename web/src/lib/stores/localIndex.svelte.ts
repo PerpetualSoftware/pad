@@ -24,10 +24,13 @@
 // workspace-wide read model, and the showArchived toggle is a
 // render-time predicate. `getByCollection` filters them out by default;
 // callers that want to render archived rows pass `{ includeArchived: true }`.
-// `applyDelta` removes a row from the store only when the server flags
-// it as a hard-deleted tombstone (`deleted: true` on the change wire
-// format) — soft-deletes arrive as upserts with `deleted_at` populated,
-// so they stay in the index and just fall out of the default filter.
+//
+// On `/items-changes` deltas, `deleted: true` is the server's derived
+// view of `deleted_at != nil` (a SOFT delete) — the row still carries
+// its full skinny payload, so `applyDelta` upserts it like any other
+// change. Hard deletes (workspace GC, 403 purge from TASK-1360) flow
+// through `remove()` instead, which is the only path that drops a row
+// id from the local index.
 //
 // Strip `content` defensively on every ingest path. The server's skinny
 // `/items-index` and `/items-changes` endpoints already exclude the
@@ -172,10 +175,14 @@ export const localIndex = {
 	},
 
 	/**
-	 * Apply a batch of changes from `/items-changes`. Upserts on
-	 * non-deleted rows, removes on `deleted: true` (hard-delete
-	 * tombstone). Soft-deleted rows arrive as regular upserts with
-	 * `deleted_at` populated, so they stay in the index.
+	 * Apply a batch of changes from `/items-changes`. Always upserts
+	 * — `deleted: true` on a change is the server's derived view of
+	 * `deleted_at != nil` (a SOFT delete) and the row still carries
+	 * its full skinny payload, so it gets stored alongside live rows
+	 * with `deleted_at` populated. The default `getByCollection`
+	 * filter hides those from live views; `{ includeArchived: true }`
+	 * surfaces them. Hard deletes (workspace GC / 403 purge) go
+	 * through `remove()` instead.
 	 *
 	 * Three guards against stale batches (all three caught by Codex
 	 * across review rounds):
@@ -223,12 +230,16 @@ export const localIndex = {
 					continue;
 				}
 			}
-			if (change.deleted) {
-				state.items.delete(change.id);
-			} else {
-				const { deleted: _d, ...row } = change;
-				state.items.set(change.id, toSkinny(row as ItemIndexRow));
-			}
+			// `deleted: true` is the server's derived view of
+			// `deleted_at != nil` — a SOFT delete. The row still carries
+			// its full skinny payload (including `deleted_at`), so we
+			// upsert it like any other change. Hiding archived rows
+			// from default reads is `getByCollection`'s job; this layer
+			// only manages the seq-ordered identity of the row. Hard
+			// deletes (workspace GC / 403 purge) go through the
+			// `remove()` method, not through this batch path.
+			const { deleted: _d, ...row } = change;
+			state.items.set(change.id, toSkinny(row as ItemIndexRow));
 		}
 		state.cursor = newCursor;
 	},
@@ -239,10 +250,27 @@ export const localIndex = {
 	 * `Item`, the caller hands it here to keep the local index fresh
 	 * without waiting for the SSE round-trip). Does NOT touch the
 	 * cursor — that's the job of `applyDelta` / `applySSEEvent`.
+	 *
+	 * Same per-row stale guard as `applyDelta`: if the incoming row's
+	 * `seq` is not strictly greater than the existing row's `seq`,
+	 * skip the write. Without this, a late SSE / out-of-order optimistic
+	 * response could regress a row after a fresher version had already
+	 * landed. Rows or peers missing `seq` (legacy snapshots before
+	 * TASK-1352) overwrite unconditionally — there's no basis to
+	 * compare.
 	 */
 	upsert(ws: string, row: ItemIndexRow | Item): void {
 		const state = ensureState(ws);
-		state.items.set(row.id, toSkinny(row));
+		const next = toSkinny(row);
+		const existing = state.items.get(row.id);
+		if (
+			existing?.seq !== undefined &&
+			next.seq !== undefined &&
+			next.seq <= existing.seq
+		) {
+			return;
+		}
+		state.items.set(row.id, next);
 	},
 
 	/**
