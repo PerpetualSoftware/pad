@@ -1540,6 +1540,81 @@ func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
 	}
 }
 
+// TestCollectionCheckboxProgress covers the markdown-checkbox progress
+// endpoint that pairs with /items-index (TASK-1349). Verifies SQL
+// LENGTH/REPLACE arithmetic produces the same per-item counts the
+// client used to compute from item.content before /items-index made
+// content unavailable in list view.
+func TestCollectionCheckboxProgress(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Item with 2 open + 1 done checkbox.
+	mixed := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":   "Has checklist",
+		"content": "Do this:\n- [ ] alpha\n- [x] beta\n- [ ] gamma\n",
+		"fields":  `{"status":"open"}`,
+	})
+	// Item with no checkboxes — must be excluded from the response.
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":   "No checklist",
+		"content": "Just prose, nothing to count here.",
+		"fields":  `{"status":"open"}`,
+	})
+	// Item with only done checkboxes — total == done.
+	allDone := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":   "All done",
+		"content": "- [x] one\n- [x] two\n",
+		"fields":  `{"status":"done"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/checkbox-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkbox-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	type progressRow struct {
+		ItemID string `json:"item_id"`
+		Total  int    `json:"total"`
+		Done   int    `json:"done"`
+	}
+	var resp []progressRow
+	parseJSON(t, rr, &resp)
+
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 rows (mixed + allDone), got %d: %+v", len(resp), resp)
+	}
+	byID := map[string]progressRow{}
+	for _, r := range resp {
+		byID[r.ItemID] = r
+	}
+	if r, ok := byID[mixed.ID]; !ok {
+		t.Fatalf("mixed item missing from response")
+	} else if r.Total != 3 || r.Done != 1 {
+		t.Fatalf("mixed item: expected total=3, done=1, got total=%d, done=%d", r.Total, r.Done)
+	}
+	if r, ok := byID[allDone.ID]; !ok {
+		t.Fatalf("allDone item missing from response")
+	} else if r.Total != 2 || r.Done != 2 {
+		t.Fatalf("allDone item: expected total=2, done=2, got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// Unknown collection → 404.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/nonexistent/checkbox-progress", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown collection, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Empty result (collection has no items with checkboxes) → 200 + [].
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/ideas/checkbox-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkbox-progress empty: expected 200, got %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`[]`)) {
+		t.Fatalf("expected empty array body, got %s", rr.Body.String())
+	}
+}
+
 func firstID(items []models.Item) string {
 	if len(items) == 0 {
 		return ""

@@ -411,13 +411,17 @@
 			}
 			itemProgress = map;
 		} else {
+			// Non-plans collections: pull markdown-checkbox progress from
+			// the new server-side endpoint. Pre-TASK-1349 this loop walked
+			// `it.content` client-side, but the skinny /items-index
+			// payload doesn't ship content. The server endpoint computes
+			// the same counts via LENGTH/REPLACE arithmetic on the
+			// stored rows — same shape `{item_id, total, done}` as
+			// /plans-progress.
 			const map: Record<string, { total: number; done: number }> = {};
-			for (const it of itemList) {
-				if (!it.content) continue;
-				const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
-				if (total === 0) continue;
-				const done = (it.content.match(/- \[x\]/g) ?? []).length;
-				map[it.id] = { total, done };
+			const progress = await api.items.collectionCheckboxProgress(ws, coll).catch(() => []);
+			for (const p of progress) {
+				map[p.item_id] = { total: p.total, done: p.done };
 			}
 			itemProgress = map;
 		}
@@ -452,23 +456,23 @@
 					itemProgress = {};
 				}
 			} else {
-				// Non-plans collections used to compute progress from
-				// item.content markdown checkboxes. The skinny /items-index
-				// endpoint doesn't return `content`, so this branch produces
-				// no progress entries (the loop below short-circuits on the
-				// empty content set by `fetchSkinnyItems`). Re-introducing
-				// the feature requires either server-side progress
-				// computation or a separate lazy fetch — captured as a
-				// follow-up rather than blocking TASK-1349's bandwidth win.
-				const map: Record<string, { total: number; done: number }> = {};
-				for (const it of itemsData) {
-					if (!it.content) continue;
-					const total = (it.content.match(/- \[[ x]\]/g) ?? []).length;
-					if (total === 0) continue;
-					const done = (it.content.match(/- \[x\]/g) ?? []).length;
-					map[it.id] = { total, done };
+				// Non-plans collections: pull progress from the new
+				// /collections/{coll}/checkbox-progress endpoint instead
+				// of parsing `item.content` client-side. /items-index
+				// doesn't ship content, so the old client-side parse
+				// would be a no-op; the server-side endpoint computes
+				// the same counts via LENGTH/REPLACE arithmetic on the
+				// stored rows.
+				try {
+					const progress = await api.items.collectionCheckboxProgress(ws, coll);
+					const map: Record<string, { total: number; done: number }> = {};
+					for (const p of progress) {
+						map[p.item_id] = { total: p.total, done: p.done };
+					}
+					itemProgress = map;
+				} catch {
+					itemProgress = {};
 				}
-				itemProgress = map;
 				progressLabel = 'done';
 			}
 

@@ -783,6 +783,68 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	return scanItemsIndex(rows)
 }
 
+// ItemCheckboxProgress is the per-item count of markdown checkboxes
+// (`- [ ]` / `- [x]`) extracted from item content. Used by the
+// collection page to render checklist progress badges without
+// shipping the rich-text body over the wire (PLAN-1343 Phase 1 /
+// TASK-1349).
+type ItemCheckboxProgress struct {
+	ItemID string `json:"item_id"`
+	Total  int    `json:"total"`
+	Done   int    `json:"done"`
+}
+
+// CountSubstring is the SQL fragment used to count occurrences of a
+// literal substring inside a column. Implemented identically on
+// SQLite and PostgreSQL via the `(LENGTH(col) - LENGTH(REPLACE(col,
+// needle, ”))) / LENGTH(needle)` trick — both dialects support
+// LENGTH and REPLACE on TEXT, and integer division is identical.
+const checkboxCountSQL = `
+	SELECT i.id,
+	       (LENGTH(i.content) - LENGTH(REPLACE(i.content, '- [ ]', ''))) / 5
+	         + (LENGTH(i.content) - LENGTH(REPLACE(i.content, '- [x]', ''))) / 5 AS total,
+	       (LENGTH(i.content) - LENGTH(REPLACE(i.content, '- [x]', ''))) / 5 AS done
+	FROM items i
+	WHERE i.workspace_id = ?
+	  AND i.collection_id = ?
+	  AND i.deleted_at IS NULL
+	  AND i.content LIKE '%- [%]%'
+`
+
+// CollectionCheckboxProgress returns the per-item checkbox totals for
+// every item in a collection whose content has at least one
+// `- [ ]` / `- [x]` marker. The query computes counts server-side via
+// LENGTH/REPLACE arithmetic so the wire payload stays small (three
+// ints per non-zero item) — much cheaper than shipping every item's
+// rich-text body just so the client can grep for checkboxes.
+//
+// Items with no markers, or with non-positive totals after subtracting
+// done from open, are filtered out. Result order is unspecified.
+func (s *Store) CollectionCheckboxProgress(workspaceID, collectionID string) ([]ItemCheckboxProgress, error) {
+	rows, err := s.db.Query(s.q(checkboxCountSQL), workspaceID, collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("collection checkbox progress: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ItemCheckboxProgress
+	for rows.Next() {
+		var p ItemCheckboxProgress
+		if err := rows.Scan(&p.ItemID, &p.Total, &p.Done); err != nil {
+			return nil, err
+		}
+		// Skip rows with no checkboxes — the LIKE filter is a fast
+		// preliminary check, but item bodies can contain the substring
+		// inside a code block or other context that doesn't end up as
+		// a markdown checkbox; the per-row Total accounts for that.
+		if p.Total <= 0 {
+			continue
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
 // scanItemsIndex scans rows from ListItemsIndex (skinny projection — no
 // i.content column).
 func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {

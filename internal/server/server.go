@@ -1009,6 +1009,11 @@ func (s *Server) setupRouter() {
 							// Items within collection
 							r.Get("/items", s.handleListCollectionItems)
 							r.Post("/items", s.handleCreateItem)
+							// Pairs with /items-index — server-side checkbox
+							// progress so the collection page can render
+							// list/board/table progress badges without
+							// fetching item content (TASK-1349).
+							r.Get("/checkbox-progress", s.handleCollectionCheckboxProgress)
 							// Collection grants
 							r.Get("/grants", s.handleListCollectionGrants)
 							r.Post("/grants", s.handleCreateCollectionGrant)

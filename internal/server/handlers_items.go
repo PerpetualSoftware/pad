@@ -1072,6 +1072,102 @@ func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title,
 	})
 }
 
+// handleCollectionCheckboxProgress returns per-item markdown-checkbox
+// progress for items in a single collection — the bookkeeping that
+// powers the list/board/table progress badges for non-plans
+// collections. Pairs with /items-index (TASK-1349 / PLAN-1343 Phase 1):
+// the index endpoint omits content to keep the wire payload small,
+// and this endpoint computes the checkbox counts server-side via
+// LENGTH/REPLACE arithmetic so the client doesn't need content at
+// all to render the progress UI.
+//
+// Visibility: enforces the same collection-visibility + item-grant
+// rules as handleListItems / handleListItemsIndex. Items the caller
+// can't see contribute zero rows to the response.
+func (s *Server) handleCollectionCheckboxProgress(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	collSlug := chi.URLParam(r, "collSlug")
+	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Collection-visibility gate.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	progress, err := s.store.CollectionCheckboxProgress(workspaceID, coll.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// Item-grant filtering: if the caller has item-level grants (guest
+	// / restricted member) and the collection isn't fully granted, drop
+	// rows for items outside their grant set. This mirrors the same
+	// filter handleListItems / handleListItemsIndex apply via
+	// guestResourceFilter — without it, a guest could enumerate the
+	// existence of items they can't otherwise see by reading their
+	// checkbox progress.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		hasFullCollectionGrant := false
+		for _, id := range fullCollIDs {
+			if id == coll.ID {
+				hasFullCollectionGrant = true
+				break
+			}
+		}
+		if !hasFullCollectionGrant && workspaceRole(r) != "guest" {
+			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
+			for _, id := range memberColls {
+				if id == coll.ID {
+					hasFullCollectionGrant = true
+					break
+				}
+			}
+		}
+		if !hasFullCollectionGrant {
+			granted := make(map[string]struct{}, len(grantedItemIDs))
+			for _, id := range grantedItemIDs {
+				granted[id] = struct{}{}
+			}
+			filtered := progress[:0]
+			for _, p := range progress {
+				if _, ok := granted[p.ItemID]; ok {
+					filtered = append(filtered, p)
+				}
+			}
+			progress = filtered
+		}
+	}
+
+	if progress == nil {
+		progress = []store.ItemCheckboxProgress{}
+	}
+	writeJSON(w, http.StatusOK, progress)
+}
+
 // handlePlansProgress returns child item completion progress for all non-deleted plans.
 // This is a backward-compat endpoint; the general form is per-item via /items/{slug}/children.
 func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
