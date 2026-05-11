@@ -25,10 +25,35 @@
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
 	let showCreateCollection = $state(false);
-	// Mirrors the settings page: server requires owner for collection create
-	// (handlers_collections.go:48), so the dashboard trigger + modal are
-	// owner-gated too. Without this, viewers can open the modal and hit a 403.
-	let isOwner = $derived(workspaceStore.isOwner);
+
+	// Owner-gate state for the New Collection trigger.
+	//
+	// Reading `workspaceStore.isOwner` directly would make the trigger button
+	// flicker visibility every 30 s: the dashboard's silent poll (and sync
+	// signals) call `load()` → `workspaceStore.setCurrent()`, which clears
+	// `currentMembership` to null before `/me` resolves. During that window
+	// `workspaceStore.isOwner` returns false even for owners, hiding the CTA
+	// and dropping any focus on it.
+	//
+	// Two effects per CONVE-606 (split reactive-state sync from route-change
+	// effects): one resets the cache on a real workspace switch, the other
+	// updates it only when membership is definitively known (non-null).
+	// Initial default is `false` so we never flash owner-only UI before /me
+	// confirms ownership. Server enforcement (handlers_collections.go:48)
+	// remains the security boundary; this is purely a stability fix for the
+	// UX gate.
+	let isOwner = $state(false);
+	let lastOwnerSlug: string | null = null;
+	$effect(() => {
+		if (wsSlug !== lastOwnerSlug) {
+			lastOwnerSlug = wsSlug;
+			isOwner = false;
+		}
+	});
+	$effect(() => {
+		const mem = workspaceStore.currentMembership;
+		if (mem !== null) isOwner = mem.role === 'owner';
+	});
 
 	// The dashboard response carries an `onboarding_seed` field when the
 	// workspace has a seeded onboarding primary (IDEA-1 / BACK-1 / FEAT-1
