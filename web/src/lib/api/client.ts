@@ -7,6 +7,8 @@ import type {
 	CollectionUpdate,
 	Item,
 	ItemCreate,
+	ItemIndexResponse,
+	ItemIndexRow,
 	ItemUpdate,
 	ItemLink,
 	ItemLinkCreate,
@@ -321,6 +323,55 @@ export const api = {
 			request<Item[]>(
 				`/workspaces/${ws}/collections/${coll}/items${qs(params)}`
 			),
+
+		/**
+		 * Skinny-projection cross-collection listing for the local-first
+		 * read model (PLAN-1343 / TASK-1344). Returns every item in a
+		 * workspace MINUS the rich-text `content` body, plus a `total`
+		 * count and a forward-looking `cursor` placeholder.
+		 *
+		 * Optional filters mirror the server: `collection` narrows to one
+		 * collection slug, `include_archived` flips the soft-delete gate.
+		 *
+		 * Endpoint: `GET /api/v1/workspaces/{ws}/items-index`. The path is
+		 * deliberately at workspace level (sibling to `/plans-progress`)
+		 * rather than `/items/index` to avoid colliding with any item
+		 * whose slug is `"index"` — see PR #486 Codex round 1.
+		 *
+		 * The server's `ListItemsIndex` query doesn't scan `i.content`, but
+		 * the Go struct serializes the zero value (`content: ""`) over the
+		 * wire because `models.Item.Content` has no `omitempty`. Strip it
+		 * here so the returned shape matches `ItemIndexRow`'s
+		 * `Omit<Item, 'content'>` contract — preventing downstream code
+		 * from spreading a row back into the canonical item store and
+		 * silently blanking the rich-text body. Per Codex round 1 [P2]
+		 * on PR #487.
+		 */
+		listIndex: async (
+			ws: string,
+			opts?: { collection?: string; includeArchived?: boolean }
+		): Promise<ItemIndexResponse> => {
+			const raw = await request<{
+				items: (ItemIndexRow & { content?: string })[];
+				total: number;
+				cursor: string;
+			}>(
+				`/workspaces/${ws}/items-index${qs({
+					collection: opts?.collection,
+					include_archived: opts?.includeArchived ? 'true' : undefined,
+				})}`
+			);
+			const items: ItemIndexRow[] = raw.items.map((row) => {
+				// Destructure to discard the always-empty `content` key so
+				// the returned object truly has no `content` property —
+				// `delete row.content` would mutate the parsed JSON in
+				// place, but the explicit rest pattern survives strict
+				// linting and produces a new shallow copy per row.
+				const { content: _ignored, ...rest } = row;
+				return rest;
+			});
+			return { items, total: raw.total, cursor: raw.cursor };
+		},
 
 		create: (ws: string, coll: string, data: ItemCreate) =>
 			request<Item>(`/workspaces/${ws}/collections/${coll}/items`, {
