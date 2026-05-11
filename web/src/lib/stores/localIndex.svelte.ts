@@ -288,6 +288,7 @@ export const localIndex = {
 						// something pathological loops without cursor
 						// advance, give up after 50 and let the user's
 						// next visit retry.
+						let caughtUp = false;
 						for (let i = 0; i < 50; i++) {
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
@@ -295,13 +296,24 @@ export const localIndex = {
 							if (delta.changes.length === 0 || delta.cursor === since) {
 								// Server returned no new rows AND no
 								// cursor advance — we're caught up.
+								caughtUp = true;
 								break;
 							}
 							localIndex.applyDelta(ws, delta.changes, delta.cursor);
-							if (delta.cursor === since) break;
+							if (delta.cursor === since) {
+								caughtUp = true;
+								break;
+							}
 						}
-						// Reconcile succeeded — cache is fresh as of now.
-						state.pendingResync = false;
+						// Only mark fresh if the loop reached the
+						// server cursor. Hitting the 50-page cap
+						// without catching up leaves `pendingResync`
+						// true so a later bootstrap call resumes
+						// (Codex P2 round 6). 50 × 5000 = 250,000
+						// rows; we don't expect to hit this in practice
+						// but it's the difference between "stale
+						// forever" and "next visit retries".
+						if (caughtUp) state.pendingResync = false;
 					} catch (err) {
 						if (isStale()) return;
 						if (err instanceof PadApiError && err.code === 'forbidden') {
