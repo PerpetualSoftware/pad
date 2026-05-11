@@ -263,14 +263,20 @@ export const localIndex = {
 					}
 					state.bootstrapState = 'ready';
 					// Best-effort persist the cold snapshot to IDB so
-					// the next visit is warm. Atomic so the cursor
-					// can never write without the rows that produced
-					// it (matches applyDelta's persist invariant).
-					persistDelta(
-						ws,
-						resp.items.map(toSkinny),
-						state.cursor,
-					).catch(() => undefined);
+					// the next visit is warm. We persist the POST-MERGE
+					// in-memory rows (not raw `resp.items`), and use
+					// the same atomic rows+cursor write applyDelta does.
+					// Otherwise an SSE/applyDelta that landed during the
+					// in-flight /items-index request could overwrite a
+					// newer row in IDB while the cursor on disk pointed
+					// past the gap, leaving the cache permanently stale
+					// (Codex P1 round 2). Iterating state.items.values()
+					// yields exactly the merged, winning rows.
+					const snapshot: ItemIndexRow[] = [];
+					for (const row of state.items.values()) snapshot.push(row);
+					persistDelta(ws, snapshot, state.cursor).catch(
+						() => undefined,
+					);
 				}
 			} catch (err) {
 				state.bootstrapState = 'error';
