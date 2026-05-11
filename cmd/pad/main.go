@@ -4845,6 +4845,15 @@ func collectionSchemaJSONFromFlags(schemaInput, fieldsDSL string, stdin io.Reade
 		if err := json.Unmarshal(data, &schema); err != nil {
 			return "", fmt.Errorf("invalid --schema JSON: %w", err)
 		}
+		// Backfill missing labels from keys using the same Title-Case-of-key
+		// heuristic the legacy --fields DSL applies. Without this, schemas
+		// that omit `label` render blank field headers in the web UI — easy
+		// for an agent constructing JSON to forget.
+		for i := range schema.Fields {
+			if schema.Fields[i].Label == "" && schema.Fields[i].Key != "" {
+				schema.Fields[i].Label = cases.Title(language.English).String(strings.ReplaceAll(schema.Fields[i].Key, "_", " "))
+			}
+		}
 		out, err := json.Marshal(schema)
 		if err != nil {
 			return "", fmt.Errorf("re-marshal schema: %w", err)
@@ -4955,9 +4964,13 @@ Two ways to define the schema:
 Examples:
   pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
   pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
-  pad collection create "Marketing" --schema '{"fields":[{"key":"status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
+  pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
   pad collection create "Marketing" --schema @./marketing-schema.json
-  cat schema.json | pad collection create "Marketing" --schema -`,
+  cat schema.json | pad collection create "Marketing" --schema -
+
+Tip: if you omit "label" on a --schema field, the CLI auto-fills it from
+the key using Title Case (e.g. "due_date" → "Due Date") — matching what
+the --fields DSL does. Set "label" explicitly when you want a custom display name.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

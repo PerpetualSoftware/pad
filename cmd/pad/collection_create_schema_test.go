@@ -159,6 +159,39 @@ func TestCollectionSchemaJSONFromFlags_BothEmptyReturnsEmptySchema(t *testing.T)
 	}
 }
 
+// TestCollectionSchemaJSONFromFlags_BackfillsMissingLabels verifies that a
+// schema field with no `label` gets one auto-filled from its `key` using
+// Title-Case, matching the legacy --fields DSL behavior. Without this,
+// agents constructing JSON that omits `label` would create collections
+// that render blank field headers in the web UI.
+func TestCollectionSchemaJSONFromFlags_BackfillsMissingLabels(t *testing.T) {
+	in := `{"fields":[
+		{"key":"status","type":"select","options":["open","done"]},
+		{"key":"due_date","type":"date"},
+		{"key":"already_labeled","label":"Custom Label","type":"text"}
+	]}`
+	out, err := collectionSchemaJSONFromFlags(in, "", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got models.CollectionSchema
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if len(got.Fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(got.Fields))
+	}
+	if got.Fields[0].Label != "Status" {
+		t.Errorf("expected label 'Status' for key 'status', got %q", got.Fields[0].Label)
+	}
+	if got.Fields[1].Label != "Due Date" {
+		t.Errorf("expected label 'Due Date' for key 'due_date', got %q", got.Fields[1].Label)
+	}
+	if got.Fields[2].Label != "Custom Label" {
+		t.Errorf("explicit label clobbered: got %q want 'Custom Label'", got.Fields[2].Label)
+	}
+}
+
 // TestCollectionSchemaJSONFromFlags_PreservesAllFieldDefProperties is the
 // regression test for BUG-1284: confirms that every FieldDef property — not
 // just the DSL-expressible subset — round-trips through --schema unchanged.
