@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -1240,4 +1241,308 @@ func TestPatchItem_FlexibleFieldsShape(t *testing.T) {
 			t.Fatalf("response missing domain-level tags message: %s", rr.Body.String())
 		}
 	})
+}
+
+// itemsIndexBody mirrors the server-side response wrapper for /items-index.
+// Kept local to the test file so the public handler doesn't need to export it.
+type itemsIndexBody struct {
+	Items  []models.Item `json:"items"`
+	Total  int           `json:"total"`
+	Cursor string        `json:"cursor"`
+}
+
+// TestListItemsIndex_SkinnyProjectionAndShape covers the foundational
+// behavior of the local-first read model bootstrap endpoint (TASK-1344):
+//   - response shape: {items, total, cursor}
+//   - content body excluded (skinny projection)
+//   - cursor placeholder reflects the newest updated_at
+//   - core projected fields populate (ref, collection_slug, fields, …)
+//
+// Sort order is exercised separately by TestListItemsIndex_SortByUpdatedAt,
+// which forces distinct timestamps — store.now() has RFC3339 second
+// resolution, so two creates inside the same second tie on updated_at
+// and the ID tiebreaker (not creation order) decides the row order.
+func TestListItemsIndex_SkinnyProjectionAndShape(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":   "First task",
+		"content": "Body text that MUST NOT be returned by the index endpoint",
+		"fields":  `{"status":"open","priority":"high"}`,
+	})
+	createItem(t, srv, slug, "ideas", map[string]interface{}{
+		"title":   "Second idea",
+		"content": "Another body that the skinny projection should skip",
+		"fields":  `{"status":"new"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Items))
+	}
+	if resp.Cursor == "" || resp.Cursor == "0" {
+		t.Fatalf("expected cursor to be populated for non-empty workspace, got %q", resp.Cursor)
+	}
+
+	// Cursor must match the newest updated_at — and because the sort is
+	// updated_at DESC, that's the row at index 0.
+	want := resp.Items[0].UpdatedAt.UTC().Format(time.RFC3339Nano)
+	if resp.Cursor != want {
+		t.Fatalf("cursor mismatch: got %q, want %q", resp.Cursor, want)
+	}
+
+	// Skinny projection: content body excluded for every row.
+	for i, it := range resp.Items {
+		if it.Content != "" {
+			t.Fatalf("items[%d] (%s): expected empty content, got %q", i, it.Ref, it.Content)
+		}
+		if it.Ref == "" {
+			t.Errorf("items[%d]: missing computed ref", i)
+		}
+		if it.CollectionSlug == "" {
+			t.Errorf("items[%d]: missing collection_slug", i)
+		}
+		if it.Fields == "" {
+			t.Errorf("items[%d]: missing fields JSON", i)
+		}
+	}
+}
+
+// TestListItemsIndex_SortByUpdatedAt forces a >1s gap between the two
+// items so they land in distinct RFC3339 buckets, then asserts the
+// updated_at DESC ordering. The sleep is the price of admission for
+// testing a sort whose tiebreaker (id ASC) would otherwise win — see
+// the comment on TestListItemsIndex_SkinnyProjectionAndShape.
+func TestListItemsIndex_SortByUpdatedAt(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	older := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Older",
+		"fields": `{"status":"open"}`,
+	})
+	// store.now() uses RFC3339 (second precision). Sleep just over 1s
+	// so the second create lands in a distinct timestamp bucket.
+	time.Sleep(1100 * time.Millisecond)
+	newer := createItem(t, srv, slug, "ideas", map[string]interface{}{
+		"title":  "Newer",
+		"fields": `{"status":"new"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Items))
+	}
+	if resp.Items[0].ID != newer.ID {
+		t.Fatalf("expected newer item first; got %q (want %q)", resp.Items[0].ID, newer.ID)
+	}
+	if resp.Items[1].ID != older.ID {
+		t.Fatalf("expected older item second; got %q (want %q)", resp.Items[1].ID, older.ID)
+	}
+}
+
+// TestListItemsIndex_EmptyWorkspace covers the edge case the cursor
+// placeholder is documented to handle: no items → cursor "0".
+func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index empty: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if resp.Total != 0 {
+		t.Fatalf("expected total=0, got %d", resp.Total)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("expected empty items slice, got %d", len(resp.Items))
+	}
+	// JSON contract: items must marshal as [] (not null) so the client can
+	// rely on Array semantics.
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"items":[]`)) {
+		t.Fatalf("expected empty items array, body=%s", rr.Body.String())
+	}
+	if resp.Cursor != "0" {
+		t.Fatalf("expected cursor=\"0\" on empty workspace, got %q", resp.Cursor)
+	}
+}
+
+// TestListItemsIndex_CollectionFilter covers ?collection=<slug>.
+func TestListItemsIndex_CollectionFilter(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "A task",
+		"fields": `{"status":"open"}`,
+	})
+	createItem(t, srv, slug, "ideas", map[string]interface{}{
+		"title":  "An idea",
+		"fields": `{"status":"new"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?collection=tasks", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index?collection=tasks: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if resp.Total != 1 {
+		t.Fatalf("expected total=1 task, got %d", resp.Total)
+	}
+	if resp.Items[0].CollectionSlug != "tasks" {
+		t.Fatalf("expected collection_slug=tasks, got %q", resp.Items[0].CollectionSlug)
+	}
+}
+
+// TestListItemsIndex_ParentEnrichment confirms parent_link_id / parent_ref
+// are populated for child items (same enrichment path the existing items
+// list uses).
+func TestListItemsIndex_ParentEnrichment(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "Parent plan",
+		"fields": `{"status":"active"}`,
+	})
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Child task",
+		"fields": `{"status":"open","parent":"` + plan.Ref + `"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?collection=tasks", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 child task, got %d", len(resp.Items))
+	}
+	child := resp.Items[0]
+	if child.ParentLinkID == "" {
+		t.Fatalf("expected parent_link_id to be populated, got empty")
+	}
+	if child.ParentRef != plan.Ref {
+		t.Fatalf("expected parent_ref=%q, got %q", plan.Ref, child.ParentRef)
+	}
+}
+
+// TestListItemsIndex_ExcludesArchivedByDefault confirms the IncludeArchived
+// gate matches handleListItems' default behavior.
+func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	keep := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Keep me",
+		"fields": `{"status":"open"}`,
+	})
+	archive := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Archive me",
+		"fields": `{"status":"open"}`,
+	})
+
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+archive.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp itemsIndexBody
+	parseJSON(t, rr, &resp)
+
+	if resp.Total != 1 || resp.Items[0].ID != keep.ID {
+		t.Fatalf("expected only the live item to remain; got %d items, first=%q want=%q",
+			resp.Total, firstID(resp.Items), keep.ID)
+	}
+
+	// With include_archived=true, both items must come back.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index include_archived: expected 200, got %d", rr.Code)
+	}
+
+	parseJSON(t, rr, &resp)
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 with include_archived, got %d", resp.Total)
+	}
+}
+
+// TestListItemsIndex_DoesNotShadowItemSlug confirms /items-index lives in
+// a non-conflicting URL space — an item titled "Index" (slug "index") still
+// resolves through /items/{itemSlug}, while /items-index serves the new
+// index wrapper. This is the contract that drove the path choice: keeping
+// the endpoint outside the /items/{itemSlug} subtree means no item slug
+// can ever shadow it (or vice versa). See Codex round 1 [P2] on PR #486.
+func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	indexItem := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Index",
+		"fields": `{"status":"open"}`,
+	})
+	if indexItem.Slug != "index" {
+		t.Fatalf("expected slug 'index' for title 'Index', got %q", indexItem.Slug)
+	}
+
+	// /items-index → index wrapper.
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"items":[`)) {
+		t.Fatalf("expected wrapped response, got %s", rr.Body.String())
+	}
+
+	// /items/index → the item titled "Index", same as before this change.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/index", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items/index detail: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var fetched models.Item
+	parseJSON(t, rr, &fetched)
+	if fetched.ID != indexItem.ID {
+		t.Fatalf("expected item ID %q at /items/index, got %q", indexItem.ID, fetched.ID)
+	}
+}
+
+func firstID(items []models.Item) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0].ID
 }

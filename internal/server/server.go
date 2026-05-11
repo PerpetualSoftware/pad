@@ -1028,6 +1028,13 @@ func (s *Server) setupRouter() {
 					// Plans progress
 					r.Get("/plans-progress", s.handlePlansProgress)
 
+					// Skinny-projection cross-collection items list for the
+					// local-first read model bootstrap (PLAN-1343 / TASK-1344).
+					// Lives at workspace level — sibling to /plans-progress
+					// and /starred — so the path can't ever collide with an
+					// item slug under /items/{itemSlug}.
+					r.Get("/items-index", s.handleListItemsIndex)
+
 					// User grants (all grants for a specific user in this workspace)
 					r.Get("/users/{userID}/grants", s.handleListUserGrants)
 

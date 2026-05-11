@@ -16,6 +16,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // errStaleCollabSnapshot signals an UnderItemLock-wrapped
@@ -70,6 +71,85 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// itemsIndexResponse wraps the skinny-projection items list with bookkeeping
+// the local-first read model (PLAN-1343) needs:
+//   - total: the row count so the client can size its in-memory array.
+//   - cursor: a placeholder for the Phase 2 monotonic seq cursor — for now
+//     we return the maximum updated_at (RFC3339), or "0" when the workspace
+//     is empty. Clients should treat its value as opaque.
+type itemsIndexResponse struct {
+	Items  []models.Item `json:"items"`
+	Total  int           `json:"total"`
+	Cursor string        `json:"cursor"`
+}
+
+// handleListItemsIndex returns the skinny-projection of every item in a
+// workspace — same row set as handleListItems but without the rich-text
+// `content` body. It exists to bootstrap the local-first read model
+// (PLAN-1343 Phase 1): the client hydrates its in-memory index + IndexedDB
+// cache from one request, then renders every collection page from local
+// state without re-fetching.
+//
+// Filters: optional ?collection=<slug>. No pagination — callers want the
+// full set. Auth: same as handleListItems (collection visibility + item
+// grants).
+func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	params := store.ItemIndexParams{
+		CollectionSlug: r.URL.Query().Get("collection"),
+	}
+	if r.URL.Query().Get("include_archived") == "true" {
+		params.IncludeArchived = true
+	}
+
+	// Collection visibility filter — same shape as handleListItems.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	params.CollectionIDs = visibleIDs
+
+	// Item-level grants for guests / restricted members.
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		params.CollectionIDs = fullCollIDs
+		params.ItemIDs = grantedItemIDs
+	}
+
+	result, err := s.store.ListItemsIndex(workspaceID, params)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if result == nil {
+		result = []models.Item{}
+	}
+	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
+
+	// Cursor placeholder: max(updated_at) across the returned set. ListItemsIndex
+	// already sorts by updated_at DESC, so the first row holds it. Phase 2 will
+	// replace this with a monotonic `seq` cursor (see PLAN-1343).
+	cursor := "0"
+	if len(result) > 0 {
+		cursor = result[0].UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	writeJSON(w, http.StatusOK, itemsIndexResponse{
+		Items:  result,
+		Total:  len(result),
+		Cursor: cursor,
+	})
 }
 
 // handleListCollectionItems lists items within a specific collection.

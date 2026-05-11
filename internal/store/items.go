@@ -684,6 +684,134 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	return scanItems(rows)
 }
 
+// ItemIndexParams is the trimmed parameter set for ListItemsIndex.
+// It deliberately omits sort/search/pagination/field-filter knobs that the
+// "skinny projection" endpoint doesn't expose — the local-first read model
+// fetches the entire workspace once and does its own client-side filtering.
+type ItemIndexParams struct {
+	// CollectionSlug optionally restricts to a single collection by slug.
+	CollectionSlug string
+	// CollectionIDs is the permission filter for visible collections.
+	// nil = unfiltered. A non-nil empty slice means "no visible collections"
+	// and (combined with empty ItemIDs) returns an empty result immediately,
+	// matching ListItems semantics.
+	CollectionIDs []string
+	// ItemIDs additionally allows specific items through (item-level grants
+	// for guests / restricted members).
+	ItemIDs []string
+	// IncludeArchived returns soft-deleted items when true.
+	IncludeArchived bool
+}
+
+// ListItemsIndex returns the skinny-projection of items in a workspace —
+// every column EXCEPT i.content. Used by the local-first read model
+// (PLAN-1343) so the client can hydrate an in-memory + IndexedDB index
+// without paying the rich-text body cost.
+//
+// Deterministic sort: updated_at DESC, id ASC (stable tiebreaker so cursors
+// over equal-timestamp items are reproducible).
+func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]models.Item, error) {
+	// Mirror ListItems: a non-nil empty CollectionIDs without item-level grants
+	// means "no visible collections" — return empty immediately.
+	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 && len(params.ItemIDs) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.created_at, i.updated_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.workspace_id = ?
+	`
+	args := []interface{}{workspaceID}
+
+	if !params.IncludeArchived {
+		query += " AND i.deleted_at IS NULL"
+	}
+
+	if params.CollectionSlug != "" {
+		query += " AND c.slug = ?"
+		args = append(args, params.CollectionSlug)
+	}
+
+	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
+		collPlaceholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (i.collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR i.id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(params.CollectionIDs) > 0 {
+		placeholders := make([]string, len(params.CollectionIDs))
+		for i, id := range params.CollectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(params.ItemIDs) > 0 {
+		placeholders := make([]string, len(params.ItemIDs))
+		for i, id := range params.ItemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	// Deterministic sort: most-recently-updated first, with id as a stable
+	// secondary key so equal-timestamp rows have a reproducible order.
+	query += " ORDER BY i.updated_at DESC, i.id ASC"
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list items index: %w", err)
+	}
+	defer rows.Close()
+
+	return scanItemsIndex(rows)
+}
+
+// scanItemsIndex scans rows from ListItemsIndex (skinny projection — no
+// i.content column).
+func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
+	var items []models.Item
+	for rows.Next() {
+		var item models.Item
+		var createdAt, updatedAt string
+		var pinned bool
+		if err := rows.Scan(
+			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+			&item.Fields, &item.Tags,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&item.ItemNumber, &createdAt, &updatedAt,
+			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+		); err != nil {
+			return nil, err
+		}
+		item.Pinned = pinned
+		item.CreatedAt = parseTime(createdAt)
+		item.UpdatedAt = parseTime(updatedAt)
+		hydrateItemComputedMetadata(&item)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	var query string
 	var args []interface{}
