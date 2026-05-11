@@ -285,7 +285,21 @@ pad item unblock TASK-5 TASK-8        # Remove a dependency
 ### Collections
 ```bash
 pad collection list [--format json]   # List collections with counts
-pad collection create "Name" --fields "key:type[:options]; ..." [--icon "X"]
+
+# Two ways to define the schema:
+# 1. --fields DSL — quick + compact for simple cases (key:type[:options])
+pad collection create "Bugs" --fields "status:select:new,fixing,fixed;severity:select:low,medium,high;component:text"
+
+# 2. --schema JSON — full CollectionSchema; required when you need
+#    terminal_options, custom defaults, computed fields, suffixes, or
+#    relation collections. Prefer this when terminal_options matters
+#    (drives dashboard active/complete counts).
+pad collection create "Marketing" --schema '{"fields":[{"key":"status","type":"select","options":["idea","drafting","published","archived"],"terminal_options":["published","archived"]}]}'
+pad collection create "Marketing" --schema @./schema.json   # file
+cat schema.json | pad collection create "Marketing" --schema -   # stdin
+
+# --fields and --schema are mutually exclusive.
+# Missing `label` on a schema field auto-fills from key (Title Case).
 ```
 
 ### Attachments
