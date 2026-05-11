@@ -1036,6 +1036,12 @@ func (s *Server) setupRouter() {
 
 					// Items (cross-collection, v2)
 					r.Get("/items", s.handleListItems)
+					// Skinny-projection index for the local-first read model
+					// (PLAN-1343). MUST stay registered before /items/{itemSlug}
+					// — chi's radix tree prefers static segments over wildcards
+					// at the same depth, but keeping the order explicit avoids
+					// surprises if the routing tree is ever refactored.
+					r.Get("/items/index", s.handleListItemsIndex)
 					r.Route("/items/{itemSlug}", func(r chi.Router) {
 						r.Get("/", s.handleGetItem)
 						r.Patch("/", s.handleUpdateItem)
