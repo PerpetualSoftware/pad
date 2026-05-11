@@ -724,13 +724,28 @@
 		for (const { slug, sort_order } of updates) {
 			const item = items.find((i) => i.slug === slug || i.id === slug);
 			if (item && item.sort_order !== sort_order) {
+				// Optimistic local update: upsert into the local index
+				// with the new sort_order BEFORE awaiting the API. The
+				// caller (e.g. ListView) doesn't await onReorder, so it
+				// resyncs its rendered groups from `items` immediately
+				// after drag-end — without an optimistic write the rows
+				// snap back to the old order until the network PATCH
+				// returns. Clearing `seq` on the optimistic copy
+				// bypasses the per-row seq guard so the real API
+				// response (with a higher seq) wins on arrival
+				// (Codex P2 round 3 of TASK-1357).
+				localIndex.upsert(wsSlug, {
+					...item,
+					sort_order,
+					seq: undefined,
+				});
 				dirty.push({ id: item.id, sort_order });
 			}
 		}
 		if (dirty.length === 0) return;
 		// Persist to API sequentially (SQLite can't handle concurrent
-		// writes), and upsert each returned row into the local index
-		// so the UI reflects the new order without waiting for SSE.
+		// writes), and upsert each returned row so the local index
+		// settles back to the canonical server seq.
 		try {
 			for (const { id, sort_order } of dirty) {
 				const updated = await api.items.update(wsSlug, id, { sort_order });
