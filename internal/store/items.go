@@ -816,6 +816,27 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	return scanItemsIndex(rows)
 }
 
+// MaxItemSeq returns the largest items.seq across the workspace, or 0
+// if the workspace has no items. This is the cursor floor for the
+// local-first read model (PLAN-1343 / TASK-1353): /items-index hands
+// it back when its filtered result set is empty so the client can
+// poll /items-changes?since=<cursor> against the workspace's true
+// current position instead of restarting from 0.
+//
+// Soft-deleted items DO contribute to MAX(seq) — the seq column
+// bumps on tombstone writes (DeleteItem) so a client's cursor must
+// move past those events for the next /items-changes scan to skip
+// them. Filtering by `deleted_at IS NULL` here would silently regress
+// the cursor whenever the most recent mutation was a delete.
+func (s *Store) MaxItemSeq(workspaceID string) (int64, error) {
+	var seq int64
+	err := s.db.QueryRow(s.q(`SELECT COALESCE(MAX(seq), 0) FROM items WHERE workspace_id = ?`), workspaceID).Scan(&seq)
+	if err != nil {
+		return 0, fmt.Errorf("max item seq: %w", err)
+	}
+	return seq, nil
+}
+
 // ItemCheckboxProgress is the per-item count of markdown checkboxes
 // (`- [ ]` / `- [x]`) extracted from item content. Used by the
 // collection page to render checklist progress badges without

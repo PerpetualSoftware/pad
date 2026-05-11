@@ -328,7 +328,14 @@ export const api = {
 		 * Skinny-projection cross-collection listing for the local-first
 		 * read model (PLAN-1343 / TASK-1344). Returns every item in a
 		 * workspace MINUS the rich-text `content` body, plus a `total`
-		 * count and a forward-looking `cursor` placeholder.
+		 * count and a real workspace-scoped `seq` cursor (TASK-1353).
+		 *
+		 * The response `cursor` is the decimal-encoded `MAX(seq)` across
+		 * the requested scope (or the workspace's true `MAX(seq)` when
+		 * the filtered set is empty, so /items-changes?since=cursor
+		 * starts at the right floor). Each row carries its own `seq`
+		 * field so the client can reason about ordering without parsing
+		 * the cursor.
 		 *
 		 * Optional filters mirror the server: `collection` narrows to one
 		 * collection slug, `include_archived` flips the soft-delete gate.

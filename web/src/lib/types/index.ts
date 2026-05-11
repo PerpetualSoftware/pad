@@ -429,6 +429,12 @@ export interface Item {
 	collection_icon?: string;
 	collection_prefix?: string;
 	item_number?: number;
+	// `seq` is the workspace-scoped monotonic mutation cursor (PLAN-1343 /
+	// DOC-1342 decision #1). Stamped server-side on every create / update /
+	// soft-delete / restore. Clients track the max `seq` they have seen
+	// and request `?since=<seq>` deltas to resume. Optional because old
+	// snapshots may predate the column; new responses always populate it.
+	seq?: number;
 	parent_link_id?: string;
 	parent_ref?: string;
 	parent_title?: string;
@@ -455,10 +461,14 @@ export type ItemIndexRow = Omit<Item, 'content'>;
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];
 	total: number;
-	// `cursor` is a placeholder until Phase 2 lands the monotonic `seq`
-	// column — today the server returns the maximum `updated_at` across
-	// the result set (RFC3339Nano), or `"0"` when the workspace is empty.
-	// Clients should treat the value as opaque.
+	// `cursor` is the workspace-scoped monotonic `seq` cursor (TASK-1353).
+	// Holds MAX(seq) across the requested scope as a decimal-encoded
+	// string. When the result set is empty but the workspace has items,
+	// it falls back to the workspace's current MAX(seq) so the next
+	// /items-changes?since=<cursor> poll starts at the right floor.
+	// Empty workspaces return `"0"`. Treat the value as opaque — the
+	// encoding may change in future, and clients should not parse it
+	// as an integer beyond passing it back as `since`.
 	cursor: string;
 }
 

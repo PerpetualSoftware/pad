@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1255,7 +1256,8 @@ type itemsIndexBody struct {
 // behavior of the local-first read model bootstrap endpoint (TASK-1344):
 //   - response shape: {items, total, cursor}
 //   - content body excluded (skinny projection)
-//   - cursor placeholder reflects the newest updated_at
+//   - cursor reflects MAX(seq) across the result set (TASK-1353)
+//   - per-row seq is populated and non-zero
 //   - core projected fields populate (ref, collection_slug, fields, …)
 //
 // Sort order is exercised separately by TestListItemsIndex_SortByUpdatedAt,
@@ -1295,11 +1297,23 @@ func TestListItemsIndex_SkinnyProjectionAndShape(t *testing.T) {
 		t.Fatalf("expected cursor to be populated for non-empty workspace, got %q", resp.Cursor)
 	}
 
-	// Cursor must match the newest updated_at — and because the sort is
-	// updated_at DESC, that's the row at index 0.
-	want := resp.Items[0].UpdatedAt.UTC().Format(time.RFC3339Nano)
-	if resp.Cursor != want {
-		t.Fatalf("cursor mismatch: got %q, want %q", resp.Cursor, want)
+	// Cursor must be the decimal-encoded MAX(seq) across the returned
+	// rows (TASK-1353). Per-row seq is populated by the skinny scan.
+	cursorSeq, err := strconv.ParseInt(resp.Cursor, 10, 64)
+	if err != nil {
+		t.Fatalf("cursor not decimal-encoded int: %q (err=%v)", resp.Cursor, err)
+	}
+	var maxSeq int64
+	for _, it := range resp.Items {
+		if it.Seq == 0 {
+			t.Errorf("items[%s]: seq must be non-zero", it.Ref)
+		}
+		if it.Seq > maxSeq {
+			maxSeq = it.Seq
+		}
+	}
+	if cursorSeq != maxSeq {
+		t.Fatalf("cursor mismatch: got %d, want MAX(seq)=%d", cursorSeq, maxSeq)
 	}
 
 	// Skinny projection: content body excluded for every row.
@@ -1360,7 +1374,7 @@ func TestListItemsIndex_SortByUpdatedAt(t *testing.T) {
 }
 
 // TestListItemsIndex_EmptyWorkspace covers the edge case the cursor
-// placeholder is documented to handle: no items → cursor "0".
+// is documented to handle: no items → cursor "0".
 func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -1386,6 +1400,93 @@ func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
 	}
 	if resp.Cursor != "0" {
 		t.Fatalf("expected cursor=\"0\" on empty workspace, got %q", resp.Cursor)
+	}
+}
+
+// TestListItemsIndex_EmptyResultFallsBackToWorkspaceMax verifies the
+// cursor-fallback path (TASK-1353 acceptance): when a filtered query
+// returns zero rows but the workspace itself is non-empty, the cursor
+// must hold the workspace's MAX(seq) so the client's next
+// /items-changes?since=cursor poll starts at the right floor rather
+// than replaying every prior mutation from 0.
+func TestListItemsIndex_EmptyResultFallsBackToWorkspaceMax(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Populate the workspace so MAX(seq) is non-zero.
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "T1",
+		"fields": `{"status":"open"}`,
+	})
+	createItem(t, srv, slug, "ideas", map[string]interface{}{
+		"title":  "I1",
+		"fields": `{"status":"new"}`,
+	})
+
+	// Establish the baseline MAX(seq) via the unfiltered call.
+	rrAll := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	if rrAll.Code != http.StatusOK {
+		t.Fatalf("items-index all: expected 200, got %d: %s", rrAll.Code, rrAll.Body.String())
+	}
+	var all itemsIndexBody
+	parseJSON(t, rrAll, &all)
+	if all.Cursor == "" || all.Cursor == "0" {
+		t.Fatalf("baseline cursor should be non-zero, got %q", all.Cursor)
+	}
+
+	// Now request a collection that exists but has no items — the response
+	// slice is empty, but the workspace MAX(seq) fallback should still
+	// produce the same cursor.
+	rrFiltered := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index?collection=docs", nil)
+	if rrFiltered.Code != http.StatusOK {
+		t.Fatalf("items-index docs: expected 200, got %d: %s", rrFiltered.Code, rrFiltered.Body.String())
+	}
+	var filtered itemsIndexBody
+	parseJSON(t, rrFiltered, &filtered)
+
+	if filtered.Total != 0 {
+		t.Fatalf("expected total=0 for empty collection filter, got %d", filtered.Total)
+	}
+	if filtered.Cursor != all.Cursor {
+		t.Fatalf("empty-result cursor should equal workspace MAX(seq) baseline %q, got %q", all.Cursor, filtered.Cursor)
+	}
+	if _, err := strconv.ParseInt(filtered.Cursor, 10, 64); err != nil {
+		t.Fatalf("fallback cursor not decimal-encoded int: %q", filtered.Cursor)
+	}
+}
+
+// TestListItemsIndex_CursorMonotonicAcrossMutations confirms that the
+// cursor advances after every items mutation and can be re-used as the
+// `since` parameter on a follow-up /items-changes call (cursor contract
+// for PLAN-1343 Phase 2).
+func TestListItemsIndex_CursorMonotonicAcrossMutations(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "C1",
+		"fields": `{"status":"open"}`,
+	})
+
+	rr1 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	var resp1 itemsIndexBody
+	parseJSON(t, rr1, &resp1)
+	c1, _ := strconv.ParseInt(resp1.Cursor, 10, 64)
+	if c1 == 0 {
+		t.Fatalf("expected non-zero cursor after first create, got %q", resp1.Cursor)
+	}
+
+	createItem(t, srv, slug, "ideas", map[string]interface{}{
+		"title":  "C2",
+		"fields": `{"status":"new"}`,
+	})
+
+	rr2 := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items-index", nil)
+	var resp2 itemsIndexBody
+	parseJSON(t, rr2, &resp2)
+	c2, _ := strconv.ParseInt(resp2.Cursor, 10, 64)
+	if c2 <= c1 {
+		t.Fatalf("cursor should advance after second create: c1=%d, c2=%d", c1, c2)
 	}
 }
 

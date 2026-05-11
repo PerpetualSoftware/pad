@@ -76,9 +76,14 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 // itemsIndexResponse wraps the skinny-projection items list with bookkeeping
 // the local-first read model (PLAN-1343) needs:
 //   - total: the row count so the client can size its in-memory array.
-//   - cursor: a placeholder for the Phase 2 monotonic seq cursor — for now
-//     we return the maximum updated_at (RFC3339), or "0" when the workspace
-//     is empty. Clients should treat its value as opaque.
+//   - cursor: the workspace-scoped monotonic `seq` cursor (TASK-1353).
+//     Holds MAX(seq) across the requested scope as a decimal-encoded
+//     string so it forward-compatibly tolerates future encoding changes
+//     (opaque on the wire — clients MUST NOT parse it as an integer).
+//     When the requested scope returns zero rows, the cursor falls back
+//     to the workspace's current MAX(seq) so /items-changes?since=cursor
+//     starts from the right floor on the next poll instead of replaying
+//     every prior mutation. Empty workspaces return "0".
 type itemsIndexResponse struct {
 	Items  []models.Item `json:"items"`
 	Total  int           `json:"total"`
@@ -137,13 +142,27 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
-	// Cursor placeholder: max(updated_at) across the returned set. ListItemsIndex
-	// already sorts by updated_at DESC, so the first row holds it. Phase 2 will
-	// replace this with a monotonic `seq` cursor (see PLAN-1343).
-	cursor := "0"
-	if len(result) > 0 {
-		cursor = result[0].UpdatedAt.UTC().Format(time.RFC3339Nano)
+	// Cursor: workspace-scoped MAX(seq) (PLAN-1343 / TASK-1353). We
+	// compute it across the returned set first (cheapest path), and
+	// fall back to the workspace's true MAX(seq) when the result is
+	// empty so a filtered-but-non-empty workspace's clients can still
+	// poll /items-changes?since=<cursor> against a meaningful floor.
+	// Empty workspaces collapse to "0".
+	var cursorSeq int64
+	for _, it := range result {
+		if it.Seq > cursorSeq {
+			cursorSeq = it.Seq
+		}
 	}
+	if cursorSeq == 0 {
+		wsMax, err := s.store.MaxItemSeq(workspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		cursorSeq = wsMax
+	}
+	cursor := strconv.FormatInt(cursorSeq, 10)
 
 	writeJSON(w, http.StatusOK, itemsIndexResponse{
 		Items:  result,
