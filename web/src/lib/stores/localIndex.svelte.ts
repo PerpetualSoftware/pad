@@ -172,6 +172,12 @@ export const localIndex = {
 	 * allocated array on every call; rely on `$derived` upstream for
 	 * memoization.
 	 *
+	 * Sorted `updated_at DESC, id ASC` to match the server's
+	 * /items-index ordering — `SvelteMap` is insertion-ordered, so
+	 * after live `upsert`/`applyDelta` writes the natural iteration
+	 * order would diverge from the bootstrap snapshot. Sorting on
+	 * read keeps consumers stable across mutation paths.
+	 *
 	 * By default, soft-deleted ("archived") rows are filtered out —
 	 * the store holds them alongside live rows so a `showArchived`
 	 * toggle doesn't need a refetch, but the typical view wants live
@@ -191,6 +197,16 @@ export const localIndex = {
 			if (!includeArchived && row.deleted_at) continue;
 			out.push(row);
 		}
+		// Server order is `updated_at DESC, id ASC`. Strings sort
+		// correctly here because `updated_at` is an RFC3339 string —
+		// lexicographic compare equals chronological compare.
+		out.sort((a, b) => {
+			if (a.updated_at !== b.updated_at) {
+				return a.updated_at < b.updated_at ? 1 : -1;
+			}
+			if (a.id === b.id) return 0;
+			return a.id < b.id ? -1 : 1;
+		});
 		return out;
 	},
 
