@@ -97,9 +97,15 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 	}
 
 	if _, isHTTP := env.Dispatcher.(*HTTPHandlerDispatcher); isHTTP {
-		// Forward as-is; mapPlaybookRun does the shape coercion and
-		// preserves structured args (including explicit false values).
-		return env.Dispatch(ctx, []string{"playbook", "run"}, input)
+		// Bypass env.Dispatch — its BuildCLIArgs step would choke on
+		// args:map (the cmdhelp arg `args` is a repeatable positional
+		// expecting strings). HTTPHandlerDispatcher reads the original
+		// input from context via DispatchInputFromContext, so we
+		// attach it manually and call the dispatcher directly. The
+		// resulting POST body preserves structured args including
+		// explicit false values on flag-typed entries.
+		ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.Get(), env.RootFlags))
+		return env.Dispatcher.Dispatch(ctx, []string{"playbook", "run"}, nil)
 	}
 
 	// Exec path — flatten into CLI tokens. Sort map keys for
