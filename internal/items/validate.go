@@ -164,13 +164,16 @@ func validateFieldType(def models.FieldDef, val any) error {
 			return fmt.Errorf("field %q must be a string (item ID)", def.Key)
 		}
 	case "json":
-		// Accept any JSON-decodable value (object, array, string, number, bool, null).
-		// Higher layers (collection-specific validators) can refine shape if needed.
+		// Accept only structured JSON values (object, array, null). Raw
+		// strings / numbers / bools are rejected so a generic text input in
+		// the UI can't silently corrupt a structured field (e.g. emitting
+		// the string "[]" instead of an actual array). Callers that want a
+		// scalar field should use "text", "number", or "checkbox".
 		switch val.(type) {
-		case map[string]any, []any, string, float64, int, int64, bool, nil:
+		case map[string]any, []any, nil:
 			// ok
 		default:
-			return fmt.Errorf("field %q must be a JSON-encodable value", def.Key)
+			return fmt.Errorf("field %q must be a JSON object, array, or null", def.Key)
 		}
 	}
 

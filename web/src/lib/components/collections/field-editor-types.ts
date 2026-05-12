@@ -36,6 +36,16 @@ export interface EditableField {
 	collection?: string;
 	suffix?: string;
 	default?: unknown;
+	/**
+	 * Optional opaque metadata fields. The Edit/Create modals don't expose
+	 * these in the UI yet, but they must round-trip through serialization so
+	 * a seeded schema (e.g. `playbooks.invocation_slug` with `pattern` +
+	 * `unique_scope`) doesn't lose its validation rules the first time a
+	 * user re-saves the collection. Future modal work can render dedicated
+	 * editors for these.
+	 */
+	pattern?: string;
+	uniqueScope?: string;
 	/** UI-only: the field's type at load time, used to detect in-session type switches. */
 	originalType?: FieldDef['type'];
 	/**
@@ -370,6 +380,8 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		collection: def.collection,
 		suffix: def.suffix,
 		default: def.default,
+		pattern: def.pattern,
+		uniqueScope: def.unique_scope,
 		originalType: def.type,
 		originalDefault: def.default,
 		// Both existing and template fields start with keyTouched=true so

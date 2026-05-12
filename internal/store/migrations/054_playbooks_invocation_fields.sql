@@ -18,7 +18,7 @@ UPDATE collections
 SET schema = json_insert(
     schema,
     '$.fields[#]',
-    json('{"key":"invocation_slug","label":"Invocation slug","type":"text","pattern":"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$","unique_scope":"workspace_collection"}')
+    json('{"key":"invocation_slug","label":"Invocation slug","type":"text","pattern":"^[a-z0-9][a-z0-9-]*[a-z0-9]$","unique_scope":"workspace_collection"}')
 )
 WHERE slug = 'playbooks'
   AND json_valid(schema)
@@ -43,3 +43,16 @@ WHERE slug = 'playbooks'
       FROM json_each(collections.schema, '$.fields')
       WHERE json_extract(json_each.value, '$.key') = 'arguments'
   );
+
+-- Atomically prevent two concurrent writers from inserting items with the
+-- same invocation_slug within the same collection. The application-layer
+-- pre-check in handlers_items.go gives users a friendly error message, but
+-- it is a TOCTOU race on its own; this partial unique index is the actual
+-- guard. NULL and empty-string slugs are excluded so the index only
+-- constrains rows that opt into invocation routing. deleted_at IS NULL so
+-- soft-deleted items don't block reuse of their old slug.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_items_invocation_slug_per_collection
+    ON items(collection_id, json_extract(fields, '$.invocation_slug'))
+    WHERE json_extract(fields, '$.invocation_slug') IS NOT NULL
+      AND json_extract(fields, '$.invocation_slug') != ''
+      AND deleted_at IS NULL;

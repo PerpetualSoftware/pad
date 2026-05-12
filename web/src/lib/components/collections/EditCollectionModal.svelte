@@ -189,6 +189,12 @@
 				collection: f.collection,
 				suffix: f.suffix,
 				default: f.default,
+				// Carry opaque metadata (e.g. seeded pattern / unique_scope
+				// on playbooks.invocation_slug) so re-saving the collection
+				// doesn't strip server-side validation rules the UI doesn't
+				// yet expose. See field-editor-types.ts:EditableField.
+				pattern: f.pattern,
+				uniqueScope: f.unique_scope,
 				// Snapshot the load-time type AND default so the save path
 				// can detect in-session type switches and default mutations
 				// (used for the unsupported-type default preservation
@@ -380,6 +386,12 @@
 				if (f.computed) def.computed = true;
 				if (f.type === 'relation' && f.collection) def.collection = f.collection;
 				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
+				// Preserve opaque metadata. The Edit modal doesn't expose
+				// pattern / unique_scope yet, but a seeded schema (e.g.
+				// playbooks.invocation_slug) carries them; round-tripping
+				// the modal mustn't drop server-side validation rules.
+				if (f.pattern) def.pattern = f.pattern;
+				if (f.uniqueScope) def.unique_scope = f.uniqueScope;
 				// Default-value handling for existing fields:
 				//
 				// - If the active type has UI-editable defaults, run through

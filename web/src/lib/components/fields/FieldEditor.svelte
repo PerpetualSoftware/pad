@@ -219,6 +219,10 @@ handlers — onchange is never called.
 				<span>—</span>
 			{/if}
 		</div>
+	{:else if field.type === 'json'}
+		<div class="readonly-display">
+			<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
+		</div>
 	{:else}
 		<div class="readonly-display">
 			<span>{value ?? '—'}</span>
@@ -413,6 +417,16 @@ handlers — onchange is never called.
 				</svg>
 			</a>
 		{/if}
+	</div>
+
+{:else if field.type === 'json'}
+	<!-- JSON fields need a structured editor; the generic FieldEditor
+	     intentionally exposes only a read-only summary so a plain text
+	     input can't corrupt the stored value with a "[]" string instead
+	     of an actual array. Dedicated editors (e.g. the playbook editor
+	     that owns `arguments`) render their own UI for these. -->
+	<div class="readonly-display" title="Edit this JSON field from its dedicated editor.">
+		<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 	</div>
 
 {:else}

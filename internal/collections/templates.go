@@ -271,7 +271,7 @@ var (
 // leading/trailing hyphen; minimum two characters so single-letter slugs
 // don't shadow plausible NL tokens. Shared between the schema seeding and
 // any external validators that need to mirror server-side rules.
-const PlaybookInvocationSlugPattern = `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`
+const PlaybookInvocationSlugPattern = `^[a-z0-9][a-z0-9-]*[a-z0-9]$`
 
 // copyStrings returns a defensive copy of a string slice so the helper's
 // returned schema cannot mutate the caller's option list.

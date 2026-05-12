@@ -257,10 +257,13 @@ func TestValidateFields_JSONType(t *testing.T) {
 	}{
 		{"array", []any{"a", "b"}, false},
 		{"object", map[string]any{"k": "v"}, false},
-		{"string", "hello", false},
-		{"number", float64(42), false},
-		{"bool", true, false},
 		{"nil", nil, false}, // optional + nil is allowed
+		// Scalars are rejected: a generic web text input would corrupt a
+		// structured field by emitting strings like `"[]"` instead of
+		// arrays. Use "text" / "number" / "checkbox" for scalars.
+		{"string-rejected", "hello", true},
+		{"number-rejected", float64(42), true},
+		{"bool-rejected", true, true},
 		{"struct-not-decoded", struct{ X int }{1}, true},
 	}
 	for _, tc := range cases {
@@ -284,7 +287,7 @@ func TestValidateFields_PatternMatch(t *testing.T) {
 				Key:     "invocation_slug",
 				Label:   "Invocation slug",
 				Type:    "text",
-				Pattern: `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`,
+				Pattern: `^[a-z0-9][a-z0-9-]*[a-z0-9]$`,
 			},
 		},
 	}
@@ -298,6 +301,7 @@ func TestValidateFields_PatternMatch(t *testing.T) {
 		{"valid-with-digits", "ship-blog-2", false},
 		{"valid-min-two-chars", "ab", false},
 		{"empty-allowed", "", false},
+		{"single-char-rejected", "a", true},
 		{"uppercase", "Ship", true},
 		{"underscore", "ship_blog", true},
 		{"leading-dash", "-ship", true},

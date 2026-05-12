@@ -542,8 +542,13 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			writeError(w, http.StatusConflict, "conflict", "An item with this title already exists")
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			// Could be the slug-per-workspace constraint OR the playbook
+			// invocation_slug partial unique index (TASK-1378). Keep the
+			// message generic so it covers both — the application-layer
+			// pre-check (checkUniqueFields) catches the common case with a
+			// targeted error message; only a true concurrent race lands here.
+			writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
 			return
 		}
 		writeInternalError(w, err)
