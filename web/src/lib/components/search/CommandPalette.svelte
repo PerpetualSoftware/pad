@@ -228,17 +228,37 @@
 		// All three use a 200ms debounce on the network call.
 		if (parsed.body || !currentReady || ready.length === 0) {
 			loading = true;
-			// Snapshot the query + scope at dispatch time so a slow
-			// response that lands after the user typed more (or after
-			// the local index hydrated and the path switched to local)
-			// can't clobber the now-current results. Codex round 3 P2.
+			// Snapshot the FULL dispatch scope at request time
+			// (Codex round 4 P2): the response is only valid if every
+			// dimension that determines what we render is still the
+			// same. Otherwise an in-flight server result can clobber
+			// local results once `currentReady` flips, or overwrite a
+			// later set with a different filter/query/toggle.
 			const snapshotQuery = trimmed;
 			const snapshotAllWs = searchAllWorkspaces;
+			const snapshotCurrentReady = currentReady;
+			const snapshotBody = parsed.body;
+			const snapshotFilterCollection = filterCollection;
+			const snapshotFilterStatus = filterStatus;
+			const snapshotWsSlug = currentSlug;
+			const isSameDispatch = () =>
+				query.trim() === snapshotQuery &&
+				searchAllWorkspaces === snapshotAllWs &&
+				filterCollection === snapshotFilterCollection &&
+				filterStatus === snapshotFilterStatus &&
+				workspaceStore.current?.slug === snapshotWsSlug &&
+				// Non-body server fetches are only valid while the
+				// current workspace is still NOT ready. Once it
+				// hydrates, the local path becomes correct and the
+				// server response is no longer authoritative.
+				(snapshotBody || !snapshotCurrentReady
+					? (snapshotBody || !currentReady)
+					: true);
 			searchTimeout = setTimeout(async () => {
 				try {
 					const serverQuery = parsed.body ? parsed.text || trimmed : trimmed;
 					if (!serverQuery.trim()) {
-						if (query.trim() === snapshotQuery) {
+						if (isSameDispatch()) {
 							results = [];
 							total = 0;
 							facets = undefined;
@@ -246,26 +266,19 @@
 						return;
 					}
 					const resp = await api.search(serverQuery, buildFilters(0));
-					// Stale-response guard: if the query has changed or
-					// the toggle has flipped since dispatch, discard.
-					if (
-						query.trim() !== snapshotQuery ||
-						searchAllWorkspaces !== snapshotAllWs
-					) {
-						return;
-					}
+					if (!isSameDispatch()) return;
 					results = resp.results ?? [];
 					total = resp.total ?? 0;
 					facets = resp.facets;
 					selectedIdx = -1;
 				} catch {
-					if (query.trim() === snapshotQuery) {
+					if (isSameDispatch()) {
 						results = [];
 						total = 0;
 						facets = undefined;
 					}
 				} finally {
-					if (query.trim() === snapshotQuery) loading = false;
+					if (isSameDispatch()) loading = false;
 				}
 			}, 200);
 			return;
