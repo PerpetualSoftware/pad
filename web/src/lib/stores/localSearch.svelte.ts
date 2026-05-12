@@ -75,12 +75,17 @@ export interface LocalSearchResult {
 //   - `combineWith: 'AND'` — multi-word queries require all tokens
 //   - `boost` — title 3x, ref 2x, item_number 2x (see field-level rationale)
 //
-// `tokenize`: split on whitespace AND non-word characters so `TASK-5` indexes
-// as both `task` and `5` — without this, a bare `5` query would not match
-// the ref. MiniSearch's default tokenizer already splits on whitespace; the
-// custom regex adds `-`/`_`/`.` as splitters.
+// `tokenize`: split on anything that isn't a letter or digit (in any
+// unicode script — handles non-ASCII titles too). This is broader than
+// MiniSearch's default `SPACE_OR_PUNCTUATION` regex but in the same
+// shape: it covers whitespace, dashes, dots, slashes, colons, commas,
+// parens, brackets, etc., so `TASK-5` → ['task', '5'], `foo,bar` →
+// ['foo', 'bar'], `Item (Done)` → ['item', 'done']. Underscore counts
+// as a splitter too so snake_case field keys index as separate tokens.
+// Codex review round 1 caught that the original narrow split missed
+// `foo:bar` / `foo,bar` / `foo(bar)` cases.
 
-const TOKENIZE_RE = /[\s\-_.\/]+/;
+const TOKENIZE_RE = /[^\p{L}\p{N}]+/u;
 
 interface IndexedDoc {
 	id: string;
