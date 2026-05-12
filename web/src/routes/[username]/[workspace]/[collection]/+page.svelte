@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
@@ -20,19 +20,40 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
-	let loading = $state(true);
+	// `metaLoading` tracks the collection-metadata / saved-views /
+	// members fetch. The overall `loading` indicator combines that
+	// with the localIndex bootstrap state so the empty-state CTA
+	// doesn't flash for non-empty collections while items are still
+	// hydrating (Codex P2 round 1 of TASK-1357). Scroll restoration
+	// also gates on `loading`, so this prevents the "attempt-and-fail"
+	// case where filteredItems is briefly empty.
+	let metaLoading = $state(true);
 	let collection = $state<Collection | null>(null);
-	let items = $state<Item[]>([]);
 	let viewMode = $state<ViewMode>('list');
 	let activeFilters = $state<Record<string, string>>({});
 	let searchQuery = $state('');
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
 	let progressLabel = $state('tasks');
-	let relationLabels = $state<Record<string, string>>({});
+	// `relationLabels` maps plan id → plan title for the task-card
+	// "relates to" badge. `$derived` so it picks up plans as they
+	// hydrate through the local index — the previous one-shot fetch
+	// in loadCollection raced the localIndex bootstrap on cold loads
+	// and could leave the badge empty until a manual refresh (Codex
+	// P3 round 1 of TASK-1357).
+	let relationLabels = $derived.by(() => {
+		if (!wsSlug || collSlug !== 'tasks') return {};
+		const labels: Record<string, string> = {};
+		for (const p of localIndex.getByCollection(wsSlug, 'plans')) {
+			labels[p.id] = p.title;
+		}
+		return labels;
+	});
 
 	// Saved views state
 	let savedViews = $state<View[]>([]);
@@ -53,6 +74,82 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
+
+	// `items` is now a $derived view over the local-first read model
+	// (localIndex, PLAN-1343 / TASK-1355-1356). The collection page no
+	// longer calls /items-index on every navigation; bootstrap is
+	// idempotent and fires once per workspace per session. Filter by
+	// the `showArchived` toggle at read time — the store holds both
+	// live and archived rows. Widen to `Item` by setting content=''
+	// to match the existing prop type contract for view components;
+	// the detail page rehydrates content on open.
+	let items = $derived<Item[]>(
+		wsSlug && collSlug
+			? localIndex
+					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
+					.map((row) => ({ ...row, content: '' }) as Item)
+			: [],
+	);
+
+	// `loading` is true until BOTH the collection metadata fetch AND
+	// the localIndex bootstrap have settled. Without this, the empty-
+	// state CTA can flash for non-empty collections while items are
+	// still hydrating, and scroll restore can be consumed against an
+	// empty filteredItems list (Codex P2 round 1).
+	let indexState = $derived(
+		wsSlug ? localIndex.bootstrapStateFor(wsSlug) : 'ready',
+	);
+	let indexReady = $derived(indexState === 'ready');
+	// `indexError` surfaces a cold-load failure (transient /items-index
+	// failure with no cache to fall back on) AND the post-revoke
+	// reset state (`deltaSync` resets on 401/403 — see Codex P2 round
+	// 5 of TASK-1357 — and the bootstrap effect can't re-trigger on
+	// the same wsSlug/userId pair, so we surface the error directly
+	// when indexState rolls back to 'cold' after we'd been 'ready'
+	// or 'loading'). The template renders an error banner with a
+	// retry CTA instead of the misleading "No items yet" empty state
+	// or a stuck-forever "Loading…" spinner.
+	let indexError = $derived(indexState === 'error');
+	// `deltaSyncFailed` lets the auth-error reset on /items-changes
+	// surface as an error banner even when the local-index state
+	// has rolled back to 'cold'. Cleared on every successful
+	// deltaSync.
+	let deltaSyncFailed = $state(false);
+	let loading = $derived(
+		metaLoading || (!indexReady && !indexError && !deltaSyncFailed),
+	);
+
+	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
+	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
+	// the warm-IDB / cold-/items-index flow. Re-runs when the
+	// workspace slug or the signed-in user changes so a user switch
+	// in the same browser tab gets a fresh per-user cache.
+	//
+	// Then run a deltaSync regardless of bootstrap state. Once the
+	// localIndex is `ready`, bootstrap() no-ops — but an item the
+	// user created/updated elsewhere (item detail page, dashboard,
+	// or another tab) while this collection was unmounted is still
+	// catchable via /items-changes. Without this, returning to the
+	// collection page after creating an item elsewhere could miss
+	// the new row until the next SSE event arrives (Codex P1 round
+	// 5 of TASK-1357).
+	$effect(() => {
+		if (!wsSlug) return;
+		const uid = authStore.userId || null;
+		(async () => {
+			try {
+				await localIndex.bootstrap(wsSlug, { userId: uid });
+			} catch {
+				// Bootstrap errors flip bootstrapState to 'error'; the
+				// indexError-gated error banner surfaces them. 401/403
+				// redirect/purge is handled by the API client +
+				// TASK-1360.
+			}
+			// Catch up any deltas missed while the user was on a
+			// different page within the same workspace.
+			await deltaSync(wsSlug);
+		})();
+	});
 	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
 	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
 	// array remains for the assignee dropdown / member rows.
@@ -282,29 +379,15 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
-			// Only react to events for this collection
-			if (event.collection !== coll) return;
-
-			switch (event.type) {
-				case 'item_created':
-				case 'item_archived':
-				case 'item_restored': {
-					try {
-						items = await fetchSkinnyItems(ws, coll, false);
-					} catch {
-						// Ignore fetch errors — will retry on next event
-					}
-					break;
-				}
-				case 'item_updated': {
-					try {
-						items = await fetchSkinnyItems(ws, coll, false);
-					} catch {
-						// Ignore fetch errors
-					}
-					break;
-				}
-			}
+			// React to any item lifecycle event by pulling deltas
+			// through the local store. The `items` derived view picks
+			// up changes automatically; no manual re-fetch needed.
+			// We don't filter by collection here — an item moved into
+			// or out of this collection still needs its delta applied
+			// so the derived view reflects it. TASK-1358 will replace
+			// this generic reconcile with seq-stamped per-event apply.
+			void event;
+			await deltaSync(ws);
 		});
 	});
 
@@ -315,54 +398,19 @@
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
 
-			if (result.type === 'caught_up') return;
-
-			if (result.type === 'incremental') {
-				// Apply incremental changes to this collection's item list
-				const changes = result.changes;
-				let changed = false;
-
-				for (const updated of changes.updated) {
-					const existingIdx = items.findIndex(i => i.id === updated.id);
-
-					if (updated.collection_slug === collSlug) {
-						// Item belongs to this collection — update or add
-						changed = true;
-						if (existingIdx >= 0) {
-							items[existingIdx] = updated;
-						} else {
-							items = [...items, updated];
-						}
-					} else if (existingIdx >= 0) {
-						// Item was moved OUT of this collection — remove it
-						changed = true;
-						items = items.filter(i => i.id !== updated.id);
-					}
-				}
-
-				for (const deletedId of changes.deleted) {
-					const idx = items.findIndex(i => i.id === deletedId);
-					if (idx >= 0) {
-						changed = true;
-						items = items.filter(i => i.id !== deletedId);
-					}
-				}
-
-				// Refresh progress data if anything changed
-				if (changed) {
-					await refreshProgress(wsSlug, collSlug, items);
-				}
-				return;
-			}
-
-			// Full refresh fallback
-			try {
-				const freshItems = await fetchSkinnyItems(wsSlug, collSlug, showArchived);
-				items = freshItems;
-				await refreshProgress(wsSlug, collSlug, freshItems);
-				syncService.markSynced(); // Advance cursor now that reload succeeded
-			} catch {
-				// Ignore — will catch up on next SSE event
+			// Always run deltaSync, even for `caught_up` — SSE
+			// delivers events, not delta data, and a previous
+			// deltaSync failure (Codex P2 round 2) won't recover
+			// without a fresh fetch attempt. The localIndex cursor is
+			// independent of syncService.lastSyncTime, and per-row
+			// seq guards make repeated calls idempotent.
+			const ok = await deltaSync(wsSlug);
+			await refreshProgress(wsSlug, collSlug, items);
+			if (ok && result.type === 'full_refresh') {
+				// Only advance the legacy syncService cursor on a
+				// clean catch-up. A failed reconcile leaves it where
+				// it is so the next tab-resume retries.
+				syncService.markSynced();
 			}
 		});
 	});
@@ -382,24 +430,58 @@
 	});
 
 	/**
-	 * Fetch a collection's items via the skinny /items-index endpoint
-	 * (TASK-1349 / PLAN-1343 Phase 1). The endpoint omits the rich-text
-	 * `content` body, which is the bulk of an item's wire size and is
-	 * only needed when the user opens the detail page.
+	 * Drive a /items-changes delta apply against the local store. Used
+	 * by the SSE event handler and the syncService incremental path —
+	 * both signal "something on the server changed; reconcile". The
+	 * store's per-row seq guards make the call idempotent even when
+	 * SSE + sync both fire for the same change.
 	 *
-	 * The result is widened to `Item[]` by setting `content: ''` on
-	 * every row. This satisfies the existing type contract — view
-	 * components and progress code already treat empty content as
-	 * "nothing to compute" — without leaking a custom skinny type
-	 * through the whole call graph. The detail-page fetch still
-	 * returns full items, so opening any item rehydrates `content`.
+	 * Loops until the cursor stops advancing (the server caps each
+	 * response; deeply-behind tabs need multiple pages). Hard cap at
+	 * 50 iterations to defend against pathological loops, matching
+	 * localIndex.bootstrap's reconcile loop.
+	 *
+	 * Returns true on a clean catch-up, false on any failure / cap
+	 * trip so the caller can avoid advancing its own cursor against a
+	 * stale local cache (Codex P2 round 1 of TASK-1357).
 	 */
-	async function fetchSkinnyItems(ws: string, coll: string, includeArchived: boolean): Promise<Item[]> {
-		const resp = await api.items.listIndex(ws, {
-			collection: coll,
-			includeArchived,
-		});
-		return resp.items.map((row) => ({ ...row, content: '' }));
+	async function deltaSync(ws: string): Promise<boolean> {
+		try {
+			for (let i = 0; i < 50; i++) {
+				const since = localIndex.cursorFor(ws);
+				const delta = await api.items.changes(ws, since);
+				if (delta.changes.length === 0 || delta.cursor === since) {
+					deltaSyncFailed = false;
+					return true;
+				}
+				localIndex.applyDelta(ws, delta.changes, delta.cursor);
+				if (delta.cursor === since) {
+					deltaSyncFailed = false;
+					return true;
+				}
+			}
+			// Cap hit — pretend success at the page level so we don't
+			// thrash, but tell the caller it wasn't a clean catch-up.
+			return false;
+		} catch (err) {
+			// 401 (session expired) / 403 (access revoked) mean the
+			// cache is no longer ours to display. Drop it through the
+			// same path bootstrap uses so the 403 handler (TASK-1360)
+			// + 401 /login redirect (already in api/client.ts) can
+			// react. Set `deltaSyncFailed` so the page surfaces an
+			// error banner — `localIndex.reset` rolls state back to
+			// 'cold' but the bootstrap effect can't re-trigger on the
+			// same wsSlug/userId, so without this flag the page
+			// pins at "Loading…" forever (Codex P2 round 5).
+			if (
+				err instanceof PadApiError &&
+				(err.code === 'forbidden' || err.code === 'unauthorized')
+			) {
+				localIndex.reset(ws);
+				deltaSyncFailed = true;
+			}
+			return false;
+		}
 	}
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
@@ -434,16 +516,20 @@
 	}
 
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
-		loading = true;
+		metaLoading = true;
 		try {
-			const [collData, itemsData, viewsData, membersData] = await Promise.all([
+			// Items now flow through localIndex (the `items` $derived
+			// above reads `getByCollection`). We still fetch the
+			// collection metadata + saved views + members directly,
+			// AND ensure the workspace is bootstrapped — but the
+			// bootstrap effect upstream is what drives the items
+			// store, so the parallel work is metadata-only here.
+			const [collData, viewsData, membersData] = await Promise.all([
 				api.collections.get(ws, coll),
-				fetchSkinnyItems(ws, coll, includeArchived),
 				api.views.list(ws, coll).catch(() => [] as View[]),
-				api.members.list(ws).catch(() => ({ members: [], invitations: [] }))
+				api.members.list(ws).catch(() => ({ members: [], invitations: [] })),
 			]);
 			collection = collData;
-			items = itemsData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
@@ -484,21 +570,10 @@
 				progressLabel = 'done';
 			}
 
-			// Fetch plan names for relation display on task cards
-			if (coll === 'tasks') {
-				try {
-					const plans = await fetchSkinnyItems(ws, 'plans', false);
-					const labels: Record<string, string> = {};
-					for (const p of plans) {
-						labels[p.id] = p.title;
-					}
-					relationLabels = labels;
-				} catch {
-					relationLabels = {};
-				}
-			} else {
-				relationLabels = {};
-			}
+			// `relationLabels` is computed reactively below — no need
+			// to populate it here. (Pre-localIndex this was a one-shot
+			// fetch; now plans flow into the local store and the
+			// derived map below picks them up as they hydrate.)
 
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
@@ -510,9 +585,11 @@
 			loadUrlFilters();
 		} catch {
 			collection = null;
-			items = [];
+			// `items` is derived from localIndex; nothing to clear here.
+			// A missing collection shows the empty / not-found state via
+			// the `collection` null branch in the template.
 		} finally {
-			loading = false;
+			metaLoading = false;
 		}
 	}
 
@@ -680,11 +757,9 @@
 			const updated = await api.items.update(wsSlug, item.id, {
 				fields: JSON.stringify(fields)
 			});
-			// Replace item in-place
-			const idx = items.findIndex((i) => i.id === item.id);
-			if (idx !== -1) {
-				items[idx] = updated;
-			}
+			// Push the canonical post-update row into the local index;
+			// the `items` derived view re-renders automatically.
+			localIndex.upsert(wsSlug, updated);
 			toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 		} catch (e) {
 			console.error('Failed to update item:', e);
@@ -700,15 +775,32 @@
 		for (const { slug, sort_order } of updates) {
 			const item = items.find((i) => i.slug === slug || i.id === slug);
 			if (item && item.sort_order !== sort_order) {
-				item.sort_order = sort_order;
+				// Optimistic local update: upsert into the local index
+				// with the new sort_order BEFORE awaiting the API. The
+				// caller (e.g. ListView) doesn't await onReorder, so it
+				// resyncs its rendered groups from `items` immediately
+				// after drag-end — without an optimistic write the rows
+				// snap back to the old order until the network PATCH
+				// returns. Clearing `seq` on the optimistic copy
+				// bypasses the per-row seq guard so the real API
+				// response (with a higher seq) wins on arrival
+				// (Codex P2 round 3 of TASK-1357).
+				localIndex.upsert(wsSlug, {
+					...item,
+					sort_order,
+					seq: undefined,
+				});
 				dirty.push({ id: item.id, sort_order });
 			}
 		}
 		if (dirty.length === 0) return;
-		// Persist to API sequentially (SQLite can't handle concurrent writes)
+		// Persist to API sequentially (SQLite can't handle concurrent
+		// writes), and upsert each returned row so the local index
+		// settles back to the canonical server seq.
 		try {
 			for (const { id, sort_order } of dirty) {
-				await api.items.update(wsSlug, id, { sort_order });
+				const updated = await api.items.update(wsSlug, id, { sort_order });
+				localIndex.upsert(wsSlug, updated);
 			}
 		} catch (e) {
 			console.error('Failed to persist sort order:', e);
@@ -779,7 +871,7 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			items = [...items, item];
+			localIndex.upsert(wsSlug, item);
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
@@ -892,8 +984,23 @@
 			for (const item of itemsToArchive) {
 				await api.items.delete(wsSlug, item.id);
 			}
-			items = items.filter((i) => !itemsToArchive.some((a) => a.id === i.id));
-			toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+			// Server-side delete succeeded; pull the soft-delete
+			// tombstones into the local index. Gate the success
+			// toast on a successful deltaSync so the user sees the
+			// rows actually disappear from the view (Codex P3 round 2
+			// of TASK-1357). On deltaSync failure the deletes are
+			// still real server-side — SSE catches the cache up — but
+			// we surface a softer "queued" message so the user knows
+			// the UI hasn't reflected it yet.
+			const ok = await deltaSync(wsSlug);
+			if (ok) {
+				toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+			} else {
+				toastStore.show(
+					`Archived ${count} item${count !== 1 ? 's' : ''} (updating…)`,
+					'success',
+				);
+			}
 		} catch {
 			toastStore.show('Failed to archive some items', 'error');
 		}
@@ -903,10 +1010,7 @@
 		if (!wsSlug) return;
 		try {
 			const restored = await api.items.restore(wsSlug, item.id);
-			const idx = items.findIndex((i) => i.id === item.id);
-			if (idx !== -1) {
-				items[idx] = restored;
-			}
+			localIndex.upsert(wsSlug, restored);
 			toastStore.show(`Restored "${item.title}"`, 'success');
 		} catch {
 			toastStore.show('Failed to restore item', 'error');
@@ -1281,7 +1385,28 @@
 		</div>
 
 		<!-- Content -->
-		{#if items.length === 0}
+		{#if (indexError || deltaSyncFailed) && items.length === 0}
+			<!-- localIndex bootstrap failed and the cache is empty
+			     (e.g. transient /items-index failure on cold load,
+			     or auth revoked on /items-changes). Show a retry
+			     path instead of the misleading "No items yet" empty
+			     state OR a stuck-forever "Loading…" spinner. -->
+			<div class="empty-state-box">
+				<div class="empty-icon">⚠️</div>
+				<h2>Couldn't load {collection.name.toLowerCase()}</h2>
+				<p>Something went wrong while loading this workspace.</p>
+				<button
+					class="empty-cta"
+					onclick={() => {
+						deltaSyncFailed = false;
+						localIndex.reset(wsSlug);
+						localIndex.bootstrap(wsSlug, { userId: authStore.userId || null });
+					}}
+				>
+					Retry
+				</button>
+			</div>
+		{:else if items.length === 0}
 			<div class="empty-state-box">
 				<div class="empty-icon">{collection.icon || '📦'}</div>
 				<h2>No {collection.name.toLowerCase()} yet</h2>
