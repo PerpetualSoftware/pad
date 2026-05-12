@@ -755,16 +755,22 @@
 	}
 
 	// Search dispatch. Tracks `searchQuery` (any entry point that mutates
-	// it — typed input, URL load, programmatic clears), `showArchived`
-	// (re-run local search when archived rows toggle in/out of scope),
-	// and `indexReady` (cold load: query typed before bootstrap finishes;
-	// kick the search once the index hydrates). Body-prefix queries
-	// route to server FTS with a 200ms debounce; everything else hits
-	// the in-memory MiniSearch index synchronously.
+	// it — typed input, URL load, programmatic clears), `wsSlug` /
+	// `collSlug` (navigation across workspaces or collections must drop
+	// stale results and re-issue against the new route — Codex round 2
+	// P2), `showArchived` (re-run local search when archived rows toggle
+	// in/out of scope), and `indexReady` (cold load: query typed before
+	// bootstrap finishes; kick the search once the index hydrates).
+	// Body-prefix queries route to server FTS with a 200ms debounce;
+	// everything else hits the in-memory MiniSearch index synchronously.
 	$effect(() => {
 		void showArchived;
 		void indexReady;
 		const trimmed = searchQuery.trim();
+		// Snapshot the route at effect-run time so a navigation mid-flight
+		// can't let an old response populate the new route.
+		const snapshotWs = wsSlug;
+		const snapshotColl = collSlug;
 
 		clearTimeout(searchTimeout);
 		if (!trimmed) {
@@ -790,14 +796,29 @@
 			searchTimeout = setTimeout(async () => {
 				try {
 					const resp = await api.search(bodyQuery, {
-						workspace: wsSlug,
-						collection: collSlug,
+						workspace: snapshotWs,
+						collection: snapshotColl,
 						limit: 200,
 					});
-					if (searchQuery.trim() !== snapshotQuery) return;
+					// Stale-response guard: drop the result if the user
+					// navigated away or changed the query while the
+					// request was in flight.
+					if (
+						searchQuery.trim() !== snapshotQuery ||
+						wsSlug !== snapshotWs ||
+						collSlug !== snapshotColl
+					) {
+						return;
+					}
 					searchResultIds = new Set(resp.results.map((r) => r.item.id));
 				} catch {
-					if (searchQuery.trim() === snapshotQuery) searchResultIds = null;
+					if (
+						searchQuery.trim() === snapshotQuery &&
+						wsSlug === snapshotWs &&
+						collSlug === snapshotColl
+					) {
+						searchResultIds = null;
+					}
 				}
 			}, 200);
 			return;
@@ -813,8 +834,8 @@
 			searchResultIds = null;
 			return;
 		}
-		const hits = localSearch.search(wsSlug, trimmed, {
-			collection: collSlug,
+		const hits = localSearch.search(snapshotWs, trimmed, {
+			collection: snapshotColl,
 			includeArchived: showArchived,
 			limit: 200,
 		});
