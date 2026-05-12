@@ -276,12 +276,16 @@
 			? merged.filter((r) => getFieldValue(r.item, 'status') === filterStatus)
 			: merged;
 
-		// `total` is `filtered.length` because we don't paginate local
-		// results; everything's in RAM. Truncate the rendered list to
-		// PAGE_SIZE * 2 so cross-workspace power users still see a
-		// representative top slice.
+		// Truncate the rendered list to PAGE_SIZE * 2 so cross-workspace
+		// power users still see a representative top slice. CRITICAL:
+		// set `total = results.length` so the "Load more" affordance
+		// stays hidden — loadMore hits the server, which would
+		// inject scope-mismatched (and duplicate) rows into the local
+		// result set. Codex round 1 P2. Local results are all in RAM;
+		// if more than `PAGE_SIZE * 2` match, the right answer is a
+		// more specific query, not a paginated fetch.
 		results = filtered.slice(0, PAGE_SIZE * 2);
-		total = filtered.length;
+		total = results.length;
 		// Facets are server-only; clear them on the local path so the
 		// chip row hides cleanly.
 		facets = undefined;
