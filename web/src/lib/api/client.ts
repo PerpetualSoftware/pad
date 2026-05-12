@@ -190,7 +190,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// part of the same error path (DOC-1342 decision #3, TASK-1360).
 		// The handler is best-effort and never throws into the API
 		// client.
-		notifyAccessRevoked(path);
+		//
+		// Restricted to GET / HEAD requests. A 403 on
+		// POST/PATCH/DELETE usually means "you can READ but not
+		// WRITE this resource" — purging on those would wipe
+		// perfectly accessible cache rows for a read-only user who
+		// tried (and was correctly denied) to create / update /
+		// archive an item (Codex P1 round 1 of TASK-1360). Read 403
+		// is the canonical "visibility revoked" signal.
+		//
+		// `method` is already uppercased above; undefined means GET
+		// (the fetch default).
+		if (method === undefined || method === 'GET' || method === 'HEAD') {
+			notifyAccessRevoked(path);
+		}
 	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);
