@@ -1212,23 +1212,46 @@
 	// Skip when the URL already carries explicit state (search query,
 	// active filters, non-default view mode) — that signals the user
 	// arrived from a shared/bookmarked URL and shouldn't be hijacked.
-	// Re-runs on (ws, coll, savedViews ready, indexReady) transitions
-	// — the latter is important because saved views load asynchronously
-	// AFTER the page mounts.
+	//
+	// CRITICAL: gate on `!metaLoading`. `loadCollection` flips
+	// `metaLoading=true` at entry, assigns `savedViews` mid-flight,
+	// then calls `loadUrlFilters()` synchronously near the end, and
+	// only flips `metaLoading=false` in the `finally` block. Running
+	// this effect on a `savedViews` change ALONE has two bugs Codex
+	// round 1 caught:
+	//   1. Race with URL parsing: savedViews lands before
+	//      `loadUrlFilters` does, so `searchQuery` / `activeFilters`
+	//      are still stale (empty or from the prior route), and the
+	//      effect would overwrite the incoming URL state with the
+	//      default view.
+	//   2. Cross-collection navigation: after `wsSlug`/`collSlug`
+	//      flip, the reset effect zeros `defaultViewApplied` but
+	//      `savedViews` still holds the PREVIOUS collection's views
+	//      until the new fetch resolves. A `find()` on the wrong list
+	//      misses the new default and would erase the localStorage
+	//      pointer.
+	// Gating on `metaLoading` flipping false guarantees both
+	// `savedViews` is for the current collection AND
+	// `loadUrlFilters` has applied any incoming URL state.
 	let defaultViewApplied = $state(false);
 	$effect(() => {
 		void wsSlug;
 		void collSlug;
-		void savedViews;
+		void metaLoading;
 		if (!wsSlug || !collSlug) return;
 		if (defaultViewApplied) return;
-		// Wait for savedViews to load — empty until `loadCollection`
-		// resolves.
-		if (savedViews.length === 0) return;
-		// Don't override URL-driven state. The collection page's
-		// `loadUrlFilters` runs synchronously in onMount before this
-		// effect fires; `searchQuery` and `activeFilters` will already
-		// be populated if the URL carried params.
+		// Wait for the collection-load cycle to settle entirely.
+		if (metaLoading) return;
+		// `metaLoading=false` with `savedViews` empty is a legitimate
+		// "collection has no saved views yet" state — mark as applied
+		// so we don't re-evaluate every render.
+		if (savedViews.length === 0) {
+			defaultViewApplied = true;
+			return;
+		}
+		// Don't override URL-driven state. By this point
+		// `loadUrlFilters` has populated `searchQuery` and
+		// `activeFilters` from the URL (or left them empty).
 		const urlOverrides =
 			searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0;
 		if (urlOverrides) {
