@@ -110,6 +110,16 @@ jobs:
           args: release --clean --timeout=2h
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Force-set the release tag from the triggering ref to bypass
+          # goreleaser's git-describe-based auto-detection. When two
+          # lightweight tags point at the same commit (e.g. v0.4.0 cut
+          # right on top of v0.4.0-rc.1 with no intervening commits),
+          # git-describe's tiebreaker is non-deterministic across hosts
+          # — locally it picked v0.4.0, the CI runner picked v0.4.0-rc.1
+          # during the v0.4.0 ship and stamped artifacts with the RC
+          # version. github.ref_name is unambiguous: it's exactly the
+          # tag that triggered the workflow. See PLAYB-1160 failure modes.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
           # Cross-repo PAT for pushing the brew formula to PerpetualSoftware/homebrew-tap.
           # The default GITHUB_TOKEN above only has access to PerpetualSoftware/pad.
           # Add this secret in repo settings before tagging a release that ships
