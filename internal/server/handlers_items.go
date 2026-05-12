@@ -950,6 +950,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		updated, err = s.store.UpdateItem(item.ID, input)
 	}
 	if err != nil {
+		// Map UNIQUE constraint races (e.g. concurrent updates that both
+		// pass checkUniqueFields and then both hit the partial unique
+		// index on invocation_slug) to 409 conflict, matching the create
+		// path. Without this, a benign race surfaces as a misleading 500.
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -1731,11 +1739,14 @@ func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID stri
 		if !ok || val == "" {
 			continue
 		}
+		// IncludeArchived stays false so the application-layer check stays
+		// consistent with the partial unique index's `deleted_at IS NULL`
+		// predicate. A soft-deleted playbook releases its slug back to the
+		// pool; trying to reclaim it should succeed, not 409.
 		existing, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionIDs:   []string{collectionID},
-			Fields:          map[string]string{def.Key: val},
-			IncludeArchived: true,
-			Limit:           2,
+			CollectionIDs: []string{collectionID},
+			Fields:        map[string]string{def.Key: val},
+			Limit:         2,
 		})
 		if err != nil {
 			return err
