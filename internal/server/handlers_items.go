@@ -1106,6 +1106,14 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Item not found or not archived")
 			return
 		}
+		// If restore flips the partial unique index back into play and a
+		// replacement playbook has already claimed the archived item's
+		// invocation_slug, RestoreItem returns a UNIQUE constraint
+		// violation. Map it to 409, matching the create/update paths.
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "conflict", "Cannot restore: another item has claimed this slug or invocation slug")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
