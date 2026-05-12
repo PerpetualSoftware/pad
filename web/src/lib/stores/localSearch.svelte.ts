@@ -516,14 +516,22 @@ export const localSearch = {
 		// shouldn't return everything matching anywhere; require the
 		// prefix (TASK-5) OR explicit #5 / item:5 syntax". We accept all
 		// three: TASK-5, #5/item:5, and bare digits — bare digits get
-		// treated as #N for typing-speed. The result is a single doc (or
-		// empty) which we still post-filter by collection / archived so
-		// the caller's scope is honored.
+		// treated as #N for typing-speed (Codex round 2 of TASK-1367
+		// caught that the prior `!parsed.text` guard suppressed the
+		// bare-digit branch because `parseSearchQuery("5")` leaves
+		// "5" in `parsed.text`). The result is a single doc (or empty)
+		// which we still post-filter by collection / archived so the
+		// caller's scope is honored.
 		const bareDigit = /^\d+$/.test(query) ? Number(query) : null;
-		const itemNumberQuery =
-			parsed.itemNumber ?? (bareDigit !== null ? bareDigit : null);
-		if (itemNumberQuery !== null && !parsed.text && !parsed.ref) {
-			return exactItemNumberLookup(idx, itemNumberQuery, {
+		if (parsed.itemNumber !== undefined && !parsed.text && !parsed.ref) {
+			return exactItemNumberLookup(idx, parsed.itemNumber, {
+				limit,
+				includeArchived,
+				wantCollection,
+			});
+		}
+		if (bareDigit !== null) {
+			return exactItemNumberLookup(idx, bareDigit, {
 				limit,
 				includeArchived,
 				wantCollection,

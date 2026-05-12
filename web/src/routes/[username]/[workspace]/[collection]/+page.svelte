@@ -69,7 +69,14 @@
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
 	let searchInputEl = $state<HTMLInputElement>();
-	let searchResultIds = $state<Set<string> | null>(null);
+	// `searchResultRank` is a Map<itemId, rank> where rank is the 0-indexed
+	// position in the ranked result list. `null` means no search active.
+	// Storing the rank (not just IDs) lets `filteredItems` sort matched
+	// rows by relevance so the localSearch exact-ref hoist + boost tuning
+	// from TASK-1367 actually surfaces in the UI — Codex round 2 caught
+	// that a `Set`-only filter let `updated_at DESC` order override the
+	// ranking.
+	let searchResultRank = $state<Map<string, number> | null>(null);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -79,7 +86,7 @@
 	// Reactive parse of the current search query — used to drive both
 	// the `is:archived` inclusion path on the `items` derived view
 	// (without the toggle, typing `is:archived foo` would still get
-	// archived rows filtered out before reaching `searchResultIds`)
+	// archived rows filtered out before reaching `searchResultRank`)
 	// AND to share the same prefix parser across the search-dispatch
 	// effect below. Codex round 1 of TASK-1367.
 	let parsedSearch = $derived(parseSearchQuery(searchQuery));
@@ -638,13 +645,22 @@
 		}
 
 		// Apply search query. PLAN-1343 Phase 3b: the local path
-		// populates `searchResultIds` synchronously (sub-ms) so the
+		// populates `searchResultRank` synchronously (sub-ms) so the
 		// filter just intersects. The substring fallback below covers
 		// the body:/content: server-FTS path while its 200ms debounce
 		// is in flight — and the very narrow window after a cold
 		// workspace load where indexReady is still false.
-		if (searchQuery.trim() && searchResultIds !== null) {
-			result = result.filter((item) => searchResultIds!.has(item.id));
+		//
+		// Critically: AFTER filtering, sort matched items by rank so
+		// localSearch's exact-ref hoist + boost tuning (TASK-1367)
+		// surfaces in the UI. Otherwise the natural `updated_at DESC`
+		// order from `localIndex.getByCollection` would override the
+		// ranking. Codex round 2 of TASK-1367.
+		if (searchQuery.trim() && searchResultRank !== null) {
+			const rank = searchResultRank;
+			result = result
+				.filter((item) => rank.has(item.id))
+				.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
 		} else if (searchQuery.trim()) {
 			// Fallback to client-side substring scan while the server
 			// FTS response is pending or the local index is mid-bootstrap.
@@ -768,7 +784,7 @@
 		void showArchived;
 		void indexReady;
 		// Track the localSearch mutation epoch so SSE-driven upserts /
-		// removes refresh `searchResultIds` while a query is active —
+		// removes refresh `searchResultRank` while a query is active —
 		// without this, a row created after the query was typed would
 		// stay hidden (and a row edited out of relevance would stay
 		// visible) until the user retyped. Codex round 3 P2 of TASK-1364.
@@ -781,7 +797,7 @@
 
 		clearTimeout(searchTimeout);
 		if (!trimmed) {
-			searchResultIds = null; // null = no search active
+			searchResultRank = null; // null = no search active
 			return;
 		}
 
@@ -799,12 +815,12 @@
 		if (parsed.body) {
 			const bodyQuery = parsed.text;
 			if (!bodyQuery) {
-				searchResultIds = null;
+				searchResultRank = null;
 				return;
 			}
 			// Clear stale results immediately so the substring fallback
 			// renders while the network response is pending.
-			searchResultIds = null;
+			searchResultRank = null;
 			const snapshotQuery = trimmed;
 			searchTimeout = setTimeout(async () => {
 				try {
@@ -823,14 +839,16 @@
 					) {
 						return;
 					}
-					searchResultIds = new Set(resp.results.map((r) => r.item.id));
+					searchResultRank = new Map(
+						resp.results.map((r, i) => [r.item.id, i]),
+					);
 				} catch {
 					if (
 						searchQuery.trim() === snapshotQuery &&
 						wsSlug === snapshotWs &&
 						collSlug === snapshotColl
 					) {
-						searchResultIds = null;
+						searchResultRank = null;
 					}
 				}
 			}, 200);
@@ -841,10 +859,10 @@
 		// rows — runs synchronously on every dependency change. PLAN-1343
 		// Phase 3b acceptance: keystroke → first results <50ms P95.
 		// When the index isn't ready yet (very narrow cold-load window),
-		// leave `searchResultIds = null` so the substring fallback in
+		// leave `searchResultRank = null` so the substring fallback in
 		// `filteredItems` kicks in until hydrate completes.
 		if (!indexReady) {
-			searchResultIds = null;
+			searchResultRank = null;
 			return;
 		}
 		// Pass the raw query to localSearch — it owns prefix parsing so
@@ -856,7 +874,7 @@
 			includeArchived: showArchived,
 			limit: 200,
 		});
-		searchResultIds = new Set(hits.map((h) => h.id));
+		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
 
 	async function handleStatusChange(item: Item, newValue: string) {
@@ -1161,7 +1179,7 @@
 		}
 		activeFilters = newFilters;
 		searchQuery = '';
-		searchResultIds = null;
+		searchResultRank = null;
 
 		// Open filters panel if the view has filters
 		if (Object.keys(newFilters).length > 0) {
@@ -1176,7 +1194,7 @@
 		activeViewId = null;
 		activeFilters = {};
 		searchQuery = '';
-		searchResultIds = null;
+		searchResultRank = null;
 		filtersOpen = false;
 		updateUrlFilters();
 	}
@@ -1535,7 +1553,7 @@
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultIds = null; }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}
