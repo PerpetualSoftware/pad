@@ -26,6 +26,7 @@
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -578,6 +579,53 @@
 	$effect(() => {
 		if (collabProvider?.synced) hasEverSynced = true;
 	});
+
+	// Stuck-connecting timeout — if the provider stays in
+	// `connecting` for >10s without ever syncing, surface the same
+	// ContentError UI as `offline`. Unconditional reset at the top
+	// of each effect run gives every fresh provider its own 10s
+	// grace (covers item navigation, rawMode toggle, force_refresh,
+	// and retry-driven rebuilds — without this, a stuck-connecting
+	// flag from a previous provider would carry over and the new
+	// provider would immediately show error UI). Only the timer
+	// can flip it back to true. Per Codex review round 1.
+	let staleConnecting = $state(false);
+	$effect(() => {
+		if (!collabProvider) return;
+		staleConnecting = false;
+		if (collabProvider.state !== 'connecting' || hasEverSynced) {
+			return;
+		}
+		const t = setTimeout(() => {
+			if (collabProvider?.state === 'connecting' && !hasEverSynced) {
+				staleConnecting = true;
+			}
+		}, 10_000);
+		return () => clearTimeout(t);
+	});
+
+	// Manual recovery from the initial-connect failure modes
+	// (staleConnecting / offline-while-!hasEverSynced). The template
+	// gate restricts retry to cases where `!hasEverSynced`, which
+	// means the current Y.Doc has never received a sync and therefore
+	// cannot hold user edits — tearing down the provider is safe.
+	// (Offline AFTER a successful sync keeps the editor mounted; see
+	// the gate comment in the template for why.)
+	//
+	// Bumps forceRefreshNonce so the collab $effect tears down the
+	// dead provider and rebuilds. We deliberately do NOT refetch
+	// items.content here — the lazy-seed on the new Y.Doc reads from
+	// the already-cached item.content, and the new provider's WS
+	// replay reconciles against canonical server state via the
+	// op-log. If the cursor is below MIN the server sends a real
+	// force_refresh which goes through onForceRefresh (which DOES
+	// refetch — correctly, because the server is the source of truth
+	// in that case). Per Codex review rounds 1 and 2 of TASK-1376.
+	function retryCollabSync() {
+		if (!item) return;
+		staleConnecting = false;
+		forceRefreshNonce += 1;
+	}
 
 	$effect(() => {
 		if (!collabKey) return;
@@ -1658,7 +1706,11 @@
 {#if loading}
 	<ContentSkeleton variant="page" />
 {:else if error}
-	<div class="center-message">{error}</div>
+	<ContentError
+		title="Could not load item"
+		detail={error}
+		onRetry={loadData}
+	/>
 {:else if item && collection}
 	<!-- Print-only footer (hidden on screen, fixed-positioned in print).
 	     The repeating print-header was removed as part of BUG-626: a
@@ -2157,7 +2209,28 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#if collabProvider?.state === 'connecting' && !hasEverSynced}
+						<!--
+							Error gate FIRST so a stuck-connecting condition surfaces
+							error UI instead of a perpetual shimmer. Both branches
+							that fire here imply `!hasEverSynced` (staleConnecting's
+							effect only arms its timer when !hasEverSynced; offline +
+							hasEverSynced is handled below). That invariant is what
+							makes `retryCollabSync` safe to call: with no prior sync,
+							the current Y.Doc cannot hold user edits, so tearing down
+							the provider can't lose unflushed work. The offline +
+							hasEverSynced case deliberately KEEPS the editor mounted
+							— the corner badge (line ~1700) already signals offline,
+							the existing reconnect loop in CollabProvider keeps
+							trying, and any in-progress user edits remain bound to
+							the live Y.Doc. Per Codex review round 2 of TASK-1376.
+						-->
+						{#if (collabProvider?.state === 'offline' && !hasEverSynced) || staleConnecting}
+							<ContentError
+								title="Content unavailable"
+								detail="Could not sync with the server. Reload the editor to try again."
+								onRetry={retryCollabSync}
+							/>
+						{:else if collabProvider?.state === 'connecting' && !hasEverSynced}
 							<ContentSkeleton variant="inline" />
 						{:else}
 							{#key `${item.id}:true:${forceRefreshNonce}`}
