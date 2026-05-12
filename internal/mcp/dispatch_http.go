@@ -865,12 +865,13 @@ func ingestFieldKVP(s string, dst map[string]any) {
 }
 
 // mapPlaybookRun handles `pad_playbook.action=run` for the HTTP MCP
-// dispatcher. The MCP catalog declares two payload shapes — `args`
-// (pre-parsed map) and `raw_args` (CLI-style tokens) — so the mapper
-// forwards both, plus the resolved {ref}, into the
-// POST /workspaces/{workspace}/playbooks/{ref}/run body. The server
-// applies the strict CLI parsing rules to raw_args via
-// ParsePlaybookCLIArgs (handlers_playbooks.go).
+// dispatcher. Accepts both the original MCP shape (args:map +
+// raw_args:[]string) and the flattened shape that
+// actionPlaybookRun emits when dispatching through ExecDispatcher
+// (args:[]string of CLI tokens). When args arrives as a slice it's
+// treated as raw_args so the server applies the strict CLI parser.
+// When it arrives as a map it's forwarded as a pre-parsed argument
+// dictionary.
 //
 // PLAN-1377 / TASK-1381.
 func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err error) {
@@ -883,12 +884,42 @@ func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err
 		return "", "", nil, fmt.Errorf("ref is required (invocation_slug, item slug, or issue ref)")
 	}
 	payload := map[string]any{}
-	if args, ok := input["args"]; ok && args != nil {
-		payload["args"] = args
+
+	// Coerce raw_args from any of the shapes the catalog / cli /
+	// HTTPDispatcher paths can supply. The server's parser only cares
+	// about []string, so anything else gets normalized here.
+	var rawArgs []string
+	if rv, ok := input["raw_args"]; ok && rv != nil {
+		switch v := rv.(type) {
+		case []any:
+			for _, t := range v {
+				if s, ok := t.(string); ok && s != "" {
+					rawArgs = append(rawArgs, s)
+				}
+			}
+		case []string:
+			rawArgs = append(rawArgs, v...)
+		}
 	}
-	if rawArgs, ok := input["raw_args"]; ok && rawArgs != nil {
+
+	if argv, ok := input["args"]; ok && argv != nil {
+		switch v := argv.(type) {
+		case map[string]any:
+			payload["args"] = v
+		case []any:
+			for _, t := range v {
+				if s, ok := t.(string); ok && s != "" {
+					rawArgs = append(rawArgs, s)
+				}
+			}
+		case []string:
+			rawArgs = append(rawArgs, v...)
+		}
+	}
+	if len(rawArgs) > 0 {
 		payload["raw_args"] = rawArgs
 	}
+
 	enc, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("encode playbook run body: %w", err)
