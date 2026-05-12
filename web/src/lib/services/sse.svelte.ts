@@ -39,6 +39,14 @@ const ITEM_EVENTS = [
 	'reaction_removed'
 ] as const;
 
+// Cross-tab BroadcastChannel envelope. The leader tab fans events out
+// via this channel so peer tabs in the same browser get live updates
+// without opening their own EventSource (PLAN-1343 / TASK-1359).
+type BCEnvelope =
+	| { type: 'item_event'; event: ItemEvent }
+	| { type: 'sync_required' }
+	| { type: 'status'; status: SSEStatus };
+
 function createSSEService() {
 	let status = $state<SSEStatus>('disconnected');
 	let lastEventTime = $state<number>(0);
@@ -48,66 +56,106 @@ function createSSEService() {
 	const callbacks = new SvelteSet<ItemEventCallback>();
 	const syncRequiredCallbacks = new SvelteSet<SyncRequiredCallback>();
 
-	function connect(workspaceSlug: string) {
-		// If already connected to the same workspace, don't reconnect.
-		// The browser's EventSource handles reconnection automatically
-		// with Last-Event-ID, so destroying it would lose that state.
-		if (eventSource && currentWorkspace === workspaceSlug) {
-			// EventSource is already connected (or auto-reconnecting).
-			// readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
-			if (eventSource.readyState !== EventSource.CLOSED) {
-				return;
+	// Cross-tab BroadcastChannel for fan-out from the leader tab to
+	// peer tabs. Every connected tab (leader OR peer) keeps the
+	// channel open — the leader publishes events here, peers
+	// subscribe. Null on browsers without BroadcastChannel support
+	// (very old / non-browser environments — every tab becomes its
+	// own leader and opens its own SSE).
+	let bc: BroadcastChannel | null = null;
+
+	// Resolves the leader lock when this tab is disconnecting (or
+	// switching workspaces). Returning from the lock callback
+	// releases the lock; another waiting tab then acquires it and
+	// becomes the new leader. Null when this tab is not the leader.
+	let releaseLeaderLock: (() => void) | null = null;
+
+	// True iff this tab currently holds the leader Web Lock.
+	let isLeader = false;
+
+	function dispatchItemEvent(data: ItemEvent) {
+		lastEventTime = Date.now();
+		for (const cb of callbacks) {
+			cb(data);
+		}
+	}
+
+	function dispatchSyncRequired() {
+		needsSync = true;
+		for (const cb of syncRequiredCallbacks) {
+			cb();
+		}
+	}
+
+	function broadcast(env: BCEnvelope) {
+		if (!bc) return;
+		try {
+			bc.postMessage(env);
+		} catch {
+			/* swallow — closed channel or serialization error */
+		}
+	}
+
+	function openBroadcastChannel(workspaceSlug: string) {
+		if (typeof BroadcastChannel === 'undefined') return;
+		bc = new BroadcastChannel(`pad-sync-${workspaceSlug}`);
+		bc.onmessage = (msg: MessageEvent<BCEnvelope>) => {
+			// Peer-tab path: route messages from the leader to local
+			// callbacks. The leader-side `dispatchItemEvent` /
+			// `dispatchSyncRequired` already runs locally before
+			// broadcasting, so the leader doesn't re-dispatch its
+			// own messages. The browser's own-message-filter on
+			// BroadcastChannel makes the cross-tab boundary the only
+			// fan-out edge.
+			const env = msg.data;
+			if (env.type === 'item_event') {
+				dispatchItemEvent(env.event);
+			} else if (env.type === 'sync_required') {
+				dispatchSyncRequired();
+			} else if (env.type === 'status') {
+				// Mirror the leader's connection status so peer-tab UI
+				// indicators don't show "disconnected" while the
+				// leader is happily streaming.
+				status = env.status;
 			}
-		}
+		};
+	}
 
-		// Different workspace or closed connection — create new EventSource
-		if (eventSource) {
-			disconnect();
-		}
-
-		currentWorkspace = workspaceSlug;
+	function openEventSource(workspaceSlug: string) {
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
 		eventSource = new EventSource(url);
 
 		eventSource.onopen = () => {
 			status = 'connected';
+			broadcast({ type: 'status', status: 'connected' });
 		};
 
 		eventSource.onerror = () => {
 			status = 'reconnecting';
+			broadcast({ type: 'status', status: 'reconnecting' });
 			// EventSource auto-reconnects and sends Last-Event-ID.
 			// The server replays missed events from its buffer.
 		};
 
 		eventSource.addEventListener('connected', () => {
 			status = 'connected';
+			broadcast({ type: 'status', status: 'connected' });
 		});
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
-		// Trigger an immediate sync rather than waiting for a visibility change,
-		// so the UI stays fresh even when the tab is actively visible. Fires
-		// out via onSyncRequired() subscribers (currently syncService) — the
-		// callback inversion keeps this module free of any sync.svelte import,
-		// breaking the circular dep that previously required a dynamic import
-		// here. (Rolldown flagged the dynamic import as ineffective because
-		// sync.svelte is statically imported from 5 routes/components anyway,
-		// so it's always in the main chunk — see TASK-1242.)
 		eventSource.addEventListener('sync_required', () => {
-			needsSync = true;
-			for (const cb of syncRequiredCallbacks) {
-				cb();
-			}
+			dispatchSyncRequired();
+			broadcast({ type: 'sync_required' });
 		});
 
 		// Handle unauthorized: the server's periodic membership revalidation
 		// detected that this session has lost access to the workspace. We
 		// must close the EventSource ourselves — otherwise the browser
 		// auto-reconnect would tight-loop on a 401 or a stream that
-		// immediately closes again, hammering /api/v1/events. Surface the
-		// status so the surrounding UI can redirect to the workspace list
-		// or show a "revoked" message.
+		// immediately closes again, hammering /api/v1/events.
 		eventSource.addEventListener('unauthorized', () => {
 			status = 'unauthorized';
+			broadcast({ type: 'status', status: 'unauthorized' });
 			if (eventSource) {
 				eventSource.close();
 				eventSource = null;
@@ -118,20 +166,108 @@ function createSSEService() {
 		for (const eventType of ITEM_EVENTS) {
 			eventSource.addEventListener(eventType, (e: MessageEvent) => {
 				const data: ItemEvent = JSON.parse(e.data);
-				lastEventTime = Date.now();
-				for (const cb of callbacks) {
-					cb(data);
-				}
+				dispatchItemEvent(data);
+				broadcast({ type: 'item_event', event: data });
 			});
 		}
 	}
 
+	/**
+	 * Acquire the workspace-scoped leader lock and, if granted, open
+	 * the SSE EventSource. Peer tabs queue on the same lock and only
+	 * advance when the current leader's tab unloads or closes the
+	 * lock — at which point another tab takes over transparently
+	 * (navigator.locks releases the lock on page unload).
+	 *
+	 * Browsers without navigator.locks (very old / non-browser
+	 * environments) skip the leader election and every tab opens
+	 * its own EventSource — N× traffic but correct.
+	 */
+	function requestLeader(workspaceSlug: string) {
+		if (typeof navigator === 'undefined' || !('locks' in navigator)) {
+			// No leader election available. Fall back to per-tab SSE.
+			openEventSource(workspaceSlug);
+			return;
+		}
+		navigator.locks
+			.request(
+				`pad-sse-leader-${workspaceSlug}`,
+				{ mode: 'exclusive' },
+				async () => {
+					// User may have already navigated away by the time
+					// we acquire the lock. Bail before opening a stale
+					// connection.
+					if (currentWorkspace !== workspaceSlug) return;
+					isLeader = true;
+					openEventSource(workspaceSlug);
+					// Hold the lock until release is signaled (by
+					// disconnect() or a workspace switch). The promise
+					// returned from this callback is what
+					// navigator.locks awaits.
+					return new Promise<void>((resolve) => {
+						releaseLeaderLock = () => {
+							releaseLeaderLock = null;
+							isLeader = false;
+							resolve();
+						};
+					});
+				},
+			)
+			.catch(() => {
+				// Lock request can fail in exotic cases (cross-origin
+				// iframe restrictions, etc.). Fall back to a
+				// per-tab EventSource so the user still gets live
+				// updates.
+				if (currentWorkspace === workspaceSlug && !eventSource) {
+					openEventSource(workspaceSlug);
+				}
+			});
+	}
+
+	function connect(workspaceSlug: string) {
+		// Already connected to the same workspace — no-op.
+		if (currentWorkspace === workspaceSlug && (eventSource || bc)) {
+			if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
+				return;
+			}
+			if (bc && !eventSource && !isLeader) {
+				return; // peer tab, still listening
+			}
+		}
+
+		// Different workspace or closed connection — tear down first.
+		if (eventSource || bc) {
+			disconnect();
+		}
+
+		currentWorkspace = workspaceSlug;
+		// Always open the broadcast channel: leaders use it to fan
+		// out, peers use it to receive.
+		openBroadcastChannel(workspaceSlug);
+		// Race for the leader slot. If we win, openEventSource runs
+		// inside the lock callback. If we lose, we wait on the lock
+		// while passively receiving via bc. When the leader tab
+		// closes, the lock releases and our queued request fires —
+		// at which point we open our own EventSource.
+		requestLeader(workspaceSlug);
+	}
+
 	function disconnect() {
+		// Release the leader lock first so a peer tab can take over
+		// even on the same browser session (e.g. workspace switch).
+		if (releaseLeaderLock) {
+			releaseLeaderLock();
+		}
 		if (eventSource) {
 			eventSource.close();
 			eventSource = null;
 		}
+		if (bc) {
+			bc.close();
+			bc = null;
+		}
 		currentWorkspace = '';
+		isLeader = false;
 		status = 'disconnected';
 	}
 
@@ -180,6 +316,9 @@ function createSSEService() {
 		},
 		get needsSync() {
 			return needsSync;
+		},
+		get isLeader() {
+			return isLeader;
 		},
 		connect,
 		disconnect,
