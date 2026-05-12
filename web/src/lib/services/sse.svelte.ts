@@ -202,26 +202,37 @@ function createSSEService() {
 			openEventSource(workspaceSlug);
 			return;
 		}
-		// Query first so we can distinguish "I'm the first leader"
-		// from "I'm a promoted follower." The first leader doesn't
-		// need a sync — the page bootstrap already does one. A
-		// promoted follower DOES need a sync because the freshly-
-		// opened EventSource has no Last-Event-ID and the server
-		// can't replay events emitted during the gap between the old
-		// leader's close and this new connection (Codex P1 round 2
-		// of TASK-1359). `navigator.locks.query` racing with the
-		// lock release is fine — if we mis-classify and fire an
-		// extra sync, that's idempotent + cheap.
-		let promoted = false;
+		// Distinguish "first leader" from "promoted follower" so we
+		// only fire sync_required on promotion — the freshly-opened
+		// EventSource has no Last-Event-ID and the server can't
+		// replay events emitted during the gap between the old
+		// leader's close and the new connection. Two signals:
+		//
+		//   1. `navigator.locks.query` before the request. If the
+		//      slot is already held by another tab, we're definitely
+		//      a future promotion. (Codex P1 round 2 of TASK-1359.)
+		//   2. Grant delay. If `query` raced with two tabs starting
+		//      simultaneously (both see "no holder"), one wins and
+		//      the other queues. The loser would mis-classify with
+		//      query alone — but the lock grant for the queued tab
+		//      is delayed by however long the winner held it. Any
+		//      callback that fires more than ~100ms after the
+		//      request is treated as a promotion. (Codex P1 round 3
+		//      of TASK-1359.) 100ms is a conservative cap on the
+		//      immediate grant case (uncontested lock acquisition
+		//      in a healthy browser is sub-millisecond).
+		let queryPromoted = false;
 		try {
 			const snapshot = await navigator.locks.query();
 			const held = (snapshot.held ?? []).some(
 				(l) => l.name === `pad-sse-leader-${workspaceSlug}`,
 			);
-			promoted = held;
+			queryPromoted = held;
 		} catch {
-			/* swallow — query unsupported on some platforms; treat as first */
+			/* swallow — query unsupported on some platforms */
 		}
+		const requestStart =
+			typeof performance !== 'undefined' ? performance.now() : Date.now();
 
 		navigator.locks
 			.request(
@@ -232,6 +243,11 @@ function createSSEService() {
 					// we acquire the lock. Bail before opening a stale
 					// connection.
 					if (currentWorkspace !== workspaceSlug) return;
+					const grantDelay =
+						(typeof performance !== 'undefined'
+							? performance.now()
+							: Date.now()) - requestStart;
+					const promoted = queryPromoted || grantDelay > 100;
 					isLeader = true;
 					openEventSource(workspaceSlug);
 					if (promoted) {
