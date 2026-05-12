@@ -193,11 +193,6 @@
 	}
 
 	function doSearch() {
-		// Re-read the localSearch epoch for the current workspace so
-		// reactive consumers (this $effect-equivalent inside doSearch)
-		// pick up SSE-driven index mutations. Reading inside the
-		// function is enough — the $effect that calls doSearch will
-		// pick this up via dependency tracking.
 		clearTimeout(searchTimeout);
 		const trimmed = query.trim();
 		if (!trimmed) {
@@ -210,10 +205,19 @@
 		}
 
 		const parsed = parseSearchQuery(trimmed);
-		const ready = readyWorkspaces();
 		const currentSlug = workspaceStore.current?.slug;
-		const currentReady =
-			!!currentSlug && localIndex.bootstrapStateFor(currentSlug) === 'ready';
+		// CRITICAL: don't read `localIndex.bootstrapStateFor` or
+		// `localSearch.epoch` for body queries — those reads register
+		// as reactive dependencies of the caller (`$effect`), and an
+		// SSE-driven epoch bump or hydration completion mid-flight
+		// would then re-fire doSearch and wipe an in-flight `loadMore`
+		// append. Body queries are server-authoritative; nothing in
+		// local state can change their result set. Codex round 8 P2
+		// of TASK-1365.
+		const currentReady = parsed.body
+			? true
+			: !!currentSlug && localIndex.bootstrapStateFor(currentSlug) === 'ready';
+		const ready = parsed.body ? [] : readyWorkspaces();
 
 		// Server-only paths:
 		//   - `body:` / `content:` queries — local index doesn't hold
