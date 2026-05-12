@@ -1172,6 +1172,15 @@ func (s *Server) setupRouter() {
 					// Dashboard (v2)
 					r.Get("/dashboard", s.handleGetDashboard)
 
+					// Agent bootstrap (PLAN-1377 / TASK-1379) — single
+					// round-trip that returns workspace + user +
+					// collections + always-on conventions + roles +
+					// playbook metadata + dashboard + recent activity.
+					// Replaces the four /pad context-loading calls the
+					// skill used to make. Same shape via the MCP
+					// surfaces in TASK-1380.
+					r.Get("/agent/bootstrap", s.handleGetBootstrap)
+
 					// Incremental sync — returns items changed since a timestamp
 					r.Get("/changes", s.handleGetChanges)
 				})

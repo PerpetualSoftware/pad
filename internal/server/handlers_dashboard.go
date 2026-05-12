@@ -276,19 +276,30 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	// Compute collection visibility once for the entire dashboard
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	resp, err := s.buildDashboardResponse(workspaceID, r)
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// buildDashboardResponse is the canonical dashboard-assembly path. The
+// HTTP handler (handleGetDashboard) is now a thin wrapper around it, and
+// the bootstrap endpoint (TASK-1379) calls it directly so the bootstrap
+// blob carries the same dashboard data the dedicated endpoint returns —
+// without forcing a second HTTP round-trip.
+func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*DashboardResponse, error) {
+	// Compute collection visibility once for the entire dashboard
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		return nil, err
 	}
 
 	// For guests, compute item-level grant filtering
 	dashFullCollIDs, dashGrantedItemIDs, dashGrantErr := s.guestResourceFilter(r, workspaceID)
 	if dashGrantErr != nil {
-		writeInternalError(w, dashGrantErr)
-		return
+		return nil, dashGrantErr
 	}
 	dashGrantedItemSet := make(map[string]bool, len(dashGrantedItemIDs))
 	for _, id := range dashGrantedItemIDs {
@@ -310,8 +321,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// Build a schema map for terminal status lookups
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	// Build the done-context map from ALL workspace collections before
 	// visibility filtering. The dashboard may surface item-level grants
@@ -352,16 +362,14 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// access to. See WorkspaceHasAgentActivity for the rationale.
 	hasAgent, err := s.store.WorkspaceHasAgentActivity(workspaceID, dashCollIDs, dashItemIDs)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	resp.HasAgentActivity = hasAgent
 
 	// Summary: items grouped by collection slug and status field
 	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 
 	resp.Summary.TotalItems = len(allItems)
@@ -956,7 +964,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return &resp, nil
 }
 
 // extractFieldValue extracts a string value from a JSON fields string.
