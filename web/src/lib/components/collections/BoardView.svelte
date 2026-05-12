@@ -27,9 +27,17 @@
 		 * Default true preserves behavior in callers that don't pass it.
 		 */
 		canEdit?: boolean;
+		/**
+		 * When true, the in-column `sort_order` sort is skipped and the
+		 * parent's item order is preserved. Used by the collection page
+		 * to surface localSearch's relevance ranking (TASK-1367) —
+		 * otherwise the per-column sort would clobber rank order when
+		 * two matches share a column.
+		 */
+		preserveOrder?: boolean;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', canEdit = true }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 	let isMobile = $state(false);
@@ -124,8 +132,12 @@
 				result[value].push(item);
 			}
 		}
-		for (const col of columns) {
-			result[col].sort((a, b) => a.sort_order - b.sort_order);
+		// `preserveOrder` opts out of the in-column sort so search rank
+		// from the parent isn't overridden — TASK-1367.
+		if (!preserveOrder) {
+			for (const col of columns) {
+				result[col].sort((a, b) => a.sort_order - b.sort_order);
+			}
 		}
 		return result;
 	});
