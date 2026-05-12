@@ -1249,11 +1249,20 @@
 			defaultViewApplied = true;
 			return;
 		}
-		// Don't override URL-driven state. By this point
-		// `loadUrlFilters` has populated `searchQuery` and
-		// `activeFilters` from the URL (or left them empty).
-		const urlOverrides =
-			searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0;
+		// Don't override URL-driven state. Read `page.url` directly —
+		// not the parsed `searchQuery` / `activeFilters` state —
+		// because:
+		//   * `?view=board` doesn't populate either, so a parsed-state
+		//     check would miss it. Codex round 2 P1.
+		//   * `loadUrlFilters` doesn't clear absent params, so a
+		//     parsed-state check might still see leftover values from
+		//     the previous route on cross-collection nav and skip a
+		//     default that the new clean URL would have allowed.
+		//     Codex round 2 P2.
+		// Any URL param means user has explicit intent; the only
+		// params the collection page writes (`view`, `q`, field
+		// filters) are all user-driven, so checking for any is safe.
+		const urlOverrides = page.url.searchParams.size > 0;
 		if (urlOverrides) {
 			defaultViewApplied = true;
 			return;
