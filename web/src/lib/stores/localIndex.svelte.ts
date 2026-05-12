@@ -65,6 +65,7 @@ import {
 	persistUpserts,
 	wipe as persistWipe,
 } from './localIndexPersistence';
+import { localSearch } from './localSearch.svelte';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
@@ -168,6 +169,21 @@ function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
 	}
 	state.items.set(next.id, next);
 	return true;
+}
+
+/**
+ * Rebuild the per-workspace MiniSearch index from the current in-RAM
+ * snapshot. Called after the warm-cache hydrate and after the cold-path
+ * /items-index settle — both are bulk row inserts where calling
+ * `localSearch.upsert` per row would needlessly tear down and rebuild
+ * the inverted index N times. A single `rebuild()` at the end is O(N)
+ * and runs in <50ms for 5,000 rows.
+ *
+ * Steady-state mutations (`applyDelta`, `upsert`, `remove`) update the
+ * search index incrementally inside those methods themselves.
+ */
+function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
+	localSearch.rebuild(ws, state.items.values());
 }
 
 export const localIndex = {
@@ -283,6 +299,11 @@ export const localIndex = {
 					if (cursorAsNum(cached.cursor) > cursorAsNum(state.cursor)) {
 						state.cursor = cached.cursor;
 					}
+					// Rebuild the search index from the warm snapshot so
+					// the collection page and CommandPalette can serve
+					// results immediately on first paint — TASK-1363.
+					// Bulk rebuild is cheaper than N per-row upserts.
+					rebuildSearchIndex(ws, state);
 					// Flip to ready immediately — the UI paints from
 					// the cache while delta-sync runs. `pendingResync`
 					// stays true until the reconcile finishes.
@@ -357,6 +378,11 @@ export const localIndex = {
 							state.pendingResync = false;
 							state.items.clear();
 							state.cursor = '0';
+							// Drop the MiniSearch index in lockstep with
+							// the cleared in-RAM rows so a stale search
+							// result can't navigate the user to a
+							// now-forbidden row — TASK-1363.
+							localSearch.reset(ws);
 							persistWipe(userId, ws).catch(() => undefined);
 							throw err;
 						}
@@ -384,6 +410,11 @@ export const localIndex = {
 					state.bootstrapState = 'ready';
 					// Cold path is a full snapshot — nothing pending.
 					state.pendingResync = false;
+					// Rebuild the search index from the cold snapshot —
+					// TASK-1363. Bulk rebuild is cheaper than N per-row
+					// upserts and keeps the index hot for the first
+					// keystroke.
+					rebuildSearchIndex(ws, state);
 					// Best-effort persist the cold snapshot to IDB so
 					// the next visit is warm. We persist the POST-MERGE
 					// in-memory rows (not raw `resp.items`), and use
@@ -539,6 +570,11 @@ export const localIndex = {
 			const skinny = toSkinny(rest as ItemIndexRow);
 			state.items.set(change.id, skinny);
 			toPersist.push(skinny);
+			// Keep the search index in lockstep with the canonical
+			// store — TASK-1363. Soft-deleted rows still index (the
+			// `_deleted` flag gates them out at search time) so a
+			// `{ includeArchived: true }` query finds them.
+			localSearch.upsert(ws, skinny);
 		}
 		state.cursor = newCursor;
 		// Write-through to IDB. ATOMIC: rows + cursor land in a
@@ -616,6 +652,10 @@ export const localIndex = {
 			return;
 		}
 		state.items.set(row.id, next);
+		// Mirror the write to the per-workspace MiniSearch index so
+		// the next `localSearch.search(...)` reflects the mutation
+		// without waiting for a periodic rebuild — TASK-1363.
+		localSearch.upsert(ws, next);
 		// Write-through to IDB. Fire-and-forget; storage failures
 		// degrade silently.
 		persistUpserts(state.userId, ws, [next]).catch(() => undefined);
@@ -630,6 +670,10 @@ export const localIndex = {
 		const state = workspaces.get(ws);
 		if (!state) return;
 		state.items.delete(id);
+		// Drop the row from the MiniSearch index too so the next
+		// `localSearch.search(...)` never returns a hard-removed id —
+		// TASK-1363.
+		localSearch.remove(ws, id);
 		// Write-through hard-delete to IDB.
 		persistRemovals(state.userId, ws, [id]).catch(() => undefined);
 	},
@@ -651,7 +695,13 @@ export const localIndex = {
 		for (const row of state.items.values()) {
 			if (row.collection_slug === collSlug) ids.push(row.id);
 		}
-		for (const id of ids) state.items.delete(id);
+		for (const id of ids) {
+			state.items.delete(id);
+			// Mirror each removal into the MiniSearch index so a
+			// 403-purge collection wipe doesn't leave dangling
+			// search hits — TASK-1363.
+			localSearch.remove(ws, id);
+		}
 		if (ids.length > 0) {
 			persistRemovals(state.userId, ws, ids).catch(() => undefined);
 		}
@@ -713,6 +763,11 @@ export const localIndex = {
 
 		workspaces.delete(ws);
 		inflight.delete(ws);
+
+		// Drop the MiniSearch index for the workspace too. A fresh
+		// bootstrap will rebuild it from the new owner's snapshot —
+		// TASK-1363.
+		localSearch.reset(ws);
 
 		// Drop the persisted cache for the workspace's last-known
 		// userId. If a different user later bootstraps the same
