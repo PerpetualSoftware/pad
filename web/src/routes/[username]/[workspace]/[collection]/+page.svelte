@@ -101,26 +101,54 @@
 	);
 	let indexReady = $derived(indexState === 'ready');
 	// `indexError` surfaces a cold-load failure (transient /items-index
-	// failure with no cache to fall back on). The template renders an
-	// error banner with a retry CTA instead of the misleading "No
-	// items yet" empty state (Codex P2 round 4 of TASK-1357).
+	// failure with no cache to fall back on) AND the post-revoke
+	// reset state (`deltaSync` resets on 401/403 — see Codex P2 round
+	// 5 of TASK-1357 — and the bootstrap effect can't re-trigger on
+	// the same wsSlug/userId pair, so we surface the error directly
+	// when indexState rolls back to 'cold' after we'd been 'ready'
+	// or 'loading'). The template renders an error banner with a
+	// retry CTA instead of the misleading "No items yet" empty state
+	// or a stuck-forever "Loading…" spinner.
 	let indexError = $derived(indexState === 'error');
-	let loading = $derived(metaLoading || (!indexReady && !indexError));
+	// `deltaSyncFailed` lets the auth-error reset on /items-changes
+	// surface as an error banner even when the local-index state
+	// has rolled back to 'cold'. Cleared on every successful
+	// deltaSync.
+	let deltaSyncFailed = $state(false);
+	let loading = $derived(
+		metaLoading || (!indexReady && !indexError && !deltaSyncFailed),
+	);
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
 	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
 	// the warm-IDB / cold-/items-index flow. Re-runs when the
 	// workspace slug or the signed-in user changes so a user switch
 	// in the same browser tab gets a fresh per-user cache.
+	//
+	// Then run a deltaSync regardless of bootstrap state. Once the
+	// localIndex is `ready`, bootstrap() no-ops — but an item the
+	// user created/updated elsewhere (item detail page, dashboard,
+	// or another tab) while this collection was unmounted is still
+	// catchable via /items-changes. Without this, returning to the
+	// collection page after creating an item elsewhere could miss
+	// the new row until the next SSE event arrives (Codex P1 round
+	// 5 of TASK-1357).
 	$effect(() => {
 		if (!wsSlug) return;
 		const uid = authStore.userId || null;
-		localIndex.bootstrap(wsSlug, { userId: uid }).catch(() => {
-			// errors flip the store's bootstrapState to 'error'; the
-			// UI surface is via `collection`/`items`, so a hard failure
-			// just shows an empty page. 401/403 redirect/purge is
-			// handled by the API client + TASK-1360.
-		});
+		(async () => {
+			try {
+				await localIndex.bootstrap(wsSlug, { userId: uid });
+			} catch {
+				// Bootstrap errors flip bootstrapState to 'error'; the
+				// indexError-gated error banner surfaces them. 401/403
+				// redirect/purge is handled by the API client +
+				// TASK-1360.
+			}
+			// Catch up any deltas missed while the user was on a
+			// different page within the same workspace.
+			await deltaSync(wsSlug);
+		})();
 	});
 	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
 	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
@@ -423,10 +451,14 @@
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
 				if (delta.changes.length === 0 || delta.cursor === since) {
+					deltaSyncFailed = false;
 					return true;
 				}
 				localIndex.applyDelta(ws, delta.changes, delta.cursor);
-				if (delta.cursor === since) return true;
+				if (delta.cursor === since) {
+					deltaSyncFailed = false;
+					return true;
+				}
 			}
 			// Cap hit — pretend success at the page level so we don't
 			// thrash, but tell the caller it wasn't a clean catch-up.
@@ -436,13 +468,17 @@
 			// cache is no longer ours to display. Drop it through the
 			// same path bootstrap uses so the 403 handler (TASK-1360)
 			// + 401 /login redirect (already in api/client.ts) can
-			// react. Other failures stay silent — SSE or the next
-			// tab-resume retries. Codex P1 round 4 of TASK-1357.
+			// react. Set `deltaSyncFailed` so the page surfaces an
+			// error banner — `localIndex.reset` rolls state back to
+			// 'cold' but the bootstrap effect can't re-trigger on the
+			// same wsSlug/userId, so without this flag the page
+			// pins at "Loading…" forever (Codex P2 round 5).
 			if (
 				err instanceof PadApiError &&
 				(err.code === 'forbidden' || err.code === 'unauthorized')
 			) {
 				localIndex.reset(ws);
+				deltaSyncFailed = true;
 			}
 			return false;
 		}
@@ -1349,12 +1385,12 @@
 		</div>
 
 		<!-- Content -->
-		{#if indexError && items.length === 0}
+		{#if (indexError || deltaSyncFailed) && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
-			     (e.g. transient /items-index failure on cold load).
-			     Show a retry path instead of the misleading "No
-			     items yet" empty state — the workspace might have
-			     items the user just can't see yet. -->
+			     (e.g. transient /items-index failure on cold load,
+			     or auth revoked on /items-changes). Show a retry
+			     path instead of the misleading "No items yet" empty
+			     state OR a stuck-forever "Loading…" spinner. -->
 			<div class="empty-state-box">
 				<div class="empty-icon">⚠️</div>
 				<h2>Couldn't load {collection.name.toLowerCase()}</h2>
@@ -1362,6 +1398,7 @@
 				<button
 					class="empty-cta"
 					onclick={() => {
+						deltaSyncFailed = false;
 						localIndex.reset(wsSlug);
 						localIndex.bootstrap(wsSlug, { userId: authStore.userId || null });
 					}}
