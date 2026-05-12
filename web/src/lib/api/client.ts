@@ -106,21 +106,61 @@ export function setAccessRevokedHandler(handler: AccessRevokedHandler | null): v
 }
 
 /**
- * Parse a workspace-scoped URL path and extract the workspace slug if
- * present. Returns null for non-workspace-scoped paths (auth,
- * admin, health, etc.). Pure / non-throwing.
+ * Parse a URL path and decide whether a 403 on it indicates that the
+ * caller's READ access to the workspace's item set has been revoked.
+ * Returns null for any path that doesn't qualify — auth, admin,
+ * server health, OR workspace-scoped endpoints whose 403 doesn't
+ * imply workspace-wide read loss (members list, storage usage, etc.
+ * 403 from those for grant-only guests is expected and shouldn't
+ * purge the cache — Codex P1 round 3 of TASK-1360).
+ *
+ * The whitelist is the set of endpoints the local-first read model
+ * actually consumes for items:
+ *
+ *   GET /workspaces/{ws}/items
+ *   GET /workspaces/{ws}/items/{slug}
+ *   GET /workspaces/{ws}/items-index
+ *   GET /workspaces/{ws}/items-changes
+ *   GET /workspaces/{ws}/collections/{coll}/items
+ *
+ * A 403 on any of these means the local cache is stale-by-permission
+ * (membership revoked or item-grant scope shrunk to nothing). A 403
+ * on anything else stays opaque to the local index.
  */
 function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
-	// Strip the BASE prefix and any leading slash.
+	// Strip the BASE prefix and any leading slash / query string.
 	let stripped = path.startsWith(BASE) ? path.slice(BASE.length) : path;
 	const qIdx = stripped.indexOf('?');
 	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
 	if (stripped.startsWith('/')) stripped = stripped.slice(1);
 	const parts = stripped.split('/');
-	if (parts.length < 2 || parts[0] !== 'workspaces' || !parts[1]) {
+	if (parts.length < 3 || parts[0] !== 'workspaces' || !parts[1]) {
 		return null;
 	}
-	return { kind: 'workspace', workspace: parts[1] };
+	const ws = parts[1];
+	const tail = parts[2];
+
+	// /workspaces/{ws}/items-index   |  /workspaces/{ws}/items-changes
+	if (parts.length === 3 && (tail === 'items-index' || tail === 'items-changes')) {
+		return { kind: 'workspace', workspace: ws };
+	}
+	// /workspaces/{ws}/items                 (list)
+	// /workspaces/{ws}/items/{idOrSlug}      (single read — exact, no subroute)
+	if (parts.length === 3 && tail === 'items') {
+		return { kind: 'workspace', workspace: ws };
+	}
+	if (parts.length === 4 && tail === 'items') {
+		return { kind: 'workspace', workspace: ws };
+	}
+	// /workspaces/{ws}/collections/{coll}/items
+	if (
+		parts.length === 5 &&
+		tail === 'collections' &&
+		parts[4] === 'items'
+	) {
+		return { kind: 'workspace', workspace: ws };
+	}
+	return null;
 }
 
 /**
