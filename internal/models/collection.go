@@ -5,14 +5,16 @@ import "time"
 type FieldDef struct {
 	Key             string   `json:"key"`
 	Label           string   `json:"label"`
-	Type            string   `json:"type"` // text, number, select, multi_select, date, checkbox, url, relation
+	Type            string   `json:"type"` // text, number, select, multi_select, date, checkbox, url, relation, json
 	Options         []string `json:"options,omitempty"`
 	TerminalOptions []string `json:"terminal_options,omitempty"` // for select fields: which options represent a terminal/finalized state
 	Default         any      `json:"default,omitempty"`
 	Required        bool     `json:"required,omitempty"`
 	Computed        bool     `json:"computed,omitempty"`
-	Collection      string   `json:"collection,omitempty"` // for relation type
-	Suffix          string   `json:"suffix,omitempty"`     // for number type display
+	Collection      string   `json:"collection,omitempty"`   // for relation type
+	Suffix          string   `json:"suffix,omitempty"`       // for number type display
+	Pattern         string   `json:"pattern,omitempty"`      // optional ECMAScript-style regex applied to text values; empty = no pattern check
+	UniqueScope     string   `json:"unique_scope,omitempty"` // "workspace_collection" enforces uniqueness within a collection (non-empty values only); empty = no uniqueness
 }
 
 type CollectionSchema struct {

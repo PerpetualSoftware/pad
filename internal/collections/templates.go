@@ -266,6 +266,13 @@ var (
 	SoftwarePlaybookScopes     = []string{"all", "backend", "frontend", "mobile", "devops"}
 )
 
+// PlaybookInvocationSlugPattern is the canonical regex for playbook
+// invocation_slug values: lowercase letters, digits, and hyphens; no
+// leading/trailing hyphen; minimum two characters so single-letter slugs
+// don't shadow plausible NL tokens. Shared between the schema seeding and
+// any external validators that need to mirror server-side rules.
+const PlaybookInvocationSlugPattern = `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`
+
 // copyStrings returns a defensive copy of a string slice so the helper's
 // returned schema cannot mutate the caller's option list.
 func copyStrings(in []string) []string {
@@ -362,6 +369,29 @@ func playbooksCollection(sortOrder int, triggerOptions, scopeOptions []string) D
 					Label:   "Scope",
 					Type:    "select",
 					Options: copyStrings(scopeOptions),
+				},
+				{
+					// invocation_slug enables /pad <slug> direct invocation.
+					// Nullable — playbooks meant only for trigger-based auto-load
+					// (e.g. a release checklist with trigger=on-release) don't
+					// need a slug. Kebab-case is enforced so /pad's first-token
+					// routing rule is unambiguous (a slug can't collide with
+					// natural-language verbs like "let's" or "show").
+					Key:         "invocation_slug",
+					Label:       "Invocation slug",
+					Type:        "text",
+					Pattern:     PlaybookInvocationSlugPattern,
+					UniqueScope: "workspace_collection",
+				},
+				{
+					// arguments declares the playbook's argument contract as a
+					// JSON array of {name, type, required, default, description}
+					// entries. Mirrors the playbook body's ## Arguments section;
+					// this field is the queryable form. Types: ref, string, flag,
+					// enum, number.
+					Key:   "arguments",
+					Label: "Arguments",
+					Type:  "json",
 				},
 			},
 		},

@@ -514,6 +514,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
+		writeError(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+
 	// Marshal validated/defaulted fields back
 	validatedFields, err := json.Marshal(fieldMap)
 	if err != nil {
@@ -705,6 +710,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+
+		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
+			writeError(w, http.StatusConflict, "conflict", err.Error())
 			return
 		}
 
@@ -1693,6 +1703,46 @@ func schemaHasField(schema models.CollectionSchema, key string) bool {
 		}
 	}
 	return false
+}
+
+// checkUniqueFields enforces FieldDef.UniqueScope == "workspace_collection"
+// for the given collection. For each schema field with that scope, any
+// non-empty string value in fieldMap is checked against existing items in
+// the same collection; a match returns a conflict error. excludeItemID
+// allows update flows to ignore the item being updated.
+//
+// Only string-typed unique values are supported today (the only consumer is
+// playbooks.invocation_slug). Non-string values are skipped without error.
+func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
+	for _, def := range schema.Fields {
+		if def.UniqueScope != "workspace_collection" {
+			continue
+		}
+		raw, ok := fieldMap[def.Key]
+		if !ok || raw == nil {
+			continue
+		}
+		val, ok := raw.(string)
+		if !ok || val == "" {
+			continue
+		}
+		existing, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionIDs:   []string{collectionID},
+			Fields:          map[string]string{def.Key: val},
+			IncludeArchived: true,
+			Limit:           2,
+		})
+		if err != nil {
+			return err
+		}
+		for _, item := range existing {
+			if item.ID == excludeItemID {
+				continue
+			}
+			return fmt.Errorf("field %q value %q is already used by item %s", def.Key, val, item.Slug)
+		}
+	}
+	return nil
 }
 
 func isUUID(s string) bool {

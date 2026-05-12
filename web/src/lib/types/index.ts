@@ -229,7 +229,7 @@ export interface WorkspaceTemplate {
 export interface FieldDef {
 	key: string;
 	label: string;
-	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation';
+	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'json';
 	options?: string[];
 	terminal_options?: string[];
 	default?: any;
@@ -237,6 +237,10 @@ export interface FieldDef {
 	computed?: boolean;
 	collection?: string;
 	suffix?: string;
+	/** Optional ECMAScript-style regex applied to text values. Empty = no pattern check. */
+	pattern?: string;
+	/** "workspace_collection" enforces uniqueness within a collection (non-empty values only). */
+	unique_scope?: string;
 }
 
 export interface CollectionSchema {

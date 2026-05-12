@@ -2,11 +2,37 @@ package items
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// patternCache memoizes compiled regexes so repeat validations don't pay the
+// re-compile cost. Schemas change rarely; the entries are tiny.
+var (
+	patternCache   = make(map[string]*regexp.Regexp)
+	patternCacheMu sync.RWMutex
+)
+
+func compilePattern(pat string) (*regexp.Regexp, error) {
+	patternCacheMu.RLock()
+	re, ok := patternCache[pat]
+	patternCacheMu.RUnlock()
+	if ok {
+		return re, nil
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return nil, err
+	}
+	patternCacheMu.Lock()
+	patternCache[pat] = re
+	patternCacheMu.Unlock()
+	return re, nil
+}
 
 // ValidateFields checks field values against the collection schema.
 // It validates required fields are present, types are correct, and select
@@ -136,6 +162,29 @@ func validateFieldType(def models.FieldDef, val any) error {
 	case "relation":
 		if _, ok := val.(string); !ok {
 			return fmt.Errorf("field %q must be a string (item ID)", def.Key)
+		}
+	case "json":
+		// Accept any JSON-decodable value (object, array, string, number, bool, null).
+		// Higher layers (collection-specific validators) can refine shape if needed.
+		switch val.(type) {
+		case map[string]any, []any, string, float64, int, int64, bool, nil:
+			// ok
+		default:
+			return fmt.Errorf("field %q must be a JSON-encodable value", def.Key)
+		}
+	}
+
+	// Pattern check applies to string-typed values (text, url, and JSON strings).
+	if def.Pattern != "" {
+		s, ok := val.(string)
+		if ok && s != "" {
+			re, err := compilePattern(def.Pattern)
+			if err != nil {
+				return fmt.Errorf("field %q has an invalid pattern in its schema: %v", def.Key, err)
+			}
+			if !re.MatchString(s) {
+				return fmt.Errorf("field %q value %q does not match required pattern %q", def.Key, s, def.Pattern)
+			}
 		}
 	}
 	return nil
