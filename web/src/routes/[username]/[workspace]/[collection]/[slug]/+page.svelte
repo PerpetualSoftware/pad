@@ -604,28 +604,23 @@
 		return () => clearTimeout(t);
 	});
 
-	// Manual recovery for collab offline / stuck-connecting. Bumps
-	// forceRefreshNonce so the collab $effect tears down the dead
-	// provider and rebuilds. The existing cleanup runs flushCollabNow
-	// (lines ~727–729) on tear-down, which best-effort PATCHes any
-	// unflushed local Y.Doc edits to items.content BEFORE the new
-	// provider mints a fresh Y.Doc — so user typing during the
-	// offline window is preserved.
+	// Manual recovery from the initial-connect failure modes
+	// (staleConnecting / offline-while-!hasEverSynced). The template
+	// gate restricts retry to cases where `!hasEverSynced`, which
+	// means the current Y.Doc has never received a sync and therefore
+	// cannot hold user edits — tearing down the provider is safe.
+	// (Offline AFTER a successful sync keeps the editor mounted; see
+	// the gate comment in the template for why.)
 	//
-	// We deliberately do NOT refetch items.content here. The original
-	// shape (refetch → assign item → bump nonce) was lifted from the
-	// server-driven onForceRefresh handler, where the server has told
-	// us our local state is stale. In the retry case the local Y.Doc
-	// is the canonical view (it may contain unflushed peer-invisible
-	// edits); shoveling a server snapshot into `item` before the
-	// cleanup flush risks the lazy-seed (TASK-1261) on the new Y.Doc
-	// re-encoding stale server content, which the next flush would
-	// then PATCH back over the user's just-flushed edits. The new
-	// provider's WS replay reconciles via the op-log; if the cursor
-	// has been pruned the server sends a real force_refresh which
-	// goes through onForceRefresh (which DOES refetch — correctly,
-	// because the server is the source of truth in that case).
-	// Per Codex review round 1.
+	// Bumps forceRefreshNonce so the collab $effect tears down the
+	// dead provider and rebuilds. We deliberately do NOT refetch
+	// items.content here — the lazy-seed on the new Y.Doc reads from
+	// the already-cached item.content, and the new provider's WS
+	// replay reconciles against canonical server state via the
+	// op-log. If the cursor is below MIN the server sends a real
+	// force_refresh which goes through onForceRefresh (which DOES
+	// refetch — correctly, because the server is the source of truth
+	// in that case). Per Codex review rounds 1 and 2 of TASK-1376.
 	function retryCollabSync() {
 		if (!item) return;
 		staleConnecting = false;
@@ -2214,7 +2209,22 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#if collabProvider?.state === 'offline' || staleConnecting}
+						<!--
+							Error gate FIRST so a stuck-connecting condition surfaces
+							error UI instead of a perpetual shimmer. Both branches
+							that fire here imply `!hasEverSynced` (staleConnecting's
+							effect only arms its timer when !hasEverSynced; offline +
+							hasEverSynced is handled below). That invariant is what
+							makes `retryCollabSync` safe to call: with no prior sync,
+							the current Y.Doc cannot hold user edits, so tearing down
+							the provider can't lose unflushed work. The offline +
+							hasEverSynced case deliberately KEEPS the editor mounted
+							— the corner badge (line ~1700) already signals offline,
+							the existing reconnect loop in CollabProvider keeps
+							trying, and any in-progress user edits remain bound to
+							the live Y.Doc. Per Codex review round 2 of TASK-1376.
+						-->
+						{#if (collabProvider?.state === 'offline' && !hasEverSynced) || staleConnecting}
 							<ContentError
 								title="Content unavailable"
 								detail="Could not sync with the server. Reload the editor to try again."
