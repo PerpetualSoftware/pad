@@ -1181,6 +1181,16 @@ func (s *Server) setupRouter() {
 					// surfaces in TASK-1380.
 					r.Get("/agent/bootstrap", s.handleGetBootstrap)
 
+					// Playbook surface (PLAN-1377 / TASK-1382) — list /
+					// show / run for first-class invokable procedures.
+					// run is side-effect-free: it parses args per the
+					// playbook's declared spec and returns the body +
+					// bound args. The agent (skill or MCP-driven)
+					// executes the body; the server does not.
+					r.Get("/playbooks", s.handleListPlaybooks)
+					r.Get("/playbooks/{ref}", s.handleShowPlaybook)
+					r.Post("/playbooks/{ref}/run", s.handleRunPlaybook)
+
 					// Incremental sync — returns items changed since a timestamp
 					r.Get("/changes", s.handleGetChanges)
 				})

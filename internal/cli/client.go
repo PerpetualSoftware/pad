@@ -260,6 +260,43 @@ func (c *Client) GetAgentBootstrap(wsSlug string) (json.RawMessage, error) {
 	return result, c.get("/workspaces/"+wsSlug+"/agent/bootstrap", &result)
 }
 
+// --- Playbooks ---
+
+// ListPlaybooks returns the workspace's playbook metadata array
+// (PLAN-1377 / TASK-1382). Same shape as bootstrap.playbooks.
+func (c *Client) ListPlaybooks(wsSlug string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.get("/workspaces/"+wsSlug+"/playbooks", &result)
+}
+
+// ShowPlaybook returns the full playbook item identified by ref, slug,
+// or invocation_slug.
+func (c *Client) ShowPlaybook(wsSlug, identifier string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.get("/workspaces/"+wsSlug+"/playbooks/"+identifier, &result)
+}
+
+// RunPlaybook binds the supplied args to the playbook's declared spec
+// and returns the body + bound args + any unsatisfied required args.
+// Side-effect-free: the server only parses; the agent executes.
+//
+// Callers can pass either a pre-parsed args map OR raw CLI tokens
+// (positional / bareword-flag / key=value). The server applies the
+// strict parsing rules to rawArgs and merges them with args. CLI
+// callers use rawArgs (no client-side spec lookup needed); MCP /
+// programmatic callers use args directly.
+func (c *Client) RunPlaybook(wsSlug, identifier string, args map[string]any, rawArgs []string) (json.RawMessage, error) {
+	body := map[string]any{}
+	if len(args) > 0 {
+		body["args"] = args
+	}
+	if len(rawArgs) > 0 {
+		body["raw_args"] = rawArgs
+	}
+	var result json.RawMessage
+	return result, c.post("/workspaces/"+wsSlug+"/playbooks/"+identifier+"/run", body, &result)
+}
+
 // --- Search ---
 
 // SearchItems performs a cross-workspace search. Pass q, workspace, etc. via params.
