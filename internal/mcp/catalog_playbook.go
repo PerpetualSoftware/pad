@@ -93,7 +93,15 @@ var padPlaybookTool = ToolDef{
 func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
 	ref, _ := input["ref"].(string)
 	if ref == "" {
-		return mcp.NewToolResultError("pad_playbook.run requires a ref (invocation_slug, item slug, or issue ref)"), nil
+		// Use the structured validation envelope (matches what
+		// env.Dispatch / BuildCLIArgs produces for missing-required-arg
+		// errors) so agents can branch on error.code rather than
+		// regex-matching the message text.
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrValidationFailed,
+			Message: "pad_playbook.run: missing required field 'ref'",
+			Hint:    "Pass `ref=<invocation_slug|item slug|issue ref>` (e.g. ship, cut-a-pad-release, PLAYB-1160).",
+		}), nil
 	}
 
 	if _, isHTTP := env.Dispatcher.(*HTTPHandlerDispatcher); isHTTP {
