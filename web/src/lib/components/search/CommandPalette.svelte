@@ -354,6 +354,13 @@
 	//     freshly-created items even though the underlying index
 	//     updated. PLAN-1343 / TASK-1365.
 	//
+	// EXCEPTION: body queries don't depend on local index state. They
+	// hit the server, which is the only source of truth for content
+	// text. Skip the readiness / epoch reads for body queries so a
+	// concurrent SSE bump (or hydration completion) can't re-fire
+	// doSearch from offset 0 and wipe an in-flight `loadMore` append.
+	// Codex round 7 P2 of TASK-1365.
+	//
 	// `doSearch` handles the empty-query case internally by clearing
 	// results — so the effect can fire on every transition (including
 	// "user backspaced to empty") without leaving stale results visible.
@@ -363,9 +370,13 @@
 		void searchAllWorkspaces;
 		void filterCollection;
 		void filterStatus;
-		void localIndex.bootstrapStateFor(workspaceStore.current?.slug ?? '');
-		for (const ws of workspaceStore.workspaces) {
-			void localSearch.epoch(ws.slug);
+		const trimmed = query.trim();
+		const parsed = trimmed ? parseSearchQuery(trimmed) : null;
+		if (!parsed?.body) {
+			void localIndex.bootstrapStateFor(workspaceStore.current?.slug ?? '');
+			for (const ws of workspaceStore.workspaces) {
+				void localSearch.epoch(ws.slug);
+			}
 		}
 		doSearch();
 	});
