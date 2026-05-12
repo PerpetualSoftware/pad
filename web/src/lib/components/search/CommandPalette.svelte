@@ -3,19 +3,49 @@
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import type { SearchResult, SearchFacets, SearchFilters } from '$lib/types';
+	import type {
+		SearchResult,
+		SearchFacets,
+		SearchFilters,
+		Item,
+		ItemIndexRow,
+	} from '$lib/types';
 	import { getFieldValue, itemUrlId, formatItemRef } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 
 	const RECENT_SEARCHES_KEY = 'pad-recent-searches';
 	const MAX_RECENT = 10;
 	const PAGE_SIZE = 20;
+	// Cross-workspace results merged from N ready workspaces — cap the
+	// fan-out so an extreme power user with 50 hydrated workspaces
+	// doesn't pay a 50× O(matching-docs) cost per keystroke. 20 is the
+	// max display anyway (PAGE_SIZE), but pulling the top 60 across
+	// workspaces (20 each from top 3) gives enough headroom for the
+	// merge step to keep representative coverage. PLAN-1343 / TASK-1365.
+	const LOCAL_PER_WS_LIMIT = 20;
+
+	// Augmented result — adds the source workspace so cross-workspace
+	// navigation lands on the right URL. For results returned by the
+	// server `/search` endpoint (single-workspace path), `workspace`
+	// stays undefined and `selectResult` falls back to
+	// `workspaceStore.current`. For local results, the workspace is
+	// resolved from `workspaceStore.workspaces`.
+	interface AugmentedSearchResult extends SearchResult {
+		workspace?: { slug: string; owner_username: string };
+	}
 
 	let query = $state('');
-	let results = $state<SearchResult[]>([]);
+	let results = $state<AugmentedSearchResult[]>([]);
 	let total = $state(0);
 	let facets = $state<SearchFacets | undefined>(undefined);
+	// `searchAllWorkspaces` toggle: when on, search every workspace
+	// whose `localIndex` is `'ready'` in addition to the current one.
+	// Non-ready workspaces fall back to server search transparently.
+	// Stored in localStorage so the toggle survives reloads.
+	let searchAllWorkspaces = $state(loadAllWorkspacesPref());
 	// -1 means "no result armed". The user must press an arrow key (or type a
 	// bare number) before Enter will navigate. See BUG-864.
 	let selectedIdx = $state(-1);
@@ -93,9 +123,9 @@
 		};
 	});
 
-	function buildFilters(offset = 0): SearchFilters {
+	function buildFilters(offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
-			workspace: workspaceStore.current?.slug,
+			workspace: wsSlug ?? workspaceStore.current?.slug,
 			limit: PAGE_SIZE,
 			offset
 		};
@@ -104,9 +134,73 @@
 		return filters;
 	}
 
+	/**
+	 * Materialize a localSearch `{ id, score }[]` hit list into the
+	 * SearchResult shape consumed by the palette template. Drops hits
+	 * whose row has fallen out of `localIndex` (stale rebuild race) and
+	 * tags each result with its source workspace so cross-workspace
+	 * navigation works. TASK-1365.
+	 */
+	function materializeLocalHits(
+		wsSlug: string,
+		ownerUsername: string,
+		hits: { id: string; score: number }[],
+	): AugmentedSearchResult[] {
+		const out: AugmentedSearchResult[] = [];
+		for (const h of hits) {
+			const row = localIndex.findByIdOrSlug(wsSlug, h.id);
+			if (!row) continue;
+			// `Item` widens `ItemIndexRow` by adding `content` (always ''
+			// since the local index doesn't carry the rich-text body).
+			// The CommandPalette only reads title/fields/ref/etc., so an
+			// empty content body is fine — and matches the same widening
+			// pattern the collection page uses at TASK-1357.
+			const item: Item = { ...(row as ItemIndexRow), content: '' } as Item;
+			out.push({
+				item,
+				snippet: '',
+				rank: h.score,
+				workspace: { slug: wsSlug, owner_username: ownerUsername },
+			});
+		}
+		return out;
+	}
+
+	/**
+	 * Identify the workspaces eligible for in-RAM local search:
+	 *   - Always the current workspace if it's `'ready'`.
+	 *   - When `searchAllWorkspaces` is on, every other workspace whose
+	 *     `localIndex.bootstrapStateFor` is `'ready'`.
+	 *
+	 * Non-ready workspaces are NOT included here — they don't have a
+	 * MiniSearch index built yet, and triggering bootstrap from the
+	 * search palette would be surprising. They fall back to server
+	 * search via the alternate path.
+	 */
+	function readyWorkspaces(): { slug: string; owner_username: string }[] {
+		const out: { slug: string; owner_username: string }[] = [];
+		const current = workspaceStore.current;
+		if (current && localIndex.bootstrapStateFor(current.slug) === 'ready') {
+			out.push({ slug: current.slug, owner_username: current.owner_username ?? '' });
+		}
+		if (!searchAllWorkspaces) return out;
+		for (const ws of workspaceStore.workspaces) {
+			if (current && ws.slug === current.slug) continue;
+			if (localIndex.bootstrapStateFor(ws.slug) !== 'ready') continue;
+			out.push({ slug: ws.slug, owner_username: ws.owner_username ?? '' });
+		}
+		return out;
+	}
+
 	function doSearch() {
+		// Re-read the localSearch epoch for the current workspace so
+		// reactive consumers (this $effect-equivalent inside doSearch)
+		// pick up SSE-driven index mutations. Reading inside the
+		// function is enough — the $effect that calls doSearch will
+		// pick this up via dependency tracking.
 		clearTimeout(searchTimeout);
-		if (!query.trim()) {
+		const trimmed = query.trim();
+		if (!trimmed) {
 			results = [];
 			total = 0;
 			facets = undefined;
@@ -114,27 +208,131 @@
 			loading = false;
 			return;
 		}
-		loading = true;
-		searchTimeout = setTimeout(async () => {
-			try {
-				const resp = await api.search(query, buildFilters(0));
-				// Defensive: some backends / error paths can send `null` for
-				// an absent array. Coalesce so downstream `.length` is safe.
-				results = resp.results ?? [];
-				total = resp.total ?? 0;
-				facets = resp.facets;
-				// BUG-864: do NOT auto-arm the first result. The user must
-				// press an arrow key (or type a bare number + Enter) to
-				// trigger navigation.
-				selectedIdx = -1;
-			} catch {
-				results = [];
-				total = 0;
-				facets = undefined;
-			} finally {
-				loading = false;
-			}
-		}, 200);
+
+		const parsed = parseSearchQuery(trimmed);
+		const ready = readyWorkspaces();
+
+		// Server-only paths:
+		//   - `body:` / `content:` queries — local index doesn't hold
+		//     the rich-text body, server FTS is the only way to grep.
+		//   - No ready workspaces yet (cold session) — fall through to
+		//     the server so the palette still works pre-bootstrap.
+		// In both cases we use a 200ms debounce.
+		if (parsed.body || ready.length === 0) {
+			loading = true;
+			searchTimeout = setTimeout(async () => {
+				try {
+					const serverQuery = parsed.body ? parsed.text || trimmed : trimmed;
+					if (!serverQuery.trim()) {
+						results = [];
+						total = 0;
+						facets = undefined;
+						return;
+					}
+					const resp = await api.search(serverQuery, buildFilters(0));
+					results = resp.results ?? [];
+					total = resp.total ?? 0;
+					facets = resp.facets;
+					selectedIdx = -1;
+				} catch {
+					results = [];
+					total = 0;
+					facets = undefined;
+				} finally {
+					loading = false;
+				}
+			}, 200);
+			return;
+		}
+
+		// Local synchronous path. For each ready workspace, run
+		// localSearch.search and materialize to SearchResult shape.
+		// Merge by score descending — ties broken by `updated_at DESC`
+		// for stability. Cap to PAGE_SIZE for the visible list (the
+		// palette already supports a "load more" affordance, but for
+		// in-RAM local search there's no pagination — we either have
+		// all matching rows or we'll never have more, so disable the
+		// "load more" UX by setting `total = results.length`).
+		const merged: AugmentedSearchResult[] = [];
+		for (const ws of ready) {
+			const hits = localSearch.search(ws.slug, trimmed, {
+				collection: filterCollection ?? undefined,
+				limit: LOCAL_PER_WS_LIMIT,
+			});
+			merged.push(...materializeLocalHits(ws.slug, ws.owner_username, hits));
+		}
+		merged.sort((a, b) => {
+			if (b.rank !== a.rank) return b.rank - a.rank;
+			// Stable tie-break by updated_at DESC then id ASC.
+			const aU = a.item.updated_at ?? '';
+			const bU = b.item.updated_at ?? '';
+			if (aU !== bU) return aU < bU ? 1 : -1;
+			return a.item.id < b.item.id ? -1 : 1;
+		});
+
+		// Apply the status filter chip if active. (Collection filter is
+		// passed through to localSearch.search above.)
+		const filtered = filterStatus
+			? merged.filter((r) => getFieldValue(r.item, 'status') === filterStatus)
+			: merged;
+
+		// `total` is `filtered.length` because we don't paginate local
+		// results; everything's in RAM. Truncate the rendered list to
+		// PAGE_SIZE * 2 so cross-workspace power users still see a
+		// representative top slice.
+		results = filtered.slice(0, PAGE_SIZE * 2);
+		total = filtered.length;
+		// Facets are server-only; clear them on the local path so the
+		// chip row hides cleanly.
+		facets = undefined;
+		selectedIdx = -1;
+		loading = false;
+	}
+
+	// Re-run the search whenever any tracked dependency changes:
+	//   - `query` typed by the user (keystroke or recent-search click)
+	//   - `searchAllWorkspaces` toggle
+	//   - Any ready workspace's localSearch epoch (SSE-driven upserts /
+	//     removes) — without this, an open-palette user wouldn't see
+	//     freshly-created items even though the underlying index
+	//     updated. PLAN-1343 / TASK-1365.
+	//
+	// `doSearch` handles the empty-query case internally by clearing
+	// results — so the effect can fire on every transition (including
+	// "user backspaced to empty") without leaving stale results visible.
+	$effect(() => {
+		if (!uiStore.searchOpen) return;
+		void query;
+		void searchAllWorkspaces;
+		void filterCollection;
+		void filterStatus;
+		void localIndex.bootstrapStateFor(workspaceStore.current?.slug ?? '');
+		for (const ws of workspaceStore.workspaces) {
+			void localSearch.epoch(ws.slug);
+		}
+		doSearch();
+	});
+
+	function loadAllWorkspacesPref(): boolean {
+		try {
+			return localStorage.getItem('pad-search-all-workspaces') === 'true';
+		} catch {
+			return false;
+		}
+	}
+
+	function toggleAllWorkspaces() {
+		searchAllWorkspaces = !searchAllWorkspaces;
+		try {
+			localStorage.setItem(
+				'pad-search-all-workspaces',
+				searchAllWorkspaces ? 'true' : 'false',
+			);
+		} catch {
+			// Storage unavailable (private mode, quota) — silently
+			// degrade; the toggle still works for the session.
+		}
+		// The reactive effect picks up the flip; no explicit re-run.
 	}
 
 	async function loadMore() {
@@ -156,18 +354,18 @@
 	}
 
 	function applyFilter(type: 'collection' | 'status', value: string) {
+		// The reactive search effect re-runs on filterCollection /
+		// filterStatus changes, so no explicit doSearch() needed.
 		if (type === 'collection') {
 			filterCollection = filterCollection === value ? null : value;
 		} else {
 			filterStatus = filterStatus === value ? null : value;
 		}
-		doSearch();
 	}
 
 	function clearFilters() {
 		filterCollection = null;
 		filterStatus = null;
-		doSearch();
 	}
 
 	function scrollSelectedIntoView() {
@@ -230,10 +428,15 @@
 		}
 	}
 
-	function selectResult(r: SearchResult) {
+	function selectResult(r: AugmentedSearchResult) {
 		saveRecentSearch(query.trim());
-		const ws = workspaceStore.current?.slug;
-		const wsUsername = workspaceStore.current?.owner_username;
+		// Local (cross-workspace) hits ship their source workspace on
+		// the result. Server hits don't — they implicitly came from the
+		// current workspace because `buildFilters` scopes the request.
+		// Resolve via fallback so both paths work. TASK-1365.
+		const ws = r.workspace?.slug ?? workspaceStore.current?.slug;
+		const wsUsername =
+			r.workspace?.owner_username ?? workspaceStore.current?.owner_username;
 		const collSlug = r.item.collection_slug;
 		if (ws && wsUsername && collSlug) {
 			goto(`/${wsUsername}/${ws}/${collSlug}/${itemUrlId(r.item)}`);
@@ -242,8 +445,9 @@
 	}
 
 	function useRecentSearch(q: string) {
+		// Assignment alone re-triggers the reactive search effect; the
+		// explicit doSearch() call is no longer needed.
 		query = q;
-		doSearch();
 		requestAnimationFrame(() => inputEl?.focus());
 	}
 
@@ -300,13 +504,27 @@
 		}
 	}
 
-	function renderResultCard(r: SearchResult, i: number): { ref: string | null; status: string | undefined; priority: string | undefined } {
+	function renderResultCard(r: AugmentedSearchResult, i: number): { ref: string | null; status: string | undefined; priority: string | undefined } {
+		void i;
 		return {
 			ref: formatItemRef(r.item),
 			status: getFieldValue(r.item, 'status'),
 			priority: getFieldValue(r.item, 'priority')
 		};
 	}
+
+	// Derived: ready workspaces other than the current one. Used to gate
+	// the "search all workspaces" toggle visibility — no point showing
+	// it when the user only has the current workspace hydrated.
+	let otherReadyWorkspaceCount = $derived.by(() => {
+		const current = workspaceStore.current?.slug;
+		let n = 0;
+		for (const ws of workspaceStore.workspaces) {
+			if (ws.slug === current) continue;
+			if (localIndex.bootstrapStateFor(ws.slug) === 'ready') n += 1;
+		}
+		return n;
+	});
 </script>
 
 {#if uiStore.searchOpen}
@@ -334,7 +552,6 @@
 				<input
 					bind:this={inputEl}
 					bind:value={query}
-					oninput={doSearch}
 					placeholder="Search items, collections, docs..."
 					class="search-input"
 				/>
@@ -360,6 +577,26 @@
 					</svg>
 				</button>
 			</div>
+
+			<!--
+				"All workspaces" toggle (TASK-1365). Only surfaced when the
+				user has more than one ready workspace — if you only have
+				the current workspace hydrated, the toggle would be a no-op
+				and just adds chrome.
+			-->
+			{#if otherReadyWorkspaceCount > 0}
+				<div class="scope-row">
+					<button
+						class="scope-toggle"
+						class:active={searchAllWorkspaces}
+						onclick={toggleAllWorkspaces}
+						title="When on, search every workspace that's already loaded this session"
+					>
+						<span class="scope-dot" class:on={searchAllWorkspaces}></span>
+						<span>All workspaces ({otherReadyWorkspaceCount + 1} ready)</span>
+					</button>
+				</div>
+			{/if}
 
 			<!-- Filter chips -->
 			{#if facets && query.trim()}
@@ -636,6 +873,48 @@
 		border-radius: 3px;
 		font-family: var(--font-mono);
 		flex-shrink: 0;
+	}
+
+	/* "All workspaces" scope toggle (TASK-1365) */
+	.scope-row {
+		display: flex;
+		align-items: center;
+		padding: var(--space-1) var(--space-3);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.scope-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: 2px 8px;
+		border-radius: var(--radius);
+		font-size: 0.75em;
+		color: var(--text-muted);
+		background: none;
+		border: 1px solid transparent;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+	.scope-toggle:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+	}
+	.scope-toggle.active {
+		color: var(--accent-blue);
+		border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+	}
+	.scope-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		border: 1px solid var(--border);
+	}
+	.scope-dot.on {
+		background: var(--accent-blue);
+		border-color: var(--accent-blue);
 	}
 
 	/* Filter chips */
