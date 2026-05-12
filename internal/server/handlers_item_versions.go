@@ -104,7 +104,10 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Emit event
+	// Emit event. Carry the post-update `seq` so SSE consumers
+	// (PLAN-1343 / TASK-1358 — localIndex.classifySSEEvent) can
+	// detect contiguity vs. gap rather than blindly falling back
+	// to a generic /items-changes refetch.
 	if s.events != nil {
 		s.events.Publish(events.Event{
 			Type:        "item_updated",
@@ -112,6 +115,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			Collection:  item.CollectionSlug,
 			ItemID:      item.ID,
 			Title:       item.Title,
+			Seq:         updated.Seq,
 		})
 	}
 
