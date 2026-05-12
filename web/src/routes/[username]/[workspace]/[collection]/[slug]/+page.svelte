@@ -25,6 +25,7 @@
 	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -534,6 +535,27 @@
 				}
 			: undefined,
 	);
+
+	// Per-item latch — true once the current provider has synced at
+	// least once. Prevents a mid-session `reconnecting` from re-showing
+	// the skeleton over already-rendered content.
+	let hasEverSynced = $state(false);
+
+	// Reset the latch on item navigation. SvelteKit does NOT remount
+	// +page.svelte when only the [slug] dynamic param changes — the
+	// collab $effect swaps providers, but a previous item's
+	// `hasEverSynced=true` would suppress the skeleton on the new
+	// (still-connecting) provider. Reading `item?.id` registers it as
+	// a reactive dep; the void cast silences "unused expression" lint.
+	$effect(() => {
+		void item?.id;
+		hasEverSynced = false;
+	});
+
+	// Flip the latch on the live provider's first sync.
+	$effect(() => {
+		if (collabProvider?.synced) hasEverSynced = true;
+	});
 
 	$effect(() => {
 		if (!collabKey) return;
@@ -1612,7 +1634,7 @@
 </script>
 
 {#if loading}
-	<div class="center-message">Loading...</div>
+	<ContentSkeleton variant="page" />
 {:else if error}
 	<div class="center-message">{error}</div>
 {:else if item && collection}
@@ -2113,17 +2135,21 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#key `${item.id}:true:${forceRefreshNonce}`}
-							<Editor
-								content={editorContent}
-								onUpdate={handleContentUpdate}
-								editable={true}
-								ydoc={ydoc}
-								awareness={collabProvider?.awareness}
-								collabUser={collabUserState}
-								onEditor={(e) => editorInstance = e}
-							/>
-						{/key}
+						{#if collabProvider?.state === 'connecting' && !hasEverSynced}
+							<ContentSkeleton variant="inline" />
+						{:else}
+							{#key `${item.id}:true:${forceRefreshNonce}`}
+								<Editor
+									content={editorContent}
+									onUpdate={handleContentUpdate}
+									editable={true}
+									ydoc={ydoc}
+									awareness={collabProvider?.awareness}
+									collabUser={collabUserState}
+									onEditor={(e) => editorInstance = e}
+								/>
+							{/key}
+						{/if}
 					{/if}
 					{#if canEdit}
 						<EditorBubbleMenu
