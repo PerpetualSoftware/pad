@@ -119,7 +119,7 @@ Playbooks are first-class invokable procedures: workspace-owned, user-editable, 
 
 If the first token isn't a known slug, fall through to the natural-language routing below.
 
-**Recognizing trigger-based intent.** Even when a user doesn't type the slug, you can match by intent. The bootstrap's `playbooks` array carries each playbook's `trigger` (e.g. `on-release`, `on-implement`, `manual`). If the user says "let's do a release," look at playbooks with `trigger=on-release`, find a candidate match by summary/title, and offer to run it:
+**Recognizing trigger-based intent.** Even when a user doesn't type the slug, you can match by intent. The bootstrap's `playbooks` array carries each playbook's `trigger` (e.g. `on-release`, `on-implement`, `manual`). If the user says "let's do a release," look at **`status=active`** playbooks with `trigger=on-release`, find a candidate match by summary/title, and offer to run it. Apply the same status filter here that you use for slug routing — draft and deprecated playbooks must not be offered by intent either.
 
 > *"Sounds like the release playbook (PLAYB-1160 — `/pad release`). It expects a `version` argument (semver, e.g. `0.5.0`). What version are you cutting?"*
 
