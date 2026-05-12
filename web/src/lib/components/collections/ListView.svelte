@@ -37,6 +37,15 @@
 		 * on the resulting mutations, so no security gap here.
 		 */
 		canEdit?: boolean;
+		/**
+		 * When true, the in-group `sort_order` sort is skipped and the
+		 * parent's item order is preserved. Used by the collection page
+		 * to surface localSearch's relevance ranking (exact-ref hoist
+		 * + boost tuning, TASK-1367) — otherwise the per-group sort
+		 * would clobber the rank order whenever two matches share a
+		 * status column.
+		 */
+		preserveOrder?: boolean;
 	}
 
 	let {
@@ -53,7 +62,8 @@
 		oncreate,
 		itemProgress,
 		progressLabel = 'tasks',
-		canEdit = true
+		canEdit = true,
+		preserveOrder = false
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -138,8 +148,13 @@
 				result[value] = [item];
 			}
 		}
-		for (const key of Object.keys(result)) {
-			result[key].sort((a, b) => a.sort_order - b.sort_order);
+		// `preserveOrder` opts out of the in-group sort so a parent that
+		// already sorted by relevance (search active) doesn't get its
+		// ranking clobbered when two matches share a column. TASK-1367.
+		if (!preserveOrder) {
+			for (const key of Object.keys(result)) {
+				result[key].sort((a, b) => a.sort_order - b.sort_order);
+			}
 		}
 		return result;
 	});
@@ -284,7 +299,12 @@
 							type: 'list-item',
 							dropTargetClasses: ['drop-target'],
 							delayTouchStart: touchDragDelayMs,
-							dragDisabled: !canEdit
+							// Disable item DnD whenever the parent has
+							// requested rank-preserving order (search
+							// active) — otherwise a drag would persist
+							// the relevance-ranked subset order as the
+							// stored `sort_order`. TASK-1367 / Codex R5.
+							dragDisabled: !canEdit || preserveOrder
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}

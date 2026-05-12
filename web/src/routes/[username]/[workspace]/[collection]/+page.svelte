@@ -22,7 +22,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -69,12 +69,24 @@
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
 	let searchInputEl = $state<HTMLInputElement>();
-	let searchResultIds = $state<Set<string> | null>(null);
+	// `searchResultRank` is a Map<itemId, rank> where rank is the 0-indexed
+	// position in the ranked result list. `null` means no search active.
+	// Storing the rank (not just IDs) lets `filteredItems` sort matched
+	// rows by relevance so the localSearch exact-ref hoist + boost tuning
+	// from TASK-1367 actually surfaces in the UI — Codex round 2 caught
+	// that a `Set`-only filter let `updated_at DESC` order override the
+	// ranking.
+	let searchResultRank = $state<Map<string, number> | null>(null);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
+
+	// Reactive parse of the current search query — shared with the
+	// search-dispatch effect below so it doesn't reparse per run.
+	// TASK-1367.
+	let parsedSearch = $derived(parseSearchQuery(searchQuery));
 
 	// `items` is now a $derived view over the local-first read model
 	// (localIndex, PLAN-1343 / TASK-1355-1356). The collection page no
@@ -626,13 +638,22 @@
 		}
 
 		// Apply search query. PLAN-1343 Phase 3b: the local path
-		// populates `searchResultIds` synchronously (sub-ms) so the
+		// populates `searchResultRank` synchronously (sub-ms) so the
 		// filter just intersects. The substring fallback below covers
 		// the body:/content: server-FTS path while its 200ms debounce
 		// is in flight — and the very narrow window after a cold
 		// workspace load where indexReady is still false.
-		if (searchQuery.trim() && searchResultIds !== null) {
-			result = result.filter((item) => searchResultIds!.has(item.id));
+		//
+		// Critically: AFTER filtering, sort matched items by rank so
+		// localSearch's exact-ref hoist + boost tuning (TASK-1367)
+		// surfaces in the UI. Otherwise the natural `updated_at DESC`
+		// order from `localIndex.getByCollection` would override the
+		// ranking. Codex round 2 of TASK-1367.
+		if (searchQuery.trim() && searchResultRank !== null) {
+			const rank = searchResultRank;
+			result = result
+				.filter((item) => rank.has(item.id))
+				.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
 		} else if (searchQuery.trim()) {
 			// Fallback to client-side substring scan while the server
 			// FTS response is pending or the local index is mid-bootstrap.
@@ -731,17 +752,6 @@
 		updateUrlFilters();
 	}
 
-	// Prefix routes that opt into the server-side FTS path so the rich-text
-	// body is searchable. `body:` / `content:` prefixes hit `/api/v1/search`
-	// (server FTS over `i.content`) since the in-memory localSearch index
-	// only covers titles + parsed fields by design — content bodies live
-	// on the server (DOC-1342 / TASK-1363). PLAN-1343 Phase 3b.
-	const BODY_SEARCH_PREFIX_RE = /^(?:body|content):\s*/i;
-
-	function stripBodyPrefix(query: string): string {
-		return query.replace(BODY_SEARCH_PREFIX_RE, '').trim();
-	}
-
 	function handleSearchChange(query: string) {
 		// Pure setter — the reactive effect below runs the actual search.
 		// Keeping this small means non-input entry points (URL load via
@@ -767,7 +777,7 @@
 		void showArchived;
 		void indexReady;
 		// Track the localSearch mutation epoch so SSE-driven upserts /
-		// removes refresh `searchResultIds` while a query is active —
+		// removes refresh `searchResultRank` while a query is active —
 		// without this, a row created after the query was typed would
 		// stay hidden (and a row edited out of relevance would stay
 		// visible) until the user retyped. Codex round 3 P2 of TASK-1364.
@@ -780,24 +790,30 @@
 
 		clearTimeout(searchTimeout);
 		if (!trimmed) {
-			searchResultIds = null; // null = no search active
+			searchResultRank = null; // null = no search active
 			return;
 		}
+
+		// Reuse the page-level parsed query so the prefix vocabulary
+		// (`body:`, `coll:`, `is:archived`, `#5`, ref) — TASK-1367 —
+		// drives this effect AND the `items` derived view's archived
+		// inclusion uniformly.
+		const parsed = parsedSearch;
 
 		// `body:` / `content:` prefix — fall through to the server FTS
 		// endpoint, which searches the rich-text body. The local index
 		// does not hold `content` by design (DOC-1342 decision #4), so
 		// this prefix is the only way to grep bodies. A 200ms debounce
 		// keeps the network path hammer-resistant while typing.
-		if (BODY_SEARCH_PREFIX_RE.test(trimmed)) {
-			const bodyQuery = stripBodyPrefix(trimmed);
+		if (parsed.body) {
+			const bodyQuery = parsed.text;
 			if (!bodyQuery) {
-				searchResultIds = null;
+				searchResultRank = null;
 				return;
 			}
 			// Clear stale results immediately so the substring fallback
 			// renders while the network response is pending.
-			searchResultIds = null;
+			searchResultRank = null;
 			const snapshotQuery = trimmed;
 			searchTimeout = setTimeout(async () => {
 				try {
@@ -816,14 +832,16 @@
 					) {
 						return;
 					}
-					searchResultIds = new Set(resp.results.map((r) => r.item.id));
+					searchResultRank = new Map(
+						resp.results.map((r, i) => [r.item.id, i]),
+					);
 				} catch {
 					if (
 						searchQuery.trim() === snapshotQuery &&
 						wsSlug === snapshotWs &&
 						collSlug === snapshotColl
 					) {
-						searchResultIds = null;
+						searchResultRank = null;
 					}
 				}
 			}, 200);
@@ -834,18 +852,22 @@
 		// rows — runs synchronously on every dependency change. PLAN-1343
 		// Phase 3b acceptance: keystroke → first results <50ms P95.
 		// When the index isn't ready yet (very narrow cold-load window),
-		// leave `searchResultIds = null` so the substring fallback in
+		// leave `searchResultRank = null` so the substring fallback in
 		// `filteredItems` kicks in until hydrate completes.
 		if (!indexReady) {
-			searchResultIds = null;
+			searchResultRank = null;
 			return;
 		}
+		// Pass the raw query to localSearch — it owns prefix parsing so
+		// the `coll:` / `is:archived` / `#N` / ref vocabulary works
+		// uniformly across consumers (collection page + CommandPalette,
+		// TASK-1367).
 		const hits = localSearch.search(snapshotWs, trimmed, {
 			collection: snapshotColl,
 			includeArchived: showArchived,
 			limit: 200,
 		});
-		searchResultIds = new Set(hits.map((h) => h.id));
+		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
 
 	async function handleStatusChange(item: Item, newValue: string) {
@@ -1150,7 +1172,7 @@
 		}
 		activeFilters = newFilters;
 		searchQuery = '';
-		searchResultIds = null;
+		searchResultRank = null;
 
 		// Open filters panel if the view has filters
 		if (Object.keys(newFilters).length > 0) {
@@ -1165,7 +1187,7 @@
 		activeViewId = null;
 		activeFilters = {};
 		searchQuery = '';
-		searchResultIds = null;
+		searchResultRank = null;
 		filtersOpen = false;
 		updateUrlFilters();
 	}
@@ -1524,7 +1546,7 @@
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultIds = null; }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}
@@ -1542,6 +1564,7 @@
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}
+				preserveOrder={searchQuery.trim() !== ''}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -1569,6 +1592,7 @@
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}
+				preserveOrder={searchQuery.trim() !== ''}
 			/>
 		{/if}
 	{/if}

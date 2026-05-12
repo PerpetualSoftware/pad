@@ -165,17 +165,22 @@
 	<div class="search-wrapper">
 		<!--
 			Search hits the local in-memory index (titles + parsed fields)
-			for sub-millisecond typing. Prefix with `body:` or `content:`
-			to fall back to server FTS over the rich-text body — that's
-			the only way to grep content, which doesn't live in the
-			client-side index by design (PLAN-1343 / DOC-1342 Phase 3b).
+			for sub-millisecond typing. Prefix vocabulary (TASK-1367):
+			  - `body:foo` / `content:foo` — server FTS over the rich-text
+			    body. The only way to grep content, which doesn't live
+			    in the client-side index by design.
+			  - `#5` / `item:5` — exact item-number lookup.
+			  - `TASK-5` — exact-ref hoist to the top of results.
+			(Use the Show archived toggle for archived rows — a
+			combined `is:archived body:` prefix is intentionally
+			deferred until /search supports it.)
 		-->
 		<input
 			bind:this={searchInputEl}
 			type="text"
 			class="search-input"
 			placeholder="Search {collection.name.toLowerCase()}..."
-			title="Search titles + fields locally. Prefix with `body:` to search content text."
+			title="Search titles + fields locally.&#10;  body:foo  search rich-text body (server)&#10;  #5  exact item number&#10;  TASK-5  exact ref"
 			value={searchQuery}
 			oninput={handleSearchInput}
 			onkeydown={(e) => { if (e.key === 'Escape') { onSearchChange(''); searchInputEl?.blur(); } }}
