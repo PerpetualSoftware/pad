@@ -194,7 +194,7 @@ function createSSEService() {
 	 * environments) skip the leader election and every tab opens
 	 * its own EventSource — N× traffic but correct.
 	 */
-	function requestLeader(workspaceSlug: string) {
+	async function requestLeader(workspaceSlug: string) {
 		if (!leaderElectionSupported()) {
 			// No leader election available. Fall back to per-tab SSE.
 			// BC was also skipped above, so this is the per-tab N×
@@ -202,6 +202,27 @@ function createSSEService() {
 			openEventSource(workspaceSlug);
 			return;
 		}
+		// Query first so we can distinguish "I'm the first leader"
+		// from "I'm a promoted follower." The first leader doesn't
+		// need a sync — the page bootstrap already does one. A
+		// promoted follower DOES need a sync because the freshly-
+		// opened EventSource has no Last-Event-ID and the server
+		// can't replay events emitted during the gap between the old
+		// leader's close and this new connection (Codex P1 round 2
+		// of TASK-1359). `navigator.locks.query` racing with the
+		// lock release is fine — if we mis-classify and fire an
+		// extra sync, that's idempotent + cheap.
+		let promoted = false;
+		try {
+			const snapshot = await navigator.locks.query();
+			const held = (snapshot.held ?? []).some(
+				(l) => l.name === `pad-sse-leader-${workspaceSlug}`,
+			);
+			promoted = held;
+		} catch {
+			/* swallow — query unsupported on some platforms; treat as first */
+		}
+
 		navigator.locks
 			.request(
 				`pad-sse-leader-${workspaceSlug}`,
@@ -213,6 +234,13 @@ function createSSEService() {
 					if (currentWorkspace !== workspaceSlug) return;
 					isLeader = true;
 					openEventSource(workspaceSlug);
+					if (promoted) {
+						// Tell local + peer listeners to backfill —
+						// the gap between the old leader's close
+						// and this new EventSource is unknown.
+						dispatchSyncRequired();
+						broadcast({ type: 'sync_required' });
+					}
 					// Hold the lock until release is signaled (by
 					// disconnect() or a workspace switch). The promise
 					// returned from this callback is what
@@ -228,11 +256,19 @@ function createSSEService() {
 			)
 			.catch(() => {
 				// Lock request can fail in exotic cases (cross-origin
-				// iframe restrictions, etc.). Fall back to a
-				// per-tab EventSource so the user still gets live
-				// updates.
+				// iframe restrictions, etc.). Close BC before falling
+				// back to a per-tab EventSource — otherwise peer tabs
+				// rejected the same way would each open their own SSE
+				// AND keep receiving each other's broadcasts, firing
+				// callbacks N times (Codex P2 round 2). Trigger
+				// sync_required because we may have missed events.
 				if (currentWorkspace === workspaceSlug && !eventSource) {
+					if (bc) {
+						bc.close();
+						bc = null;
+					}
 					openEventSource(workspaceSlug);
+					dispatchSyncRequired();
 				}
 			});
 	}
@@ -262,7 +298,10 @@ function createSSEService() {
 		// while passively receiving via bc. When the leader tab
 		// closes, the lock releases and our queued request fires —
 		// at which point we open our own EventSource.
-		requestLeader(workspaceSlug);
+		// requestLeader is async (it queries the lock state first)
+		// but we don't await it — the .catch() handler covers any
+		// failures and connect() returns synchronously to the caller.
+		void requestLeader(workspaceSlug);
 	}
 
 	function disconnect() {
