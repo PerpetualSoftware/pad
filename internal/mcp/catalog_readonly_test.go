@@ -20,7 +20,7 @@ import (
 func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 	want := map[string]bool{
 		// pad_meta is from TASK-979; the read-only tools are TASK-980;
-		// pad_item is TASK-981.
+		// pad_item is TASK-981; pad_playbook is TASK-1381 (PLAN-1377).
 		"pad_meta":       false,
 		"pad_workspace":  false,
 		"pad_collection": false,
@@ -28,6 +28,7 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 		"pad_role":       false,
 		"pad_search":     false,
 		"pad_item":       false,
+		"pad_playbook":   false,
 	}
 	for _, def := range Catalog {
 		if _, ok := want[def.Name]; ok {
@@ -112,6 +113,12 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
 		{"pad_item", "note"}:          {"item", "note"},
 		{"pad_item", "decide"}:        {"item", "decide"},
+
+		// pad_playbook actions (PLAN-1377 / TASK-1381). All three
+		// passThrough to `pad playbook <subcommand>`.
+		{"pad_playbook", "list"}: {"playbook", "list"},
+		{"pad_playbook", "get"}:  {"playbook", "show"},
+		{"pad_playbook", "run"}:  {"playbook", "run"},
 	}
 
 	// Actions whose dispatch is too custom for the cmdPath bijection —
@@ -225,6 +232,11 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
 		{"pad_item", "note"}:          {"item", "note"},
 		{"pad_item", "decide"}:        {"item", "decide"},
+
+		// pad_playbook actions (PLAN-1377 / TASK-1381).
+		{"pad_playbook", "list"}: {"playbook", "list"},
+		{"pad_playbook", "get"}:  {"playbook", "show"},
+		{"pad_playbook", "run"}:  {"playbook", "run"},
 	}
 
 	// Required-positional fixture: every CLI command in the v0.2
@@ -585,6 +597,24 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item unsplit": {
 				Summary: "unsplit",
 				Args:    mkArgs("child-ref", "parent-ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			// pad_playbook surface (PLAN-1377 / TASK-1381). All three
+			// passThrough to `pad playbook <subcommand>`; the live CLI
+			// adds these in TASK-1382 — the test cmdhelp stub mirrors
+			// them so the bijection assertions still hold here.
+			"playbook list": {
+				Summary: "list playbooks",
+				Flags:   mkFlags("workspace"),
+			},
+			"playbook show": {
+				Summary: "show playbook",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"playbook run": {
+				Summary: "run playbook",
+				Args:    []cmdhelp.Arg{{Name: "ref", Required: true}},
 				Flags:   mkFlags("workspace"),
 			},
 		},

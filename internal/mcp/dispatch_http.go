@@ -863,3 +863,35 @@ func ingestFieldKVP(s string, dst map[string]any) {
 	}
 	dst[key] = val
 }
+
+// mapPlaybookRun handles `pad_playbook.action=run` for the HTTP MCP
+// dispatcher. The MCP catalog declares two payload shapes — `args`
+// (pre-parsed map) and `raw_args` (CLI-style tokens) — so the mapper
+// forwards both, plus the resolved {ref}, into the
+// POST /workspaces/{workspace}/playbooks/{ref}/run body. The server
+// applies the strict CLI parsing rules to raw_args via
+// ParsePlaybookCLIArgs (handlers_playbooks.go).
+//
+// PLAN-1377 / TASK-1381.
+func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required (set --workspace or pad_set_workspace)")
+	}
+	ref, _ := input["ref"].(string)
+	if ref == "" {
+		return "", "", nil, fmt.Errorf("ref is required (invocation_slug, item slug, or issue ref)")
+	}
+	payload := map[string]any{}
+	if args, ok := input["args"]; ok && args != nil {
+		payload["args"] = args
+	}
+	if rawArgs, ok := input["raw_args"]; ok && rawArgs != nil {
+		payload["raw_args"] = rawArgs
+	}
+	enc, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode playbook run body: %w", err)
+	}
+	return http.MethodPost, "/api/v1/workspaces/" + workspace + "/playbooks/" + ref + "/run", enc, nil
+}
