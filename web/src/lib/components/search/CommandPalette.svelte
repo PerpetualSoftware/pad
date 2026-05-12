@@ -229,31 +229,38 @@
 		if (parsed.body || !currentReady || ready.length === 0) {
 			loading = true;
 			// Snapshot the FULL dispatch scope at request time
-			// (Codex round 4 P2): the response is only valid if every
-			// dimension that determines what we render is still the
-			// same. Otherwise an in-flight server result can clobber
-			// local results once `currentReady` flips, or overwrite a
-			// later set with a different filter/query/toggle.
+			// (Codex rounds 4-5 P2): the response is only valid if
+			// every dimension that determines what we render is still
+			// the same. `isSameDispatch` must READ LIVE state for
+			// readiness — capturing `currentReady` at dispatch left
+			// the check stale once the index hydrated mid-request.
 			const snapshotQuery = trimmed;
 			const snapshotAllWs = searchAllWorkspaces;
-			const snapshotCurrentReady = currentReady;
 			const snapshotBody = parsed.body;
 			const snapshotFilterCollection = filterCollection;
 			const snapshotFilterStatus = filterStatus;
 			const snapshotWsSlug = currentSlug;
-			const isSameDispatch = () =>
-				query.trim() === snapshotQuery &&
-				searchAllWorkspaces === snapshotAllWs &&
-				filterCollection === snapshotFilterCollection &&
-				filterStatus === snapshotFilterStatus &&
-				workspaceStore.current?.slug === snapshotWsSlug &&
-				// Non-body server fetches are only valid while the
-				// current workspace is still NOT ready. Once it
-				// hydrates, the local path becomes correct and the
-				// server response is no longer authoritative.
-				(snapshotBody || !snapshotCurrentReady
-					? (snapshotBody || !currentReady)
-					: true);
+			const isSameDispatch = () => {
+				if (query.trim() !== snapshotQuery) return false;
+				if (searchAllWorkspaces !== snapshotAllWs) return false;
+				if (filterCollection !== snapshotFilterCollection) return false;
+				if (filterStatus !== snapshotFilterStatus) return false;
+				if (workspaceStore.current?.slug !== snapshotWsSlug) return false;
+				// Body queries grep content the local index doesn't
+				// hold, so they're authoritative regardless of
+				// hydration state — only the dimensions checked above
+				// can invalidate them.
+				if (snapshotBody) return true;
+				// Non-body server fetches were triggered because the
+				// current workspace wasn't ready. If it's NOW ready,
+				// the local path is the authoritative source and the
+				// server response is stale. Read live state.
+				const liveCurrentReady =
+					!!snapshotWsSlug &&
+					localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
+				if (liveCurrentReady) return false;
+				return true;
+			};
 			searchTimeout = setTimeout(async () => {
 				try {
 					const serverQuery = parsed.body ? parsed.text || trimmed : trimmed;
@@ -387,14 +394,38 @@
 
 	async function loadMore() {
 		if (loadingMore || results.length >= total) return;
+		// Only the server path ever sets `total > results.length` — the
+		// local path pins them equal — so a `loadMore` always means
+		// fetching another server page. The dispatch scope can still
+		// change mid-flight, though: the current workspace can finish
+		// hydrating, the all-workspaces toggle can flip, or the query
+		// / filters can change. Snapshot all of it and bail if any of
+		// these shift before the response lands. Codex round 5 P2.
 		loadingMore = true;
 		const snapshotQuery = query;
+		const snapshotAllWs = searchAllWorkspaces;
 		const snapshotCollection = filterCollection;
 		const snapshotStatus = filterStatus;
+		const snapshotWsSlug = workspaceStore.current?.slug;
 		try {
 			const resp = await api.search(query, buildFilters(results.length));
-			// Discard if query or filters changed while loading
-			if (query !== snapshotQuery || filterCollection !== snapshotCollection || filterStatus !== snapshotStatus) return;
+			if (
+				query !== snapshotQuery ||
+				searchAllWorkspaces !== snapshotAllWs ||
+				filterCollection !== snapshotCollection ||
+				filterStatus !== snapshotStatus ||
+				workspaceStore.current?.slug !== snapshotWsSlug
+			) {
+				return;
+			}
+			// If the current workspace hydrated while the request was
+			// in flight, the main effect has likely already swapped to
+			// the local path and replaced `results`. Appending more
+			// server rows would inject scope-mismatched results.
+			const liveCurrentReady =
+				!!snapshotWsSlug &&
+				localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
+			if (liveCurrentReady) return;
 			results = [...results, ...(resp.results ?? [])];
 		} catch {
 			// ignore
