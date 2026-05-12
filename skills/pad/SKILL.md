@@ -23,18 +23,28 @@ There is **one command**: `/pad <anything>`. You interpret the user's intent and
 
 ## Context Loading
 
-On every `/pad` invocation, start by loading workspace context:
+On every `/pad` invocation, start by loading workspace context with a single call:
 
 ```bash
-pad project dashboard --format json    # Project overview: collections, plans, attention, suggestions
-pad collection list --format json      # Available collections with schemas
-pad item list conventions --field status=active --field trigger=always --format json  # Always-on project conventions
-pad role list --format json            # Agent roles configured in workspace
+pad bootstrap --format json   # one round-trip: workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity
 ```
 
-This tells you: what collections exist, what items are in them, what's active, what needs attention, what project conventions to always follow, and what agent roles are available.
+The returned `AgentBootstrap` blob carries everything the skill needs to start a session:
+
+- `workspace { slug, name, id }` — who you're talking to about
+- `user { name, email, id }` — who's talking
+- `collections [...]` — schemas (drives `pad item create`/`update` field validation)
+- `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
+- `roles [...]` — agent roles configured in the workspace
+- `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
+- `dashboard {...}` — active items, attention, suggested next, recent activity
+- `recent_activity [...]` — capped to the last 24h
 
 If the conventions list includes items, treat them as project rules you must follow. The vocabulary depends on the workspace domain — a software workspace ships rules like "use conventional commit format," a hiring workspace ships rules like "anonymize candidate names in exports," a research workspace ships rules like "always cite sources." Follow whatever the workspace has configured.
+
+### Why one call
+
+Bootstrap replaces the four separate calls the skill used to make (`pad project dashboard`, `pad collection list`, `pad item list conventions ...`, `pad role list`). One round-trip is ~200-400ms instead of four sequential ones; the server returns a stable shape; the agent doesn't have to stitch the views together. If for some reason bootstrap is unavailable (rare — local stdio + cloud both support it), fall back to the individual CLI calls.
 
 ## Role Awareness
 
@@ -71,6 +81,7 @@ Once a role is active, adjust your behavior:
 **Greeting:** When presenting status or responding to queries, lead with the role context:
 - *"Working as 🔨 Implementer. You have 3 items in your queue."*
 - Mention the role board for visual overview: *"See the full role board at the web UI → Roles page, or run `pad server open`."*
+- If the bootstrap's `playbooks` array has any with non-empty `invocation_slug`, surface the user-callable set briefly: *"Playbooks available: `/pad ship`, `/pad release`, `/pad draft-tweet`."* — same shape as the roles greeting, helps users discover what's invokable.
 
 **Querying "what's on my plate" / "what should I work on":**
 ```bash
@@ -95,6 +106,37 @@ Show the role-filtered queue prominently. If the queue is empty, fall back to ge
 
 ### No arguments
 Show project status conversationally. Run `pad project dashboard --format json`, and present the dashboard in a friendly, readable way — highlight what's active, what needs attention, and suggest what to work on next. If a role is active, highlight the role queue first.
+
+### Playbook Invocation (slug routing)
+
+Playbooks are first-class invokable procedures: workspace-owned, user-editable, multi-step workflows that ship in the playbooks collection. They're the answer to "I want to do this same sequence again." Each can declare a kebab-case `invocation_slug` (e.g. `ship`, `release`, `draft-tweet`) that maps directly to `/pad <slug>` in chat.
+
+**Routing rule.** If the first token after `/pad` is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata, dispatch to that playbook:
+
+1. Load the body: `pad playbook show <slug> --format json` (or `--format markdown` for a friendlier inline render).
+2. Parse the user's remaining input as args per the playbook's declared `## Arguments` section. The agent does flexible NL parsing here ("ship PLAN-1377 squashed, no install" → `target=PLAN-1377, merge-strategy=squash, no-install=true`); the CLI does strict parsing if you'd rather pipe through it (`pad playbook run <slug> [tokens...]`).
+3. Execute the steps in the body with those args bound.
+
+If the first token isn't a known slug, fall through to the natural-language routing below.
+
+**Recognizing trigger-based intent.** Even when a user doesn't type the slug, you can match by intent. The bootstrap's `playbooks` array carries each playbook's `trigger` (e.g. `on-release`, `on-implement`, `manual`). If the user says "let's do a release," look at playbooks with `trigger=on-release`, find a candidate match by summary/title, and offer to run it:
+
+> *"Sounds like the release playbook (PLAYB-1160 — `/pad release`). It expects a `version` argument (semver, e.g. `0.5.0`). What version are you cutting?"*
+
+**Argument-binding rules.**
+
+- Required positional args first, in declared order. (CLI requires them; agent should prompt for missing required args rather than failing the call.)
+- `flag` type → presence (e.g. `stop-after-each`).
+- `enum`/`string`/`number` → `key=value` form (`merge-strategy=rebase`, `limit=3`).
+- `ref` → accepts issue IDs (TASK-5) or slugs.
+- Default-from-context (e.g. "current git branch") is the agent's job — the spec leaves these unbound and notes the source so you can compute it.
+
+**Examples.**
+
+- `/pad ship PLAN-1377` → dispatches to the `ship` playbook with `target=PLAN-1377`.
+- `/pad release 0.5.0` → dispatches to `release` with `version=0.5.0`.
+- `/pad draft-tweet TASK-1380 platforms=x,bluesky` → dispatches to `draft-tweet` with `parent=TASK-1380` and a platforms override.
+- `/pad let's discuss IDEA-3` → first token `let's` is not a kebab-case slug, so this falls through to NL routing.
 
 ### Natural Language Routing
 
@@ -182,7 +224,9 @@ Items can carry image and file attachments. They appear in item content as `![al
 
 When you are about to take action, load the relevant conventions and playbooks FIRST. The shape is always the same: match the trigger to the action you're about to take.
 
-**Trigger vocabulary is workspace-defined and differs between conventions and playbooks.** Each template ships its own set — software conventions include `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`, `always`; software playbooks include those plus `on-triage`, `on-release`, `on-review`, `on-deploy`, `manual`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. **Inspect BOTH the Conventions and Playbooks collection schemas** (via `pad collection list --format json`) to see the available triggers for the current workspace before loading by trigger.
+**Bootstrap already gave you the always-on conventions and the full playbooks metadata array.** When the action you're about to take has a specific trigger (e.g. `on-implement` before writing code), pull the trigger-matched conventions on demand — those aren't in the bootstrap to keep its size tight.
+
+**Trigger vocabulary is workspace-defined and differs between conventions and playbooks.** Each template ships its own set — software conventions include `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`, `always`; software playbooks include those plus `on-triage`, `on-release`, `on-review`, `on-deploy`, `manual`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. **The bootstrap's `collections` array carries each schema** — inspect the conventions/playbooks schemas there to see the available triggers for the current workspace.
 
 If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone). Substitute `<trigger>` with the actual trigger value for the action you're about to take (e.g. `on-implement`, `on-candidate-advance`):
 
