@@ -514,6 +514,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
+		writeError(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+
 	// Marshal validated/defaulted fields back
 	validatedFields, err := json.Marshal(fieldMap)
 	if err != nil {
@@ -537,8 +542,13 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			writeError(w, http.StatusConflict, "conflict", "An item with this title already exists")
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			// Could be the slug-per-workspace constraint OR the playbook
+			// invocation_slug partial unique index (TASK-1378). Keep the
+			// message generic so it covers both — the application-layer
+			// pre-check (checkUniqueFields) catches the common case with a
+			// targeted error message; only a true concurrent race lands here.
+			writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
 			return
 		}
 		writeInternalError(w, err)
@@ -708,6 +718,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
+			writeError(w, http.StatusConflict, "conflict", err.Error())
+			return
+		}
+
 		// Auto-populate date fields on status changes
 		autoPopulateDates(fieldMap, item.Fields, schema)
 
@@ -865,6 +880,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					"This editor's view is out of sync with the server; please reload.")
 				return
 			}
+			// Mirror the main UpdateItem path: map UNIQUE constraint /
+			// duplicate key races (e.g. concurrent edits both racing the
+			// invocation_slug partial unique index) to 409 conflict so
+			// they don't surface as misleading 500s.
+			if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+				writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
+				return
+			}
 			writeInternalError(w, err)
 			return
 		}
@@ -935,6 +958,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		updated, err = s.store.UpdateItem(item.ID, input)
 	}
 	if err != nil {
+		// Map UNIQUE constraint races (e.g. concurrent updates that both
+		// pass checkUniqueFields and then both hit the partial unique
+		// index on invocation_slug) to 409 conflict, matching the create
+		// path. Without this, a benign race surfaces as a misleading 500.
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -1081,6 +1112,14 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Item not found or not archived")
+			return
+		}
+		// If restore flips the partial unique index back into play and a
+		// replacement playbook has already claimed the archived item's
+		// invocation_slug, RestoreItem returns a UNIQUE constraint
+		// violation. Map it to 409, matching the create/update paths.
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "conflict", "Cannot restore: another item has claimed this slug or invocation slug")
 			return
 		}
 		writeInternalError(w, err)
@@ -1693,6 +1732,49 @@ func schemaHasField(schema models.CollectionSchema, key string) bool {
 		}
 	}
 	return false
+}
+
+// checkUniqueFields enforces FieldDef.UniqueScope == "workspace_collection"
+// for the given collection. For each schema field with that scope, any
+// non-empty string value in fieldMap is checked against existing items in
+// the same collection; a match returns a conflict error. excludeItemID
+// allows update flows to ignore the item being updated.
+//
+// Only string-typed unique values are supported today (the only consumer is
+// playbooks.invocation_slug). Non-string values are skipped without error.
+func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
+	for _, def := range schema.Fields {
+		if def.UniqueScope != "workspace_collection" {
+			continue
+		}
+		raw, ok := fieldMap[def.Key]
+		if !ok || raw == nil {
+			continue
+		}
+		val, ok := raw.(string)
+		if !ok || val == "" {
+			continue
+		}
+		// IncludeArchived stays false so the application-layer check stays
+		// consistent with the partial unique index's `deleted_at IS NULL`
+		// predicate. A soft-deleted playbook releases its slug back to the
+		// pool; trying to reclaim it should succeed, not 409.
+		existing, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionIDs: []string{collectionID},
+			Fields:        map[string]string{def.Key: val},
+			Limit:         2,
+		})
+		if err != nil {
+			return err
+		}
+		for _, item := range existing {
+			if item.ID == excludeItemID {
+				continue
+			}
+			return fmt.Errorf("field %q value %q is already used by item %s", def.Key, val, item.Slug)
+		}
+	}
+	return nil
 }
 
 func isUUID(s string) bool {

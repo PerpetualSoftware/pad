@@ -243,6 +243,103 @@ func TestValidateFields_MultiSelect(t *testing.T) {
 	}
 }
 
+func TestValidateFields_JSONType(t *testing.T) {
+	schema := models.CollectionSchema{
+		Fields: []models.FieldDef{
+			{Key: "arguments", Label: "Arguments", Type: "json"},
+		},
+	}
+
+	cases := []struct {
+		name    string
+		val     any
+		wantErr bool
+	}{
+		{"array", []any{"a", "b"}, false},
+		{"object", map[string]any{"k": "v"}, false},
+		{"nil", nil, false}, // optional + nil is allowed
+		// Scalars are rejected: a generic web text input would corrupt a
+		// structured field by emitting strings like `"[]"` instead of
+		// arrays. Use "text" / "number" / "checkbox" for scalars.
+		{"string-rejected", "hello", true},
+		{"number-rejected", float64(42), true},
+		{"bool-rejected", true, true},
+		{"struct-not-decoded", struct{ X int }{1}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]any{"arguments": tc.val}
+			err := ValidateFields(fields, schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateFields_PatternMatch(t *testing.T) {
+	schema := models.CollectionSchema{
+		Fields: []models.FieldDef{
+			{
+				Key:     "invocation_slug",
+				Label:   "Invocation slug",
+				Type:    "text",
+				Pattern: `^[a-z0-9][a-z0-9-]*[a-z0-9]$`,
+			},
+		},
+	}
+
+	cases := []struct {
+		name    string
+		val     string
+		wantErr bool
+	}{
+		{"valid-kebab", "ship", false},
+		{"valid-with-digits", "ship-blog-2", false},
+		{"valid-min-two-chars", "ab", false},
+		{"empty-allowed", "", false},
+		{"single-char-rejected", "a", true},
+		{"uppercase", "Ship", true},
+		{"underscore", "ship_blog", true},
+		{"leading-dash", "-ship", true},
+		{"trailing-dash", "ship-", true},
+		{"space", "ship blog", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]any{"invocation_slug": tc.val}
+			err := ValidateFields(fields, schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.val)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error for %q, got: %v", tc.val, err)
+			}
+		})
+	}
+}
+
+func TestValidateFields_InvalidPattern(t *testing.T) {
+	schema := models.CollectionSchema{
+		Fields: []models.FieldDef{
+			{
+				Key:     "field",
+				Label:   "Field",
+				Type:    "text",
+				Pattern: `[unclosed`,
+			},
+		},
+	}
+	fields := map[string]any{"field": "value"}
+	err := ValidateFields(fields, schema)
+	if err == nil {
+		t.Fatal("expected error for invalid schema pattern")
+	}
+}
+
 func TestValidateFields_DefaultsApplied(t *testing.T) {
 	schema := taskSchema()
 	fields := map[string]any{

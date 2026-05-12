@@ -113,6 +113,55 @@ func TestPlaybooksCollectionUsesCallerOptions(t *testing.T) {
 	}
 }
 
+// TestPlaybooksCollectionHasInvocationFields verifies that the playbooks
+// schema seeds the invocation_slug + arguments fields introduced in PLAN-1377.
+// If either is missing, the bootstrap endpoint can't return the metadata that
+// /pad relies on for slug routing.
+func TestPlaybooksCollectionHasInvocationFields(t *testing.T) {
+	c := playbooksCollection(5, SoftwarePlaybookTriggers, SoftwarePlaybookScopes)
+
+	var invocation, arguments *struct {
+		Type        string
+		Pattern     string
+		UniqueScope string
+	}
+	for _, f := range c.Schema.Fields {
+		f := f // pin for pointer capture
+		if f.Key == "invocation_slug" {
+			invocation = &struct {
+				Type        string
+				Pattern     string
+				UniqueScope string
+			}{f.Type, f.Pattern, f.UniqueScope}
+		}
+		if f.Key == "arguments" {
+			arguments = &struct {
+				Type        string
+				Pattern     string
+				UniqueScope string
+			}{f.Type, f.Pattern, f.UniqueScope}
+		}
+	}
+	if invocation == nil {
+		t.Fatal("playbooks schema missing invocation_slug field")
+	}
+	if invocation.Type != "text" {
+		t.Errorf("invocation_slug.Type = %q, want text", invocation.Type)
+	}
+	if invocation.Pattern != PlaybookInvocationSlugPattern {
+		t.Errorf("invocation_slug.Pattern = %q, want %q", invocation.Pattern, PlaybookInvocationSlugPattern)
+	}
+	if invocation.UniqueScope != "workspace_collection" {
+		t.Errorf("invocation_slug.UniqueScope = %q, want workspace_collection", invocation.UniqueScope)
+	}
+	if arguments == nil {
+		t.Fatal("playbooks schema missing arguments field")
+	}
+	if arguments.Type != "json" {
+		t.Errorf("arguments.Type = %q, want json", arguments.Type)
+	}
+}
+
 // TestConventionsCollectionDefensivelyCopiesOptions verifies that the helper
 // does not retain a reference to the caller's slice. This prevents a template
 // package author from accidentally mutating a shared option list.
