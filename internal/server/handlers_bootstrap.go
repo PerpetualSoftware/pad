@@ -137,13 +137,21 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		}
 	}
 
-	// Resolve visibility once so collections/conventions/playbooks all
-	// project the same authorized view. nil visibleIDs means "no
+	// Resolve visibility once so collections/conventions/playbooks/roles
+	// all project the same authorized view. nil visibleIDs means "no
 	// restriction" — a full workspace member (or a nil-r caller that
-	// has already verified access out-of-band).
+	// has already verified access out-of-band). For guests with
+	// item-level grants, we also need ItemIDs filtering so a grant to
+	// one specific playbook doesn't leak the whole collection.
 	var visibleIDs []string
+	var grantedItemIDs []string
+	var fullCollIDs []string
 	if r != nil {
 		visibleIDs, err = s.visibleCollectionIDs(r, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		fullCollIDs, grantedItemIDs, err = s.guestResourceFilter(r, workspaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -167,12 +175,23 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	}
 	out.Collections = collections
 
-	// Conventions — only the always-on, active set, restricted to the
-	// caller's visible conventions collection. trigger-specific
-	// conventions load on demand when their trigger fires.
+	// Build the (collectionIDs, itemIDs) tuple the sub-queries should
+	// project through. When the caller has item-level grants, switch to
+	// the full-coll vs granted-item filter — same shape handleListItems
+	// uses. Without grants, fall back to collection-level visibility.
+	subCollIDs := visibleIDs
+	var subItemIDs []string
+	if len(grantedItemIDs) > 0 {
+		subCollIDs = fullCollIDs
+		subItemIDs = grantedItemIDs
+	}
+
+	// Conventions — only the always-on, active set, restricted by the
+	// caller's authorized view. A guest with a grant to one specific
+	// convention item gets only that item, not the whole always-on set.
 	conventionsCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "conventions")
 	if conventionsCollVisible {
-		convs, cerr := s.collectAlwaysOnConventions(workspaceID)
+		convs, cerr := s.collectAlwaysOnConventions(workspaceID, subCollIDs, subItemIDs)
 		if cerr != nil {
 			return nil, cerr
 		}
@@ -181,8 +200,10 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		out.Conventions = []AgentBootstrapConvention{}
 	}
 
-	// Agent roles — workspace-scoped, not collection-bound. Visible to
-	// any principal admitted into the workspace.
+	// Agent roles — workspace-scoped, not collection-bound. Item counts
+	// MUST be recomputed from the visible item set for restricted
+	// callers so a guest can't infer hidden activity by role. Mirrors
+	// handleListAgentRoles.
 	roles, err := s.store.ListAgentRoles(workspaceID)
 	if err != nil {
 		return nil, err
@@ -190,15 +211,32 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	if roles == nil {
 		roles = []models.AgentRole{}
 	}
+	if visibleIDs != nil {
+		visibleItems, vierr := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionIDs: subCollIDs,
+			ItemIDs:       subItemIDs,
+		})
+		if vierr != nil {
+			return nil, vierr
+		}
+		roleCounts := make(map[string]int)
+		for _, item := range visibleItems {
+			if item.AgentRoleID != nil && *item.AgentRoleID != "" {
+				roleCounts[*item.AgentRoleID]++
+			}
+		}
+		for i := range roles {
+			roles[i].ItemCount = roleCounts[roles[i].ID]
+		}
+	}
 	out.Roles = roles
 
-	// Playbooks (metadata only) — restricted to callers who can see the
-	// playbooks collection. Like conventions, this is a collection-level
-	// gate: if the caller can't see the playbooks collection at all,
-	// they get an empty list.
+	// Playbooks (metadata only) — restricted to the caller's authorized
+	// view. A guest granted one specific playbook item sees that one,
+	// not the whole collection.
 	playbooksCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "playbooks")
 	if playbooksCollVisible {
-		playbooks, perr := s.collectPlaybookMetadata(workspaceID)
+		playbooks, perr := s.collectPlaybookMetadata(workspaceID, subCollIDs, subItemIDs)
 		if perr != nil {
 			return nil, perr
 		}
@@ -230,9 +268,16 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 // collectAlwaysOnConventions returns the active, always-on conventions for
 // a workspace, projected into the bootstrap-friendly shape. Sorted by
 // priority (must > should > nice-to-have) then by ref for stable order.
-func (s *Server) collectAlwaysOnConventions(workspaceID string) ([]AgentBootstrapConvention, error) {
+//
+// collIDs / itemIDs scope the underlying ListItems call: nil collIDs
+// means "no restriction" (full member); non-nil collIDs + non-nil
+// itemIDs is the guest-with-item-grants shape from guestResourceFilter.
+// A guest granted access to a single convention only sees that one.
+func (s *Server) collectAlwaysOnConventions(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapConvention, error) {
 	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
 		CollectionSlug: "conventions",
+		CollectionIDs:  collIDs,
+		ItemIDs:        itemIDs,
 		Fields: map[string]string{
 			"status":  "active",
 			"trigger": "always",
@@ -292,9 +337,16 @@ func conventionPriorityRank(p string) int {
 
 // collectPlaybookMetadata returns every playbook in the workspace projected
 // down to the metadata shape. Bodies are NOT included.
-func (s *Server) collectPlaybookMetadata(workspaceID string) ([]AgentBootstrapPlaybookMeta, error) {
+//
+// collIDs / itemIDs scope the underlying ListItems call: nil collIDs
+// means "no restriction" (full member); non-nil collIDs + non-nil
+// itemIDs is the guest-with-item-grants shape from guestResourceFilter.
+// A guest granted access to a single playbook only sees that one.
+func (s *Server) collectPlaybookMetadata(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapPlaybookMeta, error) {
 	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
 		CollectionSlug: "playbooks",
+		CollectionIDs:  collIDs,
+		ItemIDs:        itemIDs,
 	})
 	if err != nil {
 		return nil, err
