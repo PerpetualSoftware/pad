@@ -541,9 +541,9 @@
 	// re-showing the skeleton over already-rendered content.
 	let hasEverSynced = $state(false);
 
-	// Reset the latch whenever the provider INSTANCE changes — covers
-	// every way a fresh unsynced Y.Doc gets mounted under the same
-	// page component:
+	// Reset latch + null editorInstance whenever the provider INSTANCE
+	// changes — covers every way a fresh unsynced Y.Doc gets mounted
+	// under the same page component:
 	//   1. Item navigation (collabKey derives from item.id; SvelteKit
 	//      reuses +page.svelte across [slug] changes).
 	//   2. Raw → Rich mode toggle (collabKey derives from rawMode).
@@ -556,9 +556,22 @@
 	// fresh-provider sync that already landed in the same tick. Per
 	// CONVE-606 (split route-change-equivalent resets from reactive-
 	// state-sync flips).
+	//
+	// `editorInstance` is nulled alongside the latch because
+	// `onEditor` only fires on mount — it does NOT re-fire with null
+	// on unmount. During the connecting-skeleton window for a same-
+	// item rebuild (rawMode toggle, force_refresh), the old <Editor>
+	// is unmounted but `editorInstance` would otherwise still point
+	// at the previous (destroyed) instance. An `applier_request`
+	// frame arriving on the new provider in that window would then
+	// `setContent` on the wrong editor (or a destroyed one) instead
+	// of falling through to the server's direct-write fallback. The
+	// new editor's mount callback sets `editorInstance` again once
+	// the skeleton phase ends. Per Codex review round 2 of TASK-1375.
 	$effect(() => {
 		void collabProvider;
 		hasEverSynced = false;
+		editorInstance = null;
 	});
 
 	// Flip the latch on the live provider's first sync.
