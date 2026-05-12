@@ -247,6 +247,19 @@ func (c *Client) GetDashboard(wsSlug string) (json.RawMessage, error) {
 	return result, c.get("/workspaces/"+wsSlug+"/dashboard", &result)
 }
 
+// --- Bootstrap ---
+
+// GetAgentBootstrap returns the consolidated bootstrap blob — workspace +
+// user + collections + always-on conventions + roles + playbook metadata +
+// dashboard + recent activity — in one round-trip. Mirrors the HTTP
+// endpoint at /workspaces/{ws}/agent/bootstrap (PLAN-1377 / TASK-1379).
+// The AgentBootstrap type lives in the server package, so the CLI keeps it
+// as raw JSON and delegates parsing to the caller.
+func (c *Client) GetAgentBootstrap(wsSlug string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.get("/workspaces/"+wsSlug+"/agent/bootstrap", &result)
+}
+
 // --- Search ---
 
 // SearchItems performs a cross-workspace search. Pass q, workspace, etc. via params.
