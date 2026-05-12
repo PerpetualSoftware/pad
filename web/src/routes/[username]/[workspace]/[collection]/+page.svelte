@@ -76,6 +76,14 @@
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
 
+	// Reactive parse of the current search query — used to drive both
+	// the `is:archived` inclusion path on the `items` derived view
+	// (without the toggle, typing `is:archived foo` would still get
+	// archived rows filtered out before reaching `searchResultIds`)
+	// AND to share the same prefix parser across the search-dispatch
+	// effect below. Codex round 1 of TASK-1367.
+	let parsedSearch = $derived(parseSearchQuery(searchQuery));
+
 	// `items` is now a $derived view over the local-first read model
 	// (localIndex, PLAN-1343 / TASK-1355-1356). The collection page no
 	// longer calls /items-index on every navigation; bootstrap is
@@ -83,11 +91,15 @@
 	// the `showArchived` toggle at read time — the store holds both
 	// live and archived rows. Widen to `Item` by setting content=''
 	// to match the existing prop type contract for view components;
-	// the detail page rehydrates content on open.
+	// the detail page rehydrates content on open. The `is:archived`
+	// search prefix transiently opts in to archived rows even when
+	// the toggle is off (TASK-1367).
 	let items = $derived<Item[]>(
 		wsSlug && collSlug
 			? localIndex
-					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
+					.getByCollection(wsSlug, collSlug, {
+						includeArchived: showArchived || parsedSearch.archived,
+					})
 					.map((row) => ({ ...row, content: '' }) as Item)
 			: [],
 	);
@@ -773,10 +785,11 @@
 			return;
 		}
 
-		// Parse the query so the centralized prefix vocabulary
+		// Reuse the page-level parsed query so the prefix vocabulary
 		// (`body:`, `coll:`, `is:archived`, `#5`, ref) — TASK-1367 —
-		// drives both paths.
-		const parsed = parseSearchQuery(trimmed);
+		// drives this effect AND the `items` derived view's archived
+		// inclusion uniformly.
+		const parsed = parsedSearch;
 
 		// `body:` / `content:` prefix — fall through to the server FTS
 		// endpoint, which searches the rich-text body. The local index

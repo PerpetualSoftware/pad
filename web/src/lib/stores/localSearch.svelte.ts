@@ -537,9 +537,11 @@ export const localSearch = {
 		const overfetch = limit * 4;
 		// Pass the residual text (post-prefix-strip) to MiniSearch. If
 		// the user typed nothing but prefixes (`coll:tasks` with no
-		// query) `parsed.text` is empty — return empty so we don't
-		// blanket-match every doc.
-		const searchText = parsed.text || query;
+		// query, `is:archived` with no query) return empty — Codex
+		// round 1 of TASK-1367 caught that the prior `parsed.text ||
+		// query` fallback searched the literal `is`/`archived` /
+		// `coll`/`tasks` tokens, which surfaced unrelated rows.
+		const searchText = parsed.text;
 		if (!searchText.trim()) return [];
 
 		const raw = idx.search(searchText) as Array<{
