@@ -2,8 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -148,7 +152,13 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 		Args    map[string]any `json:"args"`
 		RawArgs []string       `json:"raw_args"`
 	}
-	if err := decodeJSON(r, &input); err != nil && err.Error() != "EOF" {
+	// decodeJSON wraps the underlying error as "invalid JSON: ..." so an
+	// EOF check on the wrapped message is unreliable. Use errors.Is on
+	// the unwrapped chain so a zero-length body (which is a legitimate
+	// "no args" call) is accepted regardless of how decodeJSON labels
+	// the wrapper. http.NoBody as well as a closed reader both surface
+	// io.EOF; either is fine to treat as "empty request".
+	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -360,8 +370,13 @@ func ParsePlaybookCLIArgs(args []string, specs []PlaybookArgumentSpec) (map[stri
 			out[tok] = true
 			continue
 		}
-		// Treat as next positional fill.
-		for positionalIdx < len(specs) && (specs[positionalIdx].Type == "flag" || hasValue(out, specs[positionalIdx].Name)) {
+		// Treat as next positional fill. Per the PLAN-1377 contract,
+		// ONLY required args are positional — optional args must be
+		// supplied via key=value. Skip past flag-typed, optional, and
+		// already-bound slots so a bareword token can't accidentally
+		// land on an optional spec that happens to sit before a
+		// required one in the schema.
+		for positionalIdx < len(specs) && (specs[positionalIdx].Type == "flag" || !specs[positionalIdx].Required || hasValue(out, specs[positionalIdx].Name)) {
 			positionalIdx++
 		}
 		if positionalIdx >= len(specs) {
@@ -389,9 +404,15 @@ func hasValue(m map[string]any, key string) bool {
 func coercePlaybookValue(raw string, spec PlaybookArgumentSpec) (any, error) {
 	switch spec.Type {
 	case "number":
-		var f float64
-		if _, err := fmt.Sscanf(raw, "%g", &f); err != nil {
-			return nil, fmt.Errorf("argument %q expects a number; got %q", spec.Name, raw)
+		// strconv.ParseFloat validates the entire token (Sscanf with %g
+		// would accept "1abc" as 1) AND lets us reject NaN/Inf, which
+		// would otherwise blow up json.Marshal later in the request.
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("argument %q expects a finite number; got %q", spec.Name, raw)
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("argument %q must be a finite number; got %q", spec.Name, raw)
 		}
 		return f, nil
 	case "enum":

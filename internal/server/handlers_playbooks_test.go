@@ -238,6 +238,80 @@ func TestParsePlaybookCLIArgsErrors(t *testing.T) {
 	}
 }
 
+// TestPlaybookRunAcceptsEmptyBody verifies that POSTing the run
+// endpoint with no body (or only a {} body) still works for playbooks
+// with no required args — the previous EOF-string check rejected
+// the legitimate no-args call.
+func TestPlaybookRunAcceptsEmptyBody(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":   "No-args playbook",
+		"content": "Just steps",
+		"fields":  `{"status":"active","invocation_slug":"no-args"}`,
+	})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/no-args/run", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("empty-body run: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestParsePlaybookCLIArgsOptionalNotPositional verifies the strict
+// rule that ONLY required args are positional. With an optional arg
+// declared before a required one, a bareword token must skip past
+// the optional and fill the required slot.
+func TestParsePlaybookCLIArgsOptionalNotPositional(t *testing.T) {
+	specs := []PlaybookArgumentSpec{
+		{Name: "merge-strategy", Type: "enum", Enum: []string{"squash", "rebase"}}, // optional, first
+		{Name: "target", Type: "ref", Required: true},                              // required, second
+	}
+	parsed, err := ParsePlaybookCLIArgs([]string{"TASK-7"}, specs)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed["target"] != "TASK-7" {
+		t.Errorf("expected target=TASK-7 (skipping the optional first slot); got %#v", parsed)
+	}
+	if _, ok := parsed["merge-strategy"]; ok {
+		t.Errorf("merge-strategy should not be positionally filled; got %v", parsed["merge-strategy"])
+	}
+}
+
+// TestCoercePlaybookValueNumberRejectsBadInput verifies the number
+// coercion rejects partial tokens, NaN, and Inf — Codex round 1
+// caught Sscanf("%g") accepting "1abc" silently.
+func TestCoercePlaybookValueNumberRejectsBadInput(t *testing.T) {
+	spec := PlaybookArgumentSpec{Name: "limit", Type: "number"}
+
+	good := []struct {
+		in   string
+		want float64
+	}{
+		{"3", 3},
+		{"3.5", 3.5},
+		{"-2", -2},
+	}
+	for _, tc := range good {
+		v, err := coercePlaybookValue(tc.in, spec)
+		if err != nil {
+			t.Errorf("expected %q to parse, got error: %v", tc.in, err)
+			continue
+		}
+		if v != tc.want {
+			t.Errorf("parse %q = %v, want %v", tc.in, v, tc.want)
+		}
+	}
+
+	bad := []string{"1abc", "abc", "", "NaN", "Inf", "-Inf", "+Inf"}
+	for _, in := range bad {
+		if _, err := coercePlaybookValue(in, spec); err == nil {
+			t.Errorf("expected %q to fail parsing, got success", in)
+		}
+	}
+}
+
 // contains is a small test helper.
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
