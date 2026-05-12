@@ -614,8 +614,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 			"playbook run": {
 				Summary: "run playbook",
-				Args:    []cmdhelp.Arg{{Name: "ref", Required: true}},
-				Flags:   mkFlags("workspace"),
+				Args: []cmdhelp.Arg{
+					{Name: "ref", Required: true},
+					{Name: "args", Required: false, Repeatable: true},
+				},
+				Flags: mkFlags("workspace"),
 			},
 		},
 	}

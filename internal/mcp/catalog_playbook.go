@@ -1,5 +1,13 @@
 package mcp
 
+import (
+	"context"
+	"fmt"
+	"sort"
+
+	"github.com/mark3labs/mcp-go/mcp"
+)
+
 // padPlaybookTool exposes the first-class playbook surface from
 // PLAN-1377 / TASK-1381. Three actions mirror the CLI (TASK-1382):
 //
@@ -42,8 +50,11 @@ var padPlaybookTool = ToolDef{
 				Description: "Pre-parsed argument map keyed by the playbook's declared argument names. Use when you've already parsed user intent into discrete values (e.g. an MCP-driven agent). Mutually compatible with raw_args — explicit args take precedence. Optional for action=run.",
 			},
 			{
+				// Note: the catalog builder's param-type recognizer
+				// understands "array<string>" specifically (not the
+				// generic "array"); see catalog.go::paramDefToToolOption.
 				Name:        "raw_args",
-				Type:        "array",
+				Type:        "array<string>",
 				Description: "Raw CLI-style argument tokens (positional values, bareword flag names, key=value pairs). The server applies the strict parsing rules from `pad playbook run`. Use when the agent is forwarding user input verbatim. Optional for action=run.",
 			},
 		},
@@ -51,8 +62,81 @@ var padPlaybookTool = ToolDef{
 	Actions: map[string]ActionFn{
 		"list": passThrough([]string{"playbook", "list"}),
 		"get":  passThrough([]string{"playbook", "show"}),
-		"run":  passThrough([]string{"playbook", "run"}),
+		// run is a custom action — the CLI's `playbook run` takes a
+		// positional ref plus arbitrary trailing tokens (positional /
+		// bareword-flag / key=value), and the MCP tool needs to
+		// translate the structured `args` map + `raw_args` slice into
+		// that token sequence before dispatching. The CLI args are
+		// flatten-and-forwarded so the server-side ParsePlaybookCLIArgs
+		// sees the same shape it would from a real shell.
+		"run": actionPlaybookRun,
 	},
+}
+
+// actionPlaybookRun is the custom dispatch for pad_playbook.action=run.
+// It flattens the MCP's structured `args` map and `raw_args` slice into
+// the CLI's positional/flag/kv token sequence so env.Dispatch's
+// BuildCLIArgs path picks them up as cmdhelp-known positional args of
+// `pad playbook run <ref> [args...]`. Explicit `args` entries win over
+// `raw_args` per the server's merge rules.
+func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	ref, _ := input["ref"].(string)
+	if ref == "" {
+		return mcp.NewToolResultError("pad_playbook.run requires a ref (invocation_slug, item slug, or issue ref)"), nil
+	}
+
+	// Build the trailing positional/kv/flag token list. Sort the map
+	// keys for deterministic order so tests + CLI replay stay stable.
+	var tokens []string
+	if raw, ok := input["raw_args"]; ok {
+		switch v := raw.(type) {
+		case []any:
+			for _, t := range v {
+				if s, ok := t.(string); ok && s != "" {
+					tokens = append(tokens, s)
+				}
+			}
+		case []string:
+			for _, s := range v {
+				if s != "" {
+					tokens = append(tokens, s)
+				}
+			}
+		}
+	}
+	if argsMap, ok := input["args"].(map[string]any); ok {
+		keys := make([]string, 0, len(argsMap))
+		for k := range argsMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := argsMap[k]
+			switch tv := v.(type) {
+			case bool:
+				if tv {
+					tokens = append(tokens, k)
+				}
+			case nil:
+				// Skip — caller signaled "leave unbound"; let the
+				// server's bindPlaybookArgs surface it as unbound.
+			default:
+				tokens = append(tokens, fmt.Sprintf("%s=%v", k, tv))
+			}
+		}
+	}
+
+	// Re-shape the input map so BuildCLIArgs picks up ref as the first
+	// positional and the trailing tokens as variadic-args. cmdhelp
+	// records `args[]` as the variadic slot for `playbook run`.
+	rewired := map[string]any{
+		"ref":  ref,
+		"args": tokens,
+	}
+	if ws, ok := input["workspace"].(string); ok && ws != "" {
+		rewired["workspace"] = ws
+	}
+	return env.Dispatch(ctx, []string{"playbook", "run"}, rewired)
 }
 
 const padPlaybookToolDescription = `Playbooks — first-class invokable procedures (PLAN-1377).

@@ -4153,8 +4153,13 @@ func playbookListCmd() *cobra.Command {
 
 func playbookShowCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <slug|ref>",
+		// Plain <ref> in the Use so cmdhelp/MCP see arg name "ref"
+		// (alternation like <slug|ref> synthesizes the name "value").
+		// The handler accepts invocation_slug / item slug / issue ref —
+		// the Long description spells that out.
+		Use:   "show <ref>",
 		Short: "Show a single playbook's full body and metadata",
+		Long:  "Print a playbook by invocation_slug, item slug, or issue ref. The resolver tries each in turn.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -4188,7 +4193,11 @@ func playbookShowCmd() *cobra.Command {
 
 func playbookRunCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "run <slug|ref> [positional-args...] [bareword-flag...] [key=value...]",
+		// Plain <ref> for cmdhelp arg-name stability; trailing args
+		// (positional values, bareword flags, key=value pairs) are
+		// accepted as variadic and forwarded to the server's strict
+		// parser. The arg-form details live in Long.
+		Use:   "run <ref> [args...]",
 		Short: "Bind args to a playbook's declared spec and return the body + bound args",
 		Long: `Parse the supplied args against the playbook's declared argument spec
 (stored as the 'arguments' field on the item) and return the body with
