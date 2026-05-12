@@ -64,6 +64,91 @@ export interface LocalSearchResult {
 	score: number;
 }
 
+/**
+ * Structured query produced by `parseSearchQuery`. Consumers (collection
+ * page, CommandPalette) destructure to decide what to dispatch:
+ *
+ *   - `body`: true → server FTS path (local index excludes `content`)
+ *   - `collection`: scope the local search to one collection
+ *   - `archived`: include soft-deleted rows
+ *   - `itemNumber`: exact-number lookup (#5 / item:5 / bare digits)
+ *   - `ref`: PREFIX-N pattern detected; the matched doc is hoisted to
+ *     the top of `search()` results
+ *   - `text`: residual query after prefix stripping; pass to `search()`
+ */
+export interface ParsedSearchQuery {
+	text: string;
+	body: boolean;
+	collection?: string;
+	archived: boolean;
+	itemNumber?: number;
+	ref?: string;
+}
+
+const PREFIX_BODY_RE = /^(?:body|content):/i;
+const PREFIX_COLL_RE = /^coll:(.+)$/i;
+const PREFIX_IS_ARCHIVED_RE = /^is:archived$/i;
+const PREFIX_ITEM_NUMBER_RE = /^(?:#|item:)(\d+)$/i;
+const REF_PATTERN_RE = /^([A-Za-z]+)-(\d+)$/;
+
+/**
+ * Parse a free-form search query into structured prefixes + residual
+ * text. Unknown / malformed prefixes pass through as part of `text` so
+ * the user always sees something happen.
+ *
+ * Examples:
+ *   "TASK-5"               → { ref: "TASK-5", text: "TASK-5", ... }
+ *   "#5"                   → { itemNumber: 5, text: "", ... }
+ *   "body:foo"             → { body: true, text: "foo", ... }
+ *   "coll:tasks migrate"   → { collection: "tasks", text: "migrate", ... }
+ *   "is:archived hotfix"   → { archived: true, text: "hotfix", ... }
+ *
+ * Exported so the collection page and CommandPalette share one parser;
+ * also makes the prefix UX testable in isolation.
+ */
+export function parseSearchQuery(raw: string): ParsedSearchQuery {
+	const out: ParsedSearchQuery = { text: '', body: false, archived: false };
+	const tokens = raw.trim().split(/\s+/).filter(Boolean);
+	const residual: string[] = [];
+	for (const tok of tokens) {
+		// body:/content: — strip prefix; any trailing chars (`body:foo`)
+		// become residual text. A bare `body:` keeps the flag and leaves
+		// residual untouched so the user can keep typing.
+		if (PREFIX_BODY_RE.test(tok)) {
+			out.body = true;
+			const rest = tok.slice(tok.indexOf(':') + 1);
+			if (rest) residual.push(rest);
+			continue;
+		}
+		const collMatch = tok.match(PREFIX_COLL_RE);
+		if (collMatch) {
+			out.collection = collMatch[1].toLowerCase();
+			continue;
+		}
+		if (PREFIX_IS_ARCHIVED_RE.test(tok)) {
+			out.archived = true;
+			continue;
+		}
+		const itemMatch = tok.match(PREFIX_ITEM_NUMBER_RE);
+		if (itemMatch) {
+			const n = Number(itemMatch[1]);
+			if (Number.isFinite(n)) out.itemNumber = n;
+			continue;
+		}
+		const refMatch = tok.match(REF_PATTERN_RE);
+		if (refMatch) {
+			// `TASK-5` is BOTH a ref and a searchable token — keep it in
+			// residual so prefix/fuzz matching still works (the user may
+			// have typed it as plain text), and also expose `ref` so
+			// `search()` can hoist the exact match.
+			out.ref = `${refMatch[1].toUpperCase()}-${refMatch[2]}`;
+		}
+		residual.push(tok);
+	}
+	out.text = residual.join(' ');
+	return out;
+}
+
 // ─── MiniSearch config ──────────────────────────────────────────────────────
 //
 // `fields` is the searchable field list; `storeFields` is the set returned
@@ -83,10 +168,28 @@ export interface LocalSearchResult {
 // parens, brackets, etc., so `TASK-5` → ['task', '5'], `foo,bar` →
 // ['foo', 'bar'], `Item (Done)` → ['item', 'done']. Underscore counts
 // as a splitter too so snake_case field keys index as separate tokens.
-// Codex review round 1 caught that the original narrow split missed
-// `foo:bar` / `foo,bar` / `foo(bar)` cases.
+// Codex review round 1 (TASK-1363) caught that the original narrow
+// split missed `foo:bar` / `foo,bar` / `foo(bar)` cases.
 
 const TOKENIZE_RE = /[^\p{L}\p{N}]+/u;
+
+// Per-term fuzz / prefix tuning (TASK-1367 / Phase 3e). Short terms
+// fuzzed against an index of 5,000 rows produce too many low-quality
+// matches — `cat` shouldn't match `bat`/`hat`/`category` via fuzz when
+// the user typed a complete 3-letter word. Empirically:
+//   - len 1: no fuzz, no prefix (single chars match too much noise)
+//   - len 2-3: no fuzz, prefix on (`db` prefix-matches `database`)
+//   - len 4+: fuzz=0.2, prefix on (one-edit typo tolerance kicks in)
+// The cutoffs are conservative — bumping the floor higher costs felt
+// recall; lowering it reintroduces the `cat`→`category` fuzz problem.
+
+function termFuzzy(term: string): number | false {
+	return term.length >= 4 ? 0.2 : false;
+}
+
+function termPrefix(term: string): boolean {
+	return term.length >= 2;
+}
 
 interface IndexedDoc {
 	id: string;
@@ -101,9 +204,13 @@ interface IndexedDoc {
 	// Side-channel metadata used by the filter step in `search()`.
 	// These are NOT indexed (not in the `fields` array), just stored so
 	// we can filter the ranked id list without a second localIndex lookup
-	// per result.
+	// per result. `_ref` / `_item_number` (TASK-1367) carry the
+	// uppercased ref string and numeric item_number to power the
+	// exact-ref short-circuit and `#5`/`item:5` syntax.
 	_collection_slug: string;
 	_deleted: boolean;
+	_ref: string;
+	_item_number: number;
 }
 
 function createMiniSearch(): MiniSearch<IndexedDoc> {
@@ -119,7 +226,7 @@ function createMiniSearch(): MiniSearch<IndexedDoc> {
 			'collection_slug',
 			'fields',
 		],
-		storeFields: ['_collection_slug', '_deleted'],
+		storeFields: ['_collection_slug', '_deleted', '_ref', '_item_number'],
 		tokenize: (text) =>
 			text
 				.toLowerCase()
@@ -127,13 +234,19 @@ function createMiniSearch(): MiniSearch<IndexedDoc> {
 				.filter((t) => t.length > 0),
 		processTerm: (term) => term.toLowerCase(),
 		searchOptions: {
-			prefix: true,
-			fuzzy: 0.2,
+			prefix: termPrefix,
+			fuzzy: termFuzzy,
 			combineWith: 'AND',
+			// Title boost was 3x → 5x (TASK-1367): empirical eyeball test
+			// showed title-vs-tag ties leaving tag-rich rows ahead of
+			// closer title matches. Ref / item_number boost was 2x → 4x
+			// so that a typed prefix-shaped ref query out-scores
+			// incidental field hits even before the exact-ref short-circuit
+			// in `search()` prepends the row.
 			boost: {
-				title: 3,
-				ref: 2,
-				item_number: 2,
+				title: 5,
+				ref: 4,
+				item_number: 4,
 			},
 		},
 	});
@@ -207,6 +320,8 @@ function buildDoc(row: ItemIndexRow): IndexedDoc {
 		fields: flattenFields(row.fields),
 		_collection_slug: row.collection_slug || '',
 		_deleted: !!row.deleted_at,
+		_ref: ref.toUpperCase(),
+		_item_number: row.item_number ?? 0,
 	};
 }
 
@@ -240,6 +355,46 @@ function ensureIndex(ws: string): MiniSearch<IndexedDoc> {
 
 function ssrSafe(): boolean {
 	return typeof window !== 'undefined';
+}
+
+/**
+ * Exact item_number lookup. Used by the `#N` / `item:N` / bare-digit
+ * paths in `search()`. MiniSearch's tokenized search would surface
+ * every doc whose token list contains `N` (and prefix-on widens that
+ * to every `N*` doc) — for item-number intent we want a single doc.
+ *
+ * Walks the stored `_item_number` field via `idx.search` with a
+ * `filter`. Returns at most one result; the caller still applies
+ * collection / archived gates on the way out.
+ */
+function exactItemNumberLookup(
+	idx: MiniSearch<IndexedDoc>,
+	n: number,
+	opts: { limit: number; includeArchived: boolean; wantCollection?: string },
+): LocalSearchResult[] {
+	// `idx.search` with `filter` is the cheapest way to walk every doc
+	// — we pass a query string that always returns the full index
+	// (an empty-token search via `*` isn't supported, so we use the
+	// number as the query AND filter for exact match). This keeps the
+	// cost linear in matching docs rather than full index size.
+	const raw = idx.search(String(n), {
+		filter: (r) => (r as unknown as IndexedDoc)._item_number === n,
+	}) as Array<{
+		id: string;
+		score: number;
+		_collection_slug?: string;
+		_deleted?: boolean;
+	}>;
+	const out: LocalSearchResult[] = [];
+	for (const r of raw) {
+		if (!opts.includeArchived && r._deleted) continue;
+		if (opts.wantCollection && r._collection_slug !== opts.wantCollection) {
+			continue;
+		}
+		out.push({ id: r.id, score: r.score });
+		if (out.length >= opts.limit) break;
+	}
+	return out;
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -346,29 +501,79 @@ export const localSearch = {
 		const idx = indexes.get(ws);
 		if (!idx) return [];
 
+		const parsed = parseSearchQuery(query);
+
 		const limit = opts.limit ?? 50;
-		const includeArchived = opts.includeArchived === true;
-		const wantCollection = opts.collection;
+		// Caller's option wins, but the `is:archived` prefix opts in
+		// implicitly. Parsed prefixes are additive over caller intent.
+		const includeArchived = opts.includeArchived === true || parsed.archived;
+		const wantCollection = opts.collection ?? parsed.collection;
+
+		// Bare-number / explicit item-number queries: short-circuit to an
+		// exact item_number lookup so a typed `5` or `#5` lands the right
+		// row first instead of returning every doc whose token list
+		// contains a `5`. The task explicitly calls this out: "5 alone
+		// shouldn't return everything matching anywhere; require the
+		// prefix (TASK-5) OR explicit #5 / item:5 syntax". We accept all
+		// three: TASK-5, #5/item:5, and bare digits — bare digits get
+		// treated as #N for typing-speed. The result is a single doc (or
+		// empty) which we still post-filter by collection / archived so
+		// the caller's scope is honored.
+		const bareDigit = /^\d+$/.test(query) ? Number(query) : null;
+		const itemNumberQuery =
+			parsed.itemNumber ?? (bareDigit !== null ? bareDigit : null);
+		if (itemNumberQuery !== null && !parsed.text && !parsed.ref) {
+			return exactItemNumberLookup(idx, itemNumberQuery, {
+				limit,
+				includeArchived,
+				wantCollection,
+			});
+		}
 
 		// MiniSearch returns all matching docs sorted by score; we cap
 		// after filtering. Asking for `limit * 4` is a heuristic that
 		// stays cheap even at large workspace sizes — `search()` is
 		// linear in matching-doc count.
 		const overfetch = limit * 4;
-		const raw = idx.search(query) as Array<{
+		// Pass the residual text (post-prefix-strip) to MiniSearch. If
+		// the user typed nothing but prefixes (`coll:tasks` with no
+		// query) `parsed.text` is empty — return empty so we don't
+		// blanket-match every doc.
+		const searchText = parsed.text || query;
+		if (!searchText.trim()) return [];
+
+		const raw = idx.search(searchText) as Array<{
 			id: string;
 			score: number;
 			_collection_slug?: string;
 			_deleted?: boolean;
+			_ref?: string;
+			_item_number?: number;
 		}>;
 
+		// Exact-ref hoist: if the query named a ref (`TASK-5`), pull the
+		// matching doc to the front with a synthetic high score. The
+		// doc may not even be the top MiniSearch hit (a longer title
+		// match against a sibling could outscore it) — exact-ref intent
+		// is unambiguous, so we promote.
+		const wantRef = parsed.ref;
+		let hoisted: LocalSearchResult | null = null;
 		const out: LocalSearchResult[] = [];
 		for (const r of raw) {
 			if (!includeArchived && r._deleted) continue;
 			if (wantCollection && r._collection_slug !== wantCollection) continue;
+			if (wantRef && !hoisted && r._ref === wantRef) {
+				// `score: Infinity` would render as a weird display but
+				// the caller only uses score for relative ordering; use
+				// a synthetic value that beats anything MiniSearch can
+				// produce in practice.
+				hoisted = { id: r.id, score: r.score + 1e6 };
+				continue;
+			}
 			out.push({ id: r.id, score: r.score });
 			if (out.length >= overfetch) break;
 		}
+		if (hoisted) out.unshift(hoisted);
 		if (out.length > limit) out.length = limit;
 		return out;
 	},

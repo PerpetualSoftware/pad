@@ -22,7 +22,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -731,17 +731,6 @@
 		updateUrlFilters();
 	}
 
-	// Prefix routes that opt into the server-side FTS path so the rich-text
-	// body is searchable. `body:` / `content:` prefixes hit `/api/v1/search`
-	// (server FTS over `i.content`) since the in-memory localSearch index
-	// only covers titles + parsed fields by design — content bodies live
-	// on the server (DOC-1342 / TASK-1363). PLAN-1343 Phase 3b.
-	const BODY_SEARCH_PREFIX_RE = /^(?:body|content):\s*/i;
-
-	function stripBodyPrefix(query: string): string {
-		return query.replace(BODY_SEARCH_PREFIX_RE, '').trim();
-	}
-
 	function handleSearchChange(query: string) {
 		// Pure setter — the reactive effect below runs the actual search.
 		// Keeping this small means non-input entry points (URL load via
@@ -784,13 +773,18 @@
 			return;
 		}
 
+		// Parse the query so the centralized prefix vocabulary
+		// (`body:`, `coll:`, `is:archived`, `#5`, ref) — TASK-1367 —
+		// drives both paths.
+		const parsed = parseSearchQuery(trimmed);
+
 		// `body:` / `content:` prefix — fall through to the server FTS
 		// endpoint, which searches the rich-text body. The local index
 		// does not hold `content` by design (DOC-1342 decision #4), so
 		// this prefix is the only way to grep bodies. A 200ms debounce
 		// keeps the network path hammer-resistant while typing.
-		if (BODY_SEARCH_PREFIX_RE.test(trimmed)) {
-			const bodyQuery = stripBodyPrefix(trimmed);
+		if (parsed.body) {
+			const bodyQuery = parsed.text;
 			if (!bodyQuery) {
 				searchResultIds = null;
 				return;
@@ -840,6 +834,10 @@
 			searchResultIds = null;
 			return;
 		}
+		// Pass the raw query to localSearch — it owns prefix parsing so
+		// the `coll:` / `is:archived` / `#N` / ref vocabulary works
+		// uniformly across consumers (collection page + CommandPalette,
+		// TASK-1367).
 		const hits = localSearch.search(snapshotWs, trimmed, {
 			collection: snapshotColl,
 			includeArchived: showArchived,
