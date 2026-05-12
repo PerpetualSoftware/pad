@@ -171,14 +171,16 @@
 			    in the client-side index by design.
 			  - `#5` / `item:5` — exact item-number lookup.
 			  - `TASK-5` — exact-ref hoist to the top of results.
-			  - `is:archived` — include archived rows.
+			(Use the Show archived toggle for archived rows — a
+			combined `is:archived body:` prefix is intentionally
+			deferred until /search supports it.)
 		-->
 		<input
 			bind:this={searchInputEl}
 			type="text"
 			class="search-input"
 			placeholder="Search {collection.name.toLowerCase()}..."
-			title="Search titles + fields locally.&#10;  body:foo  search rich-text body (server)&#10;  #5  exact item number&#10;  TASK-5  exact ref&#10;  is:archived  include archived"
+			title="Search titles + fields locally.&#10;  body:foo  search rich-text body (server)&#10;  #5  exact item number&#10;  TASK-5  exact ref"
 			value={searchQuery}
 			oninput={handleSearchInput}
 			onkeydown={(e) => { if (e.key === 'Escape') { onSearchChange(''); searchInputEl?.blur(); } }}

@@ -83,12 +83,9 @@
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
 
-	// Reactive parse of the current search query — used to drive both
-	// the `is:archived` inclusion path on the `items` derived view
-	// (without the toggle, typing `is:archived foo` would still get
-	// archived rows filtered out before reaching `searchResultRank`)
-	// AND to share the same prefix parser across the search-dispatch
-	// effect below. Codex round 1 of TASK-1367.
+	// Reactive parse of the current search query — shared with the
+	// search-dispatch effect below so it doesn't reparse per run.
+	// TASK-1367.
 	let parsedSearch = $derived(parseSearchQuery(searchQuery));
 
 	// `items` is now a $derived view over the local-first read model
@@ -98,15 +95,11 @@
 	// the `showArchived` toggle at read time — the store holds both
 	// live and archived rows. Widen to `Item` by setting content=''
 	// to match the existing prop type contract for view components;
-	// the detail page rehydrates content on open. The `is:archived`
-	// search prefix transiently opts in to archived rows even when
-	// the toggle is off (TASK-1367).
+	// the detail page rehydrates content on open.
 	let items = $derived<Item[]>(
 		wsSlug && collSlug
 			? localIndex
-					.getByCollection(wsSlug, collSlug, {
-						includeArchived: showArchived || parsedSearch.archived,
-					})
+					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
 					.map((row) => ({ ...row, content: '' }) as Item)
 			: [],
 	);

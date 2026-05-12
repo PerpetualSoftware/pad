@@ -70,24 +70,27 @@ export interface LocalSearchResult {
  *
  *   - `body`: true → server FTS path (local index excludes `content`)
  *   - `collection`: scope the local search to one collection
- *   - `archived`: include soft-deleted rows
  *   - `itemNumber`: exact-number lookup (#5 / item:5 / bare digits)
  *   - `ref`: PREFIX-N pattern detected; the matched doc is hoisted to
  *     the top of `search()` results
  *   - `text`: residual query after prefix stripping; pass to `search()`
+ *
+ * NOTE: an `is:archived` prefix was prototyped but pulled before ship:
+ * the server `/search` endpoint hard-filters `deleted_at IS NULL`, so
+ * combining it with `body:` would silently drop archived hits. The
+ * existing `showArchived` UI toggle is the supported path until the
+ * server endpoint grows `include_archived` support.
  */
 export interface ParsedSearchQuery {
 	text: string;
 	body: boolean;
 	collection?: string;
-	archived: boolean;
 	itemNumber?: number;
 	ref?: string;
 }
 
 const PREFIX_BODY_RE = /^(?:body|content):/i;
 const PREFIX_COLL_RE = /^coll:(.+)$/i;
-const PREFIX_IS_ARCHIVED_RE = /^is:archived$/i;
 const PREFIX_ITEM_NUMBER_RE = /^(?:#|item:)(\d+)$/i;
 const REF_PATTERN_RE = /^([A-Za-z]+)-(\d+)$/;
 
@@ -101,13 +104,12 @@ const REF_PATTERN_RE = /^([A-Za-z]+)-(\d+)$/;
  *   "#5"                   → { itemNumber: 5, text: "", ... }
  *   "body:foo"             → { body: true, text: "foo", ... }
  *   "coll:tasks migrate"   → { collection: "tasks", text: "migrate", ... }
- *   "is:archived hotfix"   → { archived: true, text: "hotfix", ... }
  *
  * Exported so the collection page and CommandPalette share one parser;
  * also makes the prefix UX testable in isolation.
  */
 export function parseSearchQuery(raw: string): ParsedSearchQuery {
-	const out: ParsedSearchQuery = { text: '', body: false, archived: false };
+	const out: ParsedSearchQuery = { text: '', body: false };
 	const tokens = raw.trim().split(/\s+/).filter(Boolean);
 	const residual: string[] = [];
 	for (const tok of tokens) {
@@ -123,10 +125,6 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
 		const collMatch = tok.match(PREFIX_COLL_RE);
 		if (collMatch) {
 			out.collection = collMatch[1].toLowerCase();
-			continue;
-		}
-		if (PREFIX_IS_ARCHIVED_RE.test(tok)) {
-			out.archived = true;
 			continue;
 		}
 		const itemMatch = tok.match(PREFIX_ITEM_NUMBER_RE);
@@ -504,9 +502,7 @@ export const localSearch = {
 		const parsed = parseSearchQuery(query);
 
 		const limit = opts.limit ?? 50;
-		// Caller's option wins, but the `is:archived` prefix opts in
-		// implicitly. Parsed prefixes are additive over caller intent.
-		const includeArchived = opts.includeArchived === true || parsed.archived;
+		const includeArchived = opts.includeArchived === true;
 		const wantCollection = opts.collection ?? parsed.collection;
 
 		// Bare-number / explicit item-number queries: short-circuit to an
