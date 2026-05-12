@@ -35,17 +35,22 @@ var padMetaTool = ToolDef{
 	Name:        "pad_meta",
 	Description: padMetaToolDescription,
 	Schema: ToolSchema{
-		Workspace: false, // server-wide; no workspace context needed
-		Params:    nil,   // only `action` (added by buildToolFromDef)
+		// bootstrap requires workspace context; server-info / version /
+		// tool-surface do not (they read in-memory state only). Marking
+		// Workspace=true here makes the workspace param available to
+		// every action — the action handler decides whether to use it.
+		Workspace: true,
+		Params:    nil,
 	},
 	Actions: map[string]ActionFn{
 		"server-info":  actionMetaServerInfo,
 		"version":      actionMetaVersion,
 		"tool-surface": actionMetaToolSurface,
+		"bootstrap":    actionMetaBootstrap,
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, and the v0.2 tool catalog.
+const padMetaToolDescription = `Server introspection — version, capabilities, the v0.2 tool catalog, and the agent bootstrap blob.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
@@ -57,9 +62,15 @@ Actions:
                   intentionally only enumerates the catalog (the source it can
                   introspect cleanly). For the complete advertised surface, read
                   tools/list directly.
+  bootstrap     — Consolidated agent context-load blob (workspace + user + collections
+                  + always-on conventions + roles + playbook metadata + dashboard +
+                  recent activity). On-demand refresh for agents that didn't get the
+                  resource prefetch, or want a fresh snapshot mid-session after lots
+                  of mutations. Equivalent to pad://workspace/{ws}/bootstrap and to
+                  pad_set_workspace's embedded response.
 
-Use pad_meta when an agent needs to discover server capabilities or generate
-documentation. For runtime task work, use pad_item / pad_workspace / etc.`
+Use pad_meta when an agent needs to discover server capabilities, regenerate context,
+or build documentation. For runtime task work, use pad_item / pad_workspace / etc.`
 
 // actionMetaServerInfo returns the minimal {name, version} pair.
 // Roughly equivalent to what the MCP handshake exposes, but available
@@ -91,6 +102,19 @@ func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*mcp
 		return mcp.NewToolResultErrorf("pad_meta.version: marshal: %s", err.Error()), nil
 	}
 	return mcp.NewToolResultStructured(payload, string(body)), nil
+}
+
+// actionMetaBootstrap dispatches to `pad bootstrap` so MCP callers get
+// the same AgentBootstrap blob the HTTP endpoint, CLI, and resource all
+// return. The dispatcher resolves the session workspace via the standard
+// precedence chain (explicit arg → pad_set_workspace → CWD-linked).
+//
+// This is intentionally a passThrough — keep the canonical builder
+// (Server.BuildAgentBootstrap) the single source of truth for shape,
+// validation, and visibility filtering. The MCP surface contributes
+// only the discovery affordance, not a divergent implementation.
+func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	return env.Dispatch(ctx, []string{"bootstrap"}, input)
 }
 
 // actionMetaToolSurface returns the v0.2 catalog as JSON. Pairs with

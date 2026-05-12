@@ -112,13 +112,14 @@ func TestCatalogWorkspacePrecedence(t *testing.T) {
 // in its tools/list schema. Catches future regressions where someone
 // adds a workspace-scoped tool but forgets to set the flag.
 //
-// pad_meta is the one tool that legitimately omits workspace (it's
-// server-wide); enumerated here to make the omission deliberate
-// rather than accidental.
+// Note (PLAN-1377 / TASK-1380): pad_meta used to be the one tool that
+// legitimately omitted workspace, but the new `bootstrap` action needs
+// workspace context so the tool now exposes the param. server-info /
+// version / tool-surface actions ignore it. The intentionallyServerWide
+// list is empty for now but kept so a future tool that genuinely needs
+// to opt out has a documented home.
 func TestCatalogWorkspaceParamAdvertisedOnAllWorkspaceTools(t *testing.T) {
-	intentionallyServerWide := map[string]bool{
-		"pad_meta": true,
-	}
+	intentionallyServerWide := map[string]bool{}
 	for _, def := range Catalog {
 		t.Run(def.Name, func(t *testing.T) {
 			tool := buildToolFromDef(def)

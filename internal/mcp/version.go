@@ -52,16 +52,26 @@ const CmdhelpVersion = "0.1"
 //     3-stage rollout; never bumped during rollout because the
 //     user-visible surface was a transitional mix of v0.1 walker
 //     output + the partial v0.2 catalog.
-//   - "0.2" — current. Hand-curated resource × action catalog (PLAN-969,
-//     TASK-981). The cmdhelp leaf walker is retired; tools/list
+//   - "0.2" — historical. Hand-curated resource × action catalog
+//     (PLAN-969, TASK-981). The cmdhelp leaf walker retired; tools/list
 //     advertises only the catalog (~7 tools + pad_set_workspace).
+//   - "0.3" — current. PLAN-1377 / TASK-1380:
+//   - pad_meta gains an action: bootstrap that returns the
+//     AgentBootstrap blob (and pad_meta.Schema.Workspace flipped
+//     to true so the workspace param is available to that action).
+//   - pad_set_workspace's response shape extends from
+//     {workspace, status} to {workspace, status, bootstrap?} —
+//     the embedded blob lets one call hand the agent full session
+//     context. Purely additive; older clients that ignore unknown
+//     keys keep working.
+//   - pad://workspace/{ws}/bootstrap resource added.
 //
 // Discovery surfaces:
 //
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.2"
+const ToolSurfaceVersion = "0.3"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
