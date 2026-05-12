@@ -81,7 +81,7 @@ Once a role is active, adjust your behavior:
 **Greeting:** When presenting status or responding to queries, lead with the role context:
 - *"Working as 🔨 Implementer. You have 3 items in your queue."*
 - Mention the role board for visual overview: *"See the full role board at the web UI → Roles page, or run `pad server open`."*
-- If the bootstrap's `playbooks` array has any with non-empty `invocation_slug`, surface the user-callable set briefly: *"Playbooks available: `/pad ship`, `/pad release`, `/pad draft-tweet`."* — same shape as the roles greeting, helps users discover what's invokable.
+- If the bootstrap's `playbooks` array has any **`status=active`** entries with a non-empty `invocation_slug`, surface the user-callable set briefly: *"Playbooks available: `/pad ship`, `/pad release`, `/pad draft-tweet`."* — same shape as the roles greeting, helps users discover what's invokable. Skip `status=draft` or `status=deprecated` entries even if they carry a slug.
 
 **Querying "what's on my plate" / "what should I work on":**
 ```bash
@@ -111,7 +111,7 @@ Show project status conversationally. Run `pad project dashboard --format json`,
 
 Playbooks are first-class invokable procedures: workspace-owned, user-editable, multi-step workflows that ship in the playbooks collection. They're the answer to "I want to do this same sequence again." Each can declare a kebab-case `invocation_slug` (e.g. `ship`, `release`, `draft-tweet`) that maps directly to `/pad <slug>` in chat.
 
-**Routing rule.** If the first token after `/pad` is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata, dispatch to that playbook:
+**Routing rule.** If the first token after `/pad` is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata **AND that entry's `status` is `active`**, dispatch to that playbook. Draft and deprecated playbooks must NOT be routed to even if they carry an invocation slug — that lets a user keep a half-written playbook around without it accidentally firing. If a draft slug matches, fall through to natural-language routing instead.
 
 1. Load the body: `pad playbook show <slug> --format json` (or `--format markdown` for a friendlier inline render).
 2. Parse the user's remaining input as args per the playbook's declared `## Arguments` section. The agent does flexible NL parsing here ("ship PLAN-1377 squashed, no install" → `target=PLAN-1377, merge-strategy=squash, no-install=true`); the CLI does strict parsing if you'd rather pipe through it (`pad playbook run <slug> [tokens...]`).
