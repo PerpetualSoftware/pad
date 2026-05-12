@@ -67,6 +67,92 @@ class PadApiError extends Error {
 	}
 }
 
+/**
+ * `AccessRevokedScope` describes WHAT the 403 response was for so the
+ * registered handler can purge the right slice of the local cache.
+ * Per DOC-1342 design decision #3: the local cache is "what you could
+ * see last time you synced" — a 403 mid-session means access was
+ * revoked, and the offending entry should drop.
+ *
+ *   - `item`: a 403 on `/workspaces/{ws}/items/{idOrSlug}`. The
+ *      handler resolves the id-or-slug against the local index and
+ *      removes the matching row.
+ *   - `collection`: a 403 on `/workspaces/{ws}/collections/{coll}/items`
+ *      (or similar collection-scoped endpoint). The handler removes
+ *      every row in that collection.
+ */
+export type AccessRevokedScope =
+	| { kind: 'item'; workspace: string; idOrSlug: string }
+	| { kind: 'collection'; workspace: string; collection: string };
+
+type AccessRevokedHandler = (scope: AccessRevokedScope) => void;
+
+let accessRevokedHandler: AccessRevokedHandler | null = null;
+
+/**
+ * Register a single callback fired when the API client sees a 403
+ * Forbidden response on a workspace-scoped item or collection
+ * endpoint. The app calls this once at startup (typically from
+ * +layout.svelte) to wire `localIndex` purges into the API error
+ * path without forming a client.ts → store circular dependency.
+ *
+ * Calling this multiple times replaces the previous handler.
+ * Handler failures are caught and logged; the 403 still propagates
+ * to the caller as a `PadApiError`.
+ */
+export function setAccessRevokedHandler(handler: AccessRevokedHandler | null): void {
+	accessRevokedHandler = handler;
+}
+
+/**
+ * Parse a workspace-scoped URL path and infer the purge scope. Returns
+ * null if the URL doesn't match a known item / collection-items
+ * shape. Pure / non-throwing.
+ */
+function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
+	// Strip the BASE prefix and any leading slash.
+	let stripped = path.startsWith(BASE) ? path.slice(BASE.length) : path;
+	const qIdx = stripped.indexOf('?');
+	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
+	if (stripped.startsWith('/')) stripped = stripped.slice(1);
+	const parts = stripped.split('/');
+	// workspaces / {ws} / collections / {coll} / items[/...]
+	if (
+		parts.length >= 5 &&
+		parts[0] === 'workspaces' &&
+		parts[2] === 'collections' &&
+		parts[4] === 'items'
+	) {
+		return { kind: 'collection', workspace: parts[1], collection: parts[3] };
+	}
+	// workspaces / {ws} / items / {idOrSlug}[/...]
+	if (
+		parts.length >= 4 &&
+		parts[0] === 'workspaces' &&
+		parts[2] === 'items'
+	) {
+		return { kind: 'item', workspace: parts[1], idOrSlug: parts[3] };
+	}
+	return null;
+}
+
+/**
+ * Fire the registered access-revoked handler for a 403 response. The
+ * handler is called best-effort — its failures are swallowed so the
+ * caller still sees a clean PadApiError. Public for testing.
+ */
+function notifyAccessRevoked(path: string): void {
+	if (!accessRevokedHandler) return;
+	const scope = parseAccessRevokedScope(path);
+	if (!scope) return;
+	try {
+		accessRevokedHandler(scope);
+	} catch (err) {
+		// eslint-disable-next-line no-console
+		console.warn('access-revoked handler threw', err);
+	}
+}
+
 function getCSRFToken(): string | null {
 	if (typeof document === 'undefined') return null;
 	// Check __Host- prefixed cookie first (secure/TLS mode), fall back to unprefixed
@@ -97,6 +183,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 			window.location.href = '/login';
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+	}
+	if (resp.status === 403) {
+		// Signal the registered access-revoked handler BEFORE
+		// throwing, so the local cache purges its stale entry as
+		// part of the same error path (DOC-1342 decision #3, TASK-1360).
+		// The handler is best-effort and never throws into the API
+		// client.
+		notifyAccessRevoked(path);
 	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);

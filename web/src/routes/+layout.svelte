@@ -7,6 +7,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { setAccessRevokedHandler } from '$lib/api/client';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
@@ -32,6 +34,23 @@
 	);
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
+
+	// Register the 403-purge handler ONCE at app bootstrap (PLAN-1343
+	// / TASK-1360). The API client's request() path invokes this on
+	// 403 for workspace-scoped item / collection-items endpoints; we
+	// route the signal into localIndex so stale-by-permission rows
+	// drop out of the in-RAM + IDB cache as part of the same error
+	// path that surfaces the PadApiError to the caller. Registration
+	// lives here instead of inside client.ts to keep client.ts free
+	// of a store import that would create a circular dep.
+	setAccessRevokedHandler((scope) => {
+		if (scope.kind === 'item') {
+			const row = localIndex.findByIdOrSlug(scope.workspace, scope.idOrSlug);
+			if (row) localIndex.remove(scope.workspace, row.id);
+		} else {
+			localIndex.removeByCollection(scope.workspace, scope.collection);
+		}
+	});
 
 	onMount(async () => {
 		// Initialize theme
