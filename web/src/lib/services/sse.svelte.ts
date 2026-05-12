@@ -96,8 +96,19 @@ function createSSEService() {
 		}
 	}
 
+	function leaderElectionSupported(): boolean {
+		return typeof navigator !== 'undefined' && 'locks' in navigator;
+	}
+
 	function openBroadcastChannel(workspaceSlug: string) {
 		if (typeof BroadcastChannel === 'undefined') return;
+		// BroadcastChannel is only safe when paired with leader
+		// election. Without `navigator.locks`, every tab opens its
+		// own EventSource AND would receive its peers' broadcasts —
+		// firing item callbacks N times across N tabs (Codex P1 of
+		// TASK-1359). Skip BC entirely in that fallback regime; the
+		// per-tab EventSource still delivers the events locally.
+		if (!leaderElectionSupported()) return;
 		bc = new BroadcastChannel(`pad-sync-${workspaceSlug}`);
 		bc.onmessage = (msg: MessageEvent<BCEnvelope>) => {
 			// Peer-tab path: route messages from the leader to local
@@ -184,8 +195,10 @@ function createSSEService() {
 	 * its own EventSource — N× traffic but correct.
 	 */
 	function requestLeader(workspaceSlug: string) {
-		if (typeof navigator === 'undefined' || !('locks' in navigator)) {
+		if (!leaderElectionSupported()) {
 			// No leader election available. Fall back to per-tab SSE.
+			// BC was also skipped above, so this is the per-tab N×
+			// fallback path — correct, just less efficient.
 			openEventSource(workspaceSlug);
 			return;
 		}
