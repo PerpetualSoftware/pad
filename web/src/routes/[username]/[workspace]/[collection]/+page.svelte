@@ -1564,7 +1564,7 @@
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}
-				preserveOrder={searchResultRank !== null}
+				preserveOrder={searchQuery.trim() !== ''}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -1592,7 +1592,7 @@
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}
-				preserveOrder={searchResultRank !== null}
+				preserveOrder={searchQuery.trim() !== ''}
 			/>
 		{/if}
 	{/if}
