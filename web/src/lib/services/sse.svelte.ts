@@ -132,6 +132,15 @@ function createSSEService() {
 		};
 	}
 
+	// `pendingSyncOnConnect` defers a `sync_required` dispatch until
+	// the new EventSource is actually subscribed server-side
+	// (onopen / `connected` event). Without this gate, the promoted/
+	// fallback paths fire dispatchSyncRequired BEFORE the SSE
+	// connection lands, so any mutation between the resulting
+	// /items-changes snapshot and the new stream's first received
+	// event can be missed (Codex P1 round 4 of TASK-1359).
+	let pendingSyncOnConnect = false;
+
 	function openEventSource(workspaceSlug: string) {
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
 		eventSource = new EventSource(url);
@@ -139,6 +148,11 @@ function createSSEService() {
 		eventSource.onopen = () => {
 			status = 'connected';
 			broadcast({ type: 'status', status: 'connected' });
+			if (pendingSyncOnConnect) {
+				pendingSyncOnConnect = false;
+				dispatchSyncRequired();
+				broadcast({ type: 'sync_required' });
+			}
 		};
 
 		eventSource.onerror = () => {
@@ -151,6 +165,14 @@ function createSSEService() {
 		eventSource.addEventListener('connected', () => {
 			status = 'connected';
 			broadcast({ type: 'status', status: 'connected' });
+			// Mirror onopen — some platforms fire `connected`
+			// reliably before `onopen` on reconnect, others vice
+			// versa. Whichever fires first claims the pending sync.
+			if (pendingSyncOnConnect) {
+				pendingSyncOnConnect = false;
+				dispatchSyncRequired();
+				broadcast({ type: 'sync_required' });
+			}
 		});
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
@@ -249,14 +271,15 @@ function createSSEService() {
 							: Date.now()) - requestStart;
 					const promoted = queryPromoted || grantDelay > 100;
 					isLeader = true;
-					openEventSource(workspaceSlug);
 					if (promoted) {
-						// Tell local + peer listeners to backfill —
-						// the gap between the old leader's close
-						// and this new EventSource is unknown.
-						dispatchSyncRequired();
-						broadcast({ type: 'sync_required' });
+						// Schedule the sync to fire AFTER the SSE is
+						// connected — otherwise any mutation between
+						// the resulting /items-changes snapshot and
+						// the new stream's first received event would
+						// be missed (Codex P1 round 4).
+						pendingSyncOnConnect = true;
 					}
+					openEventSource(workspaceSlug);
 					// Hold the lock until release is signaled (by
 					// disconnect() or a workspace switch). The promise
 					// returned from this callback is what
@@ -283,8 +306,11 @@ function createSSEService() {
 						bc.close();
 						bc = null;
 					}
+					// Defer sync_required until the EventSource opens
+					// (Codex P1 round 4 of TASK-1359) — same race as
+					// the promotion path.
+					pendingSyncOnConnect = true;
 					openEventSource(workspaceSlug);
-					dispatchSyncRequired();
 				}
 			});
 	}
