@@ -228,26 +228,44 @@
 		// All three use a 200ms debounce on the network call.
 		if (parsed.body || !currentReady || ready.length === 0) {
 			loading = true;
+			// Snapshot the query + scope at dispatch time so a slow
+			// response that lands after the user typed more (or after
+			// the local index hydrated and the path switched to local)
+			// can't clobber the now-current results. Codex round 3 P2.
+			const snapshotQuery = trimmed;
+			const snapshotAllWs = searchAllWorkspaces;
 			searchTimeout = setTimeout(async () => {
 				try {
 					const serverQuery = parsed.body ? parsed.text || trimmed : trimmed;
 					if (!serverQuery.trim()) {
-						results = [];
-						total = 0;
-						facets = undefined;
+						if (query.trim() === snapshotQuery) {
+							results = [];
+							total = 0;
+							facets = undefined;
+						}
 						return;
 					}
 					const resp = await api.search(serverQuery, buildFilters(0));
+					// Stale-response guard: if the query has changed or
+					// the toggle has flipped since dispatch, discard.
+					if (
+						query.trim() !== snapshotQuery ||
+						searchAllWorkspaces !== snapshotAllWs
+					) {
+						return;
+					}
 					results = resp.results ?? [];
 					total = resp.total ?? 0;
 					facets = resp.facets;
 					selectedIdx = -1;
 				} catch {
-					results = [];
-					total = 0;
-					facets = undefined;
+					if (query.trim() === snapshotQuery) {
+						results = [];
+						total = 0;
+						facets = undefined;
+					}
 				} finally {
-					loading = false;
+					if (query.trim() === snapshotQuery) loading = false;
 				}
 			}, 200);
 			return;
@@ -256,16 +274,23 @@
 		// Local synchronous path. For each ready workspace, run
 		// localSearch.search and materialize to SearchResult shape.
 		// Merge by score descending — ties broken by `updated_at DESC`
-		// for stability. Cap to PAGE_SIZE for the visible list (the
-		// palette already supports a "load more" affordance, but for
-		// in-RAM local search there's no pagination — we either have
-		// all matching rows or we'll never have more, so disable the
-		// "load more" UX by setting `total = results.length`).
+		// for stability.
+		//
+		// Per-workspace limit: when a status filter chip is active, we
+		// expand the per-workspace pull so the post-fetch
+		// `filterStatus` filter has enough headroom to find matches
+		// outside the top 20 (Codex round 3 P2). The status filter
+		// isn't an index-aware operation on the local path — it walks
+		// the parsed `fields` blob after materialization — so a tight
+		// per-ws cap could drop valid lower-ranked matches.
+		const perWsLimit = filterStatus
+			? LOCAL_PER_WS_LIMIT * 5
+			: LOCAL_PER_WS_LIMIT;
 		const merged: AugmentedSearchResult[] = [];
 		for (const ws of ready) {
 			const hits = localSearch.search(ws.slug, trimmed, {
 				collection: filterCollection ?? undefined,
-				limit: LOCAL_PER_WS_LIMIT,
+				limit: perWsLimit,
 			});
 			merged.push(...materializeLocalHits(ws.slug, ws.owner_username, hits));
 		}
