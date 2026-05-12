@@ -766,6 +766,12 @@
 	$effect(() => {
 		void showArchived;
 		void indexReady;
+		// Track the localSearch mutation epoch so SSE-driven upserts /
+		// removes refresh `searchResultIds` while a query is active —
+		// without this, a row created after the query was typed would
+		// stay hidden (and a row edited out of relevance would stay
+		// visible) until the user retyped. Codex round 3 P2 of TASK-1364.
+		void localSearch.epoch(wsSlug);
 		const trimmed = searchQuery.trim();
 		// Snapshot the route at effect-run time so a navigation mid-flight
 		// can't let an old response populate the new route.
