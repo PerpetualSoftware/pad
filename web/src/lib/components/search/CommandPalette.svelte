@@ -267,7 +267,20 @@
 			};
 			searchTimeout = setTimeout(async () => {
 				try {
-					const serverQuery = parsed.body ? parsed.text || trimmed : trimmed;
+					// Bare `body:` / `content:` with no following text:
+					// `parsed.text` is empty and we'd otherwise fall back
+					// to the raw query (`body:`) and ship that literal
+					// token to the server. Treat as a no-op until the
+					// user keeps typing. Codex round 9 P3 of TASK-1365.
+					if (parsed.body && !parsed.text) {
+						if (isSameDispatch()) {
+							results = [];
+							total = 0;
+							facets = undefined;
+						}
+						return;
+					}
+					const serverQuery = parsed.body ? parsed.text : trimmed;
 					if (!serverQuery.trim()) {
 						if (isSameDispatch()) {
 							results = [];
@@ -424,8 +437,14 @@
 		const snapshotWsSlug = workspaceStore.current?.slug;
 		// Parse once and use the stripped query for the API call so
 		// `body:foo` → page 2 sends `foo`, not the literal `body:foo`.
+		// A bare `body:` / `content:` with no following text is a
+		// no-op — there's nothing to load a second page of.
 		const parsed = parseSearchQuery(query.trim());
-		const serverQuery = parsed.body ? parsed.text || query.trim() : query;
+		if (parsed.body && !parsed.text) {
+			loadingMore = false;
+			return;
+		}
+		const serverQuery = parsed.body ? parsed.text : query;
 		try {
 			const resp = await api.search(serverQuery, buildFilters(results.length));
 			if (
