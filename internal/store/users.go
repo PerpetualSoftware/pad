@@ -18,7 +18,13 @@ import (
 
 var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 
-const bcryptCost = 12
+// bcryptCost is the cost factor passed to bcrypt.GenerateFromPassword.
+// It is a var (not const) so tests can lower it via SetBcryptCostForTesting
+// — at the production value of 12, bcrypt takes ~3s per call under the
+// race detector and the cumulative cost across the test suite exceeds
+// the CI -race timeout (see BUG-1371). Production code MUST NOT mutate
+// this directly; the only legitimate writer is a test TestMain.
+var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
 const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, last_active_at, created_at, updated_at`
