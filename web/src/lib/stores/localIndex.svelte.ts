@@ -634,6 +634,49 @@ export const localIndex = {
 		persistRemovals(state.userId, ws, [id]).catch(() => undefined);
 	},
 
+	/**
+	 * Bulk-remove every item whose `collection_slug` matches. Used by
+	 * the 403-purge path (TASK-1360) when a collection-level fetch
+	 * returns `forbidden` — the entire collection's grants are now
+	 * gone, so every row from that collection should drop. The
+	 * remaining workspace state (other collections) stays intact.
+	 *
+	 * Idempotent — no-op when the workspace state isn't loaded or no
+	 * rows match.
+	 */
+	removeByCollection(ws: string, collSlug: string): void {
+		const state = workspaces.get(ws);
+		if (!state) return;
+		const ids: string[] = [];
+		for (const row of state.items.values()) {
+			if (row.collection_slug === collSlug) ids.push(row.id);
+		}
+		for (const id of ids) state.items.delete(id);
+		if (ids.length > 0) {
+			persistRemovals(state.userId, ws, ids).catch(() => undefined);
+		}
+	},
+
+	/**
+	 * Look up an item by EITHER id OR slug within a workspace. Used
+	 * by the 403-purge path so a 403 on `/items/{slug}` can resolve
+	 * the slug to the in-RAM id (the SvelteMap is keyed by id) and
+	 * then drop the row. Returns null if no match.
+	 */
+	findByIdOrSlug(ws: string, idOrSlug: string): ItemIndexRow | null {
+		const state = workspaces.get(ws);
+		if (!state) return null;
+		// Try id first (O(1) Map lookup).
+		const byId = state.items.get(idOrSlug);
+		if (byId) return byId;
+		// Fall through to slug (O(n) scan — acceptable for the purge
+		// path; collection-page reads use the id-keyed map).
+		for (const row of state.items.values()) {
+			if (row.slug === idOrSlug) return row;
+		}
+		return null;
+	},
+
 	/** Current cursor for a workspace, or "0" if unhydrated. */
 	cursorFor(ws: string): string {
 		return workspaces.get(ws)?.cursor ?? '0';

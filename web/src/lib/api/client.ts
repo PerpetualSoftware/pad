@@ -67,6 +67,119 @@ class PadApiError extends Error {
 	}
 }
 
+/**
+ * `AccessRevokedScope` describes WHAT the 403 response was for so the
+ * registered handler can purge the right slice of the local cache.
+ * Per DOC-1342 design decision #3: the local cache is "what you could
+ * see last time you synced" — a 403 mid-session means access was
+ * revoked, and the offending entry should drop.
+ *
+ * The scope is the WHOLE WORKSPACE. Pad's server returns 403 from
+ * the workspace-access middleware (see internal/server/middleware_auth.go:
+ * `permission_denied`, `not a member of this workspace`), and item-
+ * level visibility misses return 404. So a 403 on any workspace-scoped
+ * endpoint means access to the workspace is gone — purging a single
+ * item or collection would leave the rest of the cache stale.
+ * Per-item granular purge was attempted in TASK-1360 round 1 and
+ * round 2 (Codex P1 each) — both got the scope wrong; this is the
+ * conservative fix.
+ */
+export type AccessRevokedScope = { kind: 'workspace'; workspace: string };
+
+type AccessRevokedHandler = (scope: AccessRevokedScope) => void;
+
+let accessRevokedHandler: AccessRevokedHandler | null = null;
+
+/**
+ * Register a single callback fired when the API client sees a 403
+ * Forbidden response on a workspace-scoped item or collection
+ * endpoint. The app calls this once at startup (typically from
+ * +layout.svelte) to wire `localIndex` purges into the API error
+ * path without forming a client.ts → store circular dependency.
+ *
+ * Calling this multiple times replaces the previous handler.
+ * Handler failures are caught and logged; the 403 still propagates
+ * to the caller as a `PadApiError`.
+ */
+export function setAccessRevokedHandler(handler: AccessRevokedHandler | null): void {
+	accessRevokedHandler = handler;
+}
+
+/**
+ * Parse a URL path and decide whether a 403 on it indicates that the
+ * caller's READ access to the workspace's item set has been revoked.
+ * Returns null for any path that doesn't qualify — auth, admin,
+ * server health, OR workspace-scoped endpoints whose 403 doesn't
+ * imply workspace-wide read loss (members list, storage usage, etc.
+ * 403 from those for grant-only guests is expected and shouldn't
+ * purge the cache — Codex P1 round 3 of TASK-1360).
+ *
+ * The whitelist is the set of endpoints the local-first read model
+ * actually consumes for items:
+ *
+ *   GET /workspaces/{ws}/items
+ *   GET /workspaces/{ws}/items/{slug}
+ *   GET /workspaces/{ws}/items-index
+ *   GET /workspaces/{ws}/items-changes
+ *   GET /workspaces/{ws}/collections/{coll}/items
+ *
+ * A 403 on any of these means the local cache is stale-by-permission
+ * (membership revoked or item-grant scope shrunk to nothing). A 403
+ * on anything else stays opaque to the local index.
+ */
+function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
+	// Strip the BASE prefix and any leading slash / query string.
+	let stripped = path.startsWith(BASE) ? path.slice(BASE.length) : path;
+	const qIdx = stripped.indexOf('?');
+	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
+	if (stripped.startsWith('/')) stripped = stripped.slice(1);
+	const parts = stripped.split('/');
+	if (parts.length < 3 || parts[0] !== 'workspaces' || !parts[1]) {
+		return null;
+	}
+	const ws = parts[1];
+	const tail = parts[2];
+
+	// /workspaces/{ws}/items-index   |  /workspaces/{ws}/items-changes
+	if (parts.length === 3 && (tail === 'items-index' || tail === 'items-changes')) {
+		return { kind: 'workspace', workspace: ws };
+	}
+	// /workspaces/{ws}/items                 (list)
+	// /workspaces/{ws}/items/{idOrSlug}      (single read — exact, no subroute)
+	if (parts.length === 3 && tail === 'items') {
+		return { kind: 'workspace', workspace: ws };
+	}
+	if (parts.length === 4 && tail === 'items') {
+		return { kind: 'workspace', workspace: ws };
+	}
+	// /workspaces/{ws}/collections/{coll}/items
+	if (
+		parts.length === 5 &&
+		tail === 'collections' &&
+		parts[4] === 'items'
+	) {
+		return { kind: 'workspace', workspace: ws };
+	}
+	return null;
+}
+
+/**
+ * Fire the registered access-revoked handler for a 403 response. The
+ * handler is called best-effort — its failures are swallowed so the
+ * caller still sees a clean PadApiError. Public for testing.
+ */
+function notifyAccessRevoked(path: string): void {
+	if (!accessRevokedHandler) return;
+	const scope = parseAccessRevokedScope(path);
+	if (!scope) return;
+	try {
+		accessRevokedHandler(scope);
+	} catch (err) {
+		// eslint-disable-next-line no-console
+		console.warn('access-revoked handler threw', err);
+	}
+}
+
 function getCSRFToken(): string | null {
 	if (typeof document === 'undefined') return null;
 	// Check __Host- prefixed cookie first (secure/TLS mode), fall back to unprefixed
@@ -97,6 +210,27 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 			window.location.href = '/login';
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+	}
+	if (resp.status === 403) {
+		// Signal the registered access-revoked handler BEFORE
+		// throwing, so the local cache purges its stale entry as
+		// part of the same error path (DOC-1342 decision #3, TASK-1360).
+		// The handler is best-effort and never throws into the API
+		// client.
+		//
+		// Restricted to GET / HEAD requests. A 403 on
+		// POST/PATCH/DELETE usually means "you can READ but not
+		// WRITE this resource" — purging on those would wipe
+		// perfectly accessible cache rows for a read-only user who
+		// tried (and was correctly denied) to create / update /
+		// archive an item (Codex P1 round 1 of TASK-1360). Read 403
+		// is the canonical "visibility revoked" signal.
+		//
+		// `method` is already uppercased above; undefined means GET
+		// (the fetch default).
+		if (method === undefined || method === 'GET' || method === 'HEAD') {
+			notifyAccessRevoked(path);
+		}
 	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);

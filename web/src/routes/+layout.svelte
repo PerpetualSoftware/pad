@@ -7,6 +7,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { setAccessRevokedHandler } from '$lib/api/client';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
@@ -32,6 +34,19 @@
 	);
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
+
+	// Register the 403-purge handler ONCE at app bootstrap (PLAN-1343
+	// / TASK-1360). The API client's request() path invokes this on
+	// GET/HEAD 403 for workspace-scoped endpoints; we drop the
+	// entire workspace cache because Pad's 403 source is the
+	// workspace-access middleware, which means access to the whole
+	// workspace is gone — purging a single row would leave the rest
+	// stale (Codex round 2 of TASK-1360). Registration lives here
+	// instead of inside client.ts to keep client.ts free of a store
+	// import that would create a circular dep.
+	setAccessRevokedHandler((scope) => {
+		localIndex.reset(scope.workspace);
+	});
 
 	onMount(async () => {
 		// Initialize theme
