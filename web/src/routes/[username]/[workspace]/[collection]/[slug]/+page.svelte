@@ -26,6 +26,7 @@
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -578,6 +579,46 @@
 	$effect(() => {
 		if (collabProvider?.synced) hasEverSynced = true;
 	});
+
+	// Stuck-connecting timeout — if the provider stays in
+	// `connecting` for >10s without ever syncing, surface the same
+	// ContentError UI as `offline`. Resets whenever state moves off
+	// `connecting`, hasEverSynced flips true, or the provider is
+	// rebuilt (the cleanup function clears the prior timer).
+	let staleConnecting = $state(false);
+	$effect(() => {
+		if (!collabProvider) return;
+		if (collabProvider.state !== 'connecting' || hasEverSynced) {
+			staleConnecting = false;
+			return;
+		}
+		const t = setTimeout(() => {
+			if (collabProvider?.state === 'connecting' && !hasEverSynced) {
+				staleConnecting = true;
+			}
+		}, 10_000);
+		return () => clearTimeout(t);
+	});
+
+	// Manual recovery for collab offline / stuck-connecting. Mirrors
+	// the server-driven force_refresh dance: refetch items.content,
+	// then bump forceRefreshNonce so the collab $effect tears down
+	// the dead provider and rebuilds against the fresh item. The
+	// existing $effect at line ~559 will null editorInstance and
+	// reset hasEverSynced when the new provider lands.
+	async function retryCollabSync() {
+		if (!item) return;
+		staleConnecting = false;
+		try {
+			const fresh = await api.items.get(wsSlug, item.id);
+			if (item && item.id === fresh.id) item = fresh;
+		} catch (err) {
+			console.warn('retryCollabSync: refetch failed', err);
+			// Keep the error UI visible; user can click retry again.
+			return;
+		}
+		forceRefreshNonce += 1;
+	}
 
 	$effect(() => {
 		if (!collabKey) return;
@@ -1658,7 +1699,11 @@
 {#if loading}
 	<ContentSkeleton variant="page" />
 {:else if error}
-	<div class="center-message">{error}</div>
+	<ContentError
+		title="Could not load item"
+		detail={error}
+		onRetry={loadData}
+	/>
 {:else if item && collection}
 	<!-- Print-only footer (hidden on screen, fixed-positioned in print).
 	     The repeating print-header was removed as part of BUG-626: a
@@ -2157,7 +2202,13 @@
 							/>
 						{/key}
 					{:else if ydoc}
-						{#if collabProvider?.state === 'connecting' && !hasEverSynced}
+						{#if collabProvider?.state === 'offline' || staleConnecting}
+							<ContentError
+								title="Content unavailable"
+								detail="Could not sync with the server. Reload the editor to try again."
+								onRetry={retryCollabSync}
+							/>
+						{:else if collabProvider?.state === 'connecting' && !hasEverSynced}
 							<ContentSkeleton variant="inline" />
 						{:else}
 							{#key `${item.id}:true:${forceRefreshNonce}`}
