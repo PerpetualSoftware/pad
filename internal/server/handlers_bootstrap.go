@@ -91,14 +91,31 @@ type AgentBootstrapPlaybookMeta struct {
 // than this isn't relevant to "what's happening now."
 const recentActivityWindow = 24 * time.Hour
 
+// isCollectionSlugVisible reports whether the named collection survived
+// the visibility filter. Used by the bootstrap path to gate
+// convention/playbook queries on whether the caller can see those
+// collections at all. The slice we're checking is already-filtered, so
+// presence implies visibility.
+func isCollectionSlugVisible(filtered []models.Collection, slug string) bool {
+	for _, c := range filtered {
+		if c.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildAgentBootstrap assembles the bootstrap blob from store queries.
 // This is the single canonical code path; the HTTP handler, the MCP
 // resource handler, and the MCP `pad_set_workspace` embed all call this.
 //
-// r is used for the dashboard sub-build (which depends on guest grant
-// filtering); pass the live request. Pass nil to skip dashboard inclusion
-// — useful for callers that don't have a request context (e.g. the MCP
-// in-process dispatcher could synthesize one but doesn't yet).
+// r is the live request — used for the dashboard sub-build AND to
+// resolve the calling principal's collection visibility / guest grant
+// filter. Pass nil only when no request context is available (e.g. a
+// future MCP in-process dispatcher synthesizing its own ACL context);
+// in that case the bootstrap returns the full workspace view, which is
+// safe ONLY for callers that have already verified full-member access
+// out-of-band. Production HTTP/MCP paths MUST pass the live request.
 func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *http.Request) (*AgentBootstrap, error) {
 	ws, err := s.store.GetWorkspaceByID(workspaceID)
 	if err != nil {
@@ -120,29 +137,52 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		}
 	}
 
-	// Collections — keep the same shape ListCollections returns. The agent
-	// uses these to know what's available in the workspace and dispatch
-	// pad item commands by collection slug.
+	// Resolve visibility once so collections/conventions/playbooks all
+	// project the same authorized view. nil visibleIDs means "no
+	// restriction" — a full workspace member (or a nil-r caller that
+	// has already verified access out-of-band).
+	var visibleIDs []string
+	if r != nil {
+		visibleIDs, err = s.visibleCollectionIDs(r, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Collections — keep the same shape ListCollections returns, filtered
+	// by visibility so a guest only sees collections they're permitted
+	// into. Mirrors handleListCollections.
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
 		return nil, err
 	}
+	if visibleIDs != nil {
+		filtered := make([]models.Collection, 0, len(collections))
+		for _, c := range collections {
+			if isCollectionVisible(c.ID, visibleIDs) {
+				filtered = append(filtered, c)
+			}
+		}
+		collections = filtered
+	}
 	out.Collections = collections
 
-	// Conventions — only the always-on, active set. trigger-specific
-	// conventions load on demand when their trigger fires (e.g. an
-	// `on-implement` convention is read just-in-time before code-edit
-	// work). Including only the must-follow always-on set keeps the
-	// bootstrap small without losing the rules the agent MUST know up
-	// front.
-	convs, err := s.collectAlwaysOnConventions(workspaceID)
-	if err != nil {
-		return nil, err
+	// Conventions — only the always-on, active set, restricted to the
+	// caller's visible conventions collection. trigger-specific
+	// conventions load on demand when their trigger fires.
+	conventionsCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "conventions")
+	if conventionsCollVisible {
+		convs, cerr := s.collectAlwaysOnConventions(workspaceID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		out.Conventions = convs
+	} else {
+		out.Conventions = []AgentBootstrapConvention{}
 	}
-	out.Conventions = convs
 
-	// Agent roles — workspace-scoped role definitions so the agent can
-	// pick the right role for a given task without an extra lookup.
+	// Agent roles — workspace-scoped, not collection-bound. Visible to
+	// any principal admitted into the workspace.
 	roles, err := s.store.ListAgentRoles(workspaceID)
 	if err != nil {
 		return nil, err
@@ -152,15 +192,20 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	}
 	out.Roles = roles
 
-	// Playbooks (metadata only) — the agent uses this list to (a) route
-	// /pad <slug> invocations and (b) recognize trigger-based auto-load
-	// candidates by intent (e.g. "let's cut a release" → match a playbook
-	// whose trigger is on-release).
-	playbooks, err := s.collectPlaybookMetadata(workspaceID)
-	if err != nil {
-		return nil, err
+	// Playbooks (metadata only) — restricted to callers who can see the
+	// playbooks collection. Like conventions, this is a collection-level
+	// gate: if the caller can't see the playbooks collection at all,
+	// they get an empty list.
+	playbooksCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "playbooks")
+	if playbooksCollVisible {
+		playbooks, perr := s.collectPlaybookMetadata(workspaceID)
+		if perr != nil {
+			return nil, perr
+		}
+		out.Playbooks = playbooks
+	} else {
+		out.Playbooks = []AgentBootstrapPlaybookMeta{}
 	}
-	out.Playbooks = playbooks
 
 	// Dashboard — recreate via the existing handler logic if a request
 	// context is available. The shape is identical to `GET /dashboard`
