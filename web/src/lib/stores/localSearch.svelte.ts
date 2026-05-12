@@ -43,6 +43,7 @@
 // stop words). TASK-1364 and TASK-1365 wire consumers.
 
 import MiniSearch from 'minisearch';
+import { SvelteMap } from 'svelte/reactivity';
 import type { ItemIndexRow } from '$lib/types';
 import { parseFields } from '$lib/types';
 
@@ -213,6 +214,21 @@ function buildDoc(row: ItemIndexRow): IndexedDoc {
 
 const indexes = new Map<string, MiniSearch<IndexedDoc>>();
 
+// `epochs` is a reactive per-workspace counter bumped on every index
+// mutation. Consumers (collection page, CommandPalette) read it inside
+// a Svelte 5 `$effect` to re-derive `searchResultIds` automatically
+// when the underlying index changes — without this, an SSE-driven
+// `localIndex.upsert` would update the canonical row list but the
+// search filter Set would go stale and a freshly-matching item could
+// stay hidden, or an edited item that no longer matches could stay
+// visible until the user retyped the query (Codex round 3 P2 of
+// TASK-1364). Reactive `SvelteMap` so per-workspace reads are tracked.
+const epochs = new SvelteMap<string, number>();
+
+function bumpEpoch(ws: string): void {
+	epochs.set(ws, (epochs.get(ws) ?? 0) + 1);
+}
+
 function ensureIndex(ws: string): MiniSearch<IndexedDoc> {
 	let idx = indexes.get(ws);
 	if (!idx) {
@@ -250,6 +266,7 @@ export const localSearch = {
 		// batches the inverted-index updates.
 		if (docs.length > 0) idx.addAll(docs);
 		indexes.set(ws, idx);
+		bumpEpoch(ws);
 	},
 
 	/**
@@ -272,6 +289,7 @@ export const localSearch = {
 		// MiniSearch-recommended pattern for in-place mutation.
 		if (idx.has(doc.id)) idx.discard(doc.id);
 		idx.add(doc);
+		bumpEpoch(ws);
 	},
 
 	/**
@@ -282,7 +300,10 @@ export const localSearch = {
 		if (!ssrSafe()) return;
 		const idx = indexes.get(ws);
 		if (!idx) return;
-		if (idx.has(id)) idx.discard(id);
+		if (idx.has(id)) {
+			idx.discard(id);
+			bumpEpoch(ws);
+		}
 	},
 
 	/**
@@ -292,6 +313,18 @@ export const localSearch = {
 	 */
 	reset(ws: string): void {
 		indexes.delete(ws);
+		epochs.delete(ws);
+	},
+
+	/**
+	 * Reactive per-workspace mutation epoch. Bumped on every successful
+	 * `rebuild` / `upsert` / `remove`. Consumers should READ this inside
+	 * a `$effect` so their derived state (e.g. a `searchResultIds` Set
+	 * that intersects local items with a query) re-runs whenever the
+	 * underlying index changes — Codex round 3 P2 of TASK-1364.
+	 */
+	epoch(ws: string): number {
+		return epochs.get(ws) ?? 0;
 	},
 
 	/**

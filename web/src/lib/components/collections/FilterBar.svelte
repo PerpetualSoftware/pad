@@ -163,11 +163,19 @@
 	{/if}
 
 	<div class="search-wrapper">
+		<!--
+			Search hits the local in-memory index (titles + parsed fields)
+			for sub-millisecond typing. Prefix with `body:` or `content:`
+			to fall back to server FTS over the rich-text body — that's
+			the only way to grep content, which doesn't live in the
+			client-side index by design (PLAN-1343 / DOC-1342 Phase 3b).
+		-->
 		<input
 			bind:this={searchInputEl}
 			type="text"
 			class="search-input"
 			placeholder="Search {collection.name.toLowerCase()}..."
+			title="Search titles + fields locally. Prefix with `body:` to search content text."
 			value={searchQuery}
 			oninput={handleSearchInput}
 			onkeydown={(e) => { if (e.key === 'Escape') { onSearchChange(''); searchInputEl?.blur(); } }}
