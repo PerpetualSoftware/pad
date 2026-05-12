@@ -37,19 +37,15 @@
 
 	// Register the 403-purge handler ONCE at app bootstrap (PLAN-1343
 	// / TASK-1360). The API client's request() path invokes this on
-	// 403 for workspace-scoped item / collection-items endpoints; we
-	// route the signal into localIndex so stale-by-permission rows
-	// drop out of the in-RAM + IDB cache as part of the same error
-	// path that surfaces the PadApiError to the caller. Registration
-	// lives here instead of inside client.ts to keep client.ts free
-	// of a store import that would create a circular dep.
+	// GET/HEAD 403 for workspace-scoped endpoints; we drop the
+	// entire workspace cache because Pad's 403 source is the
+	// workspace-access middleware, which means access to the whole
+	// workspace is gone — purging a single row would leave the rest
+	// stale (Codex round 2 of TASK-1360). Registration lives here
+	// instead of inside client.ts to keep client.ts free of a store
+	// import that would create a circular dep.
 	setAccessRevokedHandler((scope) => {
-		if (scope.kind === 'item') {
-			const row = localIndex.findByIdOrSlug(scope.workspace, scope.idOrSlug);
-			if (row) localIndex.remove(scope.workspace, row.id);
-		} else {
-			localIndex.removeByCollection(scope.workspace, scope.collection);
-		}
+		localIndex.reset(scope.workspace);
 	});
 
 	onMount(async () => {

@@ -74,16 +74,17 @@ class PadApiError extends Error {
  * see last time you synced" — a 403 mid-session means access was
  * revoked, and the offending entry should drop.
  *
- *   - `item`: a 403 on `/workspaces/{ws}/items/{idOrSlug}`. The
- *      handler resolves the id-or-slug against the local index and
- *      removes the matching row.
- *   - `collection`: a 403 on `/workspaces/{ws}/collections/{coll}/items`
- *      (or similar collection-scoped endpoint). The handler removes
- *      every row in that collection.
+ * The scope is the WHOLE WORKSPACE. Pad's server returns 403 from
+ * the workspace-access middleware (see internal/server/middleware_auth.go:
+ * `permission_denied`, `not a member of this workspace`), and item-
+ * level visibility misses return 404. So a 403 on any workspace-scoped
+ * endpoint means access to the workspace is gone — purging a single
+ * item or collection would leave the rest of the cache stale.
+ * Per-item granular purge was attempted in TASK-1360 round 1 and
+ * round 2 (Codex P1 each) — both got the scope wrong; this is the
+ * conservative fix.
  */
-export type AccessRevokedScope =
-	| { kind: 'item'; workspace: string; idOrSlug: string }
-	| { kind: 'collection'; workspace: string; collection: string };
+export type AccessRevokedScope = { kind: 'workspace'; workspace: string };
 
 type AccessRevokedHandler = (scope: AccessRevokedScope) => void;
 
@@ -105,9 +106,9 @@ export function setAccessRevokedHandler(handler: AccessRevokedHandler | null): v
 }
 
 /**
- * Parse a workspace-scoped URL path and infer the purge scope. Returns
- * null if the URL doesn't match a known item / collection-items
- * shape. Pure / non-throwing.
+ * Parse a workspace-scoped URL path and extract the workspace slug if
+ * present. Returns null for non-workspace-scoped paths (auth,
+ * admin, health, etc.). Pure / non-throwing.
  */
 function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
 	// Strip the BASE prefix and any leading slash.
@@ -116,24 +117,10 @@ function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
 	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
 	if (stripped.startsWith('/')) stripped = stripped.slice(1);
 	const parts = stripped.split('/');
-	// workspaces / {ws} / collections / {coll} / items[/...]
-	if (
-		parts.length >= 5 &&
-		parts[0] === 'workspaces' &&
-		parts[2] === 'collections' &&
-		parts[4] === 'items'
-	) {
-		return { kind: 'collection', workspace: parts[1], collection: parts[3] };
+	if (parts.length < 2 || parts[0] !== 'workspaces' || !parts[1]) {
+		return null;
 	}
-	// workspaces / {ws} / items / {idOrSlug}[/...]
-	if (
-		parts.length >= 4 &&
-		parts[0] === 'workspaces' &&
-		parts[2] === 'items'
-	) {
-		return { kind: 'item', workspace: parts[1], idOrSlug: parts[3] };
-	}
-	return null;
+	return { kind: 'workspace', workspace: parts[1] };
 }
 
 /**
