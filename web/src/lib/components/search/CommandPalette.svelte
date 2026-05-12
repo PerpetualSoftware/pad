@@ -211,14 +211,22 @@
 
 		const parsed = parseSearchQuery(trimmed);
 		const ready = readyWorkspaces();
+		const currentSlug = workspaceStore.current?.slug;
+		const currentReady =
+			!!currentSlug && localIndex.bootstrapStateFor(currentSlug) === 'ready';
 
 		// Server-only paths:
 		//   - `body:` / `content:` queries — local index doesn't hold
 		//     the rich-text body, server FTS is the only way to grep.
-		//   - No ready workspaces yet (cold session) — fall through to
-		//     the server so the palette still works pre-bootstrap.
-		// In both cases we use a 200ms debounce.
-		if (parsed.body || ready.length === 0) {
+		//   - Current workspace not yet hydrated — fall through to the
+		//     server even if other workspaces are ready, so the user
+		//     never misses results from where they are. The
+		//     `searchAllWorkspaces` toggle is meant to widen, never
+		//     to replace. Codex round 2 P2.
+		//   - No ready workspaces at all (cold session) — fall through
+		//     to the server so the palette still works pre-bootstrap.
+		// All three use a 200ms debounce on the network call.
+		if (parsed.body || !currentReady || ready.length === 0) {
 			loading = true;
 			searchTimeout = setTimeout(async () => {
 				try {
@@ -602,7 +610,16 @@
 				</div>
 			{/if}
 
-			<!-- Filter chips -->
+			<!--
+				Filter chips. Surface in three cases:
+				  1. Server search returned facets (full chip vocabulary).
+				  2. Local path with an active filter — show the active
+				     chip(s) alone so the user can see + clear them.
+				     Without this branch, switching from server → local
+				     with a filter chip selected would hide the chip but
+				     keep filtering, leaving the user no clear way to
+				     remove it. Codex round 2 P2 of TASK-1365.
+			-->
 			{#if facets && query.trim()}
 				<div class="filters-row">
 					<div class="filter-chips">
@@ -640,6 +657,34 @@
 					{#if hasFilters}
 						<button class="clear-filters" onclick={clearFilters}>Clear filters</button>
 					{/if}
+				</div>
+			{:else if hasFilters && query.trim()}
+				<div class="filters-row">
+					<div class="filter-chips">
+						{#if filterCollection}
+							{@const coll = collectionStore.collections.find((c) => c.slug === filterCollection)}
+							<button
+								class="filter-chip active"
+								onclick={() => applyFilter('collection', filterCollection!)}
+							>
+								<span class="chip-icon">{coll?.icon || '📦'}</span>
+								<span class="chip-label">{coll?.name || filterCollection}</span>
+							</button>
+						{/if}
+						{#if filterStatus}
+							<button
+								class="filter-chip status-chip active"
+								onclick={() => applyFilter('status', filterStatus!)}
+							>
+								<span
+									class="chip-dot"
+									style="background: {statusColor(filterStatus)};"
+								></span>
+								<span class="chip-label">{filterStatus.replace(/_/g, ' ')}</span>
+							</button>
+						{/if}
+					</div>
+					<button class="clear-filters" onclick={clearFilters}>Clear filters</button>
 				</div>
 			{/if}
 
