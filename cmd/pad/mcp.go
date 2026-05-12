@@ -292,12 +292,20 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				rootArgs = append(rootArgs, "--"+k, v)
 			}
 			dispatcher := &mcpserver.ExecDispatcher{Binary: bin, RootArgs: rootArgs}
+			// Bootstrap fetcher hands pad_set_workspace a one-shot way to
+			// embed the AgentBootstrap blob in its response so MCP hosts
+			// get full session context in one round-trip when the agent
+			// switches workspaces. Same binary + RootArgs as the
+			// dispatcher so the call lands on the configured server.
+			// PLAN-1377 / TASK-1380.
+			bootstrapFetcher := &mcpserver.ExecBootstrapFetcher{Binary: bin, RootArgs: rootArgs}
 			if _, err := mcpserver.Register(srv.MCP(), mcpserver.RegistryOptions{
-				Doc:        doc,
-				Workspace:  state,
-				Dispatcher: dispatcher,
-				RootFlags:  rootFlags,
-				PadVersion: fullVersion(),
+				Doc:              doc,
+				Workspace:        state,
+				Dispatcher:       dispatcher,
+				RootFlags:        rootFlags,
+				PadVersion:       fullVersion(),
+				BootstrapFetcher: bootstrapFetcher,
 			}); err != nil {
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}

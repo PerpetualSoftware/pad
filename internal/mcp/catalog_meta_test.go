@@ -236,18 +236,20 @@ func TestPadMetaTool_RoundTripThroughFanOut(t *testing.T) {
 	}
 }
 
-// TestPadMetaTool_NoWorkspaceInSchema confirms the schema for a server-
-// wide tool (Schema.Workspace=false) does NOT include a workspace
-// property. Server-introspection actions don't need a workspace —
-// adding one would mislead agents into thinking they should pass it.
-func TestPadMetaTool_NoWorkspaceInSchema(t *testing.T) {
+// TestPadMetaTool_WorkspaceInSchema confirms pad_meta's schema exposes
+// a workspace property. Originally pad_meta was server-wide and the
+// schema deliberately omitted workspace. PLAN-1377 / TASK-1380 added
+// the `bootstrap` action which needs workspace context, so the tool
+// flipped to Schema.Workspace=true. The other actions
+// (server-info / version / tool-surface) ignore the parameter.
+func TestPadMetaTool_WorkspaceInSchema(t *testing.T) {
 	tool := buildToolFromDef(padMetaTool)
 	raw, err := json.Marshal(tool.InputSchema)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(raw), `"workspace"`) {
-		t.Errorf("pad_meta schema unexpectedly includes 'workspace' property: %s", raw)
+	if !strings.Contains(string(raw), `"workspace"`) {
+		t.Errorf("pad_meta schema missing 'workspace' property required by the bootstrap action: %s", raw)
 	}
 }
 

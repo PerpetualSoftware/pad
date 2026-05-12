@@ -222,6 +222,17 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/dashboard",
 		}.toRouteMapper(),
+
+		// `pad bootstrap` shells out to `pad_meta.action=bootstrap` and
+		// to the pad://workspace/{ws}/bootstrap resource on local stdio.
+		// For pad-cloud's HTTP MCP path this maps to the canonical
+		// bootstrap endpoint (PLAN-1377 / TASK-1380). Without this entry
+		// the cloud MCP path returns "not yet implemented over HTTP
+		// transport" for the advertised action.
+		"bootstrap": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/agent/bootstrap",
+		}.toRouteMapper(),
 		"collection list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",

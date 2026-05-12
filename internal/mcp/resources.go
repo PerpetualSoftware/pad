@@ -16,12 +16,13 @@ import (
 // MCP clients (Claude Desktop, Cursor) display them and may switch
 // rendering paths based on the value.
 const (
-	itemMIMEType        = "text/markdown"
-	jsonMIMEType        = "application/json"
-	uriPrefixWorkspace  = "pad://workspace/"
-	resourceKindItem    = "items" // /{ws}/items[/{ref}]
-	resourceKindDash    = "dashboard"
-	resourceKindCollect = "collections"
+	itemMIMEType         = "text/markdown"
+	jsonMIMEType         = "application/json"
+	uriPrefixWorkspace   = "pad://workspace/"
+	resourceKindItem     = "items" // /{ws}/items[/{ref}]
+	resourceKindDash     = "dashboard"
+	resourceKindCollect  = "collections"
+	resourceKindBootstrp = "bootstrap"
 )
 
 // WorkspacesURI is the canonical URI of the top-level workspace list
@@ -64,6 +65,47 @@ func (f *ExecResourceFetcher) Fetch(ctx context.Context, args []string) (string,
 		return "", fmt.Errorf("pad %s: %s", strings.Join(args, " "), msg)
 	}
 	return stdout.String(), nil
+}
+
+// ExecBootstrapFetcher shells out to `pad bootstrap --workspace <ws>
+// --format json` to satisfy the BootstrapFetcher interface. Used by
+// pad_set_workspace's response embed (PLAN-1377 / TASK-1380); RootArgs
+// carries any root-level CLI flags (e.g. --url) captured at startup so
+// the bootstrap call hits the same server endpoint as everything else.
+type ExecBootstrapFetcher struct {
+	// Binary is the path to the pad executable. Required.
+	Binary string
+	// RootArgs are root-flag tokens (e.g. ["--url", "https://api..."])
+	// appended to every shell-out so the bootstrap fetch lands on the
+	// same server endpoint as the other dispatches.
+	RootArgs []string
+}
+
+// Bootstrap runs `<Binary> bootstrap --workspace <ws> --format json`
+// and returns the raw JSON bytes. On error returns nil + the error;
+// the caller (pad_set_workspace) treats bootstrap failures as
+// non-fatal — the workspace switch still succeeds and the agent can
+// fetch context separately.
+func (f *ExecBootstrapFetcher) Bootstrap(ctx context.Context, workspace string) ([]byte, error) {
+	if f.Binary == "" {
+		return nil, fmt.Errorf("bootstrap fetcher: binary path not configured")
+	}
+	if workspace == "" {
+		return nil, fmt.Errorf("bootstrap fetcher: workspace is required")
+	}
+	args := append([]string{"bootstrap", "--workspace", workspace, "--format", "json"}, f.RootArgs...)
+	cmd := exec.CommandContext(ctx, f.Binary, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("pad bootstrap: %s", msg)
+	}
+	return []byte(stdout.String()), nil
 }
 
 // resources owns the four resource handlers and their shared state.
@@ -135,6 +177,24 @@ func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags
 			mcp.WithTemplateMIMEType(jsonMIMEType),
 		),
 		r.readCollections,
+	)
+	srv.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"pad://workspace/{workspace}/bootstrap",
+			"pad bootstrap",
+			mcp.WithTemplateDescription(
+				"Consolidated agent context-load blob (PLAN-1377 / TASK-1379): "+
+					"workspace + user + collections + always-on conventions + "+
+					"agent roles + playbook metadata + dashboard + recent "+
+					"activity. One read replaces four separate calls. Hosts "+
+					"that prefetch resources at session start should fetch "+
+					"this so the agent starts with full context. Equivalent "+
+					"to pad_meta.action=bootstrap and pad_set_workspace's "+
+					"response embed.",
+			),
+			mcp.WithTemplateMIMEType(jsonMIMEType),
+		),
+		r.readBootstrap,
 	)
 
 	// Top-level workspace list (TASK-974). Static resource — no
@@ -309,6 +369,23 @@ func (r *resources) readCollections(ctx context.Context, req mcp.ReadResourceReq
 	}
 	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
 		[]string{"collection", "list", "--workspace", ws, "--format", "json"})
+}
+
+// readBootstrap handles pad://workspace/{ws}/bootstrap. Shells out to
+// `pad bootstrap --workspace <ws> --format json` so the resource stays
+// in lockstep with the CLI and HTTP surfaces — one canonical builder
+// (Server.BuildAgentBootstrap) feeds all three. Hosts that prefetch
+// resources at session start get the full context in a single read.
+func (r *resources) readBootstrap(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	ws, kind, arg, err := parsePadURI(req.Params.URI)
+	if err != nil {
+		return nil, err
+	}
+	if kind != resourceKindBootstrp || arg != "" {
+		return nil, fmt.Errorf("resource %q is not the bootstrap URI", req.Params.URI)
+	}
+	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
+		[]string{"bootstrap", "--workspace", ws, "--format", "json"})
 }
 
 // fetchAsResource is the shared shell-out + wrap path. padArgs is

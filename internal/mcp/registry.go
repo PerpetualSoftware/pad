@@ -46,6 +46,14 @@ type RegistryOptions struct {
 	// catalog's ActionEnv so pad_meta.action: server-info / version
 	// can report it. Empty falls back to FallbackVersion.
 	PadVersion string
+
+	// BootstrapFetcher is optional. When set, pad_set_workspace's
+	// response embeds the AgentBootstrap blob so callers get full
+	// session context in one round-trip. When nil, set-workspace
+	// returns the legacy {workspace, status} shape and clients can
+	// fetch the blob separately via pad_meta.action=bootstrap or
+	// pad://workspace/{ws}/bootstrap. PLAN-1377 / TASK-1380.
+	BootstrapFetcher BootstrapFetcher
 }
 
 // Register installs pad's MCP tools on srv: the built-in
@@ -68,7 +76,7 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 		return 0, fmt.Errorf("RegistryOptions.Dispatcher is required")
 	}
 
-	registerSetWorkspaceTool(srv, opts.Workspace)
+	registerSetWorkspaceTool(srv, opts.Workspace, opts.BootstrapFetcher)
 	count := 1 // pad_set_workspace
 
 	catalogCount, err := RegisterCatalog(srv, CatalogOptions{
