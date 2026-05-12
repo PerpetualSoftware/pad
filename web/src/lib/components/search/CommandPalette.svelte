@@ -396,19 +396,23 @@
 		if (loadingMore || results.length >= total) return;
 		// Only the server path ever sets `total > results.length` — the
 		// local path pins them equal — so a `loadMore` always means
-		// fetching another server page. The dispatch scope can still
-		// change mid-flight, though: the current workspace can finish
-		// hydrating, the all-workspaces toggle can flip, or the query
-		// / filters can change. Snapshot all of it and bail if any of
-		// these shift before the response lands. Codex round 5 P2.
+		// fetching another server page. Snapshot the dispatch scope
+		// and bail if any of it has shifted before the response lands.
+		// Body queries are always server-authoritative (the local
+		// index doesn't carry content), so they bypass the
+		// live-readiness guard. Codex rounds 5-6 P2.
 		loadingMore = true;
 		const snapshotQuery = query;
 		const snapshotAllWs = searchAllWorkspaces;
 		const snapshotCollection = filterCollection;
 		const snapshotStatus = filterStatus;
 		const snapshotWsSlug = workspaceStore.current?.slug;
+		// Parse once and use the stripped query for the API call so
+		// `body:foo` → page 2 sends `foo`, not the literal `body:foo`.
+		const parsed = parseSearchQuery(query.trim());
+		const serverQuery = parsed.body ? parsed.text || query.trim() : query;
 		try {
-			const resp = await api.search(query, buildFilters(results.length));
+			const resp = await api.search(serverQuery, buildFilters(results.length));
 			if (
 				query !== snapshotQuery ||
 				searchAllWorkspaces !== snapshotAllWs ||
@@ -418,14 +422,17 @@
 			) {
 				return;
 			}
-			// If the current workspace hydrated while the request was
-			// in flight, the main effect has likely already swapped to
-			// the local path and replaced `results`. Appending more
-			// server rows would inject scope-mismatched results.
-			const liveCurrentReady =
-				!!snapshotWsSlug &&
-				localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
-			if (liveCurrentReady) return;
+			if (!parsed.body) {
+				// Non-body server paging: if the current workspace
+				// hydrated while the request was in flight, the main
+				// effect has likely already swapped to the local
+				// path and replaced `results`. Appending more server
+				// rows would inject scope-mismatched results.
+				const liveCurrentReady =
+					!!snapshotWsSlug &&
+					localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
+				if (liveCurrentReady) return;
+			}
 			results = [...results, ...(resp.results ?? [])];
 		} catch {
 			// ignore
