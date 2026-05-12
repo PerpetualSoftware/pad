@@ -74,19 +74,36 @@ var padPlaybookTool = ToolDef{
 }
 
 // actionPlaybookRun is the custom dispatch for pad_playbook.action=run.
-// It flattens the MCP's structured `args` map and `raw_args` slice into
-// the CLI's positional/flag/kv token sequence so env.Dispatch's
-// BuildCLIArgs path picks them up as cmdhelp-known positional args of
-// `pad playbook run <ref> [args...]`. Explicit `args` entries win over
-// `raw_args` per the server's merge rules.
+// The MCP-side input carries args as a map AND/OR raw_args as a slice;
+// the two dispatcher backends each need a different shape:
+//
+//   - HTTPHandlerDispatcher: forwards `input` to mapPlaybookRun, which
+//     accepts the original args:map shape directly and produces the
+//     POST /playbooks/{ref}/run JSON body. This path preserves
+//     explicit `false` values on flag-typed args, so an MCP caller
+//     CAN override a flag with default=true by sending args:{flag:false}.
+//
+//   - ExecDispatcher: shells out to `pad playbook run <ref> <tokens...>`.
+//     The CLI takes the variadic args slot (cmdhelp positional name
+//     `args`, repeatable=true) so we flatten args+raw_args into a CLI
+//     token sequence. Limitation: the CLI's strict parser only
+//     supports bareword flag PRESENCE (no flag=false form), so a
+//     local-stdio caller cannot override a flag-default-true value;
+//     route through HTTP/in-process MCP for that rare case.
 func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
 	ref, _ := input["ref"].(string)
 	if ref == "" {
 		return mcp.NewToolResultError("pad_playbook.run requires a ref (invocation_slug, item slug, or issue ref)"), nil
 	}
 
-	// Build the trailing positional/kv/flag token list. Sort the map
-	// keys for deterministic order so tests + CLI replay stay stable.
+	if _, isHTTP := env.Dispatcher.(*HTTPHandlerDispatcher); isHTTP {
+		// Forward as-is; mapPlaybookRun does the shape coercion and
+		// preserves structured args (including explicit false values).
+		return env.Dispatch(ctx, []string{"playbook", "run"}, input)
+	}
+
+	// Exec path — flatten into CLI tokens. Sort map keys for
+	// deterministic ordering so tests + CLI replay stay stable.
 	var tokens []string
 	if raw, ok := input["raw_args"]; ok {
 		switch v := raw.(type) {
@@ -117,6 +134,10 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 				if tv {
 					tokens = append(tokens, k)
 				}
+				// false: skipped because the CLI parser only accepts
+				// bareword flag PRESENCE. Document this limitation in
+				// the function docstring; HTTP path covers the rare
+				// flag-default-true-override case.
 			case nil:
 				// Skip — caller signaled "leave unbound"; let the
 				// server's bindPlaybookArgs surface it as unbound.
