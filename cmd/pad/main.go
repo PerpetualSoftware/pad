@@ -4197,7 +4197,13 @@ func playbookRunCmd() *cobra.Command {
 		// (positional values, bareword flags, key=value pairs) are
 		// accepted as variadic and forwarded to the server's strict
 		// parser. The arg-form details live in Long.
-		Use:   "run <ref> [args...]",
+		//
+		// Note: `[args]...` (ellipsis OUTSIDE the brackets) is the
+		// form cmdhelp's parseArgs treats as repeatable. `[args...]`
+		// (ellipsis inside) bakes the dots into the arg NAME, so the
+		// MCP dispatcher's BuildCLIArgs can't match input["args"] to
+		// the positional slot. Verified in cmdhelp/json.go::argRE.
+		Use:   "run <ref> [args]...",
 		Short: "Bind args to a playbook's declared spec and return the body + bound args",
 		Long: `Parse the supplied args against the playbook's declared argument spec
 (stored as the 'arguments' field on the item) and return the body with
