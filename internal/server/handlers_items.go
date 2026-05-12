@@ -880,6 +880,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					"This editor's view is out of sync with the server; please reload.")
 				return
 			}
+			// Mirror the main UpdateItem path: map UNIQUE constraint /
+			// duplicate key races (e.g. concurrent edits both racing the
+			// invocation_slug partial unique index) to 409 conflict so
+			// they don't surface as misleading 500s.
+			if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+				writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
+				return
+			}
 			writeInternalError(w, err)
 			return
 		}
