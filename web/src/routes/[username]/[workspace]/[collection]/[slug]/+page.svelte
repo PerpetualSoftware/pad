@@ -536,19 +536,28 @@
 			: undefined,
 	);
 
-	// Per-item latch — true once the current provider has synced at
-	// least once. Prevents a mid-session `reconnecting` from re-showing
-	// the skeleton over already-rendered content.
+	// Per-provider latch — true once the current provider has synced
+	// at least once. Prevents a mid-session `reconnecting` from
+	// re-showing the skeleton over already-rendered content.
 	let hasEverSynced = $state(false);
 
-	// Reset the latch on item navigation. SvelteKit does NOT remount
-	// +page.svelte when only the [slug] dynamic param changes — the
-	// collab $effect swaps providers, but a previous item's
-	// `hasEverSynced=true` would suppress the skeleton on the new
-	// (still-connecting) provider. Reading `item?.id` registers it as
-	// a reactive dep; the void cast silences "unused expression" lint.
+	// Reset the latch whenever the provider INSTANCE changes — covers
+	// every way a fresh unsynced Y.Doc gets mounted under the same
+	// page component:
+	//   1. Item navigation (collabKey derives from item.id; SvelteKit
+	//      reuses +page.svelte across [slug] changes).
+	//   2. Raw → Rich mode toggle (collabKey derives from rawMode).
+	//   3. forceRefreshNonce bump (server force_refresh OR TASK-1376
+	//      retryCollabSync), which tears down + rebuilds the provider
+	//      against the same item.
+	// Reading `collabProvider` registers it as a reactive dep; the
+	// void cast silences "unused expression" lint. Source order
+	// before the flip effect so a synchronous reset never clobbers a
+	// fresh-provider sync that already landed in the same tick. Per
+	// CONVE-606 (split route-change-equivalent resets from reactive-
+	// state-sync flips).
 	$effect(() => {
-		void item?.id;
+		void collabProvider;
 		hasEverSynced = false;
 	});
 
