@@ -299,7 +299,12 @@
 							type: 'list-item',
 							dropTargetClasses: ['drop-target'],
 							delayTouchStart: touchDragDelayMs,
-							dragDisabled: !canEdit
+							// Disable item DnD whenever the parent has
+							// requested rank-preserving order (search
+							// active) — otherwise a drag would persist
+							// the relevance-ranked subset order as the
+							// stored `sort_order`. TASK-1367 / Codex R5.
+							dragDisabled: !canEdit || preserveOrder
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}
