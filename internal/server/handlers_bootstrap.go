@@ -201,9 +201,8 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	}
 
 	// Agent roles — workspace-scoped, not collection-bound. Item counts
-	// MUST be recomputed from the visible item set for restricted
-	// callers so a guest can't infer hidden activity by role. Mirrors
-	// handleListAgentRoles.
+	// MUST be recomputed below for restricted callers from the same
+	// visible item set used for collection counts.
 	roles, err := s.store.ListAgentRoles(workspaceID)
 	if err != nil {
 		return nil, err
@@ -211,6 +210,14 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	if roles == nil {
 		roles = []models.AgentRole{}
 	}
+
+	// For restricted callers, compute the visible item set ONCE and use
+	// it to (a) recompute role counts and (b) recompute collection
+	// item_count, both of which are otherwise computed across the whole
+	// workspace by their respective ListX queries and would leak
+	// hidden activity to a guest. Full members (visibleIDs == nil)
+	// skip the recompute — the store-side counts are already correct
+	// for them.
 	if visibleIDs != nil {
 		visibleItems, vierr := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionIDs: subCollIDs,
@@ -220,11 +227,27 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 			return nil, vierr
 		}
 		roleCounts := make(map[string]int)
+		collItemCounts := make(map[string]int)
 		for _, item := range visibleItems {
 			if item.AgentRoleID != nil && *item.AgentRoleID != "" {
 				roleCounts[*item.AgentRoleID]++
 			}
+			collItemCounts[item.CollectionID]++
 		}
+		// Rewrite collection counts from the visible set.
+		// active_item_count needs each collection's done-rules to be
+		// accurate; recomputing it correctly is expensive (see
+		// dashboard's buildDoneContextMap) and the bootstrap consumers
+		// don't depend on it. Set it equal to item_count so restricted
+		// callers see a self-consistent number rather than a leaked
+		// full-workspace value. Full members keep the store-side
+		// active_item_count untouched.
+		for i := range out.Collections {
+			c := &out.Collections[i]
+			c.ItemCount = collItemCounts[c.ID]
+			c.ActiveItemCount = collItemCounts[c.ID]
+		}
+		// Overlay role counts.
 		for i := range roles {
 			roles[i].ItemCount = roleCounts[roles[i].ID]
 		}
