@@ -863,3 +863,66 @@ func ingestFieldKVP(s string, dst map[string]any) {
 	}
 	dst[key] = val
 }
+
+// mapPlaybookRun handles `pad_playbook.action=run` for the HTTP MCP
+// dispatcher. Accepts both the original MCP shape (args:map +
+// raw_args:[]string) and the flattened shape that
+// actionPlaybookRun emits when dispatching through ExecDispatcher
+// (args:[]string of CLI tokens). When args arrives as a slice it's
+// treated as raw_args so the server applies the strict CLI parser.
+// When it arrives as a map it's forwarded as a pre-parsed argument
+// dictionary.
+//
+// PLAN-1377 / TASK-1381.
+func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required (set --workspace or pad_set_workspace)")
+	}
+	ref, _ := input["ref"].(string)
+	if ref == "" {
+		return "", "", nil, fmt.Errorf("ref is required (invocation_slug, item slug, or issue ref)")
+	}
+	payload := map[string]any{}
+
+	// Coerce raw_args from any of the shapes the catalog / cli /
+	// HTTPDispatcher paths can supply. The server's parser only cares
+	// about []string, so anything else gets normalized here.
+	var rawArgs []string
+	if rv, ok := input["raw_args"]; ok && rv != nil {
+		switch v := rv.(type) {
+		case []any:
+			for _, t := range v {
+				if s, ok := t.(string); ok && s != "" {
+					rawArgs = append(rawArgs, s)
+				}
+			}
+		case []string:
+			rawArgs = append(rawArgs, v...)
+		}
+	}
+
+	if argv, ok := input["args"]; ok && argv != nil {
+		switch v := argv.(type) {
+		case map[string]any:
+			payload["args"] = v
+		case []any:
+			for _, t := range v {
+				if s, ok := t.(string); ok && s != "" {
+					rawArgs = append(rawArgs, s)
+				}
+			}
+		case []string:
+			rawArgs = append(rawArgs, v...)
+		}
+	}
+	if len(rawArgs) > 0 {
+		payload["raw_args"] = rawArgs
+	}
+
+	enc, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode playbook run body: %w", err)
+	}
+	return http.MethodPost, "/api/v1/workspaces/" + workspace + "/playbooks/" + ref + "/run", enc, nil
+}

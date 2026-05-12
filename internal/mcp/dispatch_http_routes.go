@@ -233,6 +233,22 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent/bootstrap",
 		}.toRouteMapper(),
+
+		// Playbook surface (PLAN-1377 / TASK-1381). list / show / run
+		// — same shape as the CLI on local stdio dispatches via
+		// ExecDispatcher, and the routeTable entries here let cloud
+		// MCP dispatch the same actions in-process. `run` carries the
+		// args/raw_args payload in the JSON body so the strict parser
+		// fires server-side.
+		"playbook list": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/playbooks",
+		}.toRouteMapper(),
+		"playbook show": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/playbooks/{ref}",
+		}.toRouteMapper(),
+		"playbook run": mapPlaybookRun,
 		"collection list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",
