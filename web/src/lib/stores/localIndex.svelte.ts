@@ -554,6 +554,42 @@ export const localIndex = {
 	},
 
 	/**
+	 * Classify an SSE event against the workspace cursor (TASK-1358).
+	 * Doesn't write data — the SSE wire payload only carries event
+	 * metadata (type, item_id, title, collection_slug, seq), not the
+	 * full row, so the caller still needs to fetch the row data
+	 * through `deltaSync` for the cases that need it.
+	 *
+	 * Return values:
+	 *   - `'no-seq'`: event lacks `seq` (legacy publisher, non-item
+	 *      event). Caller should fall back to a generic deltaSync.
+	 *   - `'stale'`: event.seq is at or below the current cursor —
+	 *      already applied (or covered by a prior batch). Drop it.
+	 *   - `'contiguous'`: event.seq === cursor + 1. No gap. Caller
+	 *      may still need to fetch the row data for this event
+	 *      (SSE payload is metadata-only), but is guaranteed not to
+	 *      miss any intermediate events.
+	 *   - `'gap'`: event.seq > cursor + 1. The local index is behind
+	 *      by `event.seq - cursor - 1` events. Caller MUST
+	 *      `deltaSync` to backfill before this event's data lands,
+	 *      or the cache will have holes.
+	 *
+	 * Does NOT advance the cursor. Cursor advancement happens through
+	 * `applyDelta` (with real row data) so the IDB persistence
+	 * invariant (cursor never overshoots persisted rows) stays sound.
+	 */
+	classifySSEEvent(
+		ws: string,
+		event: { seq?: number },
+	): 'no-seq' | 'stale' | 'contiguous' | 'gap' {
+		if (event.seq === undefined || event.seq === 0) return 'no-seq';
+		const cursorNum = cursorAsNum(localIndex.cursorFor(ws));
+		if (event.seq <= cursorNum) return 'stale';
+		if (event.seq === cursorNum + 1) return 'contiguous';
+		return 'gap';
+	},
+
+	/**
 	 * Single-item upsert. Used by SSE handlers and the optimistic
 	 * post-mutation path (e.g. after `api.items.update` returns a full
 	 * `Item`, the caller hands it here to keep the local index fresh

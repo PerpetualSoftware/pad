@@ -556,7 +556,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source)
+	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source, item.Seq)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
@@ -965,7 +965,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source, updated.Seq)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
@@ -1033,9 +1033,18 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch the post-delete row so the SSE event carries the new
+	// `seq` (DeleteItem bumps it). Falls back to 0 if the row is
+	// missing (race with hard-delete or a Postgres timing quirk);
+	// downstream SSE consumers backfill via /items-changes on a 0.
+	var deleteSeq int64
+	if d, derr := s.store.GetItemIncludeDeleted(item.ID); derr == nil && d != nil {
+		deleteSeq = d.Seq
+	}
+
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
-	s.publishItemEventWithName(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source)
+	s.publishItemEventWithName(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
 	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
@@ -1080,7 +1089,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
-	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source)
+	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
 	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(restored, restoreVisIDs); err != nil {
@@ -1210,7 +1219,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source, moved.Seq)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 
 	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
@@ -1223,7 +1232,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishItemEventWithName publishes a real-time event for item changes with actor name.
-func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title, collection, actor, actorName, source string) {
+// `seq` is the item's workspace-scoped monotonic mutation cursor at the
+// time of the event (PLAN-1343 / TASK-1358), so SSE consumers can
+// reason about ordering and contiguity. Callers that don't have the
+// item's current seq handy may pass 0; downstream consumers fall back
+// to a /items-changes backfill in that case.
+func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title, collection, actor, actorName, source string, seq int64) {
 	if s.events == nil {
 		return
 	}
@@ -1236,6 +1250,7 @@ func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title,
 		Actor:       actor,
 		ActorName:   actorName,
 		Source:      source,
+		Seq:         seq,
 	})
 }
 

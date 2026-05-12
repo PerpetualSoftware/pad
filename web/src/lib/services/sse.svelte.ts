@@ -13,6 +13,15 @@ export interface ItemEvent {
 	actor_name?: string;
 	source: string;
 	timestamp: number;
+	// `seq` is the workspace-scoped monotonic mutation cursor of the
+	// referenced item (PLAN-1343 / TASK-1358). Server stamps it on
+	// item lifecycle events (created / updated / archived / restored)
+	// so the local-first read model can apply contiguous deltas in
+	// place and detect gaps that need a /items-changes backfill.
+	// Optional because non-item events (workspace_updated,
+	// comment_*, reaction_*) and legacy publishers omit it; clients
+	// fall back to a generic deltaSync when missing.
+	seq?: number;
 }
 
 type ItemEventCallback = (event: ItemEvent) => void;

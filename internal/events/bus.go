@@ -58,6 +58,16 @@ type Event struct {
 	Source      string `json:"source,omitempty"`
 	UserID      string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
 	Timestamp   int64  `json:"timestamp"`
+	// Seq is the workspace-scoped monotonic mutation cursor of the
+	// item the event references (PLAN-1343 / TASK-1352). Populated
+	// for item lifecycle events (created / updated / archived /
+	// restored) so the local-first read model (TASK-1358) can apply
+	// the change in-place when the seq is contiguous with the
+	// client's cursor, or trigger a /items-changes backfill when
+	// there's a gap. Zero for non-item events (workspace_updated,
+	// comment_*, reaction_*) and for legacy publishers that
+	// haven't been upgraded.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // EventBus is the interface for pub/sub event distribution.

@@ -379,14 +379,18 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
-			// React to any item lifecycle event by pulling deltas
-			// through the local store. The `items` derived view picks
-			// up changes automatically; no manual re-fetch needed.
-			// We don't filter by collection here — an item moved into
-			// or out of this collection still needs its delta applied
-			// so the derived view reflects it. TASK-1358 will replace
-			// this generic reconcile with seq-stamped per-event apply.
-			void event;
+			// React to item lifecycle events by pulling deltas through
+			// the local store. With seq-stamped events (TASK-1358) we
+			// can short-circuit duplicates the server's replay buffer
+			// re-delivers after a tab-resume, or events whose data is
+			// already in the local index from a prior delta. Anything
+			// not "stale" still needs row data, which only
+			// `deltaSync` can fetch — the SSE wire payload doesn't
+			// carry it. We don't filter by collection here: an item
+			// moved into or out of this collection still needs its
+			// delta applied so the derived view reflects it.
+			const status = localIndex.classifySSEEvent(ws, event);
+			if (status === 'stale') return;
 			await deltaSync(ws);
 		});
 	});
