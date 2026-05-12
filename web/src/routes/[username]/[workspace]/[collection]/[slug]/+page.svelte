@@ -582,14 +582,18 @@
 
 	// Stuck-connecting timeout — if the provider stays in
 	// `connecting` for >10s without ever syncing, surface the same
-	// ContentError UI as `offline`. Resets whenever state moves off
-	// `connecting`, hasEverSynced flips true, or the provider is
-	// rebuilt (the cleanup function clears the prior timer).
+	// ContentError UI as `offline`. Unconditional reset at the top
+	// of each effect run gives every fresh provider its own 10s
+	// grace (covers item navigation, rawMode toggle, force_refresh,
+	// and retry-driven rebuilds — without this, a stuck-connecting
+	// flag from a previous provider would carry over and the new
+	// provider would immediately show error UI). Only the timer
+	// can flip it back to true. Per Codex review round 1.
 	let staleConnecting = $state(false);
 	$effect(() => {
 		if (!collabProvider) return;
+		staleConnecting = false;
 		if (collabProvider.state !== 'connecting' || hasEverSynced) {
-			staleConnecting = false;
 			return;
 		}
 		const t = setTimeout(() => {
@@ -600,23 +604,31 @@
 		return () => clearTimeout(t);
 	});
 
-	// Manual recovery for collab offline / stuck-connecting. Mirrors
-	// the server-driven force_refresh dance: refetch items.content,
-	// then bump forceRefreshNonce so the collab $effect tears down
-	// the dead provider and rebuilds against the fresh item. The
-	// existing $effect at line ~559 will null editorInstance and
-	// reset hasEverSynced when the new provider lands.
-	async function retryCollabSync() {
+	// Manual recovery for collab offline / stuck-connecting. Bumps
+	// forceRefreshNonce so the collab $effect tears down the dead
+	// provider and rebuilds. The existing cleanup runs flushCollabNow
+	// (lines ~727–729) on tear-down, which best-effort PATCHes any
+	// unflushed local Y.Doc edits to items.content BEFORE the new
+	// provider mints a fresh Y.Doc — so user typing during the
+	// offline window is preserved.
+	//
+	// We deliberately do NOT refetch items.content here. The original
+	// shape (refetch → assign item → bump nonce) was lifted from the
+	// server-driven onForceRefresh handler, where the server has told
+	// us our local state is stale. In the retry case the local Y.Doc
+	// is the canonical view (it may contain unflushed peer-invisible
+	// edits); shoveling a server snapshot into `item` before the
+	// cleanup flush risks the lazy-seed (TASK-1261) on the new Y.Doc
+	// re-encoding stale server content, which the next flush would
+	// then PATCH back over the user's just-flushed edits. The new
+	// provider's WS replay reconciles via the op-log; if the cursor
+	// has been pruned the server sends a real force_refresh which
+	// goes through onForceRefresh (which DOES refetch — correctly,
+	// because the server is the source of truth in that case).
+	// Per Codex review round 1.
+	function retryCollabSync() {
 		if (!item) return;
 		staleConnecting = false;
-		try {
-			const fresh = await api.items.get(wsSlug, item.id);
-			if (item && item.id === fresh.id) item = fresh;
-		} catch (err) {
-			console.warn('retryCollabSync: refetch failed', err);
-			// Keep the error UI visible; user can click retry again.
-			return;
-		}
 		forceRefreshNonce += 1;
 	}
 
