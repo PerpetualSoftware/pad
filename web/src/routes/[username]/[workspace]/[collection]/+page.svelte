@@ -743,32 +743,50 @@
 	}
 
 	function handleSearchChange(query: string) {
+		// Pure setter — the reactive effect below runs the actual search.
+		// Keeping this small means non-input entry points (URL load via
+		// `loadUrlFilters`, programmatic clears) get the same search
+		// behavior without duplicating the local/server dispatch logic
+		// (Codex round 1 P2: shared `?q=body:foo` URLs previously
+		// landed in the local fallback because `loadUrlFilters` set
+		// `searchQuery` directly and never invoked the dispatch).
 		searchQuery = query;
 		updateUrlFilters();
+	}
+
+	// Search dispatch. Tracks `searchQuery` (any entry point that mutates
+	// it — typed input, URL load, programmatic clears), `showArchived`
+	// (re-run local search when archived rows toggle in/out of scope),
+	// and `indexReady` (cold load: query typed before bootstrap finishes;
+	// kick the search once the index hydrates). Body-prefix queries
+	// route to server FTS with a 200ms debounce; everything else hits
+	// the in-memory MiniSearch index synchronously.
+	$effect(() => {
+		void showArchived;
+		void indexReady;
+		const trimmed = searchQuery.trim();
 
 		clearTimeout(searchTimeout);
-		const trimmed = query.trim();
 		if (!trimmed) {
-			searchResultIds = null; // null = no search active, show all items
+			searchResultIds = null; // null = no search active
 			return;
 		}
 
 		// `body:` / `content:` prefix — fall through to the server FTS
-		// endpoint, which searches the rich-text body. Local index does
-		// not hold `content`, so this prefix is the only way to grep
-		// bodies. A short 200ms debounce keeps the network path
-		// hammer-resistant while typing; the local synchronous path
-		// below doesn't need one because each call is <1ms.
+		// endpoint, which searches the rich-text body. The local index
+		// does not hold `content` by design (DOC-1342 decision #4), so
+		// this prefix is the only way to grep bodies. A 200ms debounce
+		// keeps the network path hammer-resistant while typing.
 		if (BODY_SEARCH_PREFIX_RE.test(trimmed)) {
 			const bodyQuery = stripBodyPrefix(trimmed);
 			if (!bodyQuery) {
 				searchResultIds = null;
 				return;
 			}
-			// Clear stale results immediately so the unfiltered fallback
+			// Clear stale results immediately so the substring fallback
 			// renders while the network response is pending.
 			searchResultIds = null;
-			const snapshotQuery = query;
+			const snapshotQuery = trimmed;
 			searchTimeout = setTimeout(async () => {
 				try {
 					const resp = await api.search(bodyQuery, {
@@ -776,41 +794,25 @@
 						collection: collSlug,
 						limit: 200,
 					});
-					if (searchQuery !== snapshotQuery) return;
+					if (searchQuery.trim() !== snapshotQuery) return;
 					searchResultIds = new Set(resp.results.map((r) => r.item.id));
 				} catch {
-					if (searchQuery === snapshotQuery) searchResultIds = null;
+					if (searchQuery.trim() === snapshotQuery) searchResultIds = null;
 				}
 			}, 200);
 			return;
 		}
 
 		// Local path (default). MiniSearch is sub-millisecond for 5,000
-		// rows so we can run it synchronously on every keystroke — no
-		// debounce, no API call. PLAN-1343 Phase 3b acceptance: keystroke
-		// → first results <50ms P95. Archived rows participate when the
-		// `showArchived` toggle is on.
-		const hits = localSearch.search(wsSlug, trimmed, {
-			collection: collSlug,
-			includeArchived: showArchived,
-			limit: 200,
-		});
-		searchResultIds = new Set(hits.map((h) => h.id));
-	}
-
-	// Re-run local search when the toggle that affects its inclusion
-	// rules (showArchived) flips, OR when the index transitions to
-	// 'ready' under an already-typed query (cold load: user typed before
-	// bootstrap finished; once it's ready, populate the result set).
-	// Skipped for the server FTS path because that's handled by the
-	// debounced timer.
-	$effect(() => {
-		void showArchived;
-		void indexReady;
-		const trimmed = searchQuery.trim();
-		if (!trimmed) return;
-		if (BODY_SEARCH_PREFIX_RE.test(trimmed)) return;
-		if (!indexReady) return;
+		// rows — runs synchronously on every dependency change. PLAN-1343
+		// Phase 3b acceptance: keystroke → first results <50ms P95.
+		// When the index isn't ready yet (very narrow cold-load window),
+		// leave `searchResultIds = null` so the substring fallback in
+		// `filteredItems` kicks in until hydrate completes.
+		if (!indexReady) {
+			searchResultIds = null;
+			return;
+		}
 		const hits = localSearch.search(wsSlug, trimmed, {
 			collection: collSlug,
 			includeArchived: showArchived,
