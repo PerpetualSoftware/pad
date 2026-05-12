@@ -1139,6 +1139,125 @@
 	}
 
 	// --- Saved views ---
+	//
+	// Default view persistence (TASK-1366 / Phase 3d). Pure client-side
+	// preference stored in localStorage, keyed by (workspace, collection).
+	// No schema change, no cross-device sync — the DOC-1342 design
+	// explicitly recommends the localStorage path for v1 ("ships faster,
+	// no permission semantics to debate"). A server-side `is_default`
+	// column can come in a follow-up if cross-device persistence
+	// becomes important.
+
+	const DEFAULT_VIEW_KEY = 'pad-default-view';
+
+	function defaultViewKey(ws: string, coll: string): string {
+		return `${DEFAULT_VIEW_KEY}:${ws}:${coll}`;
+	}
+
+	function readDefaultViewId(ws: string, coll: string): string | null {
+		try {
+			return localStorage.getItem(defaultViewKey(ws, coll));
+		} catch {
+			return null;
+		}
+	}
+
+	function writeDefaultViewId(ws: string, coll: string, id: string | null) {
+		try {
+			if (id) localStorage.setItem(defaultViewKey(ws, coll), id);
+			else localStorage.removeItem(defaultViewKey(ws, coll));
+		} catch {
+			// Storage unavailable (private mode, quota) — degrade
+			// silently. The default stays in-session.
+		}
+	}
+
+	// Reactive: is the currently active view marked as the user's
+	// default for this (ws, coll)? Used to render the "Make default"
+	// affordance state. Re-reads localStorage on every render of the
+	// affordance — cheap and avoids stale state if another tab flipped
+	// the default. Returns null if no view is active.
+	let defaultViewId = $state<string | null>(null);
+	$effect(() => {
+		// Re-read whenever the route or active view changes so the
+		// affordance reflects the right state per page entry.
+		void wsSlug;
+		void collSlug;
+		void activeViewId;
+		if (!wsSlug || !collSlug) {
+			defaultViewId = null;
+			return;
+		}
+		defaultViewId = readDefaultViewId(wsSlug, collSlug);
+	});
+
+	let isCurrentDefault = $derived(
+		activeViewId !== null && activeViewId === defaultViewId,
+	);
+
+	function toggleMakeDefault() {
+		if (!wsSlug || !collSlug || !activeViewId) return;
+		if (isCurrentDefault) {
+			writeDefaultViewId(wsSlug, collSlug, null);
+			defaultViewId = null;
+			toastStore.show('Removed as default view', 'success');
+		} else {
+			writeDefaultViewId(wsSlug, collSlug, activeViewId);
+			defaultViewId = activeViewId;
+			toastStore.show('Set as default view for this collection', 'success');
+		}
+	}
+
+	// Apply the user's default saved view on collection-page mount.
+	// Skip when the URL already carries explicit state (search query,
+	// active filters, non-default view mode) — that signals the user
+	// arrived from a shared/bookmarked URL and shouldn't be hijacked.
+	// Re-runs on (ws, coll, savedViews ready, indexReady) transitions
+	// — the latter is important because saved views load asynchronously
+	// AFTER the page mounts.
+	let defaultViewApplied = $state(false);
+	$effect(() => {
+		void wsSlug;
+		void collSlug;
+		void savedViews;
+		if (!wsSlug || !collSlug) return;
+		if (defaultViewApplied) return;
+		// Wait for savedViews to load — empty until `loadCollection`
+		// resolves.
+		if (savedViews.length === 0) return;
+		// Don't override URL-driven state. The collection page's
+		// `loadUrlFilters` runs synchronously in onMount before this
+		// effect fires; `searchQuery` and `activeFilters` will already
+		// be populated if the URL carried params.
+		const urlOverrides =
+			searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0;
+		if (urlOverrides) {
+			defaultViewApplied = true;
+			return;
+		}
+		const id = readDefaultViewId(wsSlug, collSlug);
+		if (!id) {
+			defaultViewApplied = true;
+			return;
+		}
+		const view = savedViews.find((v) => v.id === id);
+		if (view) {
+			applyViewConfig(view);
+		} else {
+			// Stale localStorage pointer — the view was deleted by
+			// another tab / on another device. Clean up.
+			writeDefaultViewId(wsSlug, collSlug, null);
+		}
+		defaultViewApplied = true;
+	});
+
+	// Reset the one-shot apply gate whenever the route changes so the
+	// next collection entry re-evaluates its own default.
+	$effect(() => {
+		void wsSlug;
+		void collSlug;
+		defaultViewApplied = false;
+	});
 
 	function buildViewConfig(): ViewConfig {
 		const config: ViewConfig = {};
@@ -1222,6 +1341,14 @@
 			savedViews = savedViews.filter((v) => v.id !== viewId);
 			if (activeViewId === viewId) {
 				clearActiveView();
+			}
+			// Clear the persisted default if it pointed at the
+			// just-deleted view — otherwise the next entry to this
+			// collection would re-read a dangling pointer and silently
+			// no-op. TASK-1366.
+			if (defaultViewId === viewId) {
+				writeDefaultViewId(wsSlug, collSlug, null);
+				defaultViewId = null;
 			}
 			toastStore.show(`Deleted view "${viewName}"`, 'success');
 		} catch {
@@ -1460,6 +1587,15 @@
 							onclick={() => applyViewConfig(view)}
 						>
 							<span class="saved-view-name">{view.name}</span>
+							{#if defaultViewId === view.id}
+								<!--
+									Pin icon marks the saved default. Visible
+									on every tab (not just active) so users can
+									see at a glance which view will be applied
+									on next entry. TASK-1366.
+								-->
+								<span class="saved-view-default" title="Default view — applied on entry" aria-label="Default view">📌</span>
+							{/if}
 							<span
 								class="saved-view-delete"
 								role="button"
@@ -1471,6 +1607,27 @@
 							>&times;</span>
 						</button>
 					{/each}
+					{#if activeViewId !== null}
+						<!--
+							"Make default" affordance (TASK-1366 / Phase 3d).
+							Only shown when a saved view is active — toggles
+							whether THIS view becomes the per-(workspace,
+							collection) default applied on next page entry.
+							Storage is pure localStorage v1; cross-device
+							syncs would need a server-side is_default column
+							(out of scope for this phase).
+						-->
+						<button
+							class="saved-view-default-toggle"
+							class:active={isCurrentDefault}
+							onclick={toggleMakeDefault}
+							title={isCurrentDefault
+								? 'Remove as default for this collection'
+								: 'Apply this view automatically on next entry'}
+						>
+							{isCurrentDefault ? 'Default ★' : 'Make default'}
+						</button>
+					{/if}
 				</div>
 			{/if}
 
@@ -2041,6 +2198,44 @@
 	.saved-view-delete:hover {
 		color: var(--text-primary);
 		background: var(--bg-tertiary);
+	}
+
+	/* Pin icon on the default saved view (TASK-1366). */
+	.saved-view-default {
+		font-size: 0.75em;
+		line-height: 1;
+		opacity: 0.85;
+	}
+
+	/*
+		"Make default" affordance, only rendered when a saved view is
+		active. Visually subordinate to the tabs themselves — a small
+		text button that flips to filled state when the current view is
+		the persisted default.
+	*/
+	.saved-view-default-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 0.75em;
+		padding: 2px 8px;
+		border-radius: 999px;
+		color: var(--text-muted);
+		background: none;
+		border: 1px solid var(--border);
+		cursor: pointer;
+		white-space: nowrap;
+		transition: all 0.15s ease;
+		margin-left: var(--space-1);
+	}
+	.saved-view-default-toggle:hover {
+		color: var(--text-secondary);
+		background: var(--bg-hover);
+	}
+	.saved-view-default-toggle.active {
+		color: var(--accent-amber);
+		border-color: color-mix(in srgb, var(--accent-amber) 40%, transparent);
+		background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
 	}
 
 	/* Save view form */
