@@ -191,8 +191,8 @@ Items can carry image and file attachments. They appear in item content as `![al
 **Hard rule for agents:** NEVER read files directly from `~/.pad/attachments/<storage_key>`. That bypasses workspace ACLs, doesn't work on Pad Cloud / remote / Postgres deployments, skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop), and breaks when storage moves to S3. Always go through `pad attachment view|show|list|download` so the request is authenticated and works on every Pad install.
 
 **Planning:**
-- "let's create a plan" → `/pad plan <topic>` if the `plan` playbook is activated; otherwise inline workflow (see below)
-- "break plan 2 into tasks" → `/pad decompose PLAN-2` if the `decompose` playbook is activated; otherwise inline workflow
+- "let's create a plan" → `/pad plan <topic>` (canonical entry; activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=plan, status=active`)
+- "break plan 2 into tasks" → `/pad decompose PLAN-2` (same activation story)
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
@@ -396,11 +396,11 @@ For everything else (`pad workspace init`, `pad agent install`, `pad github link
 
 ### Planning: "Let's create a plan"
 
-Use the `plan` invokable playbook: **`/pad plan <topic>`**. Software templates auto-seed it (`softwareStarterPlaybookTitles`); confirm activation via the bootstrap's `playbooks` array (look for `invocation_slug=plan, status=active`) or run `pad playbook show plan`. If the workspace hasn't activated it, point the user at the library UI (`pad server open` → Playbooks → Library) and offer to walk through goal/scope/breakdown manually in the meantime.
+Use the `plan` invokable playbook: **`/pad plan <topic>`**. Software templates auto-seed it (`softwareStarterPlaybookTitles`); confirm activation by looking for `invocation_slug=plan, status=active` in the bootstrap's `playbooks` array — `pad playbook show plan` resolves by slug regardless of status, so it can't be used as an activation check on its own. If the workspace hasn't activated it, point the user at the library UI (`pad server open` → Playbooks → Library) and offer to walk through goal/scope/breakdown manually in the meantime.
 
 ### Decomposition: "Break plan X into tasks"
 
-Use the `decompose` invokable playbook: **`/pad decompose <PLAN-ref>`**. Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — auto-seeded for software templates; library activation otherwise.
+Use the `decompose` invokable playbook: **`/pad decompose <PLAN-ref>`**. Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 
