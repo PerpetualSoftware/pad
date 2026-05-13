@@ -30,6 +30,23 @@ func PlaybookLibrary() []PlaybookCategory {
 			Name:        "workflow",
 			Description: "Core development workflows",
 			Playbooks: []LibraryPlaybook{
+				// `ship` is the headline invokable example from PLAN-1377.
+				// Library entry and startup-template seed share the same
+				// body + argument spec (shipPlaybookBody /
+				// shipPlaybookArguments) so updates live in one place.
+				// Title matches ShipPlaybook()'s SeedPlaybook so the
+				// library UI's activePlaybookTitles set (matched by
+				// title) renders this as "Active" in `startup`
+				// workspaces where it's already seeded.
+				{
+					Title:          "Ship tasks",
+					Category:       "workflow",
+					Trigger:        "manual",
+					Scope:          "all",
+					InvocationSlug: "ship",
+					Arguments:      shipPlaybookArguments,
+					Content:        shipPlaybookBody,
+				},
 				{
 					Title:    "Implementation Workflow",
 					Category: "workflow",
