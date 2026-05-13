@@ -150,12 +150,13 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 //	TASK-1411 — 16 KiB (baseline benchmark added; fixture at 13,861 bytes)
 //	TASK-1412 — 11 KiB (slim BootstrapCollection projection; fixture at 8,992 bytes — collections section dropped from 8,848 to 3,979 bytes)
 //	TASK-1413 — 8 KiB  (dedup top-level recent_activity, drop convention slug, cap dashboard.attention/recent_activity to 5 with overflow counts; fixture at 6,355 bytes — total dropped another 2,637 bytes)
+//	TASK-1417 — 7 KiB  (close-out: bootstrap shape work complete, fixture still at 6,355 bytes; locks in the cumulative -54.2% win with ~12.8% headroom for routine schema reordering)
 //
-// The remaining PRs in PLAN-1410 are skill-side trims that don't affect
-// the bootstrap response shape, plus TASK-1417's final measurement
-// step. The constant intentionally lives next to the test that consumes
-// it so PRs touching the bootstrap shape see the budget in the diff.
-const bootstrapSizeBudget = 8 * 1024
+// PLAN-1410 followups land their own wins under their own budget
+// ratchets (e.g. IDEA-1421's dashboard sub-array caps). The constant
+// intentionally lives next to the test that consumes it so PRs
+// touching the bootstrap shape see the budget in the diff.
+const bootstrapSizeBudget = 7 * 1024
 
 // TestBootstrapSizeBudget locks in a payload-size budget for the
 // bootstrap response so future regressions are caught at PR time.
