@@ -2,12 +2,18 @@ package collections
 
 // LibraryPlaybook holds a pre-built playbook definition that can be
 // activated (created as an item) in a workspace's Playbooks collection.
+//
+// InvocationSlug and Arguments are PLAN-1377's invocation surface. When
+// set, the library entry becomes user-callable as `/pad <slug>`. Leave
+// both unset for trigger-only checklist playbooks (legacy shape).
 type LibraryPlaybook struct {
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Category string `json:"category"` // workflow, planning, quality, operations
-	Trigger  string `json:"trigger"`  // on-implement, on-triage, on-release, on-plan, on-review, on-deploy, manual
-	Scope    string `json:"scope"`    // all, backend, frontend, etc.
+	Title          string           `json:"title"`
+	Content        string           `json:"content"`
+	Category       string           `json:"category"`                  // workflow, planning, quality, operations
+	Trigger        string           `json:"trigger"`                   // on-implement, on-triage, on-release, on-plan, on-review, on-deploy, manual
+	Scope          string           `json:"scope"`                     // all, backend, frontend, etc.
+	InvocationSlug string           `json:"invocation_slug,omitempty"` // kebab-case slug for `/pad <slug>` routing
+	Arguments      []map[string]any `json:"arguments,omitempty"`       // argument spec mirroring the body's `## Arguments` section
 }
 
 // PlaybookCategory groups related playbooks under a named category.

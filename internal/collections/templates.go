@@ -213,20 +213,33 @@ func seedConventionFromLibrary(c LibraryConvention) SeedConvention {
 }
 
 // seedPlaybookFromLibrary converts a LibraryPlaybook into a SeedPlaybook.
+//
+// InvocationSlug and Arguments are forwarded into the seeded item's
+// Fields JSON only when set, mirroring ShipPlaybook()'s shape
+// (templates_startup_ship.go::ShipPlaybook). Library entries that
+// leave them empty produce the legacy trigger-only field set, so
+// activation behavior is backward-compatible.
 func seedPlaybookFromLibrary(p LibraryPlaybook) SeedPlaybook {
 	scope := p.Scope
 	if scope == "" {
 		scope = "all"
 	}
-	fields, _ := json.Marshal(map[string]string{
+	fields := map[string]any{
 		"status":  "active",
 		"trigger": p.Trigger,
 		"scope":   scope,
-	})
+	}
+	if p.InvocationSlug != "" {
+		fields["invocation_slug"] = p.InvocationSlug
+	}
+	if len(p.Arguments) > 0 {
+		fields["arguments"] = p.Arguments
+	}
+	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
 		Title:   p.Title,
 		Content: p.Content,
-		Fields:  string(fields),
+		Fields:  string(encoded),
 	}
 }
 
