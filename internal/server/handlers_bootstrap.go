@@ -395,8 +395,10 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 
 	// Dashboard — recreate via the existing handler logic if a request
 	// context is available, then wrap in BootstrapDashboard so the
-	// bootstrap-side cap on `attention` and `recent_activity` (with
-	// overflow counts) doesn't leak into the `GET /dashboard` contract.
+	// bootstrap-side caps on `attention`, `recent_activity`,
+	// `active_items`, `active_plans`, and `by_role` (each with its
+	// `*_overflow_count` companion) don't leak into the
+	// `GET /dashboard` contract.
 	if r != nil {
 		dash, derr := s.buildDashboardResponse(workspaceID, r)
 		if derr == nil && dash != nil {
