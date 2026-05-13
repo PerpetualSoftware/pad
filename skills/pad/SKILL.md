@@ -179,10 +179,12 @@ Interpret the user's intent and route to the appropriate action. Here are common
 1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable as `/pad <slug>`. Leave blank for trigger-only playbooks that fire automatically (e.g. `trigger=on-release`).
 2. **`arguments`** (optional, JSON array) — declares the args. Types: `ref`, `string`, `flag`, `enum`, `number`. Mirror the spec in the body's `## Arguments` section so a human reading the playbook sees the same contract.
 
+**Activation matters.** New playbooks default to `status=draft`; slug routing and trigger-intent matching only dispatch `status=active` entries. ALWAYS include `--field status=active` on `pad item create playbook` (or flip the status field in the Web UI editor) when the user wants the playbook to fire — otherwise `/pad <slug>` will silently fall through to NL routing.
+
 Authoring options:
 
-- **CLI:** `pad item create playbook "Title" --field trigger=... --field invocation_slug=... --field 'arguments=[...]' --stdin <<EOF ... EOF` — `--field` is schema-aware as of BUG-1125; pass the `arguments` array as a JSON literal. Run `pad item create playbook --help` for flags.
-- **Web UI:** `/{username}/{workspace}/playbooks` → "+ New Playbook" (`pad server open`). Form-based flow with kebab-case slug uniqueness check and structured arguments builder; two-way binds with the body's `## Arguments` section.
+- **CLI:** `pad item create playbook "Title" --field status=active --field trigger=... --field invocation_slug=... --field 'arguments=[...]' --stdin <<EOF ... EOF` — `--field` is schema-aware as of BUG-1125; pass the `arguments` array as a JSON literal. Run `pad item create playbook --help` for flags.
+- **Web UI:** `/{username}/{workspace}/playbooks` → "+ New Playbook" (`pad server open`). Form-based flow with kebab-case slug uniqueness check and structured arguments builder; flip status from `draft` to `active` before save.
 
 After creation, point the user at `/pad <slug>` for the new invocation, or — for trigger-only playbooks — at the action that will auto-load it ("This will fire on the next `on-release` action").
 
