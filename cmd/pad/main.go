@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	goMime "mime"
 	"net/http"
 	"net/url"
@@ -2821,7 +2822,14 @@ func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
 			}
 		case "number":
 			if f, err := strconv.ParseFloat(raw, 64); err == nil {
-				return f
+				// Reject NaN / ±Inf — encoding/json can't marshal them, and
+				// the downstream json.Marshal(fields) error is ignored, so
+				// returning a non-finite float would silently drop the entire
+				// fields payload. Falling back to the raw string lets the
+				// server validator return a useful "must be a number" error.
+				if !math.IsNaN(f) && !math.IsInf(f, 0) {
+					return f
+				}
 			}
 		case "checkbox":
 			if b, err := strconv.ParseBool(raw); err == nil {
