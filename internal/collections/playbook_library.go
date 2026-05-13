@@ -51,6 +51,11 @@ func PlaybookLibrary() []PlaybookCategory {
 				// Body + arguments live in playbook_library_plan.go so
 				// the library file stays focused on the registry.
 				PlanPlaybook(),
+				// `decompose` is the natural follow-up to `plan`:
+				// takes a plan and creates the child task items its
+				// body implies. Body + arguments live in
+				// playbook_library_decompose.go.
+				DecomposePlaybook(),
 				{
 					Title:    "Implementation Workflow",
 					Category: "workflow",
