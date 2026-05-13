@@ -199,9 +199,11 @@ pad mcp status                # Install state across supported clients
 ```
 
 Surface:
-- **Tools:** the v0.2 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does.
-- **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, plus the server-wide `pad://_meta/version`.
+- **Tools:** the v0.2 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does. `pad_playbook` is the playbook surface from PLAN-1377 — `list`/`get`/`run` mirror the CLI's `pad playbook` subcommands; `run` is side-effect-free and returns the body + bound args for the agent to execute.
+- **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, `pad://workspace/{ws}/bootstrap` (one-shot workspace overview — user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity), plus the server-wide `pad://_meta/version`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
+
+**`pad_set_workspace`** pins the session default workspace; its response embeds the bootstrap blob so agents pin + load workspace context in one round-trip. The same payload is available on demand via `pad_meta.action: bootstrap` and the `pad://workspace/{ws}/bootstrap` resource.
 
 **Stability contract.** Two version constants live in `internal/mcp/version.go`, advertised in the handshake under `capabilities.experimental.padCmdhelp` and `capabilities.experimental.padToolSurface`:
 - `CmdhelpVersion` (currently `"0.1"`) — the cmdhelp CLI help-tree contract. Bump when CLI flag/arg schemas change incompatibly.
@@ -230,6 +232,36 @@ Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public d
 - Each template ships a curated starter pack (conventions + playbooks + sample items) appropriate to its domain — trigger vocabularies vary (`on-commit` vs `on-candidate-advance` vs `on-interview-scheduled`).
 - Set the template via `pad workspace init --template <name>`. Running `pad init` with no flag in a TTY opens an interactive picker grouped by category. Run `pad workspace init --list-templates` to see the current catalog.
 - See `PLAN-609` and `IDEA-583` in this workspace for the design history.
+
+## Playbooks
+
+Playbooks are first-class invokable procedures. They live in the `playbooks` collection (typed item, just like Tasks/Ideas/Plans) but carry two extra fields that make them user-callable:
+
+- **`invocation_slug`** — optional, workspace-unique, kebab-case (regex `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 2+ chars). When set, the agent dispatches `/pad <slug>` directly to this playbook (slug routing). Leave blank for trigger-only playbooks (e.g. `trigger=on-release` that auto-load on intent match).
+- **`arguments`** — JSON array of `{name, type, required, default, description, enum}` entries. Types: `ref`, `string`, `flag`, `enum`, `number`. Mirrors the playbook body's `## Arguments` section; the structured field is the queryable form (used by `pad playbook run`'s strict parser) and the markdown is the human-readable mirror.
+
+**Invocation model.** Three surfaces, one playbook:
+
+- **Claude Code (agent NL):** `/pad ship PLAN-1377 stop-after-each` — the `/pad` skill matches the first token against the bootstrap's playbook slug list and binds the rest with flexible NL parsing.
+- **CLI (strict positional):** `pad playbook run ship TASK-10,TASK-11 merge-strategy=rebase` — the server applies strict positional + bareword-flag + `key=value` parsing.
+- **MCP:** `pad_playbook` tool with `action: list | get | run`. `run` accepts either a pre-parsed `args` map or raw CLI tokens via `raw_args`.
+
+**Bootstrap returns metadata at startup.** `pad bootstrap` (CLI + `GET /api/v1/workspaces/{ws}/bootstrap` + `pad://workspace/{ws}/bootstrap` resource + `pad_set_workspace` response embed) returns the workspace's playbook metadata in one round-trip — `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary` per entry. **No bodies** in the bootstrap blob; the agent loads the full body via `pad playbook show <slug>` only when invoking. Keeps context light while still letting the agent route `/pad ship` without a tool call.
+
+**Seeded `ship` playbook.** The `startup` template ships a generic `ship` playbook (`invocation_slug=ship`) derived from the personal `/ship-tasks` slash command. Fresh `pad workspace init --template startup` workspaces get it as PLAYB-N out of the box. See `internal/collections/templates_startup_ship.go` for the body + de-personalization choices.
+
+**Web UI editor.** `web/src/routes/[username]/[workspace]/playbooks/[slug]/+page.svelte` is the dedicated playbook editor — kebab-case slug input with debounced uniqueness check, structured arguments builder that round-trips with the body's `## Arguments` section, trigger selector with custom-trigger escape, and a "Test invocation" helper that renders `/pad`, `pad playbook run`, and `pad_playbook` MCP JSON forms from a slug + sample inputs. The reusable component lives at `web/src/lib/components/playbooks/PlaybookFormFields.svelte` and the shared parser/generator at `web/src/lib/playbooks/arguments.ts`.
+
+**Code map:**
+
+- `internal/server/handlers_playbooks.go` — `pad playbook list|show|run` HTTP handlers; `ParsePlaybookCLIArgs`, `resolvePlaybook`.
+- `internal/server/handlers_bootstrap.go` — `pad bootstrap`; embeds playbook metadata.
+- `internal/mcp/catalog_playbook.go` — `pad_playbook` MCP tool catalog entry.
+- `internal/collections/templates.go` — playbooks collection schema (`invocation_slug` + `arguments` fields).
+- `internal/collections/templates_startup_ship.go` — the seeded `ship` playbook.
+- `web/src/lib/playbooks/arguments.ts` — `## Arguments` parser/generator, `INVOCATION_SLUG_PATTERN`, `buildTestInvocation`.
+
+See `PLAN-1377` and `IDEA-1368` in this workspace for the design history.
 
 ## Testing
 

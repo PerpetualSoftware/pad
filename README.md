@@ -102,7 +102,7 @@ Then just talk to your project:
 **Conventions and playbooks** teach agents how your project works:
 
 - **Conventions** — trigger-based rules like "run tests before marking a task done" or "use conventional commits"
-- **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement"
+- **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement". Playbooks can declare a kebab-case `invocation_slug` so users can invoke them directly: `/pad ship PLAN-42`, `/pad release 0.5.0`. Fresh `startup` workspaces ship a generic `ship` playbook out of the box.
 
 ```bash
 pad item create convention "Run tests before completing tasks" \
