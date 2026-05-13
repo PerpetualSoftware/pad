@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -22,12 +23,75 @@ import (
 type AgentBootstrap struct {
 	Workspace      AgentBootstrapWorkspace      `json:"workspace"`
 	User           AgentBootstrapUser           `json:"user"`
-	Collections    []models.Collection          `json:"collections"`
+	Collections    []BootstrapCollection        `json:"collections"`
 	Conventions    []AgentBootstrapConvention   `json:"conventions"`
 	Roles          []models.AgentRole           `json:"roles"`
 	Playbooks      []AgentBootstrapPlaybookMeta `json:"playbooks"`
 	Dashboard      *DashboardResponse           `json:"dashboard,omitempty"`
 	RecentActivity []DashboardActivity          `json:"recent_activity"`
+}
+
+// BootstrapCollection is the lightweight collection projection delivered
+// in the agent bootstrap response. Distinct from models.Collection: drops
+// fields the agent never reads (id, workspace_id, created_at, updated_at,
+// deleted_at) and the web-UI `settings` blob (quick-action prompts,
+// default views, group-by hints) so the per-invocation payload stays
+// tight. The `schema` field is delivered as a nested JSON object rather
+// than a JSON-encoded string so the agent sees real `{}`/`[]` structure
+// instead of backslash-escaped quotes — roughly 25% byte reduction on
+// the schema field alone, more when escape-heavy.
+//
+// Fields preserved are exactly what the /pad skill consumes:
+//   - slug / name / prefix / icon / description — addressing + listing
+//   - schema — drives `pad item create/update --field key=value` validation
+//   - item_count / active_item_count — surface-area counts in greetings
+//   - is_default / is_system — distinguish template seeds from custom collections
+//   - sort_order — preserves the workspace's authored ordering
+//
+// PLAN-1410 / TASK-1412. Pairs with the bootstrapSizeBudget benchmark
+// added in TASK-1411 — landing this projection tightens the budget by
+// ~25-30% of the collections section.
+type BootstrapCollection struct {
+	Slug            string          `json:"slug"`
+	Name            string          `json:"name"`
+	Prefix          string          `json:"prefix"`
+	Icon            string          `json:"icon,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	Schema          json.RawMessage `json:"schema,omitempty"`
+	SortOrder       int             `json:"sort_order"`
+	IsDefault       bool            `json:"is_default"`
+	IsSystem        bool            `json:"is_system"`
+	ItemCount       int             `json:"item_count"`
+	ActiveItemCount int             `json:"active_item_count"`
+}
+
+// projectBootstrapCollection converts a models.Collection into the slim
+// bootstrap projection. The `schema` field is emitted as a nested JSON
+// object when the stored string is valid JSON; an empty or malformed
+// schema is omitted (omitempty + nil RawMessage) so the response never
+// carries garbage that would break agent-side json.Unmarshal.
+//
+// json.Valid() is cheap (single byte-stream pass, no allocation) and
+// guarantees the wire shape stays parseable even if a future migration
+// or buggy write leaves a non-JSON value in the column. Defensive only:
+// every collection created via the API today writes valid JSON.
+func projectBootstrapCollection(c models.Collection) BootstrapCollection {
+	out := BootstrapCollection{
+		Slug:            c.Slug,
+		Name:            c.Name,
+		Prefix:          c.Prefix,
+		Icon:            c.Icon,
+		Description:     c.Description,
+		SortOrder:       c.SortOrder,
+		IsDefault:       c.IsDefault,
+		IsSystem:        c.IsSystem,
+		ItemCount:       c.ItemCount,
+		ActiveItemCount: c.ActiveItemCount,
+	}
+	if s := strings.TrimSpace(c.Schema); s != "" && json.Valid([]byte(s)) {
+		out.Schema = json.RawMessage(s)
+	}
+	return out
 }
 
 // AgentBootstrapWorkspace is the minimal workspace projection (slug + name
@@ -157,9 +221,13 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		}
 	}
 
-	// Collections — keep the same shape ListCollections returns, filtered
-	// by visibility so a guest only sees collections they're permitted
-	// into. Mirrors handleListCollections.
+	// Collections — load and apply visibility filtering. We hold these
+	// in their full models.Collection shape through the role/count
+	// recompute below (which keys lookups by Collection.ID), then
+	// project to BootstrapCollection at the end of this section. The
+	// projection drops id/workspace_id/timestamps/settings and parses
+	// the schema string into a nested object — see BootstrapCollection
+	// godoc + PLAN-1410 / TASK-1412.
 	collections, err := s.store.ListCollections(workspaceID)
 	if err != nil {
 		return nil, err
@@ -173,7 +241,6 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		}
 		collections = filtered
 	}
-	out.Collections = collections
 
 	// Build the (collectionIDs, itemIDs) tuple the sub-queries should
 	// project through. When the caller has item-level grants, switch to
@@ -189,7 +256,7 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	// Conventions — only the always-on, active set, restricted by the
 	// caller's authorized view. A guest with a grant to one specific
 	// convention item gets only that item, not the whole always-on set.
-	conventionsCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "conventions")
+	conventionsCollVisible := visibleIDs == nil || isCollectionSlugVisible(collections, "conventions")
 	if conventionsCollVisible {
 		convs, cerr := s.collectAlwaysOnConventions(workspaceID, subCollIDs, subItemIDs)
 		if cerr != nil {
@@ -242,8 +309,12 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		// callers see a self-consistent number rather than a leaked
 		// full-workspace value. Full members keep the store-side
 		// active_item_count untouched.
-		for i := range out.Collections {
-			c := &out.Collections[i]
+		//
+		// We mutate the local `collections` slice (models.Collection
+		// shape) here, before the bootstrap projection below — keyed
+		// by Collection.ID, which the projection drops.
+		for i := range collections {
+			c := &collections[i]
 			c.ItemCount = collItemCounts[c.ID]
 			c.ActiveItemCount = collItemCounts[c.ID]
 		}
@@ -254,10 +325,17 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	}
 	out.Roles = roles
 
+	// Project collections into the slim bootstrap shape now that
+	// counts (above) have been recomputed for restricted callers.
+	out.Collections = make([]BootstrapCollection, 0, len(collections))
+	for _, c := range collections {
+		out.Collections = append(out.Collections, projectBootstrapCollection(c))
+	}
+
 	// Playbooks (metadata only) — restricted to the caller's authorized
 	// view. A guest granted one specific playbook item sees that one,
 	// not the whole collection.
-	playbooksCollVisible := visibleIDs == nil || isCollectionSlugVisible(out.Collections, "playbooks")
+	playbooksCollVisible := visibleIDs == nil || isCollectionSlugVisible(collections, "playbooks")
 	if playbooksCollVisible {
 		playbooks, perr := s.collectPlaybookMetadata(workspaceID, subCollIDs, subItemIDs)
 		if perr != nil {

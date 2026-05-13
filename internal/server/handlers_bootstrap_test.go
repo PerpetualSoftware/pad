@@ -131,16 +131,16 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 // keeps later shape-change PRs honest: each one tightens this constant
 // once the win is measured against the fixture.
 //
-// Initial budget (TASK-1411): the seeded fixture currently encodes to
-// ~13.8 KB; the budget is set at 16 KiB to give ~2 KB headroom for
-// minor non-shape variance (e.g. an extra timestamp millisecond, schema
-// reordering) without admitting silent regressions. Later PLAN-1410 PRs
-// tighten this constant once the win is measured against the fixture —
-// TASK-1417's measurement step records the post-trim actual.
+// Budget history (each line is a PLAN-1410 PR that landed a win):
 //
-// The constant intentionally lives next to the test that consumes it so
-// PRs touching the bootstrap shape see the budget in the diff.
-const bootstrapSizeBudget = 16 * 1024
+//	TASK-1411 — 16 KiB (baseline benchmark added; fixture at 13,861 bytes)
+//	TASK-1412 — 11 KiB (slim BootstrapCollection projection; fixture at 8,992 bytes — collections section dropped from 8,848 to 3,979 bytes)
+//
+// The next PRs in PLAN-1410 tighten this further (TASK-1413's dedup +
+// caps; TASK-1417's final measurement). The constant intentionally
+// lives next to the test that consumes it so PRs touching the bootstrap
+// shape see the budget in the diff.
+const bootstrapSizeBudget = 11 * 1024
 
 // TestBootstrapSizeBudget locks in a payload-size budget for the
 // bootstrap response so future regressions are caught at PR time.
