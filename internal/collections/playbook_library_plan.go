@@ -153,7 +153,7 @@ Don't push — just offer and respect the answer.
 
 ## Philosophy
 
-- **Conversation before creation.** Never create the plan until step 6, and never create tasks here — that's the next playbook's job.
+- **Conversation before creation.** Never create the plan until step 6, and never create any tasks before the user has approved the breakdown in step 5. In step 7, prefer delegating task creation to the ` + "`decompose`" + ` playbook when it's available; only fall back to inline ` + "`pad item create task`" + ` calls if the user opts in and no decompose playbook is activated.
 - **Out-of-scope is more useful than in-scope.** What you decide not to do is the harder, more valuable list.
 - **Generic across project types.** A research workspace plans an experiment; a hiring workspace plans a recruiting push; a software workspace plans a feature. The structure is the same; the vocabulary adapts via the conversation.
 - **Wiki-link related items.** ` + "`[[Title]]`" + ` references build the audit trail. Drift between sibling work surfaces here.
