@@ -7,9 +7,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// padMetaTool is the v0.2 server-introspection tool. Three actions,
-// all handled inline (no CLI dispatch) — they read in-memory state
-// and return JSON.
+// padMetaTool is the v0.3 server-introspection tool. Four actions —
+// three handled inline (read in-memory state and return JSON), one
+// (bootstrap) dispatches through env.Dispatch since it needs workspace
+// context and the same underlying CLI handler the bootstrap resource
+// uses.
 //
 // Why a tool and not just resources: pad://_meta/version is the
 // canonical resource for read-only version metadata, but tools/list
@@ -19,13 +21,18 @@ import (
 // surface in one tool call. pad_meta complements RegisterMeta — it
 // doesn't replace it.
 //
-// The three actions:
+// The four actions:
 //
 //   - server-info   → {name, version} — minimal handshake-equivalent.
 //   - version       → MetaPayload — same JSON the meta resource serves.
 //   - tool-surface  → {tools: [...]} — full catalog for getpad.dev/docs/mcp.
+//   - bootstrap     → AgentBootstrap blob (PLAN-1377 / TASK-1380). Equivalent
+//                     to pad://workspace/{ws}/bootstrap and pad_set_workspace's
+//                     embedded response.
 //
-// All inline → padMetaTool's actions never call env.Dispatch.
+// server-info / version / tool-surface are inline (no env.Dispatch);
+// bootstrap shells through env.Dispatch so it reuses the canonical CLI/HTTP
+// handler instead of forking workspace context loading.
 
 func init() {
 	appendToCatalog(padMetaTool)
@@ -50,18 +57,18 @@ var padMetaTool = ToolDef{
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, the v0.2 tool catalog, and the agent bootstrap blob.
+const padMetaToolDescription = `Server introspection — version, capabilities, the v0.3 tool catalog, and the agent bootstrap blob.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — v0.2 catalog dump: every tool managed by the hand-curated catalog,
-                  its actions, and its input schema. During PLAN-969's rollout the
-                  cmdhelp walker also contributes to tools/list; tool-surface
-                  intentionally only enumerates the catalog (the source it can
-                  introspect cleanly). For the complete advertised surface, read
-                  tools/list directly.
+  tool-surface  — v0.3 catalog dump: every tool managed by the hand-curated
+                  catalog (the eight resource × action tools — pad_set_workspace
+                  is registered separately and not included), its actions, and
+                  its input schema. tools/list also contains pad_set_workspace
+                  and matches the catalog otherwise — the historical cmdhelp
+                  walker was retired in TASK-981.
   bootstrap     — Consolidated agent context-load blob (workspace + user + collections
                   + always-on conventions + roles + playbook metadata + dashboard +
                   recent activity). On-demand refresh for agents that didn't get the
@@ -117,22 +124,23 @@ func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEn
 	return env.Dispatch(ctx, []string{"bootstrap"}, input)
 }
 
-// actionMetaToolSurface returns the v0.2 catalog as JSON. Pairs with
+// actionMetaToolSurface returns the v0.3 catalog as JSON. Pairs with
 // PLAN-943 TASK-957 (getpad.dev/docs/mcp) — that page can generate
 // docs from this single canonical source instead of re-introspecting
 // tools/list and reverse-engineering action enums.
 //
-// Scope: the v0.2 catalog only. Until TASK-981 retires the cmdhelp
-// walker, tools/list contains both the catalog (currently pad_meta)
-// AND the walker-derived ~85 verb tools — but tool-surface
-// deliberately does not enumerate the walker output. The walker
-// surface is opaque to the catalog (no shared ToolDef shape), and
-// hand-mapping it would cost duplication for value that's about to
-// disappear in TASK-981.
+// Scope: the v0.3 catalog only — the eight hand-curated resource × action
+// tools (pad_item, pad_workspace, pad_collection, pad_project, pad_role,
+// pad_search, pad_playbook, pad_meta). pad_set_workspace is registered
+// separately and NOT enumerated here — `actionMetaToolSurface` loops
+// env.Catalog only. Consumers building from tool-surface should account
+// for pad_set_workspace as a known extra (always present in tools/list).
+// The historical cmdhelp leaf walker was retired in TASK-981.
 //
-// During rollout the response includes a `rollout_status` field so
-// consumers can detect "catalog is partial" and fall back to
-// tools/list when they need the complete advertised surface.
+// The response carries a `rollout_status` field that callers should
+// treat as opaque metadata — populated for backwards compatibility
+// with consumers that branched on it during the v0.1→v0.2 cmdhelp
+// retirement.
 //
 // Schema: per-tool entries carry name + description + workspace flag +
 // actions[] + params[]. The params list is synthesized to mirror what

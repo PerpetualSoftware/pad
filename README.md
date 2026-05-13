@@ -102,7 +102,7 @@ Then just talk to your project:
 **Conventions and playbooks** teach agents how your project works:
 
 - **Conventions** — trigger-based rules like "run tests before marking a task done" or "use conventional commits"
-- **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement"
+- **Playbooks** — multi-step workflows like "when implementing a feature: read the spec, create a branch, write tests first, then implement". Playbooks can declare a kebab-case `invocation_slug` so users can invoke them directly: `/pad ship PLAN-42`, `/pad release 0.5.0`. Fresh `startup` workspaces ship a generic `ship` playbook out of the box.
 
 ```bash
 pad item create convention "Run tests before completing tasks" \
@@ -251,7 +251,7 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-**Tool catalog (v0.2)** — eight resource × action tools, no flat verb explosion:
+**Tool catalog (v0.3)** — eight resource × action tools plus `pad_set_workspace` (nine total), no flat verb explosion:
 
 | Tool | Actions |
 |---|---|
@@ -261,12 +261,14 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 | `pad_project` | `dashboard`, `next`, `standup`, `changelog` |
 | `pad_role` | `list`, `create`, `delete` |
 | `pad_search` | `query` |
-| `pad_meta` | `server-info`, `version`, `tool-surface` |
-| `pad_set_workspace` | session-default workspace pinning |
+| `pad_playbook` | `list`, `get`, `run` |
+| `pad_meta` | `server-info`, `version`, `tool-surface`, `bootstrap` |
+| `pad_set_workspace` | session-default workspace pinning (response embeds the bootstrap blob) |
 
 Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
 `pad://workspace/{ws}/items`, `pad://workspace/{ws}/items/{ref}`,
-`pad://workspace/{ws}/collections`, and `pad://_meta/version`.
+`pad://workspace/{ws}/collections`, `pad://workspace/{ws}/bootstrap`,
+and `pad://_meta/version`.
 
 **Stability contract** — two version constants, both advertised in the
 initialize handshake under `capabilities.experimental.padCmdhelp` and
@@ -274,7 +276,7 @@ initialize handshake under `capabilities.experimental.padCmdhelp` and
 `pad://_meta/version`):
 
 - `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
-- `tool_surface_version: "0.2"` — MCP tool catalog contract
+- `tool_surface_version: "0.3"` — MCP tool catalog contract
 
 External agents pin against these so a future rename doesn't break them
 silently. Errors come back as structured envelopes (`{error: {code,

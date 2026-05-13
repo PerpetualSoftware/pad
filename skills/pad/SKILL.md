@@ -15,7 +15,7 @@ Every item has an **issue ID** like `TASK-5`, `BUG-8`, `IDEA-12` (collection pre
 
 The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects the workspace from `.pad.toml` in the directory tree. If `pad` is not found, tell the user: "Pad CLI not found. Install it or add it to your PATH."
 
-> **Note for agents using MCP instead of this skill:** Pad's MCP server exposes a hand-curated v0.2 tool catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta` + `pad_set_workspace`) — distinct from the CLI's verb tree this skill drives. Adding a new CLI command does NOT automatically expose it via MCP; ToolDef updates are explicit. Full reference at [getpad.dev/mcp/local](https://getpad.dev/mcp/local).
+> **Note for agents using MCP instead of this skill:** Pad's MCP server exposes a hand-curated v0.3 tool catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook` + `pad_set_workspace`) — distinct from the CLI's verb tree this skill drives. Adding a new CLI command does NOT automatically expose it via MCP; ToolDef updates are explicit. v0.3 added the playbook invocation surface (`pad_playbook.action: list|get|run`), `pad_meta.action: bootstrap`, and the `pad://workspace/{ws}/bootstrap` resource. Full reference at [getpad.dev/mcp/local](https://getpad.dev/mcp/local).
 
 ## How This Works
 
@@ -220,6 +220,59 @@ Items can carry image and file attachments. They appear in item content as `![al
 - "what conventions should this workspace follow?" → Run the workspace's onboarding playbook if one exists, otherwise suggest conventions from the library.
 - **"use pad to get IDEA-1"** (or any of `PLAN-2` / `TASK-3` / `DOC-4` in a fresh `startup` workspace) → Fetch the named seed item with `pad item show <REF> --format markdown` and let its body guide you. Each is a first-person note from the workspace owner's future self that asks you to capture their actual project. There is no special "onboarding mode" — it's just an item you read and act on like any other. Once the user has captured something useful, run `pad project dashboard` so they see what got built, point them at the web UI, and update the seed item's status to its terminal value (Ideas: `implemented`, Plans: `completed`, Tasks: `done`, Docs: `archived`) so the dashboard hint disappears.
 
+**Creating a playbook:**
+- "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create a playbook item with the structured fields the user just described.
+
+A playbook is just an item in the `playbooks` collection with two important fields:
+
+1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable as `/pad <slug>` in chat. Leave blank for trigger-only playbooks that should only fire automatically (e.g. `trigger=on-release`).
+2. **`arguments`** (optional, JSON array) — declares the args the playbook accepts. Types: `ref`, `string`, `flag`, `enum`, `number`. The structured form is mirrored in the body's `## Arguments` section so a human reading the playbook sees the same contract.
+
+**Authoring trigger-only playbooks from the CLI** — fully supported by `pad item create --field key=value`:
+
+```bash
+pad item create playbook "Release checklist" \
+  --field trigger=on-release \
+  --field scope=all \
+  --field status=active \
+  --stdin <<'EOF'
+1. Run full test suite
+2. Update CHANGELOG
+3. Tag the release
+EOF
+```
+
+**Authoring slug-invocable playbooks with arguments.** The `arguments` field on the playbooks collection is a `json` type, and `pad item create --field` only sets string values — so you can't set a structured `arguments` array directly from the CLI. Two working paths:
+
+- **Web UI playbook editor (recommended)** at `/{username}/{workspace}/playbooks` (click "+ New Playbook"). The editor lets the user (or the agent talking the user through it) declare each argument's `name / type / required / default / description / enum` in a structured form, validates the kebab-case slug + workspace uniqueness, and round-trips the spec into the body's `## Arguments` section. Open the URL with `pad server open` if the user isn't already there. This is the canonical path — the editor exists specifically for this case.
+
+- **CLI then web edit.** If the user wants the CLI flow, create the playbook with the body containing a `## Arguments` section and set everything BUT `arguments`:
+
+  ```bash
+  pad item create playbook "Cut a release" \
+    --field invocation_slug=release \
+    --field trigger=manual \
+    --field status=active \
+    --stdin <<'EOF'
+  Cut a Pad release.
+
+  ## Arguments
+
+  - `version` (string, required) — semver, e.g. 0.5.0
+
+  ## Steps
+
+  1. Verify the tree is clean and on main
+  2. Run `make test`
+  3. Tag with `git tag v$VERSION && git push --tags`
+  4. Verify CI release workflow succeeded
+  EOF
+  ```
+
+  Then open the new playbook in the web editor's structured arguments builder to declare each argument (the markdown `## Arguments` section is the human-readable mirror; the structured field is what the strict CLI parser reads, so both need to be populated). The editor's two-way binding will keep them in sync from there.
+
+After creation, point the user at `/pad <slug>` for the new invocation or, for trigger-only playbooks, the action that will auto-load it ("This will fire on the next `on-release` action").
+
 ## Before Performing Work
 
 When you are about to take action, load the relevant conventions and playbooks FIRST. The shape is always the same: match the trigger to the action you're about to take.
@@ -325,6 +378,23 @@ pad item blocked-by TASK-5 TASK-3     # "TASK-5 is blocked by TASK-3"
 pad item deps TASK-5                  # Show all dependencies for an item
 pad item unblock TASK-5 TASK-8        # Remove a dependency
 ```
+
+### Playbooks
+```bash
+# List the workspace's playbooks (metadata only — same shape as the bootstrap payload).
+pad playbook list [--format json]
+
+# Show a playbook by invocation_slug, item slug, or issue ref.
+pad playbook show ship [--format json|markdown]
+pad playbook show PLAYB-1160 --format json
+
+# Run — strict positional/flag/key=value parsing against the declared spec.
+# Side-effect-free: returns body + bound args + any unbound required args.
+# The agent executes the steps; the server never does.
+pad playbook run ship PLAN-1377 stop-after-each merge-strategy=rebase
+pad playbook run release 0.5.0 dry-run
+```
+
 
 ### Collections
 ```bash
