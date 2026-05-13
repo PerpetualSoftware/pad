@@ -89,13 +89,18 @@ const CmdhelpVersion = "0.1"
 //   - Schema field `label` omitted when label == TitleCase(key)
 //     (TASK-1424); custom labels preserved.
 //
-// All v0.4 changes are subtractive or additive (overflow counts,
-// nested schema objects). Clients that consumed v0.3 by reading the
-// preserved field names still work for those names. Clients that
-// relied on the dropped fields (UUIDs, timestamps, settings, the
-// duplicate recent_activity, convention.slug) need to switch to
-// the canonical alternatives (slugs for addressing; pad collection
-// list / pad role list for the full models when needed).
+// Compatibility note: most v0.4 changes are subtractive (dropped
+// fields) or additive (overflow counts), but ONE field had its
+// JSON type change — collections[].schema went from a
+// JSON-encoded string ("schema":"{\"fields\":[...]}") to a nested
+// JSON object ("schema":{"fields":[...]}). This is a breaking
+// change for any v0.3 consumer that read schema as a string and
+// JSON.parse()'d it themselves. Agents now read it as a parsed
+// object directly. Clients that relied on the dropped fields
+// (UUIDs, timestamps, settings, the duplicate recent_activity,
+// convention.slug) need to switch to the canonical alternatives
+// (slugs for addressing; pad collection list / pad role list for
+// the full models when needed).
 //
 // Discovery surfaces:
 //
