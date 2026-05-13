@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -161,6 +163,134 @@ func TestBootstrapRoleProjection(t *testing.T) {
 			t.Errorf("role.%s leaked into the bootstrap projection; should have been dropped by TASK-1423", key)
 		}
 	}
+}
+
+// TestBootstrapFieldDefMirrorsModelsFieldDef is the drift detector for
+// the bootstrapFieldDef parallel struct introduced in TASK-1424.
+// bootstrapFieldDef must stay structurally aligned with
+// models.FieldDef — same field names, same JSON tags (modulo the
+// deliberate `omitempty` on Label and the `json.RawMessage` swap for
+// Default). If models.FieldDef adds a new field, this test fails and
+// the developer is forced to either mirror it here or explicitly
+// decide to drop it from the bootstrap projection.
+//
+// We compare structural metadata (name + JSON key + base type) rather
+// than full Go types so the Default field's `any` → `json.RawMessage`
+// swap doesn't trip the check. Detected differences are listed with
+// the field name so the failure message points at the gap directly.
+func TestBootstrapFieldDefMirrorsModelsFieldDef(t *testing.T) {
+	canonical := reflect.TypeOf(models.FieldDef{})
+	mirror := reflect.TypeOf(bootstrapFieldDef{})
+
+	if canonical.NumField() != mirror.NumField() {
+		t.Fatalf("field count drift: models.FieldDef has %d fields, bootstrapFieldDef has %d — keep them in sync (see godoc on bootstrapFieldDef)",
+			canonical.NumField(), mirror.NumField())
+	}
+
+	// Map name → JSON tag for the canonical struct.
+	canon := make(map[string]string, canonical.NumField())
+	for i := 0; i < canonical.NumField(); i++ {
+		f := canonical.Field(i)
+		canon[f.Name] = f.Tag.Get("json")
+	}
+
+	// Allowed JSON-tag delta: the canonical has `json:"label"` (no
+	// omitempty); the mirror has `json:"label,omitempty"`. Same key,
+	// different presence rule, deliberate.
+	tagDeltaAllowed := map[string][2]string{
+		"Label": {"label", "label,omitempty"},
+	}
+
+	for i := 0; i < mirror.NumField(); i++ {
+		mf := mirror.Field(i)
+		cTag, ok := canon[mf.Name]
+		if !ok {
+			t.Errorf("bootstrapFieldDef.%s has no counterpart in models.FieldDef", mf.Name)
+			continue
+		}
+		mTag := mf.Tag.Get("json")
+		if mTag == cTag {
+			continue
+		}
+		if allowed, isExpected := tagDeltaAllowed[mf.Name]; isExpected {
+			if cTag == allowed[0] && mTag == allowed[1] {
+				continue
+			}
+		}
+		t.Errorf("JSON tag drift on %s: models.FieldDef=%q, bootstrapFieldDef=%q (unexpected — update the tagDeltaAllowed table if this divergence is deliberate)",
+			mf.Name, cTag, mTag)
+	}
+}
+
+// TestTrimRedundantSchemaLabels covers the three behaviors of the
+// label-trim projection:
+//
+//  1. Field labels matching TitleCase(key) are dropped.
+//  2. Custom labels (those that differ) are preserved.
+//  3. Missing/empty labels pass through (no-op).
+//
+// Plus a malformed-schema edge case where the function must return
+// the original bytes verbatim rather than blocking the bootstrap
+// response.
+func TestTrimRedundantSchemaLabels(t *testing.T) {
+	t.Run("drops-redundant-labels", func(t *testing.T) {
+		in := []byte(`{"fields":[{"key":"status","label":"Status","type":"select"}]}`)
+		out := trimRedundantSchemaLabels(in)
+
+		var parsed map[string][]map[string]json.RawMessage
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("decode trimmed: %v", err)
+		}
+		if _, ok := parsed["fields"][0]["label"]; ok {
+			t.Errorf("redundant `label:\"Status\"` should have been dropped from key=status, got: %s", string(out))
+		}
+	})
+
+	t.Run("preserves-custom-labels", func(t *testing.T) {
+		// label "When" for key "trigger" is NOT TitleCase(key) (which
+		// would be "Trigger"), so the custom label MUST be preserved.
+		in := []byte(`{"fields":[{"key":"trigger","label":"When","type":"select"}]}`)
+		out := trimRedundantSchemaLabels(in)
+
+		var parsed map[string][]map[string]json.RawMessage
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("decode trimmed: %v", err)
+		}
+		labelRaw, ok := parsed["fields"][0]["label"]
+		if !ok {
+			t.Fatalf("custom label `When` dropped — would lose information; got: %s", string(out))
+		}
+		var label string
+		_ = json.Unmarshal(labelRaw, &label)
+		if label != "When" {
+			t.Errorf("custom label mutated: got %q, want %q", label, "When")
+		}
+	})
+
+	t.Run("multi-word-keys-titlecase-correctly", func(t *testing.T) {
+		// snake_case → "Title Case" with spaces. "due_date" → "Due Date".
+		in := []byte(`{"fields":[{"key":"due_date","label":"Due Date","type":"date"}]}`)
+		out := trimRedundantSchemaLabels(in)
+
+		var parsed map[string][]map[string]json.RawMessage
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("decode trimmed: %v", err)
+		}
+		if _, ok := parsed["fields"][0]["label"]; ok {
+			t.Errorf("redundant `label:\"Due Date\"` should have been dropped from key=due_date, got: %s", string(out))
+		}
+	})
+
+	t.Run("malformed-schema-returns-raw", func(t *testing.T) {
+		// Defensive only — projectBootstrapCollection already gates on
+		// json.Valid() upstream, but trimRedundantSchemaLabels should
+		// never block a bootstrap response on a parse error.
+		bad := []byte(`{"fields":not valid json`)
+		out := trimRedundantSchemaLabels(bad)
+		if string(out) != string(bad) {
+			t.Errorf("malformed schema should pass through verbatim; got %q, want %q", string(out), string(bad))
+		}
+	})
 }
 
 // TestBootstrapIncludesPlaybookMetadata verifies that a seeded playbook
