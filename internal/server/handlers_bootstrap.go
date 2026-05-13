@@ -24,7 +24,7 @@ type AgentBootstrap struct {
 	User        AgentBootstrapUser           `json:"user"`
 	Collections []BootstrapCollection        `json:"collections"`
 	Conventions []AgentBootstrapConvention   `json:"conventions"`
-	Roles       []models.AgentRole           `json:"roles"`
+	Roles       []BootstrapRole              `json:"roles"`
 	Playbooks   []AgentBootstrapPlaybookMeta `json:"playbooks"`
 	Dashboard   *BootstrapDashboard          `json:"dashboard,omitempty"`
 }
@@ -90,6 +90,45 @@ func projectBootstrapCollection(c models.Collection) BootstrapCollection {
 		out.Schema = json.RawMessage(s)
 	}
 	return out
+}
+
+// BootstrapRole is the lightweight role projection delivered in the
+// agent bootstrap response. Distinct from models.AgentRole: drops
+// fields the /pad skill never reads (id, workspace_id, created_at,
+// updated_at) and the unused tools column. Same drop-pattern as
+// BootstrapCollection — agent addresses roles by slug; UUIDs and
+// timestamps are dead weight at context-load time.
+//
+// Fields preserved are exactly what the /pad skill consumes:
+//   - slug — addressing (e.g. `--role <slug>` on item create/update)
+//   - name / description / icon — greeting + role-picker rendering
+//   - item_count — surface-area count in role-queue greetings
+//   - sort_order — preserves the workspace's authored role ordering
+//
+// PLAN-1410 / TASK-1423. Mirror of TASK-1412's BootstrapCollection
+// projection.
+type BootstrapRole struct {
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	SortOrder   int    `json:"sort_order"`
+	ItemCount   int    `json:"item_count"`
+}
+
+// projectBootstrapRole converts a models.AgentRole into the slim
+// bootstrap projection. Stateless — the role count recompute for
+// restricted callers happens upstream and writes into c.ItemCount
+// before this projection runs.
+func projectBootstrapRole(r models.AgentRole) BootstrapRole {
+	return BootstrapRole{
+		Slug:        r.Slug,
+		Name:        r.Name,
+		Description: r.Description,
+		Icon:        r.Icon,
+		SortOrder:   r.SortOrder,
+		ItemCount:   r.ItemCount,
+	}
 }
 
 // AgentBootstrapWorkspace is the minimal workspace projection (slug + name
@@ -365,18 +404,26 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 			c.ItemCount = collItemCounts[c.ID]
 			c.ActiveItemCount = collItemCounts[c.ID]
 		}
-		// Overlay role counts.
+		// Overlay role counts. Same shape as collections above — mutate
+		// the local `roles` slice (models.AgentRole) here before the
+		// bootstrap projection below, keyed by AgentRole.ID which the
+		// projection drops.
 		for i := range roles {
 			roles[i].ItemCount = roleCounts[roles[i].ID]
 		}
 	}
-	out.Roles = roles
 
-	// Project collections into the slim bootstrap shape now that
-	// counts (above) have been recomputed for restricted callers.
+	// Project collections AND roles into their slim bootstrap shapes
+	// now that counts (above) have been recomputed for restricted
+	// callers. Both projections drop UUIDs / workspace IDs / timestamps;
+	// the agent addresses them by slug.
 	out.Collections = make([]BootstrapCollection, 0, len(collections))
 	for _, c := range collections {
 		out.Collections = append(out.Collections, projectBootstrapCollection(c))
+	}
+	out.Roles = make([]BootstrapRole, 0, len(roles))
+	for _, r := range roles {
+		out.Roles = append(out.Roles, projectBootstrapRole(r))
 	}
 
 	// Playbooks (metadata only) — restricted to the caller's authorized

@@ -92,6 +92,77 @@ func TestBootstrapEmptyArraysNotNull(t *testing.T) {
 	}
 }
 
+// TestBootstrapRoleProjection verifies the BootstrapRole wire shape
+// after PLAN-1410 / TASK-1423 trimmed it. Seeds one role and asserts:
+//
+//   - The projection's expected fields (slug/name/description/icon/
+//     item_count/sort_order) are present and correct.
+//   - The dropped fields (id, workspace_id, tools, created_at,
+//     updated_at) are NOT present in the marshalled JSON.
+//
+// The negative check is the load-bearing part — without it, a future
+// refactor that "fixes" the projection by re-adding a UUID would
+// pass all the positive assertions silently. Mirrors the contract
+// that TestBootstrapEmptyArraysNotNull guards on the dedup side.
+func TestBootstrapRoleProjection(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Create a role via the agent-roles endpoint so the workspace
+	// has one populated entry to project.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/agent-roles", map[string]interface{}{
+		"name":        "Planner",
+		"description": "Breaks down ideas, designs approaches",
+		"icon":        "🧠",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create role: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Fetch the bootstrap and unmarshal into a permissive shape so we
+	// can also detect the presence of fields that should NOT be there.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var raw struct {
+		Roles []map[string]json.RawMessage `json:"roles"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode roles: %v", err)
+	}
+	if len(raw.Roles) != 1 {
+		t.Fatalf("expected exactly 1 role, got %d", len(raw.Roles))
+	}
+	role := raw.Roles[0]
+
+	// Positive: required projection fields are present.
+	want := map[string]string{
+		"slug":        `"planner"`,
+		"name":        `"Planner"`,
+		"description": `"Breaks down ideas, designs approaches"`,
+		"item_count":  `0`,
+	}
+	for key, expected := range want {
+		got, ok := role[key]
+		if !ok {
+			t.Errorf("missing required projection field %q", key)
+			continue
+		}
+		if string(got) != expected {
+			t.Errorf("role.%s = %s, want %s", key, string(got), expected)
+		}
+	}
+
+	// Negative: dropped fields must NOT appear.
+	for _, key := range []string{"id", "workspace_id", "tools", "created_at", "updated_at"} {
+		if _, ok := role[key]; ok {
+			t.Errorf("role.%s leaked into the bootstrap projection; should have been dropped by TASK-1423", key)
+		}
+	}
+}
+
 // TestBootstrapIncludesPlaybookMetadata verifies that a seeded playbook
 // item flows into the bootstrap's playbooks array with the right
 // projection — slug, invocation_slug, has_arguments — without leaking
