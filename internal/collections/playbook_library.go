@@ -47,6 +47,10 @@ func PlaybookLibrary() []PlaybookCategory {
 					Arguments:      shipPlaybookArguments,
 					Content:        shipPlaybookBody,
 				},
+				// `plan` is the conversation-first companion to `ship`.
+				// Body + arguments live in playbook_library_plan.go so
+				// the library file stays focused on the registry.
+				PlanPlaybook(),
 				{
 					Title:    "Implementation Workflow",
 					Category: "workflow",
