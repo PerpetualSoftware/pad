@@ -15,8 +15,6 @@ Every item has an **issue ID** like `TASK-5`, `BUG-8`, `IDEA-12` (collection pre
 
 The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects the workspace from `.pad.toml` in the directory tree. If `pad` is not found, tell the user: "Pad CLI not found. Install it or add it to your PATH."
 
-> **Note for agents using MCP instead of this skill:** Pad's MCP server exposes a hand-curated v0.3 tool catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook` + `pad_set_workspace`) — distinct from the CLI's verb tree this skill drives. Adding a new CLI command does NOT automatically expose it via MCP; ToolDef updates are explicit. v0.3 added the playbook invocation surface (`pad_playbook.action: list|get|run`), `pad_meta.action: bootstrap`, and the `pad://workspace/{ws}/bootstrap` resource. Full reference at [getpad.dev/mcp/local](https://getpad.dev/mcp/local).
-
 ## How This Works
 
 There is **one command**: `/pad <anything>`. You interpret the user's intent and use the CLI to take action. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
@@ -141,54 +139,21 @@ If the first token isn't a known slug, fall through to the natural-language rout
 
 Interpret the user's intent and route to the appropriate action. Here are common patterns:
 
-**Role management:**
-- "as implementer" / "I'm the implementer" → Set role for this session
-- "switch to reviewer" / "change role" → Switch role
-- "drop role" / "no role" → Clear role context
-- "what role am I?" / "who am I?" → Show current user + role
-- "what roles exist?" → `pad role list --format json`
-- "create a role called Designer" → `pad role create "Designer" --description "..." --icon "🎨"`
-- "assign TASK-5 to Dave as reviewer" → `pad item update TASK-5 --role reviewer --assign Dave`
-- "what's on Dave's plate as implementer?" → `pad item list tasks --role implementer --assign Dave --format json`
-- "who's working on what?" → Show items grouped by role assignment, or suggest the role board: *"Check the role board in the web UI for a visual overview — `pad server open`"*
-- "show me the role board" → Suggest opening the web UI: `pad server open` (the role board is at /{workspace}/roles)
+**Role management:** set/switch/drop role from NL ("as implementer", "switch to reviewer", "no role"). Inspect via `pad role list`. Create via `pad role create "Name" --description "..." --icon "🔨"`. Assign via `pad item update <ref> --role <slug> --assign <user>`. For "show me the role board" / "who's working on what?", point at the web UI (`pad server open` → /{workspace}/roles).
 
-**Creating items:**
-- "I have an idea for X" → Create an Idea item
-- "new task: fix the OAuth bug" / "new candidate: Alice Johnson" → Create an item in whatever collection fits the workspace
-- "let's start a new plan for the API redesign" / "new application: Senior Engineer at Acme" → Create a Plan/Application item
-- "document the auth architecture" / "capture research on X" → Create a Doc item
-
-(Match the user's intent to the workspace's collections. A software workspace has Tasks/Ideas/Plans/Docs; a hiring workspace has Candidates/Requisitions; a research workspace has Notes/Sources. Use whatever the workspace has.)
+**Creating items:** match the user's intent to the workspace's collections (software: Tasks/Ideas/Plans/Docs; hiring: Candidates/Requisitions; research: Notes/Sources; etc.). "I have an idea for X" → Idea, "new task: fix Y" → Task, "document Z" → Doc.
 
 **Querying:**
-- "what's on my plate?" / "what should I work on?" → Role-filtered queue if role is active, otherwise `pad project next --format json`
-- "how far along are we?" / "show me status" → `pad project dashboard --format json`
-- "what server am I connected to?" / "show my Pad connection info" → `pad server info --format json`
-- "show me all tasks" / "list bugs" → `pad item list <collection> --format json`
-- "find anything about OAuth" → `pad item search "OAuth" --format json`
+- "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
+- "show me status" / "how are we doing?" → `pad project dashboard`
+- "show me all tasks" / "list bugs" → `pad item list <collection>`
+- "find anything about X" → `pad item search "X"`
 
-**Updating:**
-- "I finished the OAuth fix" / "mark TASK-5 as done" → `pad item update TASK-5 --status done --comment "OAuth redirect fix verified and deployed"`
-- "I'm starting on TASK-3" → `pad item update TASK-3 --status in-progress --comment "Beginning implementation"`
-- "deprioritize IDEA-7" → `pad item update IDEA-7 --priority low --comment "Deprioritized per team discussion"`
+**Updating:** `pad item update <ref> --status X --comment "..."` — **always** include `--comment` on status changes to explain *why*. The audit trail is the whole point. Same pattern for priority/role/assign changes.
 
-**Best practice:** Always use `--comment` when changing status to explain *why*. This creates an audit trail linking each status change to a reason.
+**Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
 
-**Working with attachments:**
-
-Items can carry image and file attachments. They appear in item content as `![alt](pad-attachment:<uuid>)` for images or `[label](pad-attachment:<uuid>)` for files. To inspect or read those bytes, **always use the CLI** — never read files directly from `~/.pad/attachments/`.
-
-- "show me the attachments on TASK-5" → `pad attachment list --item TASK-5 --format json`
-- "list all images in this workspace" → `pad attachment list --category image --format json`
-- "what is attachment <uuid>?" → `pad attachment show <uuid> --format json` (HEAD; metadata only)
-- "let me see the screenshot on TASK-5" / encountering `pad-attachment:<uuid>` in content → `pad attachment view <uuid>` then read the printed file path with your image tool
-- "save the design PDF locally" → `pad attachment view <uuid> -o ./design.pdf`
-- "upload this screenshot to TASK-5" → `pad attachment upload TASK-5 ./screenshot.png`
-
-`pad attachment view <uuid>` writes the bytes to a fresh OS temp file and prints just the absolute path on stdout, so it composes cleanly: `IMG=$(pad attachment view <uuid>) && open "$IMG"`. The filename comes from the attachment's stored name so the extension is correct.
-
-**Hard rule for agents:** NEVER read files directly from `~/.pad/attachments/<storage_key>`. That bypasses workspace ACLs, doesn't work on Pad Cloud / remote / Postgres deployments, skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop), and breaks when storage moves to S3. Always go through `pad attachment view|show|list|download` so the request is authenticated and works on every Pad install.
+**Hard rule for agents:** NEVER read directly from `~/.pad/attachments/<storage_key>`. That bypasses ACLs, breaks on Pad Cloud / remote / Postgres / S3 deployments, and skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop). Always go through the CLI.
 
 **Planning:**
 - "let's create a plan" → `/pad plan <topic>` (canonical entry; activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=plan, status=active`)
@@ -199,78 +164,27 @@ Items can carry image and file attachments. They appear in item content as `![al
 - "let's brainstorm about X" → Multi-step ideation workflow (see below)
 - "what if we added X?" → Discuss, then offer to capture as an Idea
 
-**Dependencies:**
-- "what's blocking TASK-5?" / "show deps for TASK-5" → `pad item deps TASK-5 --format json`
-- "TASK-5 blocks TASK-8" → `pad item block TASK-5 TASK-8`
-- "TASK-5 depends on TASK-3" → `pad item blocked-by TASK-5 TASK-3`
-- "remove the dependency" → `pad item unblock TASK-5 TASK-8`
+**Dependencies:** `pad item deps <ref>` to inspect; `pad item block <src> <tgt>` / `blocked-by <src> <tgt>` / `unblock <src> <tgt>` to mutate.
 
-**Reports:**
-- "prep for standup" / "what did we do?" → `pad project standup --format json`
-- "generate changelog" / "what shipped?" → `pad project changelog --format json`
-- "changelog for this plan" → `pad project changelog --parent PLAN-2 --format json`
-- "changelog since Monday" → `pad project changelog --since 2026-03-24 --format json`
+**Reports:** `pad project standup` ("prep for standup" / "what did we do?"); `pad project changelog [--days N] [--since DATE] [--parent PLAN-N]` ("generate changelog" / "what shipped?").
 
-**Retrospective:**
-- "plan 2 is done, let's retro" → Review completed work, save retrospective
+**Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**
-- "set up my workspace" / "onboard me" / "scan this codebase" → Onboarding workflow (see below). The software templates' onboarding step still scans the codebase; non-software workspaces run their own template-specific onboarding.
-- "what conventions should this workspace follow?" → Run the workspace's onboarding playbook if one exists, otherwise suggest conventions from the library.
-- **"use pad to get IDEA-1"** (or any of `PLAN-2` / `TASK-3` / `DOC-4` in a fresh `startup` workspace) → Fetch the named seed item with `pad item show <REF> --format markdown` and let its body guide you. Each is a first-person note from the workspace owner's future self that asks you to capture their actual project. There is no special "onboarding mode" — it's just an item you read and act on like any other. Once the user has captured something useful, run `pad project dashboard` so they see what got built, point them at the web UI, and update the seed item's status to its terminal value (Ideas: `implemented`, Plans: `completed`, Tasks: `done`, Docs: `archived`) so the dashboard hint disappears.
+- "set up my workspace" / "onboard me" / "scan this codebase" → Onboarding workflow (see below). Software templates scan the codebase; non-software workspaces run their own template-specific onboarding.
+- **"use pad to get IDEA-1"** (or `PLAN-2` / `TASK-3` / `DOC-4` in a fresh `startup` workspace) → Fetch the seed item with `pad item show <REF> --format markdown` and let its body guide you. It's a first-person note from the workspace owner's future self. After capturing something useful, update the seed item's status to its terminal value (Ideas: `implemented`, Plans: `completed`, Tasks: `done`, Docs: `archived`) so the dashboard hint disappears.
 
-**Creating a playbook:**
-- "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create a playbook item with the structured fields the user just described.
+**Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
 
-A playbook is just an item in the `playbooks` collection with two important fields:
+1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable as `/pad <slug>`. Leave blank for trigger-only playbooks that fire automatically (e.g. `trigger=on-release`).
+2. **`arguments`** (optional, JSON array) — declares the args. Types: `ref`, `string`, `flag`, `enum`, `number`. Mirror the spec in the body's `## Arguments` section so a human reading the playbook sees the same contract.
 
-1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable as `/pad <slug>` in chat. Leave blank for trigger-only playbooks that should only fire automatically (e.g. `trigger=on-release`).
-2. **`arguments`** (optional, JSON array) — declares the args the playbook accepts. Types: `ref`, `string`, `flag`, `enum`, `number`. The structured form is mirrored in the body's `## Arguments` section so a human reading the playbook sees the same contract.
+Authoring options:
 
-**Authoring trigger-only playbooks from the CLI** — fully supported by `pad item create --field key=value`:
+- **CLI:** `pad item create playbook "Title" --field trigger=... --field invocation_slug=... --field 'arguments=[...]' --stdin <<EOF ... EOF` — `--field` is schema-aware as of BUG-1125; pass the `arguments` array as a JSON literal. Run `pad item create playbook --help` for flags.
+- **Web UI:** `/{username}/{workspace}/playbooks` → "+ New Playbook" (`pad server open`). Form-based flow with kebab-case slug uniqueness check and structured arguments builder; two-way binds with the body's `## Arguments` section.
 
-```bash
-pad item create playbook "Release checklist" \
-  --field trigger=on-release \
-  --field scope=all \
-  --field status=active \
-  --stdin <<'EOF'
-1. Run full test suite
-2. Update CHANGELOG
-3. Tag the release
-EOF
-```
-
-**Authoring slug-invocable playbooks with arguments.** As of BUG-1125's fix, `pad item create --field` is schema-aware — pass the structured `arguments` array directly as a JSON literal and the CLI parses it into the json-typed field. The full playbook (slug + arguments + body with `## Arguments` mirror) lands in one command:
-
-```bash
-pad item create playbook "Cut a release" \
-  --field invocation_slug=release \
-  --field trigger=manual \
-  --field status=active \
-  --field 'arguments=[{"name":"version","type":"string","required":true,"description":"semver, e.g. 0.5.0"},{"name":"dry-run","type":"flag","default":false,"description":"Print what would happen, don'\''t push"}]' \
-  --stdin <<'EOF'
-Cut a Pad release.
-
-## Arguments
-
-- `version` (string, required) — semver, e.g. 0.5.0
-- `dry-run` (flag, default=false) — print what would happen, don't push
-
-## Steps
-
-1. Verify the tree is clean and on main
-2. Run `make test`
-3. Tag with `git tag v$VERSION && git push --tags`
-4. Verify CI release workflow succeeded
-EOF
-```
-
-The `arguments` JSON and the body's `## Arguments` section are the same contract expressed two ways — the structured field is what the strict CLI/MCP arg parser reads; the markdown is the human-readable mirror. Keep them in sync. For long argument specs, write the JSON to a file and inline it: `--field "arguments=$(cat /tmp/args.json)"`.
-
-**Web UI playbook editor** at `/{username}/{workspace}/playbooks` (click "+ New Playbook") is the alternative if the user prefers a form-based flow — kebab-case slug input with debounced uniqueness check, structured arguments builder, and two-way binding with the body's `## Arguments` section. Open with `pad server open`. Equally valid; pick whichever surface the user is already in.
-
-After creation, point the user at `/pad <slug>` for the new invocation or, for trigger-only playbooks, the action that will auto-load it ("This will fire on the next `on-release` action").
+After creation, point the user at `/pad <slug>` for the new invocation, or — for trigger-only playbooks — at the action that will auto-load it ("This will fire on the next `on-release` action").
 
 ## Before Performing Work
 
