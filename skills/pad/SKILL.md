@@ -396,33 +396,11 @@ For everything else (`pad workspace init`, `pad agent install`, `pad github link
 
 ### Planning: "Let's create a plan"
 
-**Canonical entry point: `/pad plan <topic>`** — when the workspace has the `plan` invokable playbook activated (visible in the bootstrap's `playbooks` array with `invocation_slug=plan`), invoke that. It's the structured, argument-bound version of the workflow below and walks the user through goal/scope/breakdown with confirmation checkpoints. The `plan` library entry seeds automatically for software templates (`softwareStarterPlaybookTitles`); workspaces using non-software templates can activate it from the library UI.
-
-If the `plan` playbook isn't activated, fall back to the inline workflow:
-
-1. **Load context:** `pad project dashboard --format json`, `pad item list plans --all --format json`
-2. **Understand current state:** What plans exist? What's active? What's completed?
-3. **Propose outline:** Present plan title + 1-line summary. Ask for feedback.
-4. **Create the plan:** `pad item create plan "Plan N: Title" --status draft --stdin <<< "<plan content>"`
-5. **Decompose into tasks:** For each task in the plan, create a Task item:
-   ```bash
-   pad item create task "Task description" --parent PLAN-3 --priority medium
-   ```
-6. **If roles exist, suggest role assignments** for each task: "This looks like Implementer work — assign to Implementer?"
-7. **Size each task for a single meaningful unit of work.** Software workspaces typically size tasks to one branch / one PR; other domains size them to one deliverable, one interview loop, one draft section, etc. Check the workspace's conventions for domain-specific sizing rules.
-8. **Ask before creating each item.** Don't bulk-create without approval.
+Use the `plan` invokable playbook: **`/pad plan <topic>`**. Software templates auto-seed it (`softwareStarterPlaybookTitles`); confirm activation via the bootstrap's `playbooks` array (look for `invocation_slug=plan, status=active`) or run `pad playbook show plan`. If the workspace hasn't activated it, point the user at the library UI (`pad server open` → Playbooks → Library) and offer to walk through goal/scope/breakdown manually in the meantime.
 
 ### Decomposition: "Break plan X into tasks"
 
-**Canonical entry point: `/pad decompose <PLAN-ref>`** — when the workspace has the `decompose` invokable playbook activated (bootstrap's `playbooks` array with `invocation_slug=decompose`), invoke that. It accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks) and handles reconciliation against existing children, dependency wiring, and per-task confirmation. Like `plan`, it auto-seeds for software templates.
-
-If the `decompose` playbook isn't activated, fall back to the inline workflow:
-
-1. **Load the plan:** `pad item show PLAN-2 --format markdown`
-2. **Analyze the content** for actionable work items
-3. **Propose task list** with titles, priorities, and suggested role assignments
-4. **Create approved tasks:** One `pad item create task` per approved item
-5. **Link tasks to plan** using `--parent PLAN-2` flag
+Use the `decompose` invokable playbook: **`/pad decompose <PLAN-ref>`**. Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — auto-seeded for software templates; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 
