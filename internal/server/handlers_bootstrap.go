@@ -56,7 +56,7 @@ type BootstrapCollection struct {
 	Icon            string          `json:"icon,omitempty"`
 	Description     string          `json:"description,omitempty"`
 	Schema          json.RawMessage `json:"schema,omitempty"`
-	SortOrder       int             `json:"sort_order"`
+	SortOrder       int             `json:"sort_order,omitempty"`
 	IsDefault       bool            `json:"is_default"`
 	IsSystem        bool            `json:"is_system"`
 	ItemCount       int             `json:"item_count"`
@@ -73,6 +73,12 @@ type BootstrapCollection struct {
 // guarantees the wire shape stays parseable even if a future migration
 // or buggy write leaves a non-JSON value in the column. Defensive only:
 // every collection created via the API today writes valid JSON.
+//
+// The schema bytes additionally go through trimRedundantSchemaLabels
+// to drop fields where `label == TitleCase(key)` — added in TASK-1424
+// to cut the schema sub-object's bytes by another ~10% (the labels
+// that match the auto-fill rule carry no information the agent can't
+// reconstruct).
 func projectBootstrapCollection(c models.Collection) BootstrapCollection {
 	out := BootstrapCollection{
 		Slug:            c.Slug,
@@ -87,9 +93,90 @@ func projectBootstrapCollection(c models.Collection) BootstrapCollection {
 		ActiveItemCount: c.ActiveItemCount,
 	}
 	if s := strings.TrimSpace(c.Schema); s != "" && json.Valid([]byte(s)) {
-		out.Schema = json.RawMessage(s)
+		out.Schema = trimRedundantSchemaLabels([]byte(s))
 	}
 	return out
+}
+
+// bootstrapSchema is the bootstrap-side schema shape, parallel to
+// models.CollectionSchema. Used only by trimRedundantSchemaLabels to
+// round-trip the schema bytes with `omitempty` on FieldDef.Label so
+// redundant labels (label == TitleCase(key)) collapse out of the
+// wire response. Custom labels — those that differ from the
+// auto-fill rule, e.g. label="When" for key="trigger" — are preserved
+// unchanged because their value is informationally distinct.
+//
+// PLAN-1410 / TASK-1424.
+type bootstrapSchema struct {
+	Fields []bootstrapFieldDef `json:"fields"`
+}
+
+// bootstrapFieldDef mirrors models.FieldDef field-for-field with two
+// differences: Label is `omitempty` (the whole point), and Default is
+// json.RawMessage so we round-trip any default value verbatim without
+// re-parsing.
+//
+// **MUST be kept in sync with models.FieldDef.** Adding a field to
+// the canonical struct without mirroring here would silently drop
+// the field from the bootstrap schema response.
+// TestBootstrapFieldDefMirrorsModelsFieldDef is the drift detector —
+// it uses reflection to assert structural parity and fails the build
+// if the two diverge.
+type bootstrapFieldDef struct {
+	Key             string          `json:"key"`
+	Label           string          `json:"label,omitempty"`
+	Type            string          `json:"type"`
+	Options         []string        `json:"options,omitempty"`
+	TerminalOptions []string        `json:"terminal_options,omitempty"`
+	Default         json.RawMessage `json:"default,omitempty"`
+	Required        bool            `json:"required,omitempty"`
+	Computed        bool            `json:"computed,omitempty"`
+	Collection      string          `json:"collection,omitempty"`
+	Suffix          string          `json:"suffix,omitempty"`
+	Pattern         string          `json:"pattern,omitempty"`
+	UniqueScope     string          `json:"unique_scope,omitempty"`
+}
+
+// trimRedundantSchemaLabels parses the schema JSON, drops field
+// labels equal to TitleCase(key), and re-marshals. Returns the
+// original bytes verbatim on any parse error so a malformed schema
+// never blocks the bootstrap response — defensive only, since
+// projectBootstrapCollection already gates on json.Valid() upstream.
+//
+// Field ordering is preserved by struct-based marshalling (Go's
+// encoding/json emits fields in struct definition order); we
+// deliberately avoid `map[string]any` which would shuffle order.
+func trimRedundantSchemaLabels(raw []byte) json.RawMessage {
+	var s bootstrapSchema
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return raw
+	}
+	for i := range s.Fields {
+		if s.Fields[i].Label == titleCaseLabel(s.Fields[i].Key) {
+			s.Fields[i].Label = ""
+		}
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// titleCaseLabel converts a snake_case key into a Title Case label
+// the same way the CLI does ("due_date" → "Due Date"). Duplicated
+// from internal/mcp/dispatch_http_routes.go to avoid a server → mcp
+// import (mcp already imports server). Keep the two in sync — both
+// transformations must produce identical output for a given key.
+func titleCaseLabel(key string) string {
+	parts := strings.Split(strings.ReplaceAll(key, "_", " "), " ")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 // BootstrapRole is the lightweight role projection delivered in the
