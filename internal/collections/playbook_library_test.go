@@ -5,25 +5,23 @@ import (
 	"testing"
 )
 
-// knownPlaybookTriggers is the set of trigger values the workspace
-// playbook schemas accept (software domain). Used to catch typos in
-// library entries that would seed an invalid trigger value into a
-// workspace at activation time.
+// knownPlaybookTriggers is the set of trigger values the software
+// playbook schema accepts, sourced directly from SoftwarePlaybookTriggers
+// in templates.go. Used to catch typos in library entries that would
+// seed an invalid trigger value into a software workspace at activation.
 //
-// Kept independent of the schema's actual options list because the
-// schema is workspace-scoped and configurable per template; the
-// library entries we ship MUST stay within this safe baseline.
-var knownPlaybookTriggers = map[string]bool{
-	"on-implement":     true,
-	"on-review":        true,
-	"on-plan":          true,
-	"on-triage":        true,
-	"on-release":       true,
-	"on-deploy":        true,
-	"on-pr-create":     true,
-	"on-task-complete": true,
-	"manual":           true,
-	"always":           true,
+// Sourced from SoftwarePlaybookTriggers (not from a copy) so the test
+// stays in sync if the schema's option list ever changes — the
+// assertion can only drift if the schema itself widens. Library
+// entries we ship MUST stay within this safe baseline; templates
+// shipping non-software triggers (e.g. on-candidate-advance for hiring)
+// would need their own library scoped to that template.
+func buildKnownPlaybookTriggers() map[string]bool {
+	out := make(map[string]bool, len(SoftwarePlaybookTriggers))
+	for _, t := range SoftwarePlaybookTriggers {
+		out[t] = true
+	}
+	return out
 }
 
 // TestPlaybookLibrary_InvokableEntriesPresent asserts that PlaybookLibrary()
@@ -69,14 +67,16 @@ func TestPlaybookLibrary_InvokableEntriesPresent(t *testing.T) {
 }
 
 // TestPlaybookLibrary_AllTriggersKnown asserts every library entry's
-// Trigger field is one of the known values. Catches typos that would
-// seed an invalid trigger into a workspace at activation time.
+// Trigger field is one of the values SoftwarePlaybookTriggers accepts.
+// Catches typos that would seed an invalid trigger into a software
+// workspace at activation time.
 func TestPlaybookLibrary_AllTriggersKnown(t *testing.T) {
+	known := buildKnownPlaybookTriggers()
 	for _, cat := range PlaybookLibrary() {
 		for _, pb := range cat.Playbooks {
-			if !knownPlaybookTriggers[pb.Trigger] {
+			if !known[pb.Trigger] {
 				t.Errorf("playbook %q has unknown trigger %q — must be one of %s",
-					pb.Title, pb.Trigger, knownTriggersList())
+					pb.Title, pb.Trigger, knownTriggersList(known))
 			}
 		}
 	}
@@ -137,11 +137,11 @@ func TestPlaybookLibraryArchive_BodiesCompiled(t *testing.T) {
 	}
 }
 
-// knownTriggersList returns the sorted-ish set of accepted triggers
-// for assertion-failure messages.
-func knownTriggersList() string {
-	keys := make([]string, 0, len(knownPlaybookTriggers))
-	for k := range knownPlaybookTriggers {
+// knownTriggersList returns the accepted-triggers set as a comma-joined
+// string for assertion-failure messages.
+func knownTriggersList(known map[string]bool) string {
+	keys := make([]string, 0, len(known))
+	for k := range known {
 		keys = append(keys, k)
 	}
 	return strings.Join(keys, ", ")
