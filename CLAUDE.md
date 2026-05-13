@@ -199,7 +199,7 @@ pad mcp status                # Install state across supported clients
 ```
 
 Surface:
-- **Tools:** the v0.2 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does. `pad_playbook` is the playbook surface from PLAN-1377 — `list`/`get`/`run` mirror the CLI's `pad playbook` subcommands; `run` is side-effect-free and returns the body + bound args for the agent to execute.
+- **Tools:** the v0.3 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does. `pad_playbook` is the playbook surface from PLAN-1377 — `list`/`get`/`run` mirror the CLI's `pad playbook` subcommands; `run` is side-effect-free and returns the body + bound args for the agent to execute.
 - **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, `pad://workspace/{ws}/bootstrap` (one-shot workspace overview — user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity), plus the server-wide `pad://_meta/version`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
 
@@ -207,7 +207,7 @@ Surface:
 
 **Stability contract.** Two version constants live in `internal/mcp/version.go`, advertised in the handshake under `capabilities.experimental.padCmdhelp` and `capabilities.experimental.padToolSurface`:
 - `CmdhelpVersion` (currently `"0.1"`) — the cmdhelp CLI help-tree contract. Bump when CLI flag/arg schemas change incompatibly.
-- `ToolSurfaceVersion` (currently `"0.2"`) — the MCP tool catalog contract. Bump when tool names, action enums, or parameter shapes change incompatibly.
+- `ToolSurfaceVersion` (currently `"0.3"`) — the MCP tool catalog contract. Bump when tool names, action enums, or parameter shapes change incompatibly. v0.3 introduced `pad_meta.action: bootstrap`, `pad_set_workspace`'s embedded-bootstrap response, and the `pad://workspace/{ws}/bootstrap` resource (PLAN-1377 / TASK-1380).
 
 Both are also returned by `pad://_meta/version` and `pad_meta.action: version`.
 
