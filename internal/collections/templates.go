@@ -186,9 +186,17 @@ var softwareStarterConventionTitles = []string{
 
 // softwareStarterPlaybookTitles names the library playbooks that ship in the
 // software templates' starter pack.
+//
+// PLAN-1397's invokable-first overhaul (TASK-1403) retired the
+// pre-PLAN-1377 trigger-only entries ("Implementation Workflow",
+// "Code Review Process", etc.) from the library. The replacements are
+// the invokable workflow trio. `startup` separately prepends `ship`
+// (templates.go:~440), so we list `plan` and `decompose` here — every
+// software workspace gets the three together without duplicating the
+// `ship` seed for startup specifically.
 var softwareStarterPlaybookTitles = []string{
-	"Implementation Workflow",
-	"Code Review Process",
+	"Plan a new initiative",
+	"Decompose a plan into tasks",
 }
 
 // seedConventionFromLibrary converts a LibraryConvention into a SeedConvention
