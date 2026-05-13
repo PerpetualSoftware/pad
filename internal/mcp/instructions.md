@@ -6,9 +6,9 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.2)
+## Tool surface (v0.3)
 
-Eight tools, each with an `action` enum:
+Nine tools, each with an `action` enum:
 
 - `pad_item` — Items: create / update / delete / get / list / move / link / unlink / deps / star / unstar / starred / comment / list-comments / bulk-update / note / decide.
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log.
@@ -16,8 +16,9 @@ Eight tools, each with an `action` enum:
 - `pad_project` — Project intelligence: dashboard / next / standup / changelog.
 - `pad_role` — Agent roles: list / create / delete.
 - `pad_search` — Full-text search across items: query.
-- `pad_meta` — Server introspection: server-info / version / tool-surface.
-- `pad_set_workspace` — Pin a session-default workspace for subsequent calls.
+- `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free.
+- `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity).
+- `pad_set_workspace` — Pin a session-default workspace for subsequent calls. Response embeds the bootstrap blob so you can pin + load context in one call.
 
 Always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
 
@@ -29,6 +30,7 @@ Read these directly when you need workspace state:
 - `pad://workspace/{ws}/collections` — collection types + schemas.
 - `pad://workspace/{ws}/items` — list of all items (use `pad_item.action: list` for filtering).
 - `pad://workspace/{ws}/items/{ref}` — single item rendered as markdown.
+- `pad://workspace/{ws}/bootstrap` — one-shot workspace context (same payload as `pad_meta.action: bootstrap` and `pad_set_workspace`'s embedded response).
 - `pad://_meta/version` — server version + stability tiers.
 
 Resources support host-side prefetch — if the host can fetch them once at session start, you don't pay per turn.

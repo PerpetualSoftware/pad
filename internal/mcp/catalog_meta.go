@@ -50,13 +50,13 @@ var padMetaTool = ToolDef{
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, the v0.2 tool catalog, and the agent bootstrap blob.
+const padMetaToolDescription = `Server introspection — version, capabilities, the v0.3 tool catalog, and the agent bootstrap blob.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — v0.2 catalog dump: every tool managed by the hand-curated catalog,
+  tool-surface  — v0.3 catalog dump: every tool managed by the hand-curated catalog,
                   its actions, and its input schema. During PLAN-969's rollout the
                   cmdhelp walker also contributes to tools/list; tool-surface
                   intentionally only enumerates the catalog (the source it can
