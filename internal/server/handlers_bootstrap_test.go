@@ -153,7 +153,7 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 //	TASK-1412 — 11 KiB (slim BootstrapCollection projection; fixture at 8,992 bytes — collections section dropped from 8,848 to 3,979 bytes)
 //	TASK-1413 — 8 KiB  (dedup top-level recent_activity, drop convention slug, cap dashboard.attention/recent_activity to 5 with overflow counts; fixture at 6,355 bytes — total dropped another 2,637 bytes)
 //	TASK-1417 — 7 KiB  (close-out: bootstrap shape work complete, fixture still at 6,355 bytes; locks in the cumulative -54.2% win with ~12.8% headroom for routine schema reordering)
-//	TASK-1422 — 9 KiB  (extend dashboard caps to active_items/active_plans/by_role/suggested_next; fixture grew to 7,823 bytes after seeding 6 in_progress tasks to exercise the new active_items cap — the growth is fixture-side, not shape-side, and the new caps demonstrably trigger in the per-section breakdown)
+//	TASK-1422 — 9 KiB  (extend dashboard caps to active_items/active_plans/by_role; fixture grew to 7,823 bytes after seeding 6 in_progress tasks to exercise the new active_items cap — the growth is fixture-side, not shape-side, and the new caps demonstrably trigger in the per-section breakdown. suggested_next deliberately excluded — already capped to 3 upstream in buildDashboardResponse.)
 //
 // Note that the TASK-1422 budget loosening is purely fixture-side: the
 // fixture deliberately seeds more `in_progress` items so the

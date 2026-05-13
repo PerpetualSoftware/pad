@@ -153,8 +153,8 @@ type AgentBootstrapPlaybookMeta struct {
 // BootstrapDashboard is the bootstrap-side dashboard projection. It
 // embeds *DashboardResponse so the wire shape stays compatible with the
 // `GET /dashboard` endpoint (same field names, same nesting), then adds
-// two overflow counts that report how many entries were trimmed from
-// the bootstrap's capped views.
+// five overflow counts (one per capped sub-array) that report how many
+// entries were trimmed from the bootstrap's capped views.
 //
 // Why a wrapper rather than mutating DashboardResponse: the cap is
 // bootstrap-only — `pad project dashboard` and the web UI's dashboard
@@ -597,7 +597,7 @@ func trimLeadingSpaces(s string) string {
 // arrays unchanged. The slice backing arrays are shared — we only
 // trim the view, no allocation needed for the truncated portion.
 //
-// Returns a non-nil *BootstrapDashboard even when both caps are
+// Returns a non-nil *BootstrapDashboard even when all caps are
 // untriggered, so the agent always sees a consistent shape.
 func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 	copied := *d
