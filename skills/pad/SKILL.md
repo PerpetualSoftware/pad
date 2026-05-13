@@ -242,34 +242,34 @@ pad item create playbook "Release checklist" \
 EOF
 ```
 
-**Authoring slug-invocable playbooks with arguments.** The `arguments` field on the playbooks collection is a `json` type, and `pad item create --field` only sets string values — so you can't set a structured `arguments` array directly from the CLI. Two working paths:
+**Authoring slug-invocable playbooks with arguments.** As of BUG-1125's fix, `pad item create --field` is schema-aware — pass the structured `arguments` array directly as a JSON literal and the CLI parses it into the json-typed field. The full playbook (slug + arguments + body with `## Arguments` mirror) lands in one command:
 
-- **Web UI playbook editor (recommended)** at `/{username}/{workspace}/playbooks` (click "+ New Playbook"). The editor lets the user (or the agent talking the user through it) declare each argument's `name / type / required / default / description / enum` in a structured form, validates the kebab-case slug + workspace uniqueness, and round-trips the spec into the body's `## Arguments` section. Open the URL with `pad server open` if the user isn't already there. This is the canonical path — the editor exists specifically for this case.
+```bash
+pad item create playbook "Cut a release" \
+  --field invocation_slug=release \
+  --field trigger=manual \
+  --field status=active \
+  --field 'arguments=[{"name":"version","type":"string","required":true,"description":"semver, e.g. 0.5.0"},{"name":"dry-run","type":"flag","default":false,"description":"Print what would happen, don'\''t push"}]' \
+  --stdin <<'EOF'
+Cut a Pad release.
 
-- **CLI then web edit.** If the user wants the CLI flow, create the playbook with the body containing a `## Arguments` section and set everything BUT `arguments`:
+## Arguments
 
-  ```bash
-  pad item create playbook "Cut a release" \
-    --field invocation_slug=release \
-    --field trigger=manual \
-    --field status=active \
-    --stdin <<'EOF'
-  Cut a Pad release.
+- `version` (string, required) — semver, e.g. 0.5.0
+- `dry-run` (flag, default=false) — print what would happen, don't push
 
-  ## Arguments
+## Steps
 
-  - `version` (string, required) — semver, e.g. 0.5.0
+1. Verify the tree is clean and on main
+2. Run `make test`
+3. Tag with `git tag v$VERSION && git push --tags`
+4. Verify CI release workflow succeeded
+EOF
+```
 
-  ## Steps
+The `arguments` JSON and the body's `## Arguments` section are the same contract expressed two ways — the structured field is what the strict CLI/MCP arg parser reads; the markdown is the human-readable mirror. Keep them in sync. For long argument specs, write the JSON to a file and inline it: `--field "arguments=$(cat /tmp/args.json)"`.
 
-  1. Verify the tree is clean and on main
-  2. Run `make test`
-  3. Tag with `git tag v$VERSION && git push --tags`
-  4. Verify CI release workflow succeeded
-  EOF
-  ```
-
-  Then open the new playbook in the web editor's structured arguments builder to declare each argument (the markdown `## Arguments` section is the human-readable mirror; the structured field is what the strict CLI parser reads, so both need to be populated). The editor's two-way binding will keep them in sync from there.
+**Web UI playbook editor** at `/{username}/{workspace}/playbooks` (click "+ New Playbook") is the alternative if the user prefers a form-based flow — kebab-case slug input with debounced uniqueness check, structured arguments builder, and two-way binding with the body's `## Arguments` section. Open with `pad server open`. Equally valid; pick whichever surface the user is already in.
 
 After creation, point the user at `/pad <slug>` for the new invocation or, for trigger-only playbooks, the action that will auto-load it ("This will fire on the next `on-release` action").
 

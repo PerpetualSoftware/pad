@@ -2799,6 +2799,42 @@ Usage:
 // v2 Commands: create, list, show, update, delete, search, status, next, collections
 // =============================================================================
 
+// parseFieldFlag parses a --field key=value flag value according to the
+// field's declared schema type. JSON-typed and multi_select fields receive
+// parsed JSON values, number-typed fields receive numbers, and checkbox
+// fields receive booleans. Unknown fields (not in the schema) and string-
+// typed fields (text, url, select, date, relation) fall back to the raw
+// string. On parse failure, falls back to the raw string so the server
+// validator returns a useful error rather than the CLI silently dropping
+// data. See BUG-1125.
+func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
+	for i := range schema.Fields {
+		def := schema.Fields[i]
+		if def.Key != key {
+			continue
+		}
+		switch def.Type {
+		case "json", "multi_select":
+			var v any
+			if err := json.Unmarshal([]byte(raw), &v); err == nil {
+				return v
+			}
+		case "number":
+			if f, err := strconv.ParseFloat(raw, 64); err == nil {
+				return f
+			}
+		case "checkbox":
+			if b, err := strconv.ParseBool(raw); err == nil {
+				return b
+			}
+		}
+		// All other types (text, url, select, date, relation) — string is correct.
+		return raw
+	}
+	// Unknown field — let the server decide.
+	return raw
+}
+
 // --- create ---
 
 func createCmd() *cobra.Command {
@@ -2857,10 +2893,18 @@ Run with --help-collections to see available collections and their status values
 				fields["category"] = category
 			}
 
-			// Apply arbitrary --field key=value flags
+			// Apply arbitrary --field key=value flags. Fetch the collection
+			// schema so JSON / number / checkbox / multi_select fields parse
+			// to their declared types (BUG-1125). Schema-fetch failure
+			// degrades gracefully: all values stay as strings, matching
+			// pre-fix behavior.
+			var collSchema models.CollectionSchema
+			if coll, err := client.GetCollection(ws, collSlug); err == nil {
+				_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+			}
 			for _, kv := range fieldFlags {
 				if idx := strings.Index(kv, "="); idx > 0 {
-					fields[kv[:idx]] = kv[idx+1:]
+					fields[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
 				}
 			}
 
@@ -3424,10 +3468,20 @@ Examples:
 					existingFields["category"] = category
 				}
 
-				// Apply arbitrary --field key=value flags
+				// Apply arbitrary --field key=value flags. Fetch the
+				// collection schema (using the item's own collection slug)
+				// so JSON / number / checkbox / multi_select fields parse
+				// to their declared types (BUG-1125). Schema-fetch failure
+				// degrades gracefully: all values stay as strings.
+				var collSchema models.CollectionSchema
+				if item.CollectionSlug != "" {
+					if coll, err := client.GetCollection(ws, item.CollectionSlug); err == nil {
+						_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+					}
+				}
 				for _, kv := range fieldFlags {
 					if idx := strings.Index(kv, "="); idx > 0 {
-						existingFields[kv[:idx]] = kv[idx+1:]
+						existingFields[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
 					}
 				}
 
