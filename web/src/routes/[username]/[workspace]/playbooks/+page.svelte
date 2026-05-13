@@ -324,6 +324,7 @@
 								triggers={createTriggers}
 								scopes={createScopes}
 								statuses={STATUSES}
+								hideStatus={true}
 								existingPlaybooks={playbooks}
 								onSlugChange={(s) => (newInvocationSlug = s)}
 								onTriggerChange={(t) => (newTrigger = t)}

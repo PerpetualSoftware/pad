@@ -29,6 +29,11 @@
 		triggers: readonly string[];
 		scopes: readonly string[];
 		statuses?: readonly string[];
+		// Hides the status selector. Set to true on the create-form where
+		// the submit buttons ("Create as Draft" / "Create as Active") own
+		// the status — surfacing a select that the buttons silently
+		// override is just confusing (Codex round 2 P2).
+		hideStatus?: boolean;
 		existingPlaybooks: Item[];
 		onSlugChange: (slug: string) => void;
 		onTriggerChange: (trigger: string) => void;
@@ -50,6 +55,7 @@
 		triggers,
 		scopes,
 		statuses = ['active', 'draft', 'deprecated'],
+		hideStatus = false,
 		existingPlaybooks,
 		onSlugChange,
 		onTriggerChange,
@@ -363,19 +369,21 @@
 			</div>
 		</div>
 
-		<div class="form-row">
-			<label class="form-label" for="pbff-status">Status</label>
-			<select
-				id="pbff-status"
-				class="form-select"
-				value={status}
-				onchange={(e) => onStatusChange((e.currentTarget as HTMLSelectElement).value)}
-			>
-				{#each statuses as st (st)}
-					<option value={st}>{st}</option>
-				{/each}
-			</select>
-		</div>
+		{#if !hideStatus}
+			<div class="form-row">
+				<label class="form-label" for="pbff-status">Status</label>
+				<select
+					id="pbff-status"
+					class="form-select"
+					value={status}
+					onchange={(e) => onStatusChange((e.currentTarget as HTMLSelectElement).value)}
+				>
+					{#each statuses as st (st)}
+						<option value={st}>{st}</option>
+					{/each}
+				</select>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Arguments builder -->
