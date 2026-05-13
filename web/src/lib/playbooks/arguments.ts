@@ -290,19 +290,64 @@ export function parseArgumentsSection(body: string): PlaybookArgument[] {
  *
  * Empty-string defaults are dropped — they're indistinguishable from
  * "no default" and the server treats them the same.
+ *
+ * Defaults are coerced to the type the arg declares before
+ * serialization (Codex round 4 P2). The UI input always types into a
+ * string, but `flag` defaults should be booleans and `number` defaults
+ * should be numbers — the server passes them through opaquely so the
+ * client is responsible for the canonical typing.
  */
 export function argumentsToJSON(args: PlaybookArgument[]): string {
 	const cleaned = args.map((arg) => {
 		const out: Record<string, unknown> = { name: arg.name, type: arg.type };
 		if (arg.required) out.required = true;
 		if (arg.default !== undefined && arg.default !== '' && arg.default !== null) {
-			out.default = arg.default;
+			out.default = coerceDefaultForType(arg.type, arg.default);
 		}
 		if (arg.description) out.description = arg.description;
 		if (arg.enum && arg.enum.length > 0) out.enum = arg.enum;
 		return out;
 	});
 	return JSON.stringify(cleaned);
+}
+
+/**
+ * coerceDefaultForType applies type-aware coercion to a default value
+ * collected from the UI. Mirrors the parsing rules in
+ * `coerceDefaultValue` (used by parseArgumentLine) so round-trips
+ * between the markdown body, the structured form, and the persisted
+ * JSON stay consistent.
+ *
+ * - flag: "true"/"false" → boolean; anything else falls back to the
+ *   original value (the schema validator will surface it)
+ * - number: numeric strings → number; non-numeric falls through
+ * - other types: pass through unchanged
+ */
+function coerceDefaultForType(
+	type: PlaybookArgumentType,
+	raw: string | boolean | number
+): string | boolean | number {
+	if (type === 'flag') {
+		if (typeof raw === 'boolean') return raw;
+		if (typeof raw === 'string') {
+			const lower = raw.trim().toLowerCase();
+			if (lower === 'true') return true;
+			if (lower === 'false') return false;
+		}
+		return raw;
+	}
+	if (type === 'number') {
+		if (typeof raw === 'number') return raw;
+		if (typeof raw === 'string') {
+			const trimmed = raw.trim();
+			if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+				const n = Number(trimmed);
+				if (Number.isFinite(n)) return n;
+			}
+		}
+		return raw;
+	}
+	return raw;
 }
 
 /** argumentsFromJSON parses the stored `arguments` field back into the

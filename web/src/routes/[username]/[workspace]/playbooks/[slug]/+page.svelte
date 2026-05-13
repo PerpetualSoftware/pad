@@ -54,6 +54,11 @@
 
 	async function loadItem(ws: string, slugOrRef: string) {
 		loading = true;
+		// Clear the previously-loaded playbook BEFORE the new fetch so a
+		// stale playbook isn't editable under a fresh URL while a 404 is
+		// in flight (Codex round 4 P2). The catch path then leaves item
+		// null and the template renders "Playbook not found."
+		item = null;
 		try {
 			const loaded = await api.items.get(ws, slugOrRef);
 			// Stale-response guard: if the user moved away while the
@@ -89,6 +94,9 @@
 			args = argumentsFromJSON(fields.arguments);
 		} catch {
 			if (ws !== wsSlug || slugOrRef !== ref) return;
+			// Explicit null on the current-request error path so a failed
+			// reload doesn't leave the previous item editable.
+			item = null;
 			toastStore.show('Failed to load playbook', 'error');
 		} finally {
 			if (ws === wsSlug && slugOrRef === ref) loading = false;
