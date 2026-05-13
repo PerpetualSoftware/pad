@@ -55,7 +55,7 @@ const CmdhelpVersion = "0.1"
 //   - "0.2" — historical. Hand-curated resource × action catalog
 //     (PLAN-969, TASK-981). The cmdhelp leaf walker retired; tools/list
 //     advertises only the catalog (~7 tools + pad_set_workspace).
-//   - "0.3" — current. PLAN-1377 / TASK-1380:
+//   - "0.3" — historical. PLAN-1377 / TASK-1380:
 //   - pad_meta gains an action: bootstrap that returns the
 //     AgentBootstrap blob (and pad_meta.Schema.Workspace flipped
 //     to true so the workspace param is available to that action).
@@ -65,13 +65,49 @@ const CmdhelpVersion = "0.1"
 //     context. Purely additive; older clients that ignore unknown
 //     keys keep working.
 //   - pad://workspace/{ws}/bootstrap resource added.
+//   - "0.4" — current. PLAN-1410: comprehensive bootstrap-payload
+//     trim, cutting ~40% of bytes off the AgentBootstrap response.
+//     Same tool catalog (still eight resource × action tools +
+//     pad_set_workspace); the shape changes are entirely inside the
+//     bootstrap JSON those tools/resources return:
+//   - Slim BootstrapCollection projection (TASK-1412): drops `id`,
+//     `workspace_id`, `created_at`, `updated_at`, `settings`;
+//     `schema` is now a nested JSON object rather than an
+//     escaped JSON-encoded string.
+//   - Slim BootstrapRole projection (TASK-1423): drops `id`,
+//     `workspace_id`, `tools`, `created_at`, `updated_at`.
+//   - Convention `slug` dropped (TASK-1413) — agent addresses by ref.
+//   - Top-level `recent_activity` removed (TASK-1413) — was a
+//     bit-for-bit duplicate of `dashboard.recent_activity`.
+//   - BootstrapDashboard wrapper caps five dashboard sub-arrays
+//     (attention, recent_activity, active_items, active_plans,
+//     by_role) at 5 entries each, with parallel
+//     `<name>_overflow_count` fields surfaced when truncation
+//     fired. TASK-1413 added the first two; TASK-1422 added the
+//     remaining three. suggested_next deliberately excluded —
+//     already capped to 3 upstream in buildDashboardResponse.
+//   - Schema field `label` omitted when label == TitleCase(key)
+//     (TASK-1424); custom labels preserved.
+//
+// Compatibility note: most v0.4 changes are subtractive (dropped
+// fields) or additive (overflow counts), but ONE field had its
+// JSON type change — collections[].schema went from a
+// JSON-encoded string ("schema":"{\"fields\":[...]}") to a nested
+// JSON object ("schema":{"fields":[...]}). This is a breaking
+// change for any v0.3 consumer that read schema as a string and
+// JSON.parse()'d it themselves. Agents now read it as a parsed
+// object directly. Clients that relied on the dropped fields
+// (UUIDs, timestamps, settings, the duplicate recent_activity,
+// convention.slug) need to switch to the canonical alternatives
+// (slugs for addressing; pad collection list / pad role list for
+// the full models when needed).
 //
 // Discovery surfaces:
 //
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.3"
+const ToolSurfaceVersion = "0.4"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

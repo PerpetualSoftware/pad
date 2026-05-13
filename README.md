@@ -251,7 +251,7 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-**Tool catalog (v0.3)** — eight resource × action tools plus `pad_set_workspace` (nine total), no flat verb explosion:
+**Tool catalog (v0.4)** — eight resource × action tools plus `pad_set_workspace` (nine total), no flat verb explosion:
 
 | Tool | Actions |
 |---|---|
@@ -276,7 +276,7 @@ initialize handshake under `capabilities.experimental.padCmdhelp` and
 `pad://_meta/version`):
 
 - `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
-- `tool_surface_version: "0.3"` — MCP tool catalog contract
+- `tool_surface_version: "0.4"` — MCP tool catalog contract (PLAN-1410 trimmed the bootstrap-response shape by ~40%; see `internal/mcp/version.go` for the full v0.4 changelog)
 
 External agents pin against these so a future rename doesn't break them
 silently. Errors come back as structured envelopes (`{error: {code,

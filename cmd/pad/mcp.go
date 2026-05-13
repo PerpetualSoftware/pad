@@ -222,11 +222,12 @@ etc.) per its mcp.json configuration. Direct human invocation is rare;
 when running interactively you'll see an idle process waiting for the
 client's initialize message.
 
-The tool surface is generated automatically from this binary's
-command tree (cmdhelp v0.1) — every leaf command becomes an MCP
-tool, except the curated allow-list exclusions (db ops, auth setup,
-init, etc.). Use ` + "`pad_set_workspace`" + ` to set the default
-workspace for the session.
+The tool surface is the hand-curated v0.4 catalog (PLAN-1410) —
+eight resource × action tools (` + "`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`" + `) plus ` + "`pad_set_workspace`" + ` for session-default workspace
+pinning. cmdhelp (v0.1) still drives per-command argument
+schemas at dispatch time, but the historical leaf-walker that
+exposed every CLI verb as its own tool was retired in TASK-981
+of PLAN-969's v0.2 rollout.
 
 Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 		// Errors here are connection-level rather than arg-validation,
