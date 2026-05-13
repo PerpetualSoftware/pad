@@ -168,16 +168,22 @@ type BootstrapDashboard struct {
 	// RecentActivityOverflowCount mirrors AttentionOverflowCount for the
 	// recent_activity tail.
 	RecentActivityOverflowCount int `json:"recent_activity_overflow_count,omitempty"`
-	// ActiveItemsOverflowCount, ActivePlansOverflowCount, ByRoleOverflowCount,
-	// and SuggestedNextOverflowCount cap the four other dashboard
-	// sub-arrays that grow with workspace state. Same semantics as the
-	// Attention/RecentActivity counts above: omitted when zero, populated
-	// with `len(original) - cap` when truncation kicked in. PLAN-1410 /
-	// TASK-1422 (absorbs IDEA-1421).
-	ActiveItemsOverflowCount   int `json:"active_items_overflow_count,omitempty"`
-	ActivePlansOverflowCount   int `json:"active_plans_overflow_count,omitempty"`
-	ByRoleOverflowCount        int `json:"by_role_overflow_count,omitempty"`
-	SuggestedNextOverflowCount int `json:"suggested_next_overflow_count,omitempty"`
+	// ActiveItemsOverflowCount, ActivePlansOverflowCount, and
+	// ByRoleOverflowCount cap the three other dashboard sub-arrays
+	// that grow with workspace state. Same semantics as the
+	// Attention/RecentActivity counts above: omitted when zero,
+	// populated with `len(original) - cap` when truncation kicked in.
+	// PLAN-1410 / TASK-1422 (absorbs IDEA-1421).
+	//
+	// `suggested_next` was deliberately NOT added to this set:
+	// buildDashboardResponse already truncates SuggestedNext to 3
+	// upstream (see "Take top 3" in handlers_dashboard.go), so a
+	// bootstrap-side cap of 5 would be unreachable dead code. If the
+	// upstream cap is ever raised or removed, that's the moment to
+	// add a suggested_next_overflow_count here.
+	ActiveItemsOverflowCount int `json:"active_items_overflow_count,omitempty"`
+	ActivePlansOverflowCount int `json:"active_plans_overflow_count,omitempty"`
+	ByRoleOverflowCount      int `json:"by_role_overflow_count,omitempty"`
 }
 
 // Bootstrap caps clamp the per-array sizes in the bootstrap dashboard
@@ -186,14 +192,14 @@ type BootstrapDashboard struct {
 // to render conversationally; the agent should pivot to the full
 // `pad project dashboard` query when an overflow count signals more
 // work to consider. PLAN-1410. The first two land in TASK-1413; the
-// remaining four are TASK-1422 (IDEA-1421 absorbed).
+// remaining three (active_items / active_plans / by_role) are TASK-1422
+// (IDEA-1421 absorbed). suggested_next is excluded — upstream cap of 3.
 const (
 	bootstrapAttentionCap      = 5
 	bootstrapRecentActivityCap = 5
 	bootstrapActiveItemsCap    = 5
 	bootstrapActivePlansCap    = 5
 	bootstrapByRoleCap         = 5
-	bootstrapSuggestedNextCap  = 5
 )
 
 // isCollectionSlugVisible reports whether the named collection survived
@@ -616,10 +622,8 @@ func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 		copied.ByRole = copied.ByRole[:bootstrapByRoleCap]
 		out.ByRoleOverflowCount = n
 	}
-	if n := len(copied.SuggestedNext) - bootstrapSuggestedNextCap; n > 0 {
-		copied.SuggestedNext = copied.SuggestedNext[:bootstrapSuggestedNextCap]
-		out.SuggestedNextOverflowCount = n
-	}
+	// SuggestedNext intentionally NOT capped here — see godoc on
+	// BootstrapDashboard.
 	return out
 }
 

@@ -292,7 +292,6 @@ func bootstrapSectionBytes(b AgentBootstrap) []string {
 			{"active_items", len(b.Dashboard.ActiveItems), b.Dashboard.ActiveItemsOverflowCount},
 			{"active_plans", len(b.Dashboard.ActivePlans), b.Dashboard.ActivePlansOverflowCount},
 			{"by_role", len(b.Dashboard.ByRole), b.Dashboard.ByRoleOverflowCount},
-			{"suggested_next", len(b.Dashboard.SuggestedNext), b.Dashboard.SuggestedNextOverflowCount},
 		} {
 			if c.overflow > 0 {
 				lines = append(lines, fmt.Sprintf(
@@ -322,9 +321,11 @@ func jsonLen(v interface{}) int {
 // doesn't drift silently as new caps are added.
 //
 // PLAN-1410 introduced caps on attention + recent_activity (TASK-1413)
-// and extended them to active_items / active_plans / by_role /
-// suggested_next (TASK-1422, absorbing IDEA-1421). This test covers all
-// six caps under the same contract.
+// and extended them to active_items / active_plans / by_role
+// (TASK-1422, absorbing IDEA-1421). `suggested_next` is deliberately
+// excluded — it's already capped to 3 upstream in buildDashboardResponse,
+// making a bootstrap-side cap unreachable in production. This test
+// covers all five live caps under the same contract.
 func TestCapBootstrapDashboard(t *testing.T) {
 	// dashCounts is the per-array size knob the test uses to construct
 	// a DashboardResponse with arbitrary fill levels. Each field can be
@@ -332,7 +333,7 @@ func TestCapBootstrapDashboard(t *testing.T) {
 	// populating the others — keeps the assertions for any one cap
 	// uncoupled from the noise of the others.
 	type dashCounts struct {
-		Att, Rec, Items, Plans, Role, Sugg int
+		Att, Rec, Items, Plans, Role int
 	}
 	mk := func(c dashCounts) *DashboardResponse {
 		d := &DashboardResponse{
@@ -341,7 +342,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 			ActiveItems:    make([]DashboardActiveItem, c.Items),
 			ActivePlans:    make([]DashboardPlan, c.Plans),
 			ByRole:         make([]store.RoleBreakdown, c.Role),
-			SuggestedNext:  make([]DashboardSuggestion, c.Sugg),
 		}
 		// Populate with identifying values so the cap's slice header
 		// retains a defined order — easier to spot index-shifting bugs.
@@ -360,14 +360,11 @@ func TestCapBootstrapDashboard(t *testing.T) {
 		for i := range d.ByRole {
 			d.ByRole[i] = store.RoleBreakdown{}
 		}
-		for i := range d.SuggestedNext {
-			d.SuggestedNext[i] = DashboardSuggestion{ItemSlug: fmt.Sprintf("sugg-%d", i)}
-		}
 		return d
 	}
 
 	t.Run("under-cap-no-overflow", func(t *testing.T) {
-		d := mk(dashCounts{Att: 2, Rec: 3, Items: 1, Plans: 1, Role: 2, Sugg: 1})
+		d := mk(dashCounts{Att: 2, Rec: 3, Items: 1, Plans: 1, Role: 2})
 		out := capBootstrapDashboard(d)
 		if out == nil {
 			t.Fatal("expected non-nil result even when nothing trimmed")
@@ -382,8 +379,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 		assertOverflow(t, "active_plans", out.ActivePlansOverflowCount, 0)
 		assertLen(t, "by_role", len(out.ByRole), 2)
 		assertOverflow(t, "by_role", out.ByRoleOverflowCount, 0)
-		assertLen(t, "suggested_next", len(out.SuggestedNext), 1)
-		assertOverflow(t, "suggested_next", out.SuggestedNextOverflowCount, 0)
 	})
 
 	t.Run("over-cap-truncates-and-counts-overflow", func(t *testing.T) {
@@ -393,7 +388,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 			Items: bootstrapActiveItemsCap + 4,
 			Plans: bootstrapActivePlansCap + 2,
 			Role:  bootstrapByRoleCap + 1,
-			Sugg:  bootstrapSuggestedNextCap + 7,
 		})
 		out := capBootstrapDashboard(d)
 		assertLen(t, "attention", len(out.Attention), bootstrapAttentionCap)
@@ -406,8 +400,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 		assertOverflow(t, "active_plans", out.ActivePlansOverflowCount, 2)
 		assertLen(t, "by_role", len(out.ByRole), bootstrapByRoleCap)
 		assertOverflow(t, "by_role", out.ByRoleOverflowCount, 1)
-		assertLen(t, "suggested_next", len(out.SuggestedNext), bootstrapSuggestedNextCap)
-		assertOverflow(t, "suggested_next", out.SuggestedNextOverflowCount, 7)
 	})
 
 	t.Run("source-pointer-unchanged", func(t *testing.T) {
@@ -420,15 +412,13 @@ func TestCapBootstrapDashboard(t *testing.T) {
 			Items: bootstrapActiveItemsCap + 5,
 			Plans: bootstrapActivePlansCap + 5,
 			Role:  bootstrapByRoleCap + 5,
-			Sugg:  bootstrapSuggestedNextCap + 5,
 		})
-		want := struct{ att, rec, items, plans, role, sugg int }{
+		want := struct{ att, rec, items, plans, role int }{
 			att:   len(d.Attention),
 			rec:   len(d.RecentActivity),
 			items: len(d.ActiveItems),
 			plans: len(d.ActivePlans),
 			role:  len(d.ByRole),
-			sugg:  len(d.SuggestedNext),
 		}
 
 		_ = capBootstrapDashboard(d)
@@ -448,9 +438,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 		if got := len(d.ByRole); got != want.role {
 			t.Errorf("source ByRole mutated: len = %d, want %d", got, want.role)
 		}
-		if got := len(d.SuggestedNext); got != want.sugg {
-			t.Errorf("source SuggestedNext mutated: len = %d, want %d", got, want.sugg)
-		}
 	})
 
 	t.Run("exact-cap-no-overflow", func(t *testing.T) {
@@ -461,7 +448,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 			Items: bootstrapActiveItemsCap,
 			Plans: bootstrapActivePlansCap,
 			Role:  bootstrapByRoleCap,
-			Sugg:  bootstrapSuggestedNextCap,
 		})
 		out := capBootstrapDashboard(d)
 		assertOverflow(t, "attention", out.AttentionOverflowCount, 0)
@@ -469,7 +455,6 @@ func TestCapBootstrapDashboard(t *testing.T) {
 		assertOverflow(t, "active_items", out.ActiveItemsOverflowCount, 0)
 		assertOverflow(t, "active_plans", out.ActivePlansOverflowCount, 0)
 		assertOverflow(t, "by_role", out.ByRoleOverflowCount, 0)
-		assertOverflow(t, "suggested_next", out.SuggestedNextOverflowCount, 0)
 	})
 }
 
