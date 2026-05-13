@@ -244,7 +244,7 @@ EOF
 
 **Authoring slug-invocable playbooks with arguments.** The `arguments` field on the playbooks collection is a `json` type, and `pad item create --field` only sets string values — so you can't set a structured `arguments` array directly from the CLI. Two working paths:
 
-- **Web UI playbook editor (recommended)** at `/{workspace}/playbooks/+ New Playbook`. The editor lets the user (or the agent talking the user through it) declare each argument's `name / type / required / default / description / enum` in a structured form, validates the kebab-case slug + workspace uniqueness, and round-trips the spec into the body's `## Arguments` section. Open the URL with `pad server open` if the user isn't already there. This is the canonical path — the editor exists specifically for this case.
+- **Web UI playbook editor (recommended)** at `/{username}/{workspace}/playbooks (click "+ New Playbook")`. The editor lets the user (or the agent talking the user through it) declare each argument's `name / type / required / default / description / enum` in a structured form, validates the kebab-case slug + workspace uniqueness, and round-trips the spec into the body's `## Arguments` section. Open the URL with `pad server open` if the user isn't already there. This is the canonical path — the editor exists specifically for this case.
 
 - **CLI then web edit.** If the user wants the CLI flow, create the playbook with the body containing a `## Arguments` section and set everything BUT `arguments`:
 
