@@ -157,7 +157,7 @@ var decomposePlaybookArguments = []map[string]any{
 func DecomposePlaybook() LibraryPlaybook {
 	return LibraryPlaybook{
 		Title:          "Decompose a plan into tasks",
-		Category:       "workflow",
+		Category:       "agent-workflows",
 		Trigger:        "manual",
 		Scope:          "all",
 		InvocationSlug: "decompose",

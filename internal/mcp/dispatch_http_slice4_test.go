@@ -350,7 +350,13 @@ func TestDispatch_LibraryActivate_ConventionByTitle(t *testing.T) {
 func TestDispatch_LibraryActivate_PlaybookByTitle_FallsThroughConventionLookup(t *testing.T) {
 	// A playbook title — the dispatcher should NOT find it in
 	// conventions, then fall through to the playbook library.
-	const wantTitle = "Implementation Workflow"
+	//
+	// PLAN-1397 (TASK-1403) retired the pre-PLAN-1377 trigger-only
+	// entries; "Ship tasks" is the headline invokable that still
+	// resolves through the library and still carries trigger + scope
+	// in its activation payload (plus invocation_slug + arguments,
+	// which this test doesn't assert on — those are covered separately).
+	const wantTitle = "Ship tasks"
 
 	mux := http.NewServeMux()
 	posted := ""
@@ -360,7 +366,7 @@ func TestDispatch_LibraryActivate_PlaybookByTitle_FallsThroughConventionLookup(t
 		posted = string(buf)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"pb-1","title":"Implementation Workflow"}`))
+		_, _ = w.Write([]byte(`{"id":"pb-1","title":"Ship tasks"}`))
 	})
 
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}

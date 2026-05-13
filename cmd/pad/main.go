@@ -5678,7 +5678,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.
 
 Examples:
   pad library activate "Commit after task completion"    # Activates a convention
-  pad library activate "Implementation Workflow"         # Activates a playbook`,
+  pad library activate "Ship tasks"                      # Activates a playbook`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

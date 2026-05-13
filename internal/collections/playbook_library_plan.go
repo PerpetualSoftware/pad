@@ -194,7 +194,7 @@ var planPlaybookArguments = []map[string]any{
 func PlanPlaybook() LibraryPlaybook {
 	return LibraryPlaybook{
 		Title:          "Plan a new initiative",
-		Category:       "workflow",
+		Category:       "agent-workflows",
 		Trigger:        "manual",
 		Scope:          "all",
 		InvocationSlug: "plan",
