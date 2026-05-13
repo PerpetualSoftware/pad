@@ -25,16 +25,20 @@ PRs is mechanical — the agent should just do it.
 - ` + "`target`" + ` (required, PLAN-ref | TASK-ref | comma-separated list) — what to ship
 - ` + "`stop-after-each`" + ` (flag, default=false) — pause for confirmation between merges
 - ` + "`merge-strategy`" + ` (enum: squash|merge|rebase, default=squash) — how PRs get merged
-- ` + "`limit`" + ` (number, default=∞) — ship at most N tasks from the list
+- ` + "`limit`" + ` (number, optional) — ship at most N tasks from the list; unset = no limit
 - ` + "`no-install`" + ` (flag, default=false) — skip the post-merge install step
 
 ## Argument parsing
 
+` + "`target`" + ` accepts either a single ref or a comma-separated list of refs:
+
 - **PLAN-ref** like ` + "`PLAN-9`" + ` — expand into its child tasks, ordered by ` + "`sort_order`" + `
   then ` + "`created_at`" + `. Only include children with status in {open, todo, in-progress};
   skip anything already done or cancelled.
-- **Task refs** like ` + "`TASK-10 TASK-11 TASK-12`" + ` (space or comma separated) — order
-  preserved as given.
+- **Task refs** like ` + "`TASK-10,TASK-11,TASK-12`" + ` — comma-separated when binding via the
+  CLI / MCP. The agent's natural-language parser also accepts space-separated
+  refs (` + "`/pad ship TASK-10 TASK-11 TASK-12`" + `) and collapses them into the same
+  comma-separated form before binding. Order is preserved as given.
 - **Empty target** — ask the user which plan or tasks to ship.
 
 ## Pre-flight checks
