@@ -1,6 +1,7 @@
 package collections
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -724,6 +725,61 @@ func TestInterviewingTemplate(t *testing.T) {
 	}
 	if len(tmpl.SeedItems) == 0 {
 		t.Error("interviewing template ships no seed items")
+	}
+}
+
+// TestStartupTemplateShipsShipPlaybook verifies the startup template ships
+// the seeded ship playbook (TASK-1386 / PLAN-1377) — the headline example
+// of the playbook invocation model. The ship playbook must:
+//
+//   - appear in the startup template's Playbooks slice
+//   - have a non-empty title and body
+//   - declare invocation_slug=ship in its Fields JSON so /pad ship routes to it
+//   - declare a non-empty arguments array so the slug-routed args bind correctly
+//
+// Drift here means a fresh `pad workspace init --template startup` workspace
+// no longer ships the example, and the documentation that points users at
+// "/pad ship PLAN-X" silently desyncs.
+func TestStartupTemplateShipsShipPlaybook(t *testing.T) {
+	tmpl := GetTemplate("startup")
+	if tmpl == nil {
+		t.Fatal("startup template missing")
+	}
+	var ship *SeedPlaybook
+	for i, p := range tmpl.Playbooks {
+		if p.Title == "Ship tasks" {
+			ship = &tmpl.Playbooks[i]
+			break
+		}
+	}
+	if ship == nil {
+		t.Fatal("startup template does not include the seeded ship playbook")
+	}
+	if ship.Content == "" {
+		t.Error("ship playbook has empty Content")
+	}
+	if ship.Fields == "" {
+		t.Fatal("ship playbook has empty Fields")
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(ship.Fields), &fields); err != nil {
+		t.Fatalf("ship playbook Fields is not valid JSON: %v", err)
+	}
+	if got, _ := fields["invocation_slug"].(string); got != "ship" {
+		t.Errorf("ship playbook invocation_slug = %q, want %q", got, "ship")
+	}
+	if got, _ := fields["status"].(string); got != "active" {
+		t.Errorf("ship playbook status = %q, want %q", got, "active")
+	}
+	args, ok := fields["arguments"].([]any)
+	if !ok || len(args) == 0 {
+		t.Errorf("ship playbook arguments must be a non-empty array; got %T = %v", fields["arguments"], fields["arguments"])
+	}
+	// Body must contain the ## Arguments section so the structured form
+	// and the markdown stay in sync. Web UI editor (TASK-1384) and the
+	// dispatcher both rely on this section being present.
+	if !contains(ship.Content, "## Arguments") {
+		t.Error("ship playbook body must contain a ## Arguments section")
 	}
 }
 
