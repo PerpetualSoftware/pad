@@ -192,8 +192,8 @@ Items can carry image and file attachments. They appear in item content as `![al
 **Hard rule for agents:** NEVER read files directly from `~/.pad/attachments/<storage_key>`. That bypasses workspace ACLs, doesn't work on Pad Cloud / remote / Postgres deployments, skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop), and breaks when storage moves to S3. Always go through `pad attachment view|show|list|download` so the request is authenticated and works on every Pad install.
 
 **Planning:**
-- "let's create a plan" → Multi-step planning workflow (see below)
-- "break plan 2 into tasks" → Decompose a plan into task items
+- "let's create a plan" → `/pad plan <topic>` if the `plan` playbook is activated; otherwise inline workflow (see below)
+- "break plan 2 into tasks" → `/pad decompose PLAN-2` if the `decompose` playbook is activated; otherwise inline workflow
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
@@ -463,6 +463,10 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 
 ### Planning: "Let's create a plan"
 
+**Canonical entry point: `/pad plan <topic>`** — when the workspace has the `plan` invokable playbook activated (visible in the bootstrap's `playbooks` array with `invocation_slug=plan`), invoke that. It's the structured, argument-bound version of the workflow below and walks the user through goal/scope/breakdown with confirmation checkpoints. The `plan` library entry seeds automatically for software templates (`softwareStarterPlaybookTitles`); workspaces using non-software templates can activate it from the library UI.
+
+If the `plan` playbook isn't activated, fall back to the inline workflow:
+
 1. **Load context:** `pad project dashboard --format json`, `pad item list plans --all --format json`
 2. **Understand current state:** What plans exist? What's active? What's completed?
 3. **Propose outline:** Present plan title + 1-line summary. Ask for feedback.
@@ -476,6 +480,10 @@ All commands support `--format json` (for parsing) or `--format table` (default,
 8. **Ask before creating each item.** Don't bulk-create without approval.
 
 ### Decomposition: "Break plan X into tasks"
+
+**Canonical entry point: `/pad decompose <PLAN-ref>`** — when the workspace has the `decompose` invokable playbook activated (bootstrap's `playbooks` array with `invocation_slug=decompose`), invoke that. It accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks) and handles reconciliation against existing children, dependency wiring, and per-task confirmation. Like `plan`, it auto-seeds for software templates.
+
+If the `decompose` playbook isn't activated, fall back to the inline workflow:
 
 1. **Load the plan:** `pad item show PLAN-2 --format markdown`
 2. **Analyze the content** for actionable work items

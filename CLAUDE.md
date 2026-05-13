@@ -250,6 +250,8 @@ Playbooks are first-class invokable procedures. They live in the `playbooks` col
 
 **Seeded `ship` playbook.** The `startup` template ships a generic `ship` playbook (`invocation_slug=ship`) derived from the personal `/ship-tasks` slash command. Fresh `pad workspace init --template startup` workspaces get it as PLAYB-N out of the box. See `internal/collections/templates_startup_ship.go` for the body + de-personalization choices.
 
+**Library — discovery surface for invokable playbooks.** Per PLAN-1397's invokable-first overhaul, the playbook library (web UI: `/[username]/[workspace]/library?tab=playbooks`; JSON: `GET /api/v1/playbook-library`) carries the three canonical invokable workflow playbooks — **`/pad ship`**, **`/pad plan`**, **`/pad decompose`** — under a single `agent-workflows` category. Each library card surfaces a `/pad <slug>` chip and an `N args` badge so the invocation model is visible before activation. Software templates auto-seed `plan` + `decompose` via `softwareStarterPlaybookTitles`; `startup` separately prepends `ship` so all three land together at workspace init. The pre-PLAN-1377 trigger-only checklist entries (Implementation Workflow, Code Review Process, Plan Creation, Bug Triage, Retrospective, Onboarding to a Project, Release Process, Deployment, Incident Response) are stashed in `playbook_library_archive.go::archivedPlaybooks()` — compiled but not surfaced; per-entry "convert / promote to convention / retire" decisions tracked in IDEA-1396.
+
 **Web UI editor.** `web/src/routes/[username]/[workspace]/playbooks/[slug]/+page.svelte` is the dedicated playbook editor — kebab-case slug input with debounced uniqueness check, structured arguments builder that round-trips with the body's `## Arguments` section, trigger selector with custom-trigger escape, and a "Test invocation" helper that renders `/pad`, `pad playbook run`, and `pad_playbook` MCP JSON forms from a slug + sample inputs. The reusable component lives at `web/src/lib/components/playbooks/PlaybookFormFields.svelte` and the shared parser/generator at `web/src/lib/playbooks/arguments.ts`.
 
 **Code map:**
@@ -257,11 +259,15 @@ Playbooks are first-class invokable procedures. They live in the `playbooks` col
 - `internal/server/handlers_playbooks.go` — `pad playbook list|show|run` HTTP handlers; `ParsePlaybookCLIArgs`, `resolvePlaybook`.
 - `internal/server/handlers_bootstrap.go` — `pad bootstrap`; embeds playbook metadata.
 - `internal/mcp/catalog_playbook.go` — `pad_playbook` MCP tool catalog entry.
-- `internal/collections/templates.go` — playbooks collection schema (`invocation_slug` + `arguments` fields).
-- `internal/collections/templates_startup_ship.go` — the seeded `ship` playbook.
+- `internal/collections/templates.go` — playbooks collection schema (`invocation_slug` + `arguments` fields); `softwareStarterPlaybookTitles` (auto-seed lineup for software templates).
+- `internal/collections/templates_startup_ship.go` — the seeded `ship` playbook (`ShipPlaybook()`, `shipPlaybookBody`, `shipPlaybookArguments`).
+- `internal/collections/playbook_library.go` — the invokable-first library (`PlaybookLibrary()`, `LibraryPlaybook` struct with `InvocationSlug` + `Arguments`).
+- `internal/collections/playbook_library_plan.go` — the `plan` library entry (`PlanPlaybook()`).
+- `internal/collections/playbook_library_decompose.go` — the `decompose` library entry (`DecomposePlaybook()`).
+- `internal/collections/playbook_library_archive.go` — retired pre-PLAN-1377 bodies; not surfaced, but compiled for future migrations (IDEA-1396).
 - `web/src/lib/playbooks/arguments.ts` — `## Arguments` parser/generator, `INVOCATION_SLUG_PATTERN`, `buildTestInvocation`.
 
-See `PLAN-1377` and `IDEA-1368` in this workspace for the design history.
+See `PLAN-1377` (invocation model) and `PLAN-1397` (library overhaul) in this workspace for the design history.
 
 ## Testing
 
