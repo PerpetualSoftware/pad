@@ -110,13 +110,17 @@
 
 	// Snap the create-form selections into the effective list when it changes,
 	// so the <select> never displays a phantom value that isn't in its <option>s.
+	// Only snap while the new-form is CLOSED — once the user opens the form,
+	// they may type a custom trigger (via PlaybookFormFields' "Other…" mode)
+	// that isn't in `createTriggers`. Snapping during an open form silently
+	// overwrites that custom value (Codex round 1 P2).
 	$effect(() => {
-		if (createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
+		if (!showNewForm && createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
 			newTrigger = createTriggers[0];
 		}
 	});
 	$effect(() => {
-		if (createScopes.length > 0 && !createScopes.includes(newScope)) {
+		if (!showNewForm && createScopes.length > 0 && !createScopes.includes(newScope)) {
 			newScope = createScopes[0];
 		}
 	});
@@ -239,10 +243,23 @@
 		duplicating = item.slug;
 		try {
 			const fields = parseFields(item);
+			const dupFields: Record<string, unknown> = {
+				status: 'draft',
+				trigger: fields.trigger ?? 'manual',
+				scope: fields.scope ?? 'all'
+			};
+			// Carry forward the structured `arguments` contract so a duplicated
+			// playbook keeps its arg spec — otherwise the copy's body still
+			// describes arguments but the queryable form is empty (Codex round
+			// 1 P3). invocation_slug is intentionally NOT carried; the original
+			// owns the slug and a duplicate would clash on the unique index.
+			if (fields.arguments !== undefined && fields.arguments !== null) {
+				dupFields.arguments = fields.arguments;
+			}
 			await api.items.create(wsSlug, 'playbooks', {
 				title: `${item.title} (copy)`,
 				content: item.content,
-				fields: JSON.stringify({ status: 'draft', trigger: fields.trigger ?? 'manual', scope: fields.scope ?? 'all' })
+				fields: JSON.stringify(dupFields)
 			});
 			toastStore.show('Playbook duplicated as draft', 'success');
 			await loadPlaybooks(wsSlug);

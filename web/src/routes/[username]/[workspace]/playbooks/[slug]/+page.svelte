@@ -60,6 +60,23 @@
 			// request was in flight, drop the result rather than
 			// rendering data from another route.
 			if (ws !== wsSlug || slugOrRef !== ref) return;
+			// `api.items.get` is cross-collection — `/playbooks/TASK-1`
+			// would happily resolve to a task item, and Save would then
+			// rewrite the task's fields as a playbook (Codex round 1 P2).
+			// Gate on the loaded item's collection so the editor refuses
+			// to touch non-playbook items.
+			if (loaded.collection_slug !== 'playbooks') {
+				const itemRef =
+					loaded.collection_prefix && loaded.item_number
+						? `${loaded.collection_prefix}-${loaded.item_number}`
+						: slugOrRef;
+				toastStore.show(
+					`Not a playbook — ${itemRef} lives in ${loaded.collection_slug ?? 'another collection'}`,
+					'error'
+				);
+				item = null;
+				return;
+			}
 			item = loaded;
 			title = loaded.title;
 			bodyContent = loaded.content ?? '';
