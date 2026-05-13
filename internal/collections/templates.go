@@ -420,7 +420,12 @@ var templates = []WorkspaceTemplate{
 		SeedItems:            StartupOnboardingItems(),
 		OnboardingPrimaryRef: "IDEA-1",
 		Conventions:          SoftwareStarterConventions(),
-		Playbooks:            SoftwareStarterPlaybooks(),
+		// Startup ships the generic ship playbook on top of the shared
+		// software starter pack (Implementation Workflow, Code Review
+		// Process). It's the headline example of PLAN-1377's invocation
+		// model: a real, /pad-invocable procedure rather than a passive
+		// checklist. See ShipPlaybook for the de-personalization details.
+		Playbooks: append([]SeedPlaybook{ShipPlaybook()}, SoftwareStarterPlaybooks()...),
 	},
 	{
 		Name:        "scrum",
