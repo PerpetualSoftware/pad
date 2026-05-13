@@ -7,7 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// padMetaTool is the v0.3 server-introspection tool. Four actions —
+// padMetaTool is the server-introspection tool (v0.4 catalog). Four actions —
 // three handled inline (read in-memory state and return JSON), one
 // (bootstrap) dispatches through env.Dispatch since it needs workspace
 // context and the same underlying CLI handler the bootstrap resource
@@ -57,13 +57,13 @@ var padMetaTool = ToolDef{
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, the v0.3 tool catalog, and the agent bootstrap blob.
+const padMetaToolDescription = `Server introspection — version, capabilities, the v0.4 tool catalog, and the agent bootstrap blob.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — v0.3 catalog dump: every tool managed by the hand-curated
+  tool-surface  — v0.4 catalog dump: every tool managed by the hand-curated
                   catalog (the eight resource × action tools — pad_set_workspace
                   is registered separately and not included), its actions, and
                   its input schema. tools/list also contains pad_set_workspace
@@ -124,12 +124,12 @@ func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEn
 	return env.Dispatch(ctx, []string{"bootstrap"}, input)
 }
 
-// actionMetaToolSurface returns the v0.3 catalog as JSON. Pairs with
+// actionMetaToolSurface returns the catalog as JSON. Pairs with
 // PLAN-943 TASK-957 (getpad.dev/docs/mcp) — that page can generate
 // docs from this single canonical source instead of re-introspecting
 // tools/list and reverse-engineering action enums.
 //
-// Scope: the v0.3 catalog only — the eight hand-curated resource × action
+// Scope: the catalog only — the eight hand-curated resource × action
 // tools (pad_item, pad_workspace, pad_collection, pad_project, pad_role,
 // pad_search, pad_playbook, pad_meta). pad_set_workspace is registered
 // separately and NOT enumerated here — `actionMetaToolSurface` loops
