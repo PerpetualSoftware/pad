@@ -4,9 +4,16 @@
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
+	import {
+		PLAYBOOK_SKELETON_BODY,
+		argumentsToJSON,
+		type PlaybookArgument
+	} from '$lib/playbooks/arguments';
 
 	const TRIGGERS = ['on-implement', 'on-triage', 'on-release', 'on-plan', 'on-review', 'on-deploy', 'manual'] as const;
 	const SCOPES = ['all', 'backend', 'frontend', 'mobile', 'devops'] as const;
+	const STATUSES = ['active', 'draft', 'deprecated'] as const;
 	const STATUS_ORDER: Record<string, number> = { active: 0, draft: 1, deprecated: 2 };
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -25,7 +32,27 @@
 	let newTitle = $state('');
 	let newTrigger = $state<string>('manual');
 	let newScope = $state<string>('all');
+	let newStatus = $state<string>('draft');
 	let newContent = $state('');
+	let newInvocationSlug = $state('');
+	let newArgs = $state<PlaybookArgument[]>([]);
+	// Tracks whether we've already seeded the skeleton for the current
+	// "open new form" session — so re-opens without `resetForm` (shouldn't
+	// happen but defensively) don't clobber edited content.
+	let skeletonSeeded = $state(false);
+
+	// Pre-fill the textarea with the skeleton body when the user opens
+	// the new-form panel from a closed state. Only seed when content is
+	// empty so subsequent renders don't clobber a draft.
+	$effect(() => {
+		if (showNewForm && !skeletonSeeded && newContent === '') {
+			newContent = PLAYBOOK_SKELETON_BODY;
+			skeletonSeeded = true;
+		}
+		if (!showNewForm) {
+			skeletonSeeded = false;
+		}
+	});
 
 	$effect(() => {
 		if (wsSlug) {
@@ -83,13 +110,17 @@
 
 	// Snap the create-form selections into the effective list when it changes,
 	// so the <select> never displays a phantom value that isn't in its <option>s.
+	// Only snap while the new-form is CLOSED — once the user opens the form,
+	// they may type a custom trigger (via PlaybookFormFields' "Other…" mode)
+	// that isn't in `createTriggers`. Snapping during an open form silently
+	// overwrites that custom value (Codex round 1 P2).
 	$effect(() => {
-		if (createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
+		if (!showNewForm && createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
 			newTrigger = createTriggers[0];
 		}
 	});
 	$effect(() => {
-		if (createScopes.length > 0 && !createScopes.includes(newScope)) {
+		if (!showNewForm && createScopes.length > 0 && !createScopes.includes(newScope)) {
 			newScope = createScopes[0];
 		}
 	});
@@ -159,12 +190,25 @@
 	async function createPlaybook(status: string) {
 		if (!newTitle.trim()) return;
 		try {
+			const fieldsObj: Record<string, unknown> = {
+				status,
+				trigger: newTrigger,
+				scope: newScope,
+				// `arguments` is stored as a JSON value (array of objects),
+				// NOT a stringified string — the field type is `json`.
+				// Mirrors internal/collections/templates_startup_ship.go.
+				arguments: JSON.parse(argumentsToJSON(newArgs))
+			};
+			// Omit empty slug entirely rather than emitting "".
+			if (newInvocationSlug.trim()) {
+				fieldsObj.invocation_slug = newInvocationSlug.trim();
+			}
 			await api.items.create(wsSlug, 'playbooks', {
-				title: newTitle.trim(), content: newContent,
-				fields: JSON.stringify({ status, trigger: newTrigger, scope: newScope })
+				title: newTitle.trim(),
+				content: newContent,
+				fields: JSON.stringify(fieldsObj)
 			});
-			newTitle = ''; newTrigger = 'manual'; newScope = 'all'; newContent = '';
-			showNewForm = false;
+			resetForm();
 			toastStore.show(`Playbook created as ${status}`, 'success');
 			await loadPlaybooks(wsSlug);
 		} catch { toastStore.show('Failed to create playbook', 'error'); }
@@ -199,10 +243,23 @@
 		duplicating = item.slug;
 		try {
 			const fields = parseFields(item);
+			const dupFields: Record<string, unknown> = {
+				status: 'draft',
+				trigger: fields.trigger ?? 'manual',
+				scope: fields.scope ?? 'all'
+			};
+			// Carry forward the structured `arguments` contract so a duplicated
+			// playbook keeps its arg spec — otherwise the copy's body still
+			// describes arguments but the queryable form is empty (Codex round
+			// 1 P3). invocation_slug is intentionally NOT carried; the original
+			// owns the slug and a duplicate would clash on the unique index.
+			if (fields.arguments !== undefined && fields.arguments !== null) {
+				dupFields.arguments = fields.arguments;
+			}
 			await api.items.create(wsSlug, 'playbooks', {
 				title: `${item.title} (copy)`,
 				content: item.content,
-				fields: JSON.stringify({ status: 'draft', trigger: fields.trigger ?? 'manual', scope: fields.scope ?? 'all' })
+				fields: JSON.stringify(dupFields)
 			});
 			toastStore.show('Playbook duplicated as draft', 'success');
 			await loadPlaybooks(wsSlug);
@@ -212,7 +269,17 @@
 
 	function clearFilters() { searchQuery = ''; filterTrigger = ''; filterScope = ''; }
 
-	function resetForm() { showNewForm = false; newTitle = ''; newTrigger = 'manual'; newScope = 'all'; newContent = ''; }
+	function resetForm() {
+		showNewForm = false;
+		newTitle = '';
+		newTrigger = 'manual';
+		newScope = 'all';
+		newStatus = 'draft';
+		newContent = '';
+		newInvocationSlug = '';
+		newArgs = [];
+		skeletonSeeded = false;
+	}
 	function statusLabel(s: string) { return s === 'active' ? 'Active' : s === 'deprecated' ? 'Deprecated' : 'Draft'; }
 	function nextStatusLabel(s: string) { return s === 'active' ? 'Mark as Draft' : s === 'draft' ? 'Mark as Active' : 'Mark as Draft'; }
 </script>
@@ -242,26 +309,41 @@
 						<label class="form-label" for="pb-title">Title</label>
 						<input id="pb-title" type="text" bind:value={newTitle} placeholder="e.g. Implementation Playbook" class="form-input" />
 					</div>
-					<div class="form-row-pair">
-						<div class="form-row">
-							<label class="form-label" for="pb-trigger">Trigger</label>
-							<select id="pb-trigger" bind:value={newTrigger} class="form-select">
-								{#each createTriggers as t (t)}<option value={t}>{t}</option>{/each}
-							</select>
+
+					<div class="new-form-grid">
+						<div class="new-form-sidebar">
+							<PlaybookFormFields
+								{wsSlug}
+								selfItemId={null}
+								invocationSlug={newInvocationSlug}
+								trigger={newTrigger}
+								scope={newScope}
+								status={newStatus}
+								args={newArgs}
+								bodyContent={newContent}
+								triggers={createTriggers}
+								scopes={createScopes}
+								statuses={STATUSES}
+								hideStatus={true}
+								existingPlaybooks={playbooks}
+								onSlugChange={(s) => (newInvocationSlug = s)}
+								onTriggerChange={(t) => (newTrigger = t)}
+								onScopeChange={(s) => (newScope = s)}
+								onStatusChange={(s) => (newStatus = s)}
+								onArgumentsChange={(a) => (newArgs = a)}
+								onBodyContentChange={(b) => (newContent = b)}
+							/>
 						</div>
-						<div class="form-row">
-							<label class="form-label" for="pb-scope">Scope</label>
-							<select id="pb-scope" bind:value={newScope} class="form-select">
-								{#each createScopes as s (s)}<option value={s}>{s}</option>{/each}
-							</select>
+						<div class="new-form-main">
+							<label class="form-label" for="pb-content">Body</label>
+							<textarea
+								id="pb-content"
+								bind:value={newContent}
+								placeholder="Describe what this playbook does, its arguments, steps, defaults, and stop conditions."
+								class="form-textarea"
+								rows="20"
+							></textarea>
 						</div>
-					</div>
-					<div class="form-row">
-						<label class="form-label" for="pb-content">Workflow Steps</label>
-						<textarea id="pb-content" bind:value={newContent} placeholder="1. First step
-2. Second step
-   some command here
-3. Third step" class="form-textarea" rows="10"></textarea>
 					</div>
 				</div>
 				<div class="form-actions">
@@ -428,6 +510,9 @@
 	.action-danger:hover { background: color-mix(in srgb, var(--accent-orange) 15%, var(--bg-tertiary)); color: var(--accent-orange); }
 	.delete-confirm { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8em; color: var(--accent-orange); font-weight: 600; }
 	.new-form { background: var(--bg-secondary); border: 1px solid var(--accent-blue); border-radius: var(--radius-lg); padding: var(--space-5); margin-bottom: var(--space-6); }
+	.new-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--space-4); align-items: start; margin-top: var(--space-2); }
+	.new-form-sidebar { min-width: 0; }
+	.new-form-main { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 	.new-form h2 { font-size: 1.1em; margin-bottom: var(--space-4); }
 	.form-fields { display: flex; flex-direction: column; gap: var(--space-4); }
 	.form-row { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -444,6 +529,9 @@
 	.btn-draft { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
 	.btn-secondary { background: transparent; color: var(--text-secondary); }
 	.btn-secondary:hover:not(:disabled) { color: var(--text-primary); opacity: 1; }
+	@media (max-width: 1024px) {
+		.new-form-grid { grid-template-columns: 1fr; }
+	}
 	@media (max-width: 768px) {
 		.page-header { flex-direction: column; }
 		.form-row-pair { grid-template-columns: 1fr; }
