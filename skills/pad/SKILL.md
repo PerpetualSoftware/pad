@@ -37,8 +37,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
-- `dashboard {...}` — active items, attention, suggested next, recent activity
-- `recent_activity [...]` — capped to the last 24h
+- `dashboard {...}` — active items, attention, suggested next, recent activity. `attention` and `recent_activity` are capped to 5 entries each; `attention_overflow_count` and `recent_activity_overflow_count` report how many were trimmed (use `pad project dashboard` to pull the full set when overflow > 0).
 
 If the conventions list includes items, treat them as project rules you must follow. The vocabulary depends on the workspace domain — a software workspace ships rules like "use conventional commit format," a hiring workspace ships rules like "anonymize candidate names in exports," a research workspace ships rules like "always cite sources." Follow whatever the workspace has configured.
 
