@@ -5756,11 +5756,20 @@ Examples:
 			}
 
 			if foundPlaybook != nil {
-				// Build fields JSON for playbook
+				// Build fields JSON for playbook. Forward invocation_slug
+				// and arguments only when set so legacy library entries
+				// (which leave them empty) seed unchanged. Mirrors the
+				// shape ShipPlaybook() writes in templates_startup_ship.go.
 				fields := map[string]interface{}{
 					"status":  "active",
 					"trigger": foundPlaybook.Trigger,
 					"scope":   foundPlaybook.Scope,
+				}
+				if foundPlaybook.InvocationSlug != "" {
+					fields["invocation_slug"] = foundPlaybook.InvocationSlug
+				}
+				if len(foundPlaybook.Arguments) > 0 {
+					fields["arguments"] = foundPlaybook.Arguments
 				}
 				fieldsJSON, _ := json.Marshal(fields)
 

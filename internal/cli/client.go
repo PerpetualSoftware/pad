@@ -366,12 +366,18 @@ type PlaybookCategory struct {
 }
 
 // LibraryPlaybook holds a pre-built playbook definition.
+//
+// InvocationSlug and Arguments are PLAN-1377's invocation surface and
+// must round-trip through `pad library activate` so a library entry
+// that declares them produces a `/pad <slug>`-routable workspace item.
 type LibraryPlaybook struct {
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Category string `json:"category"`
-	Trigger  string `json:"trigger"`
-	Scope    string `json:"scope"`
+	Title          string           `json:"title"`
+	Content        string           `json:"content"`
+	Category       string           `json:"category"`
+	Trigger        string           `json:"trigger"`
+	Scope          string           `json:"scope"`
+	InvocationSlug string           `json:"invocation_slug,omitempty"`
+	Arguments      []map[string]any `json:"arguments,omitempty"`
 }
 
 // GetPlaybookLibrary fetches the playbook library from the server.
