@@ -153,8 +153,8 @@ type AgentBootstrapPlaybookMeta struct {
 // BootstrapDashboard is the bootstrap-side dashboard projection. It
 // embeds *DashboardResponse so the wire shape stays compatible with the
 // `GET /dashboard` endpoint (same field names, same nesting), then adds
-// two overflow counts that report how many entries were trimmed from
-// the bootstrap's capped views.
+// five overflow counts (one per capped sub-array) that report how many
+// entries were trimmed from the bootstrap's capped views.
 //
 // Why a wrapper rather than mutating DashboardResponse: the cap is
 // bootstrap-only — `pad project dashboard` and the web UI's dashboard
@@ -168,18 +168,38 @@ type BootstrapDashboard struct {
 	// RecentActivityOverflowCount mirrors AttentionOverflowCount for the
 	// recent_activity tail.
 	RecentActivityOverflowCount int `json:"recent_activity_overflow_count,omitempty"`
+	// ActiveItemsOverflowCount, ActivePlansOverflowCount, and
+	// ByRoleOverflowCount cap the three other dashboard sub-arrays
+	// that grow with workspace state. Same semantics as the
+	// Attention/RecentActivity counts above: omitted when zero,
+	// populated with `len(original) - cap` when truncation kicked in.
+	// PLAN-1410 / TASK-1422 (absorbs IDEA-1421).
+	//
+	// `suggested_next` was deliberately NOT added to this set:
+	// buildDashboardResponse already truncates SuggestedNext to 3
+	// upstream (see "Take top 3" in handlers_dashboard.go), so a
+	// bootstrap-side cap of 5 would be unreachable dead code. If the
+	// upstream cap is ever raised or removed, that's the moment to
+	// add a suggested_next_overflow_count here.
+	ActiveItemsOverflowCount int `json:"active_items_overflow_count,omitempty"`
+	ActivePlansOverflowCount int `json:"active_plans_overflow_count,omitempty"`
+	ByRoleOverflowCount      int `json:"by_role_overflow_count,omitempty"`
 }
 
-// bootstrapAttentionCap and bootstrapRecentActivityCap clamp the
-// dashboard's `attention` and `recent_activity` arrays in the bootstrap
+// Bootstrap caps clamp the per-array sizes in the bootstrap dashboard
 // projection. 5 is the practical surfacing depth for an agent greeting
 // or status pass — anything beyond is too much for a single response
 // to render conversationally; the agent should pivot to the full
-// `pad project dashboard` query when the overflow count signals more
-// work to consider. PLAN-1410.
+// `pad project dashboard` query when an overflow count signals more
+// work to consider. PLAN-1410. The first two land in TASK-1413; the
+// remaining three (active_items / active_plans / by_role) are TASK-1422
+// (IDEA-1421 absorbed). suggested_next is excluded — upstream cap of 3.
 const (
 	bootstrapAttentionCap      = 5
 	bootstrapRecentActivityCap = 5
+	bootstrapActiveItemsCap    = 5
+	bootstrapActivePlansCap    = 5
+	bootstrapByRoleCap         = 5
 )
 
 // isCollectionSlugVisible reports whether the named collection survived
@@ -375,8 +395,10 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 
 	// Dashboard — recreate via the existing handler logic if a request
 	// context is available, then wrap in BootstrapDashboard so the
-	// bootstrap-side cap on `attention` and `recent_activity` (with
-	// overflow counts) doesn't leak into the `GET /dashboard` contract.
+	// bootstrap-side caps on `attention`, `recent_activity`,
+	// `active_items`, `active_plans`, and `by_role` (each with its
+	// `*_overflow_count` companion) don't leak into the
+	// `GET /dashboard` contract.
 	if r != nil {
 		dash, derr := s.buildDashboardResponse(workspaceID, r)
 		if derr == nil && dash != nil {
@@ -577,7 +599,7 @@ func trimLeadingSpaces(s string) string {
 // arrays unchanged. The slice backing arrays are shared — we only
 // trim the view, no allocation needed for the truncated portion.
 //
-// Returns a non-nil *BootstrapDashboard even when both caps are
+// Returns a non-nil *BootstrapDashboard even when all caps are
 // untriggered, so the agent always sees a consistent shape.
 func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 	copied := *d
@@ -590,6 +612,20 @@ func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 		copied.RecentActivity = copied.RecentActivity[:bootstrapRecentActivityCap]
 		out.RecentActivityOverflowCount = n
 	}
+	if n := len(copied.ActiveItems) - bootstrapActiveItemsCap; n > 0 {
+		copied.ActiveItems = copied.ActiveItems[:bootstrapActiveItemsCap]
+		out.ActiveItemsOverflowCount = n
+	}
+	if n := len(copied.ActivePlans) - bootstrapActivePlansCap; n > 0 {
+		copied.ActivePlans = copied.ActivePlans[:bootstrapActivePlansCap]
+		out.ActivePlansOverflowCount = n
+	}
+	if n := len(copied.ByRole) - bootstrapByRoleCap; n > 0 {
+		copied.ByRole = copied.ByRole[:bootstrapByRoleCap]
+		out.ByRoleOverflowCount = n
+	}
+	// SuggestedNext intentionally NOT capped here — see godoc on
+	// BootstrapDashboard.
 	return out
 }
 
