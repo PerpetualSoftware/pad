@@ -228,37 +228,50 @@ A playbook is just an item in the `playbooks` collection with two important fiel
 1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable as `/pad <slug>` in chat. Leave blank for trigger-only playbooks that should only fire automatically (e.g. `trigger=on-release`).
 2. **`arguments`** (optional, JSON array) — declares the args the playbook accepts. Types: `ref`, `string`, `flag`, `enum`, `number`. The structured form is mirrored in the body's `## Arguments` section so a human reading the playbook sees the same contract.
 
+**Authoring trigger-only playbooks from the CLI** — fully supported by `pad item create --field key=value`:
+
 ```bash
-# Minimal trigger-only playbook (no slug — auto-loaded on trigger match)
 pad item create playbook "Release checklist" \
   --field trigger=on-release \
   --field scope=all \
   --field status=active \
-  --content "1. Run full test suite\n2. Update CHANGELOG\n3. Tag the release"
-
-# Slug-invocable playbook with an argument spec
-pad item create playbook "Cut a release" \
-  --field invocation_slug=release \
-  --field trigger=manual \
-  --field status=active \
-  --field arguments='[{"name":"version","type":"string","required":true,"description":"semver, e.g. 0.5.0"}]' \
   --stdin <<'EOF'
-Cut a Pad release.
-
-## Arguments
-
-- `version` (string, required) — semver, e.g. 0.5.0
-
-## Steps
-
-1. Verify the tree is clean and on main
-2. Run `make test`
-3. Tag with `git tag v$VERSION && git push --tags`
-4. Verify CI release workflow succeeded
+1. Run full test suite
+2. Update CHANGELOG
+3. Tag the release
 EOF
 ```
 
-After creation, point the user at `/pad <slug>` for the new invocation or, for trigger-only playbooks, the action that will auto-load it ("This will fire on the next on-release action"). Suggest they refine the body in the web UI's playbook editor for the structured arguments builder + "Test invocation" helper.
+**Authoring slug-invocable playbooks with arguments.** The `arguments` field on the playbooks collection is a `json` type, and `pad item create --field` only sets string values — so you can't set a structured `arguments` array directly from the CLI. Two working paths:
+
+- **Web UI playbook editor (recommended)** at `/{workspace}/playbooks/+ New Playbook`. The editor lets the user (or the agent talking the user through it) declare each argument's `name / type / required / default / description / enum` in a structured form, validates the kebab-case slug + workspace uniqueness, and round-trips the spec into the body's `## Arguments` section. Open the URL with `pad server open` if the user isn't already there. This is the canonical path — the editor exists specifically for this case.
+
+- **CLI then web edit.** If the user wants the CLI flow, create the playbook with the body containing a `## Arguments` section and set everything BUT `arguments`:
+
+  ```bash
+  pad item create playbook "Cut a release" \
+    --field invocation_slug=release \
+    --field trigger=manual \
+    --field status=active \
+    --stdin <<'EOF'
+  Cut a Pad release.
+
+  ## Arguments
+
+  - `version` (string, required) — semver, e.g. 0.5.0
+
+  ## Steps
+
+  1. Verify the tree is clean and on main
+  2. Run `make test`
+  3. Tag with `git tag v$VERSION && git push --tags`
+  4. Verify CI release workflow succeeded
+  EOF
+  ```
+
+  Then open the new playbook in the web editor's structured arguments builder to declare each argument (the markdown `## Arguments` section is the human-readable mirror; the structured field is what the strict CLI parser reads, so both need to be populated). The editor's two-way binding will keep them in sync from there.
+
+After creation, point the user at `/pad <slug>` for the new invocation or, for trigger-only playbooks, the action that will auto-load it ("This will fire on the next `on-release` action").
 
 ## Before Performing Work
 
