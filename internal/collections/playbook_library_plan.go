@@ -23,9 +23,20 @@ nothing gets written until the user confirms.
 
 ## Arguments
 
-- ` + "`topic`" + ` (required, string) — what to plan (e.g. "API redesign", "OAuth migration", "Q3 hiring push")
-- ` + "`parent`" + ` (optional, ref) — existing IDEA, roadmap entry, or higher-level plan this reifies
-- ` + "`collection`" + ` (optional, string, default=plans) — collection to create the plan in (some workspaces use ` + "`roadmap`" + `, ` + "`projects`" + `, etc.)
+- ` + "`topic`" + ` (required, string OR ref) — what to plan. Accepts either:
+  - **A free-text topic** (e.g. "API redesign", "OAuth migration", "Q3 hiring push") — the normal "create a new plan" path.
+  - **A ref to an existing plan-like item** (e.g. ` + "`PLAN-5`" + `, ` + "`IDEA-12`" + `) — the "elaborate this existing item into a fuller plan" path, triggered by UI quick-actions like "Plan this" on a plan card. In this mode, the agent loads the existing item and works WITH the user to expand its motivation/scope/breakdown rather than starting from scratch.
+- ` + "`parent`" + ` (optional, ref) — existing IDEA, roadmap entry, or higher-level plan this reifies. Only meaningful in the "create new" path; ignored when the first positional is itself a ref.
+- ` + "`collection`" + ` (optional, string, default=plans) — collection to create the plan in (some workspaces use ` + "`roadmap`" + `, ` + "`projects`" + `, etc.). Only meaningful in the "create new" path.
+
+## Dispatch — new plan vs. elaborate existing
+
+Detect which mode the user invoked by inspecting the first positional:
+
+- **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --format markdown`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
+- **Otherwise** → **create-new mode**. Run the full Conversation flow below to design and create a fresh plan.
+
+Quick-action prompts of the form ` + "`/pad plan <REF> \"<title>\" — outline goals, deliverables, and timeline`" + ` are the elaborate-mode entry point — the trailing freeform text after the title is conversational context, not extra positional args.
 
 ## Pre-flight
 
@@ -129,8 +140,14 @@ Capture the new plan's ref from the CLI output (e.g. ` + "`PLAN-N`" + `).
 
 Two natural follow-ups:
 
-- **Decompose now:** invoke ` + "`/pad decompose <new-plan-ref>`" + ` to create the child task items from the breakdown the user just approved. This is usually what they want — the breakdown is fresh, the agent has the conversation context, and ` + "`/pad decompose`" + ` will propose tasks with the right priorities.
-- **Decompose later:** the plan stands on its own; the breakdown lives in the body as plain text. The user can decompose anytime by running ` + "`/pad decompose <plan-ref>`" + `.
+- **Decompose now:** turn the approved breakdown into child task items. Check whether the workspace has a ` + "`decompose`" + ` playbook activated (` + "`pad playbook list --format json`" + `) — if so, invoke it with ` + "`/pad decompose <new-plan-ref>`" + `; otherwise create the tasks inline:
+
+  ` + "```bash" + `
+  pad item create task "<task title>" --parent <new-plan-ref> --priority <X>
+  ` + "```" + `
+
+  one per approved item.
+- **Decompose later:** the plan stands on its own; the breakdown lives in the body as plain text. The user can decompose anytime.
 
 Don't push — just offer and respect the answer.
 
@@ -145,23 +162,28 @@ Don't push — just offer and respect the answer.
 // planPlaybookArguments mirrors the body's `## Arguments` section
 // (PLAN-1377). The structured form is the queryable contract; the
 // markdown is the human-readable mirror. Keep them in sync.
+//
+// `topic` is typed `string` in the structured form because the
+// strict CLI parser doesn't currently distinguish "string OR ref" —
+// the body documents the dual-purpose semantics, and the agent's NL
+// dispatcher routes ref-form invocations to elaborate-mode.
 var planPlaybookArguments = []map[string]any{
 	{
 		"name":        "topic",
 		"type":        "string",
 		"required":    true,
-		"description": "What to plan (e.g. \"API redesign\", \"OAuth migration\", \"Q3 hiring push\").",
+		"description": "What to plan. Accepts either a free-text topic (e.g. \"API redesign\") for create-new mode, OR a ref like PLAN-5 / IDEA-12 to elaborate an existing item (the entry point for UI quick-actions like \"Plan this\").",
 	},
 	{
 		"name":        "parent",
 		"type":        "ref",
-		"description": "Existing IDEA, roadmap entry, or higher-level plan this reifies.",
+		"description": "Existing IDEA, roadmap entry, or higher-level plan this reifies. Only meaningful in create-new mode.",
 	},
 	{
 		"name":        "collection",
 		"type":        "string",
 		"default":     "plans",
-		"description": "Collection to create the plan in. Defaults to `plans`; some workspaces use `roadmap`, `projects`, etc.",
+		"description": "Collection to create the plan in. Defaults to `plans`; some workspaces use `roadmap`, `projects`, etc. Only meaningful in create-new mode.",
 	},
 }
 
