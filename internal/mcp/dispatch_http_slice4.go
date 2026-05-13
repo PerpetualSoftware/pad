@@ -546,10 +546,20 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	}
 
 	if pb := collections.GetLibraryPlaybook(title); pb != nil {
+		// Forward invocation_slug + arguments only when set so legacy
+		// library entries (none of which carry them) seed with the
+		// original three-field shape. Mirrors ShipPlaybook() and the
+		// CLI activate path in cmd/pad/main.go's libraryActivate.
 		fields := map[string]any{
 			"status":  "active",
 			"trigger": pb.Trigger,
 			"scope":   pb.Scope,
+		}
+		if pb.InvocationSlug != "" {
+			fields["invocation_slug"] = pb.InvocationSlug
+		}
+		if len(pb.Arguments) > 0 {
+			fields["arguments"] = pb.Arguments
 		}
 		fieldsJSON, err := json.Marshal(fields)
 		if err != nil {
