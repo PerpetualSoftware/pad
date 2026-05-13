@@ -8,7 +8,7 @@ If the user is asking general code questions with no project-management thread, 
 
 ## Tool surface (v0.3)
 
-Nine tools, each with an `action` enum:
+Eight resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Nine tools total.
 
 - `pad_item` — Items: create / update / delete / get / list / move / link / unlink / deps / star / unstar / starred / comment / list-comments / bulk-update / note / decide.
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log.
@@ -18,9 +18,9 @@ Nine tools, each with an `action` enum:
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free.
 - `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity).
-- `pad_set_workspace` — Pin a session-default workspace for subsequent calls. Response embeds the bootstrap blob so you can pin + load context in one call.
+- `pad_set_workspace` — Pin a session-default workspace for subsequent calls. Takes `workspace: <slug>` only (no `action`). Response embeds the bootstrap blob so you can pin + load context in one call.
 
-Always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
+For the eight resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
 
 ## Resources are cheaper than tool calls
 
