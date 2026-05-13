@@ -153,21 +153,30 @@
 		if (!item) return;
 		saving = true;
 		try {
-			const fieldsObj: Record<string, unknown> = {
-				status,
-				trigger,
-				scope,
-				// arguments goes in as a JSON VALUE (array of objects), not a
-				// stringified array — the server stores it as a `json` field.
-				// argumentsToJSON returns a string, so we parse it back to a
-				// value before stuffing it into fieldsObj. This matches the
-				// canonical shape in internal/collections/templates_startup_ship.go.
-				arguments: JSON.parse(argumentsToJSON(args))
-			};
-			// Omit invocation_slug entirely when empty so the optional field
-			// stays clean rather than emitting `"invocation_slug": ""`.
-			if (invocationSlug.trim()) {
-				fieldsObj.invocation_slug = invocationSlug.trim();
+			// Start from the loaded fields so unknown/custom keys (workspace-
+			// added schema fields, future metadata) survive the round-trip.
+			// api.items.update replaces the whole fields blob, so rebuilding
+			// from scratch would silently drop everything we don't render
+			// (Codex round 3 P2).
+			const fieldsObj: Record<string, unknown> = { ...parseFields(item) };
+			fieldsObj.status = status;
+			fieldsObj.trigger = trigger;
+			fieldsObj.scope = scope;
+			// `arguments` goes in as a JSON VALUE (array of objects), not a
+			// stringified array — the server stores it as a `json` field.
+			// argumentsToJSON returns a string, so we parse it back to a
+			// value before stuffing it into fieldsObj. This matches the
+			// canonical shape in internal/collections/templates_startup_ship.go.
+			fieldsObj.arguments = JSON.parse(argumentsToJSON(args));
+			// Set or clear invocation_slug. Empty user input clears the field
+			// (the user removed the slug); a non-empty value sets it. Storing
+			// `""` would still hit the unique-index, so we delete the key
+			// entirely on clear.
+			const trimmedSlug = invocationSlug.trim();
+			if (trimmedSlug) {
+				fieldsObj.invocation_slug = trimmedSlug;
+			} else {
+				delete fieldsObj.invocation_slug;
 			}
 			await api.items.update(wsSlug, item.slug, {
 				title: title.trim(),
