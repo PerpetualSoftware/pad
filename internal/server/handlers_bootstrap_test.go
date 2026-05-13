@@ -40,9 +40,14 @@ func TestBootstrapEmptyWorkspace(t *testing.T) {
 		t.Error("roles is nil; should be an empty slice")
 	}
 
-	// RecentActivity is non-nil by contract.
-	if b.RecentActivity == nil {
-		t.Error("recent_activity is nil; should be an empty slice")
+	// Dashboard is populated when a request context is available;
+	// recent_activity lives inside it (the top-level duplicate was
+	// retired in PLAN-1410 / TASK-1413). On the empty-workspace path
+	// dashboard may itself be nil if buildDashboardResponse returns
+	// an empty/error result — the agent tolerates that via the
+	// omitempty tag, so we don't assert non-nil here.
+	if b.Dashboard != nil && b.Dashboard.RecentActivity == nil {
+		t.Error("dashboard.recent_activity is nil; should be an empty slice")
 	}
 }
 
@@ -63,7 +68,10 @@ func TestBootstrapEmptyArraysNotNull(t *testing.T) {
 		t.Fatalf("decode raw: %v", err)
 	}
 
-	for _, key := range []string{"collections", "conventions", "roles", "playbooks", "recent_activity"} {
+	// PLAN-1410 / TASK-1413: the top-level `recent_activity` key was
+	// retired (duplicate of dashboard.recent_activity). The remaining
+	// top-level array fields must still serialize as [] not null.
+	for _, key := range []string{"collections", "conventions", "roles", "playbooks"} {
 		val, ok := raw[key]
 		if !ok {
 			t.Errorf("missing key %q in bootstrap response", key)
@@ -73,6 +81,12 @@ func TestBootstrapEmptyArraysNotNull(t *testing.T) {
 		if s == "null" {
 			t.Errorf("bootstrap.%s serialized as null; want []", key)
 		}
+	}
+
+	// Guard against accidental reintroduction of the duplicate
+	// top-level recent_activity field.
+	if _, ok := raw["recent_activity"]; ok {
+		t.Errorf("top-level recent_activity reappeared in bootstrap response; it should live only under dashboard")
 	}
 }
 
@@ -135,12 +149,13 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 //
 //	TASK-1411 — 16 KiB (baseline benchmark added; fixture at 13,861 bytes)
 //	TASK-1412 — 11 KiB (slim BootstrapCollection projection; fixture at 8,992 bytes — collections section dropped from 8,848 to 3,979 bytes)
+//	TASK-1413 — 8 KiB  (dedup top-level recent_activity, drop convention slug, cap dashboard.attention/recent_activity to 5 with overflow counts; fixture at 6,355 bytes — total dropped another 2,637 bytes)
 //
-// The next PRs in PLAN-1410 tighten this further (TASK-1413's dedup +
-// caps; TASK-1417's final measurement). The constant intentionally
-// lives next to the test that consumes it so PRs touching the bootstrap
-// shape see the budget in the diff.
-const bootstrapSizeBudget = 11 * 1024
+// The remaining PRs in PLAN-1410 are skill-side trims that don't affect
+// the bootstrap response shape, plus TASK-1417's final measurement
+// step. The constant intentionally lives next to the test that consumes
+// it so PRs touching the bootstrap shape see the budget in the diff.
+const bootstrapSizeBudget = 8 * 1024
 
 // TestBootstrapSizeBudget locks in a payload-size budget for the
 // bootstrap response so future regressions are caught at PR time.
@@ -240,16 +255,30 @@ func seedBootstrapSizeFixture(t *testing.T, srv *Server, wsSlug string) {
 // Diagnostic only — not part of any production contract. Sized for
 // readability in `go test -v` output.
 func bootstrapSectionBytes(b AgentBootstrap) []string {
-	return []string{
-		fmt.Sprintf("workspace:       %d bytes", jsonLen(b.Workspace)),
-		fmt.Sprintf("user:            %d bytes", jsonLen(b.User)),
-		fmt.Sprintf("collections:     %d bytes (%d items)", jsonLen(b.Collections), len(b.Collections)),
-		fmt.Sprintf("conventions:     %d bytes (%d items)", jsonLen(b.Conventions), len(b.Conventions)),
-		fmt.Sprintf("roles:           %d bytes (%d items)", jsonLen(b.Roles), len(b.Roles)),
-		fmt.Sprintf("playbooks:       %d bytes (%d items)", jsonLen(b.Playbooks), len(b.Playbooks)),
-		fmt.Sprintf("dashboard:       %d bytes", jsonLen(b.Dashboard)),
-		fmt.Sprintf("recent_activity: %d bytes (%d items)", jsonLen(b.RecentActivity), len(b.RecentActivity)),
+	lines := []string{
+		fmt.Sprintf("workspace:   %d bytes", jsonLen(b.Workspace)),
+		fmt.Sprintf("user:        %d bytes", jsonLen(b.User)),
+		fmt.Sprintf("collections: %d bytes (%d items)", jsonLen(b.Collections), len(b.Collections)),
+		fmt.Sprintf("conventions: %d bytes (%d items)", jsonLen(b.Conventions), len(b.Conventions)),
+		fmt.Sprintf("roles:       %d bytes (%d items)", jsonLen(b.Roles), len(b.Roles)),
+		fmt.Sprintf("playbooks:   %d bytes (%d items)", jsonLen(b.Playbooks), len(b.Playbooks)),
+		fmt.Sprintf("dashboard:   %d bytes", jsonLen(b.Dashboard)),
 	}
+	// Surface the caps' effect when triggered so the trim's value is
+	// legible from CI output as PLAN-1410's later PRs land.
+	if b.Dashboard != nil {
+		if b.Dashboard.AttentionOverflowCount > 0 {
+			lines = append(lines, fmt.Sprintf(
+				"  └─ attention capped: %d shown, %d overflow",
+				len(b.Dashboard.Attention), b.Dashboard.AttentionOverflowCount))
+		}
+		if b.Dashboard.RecentActivityOverflowCount > 0 {
+			lines = append(lines, fmt.Sprintf(
+				"  └─ recent_activity capped: %d shown, %d overflow",
+				len(b.Dashboard.RecentActivity), b.Dashboard.RecentActivityOverflowCount))
+		}
+	}
+	return lines
 }
 
 // jsonLen marshals v to compact JSON and returns the byte count. Test
@@ -262,6 +291,92 @@ func jsonLen(v interface{}) int {
 		return -1
 	}
 	return len(out)
+}
+
+// TestCapBootstrapDashboard isolates the bootstrap dashboard cap logic
+// from the rest of the bootstrap pipeline so the contract (cap to N,
+// surface overflow count, leave the source pointer untouched) doesn't
+// drift silently. PLAN-1410 / TASK-1413.
+func TestCapBootstrapDashboard(t *testing.T) {
+	// Helper: make a DashboardResponse with N attention + M recent_activity.
+	mk := func(attN, recN int) *DashboardResponse {
+		attention := make([]DashboardAttention, attN)
+		for i := range attention {
+			attention[i] = DashboardAttention{Type: "stalled", ItemRef: fmt.Sprintf("TASK-%d", i)}
+		}
+		recent := make([]DashboardActivity, recN)
+		for i := range recent {
+			recent[i] = DashboardActivity{Action: "updated", ItemSlug: fmt.Sprintf("item-%d", i)}
+		}
+		return &DashboardResponse{Attention: attention, RecentActivity: recent}
+	}
+
+	t.Run("under-cap-no-overflow", func(t *testing.T) {
+		d := mk(2, 3)
+		out := capBootstrapDashboard(d)
+		if out == nil {
+			t.Fatal("expected non-nil result even when nothing trimmed")
+		}
+		if got := len(out.Attention); got != 2 {
+			t.Errorf("attention len = %d, want 2 (under cap, no trim)", got)
+		}
+		if out.AttentionOverflowCount != 0 {
+			t.Errorf("attention_overflow_count = %d, want 0", out.AttentionOverflowCount)
+		}
+		if got := len(out.RecentActivity); got != 3 {
+			t.Errorf("recent_activity len = %d, want 3", got)
+		}
+		if out.RecentActivityOverflowCount != 0 {
+			t.Errorf("recent_activity_overflow_count = %d, want 0", out.RecentActivityOverflowCount)
+		}
+	})
+
+	t.Run("over-cap-truncates-and-counts-overflow", func(t *testing.T) {
+		d := mk(bootstrapAttentionCap+8, bootstrapRecentActivityCap+3)
+		out := capBootstrapDashboard(d)
+		if got := len(out.Attention); got != bootstrapAttentionCap {
+			t.Errorf("attention len = %d, want %d (capped)", got, bootstrapAttentionCap)
+		}
+		if out.AttentionOverflowCount != 8 {
+			t.Errorf("attention_overflow_count = %d, want 8", out.AttentionOverflowCount)
+		}
+		if got := len(out.RecentActivity); got != bootstrapRecentActivityCap {
+			t.Errorf("recent_activity len = %d, want %d (capped)", got, bootstrapRecentActivityCap)
+		}
+		if out.RecentActivityOverflowCount != 3 {
+			t.Errorf("recent_activity_overflow_count = %d, want 3", out.RecentActivityOverflowCount)
+		}
+	})
+
+	t.Run("source-pointer-unchanged", func(t *testing.T) {
+		// Defensive contract: callers downstream of buildDashboardResponse
+		// (the dashboard endpoint itself) must see their full-length
+		// arrays. The cap mutates a shallow copy.
+		d := mk(bootstrapAttentionCap+5, bootstrapRecentActivityCap+5)
+		origAttLen := len(d.Attention)
+		origRecLen := len(d.RecentActivity)
+
+		_ = capBootstrapDashboard(d)
+
+		if got := len(d.Attention); got != origAttLen {
+			t.Errorf("source Attention mutated: len = %d, want %d", got, origAttLen)
+		}
+		if got := len(d.RecentActivity); got != origRecLen {
+			t.Errorf("source RecentActivity mutated: len = %d, want %d", got, origRecLen)
+		}
+	})
+
+	t.Run("exact-cap-no-overflow", func(t *testing.T) {
+		// Boundary: len == cap should not flag overflow.
+		d := mk(bootstrapAttentionCap, bootstrapRecentActivityCap)
+		out := capBootstrapDashboard(d)
+		if out.AttentionOverflowCount != 0 {
+			t.Errorf("attention_overflow_count at exact cap = %d, want 0", out.AttentionOverflowCount)
+		}
+		if out.RecentActivityOverflowCount != 0 {
+			t.Errorf("recent_activity_overflow_count at exact cap = %d, want 0", out.RecentActivityOverflowCount)
+		}
+	})
 }
 
 // TestPlaybookSummaryPrefersFirstParagraph isolates the summary extraction

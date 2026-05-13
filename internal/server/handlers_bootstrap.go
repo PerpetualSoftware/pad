@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -21,14 +20,13 @@ import (
 // in `pad_set_workspace`'s response, and an on-demand `pad_meta.action=bootstrap`
 // refresh.
 type AgentBootstrap struct {
-	Workspace      AgentBootstrapWorkspace      `json:"workspace"`
-	User           AgentBootstrapUser           `json:"user"`
-	Collections    []BootstrapCollection        `json:"collections"`
-	Conventions    []AgentBootstrapConvention   `json:"conventions"`
-	Roles          []models.AgentRole           `json:"roles"`
-	Playbooks      []AgentBootstrapPlaybookMeta `json:"playbooks"`
-	Dashboard      *DashboardResponse           `json:"dashboard,omitempty"`
-	RecentActivity []DashboardActivity          `json:"recent_activity"`
+	Workspace   AgentBootstrapWorkspace      `json:"workspace"`
+	User        AgentBootstrapUser           `json:"user"`
+	Collections []BootstrapCollection        `json:"collections"`
+	Conventions []AgentBootstrapConvention   `json:"conventions"`
+	Roles       []models.AgentRole           `json:"roles"`
+	Playbooks   []AgentBootstrapPlaybookMeta `json:"playbooks"`
+	Dashboard   *BootstrapDashboard          `json:"dashboard,omitempty"`
 }
 
 // BootstrapCollection is the lightweight collection projection delivered
@@ -116,10 +114,12 @@ type AgentBootstrapUser struct {
 // always-on, active conventions are returned — the curated must-follow
 // set. trigger-specific conventions load on demand when their trigger
 // fires.
+//
+// `slug` was dropped in PLAN-1410 / TASK-1413: the agent addresses
+// items by `ref` (CONVE-N) — slug was dead weight.
 type AgentBootstrapConvention struct {
 	Ref      string `json:"ref"`
 	Title    string `json:"title"`
-	Slug     string `json:"slug"`
 	Content  string `json:"content"`
 	Priority string `json:"priority,omitempty"`
 	Scope    string `json:"scope,omitempty"`
@@ -150,10 +150,37 @@ type AgentBootstrapPlaybookMeta struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-// recentActivityWindow caps how far back the bootstrap reaches for the
-// recent_activity tail. Bootstrap is a context-load call — anything older
-// than this isn't relevant to "what's happening now."
-const recentActivityWindow = 24 * time.Hour
+// BootstrapDashboard is the bootstrap-side dashboard projection. It
+// embeds *DashboardResponse so the wire shape stays compatible with the
+// `GET /dashboard` endpoint (same field names, same nesting), then adds
+// two overflow counts that report how many entries were trimmed from
+// the bootstrap's capped views.
+//
+// Why a wrapper rather than mutating DashboardResponse: the cap is
+// bootstrap-only — `pad project dashboard` and the web UI's dashboard
+// page consume the FULL set, unchanged. PLAN-1410 / TASK-1413.
+type BootstrapDashboard struct {
+	*DashboardResponse
+	// AttentionOverflowCount is len(original attention) - cap, or
+	// omitted when nothing was trimmed. The agent reads this to decide
+	// whether to suggest pulling the full set via `pad project dashboard`.
+	AttentionOverflowCount int `json:"attention_overflow_count,omitempty"`
+	// RecentActivityOverflowCount mirrors AttentionOverflowCount for the
+	// recent_activity tail.
+	RecentActivityOverflowCount int `json:"recent_activity_overflow_count,omitempty"`
+}
+
+// bootstrapAttentionCap and bootstrapRecentActivityCap clamp the
+// dashboard's `attention` and `recent_activity` arrays in the bootstrap
+// projection. 5 is the practical surfacing depth for an agent greeting
+// or status pass — anything beyond is too much for a single response
+// to render conversationally; the agent should pivot to the full
+// `pad project dashboard` query when the overflow count signals more
+// work to consider. PLAN-1410.
+const (
+	bootstrapAttentionCap      = 5
+	bootstrapRecentActivityCap = 5
+)
 
 // isCollectionSlugVisible reports whether the named collection survived
 // the visibility filter. Used by the bootstrap path to gate
@@ -347,20 +374,14 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	}
 
 	// Dashboard — recreate via the existing handler logic if a request
-	// context is available. The shape is identical to `GET /dashboard`
-	// so the web UI dashboard page can consume bootstrap directly and
-	// retire its dedicated fetch.
+	// context is available, then wrap in BootstrapDashboard so the
+	// bootstrap-side cap on `attention` and `recent_activity` (with
+	// overflow counts) doesn't leak into the `GET /dashboard` contract.
 	if r != nil {
 		dash, derr := s.buildDashboardResponse(workspaceID, r)
-		if derr == nil {
-			out.Dashboard = dash
-			if dash != nil {
-				out.RecentActivity = capRecentActivity(dash.RecentActivity, recentActivityWindow)
-			}
+		if derr == nil && dash != nil {
+			out.Dashboard = capBootstrapDashboard(dash)
 		}
-	}
-	if out.RecentActivity == nil {
-		out.RecentActivity = []DashboardActivity{}
 	}
 
 	return out, nil
@@ -400,7 +421,6 @@ func (s *Server) collectAlwaysOnConventions(workspaceID string, collIDs []string
 		out = append(out, AgentBootstrapConvention{
 			Ref:      it.Ref,
 			Title:    it.Title,
-			Slug:     it.Slug,
 			Content:  it.Content,
 			Priority: strField("priority"),
 			Scope:    strField("scope"),
@@ -550,33 +570,25 @@ func trimLeadingSpaces(s string) string {
 	return s[i:]
 }
 
-// capRecentActivity returns the activity events that fall within the
-// bootstrap's recency window. Dashboard's recent_activity may extend
-// further back; bootstrap deliberately trims to keep the payload tight.
+// capBootstrapDashboard wraps a DashboardResponse with the bootstrap's
+// per-section caps. The underlying *DashboardResponse is shallow-copied
+// before the slice headers are reslized so the caller's pointer (used by
+// the dashboard endpoint elsewhere) sees its original full-length
+// arrays unchanged. The slice backing arrays are shared — we only
+// trim the view, no allocation needed for the truncated portion.
 //
-// DashboardActivity.CreatedAt is a pre-formatted RFC3339-shaped string
-// (set in handleGetDashboard with `a.CreatedAt.Format("2006-01-02T15:04:05Z")`),
-// so we parse it back to time.Time for the comparison. Entries that fail
-// to parse are kept defensively — losing them silently because of a format
-// glitch would be a worse outcome than carrying a slightly older event.
-func capRecentActivity(in []DashboardActivity, window time.Duration) []DashboardActivity {
-	if len(in) == 0 {
-		return []DashboardActivity{}
+// Returns a non-nil *BootstrapDashboard even when both caps are
+// untriggered, so the agent always sees a consistent shape.
+func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
+	copied := *d
+	out := &BootstrapDashboard{DashboardResponse: &copied}
+	if n := len(copied.Attention) - bootstrapAttentionCap; n > 0 {
+		copied.Attention = copied.Attention[:bootstrapAttentionCap]
+		out.AttentionOverflowCount = n
 	}
-	cutoff := time.Now().Add(-window)
-	out := make([]DashboardActivity, 0, len(in))
-	for _, a := range in {
-		t, err := time.Parse("2006-01-02T15:04:05Z", a.CreatedAt)
-		if err != nil {
-			if t, err = time.Parse(time.RFC3339, a.CreatedAt); err != nil {
-				out = append(out, a)
-				continue
-			}
-		}
-		if t.Before(cutoff) {
-			continue
-		}
-		out = append(out, a)
+	if n := len(copied.RecentActivity) - bootstrapRecentActivityCap; n > 0 {
+		copied.RecentActivity = copied.RecentActivity[:bootstrapRecentActivityCap]
+		out.RecentActivityOverflowCount = n
 	}
 	return out
 }
