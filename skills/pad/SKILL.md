@@ -15,7 +15,7 @@ Every item has an **issue ID** like `TASK-5`, `BUG-8`, `IDEA-12` (collection pre
 
 The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects the workspace from `.pad.toml` in the directory tree. If `pad` is not found, tell the user: "Pad CLI not found. Install it or add it to your PATH."
 
-> **Note for agents using MCP instead of this skill:** Pad's MCP server exposes a hand-curated v0.2 tool catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta` + `pad_set_workspace`) — distinct from the CLI's verb tree this skill drives. Adding a new CLI command does NOT automatically expose it via MCP; ToolDef updates are explicit. Full reference at [getpad.dev/mcp/local](https://getpad.dev/mcp/local).
+> **Note for agents using MCP instead of this skill:** Pad's MCP server exposes a hand-curated v0.3 tool catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook` + `pad_set_workspace`) — distinct from the CLI's verb tree this skill drives. Adding a new CLI command does NOT automatically expose it via MCP; ToolDef updates are explicit. v0.3 added the playbook invocation surface (`pad_playbook.action: list|get|run`), `pad_meta.action: bootstrap`, and the `pad://workspace/{ws}/bootstrap` resource. Full reference at [getpad.dev/mcp/local](https://getpad.dev/mcp/local).
 
 ## How This Works
 

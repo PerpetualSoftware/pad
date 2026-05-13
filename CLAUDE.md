@@ -185,7 +185,7 @@ Collection names accept singular forms: `task`→`tasks`, `idea`→`ideas`, `doc
 
 ## MCP server
 
-Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. As of PLAN-969 (TASK-981) the tool surface is a **hand-curated v0.2 catalog** in `internal/mcp/catalog_*.go` — one ToolDef per resource (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`) with an `action` enum dispatching to underlying CLI commands. The previous v0.1 cmdhelp leaf walker is retired.
+Pad runs as a local Model Context Protocol server so Claude Desktop / Cursor / Windsurf can call non-interactive `pad` commands as tools. As of PLAN-1377 (TASK-1380) the tool surface is a **hand-curated v0.3 catalog** in `internal/mcp/catalog_*.go` — one ToolDef per resource (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) with an `action` enum dispatching to underlying CLI commands. v0.2 introduced the catalog (PLAN-969 / TASK-981); v0.3 added `pad_playbook`, `pad_meta.action: bootstrap`, `pad_set_workspace`'s embedded-bootstrap response, and the `pad://workspace/{ws}/bootstrap` resource. The pre-catalog v0.1 cmdhelp leaf walker is retired.
 
 cmdhelp is still consumed at dispatch time — `BuildCLIArgs` reads individual command schemas to translate the catalog's snake_case input map into CLI args. cmdhelp no longer drives tool naming or count.
 
