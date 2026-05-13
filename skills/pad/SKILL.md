@@ -303,150 +303,84 @@ Follow ALL returned conventions. If a playbook exists for the action, follow its
 
 ## CLI Reference
 
-**IMPORTANT:** All commands that take an item reference accept issue IDs (e.g. `TASK-5`, `BUG-8`). Always prefer issue IDs over slugs. When you create an item, the CLI prints its issue ID — use that for subsequent commands.
+All commands accepting an item reference take issue IDs (e.g. `TASK-5`, `BUG-8`) — prefer these over slugs. The CLI prints the new issue ID on create. Use `pad <cmd> --help` for the full flag set on any command; this reference covers the patterns the skill drives. All commands support `--format json` for parsing.
 
-### Agent Roles
+### Items
 ```bash
-pad role list [--format json]                                      # List workspace roles
-pad role create "Name" [--description "..."] [--icon "🔨"]         # Create a role
-pad role delete <slug>                                              # Delete a role
-```
-
-### Item CRUD
-```bash
-# Create items (collection accepts singular or plural: task/tasks, idea/ideas, etc.)
-# The CLI prints the new item's issue ID (e.g. "Created TASK-5: ...") — use it for subsequent commands
-pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--category X] [--content "..."] [--stdin]
-pad item create task "Fix OAuth redirect" --priority high --parent PLAN-3 --role implementer --assign Dave
-pad item create idea "Real-time collaboration" --category infrastructure
-pad item create plan "API Redesign" --status active
-pad item create doc "Auth Architecture" --category architecture --stdin <<< "# Auth Architecture\n\n..."
-
-# Custom fields via --field flag (works for any collection's fields)
-pad item create convention "Run tests" --field trigger=on-task-complete --field scope=all --field priority=must
-pad item create convention "Always review with linter" --field trigger=on-implement --field role=implementer --field priority=should
-pad item create roadmap "Feature X" --field quarter=2026-Q3
-
-# List items (defaults to non-done items)
-pad item list [collection] [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--all] [--field key=value] [--format json]
-pad item list tasks                            # open + in_progress tasks
-pad item list tasks --role implementer         # tasks assigned to the implementer role
-pad item list tasks --role implementer --assign Dave  # Dave's implementer queue
-pad item list tasks --status done              # completed tasks
-pad item list conventions --field trigger=always --field status=active  # filtered by custom fields
-pad item list --all                            # everything across all collections
-
-# Show item detail — use the issue ID (e.g. TASK-5, BUG-8)
-pad item show TASK-5 [--format json|markdown]
-
-# Update items — use the issue ID (--comment adds an audit note)
-pad item update TASK-5 --status done --comment "Fixed login bug, tests passing"
-pad item update TASK-5 --role reviewer --assign Alice --comment "Ready for review"
-pad item update DOC-1 --stdin < updated-doc.md
-
-# Comments — add notes, reply to threads
-pad item comment TASK-5 "Investigated the race condition, root cause is in mutex handler"
-pad item comment TASK-5 "Good catch, fixed in commit abc123" --reply-to <comment-id>
-pad item comments TASK-5               # List all comments
-
-# Delete (archive) — use the issue ID
+pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--field key=value] [--content "..." | --stdin]
+pad item list [collection] [--status X] [--role X] [--assign X] [--parent REF] [--all] [--field key=value]
+pad item show TASK-5 [--format markdown]
+pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin]
 pad item delete TASK-5
-
-# Search
-pad item search "query" [--format json]
+pad item search "query"
+pad item comment TASK-5 "..." [--reply-to <comment-id>]
+pad item comments TASK-5
+pad item bulk-update --status X TASK-5 TASK-8 ...
 ```
 
-### Intelligence
-```bash
-pad project dashboard [--format json]  # Project dashboard
-pad project next [--format json]       # Recommended next task
-pad project standup [--days N] [--format json]  # Daily standup report (completed/in-progress/blockers)
-pad project changelog [--days N] [--since DATE] [--parent PLAN-2] [--format json|markdown]  # Release notes
-```
-
-### Server
-```bash
-pad server info [--format json]        # Show local client, connection, and local server status
-pad server open                        # Open the Pad web UI in your browser
-```
+`--field key=value` is repeatable and schema-aware — sets any field declared in the collection's schema (e.g. `--field trigger=always --field priority=must` for a convention; `--field 'arguments=[...]'` JSON literal for a playbook). `--comment "..."` on update writes an audit note explaining *why* status changed.
 
 ### Dependencies
 ```bash
-pad item block TASK-5 TASK-8          # "TASK-5 blocks TASK-8"
-pad item blocked-by TASK-5 TASK-3     # "TASK-5 is blocked by TASK-3"
-pad item deps TASK-5                  # Show all dependencies for an item
-pad item unblock TASK-5 TASK-8        # Remove a dependency
+pad item block <src> <tgt>        # src blocks tgt
+pad item blocked-by <src> <tgt>   # src is blocked by tgt
+pad item unblock <src> <tgt>
+pad item deps TASK-5
+```
+
+### Roles
+```bash
+pad role list
+pad role create "Name" [--description "..."] [--icon "🔨"]
+pad role delete <slug>
+```
+
+### Project intelligence
+```bash
+pad project dashboard
+pad project next
+pad project standup [--days N]
+pad project changelog [--days N] [--since DATE] [--parent PLAN-N] [--format markdown]
 ```
 
 ### Playbooks
 ```bash
-# List the workspace's playbooks (metadata only — same shape as the bootstrap payload).
-pad playbook list [--format json]
-
-# Show a playbook by invocation_slug, item slug, or issue ref.
-pad playbook show ship [--format json|markdown]
-pad playbook show PLAYB-1160 --format json
-
-# Run — strict positional/flag/key=value parsing against the declared spec.
-# Side-effect-free: returns body + bound args + any unbound required args.
-# The agent executes the steps; the server never does.
-pad playbook run ship PLAN-1377 stop-after-each merge-strategy=rebase
-pad playbook run release 0.5.0 dry-run
-```
-
-
-### Collections
-```bash
-pad collection list [--format json]   # List collections with counts
-
-# Two ways to define the schema:
-# 1. --fields DSL — quick + compact for simple cases (key:type[:options])
-pad collection create "Bugs" --fields "status:select:new,fixing,fixed;severity:select:low,medium,high;component:text"
-
-# 2. --schema JSON — full CollectionSchema; required when you need
-#    terminal_options, custom defaults, computed fields, suffixes, or
-#    relation collections. Prefer this when terminal_options matters
-#    (drives dashboard active/complete counts).
-pad collection create "Marketing" --schema '{"fields":[{"key":"status","type":"select","options":["idea","drafting","published","archived"],"terminal_options":["published","archived"]}]}'
-pad collection create "Marketing" --schema @./schema.json   # file
-cat schema.json | pad collection create "Marketing" --schema -   # stdin
-
-# --fields and --schema are mutually exclusive.
-# Missing `label` on a schema field auto-fills from key (Title Case).
+pad playbook list                                    # metadata (same shape as bootstrap)
+pad playbook show <slug|ref> [--format markdown]     # full body
+pad playbook run <slug> [pos-args] [flag] [k=v]      # strict parsing; side-effect-free
 ```
 
 ### Attachments
+
+**NEVER** read directly from `~/.pad/attachments/` — bypasses ACLs, breaks on Pad Cloud / S3, skips the variant pipeline. Always go through the CLI.
+
 ```bash
-# List + inspect (HEAD) — no bytes transferred
 pad attachment list [--item REF] [--category image|video|audio|document|text|archive|other]
-pad attachment list [--attached|--unattached] [--limit N] [--offset N] [--format json]
-pad attachment show <id> [--format json]                    # MIME, size, filename, ETag
-
-# View — fetch to a temp file (or -o path) and print the path. Use this
-# when you encounter ![alt](pad-attachment:<uuid>) in item content.
-pad attachment view <id>                                    # → /tmp/.../filename.png
-pad attachment view <id> -o ./screenshot.png                # explicit destination
-pad attachment view <id> --variant thumb-md                 # derived variant
-pad attachment view <id> --format json                      # {path,mime,size}
-
-# Upload + explicit-path download
-pad attachment upload <item-ref-or-dash> <path> [--filename "Name.ext"]
-pad attachment download <id> <out-path> [--variant thumb-sm|thumb-md]
+pad attachment show <id>                                  # HEAD; metadata only
+pad attachment view <id> [-o PATH] [--variant thumb-md]   # writes bytes to file, prints path
+pad attachment upload <item-ref|-> <path> [--filename "..."]
+pad attachment download <id> <out-path>
 ```
 
-**NEVER** read directly from `~/.pad/attachments/`. Always go through these commands.
+`view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
 
-### Webhooks
+### Collections
 ```bash
-# Webhooks are managed via the REST API:
-# POST /api/v1/workspaces/{ws}/webhooks   — create webhook
-# GET /api/v1/workspaces/{ws}/webhooks    — list webhooks
-# DELETE /api/v1/workspaces/{ws}/webhooks/{id}  — delete
-# Events: item.created, item.updated, item.deleted, item.moved, comment.created
+pad collection list
+pad collection create "Name" [--fields "key:type[:opts];..."] [--schema JSON|@file|-]
 ```
 
-### Output Formats
-All commands support `--format json` (for parsing) or `--format table` (default, human-readable).
+`--fields` is the compact DSL for simple schemas. `--schema` is the full CollectionSchema (required for `terminal_options`, computed fields, custom defaults, relation fields). The two are mutually exclusive.
+
+### Server, auth, bootstrap
+```bash
+pad bootstrap [--format markdown]    # the canonical context-load — see Context Loading above
+pad server info
+pad server open                       # open the web UI in browser
+pad auth whoami
+```
+
+For everything else (`pad workspace init`, `pad agent install`, `pad github link`, webhooks REST API, etc.) run `pad --help` or `pad <cmd> --help`.
 
 ## Multi-Step Workflows
 
