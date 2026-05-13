@@ -63,12 +63,12 @@ Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — v0.3 catalog dump: every tool managed by the hand-curated catalog,
-                  its actions, and its input schema. During PLAN-969's rollout the
-                  cmdhelp walker also contributes to tools/list; tool-surface
-                  intentionally only enumerates the catalog (the source it can
-                  introspect cleanly). For the complete advertised surface, read
-                  tools/list directly.
+  tool-surface  — v0.3 catalog dump: every tool managed by the hand-curated
+                  catalog (the eight resource × action tools — pad_set_workspace
+                  is registered separately and not included), its actions, and
+                  its input schema. tools/list also contains pad_set_workspace
+                  and matches the catalog otherwise — the historical cmdhelp
+                  walker was retired in TASK-981.
   bootstrap     — Consolidated agent context-load blob (workspace + user + collections
                   + always-on conventions + roles + playbook metadata + dashboard +
                   recent activity). On-demand refresh for agents that didn't get the
@@ -129,11 +129,13 @@ func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEn
 // docs from this single canonical source instead of re-introspecting
 // tools/list and reverse-engineering action enums.
 //
-// Scope: the v0.3 catalog only — the post-rollout, hand-curated
-// catalog (~8 resource × action tools + pad_set_workspace). The
-// historical cmdhelp leaf walker was retired in TASK-981; tools/list
-// no longer contains walker output, so tool-surface and tools/list
-// agree on the advertised surface.
+// Scope: the v0.3 catalog only — the eight hand-curated resource × action
+// tools (pad_item, pad_workspace, pad_collection, pad_project, pad_role,
+// pad_search, pad_playbook, pad_meta). pad_set_workspace is registered
+// separately and NOT enumerated here — `actionMetaToolSurface` loops
+// env.Catalog only. Consumers building from tool-surface should account
+// for pad_set_workspace as a known extra (always present in tools/list).
+// The historical cmdhelp leaf walker was retired in TASK-981.
 //
 // The response carries a `rollout_status` field that callers should
 // treat as opaque metadata — populated for backwards compatibility

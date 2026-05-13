@@ -199,7 +199,7 @@ pad mcp status                # Install state across supported clients
 ```
 
 Surface:
-- **Tools:** the v0.3 catalog (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) plus `pad_set_workspace` for the session default. Each tool takes `action: <verb>` to choose what it does. `pad_playbook` is the playbook surface from PLAN-1377 — `list`/`get`/`run` mirror the CLI's `pad playbook` subcommands; `run` is side-effect-free and returns the body + bound args for the agent to execute.
+- **Tools:** the v0.3 catalog — eight resource × action tools (`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`) plus `pad_set_workspace` (takes a `workspace` slug only — no action enum). The eight resource × action tools take `action: <verb>` to choose what they do. `pad_playbook` is the playbook surface from PLAN-1377 — `list`/`get`/`run` mirror the CLI's `pad playbook` subcommands; `run` is side-effect-free and returns the body + bound args for the agent to execute.
 - **Resources:** `pad://workspace/{ws}/items/{ref}`, `pad://workspace/{ws}/items`, `pad://workspace/{ws}/dashboard`, `pad://workspace/{ws}/collections`, `pad://workspace/{ws}/bootstrap` (one-shot workspace overview — user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity), plus the server-wide `pad://_meta/version`.
 - **Prompts:** `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard` — multi-step workflows lifted from `skills/pad/SKILL.md`.
 

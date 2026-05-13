@@ -251,7 +251,7 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-**Tool catalog (v0.3)** — nine resource × action tools, no flat verb explosion:
+**Tool catalog (v0.3)** — eight resource × action tools plus `pad_set_workspace` (nine total), no flat verb explosion:
 
 | Tool | Actions |
 |---|---|
