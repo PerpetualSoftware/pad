@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -116,6 +117,151 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 	if found.Summary == "" {
 		t.Error("playbook.summary empty; expected the first body paragraph")
 	}
+}
+
+// bootstrapSizeBudget is the maximum byte count tolerated for the bootstrap
+// JSON response against the seeded fixture in seedBootstrapSizeFixture.
+//
+// PLAN-1410 background: on the docapp production workspace, `pad bootstrap
+// --format json` returns ~52,000 bytes / ~13,000 tokens, and the agent
+// skill loads this blob on every `/pad` invocation. The plan trims the
+// payload in stages (slim collection projection → drop duplicate
+// recent_activity → cap dashboard arrays → drop convention slug → bump
+// ToolSurfaceVersion to 0.4). This budget is the in-test ratchet that
+// keeps later shape-change PRs honest: each one tightens this constant
+// once the win is measured against the fixture.
+//
+// Initial budget (TASK-1411): the seeded fixture currently encodes to
+// ~13.8 KB; the budget is set at 16 KiB to give ~2 KB headroom for
+// minor non-shape variance (e.g. an extra timestamp millisecond, schema
+// reordering) without admitting silent regressions. Later PLAN-1410 PRs
+// tighten this constant once the win is measured against the fixture —
+// TASK-1417's measurement step records the post-trim actual.
+//
+// The constant intentionally lives next to the test that consumes it so
+// PRs touching the bootstrap shape see the budget in the diff.
+const bootstrapSizeBudget = 16 * 1024
+
+// TestBootstrapSizeBudget locks in a payload-size budget for the
+// bootstrap response so future regressions are caught at PR time.
+//
+// The fixture approximates a small-but-realistic workspace: the
+// default template seeds plus a handful of always-on conventions with
+// realistic bodies, one slug-invocable playbook, and a spread of items
+// across collections to populate the dashboard. Production workspaces
+// (docapp had ~52KB at PLAN-1410's measurement) will exceed this
+// fixture's bytes — but the contributors to the payload (per-collection
+// schema/settings shape, per-convention body, dashboard caps,
+// duplicated recent_activity) are exercised proportionally here, so a
+// shape-side regression shows up at fixture scale.
+//
+// On failure, the per-section breakdown is logged so the regression's
+// origin is obvious without re-running locally.
+func TestBootstrapSizeBudget(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	seedBootstrapSizeFixture(t, srv, slug)
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	total := rr.Body.Len()
+
+	var b AgentBootstrap
+	if err := json.Unmarshal(rr.Body.Bytes(), &b); err != nil {
+		t.Fatalf("decode bootstrap for breakdown: %v", err)
+	}
+	breakdown := bootstrapSectionBytes(b)
+
+	// Always log the breakdown so passing runs leave a measurable
+	// audit trail in CI output — that's how we track the trend as
+	// PLAN-1410's shape-change PRs land.
+	t.Logf("bootstrap size: %d bytes (budget %d)", total, bootstrapSizeBudget)
+	for _, line := range breakdown {
+		t.Logf("  %s", line)
+	}
+
+	if total > bootstrapSizeBudget {
+		t.Errorf("bootstrap size %d bytes exceeds budget %d bytes — see per-section breakdown above. "+
+			"If this is an intentional growth, raise bootstrapSizeBudget with a comment explaining why.",
+			total, bootstrapSizeBudget)
+	}
+}
+
+// seedBootstrapSizeFixture populates the workspace with the contributors
+// the bootstrap size benchmark wants to exercise: always-on conventions
+// with body content, a slug-invocable playbook (the user-callable shape),
+// and a handful of items across collections to populate the dashboard.
+//
+// Keep this in sync with bootstrapSizeBudget — adding content here
+// without raising the budget will fail TestBootstrapSizeBudget.
+func seedBootstrapSizeFixture(t *testing.T, srv *Server, wsSlug string) {
+	t.Helper()
+
+	createItem(t, srv, wsSlug, "conventions", map[string]interface{}{
+		"title":   "Run tests before commit",
+		"content": "Run `make check` before every commit. CI runs the same suite locally; catching failures here saves a round-trip and keeps main green.",
+		"fields":  `{"status":"active","trigger":"always","priority":"must","scope":"all"}`,
+	})
+	createItem(t, srv, wsSlug, "conventions", map[string]interface{}{
+		"title":   "Prefer composition over inheritance",
+		"content": "When extending behavior, embed and compose rather than subclass. Easier to test, easier to refactor when requirements change, no surprise dispatch.",
+		"fields":  `{"status":"active","trigger":"always","priority":"should","scope":"backend"}`,
+	})
+
+	createItem(t, srv, wsSlug, "playbooks", map[string]interface{}{
+		"title":   "Cut a release",
+		"content": "Release the next version.\n\n## Arguments\n\n- version (string, required) — semver, e.g. 0.5.0\n\n## Steps\n\n1. Verify clean tree on main\n2. Tag and push\n3. Verify CI release workflow",
+		"fields":  `{"status":"active","trigger":"manual","invocation_slug":"release","arguments":[{"name":"version","type":"string","required":true}]}`,
+	})
+
+	for i := 0; i < 5; i++ {
+		createItem(t, srv, wsSlug, "tasks", map[string]interface{}{
+			"title":   fmt.Sprintf("Sample task %d", i),
+			"content": "Task body — placeholder content to give the dashboard something to summarize.",
+			"fields":  `{"status":"open","priority":"medium"}`,
+		})
+	}
+	createItem(t, srv, wsSlug, "plans", map[string]interface{}{
+		"title":   "Sample plan",
+		"content": "An active plan with a few children. The dashboard counts it as active work.",
+		"fields":  `{"status":"active"}`,
+	})
+}
+
+// bootstrapSectionBytes returns a per-section byte breakdown of a
+// bootstrap blob. Marshalled with the same encoder behavior as the
+// real handler (compact, no indent) so the per-section totals sum
+// close to the overall response body length, modulo the top-level
+// JSON object's structural overhead.
+//
+// Diagnostic only — not part of any production contract. Sized for
+// readability in `go test -v` output.
+func bootstrapSectionBytes(b AgentBootstrap) []string {
+	return []string{
+		fmt.Sprintf("workspace:       %d bytes", jsonLen(b.Workspace)),
+		fmt.Sprintf("user:            %d bytes", jsonLen(b.User)),
+		fmt.Sprintf("collections:     %d bytes (%d items)", jsonLen(b.Collections), len(b.Collections)),
+		fmt.Sprintf("conventions:     %d bytes (%d items)", jsonLen(b.Conventions), len(b.Conventions)),
+		fmt.Sprintf("roles:           %d bytes (%d items)", jsonLen(b.Roles), len(b.Roles)),
+		fmt.Sprintf("playbooks:       %d bytes (%d items)", jsonLen(b.Playbooks), len(b.Playbooks)),
+		fmt.Sprintf("dashboard:       %d bytes", jsonLen(b.Dashboard)),
+		fmt.Sprintf("recent_activity: %d bytes (%d items)", jsonLen(b.RecentActivity), len(b.RecentActivity)),
+	}
+}
+
+// jsonLen marshals v to compact JSON and returns the byte count. Test
+// helper; errors are squashed because they'd indicate a programming
+// error in the test (un-marshalable value) and we want the
+// per-section breakdown to render even if one slice fails to encode.
+func jsonLen(v interface{}) int {
+	out, err := json.Marshal(v)
+	if err != nil {
+		return -1
+	}
+	return len(out)
 }
 
 // TestPlaybookSummaryPrefersFirstParagraph isolates the summary extraction
