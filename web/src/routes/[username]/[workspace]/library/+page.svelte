@@ -215,7 +215,7 @@
 									<h3 class="card-title">{playbook.title}</h3>
 									<div class="badges">
 										{#if playbook.invocation_slug}
-											<span class="badge slug" title="Invoke via `/pad {playbook.invocation_slug}`">/pad {playbook.invocation_slug}</span>
+											<span class="badge slug" title={`Invoke via /pad ${playbook.invocation_slug}`}>/pad {playbook.invocation_slug}</span>
 										{/if}
 										<span class="badge trigger">{playbook.trigger}</span>
 										<span class="badge scope">{playbook.scope}</span>
