@@ -887,19 +887,31 @@ export const api = {
 
 		getPlaybooks: () => request<PlaybookLibraryResponse>('/playbook-library'),
 
-		activatePlaybook: (ws: string, playbook: LibraryPlaybook) =>
-			request<Item>(`/workspaces/${ws}/collections/playbooks/items`, {
+		activatePlaybook: (ws: string, playbook: LibraryPlaybook) => {
+			// Forward invocation_slug + arguments only when set so legacy
+			// library entries (without them) seed with the original
+			// three-field shape. Mirrors ShipPlaybook() in
+			// internal/collections/templates_startup_ship.go.
+			const fields: Record<string, unknown> = {
+				status: 'active',
+				trigger: playbook.trigger,
+				scope: playbook.scope
+			};
+			if (playbook.invocation_slug) {
+				fields.invocation_slug = playbook.invocation_slug;
+			}
+			if (playbook.arguments && playbook.arguments.length > 0) {
+				fields.arguments = playbook.arguments;
+			}
+			return request<Item>(`/workspaces/${ws}/collections/playbooks/items`, {
 				method: 'POST',
 				body: JSON.stringify({
 					title: playbook.title,
 					content: playbook.content,
-					fields: JSON.stringify({
-						status: 'active',
-						trigger: playbook.trigger,
-						scope: playbook.scope
-					})
+					fields: JSON.stringify(fields)
 				})
-			})
+			});
+		}
 	},
 
 	// ── Raw requests ──────────────────────────────────────────────────────────

@@ -812,12 +812,25 @@ export interface ConventionLibraryResponse {
 
 // ─── Playbook Library ────────────────────────────────────────────────────────
 
+export interface LibraryPlaybookArgument {
+	name: string;
+	type: string;
+	required?: boolean;
+	default?: unknown;
+	description?: string;
+	enum?: string[];
+}
+
 export interface LibraryPlaybook {
 	title: string;
 	content: string;
 	category: string;
 	trigger: string;
 	scope: string;
+	/** PLAN-1377 invocation surface — kebab-case slug for `/pad <slug>` routing. */
+	invocation_slug?: string;
+	/** Argument spec mirroring the body's `## Arguments` section. */
+	arguments?: LibraryPlaybookArgument[];
 }
 
 export interface PlaybookCategory {

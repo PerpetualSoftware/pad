@@ -214,8 +214,14 @@
 								<div class="card-body">
 									<h3 class="card-title">{playbook.title}</h3>
 									<div class="badges">
+										{#if playbook.invocation_slug}
+											<span class="badge slug" title="Invoke via `/pad {playbook.invocation_slug}`">/pad {playbook.invocation_slug}</span>
+										{/if}
 										<span class="badge trigger">{playbook.trigger}</span>
 										<span class="badge scope">{playbook.scope}</span>
+										{#if playbook.arguments && playbook.arguments.length > 0}
+											<span class="badge args" title="Accepts {playbook.arguments.length} argument{playbook.arguments.length === 1 ? '' : 's'}">{playbook.arguments.length} arg{playbook.arguments.length === 1 ? '' : 's'}</span>
+										{/if}
 									</div>
 									<p class="card-content card-steps">{previewSteps(playbook.content)}</p>
 								</div>
@@ -322,6 +328,13 @@
 	.badge.trigger { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
 	.badge.scope { background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: var(--accent-purple); }
 	.badge.priority { color: #fff; }
+	/* PLAN-1377 invocation surface — slug chip signals "this playbook is callable as /pad <slug>". */
+	.badge.slug {
+		background: color-mix(in srgb, var(--accent-green) 18%, transparent);
+		color: var(--accent-green);
+		font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+	}
+	.badge.args { background: color-mix(in srgb, var(--accent-amber) 20%, transparent); color: var(--accent-amber); }
 
 	.card-action { display: flex; justify-content: flex-end; }
 
