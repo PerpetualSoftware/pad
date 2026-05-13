@@ -168,18 +168,32 @@ type BootstrapDashboard struct {
 	// RecentActivityOverflowCount mirrors AttentionOverflowCount for the
 	// recent_activity tail.
 	RecentActivityOverflowCount int `json:"recent_activity_overflow_count,omitempty"`
+	// ActiveItemsOverflowCount, ActivePlansOverflowCount, ByRoleOverflowCount,
+	// and SuggestedNextOverflowCount cap the four other dashboard
+	// sub-arrays that grow with workspace state. Same semantics as the
+	// Attention/RecentActivity counts above: omitted when zero, populated
+	// with `len(original) - cap` when truncation kicked in. PLAN-1410 /
+	// TASK-1422 (absorbs IDEA-1421).
+	ActiveItemsOverflowCount   int `json:"active_items_overflow_count,omitempty"`
+	ActivePlansOverflowCount   int `json:"active_plans_overflow_count,omitempty"`
+	ByRoleOverflowCount        int `json:"by_role_overflow_count,omitempty"`
+	SuggestedNextOverflowCount int `json:"suggested_next_overflow_count,omitempty"`
 }
 
-// bootstrapAttentionCap and bootstrapRecentActivityCap clamp the
-// dashboard's `attention` and `recent_activity` arrays in the bootstrap
+// Bootstrap caps clamp the per-array sizes in the bootstrap dashboard
 // projection. 5 is the practical surfacing depth for an agent greeting
 // or status pass — anything beyond is too much for a single response
 // to render conversationally; the agent should pivot to the full
-// `pad project dashboard` query when the overflow count signals more
-// work to consider. PLAN-1410.
+// `pad project dashboard` query when an overflow count signals more
+// work to consider. PLAN-1410. The first two land in TASK-1413; the
+// remaining four are TASK-1422 (IDEA-1421 absorbed).
 const (
 	bootstrapAttentionCap      = 5
 	bootstrapRecentActivityCap = 5
+	bootstrapActiveItemsCap    = 5
+	bootstrapActivePlansCap    = 5
+	bootstrapByRoleCap         = 5
+	bootstrapSuggestedNextCap  = 5
 )
 
 // isCollectionSlugVisible reports whether the named collection survived
@@ -589,6 +603,22 @@ func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 	if n := len(copied.RecentActivity) - bootstrapRecentActivityCap; n > 0 {
 		copied.RecentActivity = copied.RecentActivity[:bootstrapRecentActivityCap]
 		out.RecentActivityOverflowCount = n
+	}
+	if n := len(copied.ActiveItems) - bootstrapActiveItemsCap; n > 0 {
+		copied.ActiveItems = copied.ActiveItems[:bootstrapActiveItemsCap]
+		out.ActiveItemsOverflowCount = n
+	}
+	if n := len(copied.ActivePlans) - bootstrapActivePlansCap; n > 0 {
+		copied.ActivePlans = copied.ActivePlans[:bootstrapActivePlansCap]
+		out.ActivePlansOverflowCount = n
+	}
+	if n := len(copied.ByRole) - bootstrapByRoleCap; n > 0 {
+		copied.ByRole = copied.ByRole[:bootstrapByRoleCap]
+		out.ByRoleOverflowCount = n
+	}
+	if n := len(copied.SuggestedNext) - bootstrapSuggestedNextCap; n > 0 {
+		copied.SuggestedNext = copied.SuggestedNext[:bootstrapSuggestedNextCap]
+		out.SuggestedNextOverflowCount = n
 	}
 	return out
 }
