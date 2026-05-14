@@ -107,8 +107,24 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter."},
 
 	// ── Tagging ──
-	{Name: "tags", Type: "string", Description: "Comma-separated tags. Optional for: create, update."},
-	{Name: "field", Type: "array<string>", Description: "Custom field key=value pairs (repeatable). Optional for: create, update, list filter, move."},
+	// `tags`: agents naturally pass a JSON array of strings (e.g.
+	// `["v1","frontend"]`); the create/update handlers also accept the
+	// canonical JSON-encoded string form ItemCreate/ItemUpdate store
+	// internally. Pre-BUG-1432 the description said "Comma-separated"
+	// which mismatched both the CLI flag's help ("JSON array of tags")
+	// AND the column shape (JSONB on Postgres) — agents passing
+	// "foo,bar" produced corrupt rows on SQLite and HTTP 500s on
+	// Postgres (JSONB rejects non-JSON).
+	{Name: "tags", Type: "array<string>", Description: "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. Optional for: create, update."},
+	// `field`: the escape hatch for SCHEMA-DECLARED custom fields.
+	// Accepts the CLI-style key=value array `["key=value",...]` AND
+	// the JSON-native map form `{key: value, ...}` (added under
+	// BUG-1431). Use the dedicated top-level params (`status`,
+	// `priority`, `category`, `parent`, `role`, `assign`, `tags`)
+	// for the named fields — the dispatcher rolls those into the
+	// `fields` JSON automatically and `--field` is only needed for
+	// fields that don't have a dedicated parameter.
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Accepts array of \"key=value\" strings OR a {key: value} map. For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
@@ -136,10 +152,18 @@ const padItemToolDescription = `Item operations — the consolidated CRUD + rela
 Actions:
   create        — Create a new item.
                   Required: collection, title.
-                  Optional: priority, status, content, parent, role, assign, fields, tags.
+                  Optional: status, priority, category, content, parent, role, assign, tags, field.
+                  Use the dedicated top-level params (status / priority / category / parent
+                  / role / assign / tags) for those named fields — the dispatcher rolls
+                  them into the item's fields JSON automatically. The 'field' param is
+                  the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
+                  param; accepts ["key=value",...] OR {key: value, ...}.
+                  The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
+                  — NOT a comma-separated string.
   update        — Update an item by ref.
                   Required: ref. At least one mutable field.
-                  Optional: title, status, priority, content, role, assign, parent, comment.
+                  Optional: title, status, priority, content, role, assign, parent, comment, tags.
+                  Same placement rules as create.
   delete        — Archive an item.
                   Required: ref.
   get           — Read an item.

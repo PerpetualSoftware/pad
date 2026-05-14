@@ -790,6 +790,15 @@ func TestParseFieldKVP_Variants(t *testing.T) {
 		{"empty entries skipped", []any{"", "k=v"}, map[string]any{"k": "v"}},
 		{"missing equals skipped", []any{"loner", "k=v"}, map[string]any{"k": "v"}},
 		{"empty key skipped", []any{"=v"}, map[string]any{}},
+		// BUG-1431: agents naturally pass `field: {key: value}` over
+		// MCP. Both the CLI-style ["key=value"] array AND the map shape
+		// now produce the same result. Pre-fix the map shape errored
+		// with "expected array or string, got map[string]interface {}"
+		// — a non-actionable rejection that drove the BUG-1409 agent
+		// to misdiagnose status placement.
+		{"map of any", map[string]any{"status": "open", "priority": "high"}, map[string]any{"status": "open", "priority": "high"}},
+		{"map with empty key skipped", map[string]any{"": "x", "k": "v"}, map[string]any{"k": "v"}},
+		{"map preserves non-string values", map[string]any{"reading_time": float64(6)}, map[string]any{"reading_time": float64(6)}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
