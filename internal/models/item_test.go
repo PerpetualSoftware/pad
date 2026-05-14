@@ -367,3 +367,138 @@ func TestItemUpdateUnmarshalFlexFields(t *testing.T) {
 		}
 	})
 }
+
+// TestItemCreateUnmarshalFlexFields covers BUG-1432: POST /items must
+// accept `fields` and `tags` as either a JSON-encoded string (the
+// canonical historical shape ItemCreate stored internally) or the
+// natural nested object / array shape any reasonable HTTP client —
+// including the MCP HTTP dispatcher — would send.
+//
+// Pre-fix, ItemCreate.Tags rejected `["foo","bar"]` with "cannot
+// unmarshal array into Go struct field ItemCreate.tags of type
+// string" — agents over MCP saw this as a generic validation_failed
+// envelope and (per BUG-1409) blamed "tags is the culprit." The Codex
+// investigation called out the asymmetry with ItemUpdate (which already
+// handled both shapes per BUG-1144) as the root architectural fix.
+func TestItemCreateUnmarshalFlexFields(t *testing.T) {
+	t.Run("tags as nested array (agent-natural shape)", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X","tags":["foo","bar"]}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var got []string
+		if err := json.Unmarshal([]byte(c.Tags), &got); err != nil {
+			t.Fatalf("c.Tags not valid JSON: %v (was %q)", err, c.Tags)
+		}
+		if len(got) != 2 || got[0] != "foo" || got[1] != "bar" {
+			t.Fatalf("round-trip lost data: %#v", got)
+		}
+	})
+
+	t.Run("tags as JSON-encoded string (back-compat with CLI)", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X","tags":"[\"foo\"]"}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Tags != `["foo"]` {
+			t.Fatalf("expected stringified tags passthrough, got %q", c.Tags)
+		}
+	})
+
+	t.Run("tags absent leaves empty string", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X"}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Tags != "" {
+			t.Fatalf("expected empty tags when absent, got %q", c.Tags)
+		}
+	})
+
+	t.Run("tags null leaves empty string", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X","tags":null}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Tags != "" {
+			t.Fatalf("expected empty tags for null, got %q", c.Tags)
+		}
+	})
+
+	t.Run("tags as object is invalid (array expected)", func(t *testing.T) {
+		var c ItemCreate
+		err := json.Unmarshal([]byte(`{"title":"X","tags":{"x":1}}`), &c)
+		if !errors.Is(err, ErrInvalidTagsType) {
+			t.Fatalf("expected ErrInvalidTagsType for object tags, got %v", err)
+		}
+	})
+
+	t.Run("tags as number is invalid (array/string expected)", func(t *testing.T) {
+		var c ItemCreate
+		err := json.Unmarshal([]byte(`{"title":"X","tags":42}`), &c)
+		if !errors.Is(err, ErrInvalidTagsType) {
+			t.Fatalf("expected ErrInvalidTagsType for numeric tags, got %v", err)
+		}
+		if strings.Contains(err.Error(), "Go struct field") {
+			t.Fatalf("error leaked Go internals: %q", err.Error())
+		}
+	})
+
+	t.Run("fields as nested object (agent-natural shape)", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X","fields":{"status":"open","priority":"high"}}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(c.Fields), &got); err != nil {
+			t.Fatalf("c.Fields not valid JSON: %v (was %q)", err, c.Fields)
+		}
+		if got["status"].(string) != "open" || got["priority"].(string) != "high" {
+			t.Fatalf("round-trip lost data: %#v", got)
+		}
+	})
+
+	t.Run("fields as JSON-encoded string (back-compat)", func(t *testing.T) {
+		var c ItemCreate
+		if err := json.Unmarshal([]byte(`{"title":"X","fields":"{\"status\":\"open\"}"}`), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Fields != `{"status":"open"}` {
+			t.Fatalf("expected stringified fields passthrough, got %q", c.Fields)
+		}
+	})
+
+	t.Run("fields as array is invalid (object expected)", func(t *testing.T) {
+		var c ItemCreate
+		err := json.Unmarshal([]byte(`{"title":"X","fields":["a","b"]}`), &c)
+		if !errors.Is(err, ErrInvalidFieldsType) {
+			t.Fatalf("expected ErrInvalidFieldsType for array fields, got %v", err)
+		}
+	})
+
+	t.Run("other fields decode normally", func(t *testing.T) {
+		var c ItemCreate
+		body := `{"title":"new","content":"body","pinned":true,"source":"web","fields":{"x":1},"tags":["a"]}`
+		if err := json.Unmarshal([]byte(body), &c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Title != "new" {
+			t.Fatal("title not decoded")
+		}
+		if c.Content != "body" {
+			t.Fatal("content not decoded")
+		}
+		if !c.Pinned {
+			t.Fatal("pinned not decoded")
+		}
+		if c.Source != "web" {
+			t.Fatal("source not decoded")
+		}
+		if c.Fields != `{"x":1}` {
+			t.Fatalf("fields not normalized, got %q", c.Fields)
+		}
+		if c.Tags != `["a"]` {
+			t.Fatalf("tags not normalized, got %q", c.Tags)
+		}
+	})
+}

@@ -585,15 +585,76 @@ type ItemUpdate struct {
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by
-// ItemUpdate.UnmarshalJSON when the inbound `fields` / `tags` value is
-// neither a JSON-encoded string nor the natural object/array shape.
-// Wire handlers surface the sentinel's message verbatim (without the
-// "invalid JSON: ..." wrapper from decodeJSON) so callers see a clean
-// domain-level error instead of leaked Go internals. See BUG-1144.
+// ItemUpdate.UnmarshalJSON AND ItemCreate.UnmarshalJSON when the
+// inbound `fields` / `tags` value is neither a JSON-encoded string
+// nor the natural object/array shape. Wire handlers surface the
+// sentinel's message verbatim (without the "invalid JSON: ..." wrapper
+// from decodeJSON) so callers see a clean domain-level error instead
+// of leaked Go internals. See BUG-1144 (Update) and BUG-1432 (Create).
 var (
 	ErrInvalidFieldsType = errors.New(`"fields" must be a JSON object or a JSON-encoded string`)
 	ErrInvalidTagsType   = errors.New(`"tags" must be a JSON array or a JSON-encoded string`)
 )
+
+// UnmarshalJSON for ItemCreate mirrors the flexible-shape behaviour
+// ItemUpdate gained under BUG-1144: accept `fields` / `tags` either as
+// the canonical JSON-encoded string shape (matches models.Item storage)
+// OR as the natural nested object/array shape any reasonable HTTP
+// client would send.
+//
+// Pre-BUG-1432 the Create path was brittle in two specific ways agents
+// hit on Pad Cloud:
+//
+//   - `tags: ["foo","bar"]` (natural JSON-array shape) was rejected by
+//     the default unmarshaler because the struct field is `string`,
+//     yielding `"cannot unmarshal array into Go struct field
+//     ItemCreate.tags of type string"` — an HTTP 400 the MCP
+//     dispatcher then surfaced as a validation_failed envelope.
+//
+//   - `fields: {status: "open"}` (natural nested-object shape) hit the
+//     same brittleness with `cannot unmarshal object into ... fields of
+//     type string`.
+//
+// The asymmetry with ItemUpdate (which already handled both shapes
+// cleanly per BUG-1144) was Codex's tip in the BUG-1432 investigation
+// — fixing it here closes the create/update gap and gives agents a
+// uniform shape contract across both verbs.
+//
+// In-process callers that construct ItemCreate{} literals never hit
+// this path; only the JSON decode boundary changes.
+func (c *ItemCreate) UnmarshalJSON(data []byte) error {
+	// Use an alias to inherit every other field's default unmarshal
+	// behaviour, while shadowing fields/tags with json.RawMessage so we
+	// can inspect the raw shape. The outer fields shadow the embedded
+	// alias's same-named fields because they are less deeply nested.
+	type alias ItemCreate
+	aux := struct {
+		Fields json.RawMessage `json:"fields,omitempty"`
+		Tags   json.RawMessage `json:"tags,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// flexJSONToString returns *string (nil when absent / null / empty).
+	// ItemCreate.Fields/Tags are plain strings, not pointers, so deref
+	// when present and leave at zero value otherwise.
+	if fieldsStr, err := flexJSONToString(aux.Fields, '{', ErrInvalidFieldsType); err != nil {
+		return err
+	} else if fieldsStr != nil {
+		c.Fields = *fieldsStr
+	}
+
+	if tagsStr, err := flexJSONToString(aux.Tags, '[', ErrInvalidTagsType); err != nil {
+		return err
+	} else if tagsStr != nil {
+		c.Tags = *tagsStr
+	}
+
+	return nil
+}
 
 // UnmarshalJSON accepts `fields` / `tags` either as the canonical
 // JSON-encoded string shape (matches models.Item.Fields/Tags storage)
