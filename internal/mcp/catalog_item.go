@@ -123,11 +123,12 @@ var padItemSchemaParams = []ParamDef{
 	// automatically and `field` is only needed for fields that
 	// don't have a dedicated parameter.
 	//
-	// parseFieldKVP also accepts the JSON-native `{key: value}` map
-	// shape as defensive parsing (BUG-1431 — agents naturally try the
-	// map form), but the advertised schema stays `array<string>` per
-	// the CLI's `--field key=value` repeatable-flag convention so
-	// schema-following clients see a single consistent shape.
+	// Pre-BUG-1431 the description was the bare "Custom field
+	// key=value pairs (repeatable)." Agents seeing that often tried
+	// `field: {status: ...}` to override status (the wrong placement)
+	// or just guessed shapes when other input shapes errored. The
+	// expanded description names the dedicated top-level params so
+	// agents don't fall back to `field` for them.
 	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move."},
 
 	// ── List / starred ──

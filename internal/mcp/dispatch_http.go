@@ -822,28 +822,12 @@ func liftFieldsToColumns(fields, payload map[string]any) {
 }
 
 // parseFieldKVP normalizes the --field flag's various wire shapes
-// (single string, []string, []any, map[string]any) into a `key→value`
-// map. Empty / invalid entries are skipped silently to match the CLI's
-// permissive behaviour.
-//
-// Map shape was added under BUG-1431: agents over MCP naturally pass
-// `field: {key: value}` rather than the CLI-style `field: ["key=value"]`,
-// and pre-fix this would error with "expected array or string, got
-// map[string]interface {}" — a non-actionable rejection that drove the
-// BUG-1409 agent's "field placement is wrong" misdiagnosis. Both shapes
-// now mean the same thing, with the map shape being the more
-// JSON-native form.
+// (single string, []string, []any) into a `key→value` map. Empty /
+// invalid entries are skipped silently to match the CLI's permissive
+// behaviour.
 func parseFieldKVP(raw any) (map[string]any, error) {
 	out := map[string]any{}
 	switch v := raw.(type) {
-	case map[string]any:
-		for k, val := range v {
-			k = strings.TrimSpace(k)
-			if k == "" {
-				continue
-			}
-			out[k] = val
-		}
 	case []any:
 		for _, e := range v {
 			s, ok := e.(string)
@@ -859,7 +843,7 @@ func parseFieldKVP(raw any) (map[string]any, error) {
 	case string:
 		ingestFieldKVP(v, out)
 	default:
-		return nil, fmt.Errorf("expected array, object, or string, got %T", raw)
+		return nil, fmt.Errorf("expected array or string, got %T", raw)
 	}
 	return out, nil
 }
