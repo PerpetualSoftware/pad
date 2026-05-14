@@ -6,6 +6,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { itemUrlId } from '$lib/types';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -44,6 +45,19 @@
 	let lanes = $state<RoleBoardLane[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+
+	// Scroll position restoration (BUG-1425). Lanes render as a board, so
+	// page-level scroll is dominantly vertical — board-internal horizontal
+	// scroll is out of scope here (same constraint as the collection-page
+	// board view).
+	const scrollRestoration = createScrollRestoration({
+		// `loading` flips true on workspace change. Length gate omitted
+		// (Codex P2 round 2).
+		ready: () => !loading,
+		persistKey: () =>
+			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 
 	// Highlight: dim cards not assigned to current user
 	let highlightMine = $state(false);

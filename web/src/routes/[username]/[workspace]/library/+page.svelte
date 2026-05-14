@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -11,6 +12,19 @@
 	let activeConventionTitles = $state<Set<string>>(new Set());
 	let activePlaybookTitles = $state<Set<string>>(new Set());
 	let loading = $state(true);
+
+	// Scroll position restoration (BUG-1425). persistKey includes `?tab=…`
+	// so the conventions and playbooks tabs each keep their own offset.
+	const scrollRestoration = createScrollRestoration({
+		// `loading` flips true on workspace change. Length-based gate
+		// omitted (Codex P2 round 2).
+		ready: () => !loading,
+		persistKey: () =>
+			wsSlug
+				? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}`
+				: null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 	let activatingTitle = $state<string | null>(null);
 	let toast = $state<string | null>(null);
 	let activeTab = $state<'conventions' | 'playbooks'>(

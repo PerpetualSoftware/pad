@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		argumentsFromJSON,
@@ -34,6 +35,25 @@
 	let existingPlaybooks = $state<Item[]>([]);
 	let loading = $state(true);
 	let saving = $state(false);
+
+	// Scroll position restoration (BUG-1425). Form pages are usually short
+	// enough that scroll position isn't critical, but if the body grows the
+	// helper keeps offset preserved on back-nav like the rest of the app.
+	//
+	// The identity guards (item.slug === ref || issue-id === ref) ensure
+	// we don't restore against stale content from a previous playbook
+	// while loadItem() for the new ref is still in flight — same race
+	// as the item detail page (Codex BUG-1425 round 4 P1-B).
+	const scrollRestoration = createScrollRestoration({
+		ready: () =>
+			!loading &&
+			item !== null &&
+			(item.slug === ref ||
+				`${item.collection_prefix}-${item.item_number}` === ref),
+		persistKey: () =>
+			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 
 	// Form fields — initialized from the loaded item.
 	let title = $state('');

@@ -5,6 +5,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { Activity, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -16,6 +17,22 @@
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let hasMore = $state(true);
+
+	// Scroll position restoration (BUG-1425). Wait for the first page of
+	// activities to render before applying a saved offset. The persistKey
+	// includes the URL so filtered views (`?action=…`) keep their own entry.
+	const scrollRestoration = createScrollRestoration({
+		// `loading` flips true when filters/workspace change (loadActivities
+		// reset path), giving the helper its required ready=false
+		// transition. `length > 0` deliberately omitted (Codex P2): a
+		// late SSE-driven new activity shouldn't re-fire a stale restore.
+		ready: () => !loading,
+		persistKey: () =>
+			wsSlug
+				? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}`
+				: null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 
 	// Filters
 	let filterAction = $state('');
