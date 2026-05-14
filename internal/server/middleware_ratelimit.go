@@ -154,12 +154,17 @@ type RateLimiters struct {
 	// for other tokens. Keyed by SHA-256(bearer) so the raw token
 	// never lives in the limiter map.
 	//
-	// 60 requests / minute / token, burst 20. Sized for chatty
-	// usage (Claude Desktop sends `tools/list` + a handful of tool
-	// calls per session) without leaving headroom for sustained
-	// abuse. Retention 5 minutes — long enough to remember a quiet
-	// token between calls, short enough that the limiter doesn't
-	// hold dead tokens forever after revocation.
+	// 60 requests / minute / token, burst 60 (post-BUG-1430; was
+	// originally 20). The original burst was sized for chatty
+	// interactive usage; agentic batch onboarding regularly fans
+	// out 20-30 parallel tool calls (workspace setup, item-create
+	// bursts), so the burst was raised to match the general API
+	// limiter's burst-60-per-user cap. Sustained rate stays 60/min
+	// — abuse still gets throttled, just after a roomier burst.
+	//
+	// Retention 5 minutes — long enough to remember a quiet token
+	// between calls, short enough that the limiter doesn't hold
+	// dead tokens forever after revocation.
 	MCPPerToken *ipRateLimiter
 }
 
@@ -227,18 +232,33 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(6.0 / 3600.0),
 			Burst: 6,
 		}),
-		// MCP per-token: 60 req/min sustained, burst 20. PLAN-943
-		// TASK-959. 60/60 = 1 req/sec — written with explicit math
-		// rather than `rate.Limit(1)` so adjacent limiters' "X /
-		// 60" idiom stays consistent at a glance, but staticcheck
-		// SA4000 flags identical-numerator-denominator division —
-		// hence the explicit literal.
+		// MCP per-token: 60 req/min sustained, burst 60. PLAN-943
+		// TASK-959, bumped under BUG-1430. 60/60 = 1 req/sec —
+		// written with explicit math rather than `rate.Limit(1)`
+		// so adjacent limiters' "X / 60" idiom stays consistent at
+		// a glance, but staticcheck SA4000 flags identical-
+		// numerator-denominator division — hence the explicit
+		// literal.
+		//
+		// Burst was originally 20, sized for "chatty interactive
+		// use (Claude Desktop sends tools/list + a handful of tool
+		// calls per session)." Agentic batch onboarding workloads
+		// regularly exceed that — a fresh-workspace setup may fan
+		// out 20-30 parallel `pad_item create` tool calls, and the
+		// 21st+ failing with rate_limited (HTTP 429) on a brand-new
+		// connection is a hostile first impression. Raising to 60
+		// matches the general API limiter's burst (per-user,
+		// 600/min, burst 60), so the MCP path doesn't impose a
+		// tighter ceiling than the equivalent /api/v1 path. The
+		// sustained 60/min rate stays unchanged — abuse still gets
+		// throttled, just after a roomier burst.
+		//
 		// The 5-minute retention lets the limiter forget dead
 		// tokens reasonably quickly after revocation while still
 		// surviving idle periods between tool calls.
 		MCPPerToken: newIPRateLimiter(rateLimitConfig{
 			Rate:      rate.Limit(1.0), // 60 req/min = 1 req/sec
-			Burst:     20,
+			Burst:     60,
 			Retention: 5 * time.Minute,
 		}),
 	}

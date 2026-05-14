@@ -951,8 +951,13 @@ func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
 	pat := mustCreatePATForTest(t, srv, "rate-limit-bucket")
 
+	// Bucket is burst=60 (raised from 20 under BUG-1430 to accommodate
+	// agent-onboarding bursts). Loop slightly past the burst to give
+	// the limiter time to deny the (burst+1)th request — the rate
+	// (1/sec) refills slowly enough that we won't accidentally pad
+	// our way through.
 	got429 := false
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 80; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 		req.Header.Set("Authorization", "Bearer "+pat)
 		req.RemoteAddr = "192.0.2.1:1234"
@@ -968,7 +973,7 @@ func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 		}
 	}
 	if !got429 {
-		t.Errorf("expected 429 within 30 requests on a single token bucket (60/min, burst 20); never saw it")
+		t.Errorf("expected 429 within 80 requests on a single token bucket (60/min, burst 60); never saw it")
 	}
 }
 
@@ -986,7 +991,9 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 	pat2 := mustCreatePATForTest(t, srv, "rate-limit-pat-2")
 
 	hammer := func(bearer string) (rrs []*httptest.ResponseRecorder) {
-		for i := 0; i < 30; i++ {
+		// BUG-1430 raised burst to 60; loop past it so the (burst+1)th
+		// request drains the bucket and 429s.
+		for i := 0; i < 80; i++ {
 			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 			req.Header.Set("Authorization", "Bearer "+bearer)
 			req.RemoteAddr = "192.0.2.1:1234"
@@ -1204,8 +1211,10 @@ func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
 	srv := mcpEnabledTestServer(t)
 	pat := mustCreatePATForTest(t, srv, "rate-limit-envelope")
 
+	// BUG-1430 raised the MCP per-token burst to 60. Loop past it so
+	// the (burst+1)th request drains the bucket.
 	var limited *httptest.ResponseRecorder
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 80; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 		req.Header.Set("Authorization", "Bearer "+pat)
 		req.RemoteAddr = "192.0.2.1:1234"

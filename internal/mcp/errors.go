@@ -114,6 +114,19 @@ const (
 	// from exec, etc. The wrapped message preserves the underlying
 	// detail for debugging without promising any structured shape.
 	ErrServerError ErrorCode = "server_error"
+
+	// ErrRateLimited fires on HTTP 429 responses — either the
+	// general API limiter (per-user, 600/min, burst 60) or the
+	// MCP per-token limiter (60/min/token, burst 60 post-BUG-1430)
+	// rejecting a synthesized request. Distinct from
+	// ErrServerError so agents implementing exponential backoff
+	// can switch on code without parsing free-form text. Pre-
+	// BUG-1430 this collapsed into ErrServerError, which led the
+	// triggering agent to describe a 429 burst as "backend 500s
+	// on parallel writes" — see BUG-1409. The hint includes the
+	// upstream message so agents have a chance of recognizing
+	// transient vs persistent throttling.
+	ErrRateLimited ErrorCode = "rate_limited"
 )
 
 // ErrorEnvelope is the wire shape returned to MCP clients on tool
@@ -632,6 +645,23 @@ func classifyHTTPStatusKind(
 			Message: "Validation failed.",
 			Hint:    validationHintFor(bodyMessage, route),
 		})
+	case http.StatusTooManyRequests:
+		// BUG-1430: pre-existing behavior collapsed 429 into the
+		// generic ErrServerError "other 4xx" bucket, which led
+		// the triggering agent to report a parallel-write burst
+		// as "backend 500s." Surface 429 as a first-class
+		// ErrRateLimited so agents can implement code-based
+		// backoff instead of parsing free-form text. The hint
+		// mentions the Retry-After header (set on the response
+		// by writeRateLimitResponse / writeMCPRateLimit) since
+		// the dispatcher's body-only signature loses the headers
+		// — a future enhancement could surface the parsed value
+		// directly in the envelope.
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrRateLimited,
+			Message: fmt.Sprintf("pad %s rate-limited (HTTP 429)", cmdKey),
+			Hint:    rateLimitHintFor(bodyMessage, route),
+		})
 	}
 
 	if status >= 500 {
@@ -918,6 +948,26 @@ func upstreamHintFor(bodyMsg, route string, status int) string {
 // Catch-all — surface enough for an agent to file a bug report.
 func serverHintFor(bodyMsg, route string, status int) string {
 	parts := []string{fmt.Sprintf("Unexpected status %d from backend.", status)}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// rateLimitHintFor generates the actionable hint for ErrRateLimited.
+// 429s are recoverable with backoff — the hint encodes that bias and
+// points at the Retry-After response header. BUG-1430 added this
+// helper alongside the dedicated case in classifyHTTPStatusKind so
+// agents see a distinct envelope for "back off" vs ErrServerError's
+// "file a bug" framing.
+func rateLimitHintFor(bodyMsg, route string) string {
+	parts := []string{
+		"Rate-limited by the backend. Retry after a backoff (see the Retry-After response header for the suggested wait).",
+		"For burst-heavy workflows (agent onboarding, bulk import), space out tool calls or sequence them — the per-token cap is 60 req/min with a burst of 60.",
+	}
 	if route != "" {
 		parts = append(parts, fmt.Sprintf("Route: %s.", route))
 	}

@@ -1058,6 +1058,21 @@ func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature st
 
 	result, err := s.store.CheckLimit(workspaceID, feature)
 	if err != nil {
+		// BUG-1430 follow-up: enforcePlanLimit is one of the few
+		// cloud-mode-only 500 paths in the item-create handler chain
+		// (it fans out into 3 Postgres queries — workspace owner
+		// lookup, user fetch, feature count). Under bursty workloads
+		// like agent onboarding (24 parallel item creates fanned out
+		// from a single MCP session) it's a plausible source of
+		// "backend 500" symptoms that local SQLite testing can't
+		// reproduce. Logging with workspace_id + feature + the
+		// underlying error gives operators a grep-able tag for the
+		// next time the symptom surfaces on real Pad Cloud. Costs
+		// nothing in the happy path.
+		slog.Error("enforcePlanLimit: CheckLimit failed",
+			"workspace_id", workspaceID,
+			"feature", feature,
+			"error", err)
 		writeInternalError(w, err)
 		return false
 	}
@@ -1078,6 +1093,15 @@ func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, userID, feature str
 
 	result, err := s.store.CheckUserLimit(userID, feature)
 	if err != nil {
+		// BUG-1430 follow-up: symmetric observability for the
+		// user-scoped sibling. Same rationale as enforcePlanLimit —
+		// any DB error here surfaces to the agent as a generic 500
+		// (which the MCP dispatcher then relays as ErrUpstreamError),
+		// and we want a grep-able tag in the logs to debug.
+		slog.Error("enforceUserPlanLimit: CheckUserLimit failed",
+			"user_id", userID,
+			"feature", feature,
+			"error", err)
 		writeInternalError(w, err)
 		return false
 	}
