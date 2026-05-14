@@ -285,52 +285,87 @@ func TestDispatchItemUpdate_MergesFieldsWithExisting(t *testing.T) {
 	}
 }
 
-// TestDispatchItemUpdate_ForwardsTagsArray covers Codex review #547
-// round 1 [P1]: the catalog declares `tags` as `array<string>` (per
-// BUG-1432) but the dispatch_http_advanced.go PATCH builder was
-// filtering on `string` only, silently dropping schema-conforming
-// `tags: ["a","b"]` shapes. The fix is to forward `tags` verbatim
-// and let ItemUpdate.UnmarshalJSON's flex parser (BUG-1144) normalize.
-func TestDispatchItemUpdate_ForwardsTagsArray(t *testing.T) {
-	captured := newRequestCapture()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
-		case http.MethodPatch:
-			captured.ServeHTTP(w, r)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
-		default:
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-	})
+// TestDispatchItemUpdate_TagsForwarding covers two Codex review #547
+// rounds on the same area:
+//   - round 1 [P1]: the dispatcher must forward `tags: ["a"]` array
+//     shapes (was filtering on string-only, silently dropped them).
+//   - round 3 [P2]: forwarding ANY non-nil value regressed the
+//     "empty string is a no-op" behaviour; `tags: ""` would now write
+//     an empty string into the JSONB column (500 on Postgres). The
+//     fix forwards arrays unconditionally but skips empty strings.
+//
+// Subtests cover: array (the BUG-1432 happy path), empty array
+// (legitimate "clear tags"), empty string (no-op — must not appear in
+// the PATCH body), and nil (also no-op).
+func TestDispatchItemUpdate_TagsForwarding(t *testing.T) {
+	type expect struct {
+		inBody   bool
+		wantBody any
+	}
+	cases := []struct {
+		name string
+		tags any
+		want expect
+	}{
+		{"array of tags forwarded", []any{"v1", "frontend"}, expect{inBody: true, wantBody: []any{"v1", "frontend"}}},
+		{"empty array forwarded (clear tags)", []any{}, expect{inBody: true, wantBody: []any{}}},
+		{"empty string is a no-op", "", expect{inBody: false}},
+		{"comma-separated string forwarded (back-compat)", "foo,bar", expect{inBody: true, wantBody: "foo,bar"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			captured := newRequestCapture()
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
+				case http.MethodPatch:
+					captured.ServeHTTP(w, r)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+				default:
+					t.Fatalf("unexpected method %s", r.Method)
+				}
+			})
 
-	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
-	ctx := WithDispatchInput(context.Background(), map[string]any{
-		"workspace": "docapp",
-		"ref":       "TASK-5",
-		"tags":      []any{"v1", "frontend"},
-	})
-	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
-	if err != nil || res.IsError {
-		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
-	}
-	if captured.requestCount != 1 {
-		t.Fatalf("expected 1 PATCH, got %d", captured.requestCount)
-	}
-	var body map[string]any
-	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
-		t.Fatalf("decode body: %v\n%s", err, captured.lastBody)
-	}
-	tags, ok := body["tags"].([]any)
-	if !ok {
-		t.Fatalf("expected tags to be forwarded as array, got %T: %#v", body["tags"], body)
-	}
-	if len(tags) != 2 || tags[0] != "v1" || tags[1] != "frontend" {
-		t.Errorf("tags array round-trip lost data: %#v", tags)
+			d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+			// Always include title to force a PATCH (so the empty-string
+			// tags case still hits the dispatcher rather than no-op'ing
+			// the whole call for absence of changes).
+			ctx := WithDispatchInput(context.Background(), map[string]any{
+				"workspace": "docapp",
+				"ref":       "TASK-5",
+				"title":     "x",
+				"tags":      tc.tags,
+			})
+			res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+			if err != nil || res.IsError {
+				t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+			}
+			if captured.requestCount != 1 {
+				t.Fatalf("expected 1 PATCH, got %d", captured.requestCount)
+			}
+			var body map[string]any
+			if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+				t.Fatalf("decode body: %v\n%s", err, captured.lastBody)
+			}
+			got, present := body["tags"]
+			if tc.want.inBody {
+				if !present {
+					t.Fatalf("expected tags in PATCH body, got body=%v", body)
+				}
+				// Compare via JSON round-trip so deep slices match.
+				gotJSON, _ := json.Marshal(got)
+				wantJSON, _ := json.Marshal(tc.want.wantBody)
+				if string(gotJSON) != string(wantJSON) {
+					t.Errorf("tags round-trip: got %s, want %s", gotJSON, wantJSON)
+				}
+			} else if present {
+				t.Errorf("expected tags ABSENT from PATCH body (no-op), got %v", got)
+			}
+		})
 	}
 }
 

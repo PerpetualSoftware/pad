@@ -324,11 +324,21 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// `tags` is array<string> on the MCP schema as of BUG-1432; the
 	// dispatcher forwards it verbatim (array, JSON-encoded string, or
 	// CLI back-compat string) and lets ItemUpdate.UnmarshalJSON's
-	// flex parser (BUG-1144) normalize. Pre-fix this loop filtered on
-	// `string` only, so a schema-conforming `tags: ["a"]` was
-	// silently dropped — Codex review #547 round 1 [P1].
+	// flex parser (BUG-1144) normalize. Pre-BUG-1432 this loop
+	// filtered on `string` only, so a schema-conforming
+	// `tags: ["a"]` was silently dropped — Codex review #547
+	// round 1 [P1] caught that.
+	//
+	// Empty string is a no-op (matches the pre-fix behaviour for
+	// non-tags string fields): ItemUpdate treats `tags: ""` as an
+	// explicit empty-string write, which would corrupt the JSONB
+	// column on Postgres (500) and the TEXT column on SQLite. Empty
+	// array `[]` is intentionally NOT filtered — that's a legitimate
+	// "clear all tags" update. Codex review #547 round 3 [P2].
 	if v, ok := input["tags"]; ok && v != nil {
-		payload["tags"] = v
+		if s, isString := v.(string); !isString || s != "" {
+			payload["tags"] = v
+		}
 	}
 	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
 		payload["assigned_user_id"] = v
