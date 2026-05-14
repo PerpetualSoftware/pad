@@ -180,12 +180,28 @@ func TestClassifyHTTPStatus_HintsAreActionable(t *testing.T) {
 			body:        []byte(`{"error":{"message":"db down"}}`),
 			mustContain: []string{"transient", "retry", "500"},
 		},
+		{
+			// BUG-1430: 429 hint points at backoff + Retry-After so
+			// agents implementing backoff can adjust without parsing
+			// free-form prose. Cap is intentionally NOT named in the
+			// hint — classifyHTTPStatusKind handles synthesized
+			// /api/v1/... 429s which can come from several limiters
+			// with different sizing (Codex review #546 round 1 [P2]).
+			name:        "429 hint suggests backoff + points at Retry-After",
+			kind:        ResourceItem, // kind doesn't matter for 429
+			ref:         "TASK-7",
+			route:       "/api/v1/workspaces/foo/items/TASK-7",
+			body:        []byte(`{"error":{"code":"rate_limited","message":"Too many requests."}}`),
+			mustContain: []string{"Rate-limited", "Retry-After", "burst-heavy"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			status := 404
 			if strings.Contains(tc.name, "5xx") {
 				status = 500
+			} else if strings.Contains(tc.name, "429") {
+				status = 429
 			}
 			res := classifyHTTPStatusKind(context.Background(),
 				"test cmd", tc.route, status, tc.body, nil, tc.kind, tc.ref)

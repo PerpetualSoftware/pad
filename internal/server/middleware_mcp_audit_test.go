@@ -300,9 +300,10 @@ func TestMCPAudit_RateLimited_RecordsDeniedRow(t *testing.T) {
 	}
 
 	// Hammer until we see a 429 — same pattern as the existing
-	// rate-limit tests.
+	// rate-limit tests. BUG-1430 raised burst to 60, so loop past it
+	// to drain the bucket; the (burst+1)th request 429s.
 	got429 := false
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 80; i++ {
 		req := httptest.NewRequest("POST", "/mcp",
 			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item"}}`))
 		req.Header.Set("Authorization", "Bearer "+pat)
@@ -316,7 +317,7 @@ func TestMCPAudit_RateLimited_RecordsDeniedRow(t *testing.T) {
 		}
 	}
 	if !got429 {
-		t.Fatal("never hit 429 within 30 requests")
+		t.Fatal("never hit 429 within 80 requests")
 	}
 
 	// Wait for the async audit writer to drain. Burst sent + 1 denied

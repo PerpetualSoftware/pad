@@ -176,6 +176,11 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		// "backend hiccup, retry" from "dispatcher bug, escalate."
 		{"500_upstream", http.StatusInternalServerError, "boom", ErrUpstreamError},
 		{"503_upstream", http.StatusServiceUnavailable, "down", ErrUpstreamError},
+		// BUG-1430: 429 is now a first-class ErrRateLimited code,
+		// distinct from the generic ErrServerError "other 4xx" bucket
+		// it landed in pre-fix. Agents implementing backoff key off
+		// the code without parsing free-form text.
+		{"429_rate_limited", http.StatusTooManyRequests, "rate_limited", ErrRateLimited},
 		{"418_other", http.StatusTeapot, "weird", ErrServerError},
 	}
 	for _, tc := range cases {
