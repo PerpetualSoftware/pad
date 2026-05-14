@@ -117,14 +117,18 @@ var padItemSchemaParams = []ParamDef{
 	// Postgres (JSONB rejects non-JSON).
 	{Name: "tags", Type: "array<string>", Description: "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. Optional for: create, update."},
 	// `field`: the escape hatch for SCHEMA-DECLARED custom fields.
-	// Accepts the CLI-style key=value array `["key=value",...]` AND
-	// the JSON-native map form `{key: value, ...}` (added under
-	// BUG-1431). Use the dedicated top-level params (`status`,
-	// `priority`, `category`, `parent`, `role`, `assign`, `tags`)
-	// for the named fields — the dispatcher rolls those into the
-	// `fields` JSON automatically and `--field` is only needed for
-	// fields that don't have a dedicated parameter.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Accepts array of \"key=value\" strings OR a {key: value} map. For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move."},
+	// Use the dedicated top-level params (`status`, `priority`,
+	// `category`, `parent`, `role`, `assign`, `tags`) for the named
+	// fields — the dispatcher rolls those into the `fields` JSON
+	// automatically and `field` is only needed for fields that
+	// don't have a dedicated parameter.
+	//
+	// parseFieldKVP also accepts the JSON-native `{key: value}` map
+	// shape as defensive parsing (BUG-1431 — agents naturally try the
+	// map form), but the advertised schema stays `array<string>` per
+	// the CLI's `--field key=value` repeatable-flag convention so
+	// schema-following clients see a single consistent shape.
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
@@ -157,7 +161,7 @@ Actions:
                   / role / assign / tags) for those named fields — the dispatcher rolls
                   them into the item's fields JSON automatically. The 'field' param is
                   the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
-                  param; accepts ["key=value",...] OR {key: value, ...}.
+                  param; accepts an array of "key=value" strings.
                   The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
                   — NOT a comma-separated string.
   update        — Update an item by ref.

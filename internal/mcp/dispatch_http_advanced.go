@@ -315,10 +315,20 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 
 	// Step 2: Build the PATCH payload.
 	payload := map[string]any{}
-	for _, key := range []string{"title", "content", "comment", "tags"} {
+	// String-shaped fields: copy through when non-empty.
+	for _, key := range []string{"title", "content", "comment"} {
 		if v, ok := input[key].(string); ok && v != "" {
 			payload[key] = v
 		}
+	}
+	// `tags` is array<string> on the MCP schema as of BUG-1432; the
+	// dispatcher forwards it verbatim (array, JSON-encoded string, or
+	// CLI back-compat string) and lets ItemUpdate.UnmarshalJSON's
+	// flex parser (BUG-1144) normalize. Pre-fix this loop filtered on
+	// `string` only, so a schema-conforming `tags: ["a"]` was
+	// silently dropped — Codex review #547 round 1 [P1].
+	if v, ok := input["tags"]; ok && v != nil {
+		payload["tags"] = v
 	}
 	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
 		payload["assigned_user_id"] = v
