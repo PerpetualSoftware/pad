@@ -5,6 +5,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import type { Item, Collection } from '$lib/types';
 
@@ -16,6 +17,17 @@
 	let loading = $state(true);
 	let includeTerminal = $state(false);
 	let loadSeq = 0;
+
+	// Scroll position restoration (BUG-1425).
+	const scrollRestoration = createScrollRestoration({
+		// `loading` flips true when workspace changes (loadData reset),
+		// satisfying the helper's stale-content guard. `length > 0`
+		// omitted per Codex P2 round 2 to avoid late SSE re-fire.
+		ready: () => !loading,
+		persistKey: () =>
+			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 
 	// Filter fetched items by current starred state so unstars are reflected immediately.
 	// If the store hasn't loaded yet, trust the API response (it only returns starred items).

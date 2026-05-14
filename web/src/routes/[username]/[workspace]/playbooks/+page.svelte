@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		PLAYBOOK_SKELETON_BODY,
@@ -20,6 +21,19 @@
 	let playbooks = $state<Item[]>([]);
 	let playbooksCollection = $state<Collection | null>(null);
 	let loading = $state(true);
+
+	// Scroll position restoration (BUG-1425).
+	const scrollRestoration = createScrollRestoration({
+		// `playbooksCollection` flips null on workspace change. Length
+		// gate omitted (Codex P2 round 2).
+		ready: () => !loading && playbooksCollection !== null,
+		persistKey: () =>
+			wsSlug
+				? `pad-last-scroll-${wsSlug}-${page.url.pathname}${page.url.search}`
+				: null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
+
 	let expandedId = $state<string | null>(null);
 	let showNewForm = $state(false);
 	let deleting = $state<string | null>(null);

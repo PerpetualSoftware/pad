@@ -33,6 +33,7 @@
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -58,6 +59,33 @@
 	let collection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+
+	// ── Scroll position restoration (BUG-1425) ─────────────────────────
+	// Item detail pages fetch content async (loadData), so SvelteKit's
+	// built-in scroll restoration runs against a still-skeleton document
+	// and clamps the saved offset to ~0. The helper parks the snapshot
+	// value until ready() is true, then double-RAFs and scrolls.
+	//
+	// `ready` requires the loaded item's identity to match the URL
+	// param — otherwise a same-instance route change (item A →
+	// wiki-link to B → back to A) would fire the restore against B's
+	// still-rendered content. The match accepts EITHER the slug form
+	// OR the issue ref (e.g. `TASK-123`) because `itemUrlId()` (in
+	// `$lib/types/index.ts`) prefers refs over slugs when building
+	// links, so most app URLs are `/tasks/TASK-123` rather than
+	// `/tasks/some-slug`. Without the ref alternative, `ready()`
+	// would never become true for ref URLs and the restore would
+	// hang forever. Codex BUG-1425 round 5 P1.
+	const scrollRestoration = createScrollRestoration({
+		ready: () =>
+			!loading &&
+			item !== null &&
+			(item.slug === itemSlug ||
+				`${item.collection_prefix}-${item.item_number}` === itemSlug),
+		persistKey: () =>
+			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 
 	let editorInstance = $state<EditorType | null>(null);
 

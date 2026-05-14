@@ -4,6 +4,7 @@
 	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
 	import { parseFields, parseSchema } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
@@ -34,6 +35,19 @@
 	let conventions = $state<Item[]>([]);
 	let conventionsCollection = $state<Collection | null>(null);
 	let loading = $state(true);
+
+	// Scroll position restoration (BUG-1425).
+	const scrollRestoration = createScrollRestoration({
+		// `conventionsCollection` flips null on workspace change. Length
+		// gate omitted (Codex P2 round 2).
+		ready: () => !loading && conventionsCollection !== null,
+		persistKey: () =>
+			workspace
+				? `pad-last-scroll-${workspace}-${page.url.pathname}${page.url.search}`
+				: null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
+
 	let expandedSlug = $state<string | null>(null);
 	let collapsedGroups = new SvelteSet<string>();
 	let showCreate = $state(false);

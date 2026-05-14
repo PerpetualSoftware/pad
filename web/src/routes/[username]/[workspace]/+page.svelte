@@ -13,6 +13,7 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -21,6 +22,16 @@
 	let loading = $state(true);
 	let dashboard = $state<DashboardResponse | null>(null);
 	let collections = $state<Collection[]>([]);
+
+	// Scroll position restoration (BUG-1425). Dashboard renders progressively
+	// (active items, attention list, etc.) — wait for the initial dashboard
+	// fetch before applying a saved offset so the document is tall enough.
+	const scrollRestoration = createScrollRestoration({
+		ready: () => !loading && dashboard !== null,
+		persistKey: () =>
+			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+	});
+	export const snapshot = scrollRestoration.snapshot;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
 	let connectOpen = $state(false);
