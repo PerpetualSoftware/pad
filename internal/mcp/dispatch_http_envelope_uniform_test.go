@@ -181,15 +181,18 @@ func TestClassifyHTTPStatus_HintsAreActionable(t *testing.T) {
 			mustContain: []string{"transient", "retry", "500"},
 		},
 		{
-			// BUG-1430: 429 hint points at backoff + Retry-After +
-			// the per-token cap so agents can adjust without parsing
-			// free-form prose.
-			name:        "429 hint suggests backoff + names the rate limit cap",
+			// BUG-1430: 429 hint points at backoff + Retry-After so
+			// agents implementing backoff can adjust without parsing
+			// free-form prose. Cap is intentionally NOT named in the
+			// hint — classifyHTTPStatusKind handles synthesized
+			// /api/v1/... 429s which can come from several limiters
+			// with different sizing (Codex review #546 round 1 [P2]).
+			name:        "429 hint suggests backoff + points at Retry-After",
 			kind:        ResourceItem, // kind doesn't matter for 429
 			ref:         "TASK-7",
 			route:       "/api/v1/workspaces/foo/items/TASK-7",
 			body:        []byte(`{"error":{"code":"rate_limited","message":"Too many requests."}}`),
-			mustContain: []string{"Rate-limited", "Retry-After", "60 req/min"},
+			mustContain: []string{"Rate-limited", "Retry-After", "burst-heavy"},
 		},
 	}
 	for _, tc := range cases {

@@ -963,10 +963,20 @@ func serverHintFor(bodyMsg, route string, status int) string {
 // helper alongside the dedicated case in classifyHTTPStatusKind so
 // agents see a distinct envelope for "back off" vs ErrServerError's
 // "file a bug" framing.
+//
+// The hint is intentionally generic about the cap. classifyHTTPStatusKind
+// handles 429s from the dispatcher's SYNTHESIZED /api/v1/... requests,
+// which can fire from several different limiters with different sizing
+// (the general API limiter at 600/min/burst-60, the Search limiter at
+// 30/min/burst-10, etc.) — Codex review #546 round 1 [P2] caught the
+// first draft of this hint hard-coding the MCP per-token cap, which
+// fires BEFORE the dispatcher runs and so never lands here. The
+// Retry-After header carries the limiter-specific wait time; agents
+// honoring it get correct backoff without needing the cap in prose.
 func rateLimitHintFor(bodyMsg, route string) string {
 	parts := []string{
 		"Rate-limited by the backend. Retry after a backoff (see the Retry-After response header for the suggested wait).",
-		"For burst-heavy workflows (agent onboarding, bulk import), space out tool calls or sequence them — the per-token cap is 60 req/min with a burst of 60.",
+		"For burst-heavy workflows (agent onboarding, bulk import), space out tool calls or sequence them.",
 	}
 	if route != "" {
 		parts = append(parts, fmt.Sprintf("Route: %s.", route))
