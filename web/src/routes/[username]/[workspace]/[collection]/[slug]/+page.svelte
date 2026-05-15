@@ -1905,10 +1905,18 @@
 					was created via "Insert from URL" and the modal stamped
 					source_url into fields. Click re-fetches and replaces
 					editor content; the editor's Yjs op-log handles undo.
+
 					Hidden for view-only users (no canEdit) — refresh is a
 					content-replacing action that requires write access.
+					Also hidden in raw-markdown mode: the rich Editor is
+					unmounted there and refreshFromSource() drives content
+					replacement through the Tiptap editor instance, which
+					would either fail or update the off-screen rich editor.
+					Read-only / raw users see the provenance chip without
+					the Refresh button so the import history is still
+					discoverable. (Per Codex review round 1.)
 				-->
-				{#if canEdit}
+				{#if canEdit && !rawMode}
 					<button
 						type="button"
 						class="source-chip"
