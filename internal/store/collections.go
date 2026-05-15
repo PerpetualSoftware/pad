@@ -65,6 +65,13 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	var createdAt, updatedAt string
 	var deletedAt *string
 	var isDefault bool
+	// `collections.settings` is nullable on both drivers (TEXT DEFAULT '{}' on
+	// SQLite, JSONB DEFAULT '{}' on Postgres). A NULL row would fail to scan
+	// directly into a Go string on Postgres with "converting NULL to string
+	// is unsupported". Materialize NULL as "" to preserve the sentinel that
+	// downstream consumers gate on via `if c.Settings != ""`. Same fix shape
+	// as ListCollectionsMinimal — see BUG-1482.
+	var settings sql.NullString
 
 	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
@@ -72,7 +79,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		WHERE id = ? AND deleted_at IS NULL
 	`), id).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+		&c.Schema, &settings, &c.SortOrder, &isDefault, &c.IsSystem,
 		&createdAt, &updatedAt, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -82,6 +89,9 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
 
+	if settings.Valid {
+		c.Settings = settings.String
+	}
 	c.IsDefault = isDefault
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
@@ -165,12 +175,20 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		var c models.Collection
 		var createdAt, updatedAt string
 		var isDefault bool
+		// Nullable JSONB on Postgres; scan via sql.NullString and materialize
+		// NULL as "" so the downstream `if c.Settings != ""` guard below
+		// (and in handlers_dashboard.buildDoneContextMap) keeps working.
+		// Same fix shape as ListCollectionsMinimal — see BUG-1482.
+		var settings sql.NullString
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-			&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+			&c.Schema, &settings, &c.SortOrder, &isDefault, &c.IsSystem,
 			&createdAt, &updatedAt, &c.ItemCount,
 		); err != nil {
 			return nil, err
+		}
+		if settings.Valid {
+			c.Settings = settings.String
 		}
 		c.IsDefault = isDefault
 		c.CreatedAt = parseTime(createdAt)

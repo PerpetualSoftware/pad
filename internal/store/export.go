@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -41,8 +42,18 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		// `collections.settings` is nullable on both drivers; a NULL row
+		// would error out a direct scan into Go string on Postgres
+		// ("converting NULL to string is unsupported"). Materialize NULL
+		// as "" to keep the export's existing sentinel — same fix shape
+		// as ListCollectionsMinimal / GetCollection / ListCollections.
+		// See BUG-1482.
+		var settings sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
+		}
+		if settings.Valid {
+			c.Settings = settings.String
 		}
 		c.IsDefault = isDefault
 		c.IsSystem = isSystem

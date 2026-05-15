@@ -100,6 +100,96 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 	}
 }
 
+// TestGetCollectionHandlesNullSettings is the sibling regression guard for
+// BUG-1482 round-2: `GetCollection` previously scanned `settings` directly
+// into a Go string, which fails on Postgres for any row holding NULL with
+// "Scan error: converting NULL to string is unsupported". Latent today
+// because `CreateCollection` coerces empty→`{}`, but the column is nullable
+// on both drivers and legacy/manually-poisoned rows would 500 every handler
+// that goes through GetCollection. Sentinel contract: NULL → "".
+func TestGetCollectionHandlesNullSettings(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "GetCollection NULL Settings")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE id = ?`), created.ID); err != nil {
+		t.Fatalf("force NULL settings: %v", err)
+	}
+
+	got, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection error (BUG-1482 regression): %v", err)
+	}
+	if got == nil {
+		t.Fatalf("GetCollection returned nil for existing collection %q", created.ID)
+	}
+	if got.Settings != "" {
+		t.Errorf("expected NULL settings to surface as empty string sentinel, got %q", got.Settings)
+	}
+}
+
+// TestListCollectionsHandlesNullSettings guards the non-Minimal sibling.
+// `ListCollections` powers the dashboard + sidebar; a single NULL-settings
+// row would crash the entire list scan on Postgres.
+func TestListCollectionsHandlesNullSettings(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "ListCollections NULL Settings")
+
+	if err := s.SeedDefaultCollections(ws.ID); err != nil {
+		t.Fatalf("SeedDefaultCollections error: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
+		t.Fatalf("force NULL settings: %v", err)
+	}
+
+	colls, err := s.ListCollections(ws.ID)
+	if err != nil {
+		t.Fatalf("ListCollections error (BUG-1482 regression): %v", err)
+	}
+	if len(colls) == 0 {
+		t.Fatalf("ListCollections returned 0 collections; expected the seeded defaults")
+	}
+	for _, c := range colls {
+		if c.Settings != "" {
+			t.Errorf("collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
+		}
+	}
+}
+
+// TestExportWorkspaceHandlesNullSettings guards the third sibling reader.
+// A NULL-settings row would crash the export pipeline on Postgres before
+// any data was emitted. Sentinel contract: NULL → "".
+func TestExportWorkspaceHandlesNullSettings(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "ExportWorkspace NULL Settings")
+
+	if err := s.SeedDefaultCollections(ws.ID); err != nil {
+		t.Fatalf("SeedDefaultCollections error: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
+		t.Fatalf("force NULL settings: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace error (BUG-1482 regression): %v", err)
+	}
+	if len(exp.Collections) == 0 {
+		t.Fatalf("ExportWorkspace returned 0 collections; expected the seeded defaults")
+	}
+	for _, c := range exp.Collections {
+		if c.Settings != "" {
+			t.Errorf("exported collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
+		}
+	}
+}
+
 // TestSeedFromBlankTemplate verifies that bootstrapping a workspace from the
 // blank template (IDEA-1479) produces exactly two collections (Conventions,
 // Playbooks) and zero items. Drift here means the template silently grew
