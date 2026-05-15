@@ -190,6 +190,69 @@ func TestMergeParameters_EmptyInputs(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAPI_ArrayOfRefTypeCell(t *testing.T) {
+	// Schema properties that are arrays of component refs must render
+	// as a single balanced backtick-wrapped type cell. The previous
+	// schemaTypeBrief→codeOrBlank pipeline could double-wrap and emit
+	// "`array of `Pet``" which breaks the table.
+	spec := []byte(`openapi: 3.0.0
+info:
+  title: Array Of Ref Test
+  version: "1.0"
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        name:
+          type: string
+    Litter:
+      type: object
+      properties:
+        pets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pet'
+`)
+	res, err := ConvertOpenAPI(spec, "")
+	if err != nil {
+		t.Fatalf("ConvertOpenAPI: %v", err)
+	}
+	want := "| `pets` | `array of Pet` |"
+	if !strings.Contains(res.Markdown, want) {
+		t.Errorf("missing %q in:\n%s", want, res.Markdown)
+	}
+	// Negative: no double-backticked nor stray-backticked variants.
+	bad := []string{
+		"`array of `Pet``",
+		"``array",
+		"Pet``",
+	}
+	for _, b := range bad {
+		if strings.Contains(res.Markdown, b) {
+			t.Errorf("found malformed type cell substring %q in:\n%s", b, res.Markdown)
+		}
+	}
+}
+
+func TestCodeOrBlank(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"", ""},
+		{"string", "`string`"},
+		{"  string  ", "`string`"},
+		{"array of Pet", "`array of Pet`"},
+		{"`already`", "`already`"},
+		{"with`backtick`inside", "`withbacktickinside`"},
+		{"`", ""},
+	}
+	for _, tc := range tests {
+		if got := codeOrBlank(tc.in); got != tc.want {
+			t.Errorf("codeOrBlank(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestSchemaTypeBrief_Nil(t *testing.T) {
 	if got := schemaTypeBrief(nil); got != "" {
 		t.Errorf("schemaTypeBrief(nil) = %q, want empty", got)

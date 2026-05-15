@@ -422,23 +422,31 @@ func renderSchemaProperties(b *strings.Builder, s *base.Schema) {
 	b.WriteString("\n")
 }
 
-// codeOrBlank wraps t in backticks unless t is empty. schemaTypeBrief
-// already wraps `$ref` values in backticks so we strip any existing
-// pair to avoid “ “Pet“ “ double-wrap.
+// codeOrBlank wraps t in backticks unless t is empty. Any stray
+// backtick characters inside t are stripped first so the resulting
+// cell always carries exactly one balanced pair — schemaTypeBrief is
+// documented to return plain text, but a hand-typed call site that
+// accidentally embeds backticks would otherwise break the markdown.
 func codeOrBlank(t string) string {
 	if t == "" {
 		return ""
 	}
-	t = strings.TrimSpace(t)
-	if strings.HasPrefix(t, "`") && strings.HasSuffix(t, "`") {
-		return t
+	t = strings.ReplaceAll(strings.TrimSpace(t), "`", "")
+	if t == "" {
+		return ""
 	}
 	return "`" + escapeTableCell(t) + "`"
 }
 
 // schemaTypeBrief returns a one-line type description for a schema
 // proxy: the declared type, format if present, item type for arrays,
-// or "ref" for unresolved references.
+// or the ref name for unresolved references.
+//
+// The return value never contains backticks. The caller is responsible
+// for wrapping the result in a single backtick pair (see codeOrBlank).
+// Returning a partially-backticked string from here would compose
+// incorrectly with codeOrBlank — "array of `Pet`" gets wrapped into
+// "`array of `Pet“" which is broken markdown.
 func schemaTypeBrief(p *base.SchemaProxy) string {
 	if p == nil {
 		return ""
@@ -448,9 +456,9 @@ func schemaTypeBrief(p *base.SchemaProxy) string {
 		// Trim the canonical `#/components/schemas/` prefix to keep
 		// the type cell readable.
 		if i := strings.LastIndex(ref, "/"); i >= 0 {
-			return fmt.Sprintf("`%s`", ref[i+1:])
+			return ref[i+1:]
 		}
-		return fmt.Sprintf("`%s`", ref)
+		return ref
 	}
 	s := p.Schema()
 	if s == nil {
