@@ -425,7 +425,12 @@
 	function getFilteredSlash() {
 		if (!slashQuery) return SLASH_ITEMS;
 		const q = slashQuery.toLowerCase();
-		return SLASH_ITEMS.filter(i => i.label.toLowerCase().includes(q) || i.description.toLowerCase().includes(q));
+		return SLASH_ITEMS.filter((i) => {
+			const hay = [i.label, i.description, i.id, ...(i.keywords ?? [])]
+				.join(' ')
+				.toLowerCase();
+			return hay.includes(q);
+		});
 	}
 
 	function execSlash(id: string) {
