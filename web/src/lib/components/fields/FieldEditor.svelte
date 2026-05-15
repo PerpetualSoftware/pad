@@ -217,12 +217,17 @@ handlers — onchange is never called.
 	}
 
 	function handleNumberStep(delta: number) {
-		// ±1 buttons are a discrete action — flush any in-flight typed
-		// value first so it doesn't get clobbered, then fire the step
-		// immediately so the user sees the increment without waiting
-		// on the typing-idle window.
-		flushPendingSave();
-		onchange((Number(value) || 0) + delta);
+		// ±1 buttons are a discrete action that supersedes any in-flight
+		// typed value. Compute the new value from the pending typed value
+		// (if any) BEFORE clearing the timer — `value` is the parent
+		// prop and would lag a freshly-typed pending number until the
+		// flush round-trips back. Per Codex review round 1 [P1].
+		const base = hasPending ? Number(pendingValue) || 0 : Number(value) || 0;
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		pendingValue = undefined;
+		hasPending = false;
+		onchange(base + delta);
 	}
 
 	function handleDateInput(e: Event) {

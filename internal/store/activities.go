@@ -147,6 +147,16 @@ func collapseChanges(s string) string {
 	type entry struct {
 		field, from, to string
 		raw             string // preserved verbatim for unparseable entries
+		// mergedCount tracks how many input segments were collapsed into
+		// this entry. Used by the net-no-op drop step to distinguish a
+		// truly canceled run ("typed tip then backspaced", merged=N>1)
+		// from a single structured-field entry that diffFields
+		// intentionally emits with equal display strings
+		// ("implementation_notes: (1 note) → (1 note)" — a same-cardinality
+		// replacement; see TestDiffFieldsSameCardinalityArrayChangeStillReported).
+		// Only collapsed runs (mergedCount > 1) are dropped. Per Codex
+		// review round 1 [P2].
+		mergedCount int
 	}
 	parts := strings.Split(s, "; ")
 	entries := make([]entry, 0, len(parts))
@@ -173,7 +183,7 @@ func collapseChanges(s string) string {
 			// the segment is TrimSpace'd. Catch it via suffix match.
 			if strings.HasSuffix(valuePart, " →") {
 				from := strings.TrimSpace(valuePart[:len(valuePart)-len(" →")])
-				entries = append(entries, entry{field: field, from: from, to: ""})
+				entries = append(entries, entry{field: field, from: from, to: "", mergedCount: 1})
 				continue
 			}
 			entries = append(entries, entry{raw: p})
@@ -181,7 +191,7 @@ func collapseChanges(s string) string {
 		}
 		from := strings.TrimSpace(valuePart[:arrowIdx])
 		to := strings.TrimSpace(valuePart[arrowIdx+len(arrow):])
-		entries = append(entries, entry{field: field, from: from, to: to})
+		entries = append(entries, entry{field: field, from: from, to: to, mergedCount: 1})
 	}
 
 	// Walk consecutively, extending runs of the same field.
@@ -195,16 +205,21 @@ func collapseChanges(s string) string {
 			prev := &collapsed[len(collapsed)-1]
 			if prev.raw == "" && prev.field == e.field {
 				prev.to = e.to
+				prev.mergedCount += e.mergedCount
 				continue
 			}
 		}
 		collapsed = append(collapsed, e)
 	}
 
-	// Drop net no-ops (typed "tip" then backspaced — first == last).
+	// Drop net no-ops only when they result from collapsing a run
+	// (mergedCount > 1). A single entry where from == to is intentional
+	// from diffFields — it's how same-cardinality structured-field
+	// replacements like `(1 note) → (1 note)` are signalled. Dropping
+	// those would silently hide real changes from the activity feed.
 	kept := collapsed[:0]
 	for _, e := range collapsed {
-		if e.raw == "" && e.from == e.to {
+		if e.raw == "" && e.mergedCount > 1 && e.from == e.to {
 			continue
 		}
 		kept = append(kept, e)

@@ -438,6 +438,27 @@ func TestCollapseChanges(t *testing.T) {
 			in:   "component: ui/editor → ",
 			want: "component: ui/editor → ",
 		},
+		{
+			name: "single structured-field same-display entry preserved",
+			// Regression for Codex round 1 [P2]: diffFields emits
+			// `implementation_notes: (1 note) → (1 note)` to signal that
+			// a same-cardinality replacement occurred (e.g. one note
+			// swapped for a different note). The display strings collapse
+			// to identical labels because formatChangeValue intentionally
+			// renders array-valued fields by count, not content — but the
+			// underlying data did change. collapseChanges must NOT drop
+			// this entry; only multi-segment runs that collapse to a
+			// from==to result are true no-ops.
+			in:   "implementation_notes: (1 note) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "structured-field no-op preserved even when interleaved with a typed run",
+			// Defense in depth: a structured-field same-display entry
+			// must survive when surrounded by a typed-field collapse.
+			in:   "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
+			want: "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
+		},
 	}
 
 	for _, tt := range tests {
