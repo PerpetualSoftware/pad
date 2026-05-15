@@ -129,7 +129,7 @@ func TestPrintGroupedTemplatesIncludesEveryVisibleTemplate(t *testing.T) {
 	var out bytes.Buffer
 	printGroupedTemplates(&out)
 	rendered := out.String()
-	for _, name := range []string{"startup", "scrum", "product", "hiring", "interviewing"} {
+	for _, name := range []string{"startup", "scrum", "product", "hiring", "interviewing", "blank"} {
 		if !strings.Contains(rendered, name) {
 			t.Errorf("grouped template output missing %q:\n%s", name, rendered)
 		}
@@ -139,10 +139,9 @@ func TestPrintGroupedTemplatesIncludesEveryVisibleTemplate(t *testing.T) {
 		t.Errorf("grouped template output leaked hidden template 'demo':\n%s", rendered)
 	}
 	// Category headers should render.
-	if !strings.Contains(rendered, "Software") {
-		t.Errorf("grouped template output missing 'Software' category header")
-	}
-	if !strings.Contains(rendered, "People") {
-		t.Errorf("grouped template output missing 'People' category header")
+	for _, cat := range []string{"Software", "People", "Custom"} {
+		if !strings.Contains(rendered, cat) {
+			t.Errorf("grouped template output missing %q category header", cat)
+		}
 	}
 }
