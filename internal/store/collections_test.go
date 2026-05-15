@@ -8,45 +8,65 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TestListCollectionsMinimalHandlesNullSettings is the regression guard for
-// BUG-1482: ListCollectionsMinimal previously coalesced settings against an
-// empty SQL string literal, which fails at planner time on Postgres because
-// collections.settings is JSONB and an empty string is not valid JSON
-// (SQLSTATE 22P02). The query failed regardless of row contents. SQLite's
-// loose typing hid the issue.
-//
-// This test exercises both drivers and explicitly stores a NULL `settings`
-// to cover the column-nullability branch — neither the SQLite migration
-// (`settings TEXT DEFAULT '{}'`) nor the Postgres one (`settings JSONB
-// DEFAULT '{}'`) marks the column NOT NULL, so production data can legally
-// hold NULL. The contract is that NULL surfaces as `""` so existing
-// `if c.Settings != ""` guards in downstream consumers continue to work.
-func TestListCollectionsMinimalHandlesNullSettings(t *testing.T) {
+// IDEA-1484: the BUG-1482 NULL-settings regression tests
+// (TestListCollectionsMinimalHandlesNullSettings,
+// TestGetCollectionHandlesNullSettings,
+// TestListCollectionsHandlesNullSettings,
+// TestExportWorkspaceHandlesNullSettings) were removed when migration
+// 055 / pg 034 made collections.settings NOT NULL DEFAULT '{}'. With the
+// constraint in place, the `UPDATE collections SET settings = NULL` setup
+// those tests relied on is now a hard write error, and the scenario they
+// guarded (production data legally holding NULL) is no longer reachable.
+// The defensive `sql.NullString` scans in collections.go / export.go
+// remain in place and will be reverted in a separate follow-up PR.
+
+// TestCollectionsSettingsNotNullEnforced is the IDEA-1484 outcome guard:
+// after migration 055 / pg 034, attempting to write a literal SQL NULL
+// into collections.settings must fail at the driver level. The error
+// shape differs across SQLite ("NOT NULL constraint failed:
+// collections.settings") and Postgres ("null value in column ... violates
+// not-null constraint", SQLSTATE 23502), so we only assert that an error
+// surfaces — not its content.
+func TestCollectionsSettingsNotNullEnforced(t *testing.T) {
 	s := testStore(t)
-	ws := createTestWorkspace(t, s, "ListCollectionsMinimal NULL Settings")
+	ws := createTestWorkspace(t, s, "NOT NULL Enforcement")
 
-	if err := s.SeedDefaultCollections(ws.ID); err != nil {
-		t.Fatalf("SeedDefaultCollections error: %v", err)
+	_, err := s.db.Exec(s.q(`
+		INSERT INTO collections (id, workspace_id, name, slug, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, NULL, ?, ?)
+	`), "test-col-not-null", ws.ID, "Things", "things-not-null", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+	if err == nil {
+		t.Fatalf("expected NOT NULL constraint violation when inserting NULL settings, got nil error")
+	}
+}
+
+// TestCollectionsSettingsDefaultsToEmptyObject is the companion guard:
+// when an INSERT omits the settings column entirely, the column DEFAULT
+// must materialize as the empty JSON object `{}`. SQLite stores it as
+// TEXT and Postgres stores it as JSONB (which normalizes to `{}` on
+// readback); both surface through GetCollection's defensive scan as the
+// Go string `{}`.
+func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Settings Default")
+
+	const id = "test-col-default-settings"
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO collections (id, workspace_id, name, slug, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`), id, ws.ID, "Things", "things-default", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("INSERT omitting settings failed: %v", err)
 	}
 
-	// Force one collection's settings to NULL via direct SQL to simulate
-	// legacy / partially-initialized rows. CreateCollection's normal path
-	// coerces empty settings to "{}", so we have to bypass it.
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
-		t.Fatalf("force NULL settings: %v", err)
-	}
-
-	colls, err := s.ListCollectionsMinimal(ws.ID)
+	got, err := s.GetCollection(id)
 	if err != nil {
-		t.Fatalf("ListCollectionsMinimal error (BUG-1482 regression): %v", err)
+		t.Fatalf("GetCollection error: %v", err)
 	}
-	if len(colls) == 0 {
-		t.Fatalf("ListCollectionsMinimal returned 0 collections; expected the seeded defaults")
+	if got == nil {
+		t.Fatalf("GetCollection returned nil for %q", id)
 	}
-	for _, c := range colls {
-		if c.Settings != "" {
-			t.Errorf("collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
-		}
+	if got.Settings != "{}" {
+		t.Errorf("expected default settings to materialize as %q, got %q", "{}", got.Settings)
 	}
 }
 
@@ -101,120 +121,36 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 	}
 }
 
-// TestGetCollectionHandlesNullSettings is the sibling regression guard for
-// BUG-1482 round-2: `GetCollection` previously scanned `settings` directly
-// into a Go string, which fails on Postgres for any row holding NULL with
-// "Scan error: converting NULL to string is unsupported". Latent today
-// because `CreateCollection` coerces empty→`{}`, but the column is nullable
-// on both drivers and legacy/manually-poisoned rows would 500 every handler
-// that goes through GetCollection. Sentinel contract: NULL → "".
-func TestGetCollectionHandlesNullSettings(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "GetCollection NULL Settings")
-
-	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
-		Name: "Things",
-		Slug: "things",
-	})
-	if err != nil {
-		t.Fatalf("CreateCollection error: %v", err)
-	}
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE id = ?`), created.ID); err != nil {
-		t.Fatalf("force NULL settings: %v", err)
-	}
-
-	got, err := s.GetCollection(created.ID)
-	if err != nil {
-		t.Fatalf("GetCollection error (BUG-1482 regression): %v", err)
-	}
-	if got == nil {
-		t.Fatalf("GetCollection returned nil for existing collection %q", created.ID)
-	}
-	if got.Settings != "" {
-		t.Errorf("expected NULL settings to surface as empty string sentinel, got %q", got.Settings)
-	}
-}
-
-// TestListCollectionsHandlesNullSettings guards the non-Minimal sibling.
-// `ListCollections` powers the dashboard + sidebar; a single NULL-settings
-// row would crash the entire list scan on Postgres.
-func TestListCollectionsHandlesNullSettings(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "ListCollections NULL Settings")
-
-	if err := s.SeedDefaultCollections(ws.ID); err != nil {
-		t.Fatalf("SeedDefaultCollections error: %v", err)
-	}
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
-		t.Fatalf("force NULL settings: %v", err)
-	}
-
-	colls, err := s.ListCollections(ws.ID)
-	if err != nil {
-		t.Fatalf("ListCollections error (BUG-1482 regression): %v", err)
-	}
-	if len(colls) == 0 {
-		t.Fatalf("ListCollections returned 0 collections; expected the seeded defaults")
-	}
-	for _, c := range colls {
-		if c.Settings != "" {
-			t.Errorf("collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
-		}
-	}
-}
-
-// TestExportWorkspaceHandlesNullSettings guards the third sibling reader.
-// A NULL-settings row would crash the export pipeline on Postgres before
-// any data was emitted. Sentinel contract: NULL → "".
-func TestExportWorkspaceHandlesNullSettings(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "ExportWorkspace NULL Settings")
-
-	if err := s.SeedDefaultCollections(ws.ID); err != nil {
-		t.Fatalf("SeedDefaultCollections error: %v", err)
-	}
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
-		t.Fatalf("force NULL settings: %v", err)
-	}
-
-	exp, err := s.ExportWorkspace(ws.Slug)
-	if err != nil {
-		t.Fatalf("ExportWorkspace error (BUG-1482 regression): %v", err)
-	}
-	if len(exp.Collections) == 0 {
-		t.Fatalf("ExportWorkspace returned 0 collections; expected the seeded defaults")
-	}
-	for _, c := range exp.Collections {
-		if c.Settings != "" {
-			t.Errorf("exported collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
-		}
-	}
-}
-
-// TestExportImportRoundTripWithNullSettings guards the paired contract created
-// by the BUG-1482 round-2 fix: now that ExportWorkspace successfully reads
-// NULL-settings rows (surfacing them as `""`), ImportWorkspace must be able
-// to re-insert those bundles. Without the import-side `""→"{}"` coercion at
-// export.go:~210, this round-trip would fail at INSERT time on Postgres
-// because `""` is not valid JSONB. SQLite is type-loose and accepts `""`,
-// but downstream consumers (gated on `c.Settings != ""`) would interpret an
-// empty-string-settings collection as "no settings" — silently different
-// from the original NULL row's semantic intent.
-func TestExportImportRoundTripWithNullSettings(t *testing.T) {
+// TestExportImportRoundTripWithEmptyStringSettings guards the paired
+// import-side `""→"{}"` coercion at export.go:~210. After IDEA-1484's
+// migration, the source column can no longer hold NULL, but exports of
+// legacy bundles or pre-migration backups may still carry an empty-string
+// settings value (the BUG-1482 sentinel for the previously-nullable
+// column). ImportWorkspace must coerce that back to a valid JSON object
+// before INSERT, otherwise the import would fail on Postgres because `""`
+// is not valid JSONB and downstream consumers gated on
+// `c.Settings != ""` would misinterpret it.
+func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
 	s := testStore(t)
 	owner := createTestUser(t, s, "round-trip-owner@test.com", "Round Trip Owner", "password123")
-	src := createTestWorkspace(t, s, "Export-Import Round Trip NULL Settings")
+	src := createTestWorkspace(t, s, "Export-Import Round Trip Empty Settings")
 
 	if err := s.SeedDefaultCollections(src.ID); err != nil {
 		t.Fatalf("SeedDefaultCollections error: %v", err)
-	}
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), src.ID); err != nil {
-		t.Fatalf("force NULL settings: %v", err)
 	}
 
 	exp, err := s.ExportWorkspace(src.Slug)
 	if err != nil {
 		t.Fatalf("ExportWorkspace error: %v", err)
+	}
+
+	// Simulate a legacy export bundle whose collections carry the
+	// empty-string sentinel (originally surfaced by BUG-1482's defensive
+	// `sql.NullString` scan for NULL-settings rows). The IDEA-1484
+	// migration eliminates NULL at the column level, but ImportWorkspace
+	// must still tolerate `""` from older bundles in flight.
+	for i := range exp.Collections {
+		exp.Collections[i].Settings = ""
 	}
 
 	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID)
