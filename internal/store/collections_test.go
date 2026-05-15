@@ -17,8 +17,11 @@ import (
 // constraint in place, the `UPDATE collections SET settings = NULL` setup
 // those tests relied on is now a hard write error, and the scenario they
 // guarded (production data legally holding NULL) is no longer reachable.
-// The defensive `sql.NullString` scans in collections.go / export.go
-// remain in place and will be reverted in a separate follow-up PR.
+// The defensive `sql.NullString` scans in collections.go / export.go and
+// the paired import-side `""→"{}"` coercion (along with
+// TestExportImportRoundTripWithEmptyStringSettings) were reverted in the
+// IDEA-1484 follow-up now that the schema constraint is the load-bearing
+// invariant.
 
 // TestCollectionsSettingsNotNullEnforced is the IDEA-1484 outcome guard:
 // after migration 055 / pg 034, attempting to write a literal SQL NULL
@@ -118,67 +121,6 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("created collection %q not returned by ListCollectionsMinimal", created.ID)
-	}
-}
-
-// TestExportImportRoundTripWithEmptyStringSettings guards the paired
-// import-side `""→"{}"` coercion at export.go:~210. After IDEA-1484's
-// migration, the source column can no longer hold NULL, but exports of
-// legacy bundles or pre-migration backups may still carry an empty-string
-// settings value (the BUG-1482 sentinel for the previously-nullable
-// column). ImportWorkspace must coerce that back to a valid JSON object
-// before INSERT, otherwise the import would fail on Postgres because `""`
-// is not valid JSONB and downstream consumers gated on
-// `c.Settings != ""` would misinterpret it.
-func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
-	s := testStore(t)
-	owner := createTestUser(t, s, "round-trip-owner@test.com", "Round Trip Owner", "password123")
-	src := createTestWorkspace(t, s, "Export-Import Round Trip Empty Settings")
-
-	if err := s.SeedDefaultCollections(src.ID); err != nil {
-		t.Fatalf("SeedDefaultCollections error: %v", err)
-	}
-
-	exp, err := s.ExportWorkspace(src.Slug)
-	if err != nil {
-		t.Fatalf("ExportWorkspace error: %v", err)
-	}
-
-	// Simulate a legacy export bundle whose collections carry the
-	// empty-string sentinel (originally surfaced by BUG-1482's defensive
-	// `sql.NullString` scan for NULL-settings rows). The IDEA-1484
-	// migration eliminates NULL at the column level, but ImportWorkspace
-	// must still tolerate `""` from older bundles in flight.
-	for i := range exp.Collections {
-		exp.Collections[i].Settings = ""
-	}
-
-	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID)
-	if err != nil {
-		t.Fatalf("ImportWorkspace error (BUG-1482 import-side regression): %v", err)
-	}
-	if imported == nil {
-		t.Fatalf("ImportWorkspace returned nil workspace")
-	}
-
-	// Re-read the imported collections and assert they hold valid JSON
-	// (the import-side coercion materialized `""` back to `"{}"`).
-	colls, err := s.ListCollections(imported.ID)
-	if err != nil {
-		t.Fatalf("ListCollections on imported workspace: %v", err)
-	}
-	if len(colls) == 0 {
-		t.Fatalf("imported workspace has 0 collections; expected the round-tripped defaults")
-	}
-	for _, c := range colls {
-		if c.Settings == "" {
-			t.Errorf("imported collection %q: settings should have been coerced from \"\" to a valid JSON object, got empty string", c.ID)
-			continue
-		}
-		var got map[string]any
-		if err := json.Unmarshal([]byte(c.Settings), &got); err != nil {
-			t.Errorf("imported collection %q: settings is not valid JSON: %v (raw=%q)", c.ID, err, c.Settings)
-		}
 	}
 }
 

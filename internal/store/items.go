@@ -2160,8 +2160,7 @@ func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug str
 func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 	var filters []collectionDoneFilter
 	for rows.Next() {
-		var id, schemaJSON string
-		var settingsJSON sql.NullString
+		var id, schemaJSON, settingsJSON string
 		if err := rows.Scan(&id, &schemaJSON, &settingsJSON); err != nil {
 			continue
 		}
@@ -2179,8 +2178,8 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 			continue
 		}
 		var settings models.CollectionSettings
-		if settingsJSON.Valid && settingsJSON.String != "" {
-			_ = json.Unmarshal([]byte(settingsJSON.String), &settings)
+		if settingsJSON != "" {
+			_ = json.Unmarshal([]byte(settingsJSON), &settings)
 		}
 		key, values := models.TerminalValuesForDoneField(schema, settings)
 		filters = append(filters, collectionDoneFilter{

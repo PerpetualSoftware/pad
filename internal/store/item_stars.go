@@ -182,8 +182,7 @@ func (s *Store) buildCollectionDoneContextMap(workspaceID string) (map[string]co
 
 	m := make(map[string]collectionDoneContext)
 	for rows.Next() {
-		var id, rawSchema string
-		var rawSettings sql.NullString
+		var id, rawSchema, rawSettings string
 		if err := rows.Scan(&id, &rawSchema, &rawSettings); err != nil {
 			return nil, err
 		}
@@ -194,8 +193,8 @@ func (s *Store) buildCollectionDoneContextMap(workspaceID string) (map[string]co
 			// rather than silently treating the item as non-terminal.
 			ctx.schema = models.CollectionSchema{}
 		}
-		if rawSettings.Valid && rawSettings.String != "" {
-			_ = json.Unmarshal([]byte(rawSettings.String), &ctx.settings)
+		if rawSettings != "" {
+			_ = json.Unmarshal([]byte(rawSettings), &ctx.settings)
 		}
 		m[id] = ctx
 	}

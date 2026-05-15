@@ -65,13 +65,6 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	var createdAt, updatedAt string
 	var deletedAt *string
 	var isDefault bool
-	// `collections.settings` is nullable on both drivers (TEXT DEFAULT '{}' on
-	// SQLite, JSONB DEFAULT '{}' on Postgres). A NULL row would fail to scan
-	// directly into a Go string on Postgres with "converting NULL to string
-	// is unsupported". Materialize NULL as "" to preserve the sentinel that
-	// downstream consumers gate on via `if c.Settings != ""`. Same fix shape
-	// as ListCollectionsMinimal — see BUG-1482.
-	var settings sql.NullString
 
 	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
@@ -79,7 +72,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		WHERE id = ? AND deleted_at IS NULL
 	`), id).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &settings, &c.SortOrder, &isDefault, &c.IsSystem,
+		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
 		&createdAt, &updatedAt, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -89,9 +82,6 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
 
-	if settings.Valid {
-		c.Settings = settings.String
-	}
 	c.IsDefault = isDefault
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
@@ -121,16 +111,6 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 // handlers that build a ctxMap for isItemDone). Includes soft-deleted
 // collections so items still attached to them can be evaluated.
 func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection, error) {
-	// Note: we deliberately avoid `COALESCE(settings, '')` here. On Postgres,
-	// `collections.settings` is JSONB and `COALESCE(jsonb_col, '')` forces a
-	// planner-time cast of `''` to JSON which fails with SQLSTATE 22P02
-	// ("invalid input syntax for type json"), regardless of row contents.
-	// SQLite is type-loose and accepts it, which is why the bug was latent
-	// (BUG-1482). Scanning into sql.NullString is dialect-agnostic and
-	// preserves the historical sentinel: a NULL settings value materializes
-	// as `""`, matching the contract that downstream consumers
-	// (buildDoneContextMap, ListCollections's own scan loop) already gate on
-	// via `if c.Settings != ""`.
 	rows, err := s.db.Query(
 		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),
 		workspaceID,
@@ -142,12 +122,8 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 	var result []models.Collection
 	for rows.Next() {
 		var c models.Collection
-		var settings sql.NullString
-		if err := rows.Scan(&c.ID, &c.Schema, &settings); err != nil {
+		if err := rows.Scan(&c.ID, &c.Schema, &c.Settings); err != nil {
 			return nil, fmt.Errorf("scan collection minimal: %w", err)
-		}
-		if settings.Valid {
-			c.Settings = settings.String
 		}
 		result = append(result, c)
 	}
@@ -175,20 +151,12 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		var c models.Collection
 		var createdAt, updatedAt string
 		var isDefault bool
-		// Nullable JSONB on Postgres; scan via sql.NullString and materialize
-		// NULL as "" so the downstream `if c.Settings != ""` guard below
-		// (and in handlers_dashboard.buildDoneContextMap) keeps working.
-		// Same fix shape as ListCollectionsMinimal — see BUG-1482.
-		var settings sql.NullString
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-			&c.Schema, &settings, &c.SortOrder, &isDefault, &c.IsSystem,
+			&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
 			&createdAt, &updatedAt, &c.ItemCount,
 		); err != nil {
 			return nil, err
-		}
-		if settings.Valid {
-			c.Settings = settings.String
 		}
 		c.IsDefault = isDefault
 		c.CreatedAt = parseTime(createdAt)
