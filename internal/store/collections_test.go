@@ -9,10 +9,11 @@ import (
 )
 
 // TestListCollectionsMinimalHandlesNullSettings is the regression guard for
-// BUG-1482: `ListCollectionsMinimal` previously used `COALESCE(settings, '')`
-// which fails at planner time on Postgres because `collections.settings` is
-// JSONB and `''` is not valid JSON (SQLSTATE 22P02). The query failed
-// regardless of row contents. SQLite's loose typing hid the issue.
+// BUG-1482: ListCollectionsMinimal previously coalesced settings against an
+// empty SQL string literal, which fails at planner time on Postgres because
+// collections.settings is JSONB and an empty string is not valid JSON
+// (SQLSTATE 22P02). The query failed regardless of row contents. SQLite's
+// loose typing hid the issue.
 //
 // This test exercises both drivers and explicitly stores a NULL `settings`
 // to cover the column-nullability branch — neither the SQLite migration
