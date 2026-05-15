@@ -148,15 +148,29 @@ func collapseChanges(s string) string {
 		field, from, to string
 		raw             string // preserved verbatim for unparseable entries
 		// mergedCount tracks how many input segments were collapsed into
-		// this entry. Used by the net-no-op drop step to distinguish a
-		// truly canceled run ("typed tip then backspaced", merged=N>1)
-		// from a single structured-field entry that diffFields
-		// intentionally emits with equal display strings
-		// ("implementation_notes: (1 note) → (1 note)" — a same-cardinality
-		// replacement; see TestDiffFieldsSameCardinalityArrayChangeStillReported).
-		// Only collapsed runs (mergedCount > 1) are dropped. Per Codex
-		// review round 1 [P2].
+		// this entry. mergedCount > 1 means at least one merge happened.
 		mergedCount int
+		// hadTransition is true iff any input entry in the run produced a
+		// display-string transition — i.e. either the initial entry had
+		// from != to, or a subsequent entry's `to` differed from the
+		// run's anchored `from`. Used by the drop step to distinguish:
+		//
+		//   - typed-then-backspaced (BUG-1419 / BUG-1466):
+		//     `c: → t; c: t → ti; c: ti → t; c: t → ` — intermediate
+		//     `to` values ("t", "ti") differ from anchor `from`=""
+		//     → hadTransition=true, from==to, dropped as net no-op.
+		//
+		//   - repeated same-display structured-field replacements
+		//     (Codex review round 2 [P2]):
+		//     `implementation_notes: (1 note) → (1 note); implementation_notes: (1 note) → (1 note)`
+		//     — every `to` equals the anchor `from`, so the display
+		//     trace shows no transition → hadTransition=false, preserved.
+		//     The underlying values DID change (diffFields uses
+		//     reflect.DeepEqual; see TestDiffFieldsSameCardinalityArrayChangeStillReported),
+		//     but that information is lost once formatChangeValue
+		//     summarises both as `(1 note)`. We can't recover it from
+		//     the merged string, but we mustn't pretend nothing happened.
+		hadTransition bool
 	}
 	parts := strings.Split(s, "; ")
 	entries := make([]entry, 0, len(parts))
@@ -183,7 +197,10 @@ func collapseChanges(s string) string {
 			// the segment is TrimSpace'd. Catch it via suffix match.
 			if strings.HasSuffix(valuePart, " →") {
 				from := strings.TrimSpace(valuePart[:len(valuePart)-len(" →")])
-				entries = append(entries, entry{field: field, from: from, to: "", mergedCount: 1})
+				entries = append(entries, entry{
+					field: field, from: from, to: "",
+					mergedCount: 1, hadTransition: from != "",
+				})
 				continue
 			}
 			entries = append(entries, entry{raw: p})
@@ -191,7 +208,10 @@ func collapseChanges(s string) string {
 		}
 		from := strings.TrimSpace(valuePart[:arrowIdx])
 		to := strings.TrimSpace(valuePart[arrowIdx+len(arrow):])
-		entries = append(entries, entry{field: field, from: from, to: to, mergedCount: 1})
+		entries = append(entries, entry{
+			field: field, from: from, to: to,
+			mergedCount: 1, hadTransition: from != to,
+		})
 	}
 
 	// Walk consecutively, extending runs of the same field.
@@ -204,6 +224,15 @@ func collapseChanges(s string) string {
 		if len(collapsed) > 0 {
 			prev := &collapsed[len(collapsed)-1]
 			if prev.raw == "" && prev.field == e.field {
+				// Any deviation from the anchored `from` — by the
+				// incoming entry's own from→to swing OR by its `to`
+				// differing from prev.from — counts as a real
+				// transition. If neither differs, the run is a
+				// repeated same-display structured-field update;
+				// preserve those (see hadTransition comment above).
+				if e.hadTransition || e.to != prev.from {
+					prev.hadTransition = true
+				}
 				prev.to = e.to
 				prev.mergedCount += e.mergedCount
 				continue
@@ -212,14 +241,18 @@ func collapseChanges(s string) string {
 		collapsed = append(collapsed, e)
 	}
 
-	// Drop net no-ops only when they result from collapsing a run
-	// (mergedCount > 1). A single entry where from == to is intentional
-	// from diffFields — it's how same-cardinality structured-field
-	// replacements like `(1 note) → (1 note)` are signalled. Dropping
-	// those would silently hide real changes from the activity feed.
+	// Drop only true net no-ops: a collapsed run (mergedCount > 1) whose
+	// from==to AND whose intermediate `to` values transitioned away from
+	// the anchor at some point — i.e. the user typed something and
+	// backspaced back to the original. Single entries are always
+	// preserved (diffFields wouldn't emit them unless reflect.DeepEqual
+	// detected a real change), and runs without hadTransition represent
+	// repeated structured-field updates whose display strings happen to
+	// match — preserve those too. Per Codex review round 1 [P2] +
+	// round 2 [P2].
 	kept := collapsed[:0]
 	for _, e := range collapsed {
-		if e.raw == "" && e.mergedCount > 1 && e.from == e.to {
+		if e.raw == "" && e.mergedCount > 1 && e.from == e.to && e.hadTransition {
 			continue
 		}
 		kept = append(kept, e)

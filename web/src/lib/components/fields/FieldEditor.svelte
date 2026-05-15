@@ -424,13 +424,20 @@ handlers — onchange is never called.
 	</div>
 
 {:else if field.type === 'number'}
-	<!-- Custom number input with +/- buttons -->
+	<!-- Custom number input with +/- buttons.
+	     onmousedown={preventDefault} on the buttons keeps the input
+	     focused across the click — without this, the natural focus
+	     transfer fires the input's onblur (→ flushPendingSave clears
+	     hasPending) BEFORE the button's onclick runs, so
+	     handleNumberStep would read stale `value` from the parent prop.
+	     Per Codex review round 2 [P1]. -->
 	<div class="number-wrapper">
 		<button
 			class="number-btn"
 			type="button"
 			tabindex={-1}
 			aria-label="Decrease"
+			onmousedown={(e) => e.preventDefault()}
 			onclick={() => handleNumberStep(-1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
@@ -454,6 +461,7 @@ handlers — onchange is never called.
 			type="button"
 			tabindex={-1}
 			aria-label="Increase"
+			onmousedown={(e) => e.preventDefault()}
 			onclick={() => handleNumberStep(1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">

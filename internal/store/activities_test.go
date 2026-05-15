@@ -459,6 +459,29 @@ func TestCollapseChanges(t *testing.T) {
 			in:   "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
 			want: "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
 		},
+		{
+			name: "repeated same-display structured-field entries preserved",
+			// Codex review round 2 [P2]: two PATCHes that both swapped a
+			// single note for a different single note. Both render as
+			// `(1 note) → (1 note)` because formatChangeValue summarises
+			// by count, but the underlying notes differ each time.
+			// hadTransition stays false through the merge (every `to`
+			// equals the anchor `from`), so the from==to drop rule
+			// doesn't fire — the entry is preserved as a single
+			// "something happened twice on this field" record.
+			in:   "implementation_notes: (1 note) → (1 note); implementation_notes: (1 note) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "real swing that nets to zero IS still dropped",
+			// Regression cover for the hadTransition rule: a typed
+			// `foo → bar → foo` run still drops as a net no-op
+			// because intermediate `to=bar` differed from anchor
+			// `from=foo`. Without this, hadTransition would never
+			// flag a "true cancellation" outside the empty-start case.
+			in:   "name: foo → bar; name: bar → foo",
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
