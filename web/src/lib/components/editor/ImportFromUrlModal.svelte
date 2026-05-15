@@ -19,12 +19,22 @@
 	let errorMessage = $state('');
 	let result = $state<ImportURLResponse | null>(null);
 
+	// Monotonic request counter. handleFetch() captures the current value
+	// before await and ignores the response if `requestGen` has advanced
+	// past it — happens when the user closes the modal (which bumps the
+	// counter via the open effect on next reopen) OR triggers another
+	// fetch (which bumps it directly). Without this guard, a slow request
+	// can land on a freshly reopened modal and clobber its empty state.
+	let requestGen = 0;
+
 	$effect(() => {
 		if (open) {
 			url = '';
 			isLoading = false;
 			errorMessage = '';
 			result = null;
+			// Invalidate any in-flight request from the previous session.
+			requestGen += 1;
 		}
 	});
 
@@ -55,14 +65,21 @@
 			return;
 		}
 
+		// Bump the generation BEFORE the await and capture our value;
+		// any in-flight earlier fetch is now stale.
+		const myGen = ++requestGen;
 		isLoading = true;
 		try {
 			const resp = await api.importURL(trimmed);
+			if (myGen !== requestGen) return; // superseded — drop response
 			result = resp;
 		} catch (err) {
+			if (myGen !== requestGen) return; // superseded — drop error
 			errorMessage = err instanceof Error ? err.message : 'Failed to fetch URL.';
 		} finally {
-			isLoading = false;
+			if (myGen === requestGen) {
+				isLoading = false;
+			}
 		}
 	}
 
@@ -82,6 +99,9 @@
 	}
 
 	function handleCancel() {
+		// Bump the generation so any in-flight fetch's response is
+		// discarded before the next open() resets state.
+		requestGen += 1;
 		open = false;
 	}
 </script>

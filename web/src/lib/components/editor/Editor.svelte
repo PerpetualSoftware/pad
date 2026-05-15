@@ -336,6 +336,7 @@
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
+	import ImportFromUrlModal from './ImportFromUrlModal.svelte';
 	import {
 		AttachmentImage,
 		type AttachmentVariant,
@@ -413,6 +414,12 @@
 	let slashIdx = $state(0);
 	let slashStartPos = -1;
 
+	// "Insert from URL" modal — opened by the importUrl slash command
+	// (and any future toolbar entry). The modal owns its own working
+	// state; we just track open/closed here so the slash handler can
+	// trigger it. See PLAN-1467 / TASK-1473.
+	let importUrlModalOpen = $state(false);
+
 	// [[ link picker state
 	let linkOpen = $state(false);
 	let linkQuery = $state('');
@@ -464,6 +471,12 @@
 			case 'blockquote': c.toggleBlockquote().run(); break;
 			case 'horizontalRule': c.setHorizontalRule().run(); break;
 			case 'table': c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break;
+			case 'importUrl':
+				// Defocus by completing the slash deletion above, then
+				// pop the modal. The modal's Insert runs insertContent
+				// against the editor reference we hold in this scope.
+				importUrlModalOpen = true;
+				break;
 		}
 		closeSlash();
 	}
@@ -1068,6 +1081,8 @@
 		{/each}
 	</div>
 {/if}
+
+<ImportFromUrlModal bind:open={importUrlModalOpen} {editor} />
 
 <style>
 	.editor-wrapper {
