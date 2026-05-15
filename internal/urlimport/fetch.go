@@ -89,6 +89,17 @@ func NewFetcher() *Fetcher {
 // Fetch performs a GET against rawURL, re-validating every redirect hop
 // and aborting if the response exceeds the size cap. Returns a wrapped
 // error suitable for surfacing to API callers.
+//
+// The SSRF guard runs in two layers:
+//
+//  1. ValidateURL — fast-fail pre-flight on scheme, credentials,
+//     hostname presence, and IP-literal targets. Does NOT do DNS
+//     resolution; see (2).
+//  2. A custom dialer that resolves the hostname once and checks every
+//     returned IP at dial-time. This is the canonical guard against
+//     DNS rebinding: any hostname-lookup happens inside the dialer and
+//     the result is reused as the dial target, so the IP we vetted is
+//     the IP we connect to.
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error) {
 	if !f.AllowLocal {
 		if err := ValidateURL(rawURL); err != nil {
@@ -113,9 +124,14 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error
 		ua = DefaultUserAgent
 	}
 
+	transport := f.Transport
+	if transport == nil {
+		transport = newSafeTransport(f.AllowLocal, timeout)
+	}
+
 	client := &http.Client{
 		Timeout:   timeout,
-		Transport: f.Transport,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("too many redirects (> %d)", maxRedirects)
@@ -175,9 +191,19 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error
 	}, nil
 }
 
-// ValidateURL applies the SSRF guard: only http(s) schemes, no embedded
-// credentials, hostname must resolve to public IPs only. Returns nil
-// when the URL is safe to fetch.
+// ValidateURL is the pre-flight SSRF guard: it rejects non-http(s)
+// schemes, URLs with embedded credentials, missing hostnames, and
+// IP-literal hosts in private/reserved ranges. It deliberately does
+// NOT do DNS resolution — that happens once at dial-time inside the
+// fetcher's transport (see newSafeTransport), where the resolved IP
+// is both checked and reused as the dial target. Doing DNS here would
+// open a TOCTOU window allowing DNS rebinding: a malicious server
+// returns a public IP for the validation lookup and a private IP for
+// the actual fetch.
+//
+// Callers that just want a quick "is this URL syntactically safe?"
+// check (e.g. UI input validation) can call ValidateURL standalone.
+// Callers that fetch must use Fetcher, which adds the dial-time check.
 func ValidateURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -201,22 +227,71 @@ func ValidateURL(rawURL string) error {
 		if isPrivateIP(ip) {
 			return fmt.Errorf("URL targets private or reserved IP %s", ip)
 		}
-		return nil
-	}
-
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("resolve hostname %q: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("hostname %q resolved to no addresses", host)
-	}
-	for _, ip := range ips {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("hostname %q resolves to private/reserved IP %s", host, ip)
-		}
 	}
 	return nil
+}
+
+// newSafeTransport returns an *http.Transport whose DialContext resolves
+// each hostname inside the dialer and validates every returned IP. Only
+// IPs that pass isPrivateIP are dialed, and the connection is made to
+// the resolved IP directly (no second lookup) so the validated IP is
+// the dial target.
+//
+// allowLocal=true (tests only) bypasses the IP check so httptest servers
+// on 127.0.0.1 are reachable.
+func newSafeTransport(allowLocal bool, timeout time.Duration) *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+	resolver := net.DefaultResolver
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("urlimport: split host/port %q: %w", addr, err)
+			}
+
+			// IP literal — already vetted by ValidateURL. Dial directly.
+			if ip := net.ParseIP(host); ip != nil {
+				if !allowLocal && isPrivateIP(ip) {
+					return nil, fmt.Errorf("urlimport: blocked dial to private/reserved IP %s", ip)
+				}
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			// Hostname — resolve once, validate every IP, dial the first
+			// allowed one. This single resolution is the dial target.
+			ips, err := resolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, fmt.Errorf("urlimport: resolve %q: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("urlimport: hostname %q resolved to no addresses", host)
+			}
+			var lastErr error
+			for _, ip := range ips {
+				if !allowLocal && isPrivateIP(ip) {
+					lastErr = fmt.Errorf("urlimport: %q resolves to private/reserved IP %s", host, ip)
+					continue
+				}
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("urlimport: no usable address for %q", host)
+		},
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 // isPrivateIP returns true for any IP we refuse to fetch from. This

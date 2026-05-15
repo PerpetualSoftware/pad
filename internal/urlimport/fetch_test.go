@@ -60,11 +60,11 @@ func TestValidateURL(t *testing.T) {
 		// Boundary: a public IPv4 (1.1.1.1 — Cloudflare DNS, well-known public)
 		{"public ipv4 1.1.1.1", "http://1.1.1.1/foo", false},
 
-		// Hostname resolution — these depend on DNS being available; we
-		// only test parse-level cases here and rely on the IP-literal
-		// tests above for guard correctness. example.com is RFC2606 and
-		// always resolves to a public IP when DNS works; if the test
-		// environment has no DNS the test will skip via t.Skip below.
+		// Hostnames are NOT resolved here (see ValidateURL docstring on
+		// DNS rebinding). example.com passes the pre-flight; the
+		// dial-time guard inside newSafeTransport is what would catch a
+		// hostname that resolves to a private IP.
+		{"public hostname not resolved at validate", "https://example.com/", false},
 	}
 
 	for _, tc := range tests {
@@ -203,6 +203,23 @@ type stubTransport struct {
 
 func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return s.respond(req), nil
+}
+
+func TestFetch_DialerBlocksLoopbackHostname(t *testing.T) {
+	// Initial URL passes ValidateURL because the hostname is syntactic-
+	// only and we no longer do DNS in ValidateURL. The dial-time guard
+	// inside newSafeTransport must block dialing the resolved IP if it's
+	// loopback. Use "localhost" which resolves to 127.0.0.1.
+	f := NewFetcher()
+	f.Timeout = 2 * time.Second
+	// AllowLocal=false (production default)
+	_, err := f.Fetch(context.Background(), "http://localhost:1/")
+	if err == nil {
+		t.Fatal("Fetch: expected dial-time SSRF rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "private") && !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("error = %v, want to mention private/reserved", err)
+	}
 }
 
 func TestFetch_ContextCancel(t *testing.T) {

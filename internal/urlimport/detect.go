@@ -1,7 +1,9 @@
 package urlimport
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 )
 
@@ -92,34 +94,97 @@ func looksLikeJSON(body []byte) bool {
 	return false
 }
 
-// isOpenAPIJSON returns true when the body parses as a JSON object that
+// isOpenAPIJSON returns true when the body is a JSON object that
 // declares a top-level `openapi` (3.x) or `swagger` (2.0) key. Other
 // shapes (arrays, primitives) and parse errors return false.
+//
+// Bodies smaller than the sniff cap are fully unmarshalled — fast and
+// definitive. Larger bodies (real OpenAPI specs routinely exceed 64
+// KiB) are streamed through json.Decoder, scanning only top-level
+// keys; if either `openapi` or `swagger` appears we return true
+// without parsing the full document. Skipping descendant values keeps
+// memory bounded even for huge specs.
 func isOpenAPIJSON(body []byte) bool {
-	head := body
-	const cap = 64 * 1024
-	if len(head) > cap {
-		head = head[:cap]
-	}
-	// Try as object first.
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(head, &top); err == nil {
+	const sniffCap = 64 * 1024
+	if len(body) < sniffCap {
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(body, &top); err != nil {
+			return false
+		}
 		if _, ok := top["openapi"]; ok {
 			return true
 		}
-		if _, ok := top["swagger"]; ok {
-			return true
-		}
+		_, ok := top["swagger"]
+		return ok
+	}
+	return scanTopLevelJSONKey(body, "openapi") || scanTopLevelJSONKey(body, "swagger")
+}
+
+// scanTopLevelJSONKey returns true if `key` appears as a top-level key
+// in the JSON object encoded in body. It uses json.Decoder so it can
+// terminate early once the key is seen and works on streams that are
+// orders of magnitude larger than the sniff cap. Truncated input
+// returns false.
+func scanTopLevelJSONKey(body []byte, key string) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
 		return false
 	}
-	// If parse failed because the body was truncated mid-object (likely
-	// when len(body) == cap), the json error is unhelpful — fall back to
-	// a YAML-style scan since the keys appear near the top of any
-	// well-formed spec.
-	if len(body) >= cap {
-		return isOpenAPIYAML(head)
+	d, ok := tok.(json.Delim)
+	if !ok || d != '{' {
+		return false
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := tok.(string)
+		if !ok {
+			return false
+		}
+		if name == key {
+			return true
+		}
+		if err := skipJSONValue(dec); err != nil {
+			return false
+		}
 	}
 	return false
+}
+
+// skipJSONValue advances dec past one complete JSON value (object,
+// array, or scalar). Used by scanTopLevelJSONKey to land on the next
+// object key without materializing the intervening value.
+func skipJSONValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	d, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return nil // scalar — already consumed.
+	}
+	if d != '{' && d != '[' {
+		return io.ErrUnexpectedEOF
+	}
+	depth := 1
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if dd, ok := tok.(json.Delim); ok {
+			switch dd {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 // isOpenAPIYAML returns true when one of the first ~8 KiB of unindented

@@ -1,6 +1,9 @@
 package urlimport
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDetect(t *testing.T) {
 	tests := []struct {
@@ -145,6 +148,69 @@ func TestDetect(t *testing.T) {
 				t.Fatalf("Detect(%q, %q) = %q, want %q", tc.contentType, tc.body, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDetect_LargeOpenAPIJSON(t *testing.T) {
+	// Real-world OpenAPI specs frequently exceed 64 KiB. The streaming
+	// scanner must find the top-level `openapi` key even when the full
+	// document can't be parsed in memory at sniff time.
+	var b strings.Builder
+	b.WriteString(`{"openapi":"3.0.0","info":{"title":"big","version":"1"},"paths":{`)
+	// Pad with many endpoints so the body is well over 64 KiB.
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		// ~120 bytes per path entry → ~240 KiB total
+		b.WriteString(`"/path/`)
+		b.WriteString(strings.Repeat("a", 10))
+		b.WriteString(`":{"get":{"summary":"`)
+		b.WriteString(strings.Repeat("x", 60))
+		b.WriteString(`","responses":{"200":{"description":"ok"}}}}`)
+	}
+	b.WriteString("}}")
+	body := []byte(b.String())
+	if len(body) < 64*1024 {
+		t.Fatalf("test setup: body is %d bytes, want > 64 KiB", len(body))
+	}
+	if got := Detect("application/json", body); got != TypeOpenAPI {
+		t.Fatalf("Detect = %q, want %q for large OpenAPI JSON (%d bytes)", got, TypeOpenAPI, len(body))
+	}
+}
+
+func TestDetect_LargeOpenAPIJSON_KeyNotFirst(t *testing.T) {
+	// Same large body, but `openapi` is NOT the first top-level key —
+	// proves the streaming scan walks past other keys to find it.
+	var b strings.Builder
+	b.WriteString(`{"info":{"title":"big","version":"1","description":"`)
+	b.WriteString(strings.Repeat("x", 64*1024+10000))
+	b.WriteString(`"},"openapi":"3.0.0","paths":{}}`)
+	body := []byte(b.String())
+	if len(body) < 64*1024 {
+		t.Fatalf("test setup: body is %d bytes, want > 64 KiB", len(body))
+	}
+	if got := Detect("application/json", body); got != TypeOpenAPI {
+		t.Fatalf("Detect = %q, want %q (openapi key after a huge info block)", got, TypeOpenAPI)
+	}
+}
+
+func TestDetect_LargeJSONNotOpenAPI(t *testing.T) {
+	// A huge JSON document that is not an OpenAPI spec must stay generic.
+	var b strings.Builder
+	b.WriteString(`{"name":"big","items":[`)
+	for i := 0; i < 5000; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"id":`)
+		b.WriteString(strings.Repeat("9", 20))
+		b.WriteString(`,"value":"x"}`)
+	}
+	b.WriteString(`]}`)
+	body := []byte(b.String())
+	if got := Detect("application/json", body); got != TypeGeneric {
+		t.Fatalf("Detect = %q, want %q for large non-OpenAPI JSON", got, TypeGeneric)
 	}
 }
 
