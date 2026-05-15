@@ -354,15 +354,55 @@ func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
 // GetUserWorkspaces returns all workspaces a user has access to,
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
+	// BUG-1481: include MAX(items.updated_at) so the workspace's
+	// effective UpdatedAt reflects item activity, not just row mtime.
+	// For members with collection_access='specific', restrict MAX to
+	// items in collections the member can actually see (via
+	// member_collection_access, system collections, collection_grants,
+	// or item_grants) — otherwise the freshness signal leaks activity
+	// for collections the member doesn't have access to. Members with
+	// 'all' (or empty) access see every collection, so the predicate
+	// short-circuits and behaves like an unrestricted MAX. The
+	// visibility rule mirrors VisibleCollectionIDs above.
 	rows, err := s.db.Query(s.q(`
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
-		       wm.sort_order
+		       wm.sort_order,
+		       (
+		           SELECT MAX(i.updated_at) FROM items i
+		           JOIN collections c ON c.id = i.collection_id
+		           WHERE i.workspace_id = w.id
+		             AND c.workspace_id = w.id
+		             AND i.deleted_at IS NULL
+		             AND c.deleted_at IS NULL
+		             AND (
+		                 COALESCE(wm.collection_access, '') IN ('', 'all')
+		                 OR c.is_system = ?
+		                 OR EXISTS (
+		                     SELECT 1 FROM member_collection_access mca
+		                     WHERE mca.workspace_id = w.id
+		                       AND mca.user_id = wm.user_id
+		                       AND mca.collection_id = i.collection_id
+		                 )
+		                 OR EXISTS (
+		                     SELECT 1 FROM collection_grants cg
+		                     WHERE cg.workspace_id = w.id
+		                       AND cg.collection_id = i.collection_id
+		                       AND cg.user_id = wm.user_id
+		                 )
+		                 OR EXISTS (
+		                     SELECT 1 FROM item_grants ig
+		                     WHERE ig.workspace_id = w.id
+		                       AND ig.item_id = i.id
+		                       AND ig.user_id = wm.user_id
+		                 )
+		             )
+		       )
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE wm.user_id = ? AND w.deleted_at IS NULL
 		ORDER BY wm.sort_order ASC, w.name ASC
-	`), userID)
+	`), s.dialect.BoolToInt(true), userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user workspaces: %w", err)
 	}
@@ -373,15 +413,17 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var ws models.Workspace
 		var createdAt, updatedAt string
 		var deletedAt *string
+		var lastItemActivity sql.NullString
 		if err := rows.Scan(
 			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
 			&ws.SortOrder,
+			&lastItemActivity,
 		); err != nil {
 			return nil, fmt.Errorf("scan workspace: %w", err)
 		}
 		ws.CreatedAt = parseTime(createdAt)
-		ws.UpdatedAt = parseTime(updatedAt)
+		ws.UpdatedAt = effectiveWorkspaceUpdatedAt(updatedAt, lastItemActivity)
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		ws.HydrateDerivedFields()
 		result = append(result, ws)
@@ -396,8 +438,36 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		memberIDs[ws.ID] = true
 	}
 
+	// BUG-1481: for guests, the workspace freshness must reflect ONLY
+	// items the guest can actually see — items in collections they have
+	// a collection_grant on, or specific items they have an item_grant
+	// on. Otherwise the workspace's UpdatedAt leaks activity timing for
+	// items behind grants the guest doesn't hold. The visible-items
+	// subquery mirrors the WHERE-clause grant logic below.
 	guestRows, err := s.db.Query(s.q(`
-		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		       (
+		           SELECT MAX(i.updated_at) FROM items i
+		           JOIN collections c ON c.id = i.collection_id
+		           WHERE i.workspace_id = w.id
+		             AND c.workspace_id = w.id
+		             AND i.deleted_at IS NULL
+		             AND c.deleted_at IS NULL
+		             AND (
+		                 EXISTS (
+		                     SELECT 1 FROM collection_grants cg
+		                     WHERE cg.workspace_id = w.id
+		                       AND cg.collection_id = i.collection_id
+		                       AND cg.user_id = ?
+		                 )
+		                 OR EXISTS (
+		                     SELECT 1 FROM item_grants ig
+		                     WHERE ig.workspace_id = w.id
+		                       AND ig.item_id = i.id
+		                       AND ig.user_id = ?
+		                 )
+		             )
+		       )
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.deleted_at IS NULL AND (
@@ -413,7 +483,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 				WHERE ig.workspace_id = w.id AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 			)
 		)
-	`), userID, userID)
+	`), userID, userID, userID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get guest workspaces: %w", err)
 	}
@@ -423,9 +493,11 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var ws models.Workspace
 		var createdAt, updatedAt string
 		var deletedAt *string
+		var lastItemActivity sql.NullString
 		if err := guestRows.Scan(
 			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
 			&createdAt, &updatedAt, &deletedAt,
+			&lastItemActivity,
 		); err != nil {
 			return nil, fmt.Errorf("scan guest workspace: %w", err)
 		}
@@ -434,7 +506,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 			continue
 		}
 		ws.CreatedAt = parseTime(createdAt)
-		ws.UpdatedAt = parseTime(updatedAt)
+		ws.UpdatedAt = effectiveWorkspaceUpdatedAt(updatedAt, lastItemActivity)
 		ws.DeletedAt = parseTimePtr(deletedAt)
 		ws.IsGuest = true
 		ws.HydrateDerivedFields()

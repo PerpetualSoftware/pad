@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -12,8 +13,17 @@ import (
 // pre-auth/fresh-install bootstrap. End-user workspace switchers should
 // call GetUserWorkspaces instead, which scopes to the user's memberships.
 func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
+	// BUG-1481: workspaces.updated_at only moves when the workspace row
+	// itself changes (rename, settings, members) — it does NOT reflect
+	// item activity inside the workspace. We surface the latter via
+	// MAX(items.updated_at) and expose the later of the two as the
+	// workspace's effective UpdatedAt, so `pad workspace list` answers
+	// "where is work happening?" rather than "when was this row last
+	// renamed?". Done in two steps (scalar subquery + Go-side max) to
+	// stay portable across SQLite (no GREATEST) and Postgres.
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at,
+		       (SELECT MAX(i.updated_at) FROM items i WHERE i.workspace_id = w.id AND i.deleted_at IS NULL)
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.deleted_at IS NULL
@@ -28,15 +38,31 @@ func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
 	for rows.Next() {
 		var w models.Workspace
 		var createdAt, updatedAt string
-		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt); err != nil {
+		var lastItemActivity sql.NullString
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt, &lastItemActivity); err != nil {
 			return nil, err
 		}
 		w.CreatedAt = parseTime(createdAt)
-		w.UpdatedAt = parseTime(updatedAt)
+		w.UpdatedAt = effectiveWorkspaceUpdatedAt(updatedAt, lastItemActivity)
 		w.HydrateDerivedFields()
 		workspaces = append(workspaces, w)
 	}
 	return workspaces, rows.Err()
+}
+
+// effectiveWorkspaceUpdatedAt returns the later of the workspace's own
+// updated_at and the most recent item activity inside it. See BUG-1481
+// for why item activity is the meaningful freshness signal.
+func effectiveWorkspaceUpdatedAt(workspaceUpdatedAt string, lastItemActivity sql.NullString) time.Time {
+	wsTS := parseTime(workspaceUpdatedAt)
+	if !lastItemActivity.Valid || lastItemActivity.String == "" {
+		return wsTS
+	}
+	itemTS := parseTime(lastItemActivity.String)
+	if itemTS.After(wsTS) {
+		return itemTS
+	}
+	return wsTS
 }
 
 func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace, error) {
