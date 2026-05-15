@@ -54,8 +54,7 @@ func TestCollectionsSettingsNotNullEnforced(t *testing.T) {
 // when an INSERT omits the settings column entirely, the column DEFAULT
 // must materialize as the empty JSON object `{}`. SQLite stores it as
 // TEXT and Postgres stores it as JSONB (which normalizes to `{}` on
-// readback); both surface through GetCollection's defensive scan as the
-// Go string `{}`.
+// readback); both surface through GetCollection as the Go string `{}`.
 func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Settings Default")
@@ -77,6 +76,43 @@ func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
 	}
 	if got.Settings != "{}" {
 		t.Errorf("expected default settings to materialize as %q, got %q", "{}", got.Settings)
+	}
+}
+
+// TestUpdateCollectionCoercesEmptyStringSettings guards the second
+// boundary normalizer: UpdateCollection writes a `settings=""` PATCH
+// verbatim by default, bypassing the NOT NULL DEFAULT '{}' constraint
+// (which only fires on column-omission, not on explicit values).
+// Postgres would reject `""` at JSONB type-validation; SQLite would
+// silently store invalid JSON. The coercion in UpdateCollection matches
+// the one in ImportWorkspace — both protect the
+// `collections.settings always holds valid JSON` invariant at the API
+// boundary, where the schema constraint alone is not sufficient.
+func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Update Coerce Empty Settings")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:     "Things",
+		Slug:     "things-update-coerce",
+		Settings: `{"done_field":"status","done_values":["closed"]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	empty := ""
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings: &empty,
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection with empty-string settings should coerce, got error: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("UpdateCollection returned nil")
+	}
+	if updated.Settings != "{}" {
+		t.Errorf("expected UpdateCollection to coerce empty-string settings to %q, got %q", "{}", updated.Settings)
 	}
 }
 

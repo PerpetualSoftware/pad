@@ -246,8 +246,18 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		args = append(args, *input.Schema)
 	}
 	if input.Settings != nil {
+		// Normalize the empty-string sentinel to a valid JSON object before
+		// writing. The NOT NULL DEFAULT '{}' constraint (IDEA-1484) only
+		// fires when the UPDATE omits the column; explicit values are
+		// written verbatim. Postgres rejects `""` at JSONB type-validation;
+		// SQLite would silently store invalid JSON. Same boundary
+		// normalization as ImportWorkspace.
+		settings := *input.Settings
+		if settings == "" {
+			settings = "{}"
+		}
 		sets = append(sets, "settings = ?")
-		args = append(args, *input.Settings)
+		args = append(args, settings)
 	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
