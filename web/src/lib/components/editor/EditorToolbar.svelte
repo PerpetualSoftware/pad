@@ -2,8 +2,20 @@
 	import type { Editor } from '@tiptap/core';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
+	import ImportFromUrlModal from './ImportFromUrlModal.svelte';
+	import type { ImportURLResponse } from '$lib/api/client';
 
-	let { editor }: { editor: Editor | null } = $props();
+	type ImportInsertedHandler = (meta: ImportURLResponse) => void;
+
+	let {
+		editor,
+		onImportInserted
+	}: { editor: Editor | null; onImportInserted?: ImportInsertedHandler } = $props();
+
+	// Modal open state for "Insert from URL". Owned by the toolbar so the
+	// button stays self-contained; the parent can subscribe via
+	// onImportInserted to stamp source_url metadata on the item (TASK-1474).
+	let importModalOpen = $state(false);
 
 	function btn(label: string, action: () => void, isActive: boolean = false) {
 		return { label, action, isActive };
@@ -41,6 +53,10 @@
 				editor!.chain().focus().setHtmlBlock({ html: '' }).run();
 				flipHtmlBlockToSource(editor!, insertionPoint, before);
 			}, false),
+			// "Insert from URL" toolbar entry. Opens a modal that calls
+			// POST /api/v1/import/url and splices the resulting markdown
+			// at the cursor when the user confirms. See PLAN-1467.
+			btn('🌐', () => { importModalOpen = true; }, false),
 		]},
 	] : []);
 </script>
@@ -73,6 +89,8 @@
 			{editorStore.mode === 'raw' ? 'Rich' : 'Raw'}
 		</button>
 	</div>
+
+	<ImportFromUrlModal bind:open={importModalOpen} {editor} onInserted={onImportInserted} />
 {/if}
 
 <style>
