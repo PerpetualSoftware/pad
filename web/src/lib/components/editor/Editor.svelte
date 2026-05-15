@@ -337,6 +337,7 @@
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
 	import ImportFromUrlModal from './ImportFromUrlModal.svelte';
+	import type { ImportURLResponse } from '$lib/api/client';
 	import {
 		AttachmentImage,
 		type AttachmentVariant,
@@ -353,6 +354,7 @@
 		collabUser,
 		onUpdate,
 		onEditor,
+		onImportInserted,
 	}: {
 		content?: string;
 		editable?: boolean;
@@ -394,6 +396,15 @@
 		collabUser?: { name: string; color: string };
 		onUpdate?: (markdown: string) => void;
 		onEditor?: (editor: Editor) => void;
+		/**
+		 * Fired after the Insert-from-URL modal splices content into
+		 * the editor. The host page uses this to stamp source_url +
+		 * imported_at into the item's fields when the item has no
+		 * source_url yet (TASK-1474). Optional — view-only / share-
+		 * page mounts never trigger this since the modal is gated on
+		 * a writable editor.
+		 */
+		onImportInserted?: (meta: ImportURLResponse) => void;
 	} = $props();
 
 	let element = $state<HTMLDivElement>();
@@ -1082,7 +1093,7 @@
 	</div>
 {/if}
 
-<ImportFromUrlModal bind:open={importUrlModalOpen} {editor} />
+<ImportFromUrlModal bind:open={importUrlModalOpen} {editor} onInserted={onImportInserted} />
 
 <style>
 	.editor-wrapper {

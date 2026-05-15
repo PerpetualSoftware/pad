@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, type ImportURLResponse } from '$lib/api/client';
+	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -1052,6 +1053,83 @@
 		}
 	}
 
+	// stampSourceUrl writes the source_url + imported_at orphan keys
+	// into the item's `fields` JSON. The keys aren't declared in any
+	// collection schema — `internal/items/validate.go` only iterates
+	// declared fields, so unknown keys round-trip through PATCH without
+	// migration. See PLAN-1467's ghost-field design.
+	async function stampSourceUrl(meta: ImportURLResponse) {
+		if (!item) return;
+		const updated = {
+			...fields,
+			source_url: meta.source_url,
+			imported_at: meta.fetched_at
+		};
+		try {
+			item = await api.items.update(wsSlug, item.id, { fields: JSON.stringify(updated) });
+		} catch (err) {
+			// Non-fatal: the content was inserted regardless of whether
+			// the stamping succeeded. Toast so the user knows the
+			// "Refresh from source" affordance won't be available.
+			console.warn('failed to stamp source_url', err);
+			toastStore.show('Imported, but source_url not saved — refresh affordance disabled', 'error');
+		}
+	}
+
+	// handleImportInserted runs after the modal splices markdown into
+	// the editor. Per PLAN-1467 we only stamp source_url when (a) the
+	// item had no prior content and (b) source_url is not already set.
+	// Both checks are cheap and avoid clobbering an existing import
+	// the user has since iterated on.
+	function handleImportInserted(meta: ImportURLResponse) {
+		if (!item) return;
+		const hadPriorContent = (item.content ?? '').trim() !== '';
+		const alreadyStamped = typeof fields.source_url === 'string' && fields.source_url.length > 0;
+		if (hadPriorContent || alreadyStamped) return;
+		void stampSourceUrl(meta);
+	}
+
+	// "Refresh from source" affordance. Re-fetches the source URL,
+	// asks the user to confirm (the action is destructive — it
+	// replaces the editor's content), then runs the same insert
+	// pipeline as the modal: marked → HTML → editor.insertContent.
+	// Diff-preview is intentionally deferred (see PLAN-1467 risks);
+	// the Yjs op-log provides recoverable history.
+	let refreshing = $state(false);
+	async function refreshFromSource() {
+		const url = fields.source_url;
+		if (!url || typeof url !== 'string' || !item || !editorInstance) return;
+		const ok = typeof window !== 'undefined' &&
+			window.confirm(
+				`Replace the current content with a fresh fetch from:\n${url}\n\n` +
+				'Your existing content will be replaced. Undo is available via the editor history.'
+			);
+		if (!ok) return;
+		refreshing = true;
+		try {
+			const resp = await api.importURL(url);
+			const html = marked.parse(resp.markdown, { async: false }) as string;
+			// Replace the entire document: select all, delete, insert.
+			// Under collab the Y.Doc tracks each transaction so peers
+			// converge on the new state.
+			editorInstance
+				.chain()
+				.focus()
+				.selectAll()
+				.deleteSelection()
+				.insertContent(html)
+				.run();
+			// Bump imported_at and refresh source_url in case it
+			// resolved through a different final URL on this fetch.
+			await stampSourceUrl(resp);
+			toastStore.show('Refreshed from source', 'success');
+		} catch (err) {
+			toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
+		} finally {
+			refreshing = false;
+		}
+	}
+
 	async function updateAssignedUser(userId: string | null) {
 		if (!item) return;
 		saveStatus = 'saving';
@@ -1821,6 +1899,35 @@
 				<!-- Read-only title (PLAN-1100 / TASK-1105) — no click-to-edit. -->
 				<h1 class="title title-readonly">{item.title}</h1>
 			{/if}
+			{#if typeof fields.source_url === 'string' && fields.source_url}
+				<!--
+					"Refresh from source" chip — visible only when the item
+					was created via "Insert from URL" and the modal stamped
+					source_url into fields. Click re-fetches and replaces
+					editor content; the editor's Yjs op-log handles undo.
+					Hidden for view-only users (no canEdit) — refresh is a
+					content-replacing action that requires write access.
+				-->
+				{#if canEdit}
+					<button
+						type="button"
+						class="source-chip"
+						title={`Source: ${fields.source_url}${fields.imported_at ? `\nImported: ${fields.imported_at}` : ''}`}
+						disabled={refreshing}
+						onclick={refreshFromSource}
+					>
+						<span class="source-chip-icon" aria-hidden="true">🌐</span>
+						<span class="source-chip-label">
+							{refreshing ? 'Refreshing…' : 'Refresh from source'}
+						</span>
+					</button>
+				{:else}
+					<span class="source-chip source-chip-readonly" title={fields.source_url}>
+						<span class="source-chip-icon" aria-hidden="true">🌐</span>
+						<span class="source-chip-label">Imported from URL</span>
+					</span>
+				{/if}
+			{/if}
 		</div>
 
 		<!-- Meta info -->
@@ -2251,6 +2358,7 @@
 								onUpdate={handleContentUpdate}
 								editable={false}
 								onEditor={(e) => editorInstance = e}
+								onImportInserted={handleImportInserted}
 							/>
 						{/key}
 					{:else if ydoc}
@@ -2287,6 +2395,7 @@
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
 									onEditor={(e) => editorInstance = e}
+									onImportInserted={handleImportInserted}
 								/>
 							{/key}
 						{/if}
@@ -2621,6 +2730,37 @@
 		overflow: hidden;
 		line-height: 1.3;
 		font-family: inherit;
+	}
+
+	/* Refresh-from-source chip (TASK-1474). Lives in .title-row right
+	   of the title; small, unobtrusive, click to re-fetch. */
+	.source-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		font-size: 0.75em;
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.source-chip:hover:not(:disabled) {
+		background: var(--bg-tertiary, var(--bg-secondary));
+		color: var(--text-primary);
+	}
+	.source-chip:disabled {
+		opacity: 0.6;
+		cursor: progress;
+	}
+	.source-chip-readonly {
+		cursor: default;
+	}
+	.source-chip-icon {
+		font-size: 0.9em;
+		line-height: 1;
 	}
 
 	/* Meta */
