@@ -119,6 +119,77 @@ paths: {}
 	}
 }
 
+func TestConvertOpenAPI_PathLevelParametersMerged(t *testing.T) {
+	// Path-level parameters apply to every operation on that path.
+	// Operation-level parameters override path-level ones on a
+	// (name, in) match. Both rules must hold.
+	spec := []byte(`openapi: 3.0.0
+info:
+  title: Param Merge Test
+  version: "1.0"
+paths:
+  /widgets/{widgetId}:
+    parameters:
+      - name: widgetId
+        in: path
+        required: true
+        description: Path-level widget id
+        schema:
+          type: string
+      - name: trace
+        in: header
+        required: false
+        description: Trace header from path-level
+        schema:
+          type: string
+    get:
+      summary: Get a widget
+      parameters:
+        - name: trace
+          in: header
+          required: true
+          description: Operation-level trace (overrides path-level)
+          schema:
+            type: string
+        - name: fields
+          in: query
+          required: false
+          description: Op-only filter
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+`)
+	res, err := ConvertOpenAPI(spec, "")
+	if err != nil {
+		t.Fatalf("ConvertOpenAPI: %v", err)
+	}
+	md := res.Markdown
+	// Path-level parameter survives merge.
+	if !strings.Contains(md, "| `widgetId` | path | yes |") {
+		t.Errorf("missing path-level widgetId row in:\n%s", md)
+	}
+	// Operation-level override wins on (name, in) collision: trace
+	// goes from required=false (path) to required=yes (op).
+	if !strings.Contains(md, "| `trace` | header | yes |") {
+		t.Errorf("op-level trace override missing or didn't win in:\n%s", md)
+	}
+	if strings.Contains(md, "| `trace` | header | no |") {
+		t.Errorf("path-level trace row leaked in; op-level should override:\n%s", md)
+	}
+	// Op-only parameter present.
+	if !strings.Contains(md, "| `fields` | query |") {
+		t.Errorf("missing op-only fields row in:\n%s", md)
+	}
+}
+
+func TestMergeParameters_EmptyInputs(t *testing.T) {
+	if got := mergeParameters(nil, nil); got != nil {
+		t.Errorf("mergeParameters(nil, nil) = %v, want nil", got)
+	}
+}
+
 func TestSchemaTypeBrief_Nil(t *testing.T) {
 	if got := schemaTypeBrief(nil); got != "" {
 		t.Errorf("schemaTypeBrief(nil) = %q, want empty", got)

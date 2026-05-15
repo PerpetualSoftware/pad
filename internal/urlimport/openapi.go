@@ -126,11 +126,15 @@ func renderServers(b *strings.Builder, doc *v3high.Document) {
 }
 
 // opSlot is a unit of work for the tag-grouping pass: one HTTP method
-// against one path, plus the Operation that defines it.
+// against one path, plus the Operation that defines it. pathParams
+// carries the path-item's shared parameters so renderOperation can
+// merge them with operation-scoped parameters per the OpenAPI spec
+// (operation-level overrides path-level on a (name, in) match).
 type opSlot struct {
-	method string
-	path   string
-	op     *v3high.Operation
+	method     string
+	path       string
+	op         *v3high.Operation
+	pathParams []*v3high.Parameter
 }
 
 func renderOperations(b *strings.Builder, doc *v3high.Document) {
@@ -138,13 +142,20 @@ func renderOperations(b *strings.Builder, doc *v3high.Document) {
 		return
 	}
 
-	// Collect (method, path, op) tuples preserving spec order.
+	// Collect (method, path, op, pathParams) tuples preserving spec
+	// order. Path-level parameters are captured here so each operation
+	// renders with the full merged parameter set.
 	var slots []opSlot
 	for pair := doc.Paths.PathItems.First(); pair != nil; pair = pair.Next() {
 		path := pair.Key()
 		item := pair.Value()
 		for opPair := item.GetOperations().First(); opPair != nil; opPair = opPair.Next() {
-			slots = append(slots, opSlot{method: strings.ToUpper(opPair.Key()), path: path, op: opPair.Value()})
+			slots = append(slots, opSlot{
+				method:     strings.ToUpper(opPair.Key()),
+				path:       path,
+				op:         opPair.Value(),
+				pathParams: item.Parameters,
+			})
 		}
 	}
 
@@ -190,8 +201,8 @@ func renderOperation(b *strings.Builder, slot opSlot) {
 	if slot.op.OperationId != "" {
 		fmt.Fprintf(b, "**Operation ID:** `%s`\n\n", slot.op.OperationId)
 	}
-	if len(slot.op.Parameters) > 0 {
-		renderParameters(b, slot.op.Parameters)
+	if params := mergeParameters(slot.pathParams, slot.op.Parameters); len(params) > 0 {
+		renderParameters(b, params)
 	}
 	if slot.op.RequestBody != nil {
 		renderRequestBody(b, slot.op.RequestBody)
@@ -199,6 +210,55 @@ func renderOperation(b *strings.Builder, slot opSlot) {
 	if slot.op.Responses != nil {
 		renderResponses(b, slot.op.Responses)
 	}
+}
+
+// mergeParameters combines path-item-level parameters with
+// operation-level ones, deduping on the (name, in) tuple. Operation-
+// level parameters win on conflict — that's the OpenAPI spec's rule.
+// Order is: path-level first (in declared order), then operation-
+// level entries that don't collide, then operation-level overrides
+// inserted in place of the path-level entry they override.
+func mergeParameters(pathParams, opParams []*v3high.Parameter) []*v3high.Parameter {
+	if len(pathParams) == 0 {
+		return opParams
+	}
+	if len(opParams) == 0 {
+		return pathParams
+	}
+	type key struct{ name, in string }
+	override := map[key]*v3high.Parameter{}
+	for _, p := range opParams {
+		if p == nil {
+			continue
+		}
+		override[key{p.Name, p.In}] = p
+	}
+	out := make([]*v3high.Parameter, 0, len(pathParams)+len(opParams))
+	seen := map[key]bool{}
+	for _, p := range pathParams {
+		if p == nil {
+			continue
+		}
+		k := key{p.Name, p.In}
+		if rep, ok := override[k]; ok {
+			out = append(out, rep)
+		} else {
+			out = append(out, p)
+		}
+		seen[k] = true
+	}
+	for _, p := range opParams {
+		if p == nil {
+			continue
+		}
+		k := key{p.Name, p.In}
+		if seen[k] {
+			continue
+		}
+		out = append(out, p)
+		seen[k] = true
+	}
+	return out
 }
 
 func renderParameters(b *strings.Builder, params []*v3high.Parameter) {
