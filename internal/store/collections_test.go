@@ -20,6 +20,56 @@ import (
 // The defensive `sql.NullString` scans in collections.go / export.go
 // remain in place and will be reverted in a separate follow-up PR.
 
+// TestCollectionsSettingsNotNullEnforced is the IDEA-1484 outcome guard:
+// after migration 055 / pg 034, attempting to write a literal SQL NULL
+// into collections.settings must fail at the driver level. The error
+// shape differs across SQLite ("NOT NULL constraint failed:
+// collections.settings") and Postgres ("null value in column ... violates
+// not-null constraint", SQLSTATE 23502), so we only assert that an error
+// surfaces — not its content.
+func TestCollectionsSettingsNotNullEnforced(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "NOT NULL Enforcement")
+
+	_, err := s.db.Exec(s.q(`
+		INSERT INTO collections (id, workspace_id, name, slug, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, NULL, ?, ?)
+	`), "test-col-not-null", ws.ID, "Things", "things-not-null", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z")
+	if err == nil {
+		t.Fatalf("expected NOT NULL constraint violation when inserting NULL settings, got nil error")
+	}
+}
+
+// TestCollectionsSettingsDefaultsToEmptyObject is the companion guard:
+// when an INSERT omits the settings column entirely, the column DEFAULT
+// must materialize as the empty JSON object `{}`. SQLite stores it as
+// TEXT and Postgres stores it as JSONB (which normalizes to `{}` on
+// readback); both surface through GetCollection's defensive scan as the
+// Go string `{}`.
+func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Settings Default")
+
+	const id = "test-col-default-settings"
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO collections (id, workspace_id, name, slug, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`), id, ws.ID, "Things", "things-default", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("INSERT omitting settings failed: %v", err)
+	}
+
+	got, err := s.GetCollection(id)
+	if err != nil {
+		t.Fatalf("GetCollection error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("GetCollection returned nil for %q", id)
+	}
+	if got.Settings != "{}" {
+		t.Errorf("expected default settings to materialize as %q, got %q", "{}", got.Settings)
+	}
+}
+
 // TestListCollectionsMinimalReturnsSettingsJSON verifies the happy path:
 // a collection with non-NULL JSON settings round-trips through the minimal
 // query intact on both drivers.
