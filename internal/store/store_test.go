@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/google/uuid"
@@ -362,6 +363,302 @@ func TestWorkspaceCRUD(t *testing.T) {
 	got, _ = s.GetWorkspaceBySlug("my-app")
 	if got != nil {
 		t.Error("deleted workspace still found by slug")
+	}
+}
+
+// TestListWorkspaces_UpdatedAtReflectsItemActivity is the regression
+// test for BUG-1481: `pad workspace list` was showing the workspaces
+// row's updated_at, which is only bumped by workspace-row mutations
+// (rename, settings, members), not by item activity inside the
+// workspace. After the fix, the returned UpdatedAt should be the later
+// of workspaces.updated_at and MAX(items.updated_at), so the freshness
+// signal answers "where is work happening?".
+func TestListWorkspaces_UpdatedAtReflectsItemActivity(t *testing.T) {
+	s := testStore(t)
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Active"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// Capture the workspace's own row-level updated_at as a baseline.
+	wsRow, err := s.GetWorkspaceBySlug(ws.Slug)
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+	baselineWS := wsRow.UpdatedAt
+
+	// Manually backdate the workspace row's updated_at and forward-date
+	// a new item, so the only way the freshness can read "later" is by
+	// surfacing the item's timestamp.
+	pastTS := "2020-01-01T00:00:00Z"
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET updated_at = ? WHERE id = ?`), pastTS, ws.ID); err != nil {
+		t.Fatalf("backdate workspace: %v", err)
+	}
+
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Recent work"})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	list, err := s.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	var got *models.Workspace
+	for i := range list {
+		if list[i].ID == ws.ID {
+			got = &list[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("workspace %s not in ListWorkspaces result", ws.ID)
+	}
+
+	// The returned UpdatedAt must reflect the item activity, not the
+	// (now ancient) workspace row mtime.
+	if !got.UpdatedAt.Equal(item.UpdatedAt) {
+		t.Errorf("ListWorkspaces UpdatedAt = %v, want item activity %v (workspace row backdated to %v, baseline was %v)",
+			got.UpdatedAt, item.UpdatedAt, pastTS, baselineWS)
+	}
+	if !got.UpdatedAt.After(parseTime(pastTS)) {
+		t.Errorf("UpdatedAt %v should be after backdated workspace row mtime %s", got.UpdatedAt, pastTS)
+	}
+}
+
+// TestGetUserWorkspaces_MemberFreshness covers the member path of
+// BUG-1481: a workspace returned via membership in GetUserWorkspaces
+// must surface item activity as its effective UpdatedAt, not just the
+// workspace row mtime.
+func TestGetUserWorkspaces_MemberFreshness(t *testing.T) {
+	s := testStore(t)
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Member-WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	u := createTestUser(t, s, "member@test.com", "Member", "password123")
+	if err := s.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+
+	// Backdate the workspace row, then create an item — the freshness
+	// must reflect the item's timestamp, not the backdated row.
+	pastTS := "2020-01-01T00:00:00Z"
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET updated_at = ? WHERE id = ?`), pastTS, ws.ID); err != nil {
+		t.Fatalf("backdate workspace: %v", err)
+	}
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Member work"})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	list, err := s.GetUserWorkspaces(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserWorkspaces: %v", err)
+	}
+	var got *models.Workspace
+	for i := range list {
+		if list[i].ID == ws.ID {
+			got = &list[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("workspace %s not in GetUserWorkspaces result", ws.ID)
+	}
+	if !got.UpdatedAt.Equal(item.UpdatedAt) {
+		t.Errorf("GetUserWorkspaces member UpdatedAt = %v, want item activity %v",
+			got.UpdatedAt, item.UpdatedAt)
+	}
+}
+
+// TestGetUserWorkspaces_GuestFreshnessLimitedToVisibleItems covers the
+// guest path of BUG-1481 AND the data-leak guardrail surfaced in
+// codex review: a guest's view of a workspace's UpdatedAt must reflect
+// ONLY items they can actually see (via collection_grants or
+// item_grants). Activity in items they have no grant on must not leak
+// through the freshness signal.
+func TestGetUserWorkspaces_GuestFreshnessLimitedToVisibleItems(t *testing.T) {
+	s := testStore(t)
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Guest-WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	owner := createTestUser(t, s, "owner@test.com", "Owner", "password123")
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember owner: %v", err)
+	}
+
+	visibleColl, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Visible",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection visible: %v", err)
+	}
+	hiddenColl, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Hidden",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection hidden: %v", err)
+	}
+
+	// Create the guest user and grant them access ONLY to the visible
+	// collection — they should never see the hidden collection's items.
+	guest := createTestUser(t, s, "guest@test.com", "Guest", "password123")
+	if _, err := s.CreateCollectionGrant(ws.ID, visibleColl.ID, guest.ID, "read", owner.ID); err != nil {
+		t.Fatalf("CreateCollectionGrant: %v", err)
+	}
+
+	// Backdate the workspace row so neither item is being shadowed by
+	// the row's own mtime.
+	pastTS := "2020-01-01T00:00:00Z"
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET updated_at = ? WHERE id = ?`), pastTS, ws.ID); err != nil {
+		t.Fatalf("backdate workspace: %v", err)
+	}
+
+	// Create a visible item first, then a hidden item LATER — so if
+	// the freshness query ignores the grant filter, it will surface the
+	// later (hidden) timestamp and the test will catch the leak.
+	visibleItem, err := s.CreateItem(ws.ID, visibleColl.ID, models.ItemCreate{Title: "Visible work"})
+	if err != nil {
+		t.Fatalf("CreateItem visible: %v", err)
+	}
+	// Force a measurable gap; RFC3339 stores second-precision so a
+	// 1.1s sleep guarantees a distinct later timestamp.
+	time.Sleep(1100 * time.Millisecond)
+	hiddenItem, err := s.CreateItem(ws.ID, hiddenColl.ID, models.ItemCreate{Title: "Hidden work"})
+	if err != nil {
+		t.Fatalf("CreateItem hidden: %v", err)
+	}
+	if !hiddenItem.UpdatedAt.After(visibleItem.UpdatedAt) {
+		t.Fatalf("setup invariant: hidden item should be newer than visible item (visible=%v hidden=%v)",
+			visibleItem.UpdatedAt, hiddenItem.UpdatedAt)
+	}
+
+	list, err := s.GetUserWorkspaces(guest.ID)
+	if err != nil {
+		t.Fatalf("GetUserWorkspaces guest: %v", err)
+	}
+	var got *models.Workspace
+	for i := range list {
+		if list[i].ID == ws.ID {
+			got = &list[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("guest workspace %s not in GetUserWorkspaces result", ws.ID)
+	}
+	if !got.IsGuest {
+		t.Errorf("expected workspace to be flagged as guest, got IsGuest=%v", got.IsGuest)
+	}
+	// The guest's view must show the visible item's timestamp, NOT the
+	// newer hidden item's timestamp — that would be a freshness leak.
+	if !got.UpdatedAt.Equal(visibleItem.UpdatedAt) {
+		t.Errorf("guest UpdatedAt = %v, want visible item activity %v (leak check: hidden item = %v)",
+			got.UpdatedAt, visibleItem.UpdatedAt, hiddenItem.UpdatedAt)
+	}
+	if got.UpdatedAt.Equal(hiddenItem.UpdatedAt) || got.UpdatedAt.After(hiddenItem.UpdatedAt) {
+		t.Errorf("guest UpdatedAt %v leaks hidden-item activity %v", got.UpdatedAt, hiddenItem.UpdatedAt)
+	}
+}
+
+// TestGetUserWorkspaces_MemberSpecificAccessFreshnessLimitedToVisibleItems
+// covers the member-with-restricted-access path of BUG-1481: a member
+// with collection_access='specific' must only see freshness from
+// collections they can actually access (via member_collection_access,
+// system collections, collection_grants, or item_grants). Without
+// scoping, the read-time MAX would leak activity timing for hidden
+// collections to restricted members.
+func TestGetUserWorkspaces_MemberSpecificAccessFreshnessLimitedToVisibleItems(t *testing.T) {
+	s := testStore(t)
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Restricted-WS"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	visibleColl, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Visible",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection visible: %v", err)
+	}
+	hiddenColl, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Hidden",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection hidden: %v", err)
+	}
+
+	// Restricted member: granted access to the visible collection only.
+	u := createTestUser(t, s, "restricted@test.com", "Restricted", "password123")
+	if err := s.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := s.SetMemberCollectionAccess(ws.ID, u.ID, "specific", []string{visibleColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	// Backdate the workspace row so it can't shadow the items.
+	pastTS := "2020-01-01T00:00:00Z"
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET updated_at = ? WHERE id = ?`), pastTS, ws.ID); err != nil {
+		t.Fatalf("backdate workspace: %v", err)
+	}
+
+	// Visible item first, then a NEWER hidden item — if the freshness
+	// query doesn't filter by visibility, the hidden item's timestamp
+	// leaks through.
+	visibleItem, err := s.CreateItem(ws.ID, visibleColl.ID, models.ItemCreate{Title: "Visible work"})
+	if err != nil {
+		t.Fatalf("CreateItem visible: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	hiddenItem, err := s.CreateItem(ws.ID, hiddenColl.ID, models.ItemCreate{Title: "Hidden work"})
+	if err != nil {
+		t.Fatalf("CreateItem hidden: %v", err)
+	}
+	if !hiddenItem.UpdatedAt.After(visibleItem.UpdatedAt) {
+		t.Fatalf("setup invariant: hidden item should be newer than visible item (visible=%v hidden=%v)",
+			visibleItem.UpdatedAt, hiddenItem.UpdatedAt)
+	}
+
+	list, err := s.GetUserWorkspaces(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserWorkspaces: %v", err)
+	}
+	var got *models.Workspace
+	for i := range list {
+		if list[i].ID == ws.ID {
+			got = &list[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("workspace %s not in GetUserWorkspaces result", ws.ID)
+	}
+	if !got.UpdatedAt.Equal(visibleItem.UpdatedAt) {
+		t.Errorf("restricted member UpdatedAt = %v, want visible item activity %v (leak check: hidden item = %v)",
+			got.UpdatedAt, visibleItem.UpdatedAt, hiddenItem.UpdatedAt)
+	}
+	if got.UpdatedAt.Equal(hiddenItem.UpdatedAt) || got.UpdatedAt.After(hiddenItem.UpdatedAt) {
+		t.Errorf("restricted member UpdatedAt %v leaks hidden-item activity %v", got.UpdatedAt, hiddenItem.UpdatedAt)
 	}
 }
 
