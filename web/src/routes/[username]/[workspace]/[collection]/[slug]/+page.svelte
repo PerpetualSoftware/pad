@@ -416,9 +416,26 @@
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
 		try {
+			// Workspace items are needed for wiki-link resolution at Y.Doc
+			// seed time (the $effect ~line 904 below) and for the
+			// non-collab editorContent derived (~line 103 above). Both
+			// silently fall back to raw markdown when the items array is
+			// empty, baking literal `[[X]]` text into the Y.Doc the first
+			// time a fresh item with wiki-links is opened (BUG-1461). We
+			// fold the load into this Promise.all and AWAIT it before
+			// `item` is set so the downstream readers always see a
+			// populated items list paired with the correct workspace.
+			// The freshness gate (workspace-scoped, not length-based) is
+			// what prevents a stale cross-workspace items array from
+			// satisfying a naive `items.length > 0` check after a
+			// workspace switch.
+			const itemsPromise = collectionStore.itemsAreFreshFor(wsSlug)
+				? Promise.resolve()
+				: collectionStore.loadItems(wsSlug);
 			const [itemData, collData] = await Promise.all([
 				api.items.get(wsSlug, itemSlug),
-				api.collections.get(wsSlug, collSlug)
+				api.collections.get(wsSlug, collSlug),
+				itemsPromise
 			]);
 			item = itemData;
 			collection = collData;
@@ -440,10 +457,10 @@
 				computedOverrides = {};
 			}
 
-			// Also load items for wiki-link resolution if not already loaded
-			if ((collectionStore.items ?? []).length === 0) {
-				collectionStore.loadItems(wsSlug);
-			}
+			// Items for wiki-link resolution are now loaded as part of the
+			// Promise.all above so they're awaited before `item` is set
+			// (BUG-1461 — previously this was a fire-and-forget call here,
+			// which raced the Y.Doc seed and could bake `[[X]]` text in).
 
 			// Load links for this item
 			try {
