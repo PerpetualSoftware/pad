@@ -153,24 +153,33 @@ func collapseChanges(s string) string {
 		// hadTransition is true iff any input entry in the run produced a
 		// display-string transition — i.e. either the initial entry had
 		// from != to, or a subsequent entry's `to` differed from the
-		// run's anchored `from`. Used by the drop step to distinguish:
-		//
-		//   - typed-then-backspaced (BUG-1419 / BUG-1466):
-		//     `c: → t; c: t → ti; c: ti → t; c: t → ` — intermediate
-		//     `to` values ("t", "ti") differ from anchor `from`=""
-		//     → hadTransition=true, from==to, dropped as net no-op.
-		//
-		//   - repeated same-display structured-field replacements
-		//     (Codex review round 2 [P2]):
-		//     `implementation_notes: (1 note) → (1 note); implementation_notes: (1 note) → (1 note)`
-		//     — every `to` equals the anchor `from`, so the display
-		//     trace shows no transition → hadTransition=false, preserved.
-		//     The underlying values DID change (diffFields uses
-		//     reflect.DeepEqual; see TestDiffFieldsSameCardinalityArrayChangeStillReported),
-		//     but that information is lost once formatChangeValue
-		//     summarises both as `(1 note)`. We can't recover it from
-		//     the merged string, but we mustn't pretend nothing happened.
+		// run's anchored `from`. Used together with hasLossySummary
+		// below to decide whether a from==to result is a true net no-op.
 		hadTransition bool
+		// hasLossySummary is true iff ANY entry in the run carried a
+		// `(N items)` / `(object)` / `(1 note)` display value — the
+		// lossy summary form that formatChangeValue emits for
+		// structured fields (handlers_documents.go::formatChangeValue).
+		//
+		// When the display value is lossy, a from==to result CAN'T be
+		// trusted as "no underlying change." Counter-example: editing
+		// implementation_notes from 1 note → 2 notes → 1 different
+		// note collapses to `(1 note) → (1 note)` with hadTransition=true,
+		// but the final note differs from the original — diffFields
+		// emitted both entries because reflect.DeepEqual saw real
+		// changes (see TestDiffFieldsSameCardinalityArrayChangeStillReported).
+		// We can't recover the raw values from the merged string, so
+		// we never drop a run that touched a lossy summary. Per Codex
+		// review round 3 [P2].
+		hasLossySummary bool
+	}
+
+	// isLossySummary detects formatChangeValue's display labels:
+	// `(N items)`, `(1 note)`, `(2 entries)`, `(object)`, etc. The
+	// shape — parenthesised, never produced for primitive values — is
+	// stable across formatChangeValue's known and fallback branches.
+	isLossySummary := func(v string) bool {
+		return len(v) >= 2 && strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")")
 	}
 	parts := strings.Split(s, "; ")
 	entries := make([]entry, 0, len(parts))
@@ -200,6 +209,7 @@ func collapseChanges(s string) string {
 				entries = append(entries, entry{
 					field: field, from: from, to: "",
 					mergedCount: 1, hadTransition: from != "",
+					hasLossySummary: isLossySummary(from),
 				})
 				continue
 			}
@@ -211,6 +221,7 @@ func collapseChanges(s string) string {
 		entries = append(entries, entry{
 			field: field, from: from, to: to,
 			mergedCount: 1, hadTransition: from != to,
+			hasLossySummary: isLossySummary(from) || isLossySummary(to),
 		})
 	}
 
@@ -224,14 +235,15 @@ func collapseChanges(s string) string {
 		if len(collapsed) > 0 {
 			prev := &collapsed[len(collapsed)-1]
 			if prev.raw == "" && prev.field == e.field {
-				// Any deviation from the anchored `from` — by the
-				// incoming entry's own from→to swing OR by its `to`
-				// differing from prev.from — counts as a real
-				// transition. If neither differs, the run is a
-				// repeated same-display structured-field update;
-				// preserve those (see hadTransition comment above).
 				if e.hadTransition || e.to != prev.from {
 					prev.hadTransition = true
+				}
+				// hasLossySummary is sticky across the run: once any
+				// entry brings a lossy display value into the chain,
+				// the merged result can never be safely treated as a
+				// raw-value no-op.
+				if e.hasLossySummary {
+					prev.hasLossySummary = true
 				}
 				prev.to = e.to
 				prev.mergedCount += e.mergedCount
@@ -241,18 +253,24 @@ func collapseChanges(s string) string {
 		collapsed = append(collapsed, e)
 	}
 
-	// Drop only true net no-ops: a collapsed run (mergedCount > 1) whose
-	// from==to AND whose intermediate `to` values transitioned away from
-	// the anchor at some point — i.e. the user typed something and
-	// backspaced back to the original. Single entries are always
-	// preserved (diffFields wouldn't emit them unless reflect.DeepEqual
-	// detected a real change), and runs without hadTransition represent
-	// repeated structured-field updates whose display strings happen to
-	// match — preserve those too. Per Codex review round 1 [P2] +
-	// round 2 [P2].
+	// Drop only true net no-ops, defined as: a collapsed run
+	// (mergedCount > 1) whose from==to, whose intermediate `to` values
+	// transitioned away from the anchor at some point (hadTransition),
+	// AND whose display values are NOT lossy summaries (!hasLossySummary).
+	//
+	// Why each clause:
+	//   - mergedCount > 1: a single entry is preserved because diffFields
+	//     wouldn't emit it unless reflect.DeepEqual detected a real
+	//     change. Only collapsed runs can synthesise a fake from==to.
+	//   - hadTransition: distinguishes a real cancellation from a
+	//     repeated same-display run (Codex round 2 [P2]).
+	//   - !hasLossySummary: a `(1 note) → (2 notes) → (1 note)` run
+	//     visibly transitions and visibly returns, but the underlying
+	//     notes can be entirely different objects — the display labels
+	//     are lossy. Never drop those (Codex round 3 [P2]).
 	kept := collapsed[:0]
 	for _, e := range collapsed {
-		if e.raw == "" && e.mergedCount > 1 && e.from == e.to && e.hadTransition {
+		if e.raw == "" && e.mergedCount > 1 && e.from == e.to && e.hadTransition && !e.hasLossySummary {
 			continue
 		}
 		kept = append(kept, e)

@@ -482,6 +482,26 @@ func TestCollapseChanges(t *testing.T) {
 			in:   "name: foo → bar; name: bar → foo",
 			want: "",
 		},
+		{
+			name: "structured count-return swing preserved (lossy summaries)",
+			// Codex review round 3 [P2]: 1 note A → 2 notes A+B → 1
+			// note B. diffFields emits both transitions; the merged
+			// shape looks like a foo→bar→foo cancellation, but the
+			// final note differs from the original. hasLossySummary
+			// blocks the drop — we can't recover the raw delta from
+			// the merged string, so we preserve the entry.
+			in:   "implementation_notes: (1 note) → (2 notes); implementation_notes: (2 notes) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "lossy summary appearing only on one side still pins the run",
+			// Defensive: even if just `to` (or just `from`) is a lossy
+			// label — e.g. clearing a field renders as "(1 note) → " —
+			// the run must be preserved if it ever returns to from==to
+			// via a structured intermediate.
+			in:   "implementation_notes: original_text → (1 note); implementation_notes: (1 note) → original_text",
+			want: "implementation_notes: original_text → original_text",
+		},
 	}
 
 	for _, tt := range tests {

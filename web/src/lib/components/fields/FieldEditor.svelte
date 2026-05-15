@@ -195,13 +195,63 @@ handlers — onchange is never called.
 		onchange(v);
 	}
 
-	// Cleanup on unmount: a pending typed value must NOT be lost when
-	// the user navigates away mid-edit. The effect-return is Svelte 5's
-	// cleanup hook — fires on component teardown.
+	// Cleanup on unmount: drop any pending typed save. We deliberately
+	// do NOT flush here:
+	//   - When unmount fires because the parent navigated to an item
+	//     whose schema doesn't include this field key, the parent's
+	//     `item` has already been replaced. Calling onchange now would
+	//     route the save through `updateField`, which reads the CURRENT
+	//     `item` — writing field-A's typed value into item-B (Codex
+	//     review round 3 [P1]).
+	//   - The other unmount cases (route teardown, parent destroy) have
+	//     ambiguous parent state too.
+	// Blur is the supported commit gesture: tabbing out, clicking
+	// elsewhere within the page, or the ±1 buttons — all flush via the
+	// onblur handler before any teardown. Unmount-without-blur means
+	// the user navigated away aggressively; respecting that is safer
+	// than a best-effort write to a context we can't validate.
 	$effect(() => {
 		return () => {
-			flushPendingSave();
+			if (hasPending) {
+				clearTimeout(typingTimer);
+				typingTimer = undefined;
+				pendingValue = undefined;
+				hasPending = false;
+			}
 		};
+	});
+
+	// Drop pending typed value if the parent updates `value` externally
+	// while we have a pending save. The parent could re-prop this
+	// FieldEditor mid-edit for legitimate reasons:
+	//
+	//   - Navigation to a different item within the same route reuses
+	//     the component (same schema, same field.key) with a different
+	//     item's value. Without this guard the pending value would be
+	//     flushed against the parent's `updateField`, which reads the
+	//     CURRENT `item.id` — leaking item A's edit into item B
+	//     (Codex review round 3 [P1]).
+	//   - A collab peer / SSE-driven update of the same field on the
+	//     same item also rebases the prop. The user's in-flight typed
+	//     value is no longer the right answer; drop it rather than
+	//     silently overwrite the peer edit.
+	//
+	// The trade-off: a typed-but-unflushed value is lost when the user
+	// navigates within 500ms. Acceptable — they actively navigated, and
+	// blur (the usual way to leave an input) already flushes eagerly.
+	//
+	// We don't need to distinguish "our save echoing back" from
+	// "external update" because the timer callback clears `hasPending`
+	// BEFORE calling onchange, so by the time this $effect runs in
+	// response to our own save's echo, hasPending is already false.
+	$effect(() => {
+		void value; // track dependency
+		if (hasPending) {
+			clearTimeout(typingTimer);
+			typingTimer = undefined;
+			pendingValue = undefined;
+			hasPending = false;
+		}
 	});
 
 	function handleTextInput(e: Event) {
