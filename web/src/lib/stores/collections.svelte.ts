@@ -3,14 +3,36 @@ import type { Collection, Item } from '$lib/types';
 
 let collections = $state<Collection[]>([]);
 let items = $state<Item[]>([]);
+// Workspace slug the current `items` array was loaded for. Used to decide
+// whether `items` is stale for a different workspace (BUG-1461). `items` is
+// a single global slot, so without this stamp a navigation from workspace A
+// to workspace B would leave A's items in the store and freshness checks
+// based purely on `items.length` would silently accept them as B's data —
+// causing wiki-link resolution (which scans `items` for title/ref matches)
+// to render `[[X]]` brackets as plain text. Null = no load completed yet
+// for a full workspace; a non-null value pairs the items array with its
+// source workspace.
+let itemsWorkspace = $state<string | null>(null);
 let activeItem = $state<Item | null>(null);
 let loading = $state(false);
 
 export const collectionStore = {
 	get collections() { return collections; },
 	get items() { return items; },
+	get itemsWorkspace() { return itemsWorkspace; },
 	get activeItem() { return activeItem; },
 	get loading() { return loading; },
+
+	/**
+	 * Returns true when `items` was last loaded as a full-workspace list
+	 * (no collection filter) for the given workspace slug. Callers that
+	 * need ALL items for wiki-link resolution should use this gate rather
+	 * than `items.length === 0` — the latter can't distinguish "empty
+	 * workspace" from "stale items from a different workspace."
+	 */
+	itemsAreFreshFor(ws: string): boolean {
+		return itemsWorkspace === ws;
+	},
 
 	get defaultCollections() {
 		return collections.filter(c => c.is_default).sort((a, b) => a.sort_order - b.sort_order);
@@ -34,8 +56,14 @@ export const collectionStore = {
 		try {
 			if (collectionSlug) {
 				items = await api.items.listByCollection(ws, collectionSlug, params);
+				// Partial load — the stored array no longer represents the
+				// full workspace, so invalidate the freshness stamp. A
+				// downstream caller asking `itemsAreFreshFor(ws)` will
+				// correctly trigger a full re-load.
+				itemsWorkspace = null;
 			} else {
 				items = await api.items.list(ws, params);
+				itemsWorkspace = ws;
 			}
 		} finally {
 			loading = false;
