@@ -284,6 +284,19 @@ export interface AuthSession {
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
+// ImportURLResponse mirrors internal/server/handlers_import.go's
+// importURLResponse. Side-effect-free: no DB writes happen on the
+// server during this call; the editor decides whether to splice the
+// markdown into an item.
+export interface ImportURLResponse {
+	markdown: string;
+	detected_type: 'openapi' | 'generic';
+	title?: string;
+	source_url: string;
+	fetched_at: string;
+	content_type: string;
+}
+
 export interface LoginResponse {
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 	token?: string;
@@ -1339,6 +1352,18 @@ export const api = {
 		revoke: (id: string) =>
 			request<void>(`/connected-apps/${encodeURIComponent(id)}`, { method: 'DELETE' })
 	},
+
+	// ── URL Import ───────────────────────────────────────────────────────────
+
+	// Server-side fetch + convert primitive used by the editor's
+	// "Insert from URL" modal. Side-effect-free — the server returns
+	// markdown plus metadata; the client decides whether to splice it
+	// into an item. See PLAN-1467 / TASK-1472 / internal/urlimport.
+	importURL: (url: string) =>
+		request<ImportURLResponse>('/import/url', {
+			method: 'POST',
+			body: JSON.stringify({ url })
+		}),
 
 	// ── Admin ────────────────────────────────────────────────────────────────
 
