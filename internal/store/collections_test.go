@@ -17,11 +17,18 @@ import (
 // constraint in place, the `UPDATE collections SET settings = NULL` setup
 // those tests relied on is now a hard write error, and the scenario they
 // guarded (production data legally holding NULL) is no longer reachable.
-// The defensive `sql.NullString` scans in collections.go / export.go and
-// the paired import-side `""→"{}"` coercion (along with
-// TestExportImportRoundTripWithEmptyStringSettings) were reverted in the
-// IDEA-1484 follow-up now that the schema constraint is the load-bearing
-// invariant.
+//
+// The defensive `sql.NullString` scans in collections.go / export.go were
+// reverted in the IDEA-1484 follow-up — direct string scans are safe now
+// that the column cannot hold NULL.
+//
+// The import-side `""→"{}"` coercion in ImportWorkspace is INTENTIONALLY
+// RETAINED. The NOT NULL DEFAULT '{}' constraint only fires when the
+// INSERT omits the column; ImportWorkspace explicitly supplies the value,
+// so a `""` from a legacy bundle or external JSON import would bypass the
+// default and either fail on Postgres (invalid JSONB) or silently store
+// invalid JSON on SQLite. `TestExportImportRoundTripWithEmptyStringSettings`
+// guards that boundary normalization.
 
 // TestCollectionsSettingsNotNullEnforced is the IDEA-1484 outcome guard:
 // after migration 055 / pg 034, attempting to write a literal SQL NULL
@@ -121,6 +128,64 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("created collection %q not returned by ListCollectionsMinimal", created.ID)
+	}
+}
+
+// TestExportImportRoundTripWithEmptyStringSettings guards the import-side
+// `""→"{}"` coercion in ImportWorkspace. IDEA-1484 (PR #562) hardened
+// collections.settings to NOT NULL DEFAULT '{}', but the DEFAULT clause
+// only fires when the INSERT omits the column — ImportWorkspace
+// explicitly supplies the value. Without the coercion, a legacy bundle
+// or external JSON payload whose settings is "" would fail at Postgres's
+// JSONB type-validation (and silently store invalid JSON on SQLite).
+// This test simulates the bundle by mutating the in-memory export bundle
+// to inject "" settings, then asserts ImportWorkspace materializes them
+// back to valid JSON on the destination side.
+func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "round-trip-owner@test.com", "Round Trip Owner", "password123")
+	src := createTestWorkspace(t, s, "Export-Import Round Trip Empty Settings")
+
+	if err := s.SeedDefaultCollections(src.ID); err != nil {
+		t.Fatalf("SeedDefaultCollections error: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace error: %v", err)
+	}
+
+	// Simulate a legacy/external bundle whose collections carry "" settings.
+	for i := range exp.Collections {
+		exp.Collections[i].Settings = ""
+	}
+
+	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace error (IDEA-1484 import-side coercion regression): %v", err)
+	}
+	if imported == nil {
+		t.Fatalf("ImportWorkspace returned nil workspace")
+	}
+
+	// Re-read the imported collections and assert they hold valid JSON
+	// (the import-side coercion materialized `""` back to `"{}"`).
+	colls, err := s.ListCollections(imported.ID)
+	if err != nil {
+		t.Fatalf("ListCollections on imported workspace: %v", err)
+	}
+	if len(colls) == 0 {
+		t.Fatalf("imported workspace has 0 collections; expected the round-tripped defaults")
+	}
+	for _, c := range colls {
+		if c.Settings == "" {
+			t.Errorf("imported collection %q: settings should have been coerced from \"\" to a valid JSON object, got empty string", c.ID)
+			continue
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(c.Settings), &got); err != nil {
+			t.Errorf("imported collection %q: settings is not valid JSON: %v (raw=%q)", c.ID, err, c.Settings)
+		}
 	}
 }
 

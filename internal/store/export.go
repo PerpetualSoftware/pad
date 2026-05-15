@@ -193,10 +193,25 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		newCollID := newID()
 		collMap[c.ID] = newCollID
 
+		// Coerce empty-string settings to a valid JSON object before insert.
+		// IDEA-1484 (PR #562) hardened collections.settings to NOT NULL
+		// DEFAULT '{}', but this INSERT explicitly supplies the settings
+		// column — so the DEFAULT clause does NOT fire when c.Settings is
+		// "". Without this coercion, Postgres rejects `""` at JSONB
+		// type-validation and SQLite silently stores invalid JSON. Legacy
+		// bundles and plain-JSON workspace imports (handlers_workspaces.go,
+		// handlers_import_bundle.go, cmd/pad/main.go's migrate command) can
+		// still carry "" settings, so normalization belongs at the import
+		// boundary rather than at the schema level.
+		settings := c.Settings
+		if settings == "" {
+			settings = "{}"
+		}
+
 		_, err := tx.Exec(s.q(`
 			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, c.Settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
 			c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
