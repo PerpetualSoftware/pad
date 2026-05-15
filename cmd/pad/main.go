@@ -314,18 +314,12 @@ func serveCmd() *cobra.Command {
 				slog.Info("Encrypted plaintext TOTP secrets", "count", n)
 			}
 
-			// Auto-upgrade: ensure all default collections exist in every workspace.
-			// This is safe because SeedDefaultCollections skips collections that already exist.
-			if workspaces, err := s.ListWorkspaces(); err == nil {
-				slog.Info("auto-upgrade: checking workspaces for missing default collections", "count", len(workspaces))
-				for _, ws := range workspaces {
-					if err := s.SeedDefaultCollections(ws.ID); err != nil {
-						slog.Warn("failed to seed defaults for workspace", "workspace", ws.Slug, "error", err)
-					}
-				}
-			} else {
-				slog.Warn("failed to list workspaces for auto-upgrade", "error", err)
-			}
+			// Auto-upgrade hook removed in IDEA-1479. The historical
+			// SeedDefaultCollections backfill was incompatible with templates
+			// that intentionally diverge from Defaults() (e.g. `blank`). Future
+			// changes that need to backfill collections into existing workspaces
+			// should be implemented as explicit migrations in
+			// internal/store/migrations/.
 
 			srv := server.New(s)
 			srv.SetVersion(version, commit, buildTime)

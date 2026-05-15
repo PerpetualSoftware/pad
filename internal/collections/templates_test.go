@@ -818,3 +818,98 @@ func TestSoftwareTemplatesUseSoftwareOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestBlankTemplateShape verifies the blank template (IDEA-1479) ships only
+// the two system collections (Conventions, Playbooks) with no seed items,
+// conventions, playbooks, or OnboardingPrimaryRef. This is the contract: a
+// new workspace with system rails only, no user-facing collections.
+func TestBlankTemplateShape(t *testing.T) {
+	tmpl := GetTemplate("blank")
+	if tmpl == nil {
+		t.Fatal("blank template missing")
+	}
+	if tmpl.Category != CategoryCustom {
+		t.Errorf("blank category = %q, want %q", tmpl.Category, CategoryCustom)
+	}
+	if tmpl.Icon == "" {
+		t.Error("blank template has empty Icon")
+	}
+	if tmpl.Hidden {
+		t.Error("blank template should not be Hidden")
+	}
+	if len(tmpl.Collections) != 2 {
+		t.Fatalf("blank template Collections = %d, want 2 (system only)", len(tmpl.Collections))
+	}
+	wantSlugs := map[string]bool{"conventions": true, "playbooks": true}
+	for _, c := range tmpl.Collections {
+		if !wantSlugs[c.Slug] {
+			t.Errorf("blank template has unexpected collection %q", c.Slug)
+		}
+		if !c.IsSystem {
+			t.Errorf("blank template collection %q must be IsSystem=true", c.Slug)
+		}
+		delete(wantSlugs, c.Slug)
+	}
+	for slug := range wantSlugs {
+		t.Errorf("blank template missing required system collection %q", slug)
+	}
+	if len(tmpl.SeedItems) != 0 {
+		t.Errorf("blank template SeedItems = %d, want 0", len(tmpl.SeedItems))
+	}
+	if len(tmpl.Conventions) != 0 {
+		t.Errorf("blank template Conventions = %d, want 0", len(tmpl.Conventions))
+	}
+	if len(tmpl.Playbooks) != 0 {
+		t.Errorf("blank template Playbooks = %d, want 0", len(tmpl.Playbooks))
+	}
+	if tmpl.OnboardingPrimaryRef != "" {
+		t.Errorf("blank template OnboardingPrimaryRef = %q, want empty", tmpl.OnboardingPrimaryRef)
+	}
+}
+
+// TestBlankTemplateExcludesSoftwareCollections verifies the blank template
+// doesn't accidentally inherit the standard software user-facing collections
+// (tasks/ideas/plans/docs). Drift here means the template no longer solves
+// the motivating use case — agent-self workspaces want zero ghost
+// collections.
+func TestBlankTemplateExcludesSoftwareCollections(t *testing.T) {
+	tmpl := GetTemplate("blank")
+	if tmpl == nil {
+		t.Fatal("blank template missing")
+	}
+	forbidden := []string{"tasks", "ideas", "plans", "docs"}
+	for _, c := range tmpl.Collections {
+		for _, slug := range forbidden {
+			if c.Slug == slug {
+				t.Errorf("blank template leaked software collection %q", slug)
+			}
+		}
+	}
+}
+
+// TestBlankTemplateAppearsInPicker verifies the blank template is surfaced
+// by GroupTemplatesByCategory under a Custom group. The picker iterates
+// this helper, so a missing Custom group would hide the template entirely.
+func TestBlankTemplateAppearsInPicker(t *testing.T) {
+	groups := GroupTemplatesByCategory()
+	var customGroup *CategoryGroup
+	for i, g := range groups {
+		if g.Category == CategoryCustom {
+			customGroup = &groups[i]
+			break
+		}
+	}
+	if customGroup == nil {
+		t.Fatal("GroupTemplatesByCategory did not return a Custom group containing the blank template")
+	}
+	found := false
+	for _, tmpl := range customGroup.Templates {
+		if tmpl.Name == "blank" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Custom group does not contain the blank template; got %+v", customGroup.Templates)
+	}
+}

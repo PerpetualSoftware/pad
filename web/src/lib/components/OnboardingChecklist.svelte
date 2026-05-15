@@ -5,10 +5,22 @@
 		wsSlug: string;
 		username?: string;
 		byCollection: Record<string, Record<string, number>>;
+		// Slugs of collections that actually exist in this workspace. Steps
+		// targeting missing collections (e.g. blank-template workspaces with
+		// no plans/tasks/docs) are filtered out so users don't get
+		// "Collection not found" links.
+		collectionSlugs?: string[];
 		ondismiss?: () => void;
 	}
 
-	let { wsSlug, username = '', byCollection, ondismiss }: Props = $props();
+	let { wsSlug, username = '', byCollection, collectionSlugs, ondismiss }: Props = $props();
+
+	let collectionSet = $derived(new Set(collectionSlugs ?? []));
+	function collectionExists(slug: string): boolean {
+		// If collectionSlugs wasn't provided, fall back to "assume exists"
+		// for backward compat with callers that haven't been updated.
+		return collectionSlugs === undefined ? true : collectionSet.has(slug);
+	}
 
 	let copiedHint = $state<string | null>(null);
 
@@ -29,9 +41,14 @@
 		href: string;
 		done: boolean;
 		hint: string;
+		// Optional gate: if set, this step is only shown when the target
+		// collection exists in the workspace. The conventions step has no
+		// gate because the conventions collection is system-level and
+		// shipped by every template (including blank).
+		requiresCollection?: string;
 	}
 
-	let steps = $derived<Step[]>([
+	let allSteps = $derived<Step[]>([
 		{
 			title: 'Add project conventions',
 			href: `/${username}/${wsSlug}/library`,
@@ -42,24 +59,29 @@
 			title: 'Create your first plan',
 			href: `/${username}/${wsSlug}/plans`,
 			done: collectionHasItems('plans'),
-			hint: '/pad create a plan for what I\'m working on'
+			hint: '/pad create a plan for what I\'m working on',
+			requiresCollection: 'plans'
 		},
 		{
 			title: 'Add a few tasks',
 			href: `/${username}/${wsSlug}/tasks`,
 			done: collectionItemCount('tasks') >= 3,
-			hint: '/pad break down my current work into tasks'
+			hint: '/pad break down my current work into tasks',
+			requiresCollection: 'tasks'
 		},
 		{
 			title: 'Write an architecture doc',
 			href: `/${username}/${wsSlug}/docs`,
 			done: collectionHasItems('docs'),
-			hint: '/pad document the architecture of this project'
+			hint: '/pad document the architecture of this project',
+			requiresCollection: 'docs'
 		}
 	]);
 
+	let steps = $derived(allSteps.filter(s => !s.requiresCollection || collectionExists(s.requiresCollection)));
+
 	let completedCount = $derived(steps.filter((s) => s.done).length);
-	let progressPct = $derived(Math.round((completedCount / steps.length) * 100));
+	let progressPct = $derived(steps.length === 0 ? 0 : Math.round((completedCount / steps.length) * 100));
 
 	async function copyHint(text: string) {
 		const ok = await copyToClipboard(text);

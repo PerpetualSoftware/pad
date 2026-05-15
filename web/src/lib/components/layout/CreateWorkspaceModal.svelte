@@ -171,16 +171,6 @@
 								</button>
 							{/each}
 						{/each}
-						<button
-							class="template-card"
-							class:selected={selectedTemplate === ''}
-							onclick={() => (selectedTemplate = '')}
-						>
-							<span class="tpl-text">
-								<span class="tpl-name">blank</span>
-								<span class="tpl-desc">Empty workspace</span>
-							</span>
-						</button>
 					</div>
 				{/if}
 			{:else}

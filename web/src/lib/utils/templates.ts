@@ -11,6 +11,7 @@ export const CATEGORY_ORDER = [
 	'content',
 	'operations',
 	'personal',
+	'custom',
 ] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -20,6 +21,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 	content: 'Content',
 	operations: 'Operations',
 	personal: 'Personal',
+	custom: 'Custom',
 };
 
 export function categoryLabel(slug: string | undefined): string {

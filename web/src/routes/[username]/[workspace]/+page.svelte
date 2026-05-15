@@ -146,6 +146,7 @@
 
 	let totalItems = $derived(dashboard?.summary.total_items ?? 0);
 	let firstCollection = $derived(collections.filter(c => !c.is_system && c.slug !== 'tasks').sort((a, b) => a.sort_order - b.sort_order)[0]);
+	let hasTasksCollection = $derived(collections.some(c => c.slug === 'tasks'));
 
 	function statusColor(status: string): string {
 		const s = status.toLowerCase().replace(/-/g, '_');
@@ -247,7 +248,9 @@
 				{#if firstCollection}
 					<button class="btn btn-secondary" onclick={() => uiStore.requestQuickAdd(firstCollection.slug)}>{firstCollection.icon} New {firstCollection.name.replace(/s$/, '')}</button>
 				{/if}
-				<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd('tasks')}>+ New Task</button>
+				{#if hasTasksCollection}
+					<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd('tasks')}>+ New Task</button>
+				{/if}
 			</div>
 		</header>
 
@@ -273,7 +276,7 @@
 		{/if}
 		{#if totalItems === 0 && !onboardingDismissed}
 			<div class="onboarding-wrapper">
-				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} ondismiss={dismissOnboarding} />
+				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} collectionSlugs={collections.map(c => c.slug)} ondismiss={dismissOnboarding} />
 				<button class="connect-card" type="button" onclick={() => (connectOpen = true)}>
 					<span class="connect-card-icon" aria-hidden="true">
 						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
