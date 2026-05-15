@@ -190,6 +190,61 @@ func TestExportWorkspaceHandlesNullSettings(t *testing.T) {
 	}
 }
 
+// TestExportImportRoundTripWithNullSettings guards the paired contract created
+// by the BUG-1482 round-2 fix: now that ExportWorkspace successfully reads
+// NULL-settings rows (surfacing them as `""`), ImportWorkspace must be able
+// to re-insert those bundles. Without the import-side `""→"{}"` coercion at
+// export.go:~210, this round-trip would fail at INSERT time on Postgres
+// because `""` is not valid JSONB. SQLite is type-loose and accepts `""`,
+// but downstream consumers (gated on `c.Settings != ""`) would interpret an
+// empty-string-settings collection as "no settings" — silently different
+// from the original NULL row's semantic intent.
+func TestExportImportRoundTripWithNullSettings(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "round-trip-owner@test.com", "Round Trip Owner", "password123")
+	src := createTestWorkspace(t, s, "Export-Import Round Trip NULL Settings")
+
+	if err := s.SeedDefaultCollections(src.ID); err != nil {
+		t.Fatalf("SeedDefaultCollections error: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), src.ID); err != nil {
+		t.Fatalf("force NULL settings: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace error: %v", err)
+	}
+
+	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace error (BUG-1482 import-side regression): %v", err)
+	}
+	if imported == nil {
+		t.Fatalf("ImportWorkspace returned nil workspace")
+	}
+
+	// Re-read the imported collections and assert they hold valid JSON
+	// (the import-side coercion materialized `""` back to `"{}"`).
+	colls, err := s.ListCollections(imported.ID)
+	if err != nil {
+		t.Fatalf("ListCollections on imported workspace: %v", err)
+	}
+	if len(colls) == 0 {
+		t.Fatalf("imported workspace has 0 collections; expected the round-tripped defaults")
+	}
+	for _, c := range colls {
+		if c.Settings == "" {
+			t.Errorf("imported collection %q: settings should have been coerced from \"\" to a valid JSON object, got empty string", c.ID)
+			continue
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(c.Settings), &got); err != nil {
+			t.Errorf("imported collection %q: settings is not valid JSON: %v (raw=%q)", c.ID, err, c.Settings)
+		}
+	}
+}
+
 // TestSeedFromBlankTemplate verifies that bootstrapping a workspace from the
 // blank template (IDEA-1479) produces exactly two collections (Conventions,
 // Playbooks) and zero items. Drift here means the template silently grew
