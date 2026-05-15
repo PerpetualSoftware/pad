@@ -110,7 +110,7 @@ func TestCleanupMarkdown(t *testing.T) {
 		name, in, want string
 	}{
 		{
-			name: "trailing whitespace stripped",
+			name: "triple trailing whitespace stripped",
 			in:   "foo   \nbar\t\n",
 			want: "foo\nbar\n",
 		},
@@ -134,6 +134,34 @@ func TestCleanupMarkdown(t *testing.T) {
 			in:   "\n\n\nfoo\n",
 			want: "foo\n",
 		},
+		// Hard-line-break preservation: exactly two trailing spaces is
+		// the markdown idiom for <br>. cleanupMarkdown must NOT strip
+		// these or the imported content collapses.
+		{
+			name: "hard line break preserved",
+			in:   "Line A  \nLine B\n",
+			want: "Line A  \nLine B\n",
+		},
+		{
+			name: "single trailing space stripped",
+			in:   "Line A \nLine B\n",
+			want: "Line A\nLine B\n",
+		},
+		{
+			name: "three trailing spaces stripped",
+			in:   "Line A   \nLine B\n",
+			want: "Line A\nLine B\n",
+		},
+		{
+			name: "two spaces plus tab stripped (tab disqualifies)",
+			in:   "Line A  \t\nLine B\n",
+			want: "Line A\nLine B\n",
+		},
+		{
+			name: "blank line with two spaces is just whitespace junk",
+			in:   "Line A\n  \nLine B\n",
+			want: "Line A\n\nLine B\n",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,5 +169,19 @@ func TestCleanupMarkdown(t *testing.T) {
 				t.Errorf("cleanupMarkdown(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestConvertGeneric_RelativeURLsResolvedOnFallback(t *testing.T) {
+	// Document with no recognizable article container — Readability
+	// usually falls through to the whole-body conversion. Relative
+	// links in the fallback path must be resolved against pageURL.
+	html := []byte(`<a href="/relative/path">link</a>`)
+	res, err := ConvertGeneric(html, "https://example.com/some/page")
+	if err != nil {
+		t.Fatalf("ConvertGeneric: %v", err)
+	}
+	if !strings.Contains(res.Markdown, "https://example.com/relative/path") {
+		t.Errorf("Markdown = %q, want absolute URL anchored at example.com", res.Markdown)
 	}
 }

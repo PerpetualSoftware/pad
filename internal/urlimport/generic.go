@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	htmltomd "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/go-shiori/go-readability"
 )
 
@@ -54,7 +55,15 @@ func ConvertGeneric(html []byte, pageURL string) (*ConvertResult, error) {
 		source = string(html)
 	}
 
-	md, err := htmltomd.ConvertString(source)
+	// WithDomain resolves relative links/images against pageURL. Without
+	// it, fallback-path output keeps href="/foo" which would resolve
+	// against the Pad host when rendered — broken navigation.
+	var convertOpts []converter.ConvertOptionFunc
+	if pageURL != "" {
+		convertOpts = append(convertOpts, converter.WithDomain(pageURL))
+	}
+
+	md, err := htmltomd.ConvertString(source, convertOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("urlimport: html→markdown: %w", err)
 	}
@@ -76,20 +85,40 @@ func ConvertGeneric(html []byte, pageURL string) (*ConvertResult, error) {
 // each line, normalizes line endings, and strips a single trailing
 // newline so the result composes cleanly when concatenated.
 //
+// The line-by-line trim preserves the markdown "two trailing spaces"
+// hard-line-break idiom — html-to-markdown emits `<br>` as `"  \n"` so
+// blindly stripping trailing whitespace would silently demote hard
+// breaks to soft wraps. Trailing runs of 1, 3+, or any tab-mix are
+// still removed.
+//
 // Cleanup is intentionally conservative — we don't try to "fix" the
 // converter's structural choices (heading levels, code-fence languages,
 // list markers). Those are the converter's responsibility.
-var (
-	reTrailingSpace = regexp.MustCompile(`[ \t]+\n`)
-	reBlankRuns     = regexp.MustCompile(`\n{3,}`)
-)
+var reBlankRuns = regexp.MustCompile(`\n{3,}`)
 
 func cleanupMarkdown(md string) string {
 	// Normalize CRLF / CR to LF.
 	md = strings.ReplaceAll(md, "\r\n", "\n")
 	md = strings.ReplaceAll(md, "\r", "\n")
-	// Strip trailing whitespace on each line.
-	md = reTrailingSpace.ReplaceAllString(md, "\n")
+
+	// Per-line trailing whitespace cleanup that preserves
+	// hard-line-break markers (exactly two trailing spaces, no tabs).
+	lines := strings.Split(md, "\n")
+	for i, line := range lines {
+		stripped := strings.TrimRight(line, " \t")
+		// Hard-line-break: line ends with exactly two spaces (no tab
+		// mixed in) and the stripped form is non-empty. A "trailing
+		// space" line that's otherwise blank is just whitespace junk.
+		spaces := len(line) - len(stripped)
+		hadTab := strings.ContainsAny(line[len(stripped):], "\t")
+		if !hadTab && spaces == 2 && stripped != "" {
+			lines[i] = stripped + "  "
+		} else {
+			lines[i] = stripped
+		}
+	}
+	md = strings.Join(lines, "\n")
+
 	// Collapse runs of >=3 newlines down to exactly 2 (one blank line).
 	md = reBlankRuns.ReplaceAllString(md, "\n\n")
 	return strings.TrimSpace(md) + "\n"
