@@ -940,6 +940,11 @@ func (s *Server) setupRouter() {
 			// Playbook Library
 			r.Get("/playbook-library", s.handlePlaybookLibrary)
 
+			// URL import — fetch a remote page and return markdown.
+			// Side-effect-free; the client decides what to do with the
+			// markdown. See PLAN-1467 / TASK-1472 / internal/urlimport.
+			r.Post("/import/url", s.handleImportURL)
+
 			// Invitations (outside workspace scope)
 			r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
 
