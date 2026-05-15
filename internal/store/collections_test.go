@@ -6,6 +6,82 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// TestListCollectionsMinimalHandlesNullSettings is the regression guard for
+// BUG-1482: `ListCollectionsMinimal` previously used `COALESCE(settings, '')`
+// which fails at planner time on Postgres because `collections.settings` is
+// JSONB and `''` is not valid JSON (SQLSTATE 22P02). The query failed
+// regardless of row contents. SQLite's loose typing hid the issue.
+//
+// This test exercises both drivers and explicitly stores a NULL `settings`
+// to cover the column-nullability branch — neither the SQLite migration
+// (`settings TEXT DEFAULT '{}'`) nor the Postgres one (`settings JSONB
+// DEFAULT '{}'`) marks the column NOT NULL, so production data can legally
+// hold NULL. The contract is that NULL surfaces as `""` so existing
+// `if c.Settings != ""` guards in downstream consumers continue to work.
+func TestListCollectionsMinimalHandlesNullSettings(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "ListCollectionsMinimal NULL Settings")
+
+	if err := s.SeedDefaultCollections(ws.ID); err != nil {
+		t.Fatalf("SeedDefaultCollections error: %v", err)
+	}
+
+	// Force one collection's settings to NULL via direct SQL to simulate
+	// legacy / partially-initialized rows. CreateCollection's normal path
+	// coerces empty settings to "{}", so we have to bypass it.
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET settings = NULL WHERE workspace_id = ?`), ws.ID); err != nil {
+		t.Fatalf("force NULL settings: %v", err)
+	}
+
+	colls, err := s.ListCollectionsMinimal(ws.ID)
+	if err != nil {
+		t.Fatalf("ListCollectionsMinimal error (BUG-1482 regression): %v", err)
+	}
+	if len(colls) == 0 {
+		t.Fatalf("ListCollectionsMinimal returned 0 collections; expected the seeded defaults")
+	}
+	for _, c := range colls {
+		if c.Settings != "" {
+			t.Errorf("collection %q: expected NULL settings to surface as empty string sentinel, got %q", c.ID, c.Settings)
+		}
+	}
+}
+
+// TestListCollectionsMinimalReturnsSettingsJSON verifies the happy path:
+// a collection with non-NULL JSON settings round-trips through the minimal
+// query intact on both drivers.
+func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "ListCollectionsMinimal JSON Settings")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:     "Things",
+		Slug:     "things",
+		Settings: `{"done_field":"status","done_values":["closed"]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	colls, err := s.ListCollectionsMinimal(ws.ID)
+	if err != nil {
+		t.Fatalf("ListCollectionsMinimal error: %v", err)
+	}
+	var found bool
+	for _, c := range colls {
+		if c.ID != created.ID {
+			continue
+		}
+		found = true
+		if c.Settings == "" {
+			t.Errorf("expected non-empty settings JSON, got empty string")
+		}
+	}
+	if !found {
+		t.Fatalf("created collection %q not returned by ListCollectionsMinimal", created.ID)
+	}
+}
+
 // TestSeedFromBlankTemplate verifies that bootstrapping a workspace from the
 // blank template (IDEA-1479) produces exactly two collections (Conventions,
 // Playbooks) and zero items. Drift here means the template silently grew

@@ -111,8 +111,18 @@ func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collectio
 // handlers that build a ctxMap for isItemDone). Includes soft-deleted
 // collections so items still attached to them can be evaluated.
 func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection, error) {
+	// Note: we deliberately avoid `COALESCE(settings, '')` here. On Postgres,
+	// `collections.settings` is JSONB and `COALESCE(jsonb_col, '')` forces a
+	// planner-time cast of `''` to JSON which fails with SQLSTATE 22P02
+	// ("invalid input syntax for type json"), regardless of row contents.
+	// SQLite is type-loose and accepts it, which is why the bug was latent
+	// (BUG-1482). Scanning into sql.NullString is dialect-agnostic and
+	// preserves the historical sentinel: a NULL settings value materializes
+	// as `""`, matching the contract that downstream consumers
+	// (buildDoneContextMap, ListCollections's own scan loop) already gate on
+	// via `if c.Settings != ""`.
 	rows, err := s.db.Query(
-		s.q(`SELECT id, schema, COALESCE(settings, '') FROM collections WHERE workspace_id = ?`),
+		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),
 		workspaceID,
 	)
 	if err != nil {
@@ -122,8 +132,12 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 	var result []models.Collection
 	for rows.Next() {
 		var c models.Collection
-		if err := rows.Scan(&c.ID, &c.Schema, &c.Settings); err != nil {
+		var settings sql.NullString
+		if err := rows.Scan(&c.ID, &c.Schema, &settings); err != nil {
 			return nil, fmt.Errorf("scan collection minimal: %w", err)
+		}
+		if settings.Valid {
+			c.Settings = settings.String
 		}
 		result = append(result, c)
 	}
