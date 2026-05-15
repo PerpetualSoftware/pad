@@ -35,8 +35,10 @@ require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cristalhq/jwt/v4 v4.0.2 // indirect
@@ -78,6 +80,9 @@ require (
 	github.com/ory/go-acc v0.2.9-0.20230103102148-6b1c9a70dbbe // indirect
 	github.com/ory/go-convenience v0.1.0 // indirect
 	github.com/ory/x v0.0.665 // indirect
+	github.com/pb33f/jsonpath v0.8.2 // indirect
+	github.com/pb33f/libopenapi v0.36.3 // indirect
+	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
@@ -111,6 +116,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.0.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
+	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
