@@ -370,6 +370,169 @@ func TestCreateActivityDebounced_NoUserID(t *testing.T) {
 	}
 }
 
+func TestCollapseChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "single entry unchanged",
+			in:   "status: open → fixed",
+			want: "status: open → fixed",
+		},
+		{
+			name: "different fields preserved",
+			in:   "status: open → fixed; priority: low → high",
+			want: "status: open → fixed; priority: low → high",
+		},
+		{
+			name: "consecutive same-field run collapses to first→last",
+			// The BUG-1419 reproducer: a typed-out value chained per keystroke.
+			in:   "component: → e; component: e → ed; component: ed → edi; component: edi → editor",
+			want: "component: → editor",
+		},
+		{
+			name: "net no-op (typed then backspaced) dropped",
+			// User typed "tip" then backspaced everything — no net change,
+			// no point keeping the entry at all.
+			in:   "component: → t; component: t → ti; component: ti → tip; component: tip → ti; component: ti → t; component: t → ",
+			want: "",
+		},
+		{
+			name: "interleaved fields keep chronology (no global merge)",
+			// Run-based collapse only merges *adjacent* same-field entries;
+			// non-adjacent ones stay split so the timeline preserves the
+			// real edit order.
+			in:   "component: a → b; status: open → fixed; component: b → c",
+			want: "component: a → b; status: open → fixed; component: b → c",
+		},
+		{
+			name: "leading from preserved through run",
+			in:   "component: editor → ueditor; component: ueditor → uieditor; component: uieditor → ui/editor",
+			want: "component: editor → ui/editor",
+		},
+		{
+			name: "unparseable entries preserved verbatim (no field anchor → no collapse)",
+			// Defensive: malformed entries get passed through untouched so
+			// we never silently drop a metadata segment we don't understand.
+			in:   "weird-no-arrow-here; status: open → fixed",
+			want: "weird-no-arrow-here; status: open → fixed",
+		},
+		{
+			name: "trailing/empty segments tolerated",
+			in:   "; status: open → fixed; ; ",
+			want: "status: open → fixed",
+		},
+		{
+			name: "field cleared to empty (deletion to empty value)",
+			// diffFields renders a deletion-to-empty as "<key>: <from> → "
+			// with a trailing space. After segment-level TrimSpace the
+			// trailing space is gone, so the parser falls back to the
+			// "<value> →" suffix branch to recover from="value", to="".
+			in:   "component: ui/editor → ",
+			want: "component: ui/editor → ",
+		},
+		{
+			name: "single structured-field same-display entry preserved",
+			// Regression for Codex round 1 [P2]: diffFields emits
+			// `implementation_notes: (1 note) → (1 note)` to signal that
+			// a same-cardinality replacement occurred (e.g. one note
+			// swapped for a different note). The display strings collapse
+			// to identical labels because formatChangeValue intentionally
+			// renders array-valued fields by count, not content — but the
+			// underlying data did change. collapseChanges must NOT drop
+			// this entry; only multi-segment runs that collapse to a
+			// from==to result are true no-ops.
+			in:   "implementation_notes: (1 note) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "structured-field no-op preserved even when interleaved with a typed run",
+			// Defense in depth: a structured-field same-display entry
+			// must survive when surrounded by a typed-field collapse.
+			in:   "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
+			want: "component: → t; implementation_notes: (1 note) → (1 note); component: t → tip",
+		},
+		{
+			name: "repeated same-display structured-field entries preserved",
+			// Codex review round 2 [P2]: two PATCHes that both swapped a
+			// single note for a different single note. Both render as
+			// `(1 note) → (1 note)` because formatChangeValue summarises
+			// by count, but the underlying notes differ each time.
+			// hadTransition stays false through the merge (every `to`
+			// equals the anchor `from`), so the from==to drop rule
+			// doesn't fire — the entry is preserved as a single
+			// "something happened twice on this field" record.
+			in:   "implementation_notes: (1 note) → (1 note); implementation_notes: (1 note) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "real swing that nets to zero IS still dropped",
+			// Regression cover for the hadTransition rule: a typed
+			// `foo → bar → foo` run still drops as a net no-op
+			// because intermediate `to=bar` differed from anchor
+			// `from=foo`. Without this, hadTransition would never
+			// flag a "true cancellation" outside the empty-start case.
+			in:   "name: foo → bar; name: bar → foo",
+			want: "",
+		},
+		{
+			name: "structured count-return swing preserved (lossy summaries)",
+			// Codex review round 3 [P2]: 1 note A → 2 notes A+B → 1
+			// note B. diffFields emits both transitions; the merged
+			// shape looks like a foo→bar→foo cancellation, but the
+			// final note differs from the original. hasLossySummary
+			// blocks the drop — we can't recover the raw delta from
+			// the merged string, so we preserve the entry.
+			in:   "implementation_notes: (1 note) → (2 notes); implementation_notes: (2 notes) → (1 note)",
+			want: "implementation_notes: (1 note) → (1 note)",
+		},
+		{
+			name: "lossy summary appearing only on one side still pins the run",
+			// Defensive: even if just `to` (or just `from`) is a lossy
+			// label — e.g. clearing a field renders as "(1 note) → " —
+			// the run must be preserved if it ever returns to from==to
+			// via a structured intermediate.
+			in:   "implementation_notes: original_text → (1 note); implementation_notes: (1 note) → original_text",
+			want: "implementation_notes: original_text → original_text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := collapseChanges(tt.in); got != tt.want {
+				t.Errorf("collapseChanges:\n  in:   %q\n  got:  %q\n  want: %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Regression for the BUG-1466 follow-up: when CreateActivityDebounced
+// merges multiple PATCHes that all hit the same field, the merged
+// `changes` string should collapse into a single first→last entry
+// instead of a 30-step keystroke chain (as seen on BUG-1419's timeline
+// pre-fix).
+func TestMergeActivityMeta_CollapsesSameFieldRun(t *testing.T) {
+	existing := `{"changes":"component: → e; component: e → ed; component: ed → edi"}`
+	incoming := `{"changes":"component: edi → editor"}`
+	got := mergeActivityMeta(existing, incoming)
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+	changes, _ := m["changes"].(string)
+	want := "component: → editor"
+	if changes != want {
+		t.Errorf("expected collapsed run, got %q (want %q)", changes, want)
+	}
+}
+
 func TestMergeActivityMeta(t *testing.T) {
 	tests := []struct {
 		name     string

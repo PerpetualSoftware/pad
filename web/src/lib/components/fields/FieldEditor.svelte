@@ -148,17 +148,145 @@ handlers — onchange is never called.
 	}
 
 	// ── Input handlers ─────────────────────────────────────────────────────
+	//
+	// Typed inputs (text / number / url) debounce the parent's `onchange`
+	// so each keystroke isn't persisted as a separate item update — that
+	// produced 30-step keystroke chains in the audit log when a user
+	// typed `ui/editor/tiptap` into a `component` field (BUG-1466).
+	//
+	// Discrete inputs (select / date / checkbox / number ±1 buttons) keep
+	// firing immediately — they're single user actions, not typing.
+	//
+	// On blur we flush any pending save eagerly so tabbing out of the
+	// field commits right away instead of waiting out the idle window;
+	// likewise on unmount, so navigating away never drops a typed value.
+	//
+	// Mirrors the markdown content debounce pattern in
+	// routes/[username]/[workspace]/[collection]/[slug]/+page.svelte
+	// (`contentDebounceTimer`, 1.2s for content); we use 500ms here
+	// because fields are small and users expect quicker confirmation
+	// than the body editor.
+
+	const TYPING_DEBOUNCE_MS = 500;
+	let typingTimer: ReturnType<typeof setTimeout> | undefined;
+	let pendingValue: any = undefined;
+	// `hasPending` is intentionally a plain let, not $state. It's only
+	// read inside imperative handlers (scheduleSave, flushPendingSave,
+	// handleNumberStep, the value-track $effect, the unmount cleanup)
+	// — never from a template or other reactive context. Making it
+	// $state would establish a reactive dependency from the
+	// value-track $effect onto hasPending: scheduleSave would set
+	// hasPending=true, which would retrigger the $effect, which reads
+	// hasPending and clears it — cancelling every keystroke before the
+	// debounce can fire. Per Codex review round 4 [P1].
+	let hasPending = false;
+
+	function scheduleSave(next: any) {
+		pendingValue = next;
+		hasPending = true;
+		clearTimeout(typingTimer);
+		typingTimer = setTimeout(() => {
+			typingTimer = undefined;
+			const v = pendingValue;
+			pendingValue = undefined;
+			hasPending = false;
+			onchange(v);
+		}, TYPING_DEBOUNCE_MS);
+	}
+
+	function flushPendingSave() {
+		if (!hasPending) return;
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		const v = pendingValue;
+		pendingValue = undefined;
+		hasPending = false;
+		onchange(v);
+	}
+
+	// Cleanup on unmount: drop any pending typed save. We deliberately
+	// do NOT flush here:
+	//   - When unmount fires because the parent navigated to an item
+	//     whose schema doesn't include this field key, the parent's
+	//     `item` has already been replaced. Calling onchange now would
+	//     route the save through `updateField`, which reads the CURRENT
+	//     `item` — writing field-A's typed value into item-B (Codex
+	//     review round 3 [P1]).
+	//   - The other unmount cases (route teardown, parent destroy) have
+	//     ambiguous parent state too.
+	// Blur is the supported commit gesture: tabbing out, clicking
+	// elsewhere within the page, or the ±1 buttons — all flush via the
+	// onblur handler before any teardown. Unmount-without-blur means
+	// the user navigated away aggressively; respecting that is safer
+	// than a best-effort write to a context we can't validate.
+	$effect(() => {
+		return () => {
+			if (hasPending) {
+				clearTimeout(typingTimer);
+				typingTimer = undefined;
+				pendingValue = undefined;
+				hasPending = false;
+			}
+		};
+	});
+
+	// Drop pending typed value if the parent updates `value` externally
+	// while we have a pending save. The parent could re-prop this
+	// FieldEditor mid-edit for legitimate reasons:
+	//
+	//   - Navigation to a different item within the same route reuses
+	//     the component (same schema, same field.key) with a different
+	//     item's value. Without this guard the pending value would be
+	//     flushed against the parent's `updateField`, which reads the
+	//     CURRENT `item.id` — leaking item A's edit into item B
+	//     (Codex review round 3 [P1]).
+	//   - A collab peer / SSE-driven update of the same field on the
+	//     same item also rebases the prop. The user's in-flight typed
+	//     value is no longer the right answer; drop it rather than
+	//     silently overwrite the peer edit.
+	//
+	// The trade-off: a typed-but-unflushed value is lost when the user
+	// navigates within 500ms. Acceptable — they actively navigated, and
+	// blur (the usual way to leave an input) already flushes eagerly.
+	//
+	// We don't need to distinguish "our save echoing back" from
+	// "external update" because the timer callback clears `hasPending`
+	// BEFORE calling onchange, so by the time this $effect runs in
+	// response to our own save's echo, hasPending is already false.
+	$effect(() => {
+		void value; // track dependency
+		if (hasPending) {
+			clearTimeout(typingTimer);
+			typingTimer = undefined;
+			pendingValue = undefined;
+			hasPending = false;
+		}
+	});
 
 	function handleTextInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		onchange(target.value);
+		scheduleSave(target.value);
 	}
 
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		if (target.value === '') { onchange(null); return; }
+		if (target.value === '') { scheduleSave(null); return; }
 		const num = Number(target.value);
-		if (!isNaN(num)) onchange(num);
+		if (!isNaN(num)) scheduleSave(num);
+	}
+
+	function handleNumberStep(delta: number) {
+		// ±1 buttons are a discrete action that supersedes any in-flight
+		// typed value. Compute the new value from the pending typed value
+		// (if any) BEFORE clearing the timer — `value` is the parent
+		// prop and would lag a freshly-typed pending number until the
+		// flush round-trips back. Per Codex review round 1 [P1].
+		const base = hasPending ? Number(pendingValue) || 0 : Number(value) || 0;
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		pendingValue = undefined;
+		hasPending = false;
+		onchange(base + delta);
 	}
 
 	function handleDateInput(e: Event) {
@@ -355,14 +483,21 @@ handlers — onchange is never called.
 	</div>
 
 {:else if field.type === 'number'}
-	<!-- Custom number input with +/- buttons -->
+	<!-- Custom number input with +/- buttons.
+	     onmousedown={preventDefault} on the buttons keeps the input
+	     focused across the click — without this, the natural focus
+	     transfer fires the input's onblur (→ flushPendingSave clears
+	     hasPending) BEFORE the button's onclick runs, so
+	     handleNumberStep would read stale `value` from the parent prop.
+	     Per Codex review round 2 [P1]. -->
 	<div class="number-wrapper">
 		<button
 			class="number-btn"
 			type="button"
 			tabindex={-1}
 			aria-label="Decrease"
-			onclick={() => onchange((Number(value) || 0) - 1)}
+			onmousedown={(e) => e.preventDefault()}
+			onclick={() => handleNumberStep(-1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -374,6 +509,7 @@ handlers — onchange is never called.
 			inputmode="numeric"
 			value={value ?? ''}
 			oninput={handleNumberInput}
+			onblur={flushPendingSave}
 			placeholder="—"
 		/>
 		{#if field.suffix}
@@ -384,7 +520,8 @@ handlers — onchange is never called.
 			type="button"
 			tabindex={-1}
 			aria-label="Increase"
-			onclick={() => onchange((Number(value) || 0) + 1)}
+			onmousedown={(e) => e.preventDefault()}
+			onclick={() => handleNumberStep(1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -401,6 +538,7 @@ handlers — onchange is never called.
 			type="url"
 			value={value ?? ''}
 			oninput={handleTextInput}
+			onblur={flushPendingSave}
 			placeholder="https://..."
 		/>
 		{#if value}
@@ -436,6 +574,7 @@ handlers — onchange is never called.
 		type="text"
 		value={value ?? ''}
 		oninput={handleTextInput}
+		onblur={flushPendingSave}
 	/>
 {/if}
 

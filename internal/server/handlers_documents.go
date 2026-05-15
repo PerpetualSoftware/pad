@@ -435,9 +435,14 @@ func diffFields(oldFields, newFields string) string {
 		changes = append(changes, fmt.Sprintf("%s: %s → %s", key, oldStr, newStr))
 	}
 
-	// Sort for deterministic output
+	// Sort for deterministic output.
 	sort.Strings(changes)
-	return strings.Join(changes, ", ")
+	// "; " matches mergeActivityMeta's joiner and the web timeline parser's
+	// split delimiter (TimelineActivityCard.svelte splits on ';'), so a
+	// multi-field PATCH renders as individual change pills instead of one
+	// unparseable blob. Same delimiter for single-PATCH and merged outputs
+	// lets collapseChanges treat the whole string uniformly.
+	return strings.Join(changes, "; ")
 }
 
 // formatChangeValue renders a JSON-decoded field value as a human-readable

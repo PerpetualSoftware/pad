@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -101,9 +102,9 @@ func mergeActivityMeta(existing, incoming string) string {
 
 	if newChanges != "" {
 		if existChanges != "" {
-			existMap["changes"] = existChanges + "; " + newChanges
+			existMap["changes"] = collapseChanges(existChanges + "; " + newChanges)
 		} else {
-			existMap["changes"] = newChanges
+			existMap["changes"] = collapseChanges(newChanges)
 		}
 	}
 	// If neither had changes, don't add an empty one.
@@ -114,6 +115,190 @@ func mergeActivityMeta(existing, incoming string) string {
 		return existing
 	}
 	return string(result)
+}
+
+// collapseChanges takes a "; "-delimited list of "field: old → new" entries
+// and collapses runs of consecutive same-field entries into a single
+// "field: first-old → last-new" entry. Net no-ops (first-old == last-new
+// after collapse) are dropped entirely.
+//
+// Why: CreateActivityDebounced accumulates changes across PATCHes within
+// the 5-minute cooldown. Before BUG-1466's web-side typing debounce,
+// rapid typing in a structured text field produced 30+ chained
+// per-keystroke entries on a single activity row (visible on BUG-1419's
+// timeline). Even with the debounce in place, two edits to the same
+// field in the same window still read more naturally as one transition.
+//
+// Parsing assumptions:
+//   - Entries are joined by "; " — diffFields uses the same separator so
+//     a single split-by-"; " produces a flat list regardless of whether
+//     the changes string came from one multi-field PATCH or several.
+//   - Each entry has the shape "<field>: <from> → <to>" with " → " (U+2192,
+//     padded) as the arrow. Unparseable entries are preserved verbatim
+//     (they never match a field name, so they never collapse).
+//   - Collapse is run-based, not global: `a:1→2; b:x→y; a:2→3` stays as-is
+//     (interleaved field edits keep their chronology). Easier to reason
+//     about and more accurate as a history.
+func collapseChanges(s string) string {
+	if s == "" {
+		return ""
+	}
+	const arrow = " → "
+	type entry struct {
+		field, from, to string
+		raw             string // preserved verbatim for unparseable entries
+		// mergedCount tracks how many input segments were collapsed into
+		// this entry. mergedCount > 1 means at least one merge happened.
+		mergedCount int
+		// hadTransition is true iff any input entry in the run produced a
+		// display-string transition — i.e. either the initial entry had
+		// from != to, or a subsequent entry's `to` differed from the
+		// run's anchored `from`. Used together with hasLossySummary
+		// below to decide whether a from==to result is a true net no-op.
+		hadTransition bool
+		// hasLossySummary is true iff ANY entry in the run carried a
+		// `(N items)` / `(object)` / `(1 note)` display value — the
+		// lossy summary form that formatChangeValue emits for
+		// structured fields (handlers_documents.go::formatChangeValue).
+		//
+		// When the display value is lossy, a from==to result CAN'T be
+		// trusted as "no underlying change." Counter-example: editing
+		// implementation_notes from 1 note → 2 notes → 1 different
+		// note collapses to `(1 note) → (1 note)` with hadTransition=true,
+		// but the final note differs from the original — diffFields
+		// emitted both entries because reflect.DeepEqual saw real
+		// changes (see TestDiffFieldsSameCardinalityArrayChangeStillReported).
+		// We can't recover the raw values from the merged string, so
+		// we never drop a run that touched a lossy summary. Per Codex
+		// review round 3 [P2].
+		hasLossySummary bool
+	}
+
+	// isLossySummary detects formatChangeValue's display labels:
+	// `(N items)`, `(1 note)`, `(2 entries)`, `(object)`, etc. The
+	// shape — parenthesised, never produced for primitive values — is
+	// stable across formatChangeValue's known and fallback branches.
+	isLossySummary := func(v string) bool {
+		return len(v) >= 2 && strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")")
+	}
+	parts := strings.Split(s, "; ")
+	entries := make([]entry, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		colonIdx := strings.Index(p, ":")
+		if colonIdx == -1 {
+			entries = append(entries, entry{raw: p})
+			continue
+		}
+		field := strings.TrimSpace(p[:colonIdx])
+		// NB: don't TrimSpace the value-part — diffFields formats it as
+		// " <from> → <to>" with a single leading space (the ": " format
+		// separator). Trimming that leading space breaks arrow detection
+		// when `from` is empty ("→ x" → no match for " → ").
+		valuePart := p[colonIdx+1:]
+		arrowIdx := strings.Index(valuePart, arrow)
+		if arrowIdx == -1 {
+			// Deletion-to-empty case: diffFields renders this as
+			// "<key>: <from> → " which loses its trailing space when
+			// the segment is TrimSpace'd. Catch it via suffix match.
+			if strings.HasSuffix(valuePart, " →") {
+				from := strings.TrimSpace(valuePart[:len(valuePart)-len(" →")])
+				entries = append(entries, entry{
+					field: field, from: from, to: "",
+					mergedCount: 1, hadTransition: from != "",
+					hasLossySummary: isLossySummary(from),
+				})
+				continue
+			}
+			entries = append(entries, entry{raw: p})
+			continue
+		}
+		from := strings.TrimSpace(valuePart[:arrowIdx])
+		to := strings.TrimSpace(valuePart[arrowIdx+len(arrow):])
+		entries = append(entries, entry{
+			field: field, from: from, to: to,
+			mergedCount: 1, hadTransition: from != to,
+			hasLossySummary: isLossySummary(from) || isLossySummary(to),
+		})
+	}
+
+	// Walk consecutively, extending runs of the same field.
+	collapsed := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		if e.raw != "" {
+			collapsed = append(collapsed, e)
+			continue
+		}
+		if len(collapsed) > 0 {
+			prev := &collapsed[len(collapsed)-1]
+			if prev.raw == "" && prev.field == e.field {
+				if e.hadTransition || e.to != prev.from {
+					prev.hadTransition = true
+				}
+				// hasLossySummary is sticky across the run: once any
+				// entry brings a lossy display value into the chain,
+				// the merged result can never be safely treated as a
+				// raw-value no-op.
+				if e.hasLossySummary {
+					prev.hasLossySummary = true
+				}
+				prev.to = e.to
+				prev.mergedCount += e.mergedCount
+				continue
+			}
+		}
+		collapsed = append(collapsed, e)
+	}
+
+	// Drop only true net no-ops, defined as: a collapsed run
+	// (mergedCount > 1) whose from==to, whose intermediate `to` values
+	// transitioned away from the anchor at some point (hadTransition),
+	// AND whose display values are NOT lossy summaries (!hasLossySummary).
+	//
+	// Why each clause:
+	//   - mergedCount > 1: a single entry is preserved because diffFields
+	//     wouldn't emit it unless reflect.DeepEqual detected a real
+	//     change. Only collapsed runs can synthesise a fake from==to.
+	//   - hadTransition: distinguishes a real cancellation from a
+	//     repeated same-display run (Codex round 2 [P2]).
+	//   - !hasLossySummary: a `(1 note) → (2 notes) → (1 note)` run
+	//     visibly transitions and visibly returns, but the underlying
+	//     notes can be entirely different objects — the display labels
+	//     are lossy. Never drop those (Codex round 3 [P2]).
+	kept := collapsed[:0]
+	for _, e := range collapsed {
+		if e.raw == "" && e.mergedCount > 1 && e.from == e.to && e.hadTransition && !e.hasLossySummary {
+			continue
+		}
+		kept = append(kept, e)
+	}
+
+	var sb strings.Builder
+	for i, e := range kept {
+		if i > 0 {
+			sb.WriteString("; ")
+		}
+		if e.raw != "" {
+			sb.WriteString(e.raw)
+			continue
+		}
+		// Match diffFields's format: `"<field>: → <to>"` when from is
+		// empty (one space between ":" and "→"), `"<field>: <from> → <to>"`
+		// otherwise. arrow already carries its own leading space.
+		sb.WriteString(e.field)
+		if e.from == "" {
+			sb.WriteString(":")
+		} else {
+			sb.WriteString(": ")
+			sb.WriteString(e.from)
+		}
+		sb.WriteString(arrow)
+		sb.WriteString(e.to)
+	}
+	return sb.String()
 }
 
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
