@@ -4,10 +4,20 @@
 	import { api, type ImportURLResponse } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
+	// Context the modal observes about the editor at the moment of
+	// insert. `wasEmpty` mirrors editor.isEmpty BEFORE we splice in
+	// the imported markdown — the page uses this to decide whether
+	// to stamp source_url (PLAN-1467 rule: only on a previously-empty
+	// item). Reading editor.isEmpty post-insert would always return
+	// false because we just added content.
+	export interface InsertContext {
+		wasEmpty: boolean;
+	}
+
 	interface Props {
 		open: boolean;
 		editor: Editor | null;
-		onInserted?: (meta: ImportURLResponse) => void;
+		onInserted?: (meta: ImportURLResponse, ctx: InsertContext) => void;
 	}
 
 	let { open = $bindable(), editor, onInserted }: Props = $props();
@@ -85,6 +95,13 @@
 
 	function handleInsert() {
 		if (!result || !editor) return;
+		// Snapshot the editor's live emptiness BEFORE the insert. Under
+		// collab the ProseMirror doc reflects the authoritative Y.Doc
+		// state, which can include user-typed content that hasn't yet
+		// been flushed to item.content (the page's database snapshot).
+		// Capturing here gives the host page a reliable "was this a
+		// blank canvas?" signal for its source_url stamping rule.
+		const wasEmpty = editor.isEmpty;
 		// The editor's tiptap-markdown extension handles paste-time
 		// markdown decoding but `insertContent` accepts HTML directly,
 		// so we convert markdown → HTML with `marked` (the project's
@@ -93,7 +110,7 @@
 		// uses on initial setContent, so structural fidelity is high.
 		const html = marked.parse(result.markdown, { async: false }) as string;
 		editor.chain().focus().insertContent(html).run();
-		onInserted?.(result);
+		onInserted?.(result, { wasEmpty });
 		toastStore.show(`Imported from ${result.source_url}`, 'success');
 		open = false;
 	}

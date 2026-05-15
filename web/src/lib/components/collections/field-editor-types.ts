@@ -72,9 +72,16 @@ export const FIELD_TYPES: FieldDef['type'][] = [
 
 /**
  * Keys reserved at the UI level because they would shadow top-level item
- * JSON fields and cause confusion in API responses / rendering.
+ * JSON fields or collide with internal provenance metadata.
  * The backend does not explicitly reject these, but using them as schema
  * field keys is strongly discouraged.
+ *
+ * The `pad_` prefix is the canonical namespace for internal orphan keys
+ * (Pad-managed metadata that lives inside the per-item `fields` JSON
+ * without a corresponding schema declaration). Reserving the prefix here
+ * prevents a user-defined "Pad Source URL" field from generating the
+ * same key as TASK-1474's import provenance and triggering the
+ * destructive "Refresh from source" chip on ordinary data.
  */
 export const RESERVED_FIELD_KEYS: ReadonlySet<string> = new Set([
 	'id',
@@ -95,8 +102,20 @@ export const RESERVED_FIELD_KEYS: ReadonlySet<string> = new Set([
 	'fields',
 	'item_number',
 	'workspace_id',
-	'collection_id'
+	'collection_id',
+	// Internal orphan-key namespace (PLAN-1467 / TASK-1474). All keys
+	// stamped by Pad into fields JSON should sit under this prefix.
+	'pad_source_url',
+	'pad_imported_at'
 ]);
+
+/**
+ * Reserved prefix for internal orphan keys. Field-key validation should
+ * reject any user-defined key that starts with this string so future
+ * Pad-managed metadata (TASK-1474 plus anything that comes later) can
+ * land without retroactively breaking existing collections.
+ */
+export const RESERVED_FIELD_KEY_PREFIX = 'pad_';
 
 /** Maximum length of a slugified key. */
 export const MAX_FIELD_KEY_LENGTH = 40;
@@ -133,9 +152,18 @@ export function slugifyKey(input: string): string {
  */
 export function validateFieldKey(key: string): string | null {
 	const trimmed = key.trim();
+	const lower = trimmed.toLowerCase();
 	if (!trimmed) return 'Key is required';
-	if (RESERVED_FIELD_KEYS.has(trimmed.toLowerCase())) {
+	if (RESERVED_FIELD_KEYS.has(lower)) {
 		return `"${trimmed}" is a reserved key`;
+	}
+	// Anything under the `pad_` prefix is reserved for internal orphan
+	// metadata (PLAN-1467 introduced pad_source_url + pad_imported_at;
+	// future Pad-managed metadata lands here too). Without this gate a
+	// user labelling a field "Pad Source URL" would auto-generate
+	// `pad_source_url` and shadow the import-provenance keys.
+	if (lower.startsWith(RESERVED_FIELD_KEY_PREFIX)) {
+		return `Keys starting with "${RESERVED_FIELD_KEY_PREFIX}" are reserved for internal metadata`;
 	}
 	if (!/^[a-z][a-z0-9_]*$/.test(trimmed)) {
 		return 'Key must start with a letter and contain only lowercase letters, digits, and underscores';

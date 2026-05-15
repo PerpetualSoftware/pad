@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, type ImportURLResponse } from '$lib/api/client';
+	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -1052,6 +1053,155 @@
 		}
 	}
 
+	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
+	// keys into the item's `fields` JSON. The keys aren't declared in
+	// any collection schema — `internal/items/validate.go` only iterates
+	// declared fields, so unknown keys round-trip through PATCH without
+	// migration. See PLAN-1467's ghost-field design.
+	//
+	// Keys are namespaced with the `pad_` prefix so they cannot collide
+	// with a user-defined `source_url` field — without the prefix, an
+	// existing collection with that key in its schema would conflict
+	// both at validate time and at chip-render time. (Per Codex review
+	// round 5 finding #2.)
+	//
+	// Race mitigation: a concurrent updateField call to the same item
+	// would, in the legacy pattern, race against our PATCH because both
+	// send the FULL fields blob. To minimize the window we re-fetch the
+	// item right before the PATCH and merge our keys onto the freshest
+	// server snapshot. The window is still non-zero (between fetch and
+	// patch-land), and the same race exists in the project's existing
+	// updateField path — IDEA-1480 tracks a server-side partial-fields
+	// update that would close it system-wide. (Per Codex review round 5
+	// finding #1.)
+	//
+	// Item identity is captured before the await so a navigation
+	// during the in-flight PATCH cannot stamp the WRONG item with
+	// the source URL: the assignment to `item` is gated on the
+	// page still showing the same item we started with.
+	async function stampSourceUrl(meta: ImportURLResponse) {
+		if (!item) return;
+		const targetItem = item;
+		const targetWs = wsSlug;
+		try {
+			// Re-fetch to get the latest fields snapshot from the server,
+			// then merge our two keys. This narrows but does not fully
+			// close the race against concurrent field edits.
+			const latest = await api.items.get(targetWs, targetItem.id);
+			if (!item || item.id !== targetItem.id) return;
+			const latestFields = parseFields(latest);
+			const merged = {
+				...latestFields,
+				pad_source_url: meta.source_url,
+				pad_imported_at: meta.fetched_at
+			};
+			const fresh = await api.items.update(targetWs, targetItem.id, {
+				fields: JSON.stringify(merged)
+			});
+			if (item && item.id === targetItem.id) {
+				item = fresh;
+			}
+		} catch (err) {
+			// Non-fatal: the content was inserted regardless of whether
+			// the stamping succeeded. Toast so the user knows the
+			// "Refresh from source" affordance won't be available.
+			console.warn('failed to stamp source_url', err);
+			if (item && item.id === targetItem.id) {
+				toastStore.show(
+					'Imported, but source_url not saved — refresh affordance disabled',
+					'error'
+				);
+			}
+		}
+	}
+
+	// handleImportInserted runs after the modal splices markdown into
+	// the editor. Per PLAN-1467 we only stamp source_url when (a) the
+	// item had no prior content and (b) source_url is not already set.
+	//
+	// `ctx.wasEmpty` comes from the modal which captured editor.isEmpty
+	// BEFORE inserting. Under collab the editor reflects the
+	// authoritative Y.Doc — which can hold user edits that haven't yet
+	// been flushed to item.content (the database snapshot). Checking
+	// item.content here would let a mixed/manual document be stamped
+	// as source-backed if it happened to not have synced yet. Per
+	// Codex review round 4.
+	function handleImportInserted(meta: ImportURLResponse, ctx: { wasEmpty: boolean }) {
+		if (!item) return;
+		const alreadyStamped =
+			typeof fields.pad_source_url === 'string' && fields.pad_source_url.length > 0;
+		if (!ctx.wasEmpty || alreadyStamped) return;
+		void stampSourceUrl(meta);
+	}
+
+	// "Refresh from source" affordance. Re-fetches the source URL,
+	// asks the user to confirm (the action is destructive — it
+	// replaces the editor's content), then runs the same insert
+	// pipeline as the modal: marked → HTML → editor.insertContent.
+	// Diff-preview is intentionally deferred (see PLAN-1467 risks);
+	// the Yjs op-log provides recoverable history.
+	let refreshing = $state(false);
+	async function refreshFromSource() {
+		const url = fields.pad_source_url;
+		if (!url || typeof url !== 'string' || !item || !editorInstance) return;
+		// Capture the item + editor instance before any awaits. A user
+		// who confirms the refresh and then navigates to another item
+		// before the fetch returns would otherwise have their NEW item
+		// clobbered with the OLD item's source content. After each
+		// await we re-check the captured values match the live state
+		// and bail if not. (Per Codex review round 2.)
+		const targetItem = item;
+		const targetEditor = editorInstance;
+		const ok = typeof window !== 'undefined' &&
+			window.confirm(
+				`Replace the current content with a fresh fetch from:\n${url}\n\n` +
+				'Your existing content will be replaced. Undo is available via the editor history.'
+			);
+		if (!ok) return;
+		refreshing = true;
+		try {
+			const resp = await api.importURL(url);
+			// Bail if the user navigated to a different item — applying
+			// the refresh now would target the wrong document AND stamp
+			// the wrong source URL.
+			if (!item || item.id !== targetItem.id || editorInstance !== targetEditor) {
+				return;
+			}
+			const html = marked.parse(resp.markdown, { async: false }) as string;
+			// Replace the entire document: select all, delete, insert.
+			// Under collab the Y.Doc tracks each transaction so peers
+			// converge on the new state.
+			targetEditor
+				.chain()
+				.focus()
+				.selectAll()
+				.deleteSelection()
+				.insertContent(html)
+				.run();
+			// Bump imported_at and refresh source_url in case it
+			// resolved through a different final URL on this fetch.
+			// stampSourceUrl's own guard re-checks identity.
+			await stampSourceUrl(resp);
+			if (item && item.id === targetItem.id) {
+				toastStore.show('Refreshed from source', 'success');
+			}
+		} catch (err) {
+			if (item && item.id === targetItem.id) {
+				toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
+			}
+		} finally {
+			// Always clear the spinner. The page component is reused
+			// across item navigation, so leaving `refreshing = true`
+			// when the user navigates away would re-emerge as a stuck
+			// "Refreshing…" label the next time they open ANY item
+			// with a source_url. The visual feedback is per-item only
+			// while the user stays on the originating item; that's
+			// acceptable — a successful navigation already signals
+			// "user moved on". (Per Codex review round 3.)
+			refreshing = false;
+		}
+	}
+
 	async function updateAssignedUser(userId: string | null) {
 		if (!item) return;
 		saveStatus = 'saving';
@@ -1821,6 +1971,47 @@
 				<!-- Read-only title (PLAN-1100 / TASK-1105) — no click-to-edit. -->
 				<h1 class="title title-readonly">{item.title}</h1>
 			{/if}
+			{#if typeof fields.pad_source_url === 'string' && fields.pad_source_url}
+				<!--
+					"Refresh from source" chip — visible only when the item
+					was created via "Insert from URL" and the modal stamped
+					pad_source_url into fields. The `pad_` prefix namespaces
+					the ghost-field keys away from any user-defined
+					`source_url` column on the collection schema (per Codex
+					review round 5 finding #2).
+
+					Click re-fetches and replaces editor content; the
+					editor's Yjs op-log handles undo. Hidden for view-only
+					users (no canEdit) — refresh is a content-replacing
+					action that requires write access. Also hidden in
+					raw-markdown mode: the rich Editor is unmounted there
+					and refreshFromSource() drives content replacement
+					through the Tiptap editor instance, which would either
+					fail or update the off-screen rich editor. Read-only
+					and raw users see the provenance chip without the
+					Refresh button so the import history is still
+					discoverable. (Per Codex review round 1.)
+				-->
+				{#if canEdit && !rawMode}
+					<button
+						type="button"
+						class="source-chip"
+						title={`Source: ${fields.pad_source_url}${fields.pad_imported_at ? `\nImported: ${fields.pad_imported_at}` : ''}`}
+						disabled={refreshing}
+						onclick={refreshFromSource}
+					>
+						<span class="source-chip-icon" aria-hidden="true">🌐</span>
+						<span class="source-chip-label">
+							{refreshing ? 'Refreshing…' : 'Refresh from source'}
+						</span>
+					</button>
+				{:else}
+					<span class="source-chip source-chip-readonly" title={fields.pad_source_url}>
+						<span class="source-chip-icon" aria-hidden="true">🌐</span>
+						<span class="source-chip-label">Imported from URL</span>
+					</span>
+				{/if}
+			{/if}
 		</div>
 
 		<!-- Meta info -->
@@ -2251,6 +2442,7 @@
 								onUpdate={handleContentUpdate}
 								editable={false}
 								onEditor={(e) => editorInstance = e}
+								onImportInserted={handleImportInserted}
 							/>
 						{/key}
 					{:else if ydoc}
@@ -2287,6 +2479,7 @@
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
 									onEditor={(e) => editorInstance = e}
+									onImportInserted={handleImportInserted}
 								/>
 							{/key}
 						{/if}
@@ -2621,6 +2814,37 @@
 		overflow: hidden;
 		line-height: 1.3;
 		font-family: inherit;
+	}
+
+	/* Refresh-from-source chip (TASK-1474). Lives in .title-row right
+	   of the title; small, unobtrusive, click to re-fetch. */
+	.source-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		font-size: 0.75em;
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.source-chip:hover:not(:disabled) {
+		background: var(--bg-tertiary, var(--bg-secondary));
+		color: var(--text-primary);
+	}
+	.source-chip:disabled {
+		opacity: 0.6;
+		cursor: progress;
+	}
+	.source-chip-readonly {
+		cursor: default;
+	}
+	.source-chip-icon {
+		font-size: 0.9em;
+		line-height: 1;
 	}
 
 	/* Meta */
