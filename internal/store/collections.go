@@ -405,23 +405,15 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 	return totalAffected, nil
 }
 
-// SeedDefaultCollections is a rescue hook for workspaces that somehow ended
-// up with zero collections — e.g. workspaces created before the seed-on-init
-// flow existed, or a partial init that failed before any collection landed.
-// The server calls it for every workspace at startup as an auto-upgrade.
+// SeedDefaultCollections rescues a workspace that ended up with zero
+// collections by seeding it with the standard Software-shape Defaults().
+// It is intentionally a no-op for workspaces that already have any
+// collections — those have an established shape (from a template or
+// user edits) that the rescue must not clobber.
 //
-// It is intentionally a no-op for workspaces that already have at least one
-// collection (system or user-facing). Without this guard, the hook would
-// re-materialize the standard Software-template collections (Tasks/Ideas/
-// Plans/Docs) into workspaces created from non-default templates on every
-// boot — including the `blank` template (IDEA-1479), which ships only
-// Conventions + Playbooks and would silently grow ghost user-facing
-// collections on each restart.
-//
-// The "zero collections" guard preserves the original backfill intent
-// (rescue truly-empty workspaces) while making the hook safe for the
-// post-templates world where workspaces legitimately diverge from
-// Defaults().
+// No longer called automatically at server startup (removed in
+// IDEA-1479); preserved as a building block for any future explicit
+// rescue command or migration that wants this behavior.
 func (s *Store) SeedDefaultCollections(workspaceID string) error {
 	existing, err := s.ListCollectionsMinimal(workspaceID)
 	if err != nil {
