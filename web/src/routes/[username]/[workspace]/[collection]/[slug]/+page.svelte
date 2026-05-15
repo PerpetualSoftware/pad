@@ -1096,13 +1096,18 @@
 	// handleImportInserted runs after the modal splices markdown into
 	// the editor. Per PLAN-1467 we only stamp source_url when (a) the
 	// item had no prior content and (b) source_url is not already set.
-	// Both checks are cheap and avoid clobbering an existing import
-	// the user has since iterated on.
-	function handleImportInserted(meta: ImportURLResponse) {
+	//
+	// `ctx.wasEmpty` comes from the modal which captured editor.isEmpty
+	// BEFORE inserting. Under collab the editor reflects the
+	// authoritative Y.Doc — which can hold user edits that haven't yet
+	// been flushed to item.content (the database snapshot). Checking
+	// item.content here would let a mixed/manual document be stamped
+	// as source-backed if it happened to not have synced yet. Per
+	// Codex review round 4.
+	function handleImportInserted(meta: ImportURLResponse, ctx: { wasEmpty: boolean }) {
 		if (!item) return;
-		const hadPriorContent = (item.content ?? '').trim() !== '';
 		const alreadyStamped = typeof fields.source_url === 'string' && fields.source_url.length > 0;
-		if (hadPriorContent || alreadyStamped) return;
+		if (!ctx.wasEmpty || alreadyStamped) return;
 		void stampSourceUrl(meta);
 	}
 

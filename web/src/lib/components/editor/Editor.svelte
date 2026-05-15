@@ -336,7 +336,7 @@
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
-	import ImportFromUrlModal from './ImportFromUrlModal.svelte';
+	import ImportFromUrlModal, { type InsertContext } from './ImportFromUrlModal.svelte';
 	import type { ImportURLResponse } from '$lib/api/client';
 	import {
 		AttachmentImage,
@@ -404,7 +404,7 @@
 		 * page mounts never trigger this since the modal is gated on
 		 * a writable editor.
 		 */
-		onImportInserted?: (meta: ImportURLResponse) => void;
+		onImportInserted?: (meta: ImportURLResponse, ctx: InsertContext) => void;
 	} = $props();
 
 	let element = $state<HTMLDivElement>();
