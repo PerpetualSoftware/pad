@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -67,6 +69,15 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCollectionsMinimal error: %v", err)
 	}
+	// Compare settings semantically. Postgres JSONB normalizes formatting and
+	// key order, so a byte-for-byte string compare against the input literal
+	// would be brittle across drivers. Unmarshal both sides and assert the
+	// decoded values are equal — this verifies the JSON actually round-trips
+	// rather than just that *some* non-empty string came back.
+	want := map[string]any{
+		"done_field":  "status",
+		"done_values": []any{"closed"},
+	}
 	var found bool
 	for _, c := range colls {
 		if c.ID != created.ID {
@@ -74,7 +85,14 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 		}
 		found = true
 		if c.Settings == "" {
-			t.Errorf("expected non-empty settings JSON, got empty string")
+			t.Fatalf("expected non-empty settings JSON, got empty string")
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(c.Settings), &got); err != nil {
+			t.Fatalf("settings is not valid JSON: %v (raw=%q)", err, c.Settings)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("settings round-trip mismatch:\n  got:  %#v\n  want: %#v", got, want)
 		}
 	}
 	if !found {
