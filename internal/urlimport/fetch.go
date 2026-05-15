@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,11 +58,16 @@ type FetchResult struct {
 // Fetcher performs SSRF-guarded HTTP GETs.
 //
 // The zero value is not usable — call NewFetcher. Fields are exported
-// only to allow tests to flip AllowLocal; production code should treat
-// the struct as opaque.
+// only to allow tests to flip AllowLocal and inject a Transport;
+// production code should treat the struct as opaque after creation.
+//
+// Fetcher is safe for concurrent use. The default safe-transport is
+// lazily built on first Fetch and reused for subsequent calls so
+// keep-alive connections aren't leaked.
 type Fetcher struct {
 	// Transport is the underlying RoundTripper used by the HTTP client.
 	// Tests inject a custom transport to point at httptest servers.
+	// When nil, Fetcher builds and caches a safe default.
 	Transport http.RoundTripper
 	// Timeout overrides DefaultTimeout when non-zero.
 	Timeout time.Duration
@@ -74,6 +80,12 @@ type Fetcher struct {
 	// AllowLocal disables the SSRF guard. INTENDED FOR TESTS ONLY —
 	// production handlers must leave this false.
 	AllowLocal bool
+
+	// safeOnce + safeTransport memoize the default transport so we
+	// don't leak per-call *http.Transport instances with their own
+	// idle-connection pools.
+	safeOnce      sync.Once
+	safeTransport *http.Transport
 }
 
 // NewFetcher returns a Fetcher with production defaults applied.
@@ -126,7 +138,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error
 
 	transport := f.Transport
 	if transport == nil {
-		transport = newSafeTransport(f.AllowLocal, timeout)
+		transport = f.defaultTransport(timeout)
 	}
 
 	client := &http.Client{
@@ -231,11 +243,30 @@ func ValidateURL(rawURL string) error {
 	return nil
 }
 
+// defaultTransport lazily builds and memoizes the package's safe
+// transport. Reusing one transport across Fetch calls keeps the
+// keep-alive pool bounded and the FD usage flat under load. AllowLocal
+// is captured on first use — callers that want to flip it after the
+// first Fetch should construct a new Fetcher instead.
+func (f *Fetcher) defaultTransport(timeout time.Duration) *http.Transport {
+	f.safeOnce.Do(func() {
+		f.safeTransport = newSafeTransport(f.AllowLocal, timeout)
+	})
+	return f.safeTransport
+}
+
 // newSafeTransport returns an *http.Transport whose DialContext resolves
 // each hostname inside the dialer and validates every returned IP. Only
 // IPs that pass isPrivateIP are dialed, and the connection is made to
 // the resolved IP directly (no second lookup) so the validated IP is
 // the dial target.
+//
+// HTTP/HTTPS proxies are deliberately NOT honored: when a proxy is in
+// use the client connects to the proxy host and the target hostname is
+// never resolved by our dialer, which would silently bypass the SSRF
+// guard. Operators who need an outbound proxy can wire their own
+// trusted transport into Fetcher.Transport instead of relying on
+// HTTP_PROXY/HTTPS_PROXY env vars.
 //
 // allowLocal=true (tests only) bypasses the IP check so httptest servers
 // on 127.0.0.1 are reachable.
@@ -246,7 +277,8 @@ func newSafeTransport(allowLocal bool, timeout time.Duration) *http.Transport {
 	}
 	resolver := net.DefaultResolver
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		// Proxy intentionally nil — see function docstring.
+		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
