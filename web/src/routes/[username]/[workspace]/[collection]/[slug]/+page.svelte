@@ -1162,11 +1162,15 @@
 				toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
 			}
 		} finally {
-			// Only clear the spinner if the user is still on this item.
-			// On navigation the new item's state owns its own UI.
-			if (item && item.id === targetItem.id) {
-				refreshing = false;
-			}
+			// Always clear the spinner. The page component is reused
+			// across item navigation, so leaving `refreshing = true`
+			// when the user navigates away would re-emerge as a stuck
+			// "Refreshing…" label the next time they open ANY item
+			// with a source_url. The visual feedback is per-item only
+			// while the user stays on the originating item; that's
+			// acceptable — a successful navigation already signals
+			// "user moved on". (Per Codex review round 3.)
+			refreshing = false;
 		}
 	}
 
