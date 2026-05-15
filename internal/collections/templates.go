@@ -16,6 +16,7 @@ const (
 	CategoryContent    = "content"
 	CategoryOperations = "operations"
 	CategoryPersonal   = "personal"
+	CategoryCustom     = "custom"
 )
 
 // CategoryOrder is the canonical display order of categories. Pickers and
@@ -28,6 +29,7 @@ var CategoryOrder = []string{
 	CategoryContent,
 	CategoryOperations,
 	CategoryPersonal,
+	CategoryCustom,
 }
 
 // categoryLabels maps category slugs to their human-readable display labels.
@@ -38,6 +40,7 @@ var categoryLabels = map[string]string{
 	CategoryContent:    "Content",
 	CategoryOperations: "Operations",
 	CategoryPersonal:   "Personal",
+	CategoryCustom:     "Custom",
 }
 
 // CategoryLabel returns the human-readable label for a category slug.
@@ -732,6 +735,18 @@ var templates = []WorkspaceTemplate{
 	},
 	hiringTemplate(),
 	interviewingTemplate(),
+	{
+		Name:        "blank",
+		Category:    CategoryCustom,
+		Description: "Just Conventions & Playbooks — build the rest yourself",
+		Icon:        "\U0001F4DD", // 📝
+		Collections: []DefaultCollection{
+			conventionsCollection(0, SoftwareConventionTriggers, SoftwareConventionScopes),
+			playbooksCollection(1, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
+		},
+		// No SeedItems, no Conventions, no Playbooks, no OnboardingPrimaryRef —
+		// system rails only. Users build the rest via `pad collection create`.
+	},
 	{
 		Name:        "demo",
 		Category:    CategorySoftware,
