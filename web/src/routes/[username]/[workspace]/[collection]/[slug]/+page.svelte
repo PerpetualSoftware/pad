@@ -1053,11 +1053,27 @@
 		}
 	}
 
-	// stampSourceUrl writes the source_url + imported_at orphan keys
-	// into the item's `fields` JSON. The keys aren't declared in any
-	// collection schema — `internal/items/validate.go` only iterates
+	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
+	// keys into the item's `fields` JSON. The keys aren't declared in
+	// any collection schema — `internal/items/validate.go` only iterates
 	// declared fields, so unknown keys round-trip through PATCH without
 	// migration. See PLAN-1467's ghost-field design.
+	//
+	// Keys are namespaced with the `pad_` prefix so they cannot collide
+	// with a user-defined `source_url` field — without the prefix, an
+	// existing collection with that key in its schema would conflict
+	// both at validate time and at chip-render time. (Per Codex review
+	// round 5 finding #2.)
+	//
+	// Race mitigation: a concurrent updateField call to the same item
+	// would, in the legacy pattern, race against our PATCH because both
+	// send the FULL fields blob. To minimize the window we re-fetch the
+	// item right before the PATCH and merge our keys onto the freshest
+	// server snapshot. The window is still non-zero (between fetch and
+	// patch-land), and the same race exists in the project's existing
+	// updateField path — IDEA-1480 tracks a server-side partial-fields
+	// update that would close it system-wide. (Per Codex review round 5
+	// finding #1.)
 	//
 	// Item identity is captured before the await so a navigation
 	// during the in-flight PATCH cannot stamp the WRONG item with
@@ -1067,14 +1083,20 @@
 		if (!item) return;
 		const targetItem = item;
 		const targetWs = wsSlug;
-		const updated = {
-			...fields,
-			source_url: meta.source_url,
-			imported_at: meta.fetched_at
-		};
 		try {
+			// Re-fetch to get the latest fields snapshot from the server,
+			// then merge our two keys. This narrows but does not fully
+			// close the race against concurrent field edits.
+			const latest = await api.items.get(targetWs, targetItem.id);
+			if (!item || item.id !== targetItem.id) return;
+			const latestFields = parseFields(latest);
+			const merged = {
+				...latestFields,
+				pad_source_url: meta.source_url,
+				pad_imported_at: meta.fetched_at
+			};
 			const fresh = await api.items.update(targetWs, targetItem.id, {
-				fields: JSON.stringify(updated)
+				fields: JSON.stringify(merged)
 			});
 			if (item && item.id === targetItem.id) {
 				item = fresh;
@@ -1106,7 +1128,8 @@
 	// Codex review round 4.
 	function handleImportInserted(meta: ImportURLResponse, ctx: { wasEmpty: boolean }) {
 		if (!item) return;
-		const alreadyStamped = typeof fields.source_url === 'string' && fields.source_url.length > 0;
+		const alreadyStamped =
+			typeof fields.pad_source_url === 'string' && fields.pad_source_url.length > 0;
 		if (!ctx.wasEmpty || alreadyStamped) return;
 		void stampSourceUrl(meta);
 	}
@@ -1119,7 +1142,7 @@
 	// the Yjs op-log provides recoverable history.
 	let refreshing = $state(false);
 	async function refreshFromSource() {
-		const url = fields.source_url;
+		const url = fields.pad_source_url;
 		if (!url || typeof url !== 'string' || !item || !editorInstance) return;
 		// Capture the item + editor instance before any awaits. A user
 		// who confirms the refresh and then navigates to another item
@@ -1948,28 +1971,32 @@
 				<!-- Read-only title (PLAN-1100 / TASK-1105) — no click-to-edit. -->
 				<h1 class="title title-readonly">{item.title}</h1>
 			{/if}
-			{#if typeof fields.source_url === 'string' && fields.source_url}
+			{#if typeof fields.pad_source_url === 'string' && fields.pad_source_url}
 				<!--
 					"Refresh from source" chip — visible only when the item
 					was created via "Insert from URL" and the modal stamped
-					source_url into fields. Click re-fetches and replaces
-					editor content; the editor's Yjs op-log handles undo.
+					pad_source_url into fields. The `pad_` prefix namespaces
+					the ghost-field keys away from any user-defined
+					`source_url` column on the collection schema (per Codex
+					review round 5 finding #2).
 
-					Hidden for view-only users (no canEdit) — refresh is a
-					content-replacing action that requires write access.
-					Also hidden in raw-markdown mode: the rich Editor is
-					unmounted there and refreshFromSource() drives content
-					replacement through the Tiptap editor instance, which
-					would either fail or update the off-screen rich editor.
-					Read-only / raw users see the provenance chip without
-					the Refresh button so the import history is still
+					Click re-fetches and replaces editor content; the
+					editor's Yjs op-log handles undo. Hidden for view-only
+					users (no canEdit) — refresh is a content-replacing
+					action that requires write access. Also hidden in
+					raw-markdown mode: the rich Editor is unmounted there
+					and refreshFromSource() drives content replacement
+					through the Tiptap editor instance, which would either
+					fail or update the off-screen rich editor. Read-only
+					and raw users see the provenance chip without the
+					Refresh button so the import history is still
 					discoverable. (Per Codex review round 1.)
 				-->
 				{#if canEdit && !rawMode}
 					<button
 						type="button"
 						class="source-chip"
-						title={`Source: ${fields.source_url}${fields.imported_at ? `\nImported: ${fields.imported_at}` : ''}`}
+						title={`Source: ${fields.pad_source_url}${fields.pad_imported_at ? `\nImported: ${fields.pad_imported_at}` : ''}`}
 						disabled={refreshing}
 						onclick={refreshFromSource}
 					>
@@ -1979,7 +2006,7 @@
 						</span>
 					</button>
 				{:else}
-					<span class="source-chip source-chip-readonly" title={fields.source_url}>
+					<span class="source-chip source-chip-readonly" title={fields.pad_source_url}>
 						<span class="source-chip-icon" aria-hidden="true">🌐</span>
 						<span class="source-chip-label">Imported from URL</span>
 					</span>
