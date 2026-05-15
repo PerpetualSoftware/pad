@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Array.prototype.flat() — MDN-shape</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <ul>
+        <li><a href="/">Home</a></li>
+        <li><a href="/docs">Docs</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <article>
+      <h1>Array.prototype.flat()</h1>
+      <p>The <code>flat()</code> method of <a href="/docs/Array"><code>Array</code></a> instances creates a new array with all sub-array elements concatenated into it recursively up to the specified depth.</p>
+
+      <h2 id="syntax">Syntax</h2>
+      <pre><code class="language-js">flat()
+flat(depth)</code></pre>
+
+      <h3 id="parameters">Parameters</h3>
+      <dl>
+        <dt><code>depth</code> <em>(optional)</em></dt>
+        <dd>The depth level specifying how deep a nested array structure should be flattened. Defaults to <code>1</code>.</dd>
+      </dl>
+
+      <h3 id="return_value">Return value</h3>
+      <p>A new array with the sub-array elements concatenated into it.</p>
+
+      <h2 id="examples">Examples</h2>
+      <h3 id="flattening_nested_arrays">Flattening nested arrays</h3>
+      <pre><code class="language-js">const arr1 = [1, 2, [3, 4]];
+arr1.flat();
+// [1, 2, 3, 4]
+
+const arr2 = [1, 2, [3, 4, [5, 6]]];
+arr2.flat();
+// [1, 2, 3, 4, [5, 6]]
+
+const arr3 = [1, 2, [3, 4, [5, 6]]];
+arr3.flat(2);
+// [1, 2, 3, 4, 5, 6]
+</code></pre>
+
+      <h2 id="specifications">Specifications</h2>
+      <p>See <a href="https://tc39.es/ecma262/#sec-array.prototype.flat">ECMA-262, Array.prototype.flat</a>.</p>
+    </article>
+  </main>
+  <footer>
+    <p>&copy; Mozilla and individual contributors</p>
+  </footer>
+</body>
+</html>
