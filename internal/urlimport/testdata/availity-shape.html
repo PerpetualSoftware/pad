@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Eligibility &amp; Benefits API — Availity-shape Docs</title>
+  <meta name="description" content="Eligibility and benefits inquiry endpoint reference.">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="top-nav">
+      <a href="/">Home</a> | <a href="/docs">Docs</a> | <a href="/contact">Contact</a>
+    </nav>
+    <div class="ads"><img src="ad.gif" alt="ad"></div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <ul>
+        <li><a href="#auth">Authentication</a></li>
+        <li><a href="#endpoints">Endpoints</a></li>
+        <li><a href="#errors">Errors</a></li>
+      </ul>
+    </aside>
+    <div class="content">
+      <div class="container">
+        <div class="row">
+          <div class="col-12">
+            <div class="page-title">
+              <div class="page-title-inner">
+                <h1>Eligibility &amp; Benefits API</h1>
+                <p>Submit an eligibility inquiry to a payer and receive coverage details for a member.</p>
+              </div>
+            </div>
+            <div class="page-body">
+              <div class="section" id="auth">
+                <h2>Authentication</h2>
+                <p>All requests require a bearer token obtained from the OAuth 2.0 client-credentials flow.</p>
+                <pre><code>POST /v1/token
+client_id=YOUR_ID&amp;client_secret=YOUR_SECRET&amp;grant_type=client_credentials</code></pre>
+              </div>
+              <div class="section" id="endpoints">
+                <h2>Endpoints</h2>
+                <div class="endpoint">
+                  <h3>POST /v1/eligibility</h3>
+                  <p>Submit an eligibility inquiry.</p>
+                  <p>Required fields:</p>
+                  <ul>
+                    <li><code>memberId</code> — payer-assigned member identifier</li>
+                    <li><code>payerId</code> — Availity payer identifier</li>
+                    <li><code>serviceTypes</code> — array of service-type codes (e.g. <code>30</code> for general health benefits)</li>
+                  </ul>
+                </div>
+                <div class="endpoint">
+                  <h3>GET /v1/eligibility/{id}</h3>
+                  <p>Retrieve a previously submitted inquiry's response.</p>
+                </div>
+              </div>
+              <div class="section" id="errors">
+                <h2>Errors</h2>
+                <p>Errors follow the standard <a href="https://tools.ietf.org/html/rfc7807">RFC 7807</a> problem-details shape.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="site-footer">
+    <p>&copy; 2026 Availity, LLC.</p>
+    <div class="social">
+      <a href="https://twitter.com/availity">Twitter</a>
+      <a href="https://github.com/availity">GitHub</a>
+    </div>
+  </footer>
+  <script>console.log('analytics');</script>
+</body>
+</html>
