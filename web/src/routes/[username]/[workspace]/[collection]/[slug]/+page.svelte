@@ -1058,21 +1058,38 @@
 	// collection schema — `internal/items/validate.go` only iterates
 	// declared fields, so unknown keys round-trip through PATCH without
 	// migration. See PLAN-1467's ghost-field design.
+	//
+	// Item identity is captured before the await so a navigation
+	// during the in-flight PATCH cannot stamp the WRONG item with
+	// the source URL: the assignment to `item` is gated on the
+	// page still showing the same item we started with.
 	async function stampSourceUrl(meta: ImportURLResponse) {
 		if (!item) return;
+		const targetItem = item;
+		const targetWs = wsSlug;
 		const updated = {
 			...fields,
 			source_url: meta.source_url,
 			imported_at: meta.fetched_at
 		};
 		try {
-			item = await api.items.update(wsSlug, item.id, { fields: JSON.stringify(updated) });
+			const fresh = await api.items.update(targetWs, targetItem.id, {
+				fields: JSON.stringify(updated)
+			});
+			if (item && item.id === targetItem.id) {
+				item = fresh;
+			}
 		} catch (err) {
 			// Non-fatal: the content was inserted regardless of whether
 			// the stamping succeeded. Toast so the user knows the
 			// "Refresh from source" affordance won't be available.
 			console.warn('failed to stamp source_url', err);
-			toastStore.show('Imported, but source_url not saved — refresh affordance disabled', 'error');
+			if (item && item.id === targetItem.id) {
+				toastStore.show(
+					'Imported, but source_url not saved — refresh affordance disabled',
+					'error'
+				);
+			}
 		}
 	}
 
@@ -1099,6 +1116,14 @@
 	async function refreshFromSource() {
 		const url = fields.source_url;
 		if (!url || typeof url !== 'string' || !item || !editorInstance) return;
+		// Capture the item + editor instance before any awaits. A user
+		// who confirms the refresh and then navigates to another item
+		// before the fetch returns would otherwise have their NEW item
+		// clobbered with the OLD item's source content. After each
+		// await we re-check the captured values match the live state
+		// and bail if not. (Per Codex review round 2.)
+		const targetItem = item;
+		const targetEditor = editorInstance;
 		const ok = typeof window !== 'undefined' &&
 			window.confirm(
 				`Replace the current content with a fresh fetch from:\n${url}\n\n` +
@@ -1108,11 +1133,17 @@
 		refreshing = true;
 		try {
 			const resp = await api.importURL(url);
+			// Bail if the user navigated to a different item — applying
+			// the refresh now would target the wrong document AND stamp
+			// the wrong source URL.
+			if (!item || item.id !== targetItem.id || editorInstance !== targetEditor) {
+				return;
+			}
 			const html = marked.parse(resp.markdown, { async: false }) as string;
 			// Replace the entire document: select all, delete, insert.
 			// Under collab the Y.Doc tracks each transaction so peers
 			// converge on the new state.
-			editorInstance
+			targetEditor
 				.chain()
 				.focus()
 				.selectAll()
@@ -1121,12 +1152,21 @@
 				.run();
 			// Bump imported_at and refresh source_url in case it
 			// resolved through a different final URL on this fetch.
+			// stampSourceUrl's own guard re-checks identity.
 			await stampSourceUrl(resp);
-			toastStore.show('Refreshed from source', 'success');
+			if (item && item.id === targetItem.id) {
+				toastStore.show('Refreshed from source', 'success');
+			}
 		} catch (err) {
-			toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
+			if (item && item.id === targetItem.id) {
+				toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
+			}
 		} finally {
-			refreshing = false;
+			// Only clear the spinner if the user is still on this item.
+			// On navigation the new item's state owns its own UI.
+			if (item && item.id === targetItem.id) {
+				refreshing = false;
+			}
 		}
 	}
 
