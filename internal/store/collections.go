@@ -415,11 +415,20 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 // IDEA-1479); preserved as a building block for any future explicit
 // rescue command or migration that wants this behavior.
 func (s *Store) SeedDefaultCollections(workspaceID string) error {
-	existing, err := s.ListCollectionsMinimal(workspaceID)
-	if err != nil {
+	// Use a direct COUNT query rather than ListCollectionsMinimal: the
+	// rescue gate only needs to know whether ANY collection exists, and
+	// the minimal lister's SELECT touches JSON/JSONB columns whose
+	// COALESCE expression doesn't round-trip cleanly on Postgres
+	// (BUG triggered in the IDEA-1479 PR's first Postgres CI run).
+	// COUNT(*) sidesteps that path entirely and is also cheaper.
+	var existing int
+	if err := s.db.QueryRow(
+		s.q(`SELECT COUNT(*) FROM collections WHERE workspace_id = ?`),
+		workspaceID,
+	).Scan(&existing); err != nil {
 		return fmt.Errorf("check existing collections for rescue seed: %w", err)
 	}
-	if len(existing) > 0 {
+	if existing > 0 {
 		// Workspace already has collections — its shape was set by a
 		// template (default, blank, hiring, etc.) or by manual user
 		// edits. Either way, the rescue path doesn't apply.
