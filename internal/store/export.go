@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -42,18 +41,8 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		// `collections.settings` is nullable on both drivers; a NULL row
-		// would error out a direct scan into Go string on Postgres
-		// ("converting NULL to string is unsupported"). Materialize NULL
-		// as "" to keep the export's existing sentinel — same fix shape
-		// as ListCollectionsMinimal / GetCollection / ListCollections.
-		// See BUG-1482.
-		var settings sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
-		}
-		if settings.Valid {
-			c.Settings = settings.String
 		}
 		c.IsDefault = isDefault
 		c.IsSystem = isSystem
@@ -204,13 +193,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		newCollID := newID()
 		collMap[c.ID] = newCollID
 
-		// Coerce the empty-string sentinel back to a valid JSON object before
-		// insert. Exports of NULL-settings rows surface as `""` per the
-		// store-layer sentinel contract (BUG-1482 round-2); Postgres's JSONB
-		// column rejects `""` at write time, and SQLite would accept it but
-		// then downstream JSON parsers would choke. CreateCollection does the
-		// same coercion on the normal create path; this loop bypasses that
-		// helper for transactional/verbatim import, so we mirror it here.
+		// Coerce empty-string settings to a valid JSON object before insert.
+		// IDEA-1484 (PR #562) hardened collections.settings to NOT NULL
+		// DEFAULT '{}', but this INSERT explicitly supplies the settings
+		// column — so the DEFAULT clause does NOT fire when c.Settings is
+		// "". Without this coercion, Postgres rejects `""` at JSONB
+		// type-validation and SQLite silently stores invalid JSON. Legacy
+		// bundles and plain-JSON workspace imports (handlers_workspaces.go,
+		// handlers_import_bundle.go, cmd/pad/main.go's migrate command) can
+		// still carry "" settings, so normalization belongs at the import
+		// boundary rather than at the schema level.
 		settings := c.Settings
 		if settings == "" {
 			settings = "{}"
