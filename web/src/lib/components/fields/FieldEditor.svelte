@@ -170,7 +170,16 @@ handlers — onchange is never called.
 	const TYPING_DEBOUNCE_MS = 500;
 	let typingTimer: ReturnType<typeof setTimeout> | undefined;
 	let pendingValue: any = undefined;
-	let hasPending = $state(false);
+	// `hasPending` is intentionally a plain let, not $state. It's only
+	// read inside imperative handlers (scheduleSave, flushPendingSave,
+	// handleNumberStep, the value-track $effect, the unmount cleanup)
+	// — never from a template or other reactive context. Making it
+	// $state would establish a reactive dependency from the
+	// value-track $effect onto hasPending: scheduleSave would set
+	// hasPending=true, which would retrigger the $effect, which reads
+	// hasPending and clears it — cancelling every keystroke before the
+	// debounce can fire. Per Codex review round 4 [P1].
+	let hasPending = false;
 
 	function scheduleSave(next: any) {
 		pendingValue = next;
