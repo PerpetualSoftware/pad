@@ -370,6 +370,105 @@ func TestCreateActivityDebounced_NoUserID(t *testing.T) {
 	}
 }
 
+func TestCollapseChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "single entry unchanged",
+			in:   "status: open → fixed",
+			want: "status: open → fixed",
+		},
+		{
+			name: "different fields preserved",
+			in:   "status: open → fixed; priority: low → high",
+			want: "status: open → fixed; priority: low → high",
+		},
+		{
+			name: "consecutive same-field run collapses to first→last",
+			// The BUG-1419 reproducer: a typed-out value chained per keystroke.
+			in:   "component: → e; component: e → ed; component: ed → edi; component: edi → editor",
+			want: "component: → editor",
+		},
+		{
+			name: "net no-op (typed then backspaced) dropped",
+			// User typed "tip" then backspaced everything — no net change,
+			// no point keeping the entry at all.
+			in:   "component: → t; component: t → ti; component: ti → tip; component: tip → ti; component: ti → t; component: t → ",
+			want: "",
+		},
+		{
+			name: "interleaved fields keep chronology (no global merge)",
+			// Run-based collapse only merges *adjacent* same-field entries;
+			// non-adjacent ones stay split so the timeline preserves the
+			// real edit order.
+			in:   "component: a → b; status: open → fixed; component: b → c",
+			want: "component: a → b; status: open → fixed; component: b → c",
+		},
+		{
+			name: "leading from preserved through run",
+			in:   "component: editor → ueditor; component: ueditor → uieditor; component: uieditor → ui/editor",
+			want: "component: editor → ui/editor",
+		},
+		{
+			name: "unparseable entries preserved verbatim (no field anchor → no collapse)",
+			// Defensive: malformed entries get passed through untouched so
+			// we never silently drop a metadata segment we don't understand.
+			in:   "weird-no-arrow-here; status: open → fixed",
+			want: "weird-no-arrow-here; status: open → fixed",
+		},
+		{
+			name: "trailing/empty segments tolerated",
+			in:   "; status: open → fixed; ; ",
+			want: "status: open → fixed",
+		},
+		{
+			name: "field cleared to empty (deletion to empty value)",
+			// diffFields renders a deletion-to-empty as "<key>: <from> → "
+			// with a trailing space. After segment-level TrimSpace the
+			// trailing space is gone, so the parser falls back to the
+			// "<value> →" suffix branch to recover from="value", to="".
+			in:   "component: ui/editor → ",
+			want: "component: ui/editor → ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := collapseChanges(tt.in); got != tt.want {
+				t.Errorf("collapseChanges:\n  in:   %q\n  got:  %q\n  want: %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Regression for the BUG-1466 follow-up: when CreateActivityDebounced
+// merges multiple PATCHes that all hit the same field, the merged
+// `changes` string should collapse into a single first→last entry
+// instead of a 30-step keystroke chain (as seen on BUG-1419's timeline
+// pre-fix).
+func TestMergeActivityMeta_CollapsesSameFieldRun(t *testing.T) {
+	existing := `{"changes":"component: → e; component: e → ed; component: ed → edi"}`
+	incoming := `{"changes":"component: edi → editor"}`
+	got := mergeActivityMeta(existing, incoming)
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+	changes, _ := m["changes"].(string)
+	want := "component: → editor"
+	if changes != want {
+		t.Errorf("expected collapsed run, got %q (want %q)", changes, want)
+	}
+}
+
 func TestMergeActivityMeta(t *testing.T) {
 	tests := []struct {
 		name     string

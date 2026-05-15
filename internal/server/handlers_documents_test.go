@@ -10,8 +10,11 @@ func TestDiffFieldsPrimitives(t *testing.T) {
 		`{"status":"open","priority":"medium"}`,
 		`{"status":"in-progress","priority":"high"}`,
 	)
-	// Order is alphabetical (sort.Strings on the changes slice).
-	want := "priority: medium → high, status: open → in-progress"
+	// Order is alphabetical (sort.Strings on the changes slice). "; " is
+	// the joiner; matches mergeActivityMeta and the web parser's split
+	// delimiter so multi-field PATCHes render as individual change pills
+	// instead of one unparseable blob.
+	want := "priority: medium → high; status: open → in-progress"
 	if got != want {
 		t.Errorf("diffFields primitives:\n  got:  %q\n  want: %q", got, want)
 	}
