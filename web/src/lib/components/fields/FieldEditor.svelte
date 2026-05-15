@@ -148,17 +148,81 @@ handlers — onchange is never called.
 	}
 
 	// ── Input handlers ─────────────────────────────────────────────────────
+	//
+	// Typed inputs (text / number / url) debounce the parent's `onchange`
+	// so each keystroke isn't persisted as a separate item update — that
+	// produced 30-step keystroke chains in the audit log when a user
+	// typed `ui/editor/tiptap` into a `component` field (BUG-1466).
+	//
+	// Discrete inputs (select / date / checkbox / number ±1 buttons) keep
+	// firing immediately — they're single user actions, not typing.
+	//
+	// On blur we flush any pending save eagerly so tabbing out of the
+	// field commits right away instead of waiting out the idle window;
+	// likewise on unmount, so navigating away never drops a typed value.
+	//
+	// Mirrors the markdown content debounce pattern in
+	// routes/[username]/[workspace]/[collection]/[slug]/+page.svelte
+	// (`contentDebounceTimer`, 1.2s for content); we use 500ms here
+	// because fields are small and users expect quicker confirmation
+	// than the body editor.
+
+	const TYPING_DEBOUNCE_MS = 500;
+	let typingTimer: ReturnType<typeof setTimeout> | undefined;
+	let pendingValue: any = undefined;
+	let hasPending = $state(false);
+
+	function scheduleSave(next: any) {
+		pendingValue = next;
+		hasPending = true;
+		clearTimeout(typingTimer);
+		typingTimer = setTimeout(() => {
+			typingTimer = undefined;
+			const v = pendingValue;
+			pendingValue = undefined;
+			hasPending = false;
+			onchange(v);
+		}, TYPING_DEBOUNCE_MS);
+	}
+
+	function flushPendingSave() {
+		if (!hasPending) return;
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		const v = pendingValue;
+		pendingValue = undefined;
+		hasPending = false;
+		onchange(v);
+	}
+
+	// Cleanup on unmount: a pending typed value must NOT be lost when
+	// the user navigates away mid-edit. The effect-return is Svelte 5's
+	// cleanup hook — fires on component teardown.
+	$effect(() => {
+		return () => {
+			flushPendingSave();
+		};
+	});
 
 	function handleTextInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		onchange(target.value);
+		scheduleSave(target.value);
 	}
 
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		if (target.value === '') { onchange(null); return; }
+		if (target.value === '') { scheduleSave(null); return; }
 		const num = Number(target.value);
-		if (!isNaN(num)) onchange(num);
+		if (!isNaN(num)) scheduleSave(num);
+	}
+
+	function handleNumberStep(delta: number) {
+		// ±1 buttons are a discrete action — flush any in-flight typed
+		// value first so it doesn't get clobbered, then fire the step
+		// immediately so the user sees the increment without waiting
+		// on the typing-idle window.
+		flushPendingSave();
+		onchange((Number(value) || 0) + delta);
 	}
 
 	function handleDateInput(e: Event) {
@@ -362,7 +426,7 @@ handlers — onchange is never called.
 			type="button"
 			tabindex={-1}
 			aria-label="Decrease"
-			onclick={() => onchange((Number(value) || 0) - 1)}
+			onclick={() => handleNumberStep(-1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -374,6 +438,7 @@ handlers — onchange is never called.
 			inputmode="numeric"
 			value={value ?? ''}
 			oninput={handleNumberInput}
+			onblur={flushPendingSave}
 			placeholder="—"
 		/>
 		{#if field.suffix}
@@ -384,7 +449,7 @@ handlers — onchange is never called.
 			type="button"
 			tabindex={-1}
 			aria-label="Increase"
-			onclick={() => onchange((Number(value) || 0) + 1)}
+			onclick={() => handleNumberStep(1)}
 		>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 				<line x1="2" y1="5" x2="8" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -401,6 +466,7 @@ handlers — onchange is never called.
 			type="url"
 			value={value ?? ''}
 			oninput={handleTextInput}
+			onblur={flushPendingSave}
 			placeholder="https://..."
 		/>
 		{#if value}
@@ -436,6 +502,7 @@ handlers — onchange is never called.
 		type="text"
 		value={value ?? ''}
 		oninput={handleTextInput}
+		onblur={flushPendingSave}
 	/>
 {/if}
 
