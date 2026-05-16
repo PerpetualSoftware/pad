@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"errors"
+	"time"
+)
 
 type FieldDef struct {
 	Key             string   `json:"key"`
@@ -89,4 +93,66 @@ type CollectionUpdate struct {
 	Settings    *string          `json:"settings,omitempty"`
 	SortOrder   *int             `json:"sort_order,omitempty"`
 	Migrations  []FieldMigration `json:"migrations,omitempty"`
+}
+
+// ErrInvalidSettingsType is returned by CollectionUpdate.UnmarshalJSON
+// and CollectionCreate.UnmarshalJSON when the inbound `settings` value is
+// neither a JSON object nor a JSON-encoded string. IDEA-1488: handler-
+// layer shape validation ceiling, paired with the IDEA-1484 NOT NULL
+// floor on collections.settings. Mirrors item.go's
+// ErrInvalidFieldsType / ErrInvalidTagsType and view.go's
+// ErrInvalidConfigType.
+var ErrInvalidSettingsType = errors.New(`"settings" must be a JSON object or a JSON-encoded string`)
+
+// UnmarshalJSON for CollectionCreate accepts `settings` either as the
+// canonical JSON-encoded string shape (matches models.Collection.Settings
+// storage) OR as the natural nested object shape any reasonable HTTP
+// client would send. Mirrors ItemCreate.UnmarshalJSON; see
+// flexJSONToString in item.go for the shape contract.
+func (c *CollectionCreate) UnmarshalJSON(data []byte) error {
+	type alias CollectionCreate
+	aux := struct {
+		Settings json.RawMessage `json:"settings,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if settingsStr, err := flexJSONToString(aux.Settings, '{', ErrInvalidSettingsType); err != nil {
+		return err
+	} else if settingsStr != nil {
+		c.Settings = *settingsStr
+	}
+
+	return nil
+}
+
+// UnmarshalJSON for CollectionUpdate accepts `settings` either as the
+// canonical JSON-encoded string shape OR as the natural nested object
+// shape. Mirrors ItemUpdate.UnmarshalJSON; the struct field stays
+// `*string` and downstream consumers are unchanged.
+//
+// IDEA-1488: closes the shape-validation gap that IDEA-1484's NOT NULL
+// floor doesn't cover. After this lands, the writer-side store coercion
+// at collections.go:248 only sees empty-string-or-valid-object input.
+func (u *CollectionUpdate) UnmarshalJSON(data []byte) error {
+	type alias CollectionUpdate
+	aux := struct {
+		Settings json.RawMessage `json:"settings,omitempty"`
+		*alias
+	}{alias: (*alias)(u)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	settingsStr, err := flexJSONToString(aux.Settings, '{', ErrInvalidSettingsType)
+	if err != nil {
+		return err
+	}
+	u.Settings = settingsStr
+
+	return nil
 }

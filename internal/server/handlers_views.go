@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -87,6 +88,14 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 
 	var input models.ViewCreate
 	if err := decodeJSON(r, &input); err != nil {
+		// IDEA-1488: surface the domain-level error from
+		// ViewCreate.UnmarshalJSON without the "invalid JSON: ..."
+		// wrapper from decodeJSON, so callers see a clean message
+		// naming the field (mirrors handlers_items.go:641 precedent).
+		if errors.Is(err, models.ErrInvalidConfigType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidConfigType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -159,6 +168,14 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 
 	var input models.ViewUpdate
 	if err := decodeJSON(r, &input); err != nil {
+		// IDEA-1488: surface the domain-level error from
+		// ViewUpdate.UnmarshalJSON without the "invalid JSON: ..."
+		// wrapper from decodeJSON, so callers see a clean message
+		// naming the field (mirrors handlers_items.go:641 precedent).
+		if errors.Is(err, models.ErrInvalidConfigType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidConfigType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

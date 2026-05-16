@@ -1,12 +1,57 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// coerceJSONForImport normalizes an imported JSON column value to a
+// well-formed default of the expected shape. Used at the import boundary
+// (ImportWorkspace) where legacy / external workspace bundles may carry
+// empty-string or malformed JSON that bypasses the column's NOT NULL
+// DEFAULT (IDEA-1486) and that the handler-layer shape validators
+// (IDEA-1488) never see. The lenient policy (coerce + log) matches the
+// IDEA-1484 import-side precedent at export.go:206-209: don't break a
+// workspace import because one row carries malformed data.
+//
+//   - raw == ""                     → return defaultJSON (empty-string sentinel).
+//   - raw is well-formed JSON of the expected shape (object/array) →
+//     return raw verbatim.
+//   - raw is otherwise unparseable or wrong-shape → return defaultJSON
+//     AND log a structured warning naming the field + row. The raw
+//     value's LENGTH is logged (`raw_len`) but never its content, so
+//     user data does not leak into logs.
+//
+// expectObject==true requires the parsed value to be a JSON object
+// (map[string]any); expectObject==false requires a JSON array
+// ([]any) — used for items.tags.
+func coerceJSONForImport(raw, defaultJSON, field, rowID, workspaceID string, expectObject bool) string {
+	if raw == "" {
+		return defaultJSON
+	}
+	if expectObject {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+			return raw
+		}
+	} else {
+		var v []any
+		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+			return raw
+		}
+	}
+	slog.Warn("import_workspace coerced malformed json",
+		"field", field,
+		"row_id", rowID,
+		"workspace_id", workspaceID,
+		"raw_len", len(raw))
+	return defaultJSON
+}
 
 // ExportWorkspace exports all data for a workspace into a portable format.
 func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
@@ -193,20 +238,19 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		newCollID := newID()
 		collMap[c.ID] = newCollID
 
-		// Coerce empty-string settings to a valid JSON object before insert.
-		// IDEA-1484 (PR #562) hardened collections.settings to NOT NULL
-		// DEFAULT '{}', but this INSERT explicitly supplies the settings
-		// column — so the DEFAULT clause does NOT fire when c.Settings is
-		// "". Without this coercion, Postgres rejects `""` at JSONB
-		// type-validation and SQLite silently stores invalid JSON. Legacy
-		// bundles and plain-JSON workspace imports (handlers_workspaces.go,
-		// handlers_import_bundle.go, cmd/pad/main.go's migrate command) can
-		// still carry "" settings, so normalization belongs at the import
-		// boundary rather than at the schema level.
-		settings := c.Settings
-		if settings == "" {
-			settings = "{}"
-		}
+		// Coerce empty-string / malformed settings to a valid JSON object
+		// before insert. IDEA-1484 (PR #562) hardened collections.settings
+		// to NOT NULL DEFAULT '{}', but this INSERT explicitly supplies
+		// the settings column — so the DEFAULT clause does NOT fire when
+		// c.Settings is "". Without this coercion, Postgres rejects `""`
+		// at JSONB type-validation and SQLite silently stores invalid
+		// JSON. Legacy bundles and plain-JSON workspace imports
+		// (handlers_workspaces.go, handlers_import_bundle.go,
+		// cmd/pad/main.go's migrate command) can still carry "" or
+		// malformed settings, so normalization belongs at the import
+		// boundary rather than at the schema level. IDEA-1488 extends
+		// this to log-and-coerce on non-empty malformed JSON.
+		settings := coerceJSONForImport(c.Settings, "{}", "collections.settings", c.ID, ws.ID, true)
 
 		_, err := tx.Exec(s.q(`
 			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at)
@@ -223,6 +267,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// workspace-global numbering. Exported item_number values are ignored
 	// because old exports used per-collection numbering which can have
 	// duplicates within a workspace.
+	//
+	// IDEA-1486 + IDEA-1488: precompute each item's coerced fields/tags so
+	// the second-pass UPDATE (which re-applies fields after the ID remap)
+	// uses the SAME normalized value as the first-pass INSERT. Without
+	// this, a malformed it.Fields gets coerced to "{}" on INSERT but the
+	// second pass would re-write the original malformed value verbatim,
+	// undoing the coercion. The map is keyed by the original (exported)
+	// item ID so the second-pass loop can look up the normalized value.
+	coercedFields := make(map[string]string, len(data.Items))
+	coercedTags := make(map[string]string, len(data.Items))
 	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
@@ -241,6 +295,19 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 
 		nextItemNumber++
+		// IDEA-1486 + IDEA-1488: coerce empty-string / malformed
+		// fields/tags at the import boundary. After migration 056 /
+		// pgmigrations 035 hardened items.fields and items.tags to
+		// NOT NULL DEFAULT, an imported item with fields="" 500s on
+		// Postgres at JSONB type-validation and silently stores
+		// invalid JSON on SQLite. Mirror collections.settings'
+		// coercion above. The IDEA-1488 leg: log-and-coerce (not
+		// fail-stop) so a legacy bundle with one malformed item
+		// still imports.
+		fieldsJSON := coerceJSONForImport(it.Fields, "{}", "items.fields", it.ID, ws.ID, true)
+		tagsJSON := coerceJSONForImport(it.Tags, "[]", "items.tags", it.ID, ws.ID, false)
+		coercedFields[it.ID] = fieldsJSON
+		coercedTags[it.ID] = tagsJSON
 		// Stamp `seq` so workspace import populates the delta-sync cursor
 		// column (PLAN-1343 / TASK-1352). Each INSERT reads MAX(seq)+1
 		// within this transaction, so imported rows get sequential
@@ -250,7 +317,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
-			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, it.Fields, it.Tags, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
+			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, nextItemNumber,
 			it.CreatedAt, it.UpdatedAt, ws.ID)
 		if err != nil {
@@ -258,14 +325,22 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
-	// Second pass: remap parent_id and relation fields (now all items exist)
+	// Second pass: remap parent_id and relation fields (now all items exist).
+	// Use the coerced first-pass fields value as the remap input so a
+	// malformed-and-coerced row doesn't get its coercion clobbered by the
+	// raw export value (IDEA-1486 + IDEA-1488).
+	_ = coercedTags // tags don't carry ID relations; second-pass only touches fields
 	for _, it := range data.Items {
 		newItemID := itemMap[it.ID]
 		if newItemID == "" {
 			continue
 		}
+		fieldsInput, ok := coercedFields[it.ID]
+		if !ok {
+			fieldsInput = it.Fields // defensive — should always be populated by first pass
+		}
 		// Remap relation fields now that ALL items are mapped
-		fields := remapFieldIDs(it.Fields, itemMap, collMap)
+		fields := remapFieldIDs(fieldsInput, itemMap, collMap)
 		parentID := ""
 		if it.ParentID != "" {
 			if mapped, ok := itemMap[it.ParentID]; ok {
@@ -325,8 +400,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
 			ver.CreatedAt)
 		if err != nil {
-			// Log detail but skip — version history is non-critical
-			fmt.Printf("warning: skipped version for item %s: %v\n", ver.ItemID, err)
+			// Log detail but skip — version history is non-critical.
+			// Migrated from fmt.Printf to slog.Warn alongside the
+			// IDEA-1488 log-and-coerce additions; same severity, same
+			// triage signal, but threads through the canonical logger.
+			slog.Warn("import_workspace skipped item version",
+				"item_id", ver.ItemID,
+				"workspace_id", ws.ID,
+				"err", err)
 			continue
 		}
 	}
@@ -365,7 +446,20 @@ func (s *Store) rebuildFTSForWorkspace(wsID string) {
 
 // remapFieldIDs replaces old UUIDs in a JSON fields string with their new IDs.
 // This handles relation fields (e.g. parent: "uuid") without needing to parse the schema.
+//
+// IDEA-1486: empty-string input is normalized to "{}". Centralizing the
+// contract here keeps future callers safe by default — any UPDATE that
+// writes the result back into items.fields is guaranteed to satisfy the
+// post-migration NOT NULL DEFAULT '{}' invariant. Without this guard,
+// the second-pass UPDATE at ImportWorkspace would write "" verbatim on
+// items whose original fields were already empty, which silently stores
+// invalid JSON on SQLite and (post-migration) would have already 500'd
+// on the first-pass INSERT on Postgres if not for the import-boundary
+// coercion above.
 func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string {
+	if fieldsJSON == "" {
+		return "{}"
+	}
 	result := fieldsJSON
 	for oldID, newID := range itemMap {
 		if oldID != "" && newID != "" {

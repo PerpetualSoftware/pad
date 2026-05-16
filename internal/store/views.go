@@ -150,8 +150,20 @@ func (s *Store) UpdateView(id string, input models.ViewUpdate) (*models.View, er
 		args = append(args, *input.ViewType)
 	}
 	if input.Config != nil {
+		// IDEA-1486: normalize the empty-string sentinel to a valid JSON
+		// object before writing. After the NOT NULL DEFAULT '{}'
+		// hardening (migration 057 / pgmigrations 036), Postgres rejects
+		// "" at JSONB type-validation and SQLite would silently store
+		// invalid JSON. Mirrors CreateView at views.go:24-27 and the
+		// IDEA-1484 precedent at collections.go:248. Shape validation
+		// (object vs. array vs. primitive) is handled at the handler
+		// boundary by ViewUpdate.UnmarshalJSON (IDEA-1488).
+		config := *input.Config
+		if config == "" {
+			config = "{}"
+		}
 		sets = append(sets, "config = ?")
-		args = append(args, *input.Config)
+		args = append(args, config)
 	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")

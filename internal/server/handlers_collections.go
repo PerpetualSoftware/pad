@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -55,6 +56,14 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 
 	var input models.CollectionCreate
 	if err := decodeJSON(r, &input); err != nil {
+		// IDEA-1488: surface the domain-level error from
+		// CollectionCreate.UnmarshalJSON without the "invalid JSON: ..."
+		// wrapper from decodeJSON (mirrors handlers_items.go:641
+		// precedent).
+		if errors.Is(err, models.ErrInvalidSettingsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidSettingsType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -130,6 +139,14 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 
 	var input models.CollectionUpdate
 	if err := decodeJSON(r, &input); err != nil {
+		// IDEA-1488: surface the domain-level error from
+		// CollectionUpdate.UnmarshalJSON without the "invalid JSON: ..."
+		// wrapper from decodeJSON (mirrors handlers_items.go:641
+		// precedent).
+		if errors.Is(err, models.ErrInvalidSettingsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidSettingsType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

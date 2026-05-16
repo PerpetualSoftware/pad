@@ -1440,12 +1440,31 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 		}
 	}
 	if input.Fields != nil {
+		// IDEA-1486: normalize the empty-string sentinel to a valid JSON
+		// object before writing. After the NOT NULL DEFAULT '{}'
+		// hardening, Postgres rejects "" at JSONB type-validation and
+		// SQLite would silently store invalid JSON. Same boundary
+		// normalization as CreateItem (items.go:103-110) and the
+		// IDEA-1484 precedent at collections.go:248. Shape validation
+		// (object vs. array vs. primitive) is handled at the handler
+		// boundary by ItemUpdate.UnmarshalJSON (BUG-1144).
+		fields := *input.Fields
+		if fields == "" {
+			fields = "{}"
+		}
 		sets = append(sets, "fields = ?")
-		args = append(args, *input.Fields)
+		args = append(args, fields)
 	}
 	if input.Tags != nil {
+		// IDEA-1486: same empty-string coercion as fields above, but
+		// tags is array-shaped so the default is "[]". Mirrors
+		// CreateItem at items.go:107-110.
+		tags := *input.Tags
+		if tags == "" {
+			tags = "[]"
+		}
 		sets = append(sets, "tags = ?")
-		args = append(args, *input.Tags)
+		args = append(args, tags)
 	}
 	if input.Pinned != nil {
 		sets = append(sets, "pinned = ?")
