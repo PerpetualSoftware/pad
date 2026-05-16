@@ -132,7 +132,13 @@ func buildSessionShape(sessionFlag string) (*sessionShapeReport, error) {
 		if budget, ok := cli.LookupContextBudget(metrics.AgentVersion); ok {
 			report.Budget = &budget
 			report.BudgetSource = "hardcoded_per_agent_version"
-			pct := float64(metrics.Usage.CacheRead) / float64(budget) * 100
+			// Use TotalPrompt (cache_read + cache_creation + input) rather
+			// than CacheRead alone. CacheRead is a steady-state proxy that
+			// under-counts at turn boundaries when fresh content lands in
+			// cache_creation/input but hasn't been folded into the cached
+			// prefix yet. TotalPrompt is the actual prompt footprint sent
+			// to the model this turn — the right numerator vs the budget.
+			pct := float64(metrics.Usage.TotalPrompt) / float64(budget) * 100
 			report.ContextPct = &pct
 			report.ContextClass = cli.ContextClass(pct)
 		} else {
@@ -182,10 +188,10 @@ func sessionShapeMarkdown(r *sessionShapeReport) string {
 	if r.ContextPct != nil && r.Budget != nil {
 		fmt.Fprintf(&b, "- context: **%.1f%%** (%s) — %s / %s tokens\n",
 			*r.ContextPct, r.ContextClass,
-			humanizeInt(r.Tokens.CacheRead), humanizeInt(*r.Budget))
+			humanizeInt(r.Tokens.TotalPrompt), humanizeInt(*r.Budget))
 	} else if r.Tokens != nil {
 		fmt.Fprintf(&b, "- context tokens: %s (no budget for agent_version=%q)\n",
-			humanizeInt(r.Tokens.CacheRead), r.AgentVersion)
+			humanizeInt(r.Tokens.TotalPrompt), r.AgentVersion)
 	}
 	if r.Tokens != nil {
 		fmt.Fprintf(&b, "- tokens: cache_read=%s, cache_creation=%s, input=%s, output=%s\n",

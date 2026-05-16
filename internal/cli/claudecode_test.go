@@ -46,8 +46,11 @@ func TestParseSessionJSONL_Normal(t *testing.T) {
 	if m.MessageCounts["other"] != 3 {
 		t.Errorf("other count = %d, want 3 (custom-title + attachment + queue-operation)", m.MessageCounts["other"])
 	}
-	if m.ToolInvocations != 2 {
-		t.Errorf("tool_invocations = %d, want 2", m.ToolInvocations)
+	// One tool_use in turn 2, three parallel tool_use blocks in the
+	// final assistant turn = 4 invocations. Pins the multi-tool-per-turn
+	// counting behavior fixed in Codex R1 P2.
+	if m.ToolInvocations != 4 {
+		t.Errorf("tool_invocations = %d, want 4", m.ToolInvocations)
 	}
 	if m.AgentVersion != "2.1.132" {
 		t.Errorf("AgentVersion = %q, want 2.1.132", m.AgentVersion)

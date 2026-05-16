@@ -166,15 +166,16 @@ func ParseSessionJSONL(path string) (*SessionMetrics, error) {
 		}
 
 		if line.Type == "assistant" && line.Message != nil {
-			// tool_invocations: assistant turns that contain at least
-			// one tool_use block.
+			// tool_invocations: count every tool_use block — a single
+			// assistant turn can issue multiple parallel tool calls
+			// (multiple content[] entries with type=tool_use), and the
+			// field name says invocations, not turns-with-any-tool-use.
 			for _, blob := range line.Message.Content {
 				var head struct {
 					Type string `json:"type"`
 				}
 				if err := json.Unmarshal(blob, &head); err == nil && head.Type == "tool_use" {
 					m.ToolInvocations++
-					break
 				}
 			}
 			if u := line.Message.Usage; u != nil {

@@ -5,4 +5,4 @@
 {"type":"user","timestamp":"2026-05-16T10:01:00Z","message":{"content":[{"type":"text","text":"again"}]}}
 {"type":"assistant","timestamp":"2026-05-16T10:01:10Z","cwd":"/home/test/proj","gitBranch":"main","version":"2.1.132","message":{"content":[{"type":"tool_use","name":"bash"},{"type":"text","text":"running"}],"usage":{"input_tokens":12,"cache_creation_input_tokens":150,"cache_read_input_tokens":7500,"output_tokens":20}}}
 {"type":"queue-operation","timestamp":"2026-05-16T10:01:11Z"}
-{"type":"assistant","timestamp":"2026-05-16T10:02:00Z","cwd":"/home/test/proj","gitBranch":"main","version":"2.1.132","message":{"content":[{"type":"tool_use","name":"read"}],"usage":{"input_tokens":1,"cache_creation_input_tokens":50,"cache_read_input_tokens":12345,"output_tokens":3}}}
+{"type":"assistant","timestamp":"2026-05-16T10:02:00Z","cwd":"/home/test/proj","gitBranch":"main","version":"2.1.132","message":{"content":[{"type":"tool_use","name":"read"},{"type":"tool_use","name":"grep"},{"type":"tool_use","name":"bash"}],"usage":{"input_tokens":1,"cache_creation_input_tokens":50,"cache_read_input_tokens":12345,"output_tokens":3}}}
