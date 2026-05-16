@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-05-16T12:00:00Z","cwd":"/home/test/p3","version":"2.1.132","message":{"content":[{"type":"text","text":"go"}]}}
+{"type":"assistant","timestamp":"2026-05-16T12:00:01Z","isSidechain":true,"cwd":"/home/test/p3","version":"2.1.132","message":{"content":[{"type":"text","text":"sub"}],"usage":{"input_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":100,"output_tokens":2}}}
+{"type":"assistant","timestamp":"2026-05-16T12:00:02Z","cwd":"/home/test/p3","version":"2.1.132","message":{"content":[{"type":"text","text":"parent"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":20,"cache_read_input_tokens":3000,"output_tokens":4}}}
