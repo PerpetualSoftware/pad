@@ -1115,7 +1115,7 @@ const DEFAULT_TERMINAL_STATUSES = [
 export function getTerminalOptions(collection: Collection): string[] {
 	const schema = parseSchema(collection);
 	const statusField = schema.fields.find((f) => f.key === 'status');
-	return statusField?.terminal_options ?? DEFAULT_TERMINAL_STATUSES;
+	return statusField?.terminal_options ?? [...DEFAULT_TERMINAL_STATUSES];
 }
 
 /** Check if a status value is terminal (finalized) for a given collection. */
