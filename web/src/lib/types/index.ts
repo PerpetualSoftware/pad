@@ -1072,23 +1072,23 @@ export function parseFields(item: Item): Record<string, any> {
 	}
 }
 
-const SCHEMA_DEFAULTS: CollectionSchema = { fields: [] };
+const schemaDefaults = (): CollectionSchema => ({ fields: [] });
 
 export function parseSchema(collection: Collection): CollectionSchema {
 	try {
-		return { ...SCHEMA_DEFAULTS, ...JSON.parse(collection.schema) };
+		return { ...schemaDefaults(), ...JSON.parse(collection.schema) };
 	} catch {
-		return { ...SCHEMA_DEFAULTS };
+		return schemaDefaults();
 	}
 }
 
-const SETTINGS_DEFAULTS: CollectionSettings = { layout: 'balanced', default_view: 'list' };
+const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'list' });
 
 export function parseSettings(collection: Collection): CollectionSettings {
 	try {
-		return { ...SETTINGS_DEFAULTS, ...JSON.parse(collection.settings) };
+		return { ...settingsDefaults(), ...JSON.parse(collection.settings) };
 	} catch {
-		return { ...SETTINGS_DEFAULTS };
+		return settingsDefaults();
 	}
 }
 
