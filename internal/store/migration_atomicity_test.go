@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -288,5 +289,81 @@ INSERT INTO no_such_table_xyz (id) VALUES ('boom');
 		t.Errorf("%s still exists after failed migration; rollback did not happen", t1)
 	} else if qerr != sql.ErrNoRows {
 		t.Fatalf("query pg_tables: %v", qerr)
+	}
+}
+
+// TestMigrationAtomicity_FailedSQLite_RestoresForeignKeysOnError guards the
+// codex-R1 P2: once `PRAGMA foreign_keys = OFF` lands on the pinned migration
+// connection, any subsequent failure (BeginTx / execMulti / INSERT / Commit
+// / post-tx PRAGMA) returns early. The runner MUST register a deferred
+// `PRAGMA foreign_keys = ON` so the connection never goes back to the pool
+// with FK enforcement disabled — otherwise the next pool checkout silently
+// bypasses FKs.
+//
+// The test forces a single-connection pool via SetMaxOpenConns(1) so the
+// post-failure FK check is deterministically against the same physical
+// connection that ran the failed migration.
+func TestMigrationAtomicity_FailedSQLite_RestoresForeignKeysOnError(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific (PRAGMA foreign_keys is a SQLite construct)")
+	}
+
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "atomic.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	// Force a single pool connection so the assertion below targets the
+	// SAME physical conn that ran the failing migration. Without this,
+	// a fresh checkout might land on a different conn (where FKs were
+	// never disabled), masking a regression of the bug.
+	s.db.SetMaxOpenConns(1)
+
+	// Migration: disable FKs, then fail. The failure point is AFTER the
+	// PRAGMA so the FK-OFF state has reached the connection. The failure
+	// itself is a violated constraint inside the body so the wrapping tx
+	// rolls back.
+	migration := `
+PRAGMA foreign_keys = OFF;
+CREATE TABLE fk_err_t (id TEXT PRIMARY KEY);
+INSERT INTO fk_err_t (id) VALUES ('a');
+INSERT INTO fk_err_t (id) VALUES ('a');
+`
+	if err := applySQLiteMigration(s.db, "999_fk_err.sql", migration); err == nil {
+		t.Fatal("expected migration to fail (duplicate PK), got nil")
+	}
+
+	// On the SAME connection from the (1-conn) pool, foreign_keys must
+	// be back to 1. Use a tightly-scoped block so the conn is released
+	// back to the pool before later queries that also need it.
+	ctx := context.Background()
+	func() {
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("Conn: %v", err)
+		}
+		defer conn.Close()
+
+		var fk int
+		if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatalf("PRAGMA foreign_keys: %v", err)
+		}
+		if fk != 1 {
+			t.Errorf("foreign_keys leaked OFF after failed migration; got %d, want 1", fk)
+		}
+	}()
+
+	// Bookkeeping row must also be absent (atomicity invariant from
+	// the prior test, re-asserted here for completeness).
+	var count int
+	if err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?", "999_fk_err.sql",
+	).Scan(&count); err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("schema_migrations row recorded for failed migration; want 0, got %d", count)
 	}
 }

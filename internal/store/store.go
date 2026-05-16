@@ -459,10 +459,14 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 //     connection AFTER COMMIT, so they don't undo a preceding
 //     `OFF` before the body runs.
 //
-//     If a migration disables FKs but does NOT include the matching
-//     `ON`, the runner emits `PRAGMA foreign_keys = ON` itself before
-//     releasing the connection. Without this, the connection would
-//     leak `foreign_keys=OFF` to the rest of the pool's users.
+//     Whenever a before-tx `foreign_keys=OFF` is exec'd, a deferred
+//     `PRAGMA foreign_keys = ON` is registered against the pinned
+//     connection. The defer fires on EVERY return — success, BeginTx
+//     failure, execMulti failure, INSERT failure, Commit failure, or
+//     post-tx pragma failure — so the connection never goes back to
+//     the pool with FKs disabled. The restore is best-effort and does
+//     not override the migration's primary error; if the restore
+//     itself fails it's logged loudly.
 //
 //  3. The remaining body SQL — including the `INSERT INTO schema_migrations`
 //     bookkeeping row — runs inside a single BEGIN/COMMIT on the SAME
@@ -494,20 +498,15 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// "after" pragmas are restorations that must not undo a before-pragma
 	// prematurely.
 	var beforeTx, afterTx []string
-	disabledFKs := false
-	reEnabledFKs := false
 	for _, p := range pragmas {
 		switch {
 		case isForeignKeysOff(p):
 			beforeTx = append(beforeTx, p)
-			disabledFKs = true
-		case isForeignKeysOn(p):
-			afterTx = append(afterTx, p)
-			reEnabledFKs = true
 		default:
-			// Conservative default: unknown pragmas run after the body.
-			// journal_mode=WAL falls here; it's database-persistent and
-			// already set by New() so the re-run is a harmless no-op.
+			// Everything else (foreign_keys=ON, journal_mode=WAL, etc.)
+			// runs AFTER the body. foreign_keys=ON specifically must NOT
+			// run before BEGIN because it would cancel out a paired OFF
+			// in the same migration.
 			afterTx = append(afterTx, p)
 		}
 	}
@@ -515,6 +514,29 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	for _, p := range beforeTx {
 		if _, err := conn.ExecContext(ctx, p); err != nil {
 			return fmt.Errorf("apply migration %s: pre-tx pragma %q: %w", name, p, err)
+		}
+		if isForeignKeysOff(p) {
+			// FK-restore MUST be a defer, not a success-path block:
+			// once foreign_keys=OFF lands on the pinned conn, ANY later
+			// failure (BeginTx, execMulti, INSERT, Commit, post-tx
+			// pragma) returns early and the conn would otherwise go
+			// back to the pool with FKs disabled, silently bypassing
+			// enforcement for whichever caller next checks it out.
+			//
+			// The restore is best-effort: it does NOT override the
+			// migration's primary error. If the restore itself fails,
+			// log loudly — the connection is about to be released to
+			// the pool with FKs still off and a subsequent migration
+			// (or worse, a request handler) would inherit that state.
+			defer func() {
+				if _, restoreErr := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); restoreErr != nil {
+					slog.Error(
+						"failed to restore PRAGMA foreign_keys=ON after migration; pool connection may be released with FKs disabled",
+						"migration", name,
+						"err", restoreErr,
+					)
+				}
+			}()
 		}
 	}
 
@@ -548,14 +570,10 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		}
 	}
 
-	// Belt-and-braces: if the migration disabled FKs but did not emit a
-	// matching `ON`, re-enable them ourselves so the connection doesn't
-	// leak `foreign_keys=OFF` back to the pool.
-	if disabledFKs && !reEnabledFKs {
-		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-			return fmt.Errorf("apply migration %s: restore foreign_keys: %w", name, err)
-		}
-	}
+	// FK restore on the success path is handled by the deferred block
+	// registered when the before-tx OFF was executed. The migration's
+	// own `PRAGMA foreign_keys = ON` (if present) has already run via
+	// afterTx; the deferred re-set is idempotent.
 	return nil
 }
 
@@ -567,14 +585,6 @@ func isForeignKeysOff(pragma string) bool {
 	return strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=OFF") ||
 		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=0") ||
 		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=FALSE")
-}
-
-// isForeignKeysOn reports whether a PRAGMA statement enables foreign keys.
-func isForeignKeysOn(pragma string) bool {
-	u := normalizePragma(pragma)
-	return strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=ON") ||
-		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=1") ||
-		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=TRUE")
 }
 
 func normalizePragma(p string) string {
