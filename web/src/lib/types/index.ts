@@ -1072,19 +1072,23 @@ export function parseFields(item: Item): Record<string, any> {
 	}
 }
 
+const schemaDefaults = (): CollectionSchema => ({ fields: [] });
+
 export function parseSchema(collection: Collection): CollectionSchema {
 	try {
-		return JSON.parse(collection.schema);
+		return { ...schemaDefaults(), ...JSON.parse(collection.schema) };
 	} catch {
-		return { fields: [] };
+		return schemaDefaults();
 	}
 }
 
+const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'list' });
+
 export function parseSettings(collection: Collection): CollectionSettings {
 	try {
-		return JSON.parse(collection.settings);
+		return { ...settingsDefaults(), ...JSON.parse(collection.settings) };
 	} catch {
-		return { layout: 'balanced', default_view: 'list' };
+		return settingsDefaults();
 	}
 }
 
@@ -1111,7 +1115,7 @@ const DEFAULT_TERMINAL_STATUSES = [
 export function getTerminalOptions(collection: Collection): string[] {
 	const schema = parseSchema(collection);
 	const statusField = schema.fields.find((f) => f.key === 'status');
-	return statusField?.terminal_options ?? DEFAULT_TERMINAL_STATUSES;
+	return statusField?.terminal_options ?? [...DEFAULT_TERMINAL_STATUSES];
 }
 
 /** Check if a status value is terminal (finalized) for a given collection. */
