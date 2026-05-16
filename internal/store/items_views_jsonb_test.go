@@ -506,6 +506,313 @@ func TestItemsViewsJSONB_ItemLinksRoundTripAfterRebuild(t *testing.T) {
 	}
 }
 
+// TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes is the
+// codex R2 P1 regression test. It applies migrations 001-055 against
+// a fresh DB (stopping BEFORE the 056/057 hardening), seeds rows that
+// violate the post-migration shape contract in every observable way
+// (empty string, JSON null, wrong-shape JSON, non-JSON garbage), then
+// applies 056 + 057 and asserts every malformed row is repaired to
+// the default.
+//
+// The CREATE UNIQUE INDEX idx_items_invocation_slug_per_collection
+// in 056 calls json_extract on every fields value — a single row
+// with malformed JSON would error mid-migration. The "garbage"
+// seeding below is the actual ship-breaker scenario; without the
+// widened WHERE clause, the migration aborts.
+func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific (json_valid / json_type)")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "backfill_shape.db")
+	dsn := dbPath + "?_pragma=busy_timeout(30000)&_pragma=foreign_keys(on)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("WAL: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("schema_migrations: %v", err)
+	}
+
+	// Apply migrations up to BUT NOT INCLUDING 054 (which creates the
+	// partial UNIQUE index on json_extract(fields, '$.invocation_slug')),
+	// 055, 056, 057. We then seed pre-054 malformed rows, then apply
+	// 056 + 057. The codex R2 P1 ship-breaker scenario is precisely:
+	// rows with malformed items.fields exist, then 056 recreates the
+	// partial UNIQUE index over those rows, and CREATE INDEX errors
+	// mid-migration when json_extract evaluates on the bad rows.
+	//
+	// We skip 054 in the pre-seed pass because 054's own CREATE INDEX
+	// would also error on malformed rows; 056 is the migration under
+	// test, and its widened backfill WHERE clause is the fix. After
+	// 056 repairs and rebuilds, the post-56 partial index sees only
+	// well-shaped rows.
+	names, err := readMigrationNames(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	postSeed := map[string]bool{
+		"054_playbooks_invocation_fields.sql":   true,
+		"055_collections_settings_not_null.sql": true,
+		"056_items_jsonb_not_null.sql":          true,
+		"057_views_config_not_null.sql":         true,
+	}
+	for _, name := range names {
+		if postSeed[name] {
+			continue
+		}
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if err := applySQLiteMigration(db, name, string(data)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+
+	// Seed prerequisites — a workspace + collection so item FKs resolve.
+	const wsID = "ws-bf"
+	const collID = "coll-bf"
+	const ts = "2026-05-16T00:00:00Z"
+	if _, err := db.Exec(
+		`INSERT INTO workspaces (id, name, slug, settings, created_at, updated_at)
+		 VALUES (?, ?, ?, '{}', ?, ?)`,
+		wsID, "BFShape", "bfshape", ts, ts,
+	); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO collections (id, workspace_id, name, slug, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		collID, wsID, "Tasks", "tasks-bf", ts, ts,
+	); err != nil {
+		t.Fatalf("seed collection: %v", err)
+	}
+
+	// Seed items with every observable shape pathology. Pre-056 the
+	// items.fields column is nullable + no shape check, so every one
+	// of these INSERTs succeeds.
+	itemSeeds := []struct {
+		id     string
+		slug   string
+		fields any // string or nil for SQL NULL
+		tags   any
+	}{
+		{"i-null", "i-null", nil, nil},                        // SQL NULL on both
+		{"i-empty", "i-empty", "", ""},                        // empty-string sentinel
+		{"i-jsnull", "i-jsnull", "null", "null"},              // JSON null literal
+		{"i-wrongshape", "i-wrong", "[]", "{}"},               // wrong shape on each
+		{"i-garbage", "i-garbage", "not json", "garb"},        // non-JSON text
+		{"i-valid", "i-valid", `{"k":"v"}`, `["a"]`},          // already valid — must be preserved
+		{"i-slug", "i-slug", `{"invocation_slug":"x"}`, `[]`}, // exercises the partial UNIQUE index
+	}
+	for _, sd := range itemSeeds {
+		if _, err := db.Exec(
+			`INSERT INTO items (id, workspace_id, collection_id, title, slug, fields, tags, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sd.id, wsID, collID, sd.id, sd.slug, sd.fields, sd.tags, ts, ts,
+		); err != nil {
+			t.Fatalf("seed item %s: %v", sd.id, err)
+		}
+	}
+
+	// Seed views with shape pathologies on config.
+	viewSeeds := []struct {
+		id     string
+		slug   string
+		config any
+	}{
+		{"v-null", "v-null", nil},
+		{"v-empty", "v-empty", ""},
+		{"v-jsnull", "v-jsnull", "null"},
+		{"v-arr", "v-arr", "[]"},
+		{"v-garbage", "v-garb", "{garbage"},
+		{"v-valid", "v-valid", `{"layout":"list"}`},
+	}
+	for _, sd := range viewSeeds {
+		if _, err := db.Exec(
+			`INSERT INTO views (id, workspace_id, name, slug, view_type, config, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 'list', ?, ?, ?)`,
+			sd.id, wsID, sd.id, sd.slug, sd.config, ts, ts,
+		); err != nil {
+			t.Fatalf("seed view %s: %v", sd.id, err)
+		}
+	}
+
+	// Now apply 055, 056, 057. 054 is deliberately skipped because
+	// its own CREATE INDEX on json_extract(fields, '$.invocation_slug')
+	// would error on the malformed seed rows — and in production, 054
+	// already shipped without that error, which means no production
+	// row carried malformed fields at 054-run-time. The codex R2 P1
+	// concern is forward-looking: if malformed rows appeared between
+	// 054 and 056 (or any other source), 056's REBUILD recreates the
+	// same partial UNIQUE index and would re-hit the json_extract
+	// error. The widened backfill WHERE clause in 056 repairs those
+	// rows BEFORE the rebuild, so the migration succeeds end-to-end.
+	postSeedOrder := []string{
+		"055_collections_settings_not_null.sql",
+		"056_items_jsonb_not_null.sql",
+		"057_views_config_not_null.sql",
+	}
+	for _, name := range postSeedOrder {
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if err := applySQLiteMigration(db, name, string(data)); err != nil {
+			t.Fatalf("apply %s (codex R2 P1 ship-breaker): %v", name, err)
+		}
+	}
+
+	// Assert every malformed item.fields was repaired to "{}", every
+	// malformed item.tags to "[]", and the valid rows survived.
+	type wantRow struct{ fields, tags string }
+	itemWant := map[string]wantRow{
+		"i-null":       {`{}`, `[]`},
+		"i-empty":      {`{}`, `[]`},
+		"i-jsnull":     {`{}`, `[]`},
+		"i-wrongshape": {`{}`, `[]`},
+		"i-garbage":    {`{}`, `[]`},
+		"i-valid":      {`{"k":"v"}`, `["a"]`},
+		"i-slug":       {`{"invocation_slug":"x"}`, `[]`},
+	}
+	for id, want := range itemWant {
+		var f, ta string
+		err := db.QueryRow(`SELECT fields, tags FROM items WHERE id = ?`, id).Scan(&f, &ta)
+		if err != nil {
+			t.Fatalf("query item %s: %v", id, err)
+		}
+		if f != want.fields {
+			t.Errorf("item %s fields: want %q, got %q", id, want.fields, f)
+		}
+		if ta != want.tags {
+			t.Errorf("item %s tags: want %q, got %q", id, want.tags, ta)
+		}
+	}
+
+	viewWant := map[string]string{
+		"v-null":    `{}`,
+		"v-empty":   `{}`,
+		"v-jsnull":  `{}`,
+		"v-arr":     `{}`,
+		"v-garbage": `{}`,
+		"v-valid":   `{"layout":"list"}`,
+	}
+	for id, want := range viewWant {
+		var c string
+		err := db.QueryRow(`SELECT config FROM views WHERE id = ?`, id).Scan(&c)
+		if err != nil {
+			t.Fatalf("query view %s: %v", id, err)
+		}
+		if c != want {
+			t.Errorf("view %s config: want %q, got %q", id, want, c)
+		}
+	}
+
+	// The partial UNIQUE index must exist after the rebuild AND the
+	// uniqueness constraint must actually fire on duplicate
+	// invocation_slug — proof that the index works on post-rebuild rows
+	// AND that the migration succeeded end-to-end (which it could not
+	// have if json_extract had errored mid-CREATE INDEX).
+	var idxName string
+	err = db.QueryRow(
+		`SELECT name FROM sqlite_master
+		 WHERE type='index' AND tbl_name='items'
+		   AND name='idx_items_invocation_slug_per_collection'`,
+	).Scan(&idxName)
+	if err != nil {
+		t.Fatalf("invocation_slug index missing after migration: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO items (id, workspace_id, collection_id, title, slug, fields, tags, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"i-slug-dup", wsID, collID, "dup", "i-slug-dup",
+		`{"invocation_slug":"x"}`, `[]`, ts, ts,
+	); err == nil {
+		t.Error("expected UNIQUE constraint violation on duplicate invocation_slug, got success")
+	}
+}
+
+// TestItemsViewsJSONB_PostgresBackfillRepairsMalformedShapes is the
+// Postgres counterpart. JSONB columns reject invalid JSON at write
+// time, so the only pre-existing pathologies are SQL NULL and JSONB-
+// valid-but-wrong-shape (e.g. JSONB null, an array where an object is
+// required, a primitive). Codex R2 P1: the original NULL-only WHERE
+// would have left wrong-shape rows in place.
+func TestItemsViewsJSONB_PostgresBackfillRepairsMalformedShapes(t *testing.T) {
+	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set")
+	}
+	_ = pgURL // testStore picks up the env
+
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "PgBackfill")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Direct INSERT with wrong-shape JSONB. Bypasses store helpers and
+	// writes JSONB null / array / primitive into the columns. JSONB
+	// null satisfies NOT NULL (SQL NULL ≠ JSONB null) but fails
+	// jsonb_typeof = 'object'.
+	const ts = "2026-05-16T00:00:00Z"
+	mustInsert := func(t *testing.T, id, fields, tags string) {
+		t.Helper()
+		_, err := s.db.Exec(
+			`INSERT INTO items (id, workspace_id, collection_id, title, slug, fields, tags, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+			id, ws.ID, col.ID, id, id, fields, tags, ts, ts,
+		)
+		if err != nil {
+			t.Fatalf("seed item %s: %v", id, err)
+		}
+	}
+	mustInsert(t, "pg-jsnull", `null`, `null`)
+	mustInsert(t, "pg-wrongshape", `[]`, `{}`)
+	mustInsert(t, "pg-prim", `42`, `"a string"`)
+	mustInsert(t, "pg-valid", `{"k":"v"}`, `["tag"]`)
+
+	// Re-run the backfill UPDATE clauses from pgmigrations/035 (the
+	// migration itself already ran during testStore init; this
+	// exercises the UPDATE shape against rows seeded above).
+	if _, err := s.db.Exec(
+		"UPDATE items SET fields = '{}'::jsonb WHERE fields IS NULL OR jsonb_typeof(fields) != 'object'"); err != nil {
+		t.Fatalf("re-run fields backfill: %v", err)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE items SET tags = '[]'::jsonb WHERE tags IS NULL OR jsonb_typeof(tags) != 'array'"); err != nil {
+		t.Fatalf("re-run tags backfill: %v", err)
+	}
+
+	want := map[string]struct{ fields, tags string }{
+		"pg-jsnull":     {`{}`, `[]`},
+		"pg-wrongshape": {`{}`, `[]`},
+		"pg-prim":       {`{}`, `[]`},
+		"pg-valid":      {`{"k": "v"}`, `["tag"]`}, // Postgres adds whitespace
+	}
+	for id, exp := range want {
+		var f, ta string
+		err := s.db.QueryRow(`SELECT fields::text, tags::text FROM items WHERE id = $1`, id).Scan(&f, &ta)
+		if err != nil {
+			t.Fatalf("query %s: %v", id, err)
+		}
+		if !jsonEqualString(f, exp.fields) {
+			t.Errorf("item %s fields want %q got %q", id, exp.fields, f)
+		}
+		if !jsonEqualString(ta, exp.tags) {
+			t.Errorf("item %s tags want %q got %q", id, exp.tags, ta)
+		}
+	}
+}
+
 // TestItemsViewsJSONB_ItemsFTSVirtualTableExists guards that the
 // items_fts virtual table itself survives the items rebuild. (Per
 // design decision D2, the virtual table is NOT dropped — only the

@@ -440,6 +440,20 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	var input models.ItemCreate
 	if err := decodeJSON(r, &input); err != nil {
+		// IDEA-1488 R2 codex P2: surface the domain-level errors from
+		// ItemCreate.UnmarshalJSON without the "invalid JSON: ..."
+		// wrapper from decodeJSON. PATCH and the view/collection
+		// handlers already do this; the POST path was missed in the
+		// original IDEA-1488 work. Mirrors handlers_items.go:641's
+		// PATCH-side handling.
+		if errors.Is(err, models.ErrInvalidFieldsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidFieldsType.Error())
+			return
+		}
+		if errors.Is(err, models.ErrInvalidTagsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidTagsType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

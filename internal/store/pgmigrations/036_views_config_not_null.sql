@@ -7,6 +7,9 @@
 -- SET DEFAULT here is a no-op idempotency belt; SET NOT NULL is the
 -- load-bearing change.
 
-UPDATE views SET config = '{}'::jsonb WHERE config IS NULL;
+-- Backfill: repair any row whose config violates the post-migration
+-- shape contract. See migration 035 for the full rationale on the
+-- widened WHERE clause (codex R2 P1).
+UPDATE views SET config = '{}'::jsonb WHERE config IS NULL OR jsonb_typeof(config) != 'object';
 ALTER TABLE views ALTER COLUMN config SET NOT NULL;
 ALTER TABLE views ALTER COLUMN config SET DEFAULT '{}'::jsonb;

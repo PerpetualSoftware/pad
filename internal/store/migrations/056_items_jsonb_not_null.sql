@@ -24,11 +24,38 @@
 
 PRAGMA foreign_keys = OFF;
 
--- Backfill any NULL fields / tags before applying the constraint. tags
--- has been de-facto NOT NULL since migration 001 (DEFAULT '[]'), but the
--- explicit backfill is harmless idempotency belt.
-UPDATE items SET fields = '{}' WHERE fields IS NULL;
-UPDATE items SET tags = '[]' WHERE tags IS NULL;
+-- Backfill: repair any row whose fields / tags violates the post-
+-- migration shape contract (NOT NULL + object-or-array JSON). The
+-- WHERE clauses widen the NULL-only filter to cover three pre-
+-- existing failure modes:
+--
+--   1. fields IS NULL                 — the original IDEA-1486 case.
+--   2. json_valid(fields) = 0         — empty-string, "not json", or
+--                                       any other non-JSON text the
+--                                       NOT-NULL-DEFAULT never blocked.
+--   3. json_type(fields) != 'object'  — JSON-but-wrong-shape (e.g.
+--                                       'null', '[]', '"a string"',
+--                                       a number).
+--
+-- Same trio for tags with 'array' as the expected json_type. Per
+-- codex R2 P1: the original NULL-only filter would have left every
+-- malformed row in place. The partial UNIQUE index on
+-- json_extract(fields, '$.invocation_slug') (recreated below) errors
+-- on rows whose fields fails json_valid, so a single bad row would
+-- break the CREATE INDEX mid-migration. Repair has to happen before
+-- the rebuild so both the INSERT…SELECT and the post-rename CREATE
+-- INDEX see only well-shaped rows.
+UPDATE items
+SET fields = '{}'
+WHERE fields IS NULL
+   OR json_valid(fields) = 0
+   OR json_type(fields) != 'object';
+
+UPDATE items
+SET tags = '[]'
+WHERE tags IS NULL
+   OR json_valid(tags) = 0
+   OR json_type(tags) != 'array';
 
 DROP TABLE IF EXISTS items_new;
 

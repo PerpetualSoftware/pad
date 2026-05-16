@@ -14,8 +14,14 @@
 
 PRAGMA foreign_keys = OFF;
 
--- Backfill any NULL config before applying the constraint.
-UPDATE views SET config = '{}' WHERE config IS NULL;
+-- Backfill: repair any row whose config violates the post-migration
+-- shape contract (NOT NULL + JSON object). See migration 056 for the
+-- full rationale on the widened WHERE clause (codex R2 P1).
+UPDATE views
+SET config = '{}'
+WHERE config IS NULL
+   OR json_valid(config) = 0
+   OR json_type(config) != 'object';
 
 DROP TABLE IF EXISTS views_new;
 

@@ -11,8 +11,17 @@
 -- views.config NOT NULL lands in 036 to keep per-table blast radius
 -- independent.
 
-UPDATE items SET fields = '{}'::jsonb WHERE fields IS NULL;
-UPDATE items SET tags   = '[]'::jsonb WHERE tags IS NULL;
+-- Backfill: repair any row whose fields / tags violates the post-
+-- migration shape contract. The JSONB column type rejects invalid
+-- JSON at write time, so the only pre-existing pathologies that
+-- could survive are SQL NULL and JSONB-valid-but-wrong-shape (e.g.
+-- a JSONB null, an array where an object is required, a primitive).
+-- Codex R2 P1: the original NULL-only filter would have left wrong-
+-- shape rows in place, weakening the IDEA-1488 ceiling — the
+-- handler-layer shape validators reject those shapes on input but
+-- pre-existing rows would have slipped past.
+UPDATE items SET fields = '{}'::jsonb WHERE fields IS NULL OR jsonb_typeof(fields) != 'object';
+UPDATE items SET tags   = '[]'::jsonb WHERE tags   IS NULL OR jsonb_typeof(tags)   != 'array';
 ALTER TABLE items ALTER COLUMN fields SET NOT NULL;
 ALTER TABLE items ALTER COLUMN tags SET NOT NULL;
 ALTER TABLE items ALTER COLUMN fields SET DEFAULT '{}'::jsonb;
