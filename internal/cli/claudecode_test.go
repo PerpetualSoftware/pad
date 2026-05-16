@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -259,5 +261,132 @@ func TestResolveSessionLog_FallbackOnMissing(t *testing.T) {
 	_, err := ResolveSessionLog(ResolveOptions{CWD: "/nope"})
 	if err == nil {
 		t.Fatal("expected ErrNoSession")
+	}
+}
+
+// TestResolveSessionLog_RejectsPathTraversal pins the Codex R2 P1 fix:
+// session-ID-shaped input that contains '..', '/', '\\', or doesn't
+// match the UUID-ish shape is rejected before it can become a
+// filename fragment under ~/.claude/projects/<slug>/.
+func TestResolveSessionLog_RejectsPathTraversal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDECODE", "0")
+
+	bad := []string{
+		"../../../../../tmp/foo",
+		"../escape",
+		"foo/bar",
+		`foo\bar`,
+		"..",
+		".",
+		"",
+		"not-a-uuid!",
+		"abc..def",
+	}
+	for _, id := range bad {
+		t.Run("flag-id/"+id, func(t *testing.T) {
+			_, err := ResolveSessionLog(ResolveOptions{ExplicitSession: id, CWD: "/work"})
+			if err == nil {
+				t.Fatalf("expected error for --session %q", id)
+			}
+			if id != "" && !errors.Is(err, ErrInvalidSessionID) {
+				t.Fatalf("err = %v, want ErrInvalidSessionID", err)
+			}
+		})
+		if id == "" {
+			// Env-var case: empty string is treated as "not set" and
+			// would fall through to autodetect, not validation.
+			continue
+		}
+		t.Run("env-id/"+id, func(t *testing.T) {
+			t.Setenv("CLAUDE_CODE_SESSION_ID", id)
+			_, err := ResolveSessionLog(ResolveOptions{CWD: "/work"})
+			if err == nil {
+				t.Fatalf("expected error for env %q", id)
+			}
+			if !errors.Is(err, ErrInvalidSessionID) {
+				t.Fatalf("err = %v, want ErrInvalidSessionID", err)
+			}
+		})
+	}
+}
+
+// TestParseSessionJSONL_OversizedLine pins the Codex R2 P2-Scanner fix:
+// a single record larger than the old bufio.Scanner cap (8 MiB) must
+// parse cleanly instead of failing the whole command with
+// "bufio.Scanner: token too long."
+func TestParseSessionJSONL_OversizedLine(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "big.jsonl")
+	// 10 MiB of inline-attachment-shaped content. Building the JSON by
+	// hand to avoid any encoding-overhead surprise; the text inside the
+	// string is benign ASCII so JSON quoting stays minimal.
+	huge := strings.Repeat("x", 10*1024*1024)
+	body := `{"type":"assistant","timestamp":"2026-05-16T00:00:00Z","version":"2.1.132","message":{"content":[{"type":"text","text":"` + huge + `"}],"usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}}` + "\n"
+	body += `{"type":"user","timestamp":"2026-05-16T00:00:01Z","message":{"content":[{"type":"text","text":"after"}]}}` + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseSessionJSONL(p)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.Lines != 2 {
+		t.Errorf("Lines = %d, want 2", m.Lines)
+	}
+	if !m.HasUsage || m.Usage == nil || m.Usage.CacheRead != 3 {
+		t.Errorf("expected usage with cache_read=3, got %+v", m.Usage)
+	}
+	if m.MessageCounts["assistant"] != 1 || m.MessageCounts["user"] != 1 {
+		t.Errorf("message counts = %v", m.MessageCounts)
+	}
+}
+
+// TestParseSessionJSONL_NonArrayContent pins the Codex R2 P2-content
+// fix: a line whose message.content is a string (or any non-array)
+// must still contribute its type/timestamp/version/usage to the
+// metrics — only the tool_use scan is skipped.
+func TestParseSessionJSONL_NonArrayContent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "variant.jsonl")
+	body := `{"type":"assistant","timestamp":"2026-05-16T00:00:00Z","version":"2.1.999","message":{"content":"just a string","usage":{"input_tokens":7,"cache_creation_input_tokens":11,"cache_read_input_tokens":13,"output_tokens":17}}}` + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseSessionJSONL(p)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.MessageCounts["assistant"] != 1 {
+		t.Errorf("expected assistant count 1, got %v", m.MessageCounts)
+	}
+	if m.AgentVersion != "2.1.999" {
+		t.Errorf("AgentVersion = %q, want 2.1.999", m.AgentVersion)
+	}
+	if !m.HasUsage || m.Usage == nil || m.Usage.CacheRead != 13 {
+		t.Errorf("expected usage with cache_read=13, got %+v", m.Usage)
+	}
+	if m.ToolInvocations != 0 {
+		t.Errorf("ToolInvocations = %d, want 0 (non-array content)", m.ToolInvocations)
+	}
+}
+
+// TestParseSessionJSONL_ParallelToolUse pins the Codex R1 P2 fix.
+// (Already exercised via normal.jsonl, repeated here as a tight,
+// hermetic check with a single line.)
+func TestParseSessionJSONL_ParallelToolUse(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "parallel.jsonl")
+	body := `{"type":"assistant","timestamp":"2026-05-16T00:00:00Z","version":"2.1.132","message":{"content":[{"type":"tool_use","name":"a"},{"type":"tool_use","name":"b"},{"type":"tool_use","name":"c"},{"type":"text","text":"k"}]}}` + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseSessionJSONL(p)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.ToolInvocations != 3 {
+		t.Errorf("ToolInvocations = %d, want 3", m.ToolInvocations)
 	}
 }

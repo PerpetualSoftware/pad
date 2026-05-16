@@ -19,8 +19,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -89,8 +91,13 @@ type jsonlLine struct {
 	GitBranch string `json:"gitBranch"`
 	Version   string `json:"version"`
 	Message   *struct {
-		Usage   *rawUsage         `json:"usage"`
-		Content []json.RawMessage `json:"content"`
+		Usage *rawUsage `json:"usage"`
+		// Content is left as a raw blob (not []json.RawMessage) so a
+		// Claude Code schema variant that emits content as a string or
+		// object doesn't fail the whole line's decode and lose its
+		// type/timestamp/version/usage data. The tool-use scan
+		// re-decodes Content as an array on a best-effort basis.
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
 
@@ -122,76 +129,41 @@ func ParseSessionJSONL(path string) (*SessionMetrics, error) {
 		MessageCounts: map[string]int64{},
 	}
 
-	// Lines can be large (full prompt + content blocks). 8 MB is well
-	// above any single observed line; bump if Claude Code starts
-	// embedding bigger blobs.
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	// bufio.Reader instead of bufio.Scanner: Scanner has a hard
+	// per-line cap (MaxScanTokenSize, defaults 64 KiB, bumped to
+	// 8 MiB before) and a single oversized record — e.g. an inline
+	// file attachment — would kill the whole command with
+	// "bufio.Scanner: token too long." ReadBytes('\n') has no length
+	// cap; oversized lines still parse via json.Unmarshal since
+	// encoding/json has no size limit either.
+	reader := bufio.NewReaderSize(f, 64*1024)
 
-	for scanner.Scan() {
-		m.Lines++
-		raw := scanner.Bytes()
-		var line jsonlLine
-		if err := json.Unmarshal(raw, &line); err != nil {
-			// unparseable line — still counted in lines/bytes.
-			continue
-		}
-
-		// Message-count buckets. Anything outside the canonical
-		// user/assistant pair collapses into "other" so the schema
-		// stays stable across Claude Code releases.
-		switch line.Type {
-		case "user", "assistant":
-			m.MessageCounts[line.Type]++
-		case "":
-			m.MessageCounts["other"]++
-		default:
-			m.MessageCounts["other"]++
-		}
-
-		if line.Timestamp != "" {
-			if m.SessionStartedAt == "" {
-				m.SessionStartedAt = line.Timestamp
-			}
-			m.LastActivityAt = line.Timestamp
-		}
-		if line.CWD != "" {
-			m.CWD = line.CWD
-		}
-		if line.GitBranch != "" {
-			m.GitBranch = line.GitBranch
-		}
-		if line.Version != "" {
-			m.AgentVersion = line.Version
-		}
-
-		if line.Type == "assistant" && line.Message != nil {
-			// tool_invocations: count every tool_use block — a single
-			// assistant turn can issue multiple parallel tool calls
-			// (multiple content[] entries with type=tool_use), and the
-			// field name says invocations, not turns-with-any-tool-use.
-			for _, blob := range line.Message.Content {
-				var head struct {
-					Type string `json:"type"`
-				}
-				if err := json.Unmarshal(blob, &head); err == nil && head.Type == "tool_use" {
-					m.ToolInvocations++
+	for {
+		raw, err := reader.ReadBytes('\n')
+		if len(raw) > 0 {
+			m.Lines++
+			// Strip the trailing newline (and an optional \r) before
+			// parsing. encoding/json is tolerant of trailing whitespace
+			// but the strip keeps things tidy and matches the prior
+			// Scanner behavior.
+			trimmed := raw
+			if n := len(trimmed); n > 0 && trimmed[n-1] == '\n' {
+				trimmed = trimmed[:n-1]
+				if n2 := len(trimmed); n2 > 0 && trimmed[n2-1] == '\r' {
+					trimmed = trimmed[:n2-1]
 				}
 			}
-			if u := line.Message.Usage; u != nil {
-				m.HasUsage = true
-				m.Usage = &SessionUsage{
-					CacheRead:     u.CacheReadInputTokens,
-					CacheCreation: u.CacheCreationInputTokens,
-					Input:         u.InputTokens,
-					Output:        u.OutputTokens,
-					TotalPrompt:   u.CacheReadInputTokens + u.CacheCreationInputTokens + u.InputTokens,
-				}
+			if err := parseSessionLine(trimmed, m); err != nil {
+				// unparseable line — still counted in lines/bytes.
+				_ = err
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan session log: %w", err)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("read session log: %w", err)
+		}
 	}
 
 	if m.SessionStartedAt != "" && m.LastActivityAt != "" {
@@ -206,6 +178,80 @@ func ParseSessionJSONL(path string) (*SessionMetrics, error) {
 	}
 
 	return m, nil
+}
+
+// parseSessionLine decodes one JSONL record and folds its fields into
+// the running SessionMetrics. Returns an error only on decode failure;
+// callers should treat that as "skip this line, keep going."
+func parseSessionLine(raw []byte, m *SessionMetrics) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var line jsonlLine
+	if err := json.Unmarshal(raw, &line); err != nil {
+		return err
+	}
+
+	// Message-count buckets. Anything outside the canonical
+	// user/assistant pair collapses into "other" so the schema
+	// stays stable across Claude Code releases.
+	switch line.Type {
+	case "user", "assistant":
+		m.MessageCounts[line.Type]++
+	default:
+		m.MessageCounts["other"]++
+	}
+
+	if line.Timestamp != "" {
+		if m.SessionStartedAt == "" {
+			m.SessionStartedAt = line.Timestamp
+		}
+		m.LastActivityAt = line.Timestamp
+	}
+	if line.CWD != "" {
+		m.CWD = line.CWD
+	}
+	if line.GitBranch != "" {
+		m.GitBranch = line.GitBranch
+	}
+	if line.Version != "" {
+		m.AgentVersion = line.Version
+	}
+
+	if line.Type == "assistant" && line.Message != nil {
+		// tool_invocations: count every tool_use block — a single
+		// assistant turn can issue multiple parallel tool calls
+		// (multiple content[] entries with type=tool_use), and the
+		// field name says invocations, not turns-with-any-tool-use.
+		// Content may be array OR string OR object across Claude Code
+		// schema variants; only the array shape carries tool_use
+		// blocks. If the re-decode fails we skip tool counting but
+		// keep the line's other data (already folded in above).
+		if len(line.Message.Content) > 0 {
+			var blocks []json.RawMessage
+			if err := json.Unmarshal(line.Message.Content, &blocks); err == nil {
+				for _, blob := range blocks {
+					var head struct {
+						Type string `json:"type"`
+					}
+					if err := json.Unmarshal(blob, &head); err == nil && head.Type == "tool_use" {
+						m.ToolInvocations++
+					}
+				}
+			}
+		}
+		if u := line.Message.Usage; u != nil {
+			m.HasUsage = true
+			m.Usage = &SessionUsage{
+				CacheRead:     u.CacheReadInputTokens,
+				CacheCreation: u.CacheCreationInputTokens,
+				Input:         u.InputTokens,
+				Output:        u.OutputTokens,
+				TotalPrompt:   u.CacheReadInputTokens + u.CacheCreationInputTokens + u.InputTokens,
+			}
+		}
+	}
+	return nil
 }
 
 // ContextBudgetEntry maps an agent_version prefix to a context-window
@@ -275,6 +321,39 @@ type ResolveResult struct {
 // session log. Callers should switch to the IDEA-body sketch fallback.
 var ErrNoSession = errors.New("claude code session log not found")
 
+// ErrInvalidSessionID is returned when a session-ID-shaped input
+// contains path separators, `..`, or other characters that would
+// allow it to escape the projects-dir when joined as a filename
+// fragment. Caller-facing — `pad session shape` surfaces it directly.
+var ErrInvalidSessionID = errors.New("invalid session id")
+
+// sessionIDPattern matches the UUID-ish shapes Claude Code emits for
+// session IDs (e.g. "e8919313-e76d-420a-bffa-a4646d2d6a83"). We allow
+// hex + dashes generously rather than pinning to canonical UUID
+// length, because future agent versions may shift formats and the
+// goal here is a defense-in-depth filename-safety check, not strict
+// UUID enforcement.
+var sessionIDPattern = regexp.MustCompile(`^[0-9a-fA-F-]{8,}$`)
+
+// validateSessionID rejects values that would be unsafe to use as a
+// filename fragment under ~/.claude/projects/<slug>/. Path separators,
+// `..` segments, and anything that doesn't look UUID-ish trip this.
+func validateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidSessionID)
+	}
+	if strings.ContainsAny(id, "/\\") {
+		return fmt.Errorf("%w: %q contains a path separator", ErrInvalidSessionID, id)
+	}
+	if id == "." || id == ".." || strings.Contains(id, "..") {
+		return fmt.Errorf("%w: %q contains '..'", ErrInvalidSessionID, id)
+	}
+	if !sessionIDPattern.MatchString(id) {
+		return fmt.Errorf("%w: %q is not a UUID-shaped session id", ErrInvalidSessionID, id)
+	}
+	return nil
+}
+
 // ResolveSessionLog walks the cascade described in IDEA-1491 to locate
 // the JSONL for the current session.
 func ResolveSessionLog(opts ResolveOptions) (*ResolveResult, error) {
@@ -300,7 +379,13 @@ func ResolveSessionLog(opts ResolveOptions) (*ResolveResult, error) {
 			}
 			return nil, fmt.Errorf("--session path %q not found", opts.ExplicitSession)
 		}
-		// Treat as session UUID — search across all project dirs.
+		// Treat as session UUID — validate shape before letting it
+		// become a filename fragment under ~/.claude/projects/<slug>/.
+		// Without this guard, `--session ../../../../../etc/foo` would
+		// escape the projects dir on the os.Stat candidate-check.
+		if err := validateSessionID(opts.ExplicitSession); err != nil {
+			return nil, err
+		}
 		path, err := findSessionByID(opts.ExplicitSession)
 		if err != nil {
 			return nil, err
@@ -310,6 +395,13 @@ func ResolveSessionLog(opts ResolveOptions) (*ResolveResult, error) {
 
 	// Tier 2: $CLAUDE_CODE_SESSION_ID + cwd-derived slug.
 	if id := os.Getenv("CLAUDE_CODE_SESSION_ID"); id != "" {
+		// Same defense as the flag-id branch: env vars are
+		// attacker-influenceable too (e.g. inherited from a parent
+		// process or a sourced .env), so the ID must pass shape
+		// validation before we join it into a filesystem path.
+		if err := validateSessionID(id); err != nil {
+			return nil, err
+		}
 		projectsDir, err := ClaudeCodeProjectsDir()
 		if err != nil {
 			return nil, err
@@ -419,16 +511,22 @@ func tailLineCWD(path string) string {
 		return ""
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	// Use bufio.Reader (no per-line size cap) for parity with
+	// ParseSessionJSONL — an oversized line shouldn't kill autodetect.
+	reader := bufio.NewReaderSize(f, 64*1024)
 	var lastCWD string
-	for scanner.Scan() {
-		var line jsonlLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue
+	for {
+		raw, err := reader.ReadBytes('\n')
+		if len(raw) > 0 {
+			var line jsonlLine
+			if err := json.Unmarshal(raw, &line); err == nil {
+				if line.CWD != "" {
+					lastCWD = line.CWD
+				}
+			}
 		}
-		if line.CWD != "" {
-			lastCWD = line.CWD
+		if err != nil {
+			break
 		}
 	}
 	return lastCWD

@@ -90,8 +90,16 @@ Side-effect free. The CLI never echoes prompt content, only metrics.`,
 func buildSessionShape(sessionFlag string) (*sessionShapeReport, error) {
 	resolved, err := cli.ResolveSessionLog(cli.ResolveOptions{ExplicitSession: sessionFlag})
 	if err != nil {
-		// Fallback. v1 keeps this minimal — no Pad-invocation-count
-		// derivation yet (IDEA-body sketch is left as a TODO).
+		// If the user explicitly passed --session, a resolver failure
+		// is a real error (typo / wrong UUID / wrong path) and silently
+		// emitting the fallback shape would mask the bug in automation.
+		// Only the autodetect/env-var-implicit paths get to fall back.
+		if sessionFlag != "" {
+			return nil, fmt.Errorf("--session %q: %w", sessionFlag, err)
+		}
+		// Implicit-path fallback. v1 keeps this minimal — no
+		// Pad-invocation-count derivation yet (IDEA-body sketch is a
+		// TODO).
 		return &sessionShapeReport{
 			Agent:         "unknown",
 			FallbackUsed:  true,
