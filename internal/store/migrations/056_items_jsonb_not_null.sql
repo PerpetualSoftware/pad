@@ -84,7 +84,9 @@ FROM items;
 DROP TABLE items;
 ALTER TABLE items_new RENAME TO items;
 
--- Recreate all 7 indexes (originally from 005, 017, 053).
+-- Recreate all 8 indexes (originally from 005, 017, 053, 054). Every
+-- index is attached to the dropped items table and does NOT survive
+-- DROP TABLE items; each must be re-issued explicitly.
 CREATE INDEX IF NOT EXISTS idx_items_collection ON items(collection_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_workspace ON items(workspace_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id) WHERE deleted_at IS NULL;
@@ -92,6 +94,17 @@ CREATE INDEX IF NOT EXISTS idx_items_updated ON items(updated_at) WHERE deleted_
 CREATE INDEX IF NOT EXISTS idx_items_assigned_user ON items(assigned_user_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_agent_role ON items(agent_role_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_workspace_seq ON items(workspace_id, seq DESC);
+
+-- Playbook invocation_slug uniqueness guard (from migration 054). The
+-- body matches 054 verbatim. This is the DB-level TOCTOU protection
+-- that the application-layer checkUniqueFields in handlers_items.go
+-- relies on — dropping it during the rebuild and forgetting to
+-- recreate it would silently lose the uniqueness invariant.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_items_invocation_slug_per_collection
+    ON items(collection_id, json_extract(fields, '$.invocation_slug'))
+    WHERE json_extract(fields, '$.invocation_slug') IS NOT NULL
+      AND json_extract(fields, '$.invocation_slug') != ''
+      AND deleted_at IS NULL;
 
 -- Recreate items_fts triggers (auto-dropped with the items table).
 -- Bodies match 005_collections.sql:96-107 exactly. The IF EXISTS guards

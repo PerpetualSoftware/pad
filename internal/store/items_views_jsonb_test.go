@@ -161,6 +161,25 @@ func TestItemsViewsJSONB_ImportWorkspaceCoercesEmptyAndMalformed(t *testing.T) {
 				CreatedAt:    "2026-05-16T00:00:00Z",
 				UpdatedAt:    "2026-05-16T00:00:00Z",
 			},
+			{
+				// IDEA-1486 R1 codex P2: imported fields=null and
+				// tags=null must coerce to defaults. Without the
+				// non-nil check in coerceJSONForImport,
+				// json.Unmarshal("null", &m) returns err=nil with m
+				// staying nil, and the raw "null" string would land
+				// in the column — JSONB null on Postgres or text
+				// "null" on SQLite, both of which break downstream
+				// readers expecting an object/array.
+				ID:           "old-item-null",
+				CollectionID: "old-coll-1",
+				Title:        "Item with json null fields and tags",
+				Slug:         "item-null",
+				Content:      "",
+				Fields:       `null`,
+				Tags:         `null`,
+				CreatedAt:    "2026-05-16T00:00:00Z",
+				UpdatedAt:    "2026-05-16T00:00:00Z",
+			},
 		},
 	}
 
@@ -178,6 +197,7 @@ func TestItemsViewsJSONB_ImportWorkspaceCoercesEmptyAndMalformed(t *testing.T) {
 		{"Item with empty fields", "{}", "[]"},
 		{"Item with malformed json", "{}", "[]"},
 		{"Item with valid fields", `{"status":"open"}`, `["urgent"]`},
+		{"Item with json null fields and tags", "{}", "[]"},
 	}
 	for _, tc := range cases {
 		var gotFields, gotTags string
@@ -249,15 +269,19 @@ func TestItemsViewsJSONB_SQLiteRebuildPreservesIndexesAndTriggers(t *testing.T) 
 		t.Fatal("createTestItem returned nil")
 	}
 
-	// All 7 indexes from 005/017/053 must be present on items.
+	// All 8 indexes from 005/017/053/054 must be present on items.
+	// idx_items_invocation_slug_per_collection was added to migration
+	// 056 in IDEA-1486 R1 codex P1.1 after the original draft forgot
+	// to recreate it; this test grew to 8 entries alongside that fix.
 	wantIndexes := map[string]bool{
-		"idx_items_collection":    false,
-		"idx_items_workspace":     false,
-		"idx_items_parent":        false,
-		"idx_items_updated":       false,
-		"idx_items_assigned_user": false,
-		"idx_items_agent_role":    false,
-		"idx_items_workspace_seq": false,
+		"idx_items_collection":                     false,
+		"idx_items_workspace":                      false,
+		"idx_items_parent":                         false,
+		"idx_items_updated":                        false,
+		"idx_items_assigned_user":                  false,
+		"idx_items_agent_role":                     false,
+		"idx_items_workspace_seq":                  false,
+		"idx_items_invocation_slug_per_collection": false,
 	}
 	rows, err := s.db.Query(
 		"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='items'")

@@ -705,11 +705,23 @@ func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
 // canonical JSON-encoded string. Acceptable inbound shapes:
 //
 //   - absent / empty / null → nil (caller leaves the field unchanged)
-//   - JSON string → passthrough (already the canonical shape)
-//   - JSON object or array (matching expectedStart '{' or '[') → re-marshal to string
+//   - JSON-encoded string whose INNER content is either empty (the
+//     legacy empty-string sentinel handled downstream by store-layer
+//     coercion) OR a JSON value whose shape matches expectedStart
+//     ('{' or '[')
+//   - JSON object or array (matching expectedStart '{' or '[') → re-
+//     marshal to string
 //
 // Any other shape returns errInvalid so the handler surfaces a clean
 // domain-level error instead of a leaked Go unmarshal message.
+//
+// IDEA-1488 R1 codex hardening: the `case '"'` branch validates the
+// INNER content's shape (not just the JSON-encoded-string envelope).
+// Without this, `{"config": "[]"}` or `{"settings": "not json"}` would
+// slip past — the outer string-shape check accepted any inner content
+// verbatim, which defeated the shape-validation ceiling that IDEA-1488
+// is supposed to add. The pre-existing ItemUpdate fields/tags path
+// inherits the same tightening because it routes through this helper.
 func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error) (*string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -717,11 +729,30 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 	}
 	switch trimmed[0] {
 	case '"':
-		// Already a JSON-encoded string — unmarshal to the underlying Go
-		// string so subsequent code that does json.Unmarshal([]byte(*s), ...)
-		// sees the inner JSON, not a re-quoted string.
+		// JSON-encoded string envelope — unmarshal to the underlying Go
+		// string and then validate the inner content's shape matches
+		// expectedStart. Subsequent code that does
+		// json.Unmarshal([]byte(*s), ...) sees the inner JSON, not a
+		// re-quoted string.
 		var s string
 		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return nil, errInvalid
+		}
+		// Empty inner string is the empty-string sentinel; store-layer
+		// coercion handles it (IDEA-1486). Don't reject here so callers
+		// retain the legacy "" → default normalization shape.
+		innerTrimmed := bytes.TrimSpace([]byte(s))
+		if len(innerTrimmed) == 0 {
+			return &s, nil
+		}
+		if innerTrimmed[0] != expectedStart {
+			return nil, errInvalid
+		}
+		// Confirm the inner content actually parses as JSON of the
+		// expected shape. Catches strings that start with the right
+		// brace but are otherwise garbage (e.g. `"{not valid"`).
+		var inner any
+		if err := json.Unmarshal(innerTrimmed, &inner); err != nil {
 			return nil, errInvalid
 		}
 		return &s, nil

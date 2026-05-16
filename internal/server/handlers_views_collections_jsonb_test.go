@@ -104,6 +104,33 @@ func TestPatchView_FlexibleConfigShape(t *testing.T) {
 			t.Fatalf("expected 200 or 400, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
+
+	// IDEA-1488 R1 codex P1.2: the `case '"'` branch in flexJSONToString
+	// previously accepted JSON-encoded strings without checking the
+	// inner content's shape. The hardened path validates that the
+	// inner JSON is an object (or array for tags). These tests pin the
+	// fix — without the inner-shape check, both cases below would
+	// return 200 with garbage stored in config.
+	t.Run("config as JSON-encoded array string returns 400", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", patchPath, map[string]interface{}{
+			"config": `[]`, // valid JSON, wrong shape (array, not object)
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for JSON-encoded array config, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !bytes.Contains(rr.Body.Bytes(), []byte(`\"config\" must be a JSON object`)) {
+			t.Fatalf("response missing domain-level config message: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("config as JSON-encoded malformed-string returns 400", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", patchPath, map[string]interface{}{
+			"config": `not even json`,
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for malformed-string config, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 // TestCreateView_FlexibleConfigShape mirrors the PATCH test for the POST
@@ -192,6 +219,30 @@ func TestPatchCollection_FlexibleSettingsShape(t *testing.T) {
 		}
 		if !bytes.Contains(rr.Body.Bytes(), []byte(`\"settings\" must be a JSON object`)) {
 			t.Fatalf("response missing domain-level settings message: %s", rr.Body.String())
+		}
+	})
+
+	// IDEA-1488 R1 codex P1.2 — see the matching view-side tests above
+	// for context. These pin the inner-shape validation of the
+	// JSON-encoded-string envelope.
+	t.Run("settings as JSON-encoded array string returns 400", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", patchPath, map[string]interface{}{
+			"settings": `[]`,
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for JSON-encoded array settings, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !bytes.Contains(rr.Body.Bytes(), []byte(`\"settings\" must be a JSON object`)) {
+			t.Fatalf("response missing domain-level settings message: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("settings as JSON-encoded malformed-string returns 400", func(t *testing.T) {
+		rr := doRequest(srv, "PATCH", patchPath, map[string]interface{}{
+			"settings": `not json`,
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for malformed-string settings, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 }

@@ -20,9 +20,9 @@ import (
 // workspace import because one row carries malformed data.
 //
 //   - raw == ""                     → return defaultJSON (empty-string sentinel).
-//   - raw is well-formed JSON of the expected shape (object/array) →
-//     return raw verbatim.
-//   - raw is otherwise unparseable or wrong-shape → return defaultJSON
+//   - raw is well-formed JSON of the expected shape (non-nil object/array)
+//     → return raw verbatim.
+//   - raw is JSON `null`, unparseable, or wrong-shape → return defaultJSON
 //     AND log a structured warning naming the field + row. The raw
 //     value's LENGTH is logged (`raw_len`) but never its content, so
 //     user data does not leak into logs.
@@ -30,18 +30,27 @@ import (
 // expectObject==true requires the parsed value to be a JSON object
 // (map[string]any); expectObject==false requires a JSON array
 // ([]any) — used for items.tags.
+//
+// IDEA-1486 R1 codex P2: `json.Unmarshal("null", &m)` returns nil error
+// and leaves the destination nil. Imported `fields: null` (or the
+// string literal `"null"` at the JSON-encoded-string layer) would
+// otherwise satisfy this validator and land as a JSONB null on
+// Postgres (which technically satisfies NOT NULL — SQL NULL ≠ JSONB
+// null) or the text "null" on SQLite. Downstream readers that expect
+// an object would choke. The non-nil check below forces JSON null to
+// the log-and-coerce path with the rest of the malformed shapes.
 func coerceJSONForImport(raw, defaultJSON, field, rowID, workspaceID string, expectObject bool) string {
 	if raw == "" {
 		return defaultJSON
 	}
 	if expectObject {
 		var v map[string]any
-		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+		if err := json.Unmarshal([]byte(raw), &v); err == nil && v != nil {
 			return raw
 		}
 	} else {
 		var v []any
-		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+		if err := json.Unmarshal([]byte(raw), &v); err == nil && v != nil {
 			return raw
 		}
 	}
