@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -231,14 +232,8 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
-		if err := execMulti(s.db, string(data)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", name, err)
-		}
-
-		// Record migration
-		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now())
-		if err != nil {
-			return fmt.Errorf("record migration %s: %w", name, err)
+		if err := applySQLiteMigration(s.db, name, string(data)); err != nil {
+			return err
 		}
 	}
 
@@ -350,24 +345,26 @@ func (s *Store) migratePostgres() error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
-		if _, err := s.db.Exec(string(data)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", name, err)
-		}
-
-		_, err = s.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)", name, now())
-		if err != nil {
-			return fmt.Errorf("record migration %s: %w", name, err)
+		if err := applyPostgresMigration(s.db, name, string(data)); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
+// sqlExecer is the subset of sql.DB / sql.Tx that execMulti needs. It lets
+// the same statement-iteration loop run either against the raw pool or against
+// a wrapping transaction (used by applySQLiteMigration for atomicity).
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // execMulti executes multiple SQL statements by iteratively using
 // database/sql's Exec which processes one statement at a time,
 // then advancing past it using the driver's awareness of statement boundaries.
 // This handles triggers, FTS5, and other complex SQL correctly.
-func execMulti(db *sql.DB, sqlText string) error {
+func execMulti(db sqlExecer, sqlText string) error {
 	for {
 		sqlText = strings.TrimSpace(sqlText)
 		if sqlText == "" {
@@ -407,6 +404,228 @@ func execMulti(db *sql.DB, sqlText string) error {
 		}
 		sqlText = sqlText[end+1:]
 	}
+}
+
+// extractPragmas scans the migration text line-by-line and lifts any
+// top-level `PRAGMA ...;` statement out of the body. It returns the lifted
+// pragma statements (in original order) and the remaining SQL text with
+// those lines replaced by blank lines so line numbers in any error message
+// still align with the source file.
+//
+// IDEA-1485: PRAGMA statements like `foreign_keys = OFF/ON` and
+// `journal_mode = WAL` are no-ops (or errors) inside a SQLite transaction.
+// To wrap the rest of the migration in a single BEGIN/COMMIT for atomicity,
+// the runner emits any PRAGMA outside the wrapping transaction.
+//
+// Detection is intentionally conservative: only lines whose first
+// non-whitespace token is `PRAGMA` (case-insensitive) and that contain a
+// trailing `;` on the same line are lifted. PRAGMAs split across multiple
+// lines or embedded inside triggers/CTEs are not matched — none of the
+// existing migrations use that shape.
+func extractPragmas(sqlText string) (pragmas []string, rest string) {
+	var out strings.Builder
+	out.Grow(len(sqlText))
+	for _, line := range strings.SplitAfter(sqlText, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(trimmed), "PRAGMA ") && strings.HasSuffix(trimmed, ";") {
+			pragmas = append(pragmas, trimmed)
+			// Preserve the trailing newline (if present) so line numbers
+			// in downstream error messages still match the source.
+			if strings.HasSuffix(line, "\n") {
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		out.WriteString(line)
+	}
+	return pragmas, out.String()
+}
+
+// applySQLiteMigration applies a single migration file atomically.
+//
+// Behavior (IDEA-1485):
+//
+//  1. PRAGMA statements are lifted out of the migration body (see
+//     extractPragmas), since PRAGMA settings like `foreign_keys` and
+//     `journal_mode` are no-ops (or errors) inside a SQLite transaction.
+//
+//  2. Lifted PRAGMAs are classified into two groups by their semantics:
+//
+//     - "before-tx" PRAGMAs (e.g. `foreign_keys = OFF`) are exec'd on
+//     the pinned connection BEFORE BEGIN, so their effect carries
+//     into the wrapping transaction.
+//     - "after-tx" PRAGMAs (e.g. `foreign_keys = ON` and everything
+//     else — `journal_mode=WAL`, etc.) are exec'd on the pinned
+//     connection AFTER COMMIT, so they don't undo a preceding
+//     `OFF` before the body runs.
+//
+//     Whenever a before-tx `foreign_keys=OFF` is exec'd, a deferred
+//     `PRAGMA foreign_keys = ON` is registered against the pinned
+//     connection. The defer fires on EVERY return — success, BeginTx
+//     failure, execMulti failure, INSERT failure, Commit failure, or
+//     post-tx pragma failure — so the connection never goes back to
+//     the pool with FKs disabled. The restore is best-effort and does
+//     not override the migration's primary error; if the restore
+//     itself fails it's logged loudly.
+//
+//  3. The remaining body SQL — including the `INSERT INTO schema_migrations`
+//     bookkeeping row — runs inside a single BEGIN/COMMIT on the SAME
+//     dedicated connection. If anything fails (including a process
+//     crash before COMMIT), the database rolls back to its pre-migration
+//     state AND the schema_migrations row is absent, so the next
+//     startup re-attempts the migration cleanly. This eliminates the
+//     data-loss window described in the IDEA's "Problem" section for
+//     the table-rebuild migrations (022 / 055).
+//
+// CRITICAL: SQLite's `PRAGMA foreign_keys` is per-connection. We MUST
+// pin the migration to a single connection via db.Conn() so the PRAGMA
+// emitted before BEGIN is visible to the transaction body. Using the
+// raw *sql.DB would race against the pool: the PRAGMA might land on
+// connection A and `db.Begin()` might grab connection B (where FKs are
+// still on, from the per-connection DSN), causing the rebuild to fail.
+func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
+	pragmas, body := extractPragmas(sqlText)
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("apply migration %s: acquire conn: %w", name, err)
+	}
+	defer conn.Close()
+
+	// Classify pragmas. "before" pragmas must take effect for the body
+	// to behave correctly (e.g. foreign_keys=OFF for table-rebuilds);
+	// "after" pragmas are restorations that must not undo a before-pragma
+	// prematurely.
+	var beforeTx, afterTx []string
+	for _, p := range pragmas {
+		switch {
+		case isForeignKeysOff(p):
+			beforeTx = append(beforeTx, p)
+		default:
+			// Everything else (foreign_keys=ON, journal_mode=WAL, etc.)
+			// runs AFTER the body. foreign_keys=ON specifically must NOT
+			// run before BEGIN because it would cancel out a paired OFF
+			// in the same migration.
+			afterTx = append(afterTx, p)
+		}
+	}
+
+	for _, p := range beforeTx {
+		if _, err := conn.ExecContext(ctx, p); err != nil {
+			return fmt.Errorf("apply migration %s: pre-tx pragma %q: %w", name, p, err)
+		}
+		if isForeignKeysOff(p) {
+			// FK-restore MUST be a defer, not a success-path block:
+			// once foreign_keys=OFF lands on the pinned conn, ANY later
+			// failure (BeginTx, execMulti, INSERT, Commit, post-tx
+			// pragma) returns early and the conn would otherwise go
+			// back to the pool with FKs disabled, silently bypassing
+			// enforcement for whichever caller next checks it out.
+			//
+			// The restore is best-effort: it does NOT override the
+			// migration's primary error. If the restore itself fails,
+			// log loudly — the connection is about to be released to
+			// the pool with FKs still off and a subsequent migration
+			// (or worse, a request handler) would inherit that state.
+			defer func() {
+				if _, restoreErr := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); restoreErr != nil {
+					slog.Error(
+						"failed to restore PRAGMA foreign_keys=ON after migration; pool connection may be released with FKs disabled",
+						"migration", name,
+						"err", restoreErr,
+					)
+				}
+			}()
+		}
+	}
+
+	// Wrap the body + bookkeeping in a single transaction so they
+	// commit (or roll back) atomically.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("apply migration %s: begin tx: %w", name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := execMulti(tx, body); err != nil {
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now()); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("apply migration %s: commit: %w", name, err)
+	}
+	committed = true
+
+	for _, p := range afterTx {
+		if _, err := conn.ExecContext(ctx, p); err != nil {
+			return fmt.Errorf("apply migration %s: post-tx pragma %q: %w", name, p, err)
+		}
+	}
+
+	// FK restore on the success path is handled by the deferred block
+	// registered when the before-tx OFF was executed. The migration's
+	// own `PRAGMA foreign_keys = ON` (if present) has already run via
+	// afterTx; the deferred re-set is idempotent.
+	return nil
+}
+
+// isForeignKeysOff reports whether a PRAGMA statement disables foreign keys.
+// Matches the canonical forms used in migrations 022 and 055 plus the common
+// variants (`OFF`, `0`, `false`), case-insensitive, ignoring whitespace.
+func isForeignKeysOff(pragma string) bool {
+	u := normalizePragma(pragma)
+	return strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=OFF") ||
+		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=0") ||
+		strings.HasPrefix(u, "PRAGMAFOREIGN_KEYS=FALSE")
+}
+
+func normalizePragma(p string) string {
+	u := strings.ToUpper(p)
+	u = strings.ReplaceAll(u, " ", "")
+	u = strings.ReplaceAll(u, "\t", "")
+	return u
+}
+
+// applyPostgresMigration applies a single Postgres migration file atomically.
+//
+// IDEA-1485: even though Postgres wraps each DDL statement in an implicit
+// transaction, the migration body plus the `INSERT INTO schema_migrations`
+// bookkeeping row need to commit together — otherwise a crash between
+// `data Exec` and the bookkeeping INSERT leaves the migration applied but
+// not recorded, and the next startup re-runs it against an already-mutated
+// schema. Wrapping both in a single explicit transaction closes that window
+// for multi-statement migration files.
+func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("apply migration %s: begin tx: %w", name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.Exec(sqlText); err != nil {
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)", name, now()); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("apply migration %s: commit: %w", name, err)
+	}
+	committed = true
+	return nil
 }
 
 // findStatementEnd finds the index of the semicolon that ends the next
