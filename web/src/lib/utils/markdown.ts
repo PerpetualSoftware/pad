@@ -336,7 +336,7 @@ export function renderMarkdown(
 			//
 			// URL components are NOT percent-encoded here. parseCrossWorkspaceBody
 			// already vetted `xw.workspace` against WORKSPACE_SLUG_PATTERN
-			// (`^[a-z][a-z0-9-]*$`) and `xw.ref` against REF_PATTERN
+			// (`^[a-z0-9][a-z0-9-]*$`) and `xw.ref` against REF_PATTERN
 			// (`^[A-Za-z][A-Za-z0-9]*-\d+$`) — both produce URL-safe ASCII
 			// by construction. wikiLinksToMarkdown emits the same bytes
 			// verbatim, so the encode/no-encode choice is symmetric across
@@ -407,11 +407,14 @@ export function unescapeDocLinks(markdown: string): string {
 // which keeps legacy [[Title]] links working unchanged.
 const REF_PATTERN = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
-// Workspace slug pattern. Mirrors the existing slug normalization rules — a
-// lowercase letter followed by lowercase alphanumerics or hyphens. Anchored
-// so anything not slug-shaped (uppercase, leading digit, punctuation) falls
-// through to legacy title handling.
-const WORKSPACE_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
+// Workspace slug pattern. Mirrors store.slugify exactly — lowercase
+// alphanumerics + hyphens, with NO leading-letter constraint (slugify
+// preserves digit-leading inputs, e.g. "2026 Roadmap" → "2026-roadmap").
+// The earlier `^[a-z]` constraint was a frontend-only tightening that
+// caused `[[2026-roadmap::TASK-1]]` to fall through as a legacy title
+// link (Codex round-4). Anchored so other non-slug shapes (uppercase,
+// punctuation) still fall through to legacy title handling.
+const WORKSPACE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 // Cross-workspace wiki-link body parser. Returns null when the body isn't a
 // `workspace::REF` (optionally `|Display`) shape, so callers can fall through
@@ -590,7 +593,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// which the next render would emit the default `other::TASK-1` and
 	// silently change the visible link text (Codex round-1 P2.1).
 	const withXwRefs = markdown.replace(
-		/\[((?:\\.|[^\]\\])+)\]\(\/-\/r\/([a-z][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
+		/\[((?:\\.|[^\]\\])+)\]\(\/-\/r\/([a-z0-9][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
 		(_match, rawText: string, ws: string, ref: string) => {
 			const displayText = unescapeMarkdownLinkText(rawText);
 			const renderDefault = `${ws}::${ref}`;
