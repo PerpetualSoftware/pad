@@ -297,11 +297,44 @@ export function renderMarkdown(
 	visibleCollectionSlugs?: Set<string>,
 	attachmentResolver?: AttachmentResolver
 ): string {
-	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
+	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, body: string) => {
+		// Cross-workspace form: [[workspace-slug::REF]] or [[workspace-slug::REF|Display]].
+		// `::` is the unambiguous separator. The workspace prefix is recognized
+		// only when both the slug AND the right-hand side match their expected
+		// shapes — otherwise the body falls through to legacy [[Title]] handling.
+		const xw = parseCrossWorkspaceBody(body);
+		if (xw) {
+			if (xw.workspace === workspaceSlug) {
+				// Same-workspace cross-ws form: behave identically to [[REF]],
+				// resolving against the in-memory item list. Falls through to
+				// the broken-link span if the ref isn't loaded.
+				const sameWsItem = findItemByRef(items, xw.ref);
+				const display = xw.display ?? (sameWsItem?.title ?? xw.ref);
+				const safeDisplay = escapeHtml(display);
+				if (sameWsItem && sameWsItem.collection_slug) {
+					if (visibleCollectionSlugs !== undefined && !visibleCollectionSlugs.has(sameWsItem.collection_slug)) {
+						return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${safeDisplay}</span>`;
+					}
+					const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
+					return `<a href="${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)}" class="doc-link">${safeDisplay}</a>`;
+				}
+				return `<span class="doc-link broken">${safeDisplay}</span>`;
+			}
+			// Cross-workspace: emit a link to the resolver route. Validation
+			// happens server-side at click time — the renderer has no
+			// visibility into the target workspace's items.
+			const prefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
+			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
+			const safeWorkspace = encodeURIComponent(xw.workspace);
+			const safeRef = encodeURIComponent(xw.ref);
+			const hrefPrefix = username ? `/${encodeURIComponent(username)}/${safeWorkspace}` : `/${safeWorkspace}`;
+			return `<a href="${hrefPrefix}/ref/${safeRef}" class="doc-link cross-workspace">${safeDisplay}</a>`;
+		}
 		// Escape user-controlled title so it can't break out of attribute
 		// quotes. sanitizeMarkdownHtml would strip the worst offenders after
 		// the fact, but escaping up-front keeps the intermediate HTML valid
 		// and avoids relying on the sanitizer to paper over bad markup.
+		const title = body;
 		const safeTitle = escapeHtml(title);
 		const item = items.find(i => i.title === title);
 		if (item && item.collection_slug) {
@@ -360,6 +393,41 @@ export function unescapeDocLinks(markdown: string): string {
 // which keeps legacy [[Title]] links working unchanged.
 const REF_PATTERN = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
+// Workspace slug pattern. Mirrors the existing slug normalization rules — a
+// lowercase letter followed by lowercase alphanumerics or hyphens. Anchored
+// so anything not slug-shaped (uppercase, leading digit, punctuation) falls
+// through to legacy title handling.
+const WORKSPACE_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+// Cross-workspace wiki-link body parser. Returns null when the body isn't a
+// `workspace::REF` (optionally `|Display`) shape, so callers can fall through
+// to legacy [[Title]] semantics without losing pre-existing links whose titles
+// happen to contain `::`. Both the slug and the ref must validate — partial
+// matches (e.g. `[[claude::not-a-ref]]`) return null.
+function parseCrossWorkspaceBody(body: string): { workspace: string; ref: string; display: string | null } | null {
+	const sepIdx = body.indexOf('::');
+	if (sepIdx <= 0) return null;
+	const workspace = body.slice(0, sepIdx);
+	const rest = body.slice(sepIdx + 2);
+	if (!WORKSPACE_SLUG_PATTERN.test(workspace)) return null;
+	// Display override splits on the first unescaped pipe in `rest`, same as
+	// the single-workspace splitter. We reuse splitWikiBody for consistency.
+	const { key: refRaw, displayOverride: displayRaw } = splitWikiBody(rest);
+	const ref = unescapeWikiBody(refRaw).trim();
+	if (!REF_PATTERN.test(ref)) return null;
+	const display = displayRaw == null ? null : unescapeWikiBody(displayRaw);
+	return { workspace, ref, display };
+}
+
+// Locate an item by its PREFIX-NUMBER ref in the in-memory list. Returns
+// undefined if no match — same fall-through semantics as the legacy path.
+function findItemByRef(items: Item[], ref: string): Item | undefined {
+	return items.find(i =>
+		!!i.item_number && !!i.collection_prefix &&
+		`${i.collection_prefix}-${i.item_number}`.toLowerCase() === ref.toLowerCase()
+	);
+}
+
 /**
  * Convert wiki-link storage syntax into markdown links for Tiptap rendering.
  * Supports three forms, in preference order:
@@ -375,6 +443,30 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 	// i.e. "a backslash-escaped char OR any non-`]`/non-`\` char".
 	return content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
 		const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
+
+		// Cross-workspace form: [[workspace::REF]] / [[workspace::REF|Display]].
+		// If the prefix matches the current workspace, strip it and fall through
+		// to same-workspace ref handling so the link resolves to the canonical
+		// item URL. Otherwise emit a link to the resolver route — the rendered
+		// editor lacks the target workspace's items, so client-side validation
+		// is impossible and we defer to the server's 302/404.
+		const xw = parseCrossWorkspaceBody(body);
+		if (xw) {
+			if (xw.workspace === workspaceSlug) {
+				const sameWsItem = findItemByRef(items, xw.ref);
+				if (sameWsItem && sameWsItem.collection_slug) {
+					const text = xw.display ?? sameWsItem.title;
+					return `[${escapeMarkdownLinkText(text)}](${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)})`;
+				}
+				// Ref didn't resolve in the current workspace — leave the
+				// original wiki-link verbatim, matching the legacy fall-through
+				// behavior at the bottom of this function.
+				return _match;
+			}
+			const xwPrefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
+			const display = xw.display ?? `${xw.workspace}::${xw.ref}`;
+			return `[${escapeMarkdownLinkText(display)}](${xwPrefix}/ref/${xw.ref})`;
+		}
 
 		// Split optional display override on the FIRST unescaped pipe. We do
 		// this up-front so REF_PATTERN can check the key alone (a ref like
@@ -469,11 +561,28 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
  * Items without a ref fall back to the legacy [[Title]] form.
  */
 export function markdownToWikiLinks(markdown: string, items: Item[]): string {
+	// Cross-workspace ref URLs: /<user?>/<workspace>/ref/<REF> → [[workspace::REF]].
+	// Run BEFORE the same-workspace match below because the regex below also
+	// matches three-segment paths (it accepts {2,3} segments), and would
+	// otherwise consume the URL with `ref` as the "collection" segment.
+	// `[[workspace::REF]]` is preferred storage when the display text equals
+	// the bare ref; otherwise we emit the `|Display` override.
+	const withXwRefs = markdown.replace(
+		/\[((?:\\.|[^\]\\])+)\]\(\/(?:([^/]+)\/)?([a-z][a-z0-9-]*)\/ref\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
+		(_match, rawText: string, _user: string | undefined, ws: string, ref: string) => {
+			const displayText = unescapeMarkdownLinkText(rawText);
+			if (displayText === ref) {
+				return `[[${ws}::${ref}]]`;
+			}
+			return `[[${ws}::${ref}|${escapeWikiBody(displayText)}]]`;
+		}
+	);
+
 	// Match [Title](/username/workspace/collection/slug-or-REF). Title may
 	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
-	return markdown.replace(/\[((?:\\.|[^\]\\])+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, rawText: string, slugOrRef: string) => {
+	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, rawText: string, slugOrRef: string) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {

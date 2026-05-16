@@ -1204,6 +1204,16 @@ func (s *Server) setupRouter() {
 			// Search
 			r.Get("/search", s.handleSearch)
 		})
+
+		// Cross-workspace wiki-link resolver (IDEA-1492). Resolves
+		// `[[workspace::REF]]` links emitted by the markdown renderer to
+		// the canonical item URL via a 302 redirect. Lives outside /api/v1
+		// because rendered HTML hrefs target user-facing paths, not API
+		// endpoints. Registered at the outer group level so chi matches
+		// the four-segment URL ahead of the catch-all SPA handler. ACL
+		// check matches existing workspace-access semantics — 404 (not 403)
+		// on no-access so we don't leak whether a workspace exists.
+		r.Get("/{username}/{workspace}/ref/{ref}", s.handleResolveCrossWorkspaceRef)
 	}) // end r.Group (full middleware stack)
 
 	s.router = r
