@@ -1519,13 +1519,17 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //
 // Rules (in order):
 //
-//  1. Tokenized-access roles ("owner", "editor") bypass the user-nil
-//     check. RequireWorkspaceAccess grants these on the fresh-install
-//     path (synthetic "owner" with currentUser == nil) AND on the legacy
-//     workspace-scoped API token path ("editor" with currentUser == nil).
-//     The middleware already gated access for both paths; checkItemVisible
-//     should not second-guess the middleware's authorization decision
-//     (Codex round-2 P1.1).
+//  1. Tokenized-nil-user bypass: when currentUser == nil AND role is one
+//     of the synthesized-by-middleware roles ("owner" for fresh-install,
+//     "editor" for legacy workspace-scoped API tokens),
+//     RequireWorkspaceAccess has already authorized the request — there
+//     is no per-user filter to apply, and the user-nil rejection at
+//     rule 2 would false-404 these callers. The bypass is SCOPED TO
+//     user == nil — real authenticated members with role "owner" /
+//     "editor" must still fall through to the per-collection filter,
+//     otherwise a restricted editor member would bypass their own
+//     collection_access="specific" gate (Codex round-3 regression of
+//     the round-2 P1.1 fix).
 //  2. nil user past rule 1 → not visible. Anonymous viewers without a
 //     tokenized role have no item-read access (share links own the
 //     public-read surface via /s/{token}).
@@ -1538,13 +1542,18 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //     because the item-grants branch only checked direct grants + the
 //     member's explicit collection-access list).
 func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string) (bool, error) {
-	// Tokenized-role bypass. RequireWorkspaceAccess synthesizes "owner"
-	// on fresh installs (UserCount == 0, currentUser == nil) and "editor"
-	// for legacy workspace-scoped API tokens (currentUser == nil but
-	// tokenWorkspaceID matches). Both are authorized by the middleware
-	// already; rejecting them here on the user-nil check would cause
-	// every requireItemVisible-gated handler to false-404 those clients.
-	if role == "owner" || role == "editor" {
+	// Tokenized-nil-user bypass. RequireWorkspaceAccess synthesizes
+	// "owner" on fresh installs (UserCount == 0, currentUser == nil) and
+	// "editor" for legacy workspace-scoped API tokens (currentUser ==
+	// nil but tokenWorkspaceID matches). Both are authorized by the
+	// middleware already. Real authenticated users with these roles
+	// (workspace owners, member.Role=="editor", …) must NOT short-circuit
+	// here — they have to walk the per-collection filter so
+	// collection_access="specific" + member_collection_access actually
+	// gates them (Codex round-3 — the round-2 fix dropped the
+	// `user == nil` qualifier and accidentally disabled the gate for
+	// every real editor too).
+	if user == nil && (role == "owner" || role == "editor") {
 		return true, nil
 	}
 	if user == nil {

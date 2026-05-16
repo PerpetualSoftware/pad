@@ -320,6 +320,101 @@ func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 	}
 }
 
+// TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess pins
+// round-3: the round-2 bypass at the top of checkItemVisible originally
+// fired for ANY role in {owner, editor}, which silently disabled the
+// per-collection visibility filter for real authenticated editor members
+// with collection_access="specific". This test seeds exactly that
+// scenario — editor + restricted access to collection A only — and
+// asserts visibility on an item in collection B returns false.
+//
+// Pre-round-3 (round-2 buggy state): returned true. Post-round-3: false.
+func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) {
+	srv := testServer(t)
+
+	// Seed a workspace under a separate owner so the editor under test
+	// isn't accidentally given owner access.
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "owner@example.com", Name: "Owner", Username: "owner",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser owner: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "WS", OwnerID: owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	// Two collections — A is the editor's allowed set, B is forbidden.
+	collA, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Alpha", Slug: "alpha", Prefix: "ALPHA",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection alpha: %v", err)
+	}
+	collB, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Beta", Slug: "beta", Prefix: "BETA",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection beta: %v", err)
+	}
+	itemB, err := srv.store.CreateItem(ws.ID, collB.ID, models.ItemCreate{
+		Title: "Forbidden",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem in beta: %v", err)
+	}
+
+	// Real authenticated user with workspace role "editor" and
+	// collection_access="specific" listing only collection A.
+	editor, err := srv.store.CreateUser(models.UserCreate{
+		Email: "editor@example.com", Name: "Editor", Username: "editor",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser editor: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, editor.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember editor: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, editor.ID, "specific", []string{collA.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	// The regression assertion: editor + "editor" role + item in
+	// collection B (NOT in their member_collection_access list) must
+	// return false. The round-2 bug returned true here, disabling the
+	// per-collection gate for every read AND write path through
+	// requireItemVisible / the resolver.
+	visible, err := srv.checkItemVisible(ws.ID, itemB, editor, "editor")
+	if err != nil {
+		t.Fatalf("checkItemVisible: unexpected error: %v", err)
+	}
+	if visible {
+		t.Fatal("authenticated editor with collection_access='specific' (only collA) saw item in collB: round-2 bypass regression")
+	}
+
+	// Sanity: same editor on an item in collection A (their allowed
+	// collection) DOES see it. Confirms the test fixture is wired right
+	// and we're not just observing a generic false everywhere.
+	itemA, err := srv.store.CreateItem(ws.ID, collA.ID, models.ItemCreate{
+		Title: "Allowed",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem in alpha: %v", err)
+	}
+	visible, err = srv.checkItemVisible(ws.ID, itemA, editor, "editor")
+	if err != nil {
+		t.Fatalf("checkItemVisible (allowed): %v", err)
+	}
+	if !visible {
+		t.Error("authenticated editor on an allowed-collection item: expected visible=true")
+	}
+}
+
 // TestRefResolver_RestrictedMemberWithSystemCollection pins round-2 P1.2:
 // a restricted member with conventions/playbooks (system collections)
 // access plus an item grant in an UNRELATED collection must be able to
