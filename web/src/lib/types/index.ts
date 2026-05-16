@@ -1072,19 +1072,23 @@ export function parseFields(item: Item): Record<string, any> {
 	}
 }
 
+const SCHEMA_DEFAULTS: CollectionSchema = { fields: [] };
+
 export function parseSchema(collection: Collection): CollectionSchema {
 	try {
-		return JSON.parse(collection.schema);
+		return { ...SCHEMA_DEFAULTS, ...JSON.parse(collection.schema) };
 	} catch {
-		return { fields: [] };
+		return { ...SCHEMA_DEFAULTS };
 	}
 }
 
+const SETTINGS_DEFAULTS: CollectionSettings = { layout: 'balanced', default_view: 'list' };
+
 export function parseSettings(collection: Collection): CollectionSettings {
 	try {
-		return JSON.parse(collection.settings);
+		return { ...SETTINGS_DEFAULTS, ...JSON.parse(collection.settings) };
 	} catch {
-		return { layout: 'balanced', default_view: 'list' };
+		return { ...SETTINGS_DEFAULTS };
 	}
 }
 
