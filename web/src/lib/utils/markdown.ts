@@ -323,12 +323,17 @@ export function renderMarkdown(
 			// Cross-workspace: emit a link to the resolver route. Validation
 			// happens server-side at click time — the renderer has no
 			// visibility into the target workspace's items.
-			const prefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
+			//
+			// URL components are NOT percent-encoded here. parseCrossWorkspaceBody
+			// already vetted `xw.workspace` against WORKSPACE_SLUG_PATTERN
+			// (`^[a-z][a-z0-9-]*$`) and `xw.ref` against REF_PATTERN
+			// (`^[A-Za-z][A-Za-z0-9]*-\d+$`) — both produce URL-safe ASCII
+			// by construction. wikiLinksToMarkdown emits the same bytes
+			// verbatim, so the encode/no-encode choice is symmetric across
+			// both functions (Codex round-1 sanity sweep).
 			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
-			const safeWorkspace = encodeURIComponent(xw.workspace);
-			const safeRef = encodeURIComponent(xw.ref);
-			const hrefPrefix = username ? `/${encodeURIComponent(username)}/${safeWorkspace}` : `/${safeWorkspace}`;
-			return `<a href="${hrefPrefix}/ref/${safeRef}" class="doc-link cross-workspace">${safeDisplay}</a>`;
+			const hrefPrefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
+			return `<a href="${hrefPrefix}/ref/${xw.ref}" class="doc-link cross-workspace">${safeDisplay}</a>`;
 		}
 		// Escape user-controlled title so it can't break out of attribute
 		// quotes. sanitizeMarkdownHtml would strip the worst offenders after
@@ -565,13 +570,19 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// Run BEFORE the same-workspace match below because the regex below also
 	// matches three-segment paths (it accepts {2,3} segments), and would
 	// otherwise consume the URL with `ref` as the "collection" segment.
-	// `[[workspace::REF]]` is preferred storage when the display text equals
-	// the bare ref; otherwise we emit the `|Display` override.
+	//
+	// Strip the optional `|Display` ONLY when the link text equals the
+	// renderer's DEFAULT (`${ws}::${ref}`). A user who explicitly wrote
+	// `[[other::TASK-1|TASK-1]]` must round-trip back to itself — comparing
+	// against the bare ref (`displayText === ref`) drops the override, after
+	// which the next render would emit the default `other::TASK-1` and
+	// silently change the visible link text (Codex round-1 P2.1).
 	const withXwRefs = markdown.replace(
 		/\[((?:\\.|[^\]\\])+)\]\(\/(?:([^/]+)\/)?([a-z][a-z0-9-]*)\/ref\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
 		(_match, rawText: string, _user: string | undefined, ws: string, ref: string) => {
 			const displayText = unescapeMarkdownLinkText(rawText);
-			if (displayText === ref) {
+			const renderDefault = `${ws}::${ref}`;
+			if (displayText === renderDefault) {
 				return `[[${ws}::${ref}]]`;
 			}
 			return `[[${ws}::${ref}|${escapeWikiBody(displayText)}]]`;

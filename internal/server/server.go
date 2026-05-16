@@ -1210,10 +1210,22 @@ func (s *Server) setupRouter() {
 		// the canonical item URL via a 302 redirect. Lives outside /api/v1
 		// because rendered HTML hrefs target user-facing paths, not API
 		// endpoints. Registered at the outer group level so chi matches
-		// the four-segment URL ahead of the catch-all SPA handler. ACL
-		// check matches existing workspace-access semantics — 404 (not 403)
-		// on no-access so we don't leak whether a workspace exists.
+		// these URLs ahead of the catch-all SPA handler. ACL check matches
+		// existing workspace-access semantics — 404 (not 403) on no-access
+		// so we don't leak whether a workspace exists.
+		//
+		// Two shapes are registered against the same handler:
+		//
+		//   - /{username}/{workspace}/ref/{ref} — the canonical form
+		//     emitted by renderMarkdown when a username is in scope (item
+		//     bodies on /{user}/{ws}/{coll}/{slug} pages).
+		//   - /{workspace}/ref/{ref} — fallback for renderers that don't
+		//     thread a username through (TimelineCommentCard,
+		//     CommentThread). The handler synthesizes the username from
+		//     the workspace owner so the redirect lands on the same
+		//     canonical SvelteKit URL.
 		r.Get("/{username}/{workspace}/ref/{ref}", s.handleResolveCrossWorkspaceRef)
+		r.Get("/{workspace}/ref/{ref}", s.handleResolveCrossWorkspaceRef)
 	}) // end r.Group (full middleware stack)
 
 	s.router = r
@@ -1471,54 +1483,131 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 // specific item is granted (not just the collection). Writes a 404 and returns
 // false if not. Callers should invoke this immediately after resolving an item
 // by slug/ID.
+//
+// Thin shim over checkItemVisible — see that helper for the rules. This
+// wrapper exists for the legacy call-sites that already hold a *http.Request
+// pre-populated by RequireWorkspaceAccess; new callers without that middleware
+// (e.g. handlers_ref_resolver.go) should use checkItemVisible directly with
+// a manually-derived role.
 func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
-	if !isCollectionVisible(item.CollectionID, visibleIDs) {
+	if !visible {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return false
 	}
-
-	// For users with item-level grants (guests or restricted members),
-	// collection visibility may come from item-level grants.
-	// We need to verify the user actually has a grant on this specific item
-	// (not just another item in the same collection).
-	// Uses guestResourceFilter which skips this check for members with "all" access.
-	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
-	if grantErr != nil {
-		writeInternalError(w, grantErr)
-		return false
-	}
-	if len(grantedItemIDs) > 0 {
-		// If the collection has a full collection grant, the item is visible
-		for _, id := range fullCollIDs {
-			if id == item.CollectionID {
-				return true
-			}
-		}
-		// Check if this collection came from member_collection_access (not grants)
-		if workspaceRole(r) != "guest" {
-			memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, currentUserID(r))
-			for _, id := range memberColls {
-				if id == item.CollectionID {
-					return true
-				}
-			}
-		}
-		// Otherwise, the specific item must be in the granted items list
-		for _, id := range grantedItemIDs {
-			if id == item.ID {
-				return true
-			}
-		}
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
-		return false
-	}
-
 	return true
+}
+
+// checkItemVisible is the context-free visibility decision. Returns (true,
+// nil) when the (user, role) pair can see `item` under the same rules
+// `requireItemVisible` enforces. Centralizes the rule set so the
+// resolver route (IDEA-1492) and the middleware-gated handlers can't drift.
+//
+// Inputs:
+//
+//   - workspaceID — the resolved workspace's UUID.
+//   - item — already-loaded item (so the helper doesn't re-resolve and
+//     accidentally apply a different lookup path).
+//   - user — currentUser(r) at the call site; nil for unauthenticated.
+//   - role — workspaceRole(r) at the call site, or the role derived
+//     manually by callers operating outside RequireWorkspaceAccess.
+//
+// Rules (in order):
+//
+//  1. nil user → not visible. Fresh-install bypass is the caller's
+//     responsibility; once any user exists, the resolver has no
+//     anonymous-read mode (share links own that surface via /s/{token}).
+//  2. Admin user (user.Role == "admin") → always visible.
+//  3. Role "owner" — workspace owner role granted by RequireWorkspaceAccess
+//     for the workspace's owner_id, and "admin" via the same path. Always
+//     visible.
+//  4. Otherwise: replay the guestResourceFilterCore + member-collection-
+//     access logic that requireItemVisible used to inline.
+func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string) (bool, error) {
+	// Pre-setup mode: RequireWorkspaceAccess synthesizes role="owner" for
+	// fresh installs (currentUser stays nil because no user exists yet).
+	// Treat this exactly like an authenticated owner — visibleCollectionIDs's
+	// pre-refactor behavior also returned nil (no filter) for nil user, so
+	// the (user=nil, role="owner") tuple stays "visible" to preserve the
+	// install bypass.
+	if role == "owner" {
+		return true, nil
+	}
+	if user == nil {
+		return false, nil
+	}
+	// Admin sees everything (matches visibleCollectionIDs's nil-filter shape).
+	if user.Role == "admin" {
+		return true, nil
+	}
+
+	// Visibility filter: nil = unrestricted; non-nil = restricted to the slice.
+	visibleIDs, err := s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	if err != nil {
+		return false, err
+	}
+	if !isCollectionVisible(item.CollectionID, visibleIDs) {
+		return false, nil
+	}
+
+	// Replay guestResourceFilterCore's logic without the *http.Request
+	// dependency. Member-with-all-access short-circuits to "no item-level
+	// filter"; guests + restricted members get the grant filter.
+	if role != "guest" {
+		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+		if err != nil {
+			return false, err
+		}
+		if member != nil && (member.CollectionAccess == "all" || member.CollectionAccess == "") {
+			// Full collection access — visibleIDs filter already passed.
+			return true, nil
+		}
+	}
+
+	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	if err != nil {
+		return false, err
+	}
+	if len(grantedItemIDs) == 0 {
+		// No item-level grants in play. visibleCollectionIDs already
+		// determined the collection is reachable; visibility stands.
+		return true, nil
+	}
+
+	// Item-level grants are active. The item is visible when:
+	//   a) the collection itself has a full grant (any item passes), OR
+	//   b) for restricted members: the collection is in member_collection_access
+	//      (system collections + direct member grants), OR
+	//   c) the specific item is in the granted-items list.
+	for _, id := range grantCollIDs {
+		if id == item.CollectionID {
+			return true, nil
+		}
+	}
+	if role != "guest" {
+		// member_collection_access path — restricted members see system
+		// collections and their explicit collection-access list as full
+		// grants alongside any item-level grants.
+		memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, id := range memberColls {
+			if id == item.CollectionID {
+				return true, nil
+			}
+		}
+	}
+	for _, id := range grantedItemIDs {
+		if id == item.ID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isItemVisibleToGuest checks if an item is visible given grant-based access,

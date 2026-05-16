@@ -19,7 +19,17 @@ import (
 var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 
 // handleResolveCrossWorkspaceRef implements IDEA-1492's resolver route.
-// GET /{username}/{workspace}/ref/{REF} → 302 to the canonical item URL.
+// Registered under two shapes:
+//
+//	GET /{username}/{workspace}/ref/{REF}
+//	GET /{workspace}/ref/{REF}
+//
+// The two-segment form covers renderers that don't have a username in
+// scope (timeline comments, comment threads — neither call site threads
+// a username through renderMarkdown). When the URL-path username is
+// missing, we synthesize the redirect using the workspace owner's
+// username so the post-redirect URL is the canonical three-segment shape
+// SvelteKit's router expects.
 //
 // 404 cases (in order of evaluation):
 //
@@ -30,12 +40,9 @@ var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 //     for "don't leak workspace existence", so members of a different
 //     workspace see the same response as anonymous viewers.
 //  3. Ref resolves to no item in the target workspace.
-//
-// The 302 redirect target mirrors the same path the SvelteKit page router
-// would produce for a regular item link, so the post-redirect URL is
-// indistinguishable from a direct in-app navigation.
+//  4. The item's collection isn't visible to the viewer.
 func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+	username := chi.URLParam(r, "username") // "" for the two-segment route
 	workspaceSlug := chi.URLParam(r, "workspace")
 	ref := chi.URLParam(r, "ref")
 
@@ -47,9 +54,9 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 2. Resolve the workspace through the same path as /workspaces/{slug}.
-	//    Uses currentUser(r) so the ACL is consistent: members + guests with
-	//    grants see the workspace; everyone else gets nil (→ 404).
+	// 2. Resolve the workspace. Uses currentUser(r) so the ACL is
+	//    consistent: members + guests with grants see the workspace;
+	//    everyone else gets nil (→ 404).
 	ws, err := s.resolveWorkspace(workspaceSlug, currentUser(r))
 	if err != nil {
 		// Internal error path — write a generic 404 rather than 500 to keep
@@ -62,52 +69,48 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 3. Resolve the ref within the workspace. We re-parse here (rather than
-	//    just splitting on "-") to mirror store.parseItemRef's uppercase-
-	//    prefix rule — store.GetItemByRef is keyed on the uppercase prefix
-	//    so the redirect must canonicalize the URL ref the same way the
-	//    storage layer does.
+	// 3. Resolve the ref within the workspace. parseRefForRedirect
+	//    canonicalizes the prefix to uppercase so it lines up with
+	//    GetItemByRef's exact-prefix path; refs that fail the stricter
+	//    A-Z prefix rule still resolve via the workspace-unique number
+	//    fallback inside GetItemByRef.
 	prefix, number, ok := parseRefForRedirect(ref)
 	if !ok {
-		// Defense in depth — refResolverRefPattern already vetted the shape,
-		// but parseItemRef has its own rules (uppercase-only prefix). If we
-		// disagree, fall back to the same 404 path rather than 500.
 		s.refResolverNotFound(w, r)
 		return
 	}
 	item, err := s.store.GetItemByRef(ws.ID, prefix, number)
-	if err != nil {
-		s.refResolverNotFound(w, r)
-		return
-	}
-	if item == nil {
+	if err != nil || item == nil {
 		s.refResolverNotFound(w, r)
 		return
 	}
 
-	// 4. ACL: if the viewer's collection visibility excludes this item's
-	//    collection, treat as 404 (same shape as workspace-no-access). We
-	//    inline a lightweight visibility check rather than reuse
-	//    requireItemVisible because that helper assumes RequireWorkspaceAccess
-	//    middleware has already populated context — this route runs outside
-	//    that group.
-	if !s.refResolverItemVisible(r, ws.ID, item) {
+	// 4. ACL: replay RequireWorkspaceAccess's role-derivation logic for
+	//    the viewer, then delegate to checkItemVisible — the same context-
+	//    free helper the middleware-gated routes use. Drift between the
+	//    resolver's ACL and the rest of the system is now structurally
+	//    impossible.
+	visible, err := s.resolverItemVisible(r, ws, item)
+	if err != nil || !visible {
 		s.refResolverNotFound(w, r)
 		return
 	}
 
-	// 5. Build the canonical item URL and 302 to it. We prefer the URL-path
-	//    `username` from the request (matches the incoming URL shape) over
-	//    the workspace's owner username, so a user hitting /alice/ws/ref/X
-	//    stays in alice's URL namespace even if the workspace was later
-	//    transferred. SvelteKit's router handles the redirect target the
-	//    same regardless.
+	// 5. Build the canonical item URL and 302 to it. URL-path username
+	//    wins when present; otherwise fall back to the workspace owner's
+	//    username so the redirect lands on the same SvelteKit URL the
+	//    in-app router would produce. Pre-setup workspaces with no
+	//    owner_username fall back to an empty path segment — that's the
+	//    same shape SvelteKit's `[username]` param accepts.
+	if username == "" {
+		username = s.resolverOwnerUsername(ws)
+	}
 	dest := "/" + username + "/" + ws.Slug + "/" + item.CollectionSlug + "/"
 	if item.ItemNumber != nil && *item.ItemNumber > 0 && item.CollectionPrefix != "" {
 		// Items addressed by ref (formatItemRef-style) when available — this
 		// matches itemUrlId() in the frontend, so the redirect target is
 		// identical to a direct in-app navigation.
-		dest += item.CollectionPrefix + "-" + refItoa(*item.ItemNumber)
+		dest += item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
 	} else {
 		dest += item.Slug
 	}
@@ -122,98 +125,94 @@ func (s *Server) refResolverNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, "not_found", "Not found")
 }
 
-// refResolverItemVisible returns true iff the current viewer can see the
-// given item under their workspace role + grant set. Returns false for
-// anonymous viewers on a workspace that requires auth, for guests without a
-// grant on the item's collection, and for members whose collection access
-// excludes the item's collection. Returns true when the viewer has full
-// workspace access (admin / owner / member with "all" collection access).
+// resolverItemVisible derives the viewer's workspace role outside the
+// RequireWorkspaceAccess middleware path, then delegates to
+// checkItemVisible. The role-derivation mirrors RequireWorkspaceAccess's
+// rules byte-for-byte:
 //
-// Mirrors requireItemVisible but operates without the RequireWorkspaceAccess
-// middleware's context-populated state — this route is reachable
-// unauthenticated, so we compute visibility from the user + workspace
-// directly. Errors during the grant lookup fall back to "not visible" to
-// keep the no-leak contract.
-func (s *Server) refResolverItemVisible(r *http.Request, workspaceID string, item *models.Item) bool {
+//   - Pre-setup mode (UserCount == 0) → implicit "owner" so the
+//     route is reachable before the first admin exists.
+//   - Admin user → "owner" (admin gets owner-equivalent access to every
+//     workspace).
+//   - Workspace owner → "owner".
+//   - Member with explicit role → that role ("owner" / "editor" / "viewer").
+//   - Non-member with workspace grants → "guest".
+//   - Otherwise → not visible (returns false, nil — distinct from an error).
+//
+// The returned (false, err) pair is reserved for genuine DB errors; the
+// caller still maps both to a 404 to honor the no-leak contract.
+func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item *models.Item) (bool, error) {
 	user := currentUser(r)
 
-	// Pre-setup mode: a fresh instance with no users yet has the whole
-	// system open (matches RequireAuth's bypass). Anonymous probes are
-	// equivalent to "logged in as the eventual admin" here, so the
-	// visibility gate has nothing to enforce.
+	// Pre-setup mode: no users yet, the whole system is open (matches
+	// RequireAuth + RequireWorkspaceAccess's fresh-install bypass). We
+	// short-circuit to visible HERE rather than calling checkItemVisible
+	// with a synthetic "owner" role because checkItemVisible's first
+	// rule is "nil user → not visible" — that rule is correct for the
+	// authenticated-instance anonymous-viewer path below, and inverting
+	// it would weaken the gate for that path.
 	if user == nil {
 		count, err := s.store.UserCount()
-		if err == nil && count == 0 {
-			return true
+		if err != nil {
+			return false, err
+		}
+		if count == 0 {
+			return true, nil
 		}
 		// Authenticated-instance anonymous viewer: no item-read access via
-		// the resolver route. Share links cover the public-read surface
-		// through /s/{token}.
-		return false
+		// the resolver. Share links own the public-read surface via
+		// /s/{token}.
+		return false, nil
 	}
 
-	// Admin users see everything.
-	if user.Role == "admin" {
-		return true
+	// Derive the role the same way RequireWorkspaceAccess does.
+	role := s.resolverWorkspaceRole(ws, user)
+	if role == "" {
+		// Not a member, no grants, not admin/owner. Not visible.
+		return false, nil
 	}
-
-	// Owner of the workspace.
-	ws, err := s.store.GetWorkspaceByID(workspaceID)
-	if err != nil || ws == nil {
-		return false
-	}
-	if ws.OwnerID == user.ID {
-		return true
-	}
-
-	// Members with collection access. GetWorkspaceMember returns nil for
-	// non-members; in that case we fall through to the guest grant check.
-	member, _ := s.store.GetWorkspaceMember(workspaceID, user.ID)
-	if member != nil {
-		// "all" access — every collection is visible.
-		if member.CollectionAccess == "" || member.CollectionAccess == "all" {
-			return true
-		}
-		// Restricted access — check member_collection_access.
-		colls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
-		for _, cID := range colls {
-			if cID == item.CollectionID {
-				return true
-			}
-		}
-		// Member-with-restricted-access can also have explicit item grants.
-		_, grantedItemIDs, _ := s.store.GuestVisibleResources(workspaceID, user.ID)
-		for _, iID := range grantedItemIDs {
-			if iID == item.ID {
-				return true
-			}
-		}
-		return false
-	}
-
-	// Guest path: full collection grants or item grants.
-	fullCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
-	if err != nil {
-		return false
-	}
-	for _, cID := range fullCollIDs {
-		if cID == item.CollectionID {
-			return true
-		}
-	}
-	for _, iID := range grantedItemIDs {
-		if iID == item.ID {
-			return true
-		}
-	}
-	return false
+	return s.checkItemVisible(ws.ID, item, user, role)
 }
 
-// refItoa wraps strconv.Itoa for redirect-URL composition. Kept as a one-line
-// helper so the build path through this file stays grep-able for future
-// readers asking "where does the redirect target get composed".
-func refItoa(n int) string {
-	return strconv.Itoa(n)
+// resolverWorkspaceRole reproduces RequireWorkspaceAccess's role lookup
+// for a (workspace, user) pair without the *http.Request scaffolding.
+// Returns "" when the user has no role and no grants in the workspace.
+// The "owner" return value covers admins (admin gets owner-equivalent
+// access) AND the actual workspace owner — checkItemVisible treats
+// "owner" uniformly so the conflation is safe.
+func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User) string {
+	if user.Role == "admin" || ws.OwnerID == user.ID {
+		return "owner"
+	}
+	member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
+	if err == nil && member != nil {
+		return member.Role
+	}
+	// Not a member — guest path requires at least one grant.
+	hasGrants, err := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
+	if err == nil && hasGrants {
+		return "guest"
+	}
+	return ""
+}
+
+// resolverOwnerUsername returns the workspace owner's username, used as
+// the fallback for the two-segment route shape. Falls back to the empty
+// string when the owner record is missing or the owner has no username
+// (legacy accounts predating the username column) — SvelteKit's
+// `[username]` param accepts an empty segment.
+func (s *Server) resolverOwnerUsername(ws *models.Workspace) string {
+	if ws.OwnerUsername != "" {
+		return ws.OwnerUsername
+	}
+	if ws.OwnerID == "" {
+		return ""
+	}
+	user, err := s.store.GetUser(ws.OwnerID)
+	if err != nil || user == nil {
+		return ""
+	}
+	return user.Username
 }
 
 // parseRefForRedirect splits a validated ref (the regex caller already

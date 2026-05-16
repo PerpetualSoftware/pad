@@ -593,6 +593,13 @@ var reservedCollectionSlugs = map[string]bool{
 	"starred":  true,
 	"library":  true,
 	"new":      true,
+	// "ref" is reserved for the cross-workspace wiki-link resolver route
+	// (IDEA-1492): GET /{username}/{workspace}/ref/{REF} → 302 to the
+	// canonical item URL. A collection slug of "ref" would intercept every
+	// item URL under that collection (the resolver's `{ref}` segment can't
+	// match an arbitrary slug shape), so we forbid it at create time
+	// rather than tolerate silent 404s after the fact.
+	"ref": true,
 }
 
 // isReservedCollectionSlug checks whether a slug would collide with a
