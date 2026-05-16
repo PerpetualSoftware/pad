@@ -1214,18 +1214,19 @@ func (s *Server) setupRouter() {
 		// existing workspace-access semantics — 404 (not 403) on no-access
 		// so we don't leak whether a workspace exists.
 		//
-		// Two shapes are registered against the same handler:
-		//
-		//   - /{username}/{workspace}/ref/{ref} — the canonical form
-		//     emitted by renderMarkdown when a username is in scope (item
-		//     bodies on /{user}/{ws}/{coll}/{slug} pages).
-		//   - /{workspace}/ref/{ref} — fallback for renderers that don't
-		//     thread a username through (TimelineCommentCard,
-		//     CommentThread). The handler synthesizes the username from
-		//     the workspace owner so the redirect lands on the same
-		//     canonical SvelteKit URL.
-		r.Get("/{username}/{workspace}/ref/{ref}", s.handleResolveCrossWorkspaceRef)
-		r.Get("/{workspace}/ref/{ref}", s.handleResolveCrossWorkspaceRef)
+		// URL shape: `/-/r/{workspace}/{ref}` — the leading `-/r/` prefix
+		// is structurally impossible to collide with any user-namespace
+		// URL because username slugs require a leading letter (slugify
+		// rule), so no existing or future page route under
+		// /{username}/... can shadow this resolver, and no collection
+		// slug under /{u}/{ws}/{coll}/... can intercept it
+		// (slug grammar also requires letter-led). This replaces the
+		// earlier `/{username}/{workspace}/ref/{ref}` shape that risked
+		// collision with collection slugs named "ref" on pre-existing
+		// data (Codex round-2 P1.4 — picked Option B over a migration
+		// because the feature is unshipped, the new shape is more
+		// defensive, and the only cost is a frontend emit-shape change).
+		r.Get("/-/r/{workspace}/{ref}", s.handleResolveCrossWorkspaceRef)
 	}) // end r.Group (full middleware stack)
 
 	s.router = r
@@ -1518,23 +1519,32 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //
 // Rules (in order):
 //
-//  1. nil user → not visible. Fresh-install bypass is the caller's
-//     responsibility; once any user exists, the resolver has no
-//     anonymous-read mode (share links own that surface via /s/{token}).
-//  2. Admin user (user.Role == "admin") → always visible.
-//  3. Role "owner" — workspace owner role granted by RequireWorkspaceAccess
-//     for the workspace's owner_id, and "admin" via the same path. Always
-//     visible.
+//  1. Tokenized-access roles ("owner", "editor") bypass the user-nil
+//     check. RequireWorkspaceAccess grants these on the fresh-install
+//     path (synthetic "owner" with currentUser == nil) AND on the legacy
+//     workspace-scoped API token path ("editor" with currentUser == nil).
+//     The middleware already gated access for both paths; checkItemVisible
+//     should not second-guess the middleware's authorization decision
+//     (Codex round-2 P1.1).
+//  2. nil user past rule 1 → not visible. Anonymous viewers without a
+//     tokenized role have no item-read access (share links own the
+//     public-read surface via /s/{token}).
+//  3. Admin user (user.Role == "admin") → always visible.
 //  4. Otherwise: replay the guestResourceFilterCore + member-collection-
-//     access logic that requireItemVisible used to inline.
+//     access logic that requireItemVisible used to inline, with a system-
+//     collections union added to the item-grants branch (Codex round-2
+//     P1.2 — restricted members with conventions/playbooks access plus
+//     an unrelated item grant previously 404'd on system-collection items
+//     because the item-grants branch only checked direct grants + the
+//     member's explicit collection-access list).
 func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string) (bool, error) {
-	// Pre-setup mode: RequireWorkspaceAccess synthesizes role="owner" for
-	// fresh installs (currentUser stays nil because no user exists yet).
-	// Treat this exactly like an authenticated owner — visibleCollectionIDs's
-	// pre-refactor behavior also returned nil (no filter) for nil user, so
-	// the (user=nil, role="owner") tuple stays "visible" to preserve the
-	// install bypass.
-	if role == "owner" {
+	// Tokenized-role bypass. RequireWorkspaceAccess synthesizes "owner"
+	// on fresh installs (UserCount == 0, currentUser == nil) and "editor"
+	// for legacy workspace-scoped API tokens (currentUser == nil but
+	// tokenWorkspaceID matches). Both are authorized by the middleware
+	// already; rejecting them here on the user-nil check would cause
+	// every requireItemVisible-gated handler to false-404 those clients.
+	if role == "owner" || role == "editor" {
 		return true, nil
 	}
 	if user == nil {
@@ -1581,22 +1591,41 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 	// Item-level grants are active. The item is visible when:
 	//   a) the collection itself has a full grant (any item passes), OR
 	//   b) for restricted members: the collection is in member_collection_access
-	//      (system collections + direct member grants), OR
-	//   c) the specific item is in the granted-items list.
+	//      (the member's explicit collection-access list), OR
+	//   c) the item's collection is a system collection — restricted
+	//      members always retain access to system collections (conventions,
+	//      playbooks, …); pre-round-2 this branch missed the system-
+	//      collections union that guestResourceFilterCore performed, so a
+	//      restricted member with an item grant in a non-system collection
+	//      was 404'd on a system-collection item they were entitled to see.
+	//   d) the specific item is in the granted-items list.
 	for _, id := range grantCollIDs {
 		if id == item.CollectionID {
 			return true, nil
 		}
 	}
 	if role != "guest" {
-		// member_collection_access path — restricted members see system
-		// collections and their explicit collection-access list as full
-		// grants alongside any item-level grants.
+		// member_collection_access path — restricted members see their
+		// explicit collection-access list as full grants alongside any
+		// item-level grants.
 		memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
 		if err != nil {
 			return false, err
 		}
 		for _, id := range memberColls {
+			if id == item.CollectionID {
+				return true, nil
+			}
+		}
+		// System-collections union — mirror guestResourceFilterCore's
+		// pre-round-2 behavior. ListSystemCollectionIDs is a workspace-
+		// scoped lookup (no per-user filter), so the same call is correct
+		// for every restricted member in the workspace.
+		sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
+		if err != nil {
+			return false, err
+		}
+		for _, id := range sysColls {
 			if id == item.CollectionID {
 				return true, nil
 			}

@@ -33,53 +33,107 @@ func newJSONRequest(t *testing.T, method, path string, body interface{}) *http.R
 	return req
 }
 
-// TestRefResolver_Success creates a workspace + collection + item, then
-// asserts that GET /{username}/{workspace}/ref/{REF} produces a 302 whose
-// Location header points at the canonical item URL itemUrlId() would
-// produce on the frontend.
-func TestRefResolver_Success(t *testing.T) {
+// refResolverFixture seeds a (user, workspace, bearer-token) triple ready
+// for resolver tests that need a real owner-username (so the redirect
+// target's leading path segment is non-empty — Codex round-2 P1.3
+// otherwise 404s an ownerless workspace). Returns helpers that issue
+// authenticated requests against the seeded workspace.
+type refResolverFixture struct {
+	t      *testing.T
+	srv    *Server
+	owner  *models.User
+	ws     *models.Workspace
+	token  string
+	doAs   func(method, path string, body interface{}) *httptest.ResponseRecorder
+	doAuth func(token, method, path string, body interface{}) *httptest.ResponseRecorder
+}
+
+func newRefResolverFixture(t *testing.T) *refResolverFixture {
+	t.Helper()
 	srv := testServer(t)
 
-	// Workspace + collection + item via the API (the route only depends on
-	// store state, but using the same surface the frontend uses keeps the
-	// test honest about end-to-end shape).
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Claude"})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
-		"name":   "Decisions",
-		"slug":   "decisions",
-		"prefix": "DECIS",
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "owner@example.com", Name: "Owner", Username: "owneruser",
+		Password: "pw-test-12345",
 	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "Claude", OwnerID: owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{
+		Name: "owner-tok", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
 	}
 
-	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/decisions/items", map[string]interface{}{
-		"title": "Orchestration model",
+	doAuth := func(token, method, path string, body interface{}) *httptest.ResponseRecorder {
+		t.Helper()
+		req := newJSONRequest(t, method, path, body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.RemoteAddr = "127.0.0.1:0"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	doAs := func(method, path string, body interface{}) *httptest.ResponseRecorder {
+		return doAuth(tok.Token, method, path, body)
+	}
+
+	return &refResolverFixture{
+		t: t, srv: srv, owner: owner, ws: ws, token: tok.Token,
+		doAs: doAs, doAuth: doAuth,
+	}
+}
+
+// seedItem creates a collection (idempotent on slug) + an item with the
+// given title, returning the resolved item record.
+func (f *refResolverFixture) seedItem(collSlug, collPrefix, title string) *models.Item {
+	f.t.Helper()
+	rr := f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
+		"name": collSlug, "slug": collSlug, "prefix": collPrefix,
 	})
+	// 201 on fresh create; 409 / 200 acceptable on duplicate-slug retries.
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusConflict {
+		f.t.Fatalf("create collection %q: %d %s", collSlug, rr.Code, rr.Body.String())
+	}
+	rr = f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections/"+collSlug+"/items",
+		map[string]interface{}{"title": title})
 	if rr.Code != http.StatusCreated {
-		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+		f.t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
 	}
 	var item models.Item
-	parseJSON(t, rr, &item)
+	parseJSON(f.t, rr, &item)
 	if item.Ref == "" {
-		t.Fatalf("expected item Ref, got empty (item=%+v)", item)
+		f.t.Fatalf("seeded item has no ref: %+v", item)
 	}
+	return &item
+}
 
-	// Hit the resolver. The username segment is arbitrary in pre-setup mode
-	// (no auth) — the handler uses the URL-path username verbatim in the
-	// redirect target.
-	rr = doRequest(srv, "GET", "/anyuser/"+ws.Slug+"/ref/"+item.Ref, nil)
+// TestRefResolver_Success creates a workspace + collection + item, then
+// asserts that GET /-/r/{workspace}/{REF} produces a 302 whose Location
+// header points at the canonical item URL itemUrlId() would produce on
+// the frontend. The URL shape is the round-2 sentinel /-/r/... — the
+// previous /{username}/{workspace}/ref/{ref} shape risked collision with
+// pre-existing `ref`-slugged collections (Codex round-2 P1.4).
+func TestRefResolver_Success(t *testing.T) {
+	f := newRefResolverFixture(t)
+	item := f.seedItem("decisions", "DECIS", "Orchestration model")
+
+	rr := f.doAs("GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil)
 	if rr.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d body=%s", rr.Code, rr.Body.String())
 	}
 	loc := rr.Header().Get("Location")
-	want := "/anyuser/" + ws.Slug + "/decisions/" + item.Ref
+	want := "/owneruser/" + f.ws.Slug + "/decisions/" + item.Ref
 	if loc != want {
 		t.Errorf("Location header: got %q want %q", loc, want)
 	}
@@ -91,25 +145,17 @@ func TestRefResolver_Success(t *testing.T) {
 // gate, so callers can't probe workspace existence by diffing responses.
 func TestRefResolver_UnknownWorkspace(t *testing.T) {
 	srv := testServer(t)
-	rr := doRequest(srv, "GET", "/alice/ghost-workspace/ref/TASK-1", nil)
+	rr := doRequest(srv, "GET", "/-/r/ghost-workspace/TASK-1", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
 // TestRefResolver_UnknownRef asserts 404 for a workspace that exists but
-// has no item matching the requested ref. Same response shape as the
-// unknown-workspace case (verified by the generic-404 assertion).
+// has no item matching the requested ref.
 func TestRefResolver_UnknownRef(t *testing.T) {
-	srv := testServer(t)
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Claude"})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	rr = doRequest(srv, "GET", "/anyuser/"+ws.Slug+"/ref/DECIS-9999", nil)
+	f := newRefResolverFixture(t)
+	rr := f.doAs("GET", "/-/r/"+f.ws.Slug+"/DECIS-9999", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing ref, got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -134,7 +180,7 @@ func TestRefResolver_MalformedRef(t *testing.T) {
 		"%2E%2E%2F", // url-encoded traversal
 	}
 	for _, ref := range cases {
-		path := "/anyuser/some-ws/ref/" + ref
+		path := "/-/r/some-ws/" + ref
 		rr := doRequest(srv, "GET", path, nil)
 		if rr.Code != http.StatusNotFound {
 			t.Errorf("ref %q: expected 404, got %d", ref, rr.Code)
@@ -142,15 +188,11 @@ func TestRefResolver_MalformedRef(t *testing.T) {
 	}
 }
 
-// TestRefResolver_NoAccess documents the gap left by the test fixture
-// surface: the existing helpers (testServer / doRequest) don't compose a
-// "real user against a workspace they can't access" path because the
-// no-auth pre-setup bypass swallows the ACL gate. The handler still
-// enforces access in production (see refResolverItemVisible) — its full
-// matrix is covered by manual smoke + the production auth middleware
-// stack. We assert the documented pre-setup behavior (anonymous access
-// permitted) here, with the acknowledgment captured in the test name.
-func TestRefResolver_NoAccess_DocumentsPreSetupBypass(t *testing.T) {
+// TestRefResolver_PreSetupBypass: pre-setup mode (UserCount == 0) opens
+// every workspace, including resolver-route reads. We exercise the
+// fresh-install path here — distinct from the seeded-fixture path used
+// by other tests.
+func TestRefResolver_PreSetupBypass(t *testing.T) {
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Claude"})
 	if rr.Code != http.StatusCreated {
@@ -159,122 +201,12 @@ func TestRefResolver_NoAccess_DocumentsPreSetupBypass(t *testing.T) {
 	var ws models.Workspace
 	parseJSON(t, rr, &ws)
 	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
-		"name":   "Tasks",
-		"slug":   "tasks",
-		"prefix": "TASK",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
-	}
-	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items", map[string]interface{}{
-		"title": "T",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
-	}
-	var item models.Item
-	parseJSON(t, rr, &item)
-
-	rr = doRequest(srv, "GET", "/anyuser/"+ws.Slug+"/ref/"+item.Ref, nil)
-	if rr.Code != http.StatusFound {
-		t.Fatalf("pre-setup bypass should allow access, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Header().Get("Location"), "/tasks/") {
-		t.Errorf("expected Location to include /tasks/, got %q", rr.Header().Get("Location"))
-	}
-}
-
-// TestRefResolver_RejectsRefAsCollectionSlug pins P1.1: creating a
-// collection whose slug would be "ref" must not produce a collection
-// addressable at /{user}/{ws}/ref/... because that path is the resolver
-// route. The store auto-suffixes reserved slugs with "-collection", so
-// the created collection lands at slug "ref-collection" — verify that
-// outcome (not a hard 4xx rejection) since the suffixing policy mirrors
-// the other reserved slugs (settings, activity, roles, …).
-func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
-	srv := testServer(t)
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Claude"})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
-		"name":   "Ref",
-		"slug":   "ref",
-		"prefix": "REF",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
-	}
-	var coll models.Collection
-	parseJSON(t, rr, &coll)
-	if coll.Slug == "ref" {
-		t.Fatalf("collection slug %q would shadow the /ref/ resolver route — reservation regression", coll.Slug)
-	}
-	if coll.Slug != "ref-collection" {
-		t.Errorf("expected reserved-slug suffix 'ref-collection', got %q", coll.Slug)
-	}
-}
-
-// TestRefResolver_TwoSegmentRouteResolves pins P2.2: renderers without
-// a username in scope (TimelineCommentCard, CommentThread) emit
-// /{workspace}/ref/{REF} hrefs. The two-segment route must resolve and
-// redirect to the canonical three-segment item URL, using the workspace
-// owner's username as the fallback path prefix.
-func TestRefResolver_TwoSegmentRouteResolves(t *testing.T) {
-	srv := testServer(t)
-
-	// Seed a user up front and create the workspace owned by that user
-	// (CreateWorkspace's OwnerID field handles this), so the two-seg
-	// redirect path has a concrete owner-username to fall back on.
-	user, err := srv.store.CreateUser(models.UserCreate{
-		Email:    "owner@example.com",
-		Name:     "Owner",
-		Username: "owneruser",
-		Password: "pw-test-12345",
-	})
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
-		Name:    "Claude",
-		OwnerID: user.ID,
-	})
-	if err != nil {
-		t.Fatalf("CreateWorkspace: %v", err)
-	}
-	if err := srv.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
-		t.Fatalf("AddWorkspaceMember: %v", err)
-	}
-	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "owner-tok", WorkspaceID: ws.ID,
-	}, 0, 0)
-	if err != nil {
-		t.Fatalf("CreateAPIToken: %v", err)
-	}
-
-	// Use Bearer auth for subsequent writes — UserCount() > 0 now, so the
-	// pre-setup bypass is closed.
-	doAs := func(method, path string, body interface{}) *httptest.ResponseRecorder {
-		t.Helper()
-		req := newJSONRequest(t, method, path, body)
-		req.Header.Set("Authorization", "Bearer "+tok.Token)
-		req.RemoteAddr = "127.0.0.1:0"
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		return rec
-	}
-
-	rr := doAs("POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
 		"name": "Tasks", "slug": "tasks", "prefix": "TASK",
 	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
 	}
-	rr = doAs("POST", "/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
 		map[string]interface{}{"title": "T"})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
@@ -282,84 +214,130 @@ func TestRefResolver_TwoSegmentRouteResolves(t *testing.T) {
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	// Two-segment route — no username in URL. Handler should look up the
-	// workspace owner and synthesize the redirect target with the owner's
-	// username as the leading path segment.
-	rr = doAs("GET", "/"+ws.Slug+"/ref/"+item.Ref, nil)
-	if rr.Code != http.StatusFound {
-		t.Fatalf("two-seg route: expected 302, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	got := rr.Header().Get("Location")
-	want := "/owneruser/" + ws.Slug + "/tasks/" + item.Ref
-	if got != want {
-		t.Errorf("two-seg Location: got %q want %q", got, want)
-	}
-
-	// Three-segment route still works alongside the two-seg shape.
-	rr = doAs("GET", "/explicituser/"+ws.Slug+"/ref/"+item.Ref, nil)
-	if rr.Code != http.StatusFound {
-		t.Fatalf("three-seg route: expected 302, got %d", rr.Code)
-	}
-	got = rr.Header().Get("Location")
-	want = "/explicituser/" + ws.Slug + "/tasks/" + item.Ref
-	if got != want {
-		t.Errorf("three-seg Location: got %q want %q", got, want)
+	// Pre-setup workspace has owner_id="" — Codex round-2 P1.3 says we
+	// must 404 in that case rather than emit a `//slug/...` redirect.
+	// Verify the no-broken-redirect contract holds.
+	rr = doRequest(srv, "GET", "/-/r/"+ws.Slug+"/"+item.Ref, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("ownerless pre-setup workspace: expected 404, got %d location=%q",
+			rr.Code, rr.Header().Get("Location"))
 	}
 }
 
-// TestRefResolver_RestrictedMemberWithCollectionGrant pins P1.2: a
-// restricted member (collection_access="specific" with only collection A
-// in their member_collection_access) PLUS a direct collection grant on
-// collection B must be able to resolve refs that live in collection B.
-// Pre-refactor, refResolverItemVisible's drift-from-requireItemVisible
-// would 404 this case because it didn't consult the guest-grant path
-// when the user was a member. checkItemVisible (the shared helper)
-// closes the gap.
-func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
+// TestRefResolver_RejectsRefAsCollectionSlug pins round-1 P1.1: the
+// reservation prevents `ref` from becoming a collection slug. The round-2
+// URL shape /-/r/... no longer collides with a `ref` collection, but
+// the reservation stays as defense in depth (and to spare ourselves the
+// round-3 risk of someone restoring the older shape and rediscovering
+// the collision).
+func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
+	f := newRefResolverFixture(t)
+	rr := f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
+		"name": "Ref", "slug": "ref", "prefix": "REF",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+	if coll.Slug == "ref" {
+		t.Fatalf("collection slug %q would shadow the resolver route — reservation regression", coll.Slug)
+	}
+	if coll.Slug != "ref-collection" {
+		t.Errorf("expected reserved-slug suffix 'ref-collection', got %q", coll.Slug)
+	}
+}
+
+// TestRefResolver_URLShapeNonOverlap pins round-2 P1.4 (Option B): the
+// resolver URL shape `/-/r/...` cannot collide with any user-namespace
+// page URL under `/{username}/{workspace}/...` because username + slug
+// grammar both require a leading letter. We verify by routing a request
+// against the shape `/{username}/{workspace}/ref/{slug}` — the URL a
+// pre-existing `ref`-slugged collection's items would have — and
+// confirming the resolver handler is NOT invoked. (Without SetWebUI
+// installed in tests, that URL hits chi's default 404; the assertion
+// here is "the resolver did not intercept it", proved by absence of a
+// 302 Location header.)
+func TestRefResolver_URLShapeNonOverlap(t *testing.T) {
+	f := newRefResolverFixture(t)
+
+	// Hit the page-URL shape directly. The resolver lives at /-/r/...
+	// only; a 4-segment path under /{user}/{ws}/ref/... must never
+	// match the resolver route. We assert "not a 302" — chi's catch-all
+	// 404 is the only acceptable outcome here.
+	rr := f.doAs("GET", "/owneruser/"+f.ws.Slug+"/ref/some-item-slug", nil)
+	if rr.Code == http.StatusFound {
+		t.Errorf("URL /{u}/{ws}/ref/{slug} was intercepted by resolver (got 302 with Location=%q); shape should be inert",
+			rr.Header().Get("Location"))
+	}
+}
+
+// TestCheckItemVisible_TokenizedRoleAllowsNilUser pins round-2 P1.1:
+// the legacy workspace-scoped API token path admits requests with
+// currentUser == nil and a synthesized role ("editor"). Pre-round-2,
+// checkItemVisible's nil-user check fired first and false-404'd these
+// callers; the round-2 reorder lets tokenized roles bypass the gate.
+func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 	srv := testServer(t)
 
-	// Seed owner + workspace + member. CreateWorkspace handles OwnerID
-	// directly, so the workspace is anchored to a real user before any
-	// ACL-sensitive request runs (and pre-setup bypass is closed by
-	// having UserCount > 0).
+	// A real workspace + collection + item — needed because checkItemVisible
+	// dereferences item.CollectionID even when the role short-circuit fires
+	// first, and we want the assertion to reflect the "role allows nil
+	// user" path, not an unrelated DB miss.
 	owner, err := srv.store.CreateUser(models.UserCreate{
-		Email: "owner@example.com", Name: "Owner", Username: "owner",
-		Password: "pw-test-12345",
+		Email: "o@example.com", Name: "O", Username: "o", Password: "pw-test-12345",
 	})
 	if err != nil {
-		t.Fatalf("CreateUser owner: %v", err)
+		t.Fatalf("CreateUser: %v", err)
 	}
-
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
-		Name:    "Claude",
-		OwnerID: owner.ID,
+		Name: "WS", OwnerID: owner.ID,
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
-		t.Fatalf("AddWorkspaceMember owner: %v", err)
-	}
-	ownerTok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{
-		Name: "owner-tok", WorkspaceID: ws.ID,
-	}, 0, 0)
-	if err != nil {
-		t.Fatalf("CreateAPIToken owner: %v", err)
+	item := &models.Item{
+		ID: "stub", WorkspaceID: ws.ID, CollectionID: "stub-coll",
 	}
 
-	asOwner := func(method, path string, body interface{}) *httptest.ResponseRecorder {
-		t.Helper()
-		req := newJSONRequest(t, method, path, body)
-		req.Header.Set("Authorization", "Bearer "+ownerTok.Token)
-		req.RemoteAddr = "127.0.0.1:0"
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		return rec
+	for _, role := range []string{"owner", "editor"} {
+		ok, err := srv.checkItemVisible(ws.ID, item, nil, role)
+		if err != nil {
+			t.Errorf("role=%q: unexpected error: %v", role, err)
+		}
+		if !ok {
+			t.Errorf("role=%q + nil user: expected visible=true (legacy token bypass)", role)
+		}
 	}
 
-	// Two collections — A (member can see directly) and B (member sees
-	// only via the grant we'll attach below).
-	rr := asOwner("POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
+	// Sanity: nil user with no role still rejects (this is the path that
+	// distinguishes legitimate legacy tokens from anonymous probes).
+	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, ""); ok {
+		t.Error("nil user + empty role: expected visible=false")
+	}
+	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, "guest"); ok {
+		t.Error("nil user + guest role: expected visible=false (guest needs grants which require a user)")
+	}
+}
+
+// TestRefResolver_RestrictedMemberWithSystemCollection pins round-2 P1.2:
+// a restricted member with conventions/playbooks (system collections)
+// access plus an item grant in an UNRELATED collection must be able to
+// resolve refs that live in the system collection. Pre-round-2,
+// checkItemVisible's item-grants branch only consulted direct
+// collection_grants + member_collection_access — not system collections —
+// so a restricted member could LIST conventions via the existing API
+// (VisibleCollectionIDs includes system collections) but 404'd on
+// detail-fetch / ref-resolve.
+func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
+	f := newRefResolverFixture(t)
+
+	// Seed a regular collection A (the member's "specific" access list
+	// entry) and grab the workspace's default conventions collection
+	// (system collection). Default startup-template collections include
+	// conventions; we look it up via the list endpoint to avoid relying
+	// on internal seed IDs.
+	rr := f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
 		"name": "Alpha", "slug": "alpha", "prefix": "ALPHA",
 	})
 	if rr.Code != http.StatusCreated {
@@ -368,7 +346,93 @@ func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
 	var collA models.Collection
 	parseJSON(t, rr, &collA)
 
-	rr = asOwner("POST", "/api/v1/workspaces/"+ws.Slug+"/collections", map[string]interface{}{
+	// Direct store insert for the system collection. CreateWorkspace
+	// (used by the fixture) doesn't apply a template, so default
+	// system-collection seeding doesn't run; seeding manually via the
+	// store keeps the test self-contained and independent of which
+	// template defaults are wired up at the time the test runs.
+	sysColl, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{
+		Name: "Conventions", Slug: "conventions", Prefix: "CONV", IsSystem: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection (system): %v", err)
+	}
+
+	// Item directly in the system collection. We use the store path
+	// because some system collections reject API-level item creation.
+	sysItem, err := f.srv.store.CreateItem(f.ws.ID, sysColl.ID, models.ItemCreate{
+		Title: "System target",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem in system collection: %v", err)
+	}
+
+	// And a regular item in A — the unrelated grant target.
+	itemA, err := f.srv.store.CreateItem(f.ws.ID, collA.ID, models.ItemCreate{
+		Title: "Alpha item",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem in alpha: %v", err)
+	}
+
+	// Restricted member: specific access on A only, plus an item grant
+	// on itemA. That grant triggers the item-grants branch of
+	// checkItemVisible — the branch that pre-round-2 missed system
+	// collections.
+	member, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "m@example.com", Name: "M", Username: "m", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser member: %v", err)
+	}
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, member.ID, "viewer"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, member.ID, "specific", []string{collA.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, itemA.ID, member.ID, "view", f.owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+
+	tok, err := f.srv.store.CreateAPIToken(member.ID, models.APITokenCreate{
+		Name: "member-tok", WorkspaceID: f.ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Resolver should redirect — system collections must remain visible
+	// to restricted members even when the item-grants branch fires.
+	rr = f.doAuth(tok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+sysItem.Ref, nil)
+	if rr.Code != http.StatusFound {
+		t.Fatalf("restricted member on system collection: expected 302, got %d body=%s",
+			rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Header().Get("Location"), "/"+sysColl.Slug+"/") {
+		t.Errorf("expected redirect under /%s/, got %q", sysColl.Slug, rr.Header().Get("Location"))
+	}
+}
+
+// TestRefResolver_RestrictedMemberWithCollectionGrant pins round-1 P1.2:
+// a restricted member (collection_access="specific" with only collection A
+// in their member_collection_access) PLUS a direct collection grant on
+// collection B must be able to resolve refs that live in collection B.
+func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
+	f := newRefResolverFixture(t)
+
+	// Two collections — A (member can see directly) and B (member sees
+	// only via the collection grant we'll attach below).
+	rr := f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
+		"name": "Alpha", "slug": "alpha", "prefix": "ALPHA",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection alpha: %d %s", rr.Code, rr.Body.String())
+	}
+	var collA models.Collection
+	parseJSON(t, rr, &collA)
+
+	rr = f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
 		"name": "Beta", "slug": "beta", "prefix": "BETA",
 	})
 	if rr.Code != http.StatusCreated {
@@ -377,9 +441,7 @@ func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
 	var collB models.Collection
 	parseJSON(t, rr, &collB)
 
-	// Seed one item in B — this is the ref we're going to try to resolve
-	// as the restricted member.
-	rr = asOwner("POST", "/api/v1/workspaces/"+ws.Slug+"/collections/beta/items",
+	rr = f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections/beta/items",
 		map[string]interface{}{"title": "Cross-collection target"})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
@@ -387,53 +449,30 @@ func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	// Create the restricted-access member.
-	member, err := srv.store.CreateUser(models.UserCreate{
-		Email: "member@example.com", Name: "Member", Username: "member",
-		Password: "pw-test-12345",
+	member, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "m@example.com", Name: "M", Username: "m", Password: "pw-test-12345",
 	})
 	if err != nil {
 		t.Fatalf("CreateUser member: %v", err)
 	}
-	if err := srv.store.AddWorkspaceMember(ws.ID, member.ID, "viewer"); err != nil {
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, member.ID, "viewer"); err != nil {
 		t.Fatalf("AddWorkspaceMember: %v", err)
 	}
-	// "specific" collection access with ONLY collection A in the access
-	// set. Without the grant on B (added below), the member can see A's
-	// items and not B's.
-	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{collA.ID}); err != nil {
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, member.ID, "specific", []string{collA.ID}); err != nil {
 		t.Fatalf("SetMemberCollectionAccess: %v", err)
 	}
-	// Direct collection grant on B — this is the codex-flagged path.
-	// requireItemVisible considers this via guestResourceFilter's
-	// fullCollIDs return; checkItemVisible must do the same.
-	if _, err := srv.store.CreateCollectionGrant(ws.ID, collB.ID, member.ID, "view", owner.ID); err != nil {
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, collB.ID, member.ID, "view", f.owner.ID); err != nil {
 		t.Fatalf("CreateCollectionGrant: %v", err)
 	}
 
-	// Mint a Bearer token for the restricted member.
-	tok, err := srv.store.CreateAPIToken(member.ID, models.APITokenCreate{
-		Name: "member-tok", WorkspaceID: ws.ID,
+	tok, err := f.srv.store.CreateAPIToken(member.ID, models.APITokenCreate{
+		Name: "member-tok", WorkspaceID: f.ws.ID,
 	}, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
 
-	doAsMember := func(path string) *httptest.ResponseRecorder {
-		t.Helper()
-		req := httptest.NewRequest("GET", path, nil)
-		req.Header.Set("Authorization", "Bearer "+tok.Token)
-		req.RemoteAddr = "127.0.0.1:0"
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, req)
-		return rec
-	}
-
-	// The restricted-member-with-grant case: GET on the B-collection
-	// item resolves to 302, not 404. Pre-refactor this returned 404
-	// because the resolver's bespoke ACL didn't merge collection grants
-	// into the member's visible set.
-	rr = doAsMember("/owner/" + ws.Slug + "/ref/" + item.Ref)
+	rr = f.doAuth(tok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil)
 	if rr.Code != http.StatusFound {
 		t.Fatalf("restricted-member-with-grant: expected 302, got %d body=%s",
 			rr.Code, rr.Body.String())

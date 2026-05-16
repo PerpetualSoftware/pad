@@ -324,6 +324,16 @@ export function renderMarkdown(
 			// happens server-side at click time — the renderer has no
 			// visibility into the target workspace's items.
 			//
+			// URL shape: `/-/r/{workspace}/{ref}`. The leading `/-/r/` is
+			// the resolver's sentinel prefix (Codex round-2 P1.4 / Option
+			// B); it can't collide with any user-namespace URL because
+			// username + collection slugs both require letter-led. The
+			// `username` arg is ignored for cross-workspace links because
+			// the resolver derives the canonical user-namespace segment
+			// from the target workspace's owner — without that, links
+			// would silently 404 when the rendering page's username
+			// doesn't own the target workspace.
+			//
 			// URL components are NOT percent-encoded here. parseCrossWorkspaceBody
 			// already vetted `xw.workspace` against WORKSPACE_SLUG_PATTERN
 			// (`^[a-z][a-z0-9-]*$`) and `xw.ref` against REF_PATTERN
@@ -332,8 +342,7 @@ export function renderMarkdown(
 			// verbatim, so the encode/no-encode choice is symmetric across
 			// both functions (Codex round-1 sanity sweep).
 			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
-			const hrefPrefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
-			return `<a href="${hrefPrefix}/ref/${xw.ref}" class="doc-link cross-workspace">${safeDisplay}</a>`;
+			return `<a href="/-/r/${xw.workspace}/${xw.ref}" class="doc-link cross-workspace">${safeDisplay}</a>`;
 		}
 		// Escape user-controlled title so it can't break out of attribute
 		// quotes. sanitizeMarkdownHtml would strip the worst offenders after
@@ -468,9 +477,10 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 				// behavior at the bottom of this function.
 				return _match;
 			}
-			const xwPrefix = username ? `/${username}/${xw.workspace}` : `/${xw.workspace}`;
+			// Cross-workspace: emit the resolver URL (`/-/r/{ws}/{ref}`).
+			// Same shape renderMarkdown emits — Codex round-2 P1.4 / Option B.
 			const display = xw.display ?? `${xw.workspace}::${xw.ref}`;
-			return `[${escapeMarkdownLinkText(display)}](${xwPrefix}/ref/${xw.ref})`;
+			return `[${escapeMarkdownLinkText(display)}](/-/r/${xw.workspace}/${xw.ref})`;
 		}
 
 		// Split optional display override on the FIRST unescaped pipe. We do
@@ -566,10 +576,12 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
  * Items without a ref fall back to the legacy [[Title]] form.
  */
 export function markdownToWikiLinks(markdown: string, items: Item[]): string {
-	// Cross-workspace ref URLs: /<user?>/<workspace>/ref/<REF> → [[workspace::REF]].
-	// Run BEFORE the same-workspace match below because the regex below also
-	// matches three-segment paths (it accepts {2,3} segments), and would
-	// otherwise consume the URL with `ref` as the "collection" segment.
+	// Cross-workspace ref URLs: /-/r/{workspace}/{REF} → [[workspace::REF]].
+	// Run BEFORE the same-workspace match below because the regex below
+	// accepts two-or-three-segment URL paths and would otherwise misclassify
+	// the resolver URL. The `/-/r/` sentinel prefix can't appear in any
+	// user-namespace URL because username + collection slugs are letter-led
+	// (Codex round-2 P1.4 / Option B).
 	//
 	// Strip the optional `|Display` ONLY when the link text equals the
 	// renderer's DEFAULT (`${ws}::${ref}`). A user who explicitly wrote
@@ -578,8 +590,8 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// which the next render would emit the default `other::TASK-1` and
 	// silently change the visible link text (Codex round-1 P2.1).
 	const withXwRefs = markdown.replace(
-		/\[((?:\\.|[^\]\\])+)\]\(\/(?:([^/]+)\/)?([a-z][a-z0-9-]*)\/ref\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
-		(_match, rawText: string, _user: string | undefined, ws: string, ref: string) => {
+		/\[((?:\\.|[^\]\\])+)\]\(\/-\/r\/([a-z][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
+		(_match, rawText: string, ws: string, ref: string) => {
 			const displayText = unescapeMarkdownLinkText(rawText);
 			const renderDefault = `${ws}::${ref}`;
 			if (displayText === renderDefault) {

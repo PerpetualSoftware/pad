@@ -19,17 +19,14 @@ import (
 var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 
 // handleResolveCrossWorkspaceRef implements IDEA-1492's resolver route.
-// Registered under two shapes:
 //
-//	GET /{username}/{workspace}/ref/{REF}
-//	GET /{workspace}/ref/{REF}
+//	GET /-/r/{workspace}/{REF}
 //
-// The two-segment form covers renderers that don't have a username in
-// scope (timeline comments, comment threads — neither call site threads
-// a username through renderMarkdown). When the URL-path username is
-// missing, we synthesize the redirect using the workspace owner's
-// username so the post-redirect URL is the canonical three-segment shape
-// SvelteKit's router expects.
+// The `/-/r/` prefix is structurally impossible to collide with any
+// page route under /{username}/{workspace}/{collection}/... because
+// username and collection slugs both require a leading letter. This
+// shape sidesteps Codex round-2 P1.4 (pre-existing `ref`-slugged
+// collections in upgraded workspaces) without a migration.
 //
 // 404 cases (in order of evaluation):
 //
@@ -41,8 +38,12 @@ var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 //     workspace see the same response as anonymous viewers.
 //  3. Ref resolves to no item in the target workspace.
 //  4. The item's collection isn't visible to the viewer.
+//  5. The workspace's owner has no username on record — the canonical
+//     redirect target requires one, and `"/" + "" + "/" + slug + …`
+//     would produce a protocol-relative URL (`//slug/…`) the browser
+//     interprets as a network-path reference. Returning 404 here is
+//     safer than emitting a broken redirect (Codex round-2 P1.3).
 func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username") // "" for the two-segment route
 	workspaceSlug := chi.URLParam(r, "workspace")
 	ref := chi.URLParam(r, "ref")
 
@@ -88,7 +89,7 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 	// 4. ACL: replay RequireWorkspaceAccess's role-derivation logic for
 	//    the viewer, then delegate to checkItemVisible — the same context-
 	//    free helper the middleware-gated routes use. Drift between the
-	//    resolver's ACL and the rest of the system is now structurally
+	//    resolver's ACL and the rest of the system is structurally
 	//    impossible.
 	visible, err := s.resolverItemVisible(r, ws, item)
 	if err != nil || !visible {
@@ -96,20 +97,21 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 5. Build the canonical item URL and 302 to it. URL-path username
-	//    wins when present; otherwise fall back to the workspace owner's
-	//    username so the redirect lands on the same SvelteKit URL the
-	//    in-app router would produce. Pre-setup workspaces with no
-	//    owner_username fall back to an empty path segment — that's the
-	//    same shape SvelteKit's `[username]` param accepts.
+	// 5. Determine the username segment for the canonical redirect target.
+	//    The new URL shape has no URL-path username, so we always synthesize
+	//    from the workspace owner. Empty result → 404 rather than a broken
+	//    `//slug/…` protocol-relative URL (Codex round-2 P1.3).
+	username := s.resolverOwnerUsername(ws)
 	if username == "" {
-		username = s.resolverOwnerUsername(ws)
+		s.refResolverNotFound(w, r)
+		return
 	}
+
+	// 6. Build the canonical item URL and 302 to it. Matches itemUrlId()
+	//    in the frontend so the redirect target is indistinguishable from a
+	//    direct in-app navigation.
 	dest := "/" + username + "/" + ws.Slug + "/" + item.CollectionSlug + "/"
 	if item.ItemNumber != nil && *item.ItemNumber > 0 && item.CollectionPrefix != "" {
-		// Items addressed by ref (formatItemRef-style) when available — this
-		// matches itemUrlId() in the frontend, so the redirect target is
-		// identical to a direct in-app navigation.
 		dest += item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
 	} else {
 		dest += item.Slug
@@ -120,7 +122,7 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 // refResolverNotFound writes a 404 with no body details. Centralized so all
 // failure paths produce identical responses — preventing oracle-style probes
 // that compare response bodies to distinguish "workspace missing" from
-// "ref missing" from "no access".
+// "ref missing" from "no access" from "owner-username missing".
 func (s *Server) refResolverNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, "not_found", "Not found")
 }
@@ -147,10 +149,10 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 	// Pre-setup mode: no users yet, the whole system is open (matches
 	// RequireAuth + RequireWorkspaceAccess's fresh-install bypass). We
 	// short-circuit to visible HERE rather than calling checkItemVisible
-	// with a synthetic "owner" role because checkItemVisible's first
-	// rule is "nil user → not visible" — that rule is correct for the
-	// authenticated-instance anonymous-viewer path below, and inverting
-	// it would weaken the gate for that path.
+	// with a synthetic role because the round-2-extended checkItemVisible
+	// honors role-only bypasses ("owner"/"editor") for tokenized access,
+	// but the pre-setup path is conceptually distinct from a real
+	// authenticated owner — bypassing here keeps the intent explicit.
 	if user == nil {
 		count, err := s.store.UserCount()
 		if err != nil {
@@ -196,11 +198,14 @@ func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User) 
 	return ""
 }
 
-// resolverOwnerUsername returns the workspace owner's username, used as
-// the fallback for the two-segment route shape. Falls back to the empty
-// string when the owner record is missing or the owner has no username
-// (legacy accounts predating the username column) — SvelteKit's
-// `[username]` param accepts an empty segment.
+// resolverOwnerUsername returns the workspace owner's username — the
+// only source for the leading path segment of the canonical redirect
+// target (since `/-/r/{workspace}/{ref}` URLs carry no username
+// themselves). Returns "" when the owner record is missing or has no
+// username on file. Callers MUST treat empty as "can't build a valid
+// redirect" and 404 — emitting `/` + "" + `/slug/...` yields a
+// protocol-relative URL the browser interprets as a network-path
+// reference (Codex round-2 P1.3).
 func (s *Server) resolverOwnerUsername(ws *models.Workspace) string {
 	if ws.OwnerUsername != "" {
 		return ws.OwnerUsername
