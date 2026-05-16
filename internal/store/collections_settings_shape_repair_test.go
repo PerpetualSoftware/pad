@@ -28,7 +28,7 @@ import (
 // Migrations 001-054 are applied first to bring the schema up. We then
 // stop BEFORE 055 to seed nullable + free-form settings rows (055
 // rebuilds the table with NOT NULL, so post-055 inserts of `NULL` or
-// `''` would error). Then 055 runs (its own NULL-only backfill repairs
+// `”` would error). Then 055 runs (its own NULL-only backfill repairs
 // only the NULL seed; the rest survive into the new table because the
 // SQLite rebuild's INSERT…SELECT preserves the literal bytes). Finally
 // 058 runs and is the migration under test.
