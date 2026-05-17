@@ -139,6 +139,13 @@ func (c *Client) UpdateCollection(wsSlug, collSlug string, input models.Collecti
 	return &result, c.patch("/workspaces/"+wsSlug+"/collections/"+collSlug, input, &result)
 }
 
+// DeleteCollection soft-deletes a collection and all items in it.
+// Server-side requires the workspace `owner` role
+// (handlers_collections.go::handleDeleteCollection).
+func (c *Client) DeleteCollection(wsSlug, collSlug string) error {
+	return c.delete("/workspaces/" + wsSlug + "/collections/" + collSlug)
+}
+
 // --- Items ---
 
 // ListItems returns items across all collections in a workspace.

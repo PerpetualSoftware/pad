@@ -254,6 +254,10 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",
 		}.toRouteMapper(),
 		"collection update": mapCollectionUpdate,
+		"collection delete": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: "/api/v1/workspaces/{workspace}/collections/{slug}",
+		}.toRouteMapper(),
 		"role list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles",

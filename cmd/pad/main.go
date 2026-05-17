@@ -5537,6 +5537,39 @@ issue-ID equivalent for collections themselves.`,
 	return cmd
 }
 
+// collectionsDeleteCmd archives a collection. Server-side this
+// soft-deletes the collection AND all items in it; it is owner-only
+// (handlers_collections.go::handleDeleteCollection). There is no
+// undo from the CLI — restore via the API or a database backup.
+//
+// Built for the PLAN-1496 / onboard playbook (TASK-1499): the playbook
+// audits seeded collections and deletes the ones that don't fit the
+// project's workspace shape before creating the right ones. Without
+// this command, the agent had no way to remove a misaligned seed.
+func collectionsDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <slug>",
+		Short: "Delete a collection and archive all items in it (owner-only, irreversible)",
+		Long: `Delete a collection by slug. The collection AND every item
+inside it are soft-deleted. This is owner-only and there is no
+'undelete' subcommand — restore via the API or a database backup.
+
+Use this to remove seeded collections that don't fit your workspace
+(part of the PLAN-1496 / '/pad onboard' adaptation flow).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			collSlug := args[0]
+			if err := client.DeleteCollection(ws, collSlug); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted collection %s\n", collSlug)
+			return nil
+		},
+	}
+}
+
 // --- edit ---
 
 func editCmd() *cobra.Command {

@@ -84,6 +84,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
 		{"pad_collection", "update"}: {"collection", "update"},
+		{"pad_collection", "delete"}: {"collection", "delete"},
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
@@ -205,6 +206,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
 		{"pad_collection", "update"}: {"collection", "update"},
+		{"pad_collection", "delete"}: {"collection", "delete"},
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
@@ -420,6 +422,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					"workspace", "name", "icon", "description", "prefix",
 					"fields", "schema", "sort-order",
 				),
+			},
+			"collection delete": {
+				Summary: "delete col",
+				Args:    mkArgs("slug"),
+				Flags:   mkFlags("workspace"),
 			},
 			// Project
 			"project dashboard": {Summary: "dash", Flags: mkFlags("workspace")},

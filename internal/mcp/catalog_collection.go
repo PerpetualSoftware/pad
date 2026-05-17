@@ -1,14 +1,15 @@
 package mcp
 
-// padCollectionTool exposes collection management. Three actions:
-// list (read-only), create (admin-mutating), update (admin-mutating).
+// padCollectionTool exposes collection management. Four actions:
+// list (read-only), create (admin-mutating), update (admin-mutating),
+// delete (admin-mutating).
 //
-// `update` (TASK-1510) is the adaptation primitive for the `/pad
-// onboard` playbook (PLAN-1496): the agent rewrites the seeded schema
-// during onboarding so collection field shapes, status enums, icons,
-// and names match the project's actual vocabulary instead of the
-// template defaults. Server-side handler at handlers_collections.go
-// requires the workspace owner role; viewers/editors can't mutate.
+// `update` (TASK-1510) and `delete` (TASK-1511) are the adaptation
+// primitives for the `/pad onboard` playbook (PLAN-1496): the agent
+// rewrites OR removes seeded collections during onboarding so the
+// workspace shape matches the project's actual vocabulary instead of
+// the template defaults. Server-side handlers at handlers_collections.go
+// require the workspace owner role; viewers/editors can't mutate.
 //
 // `schema` was discussed in DOC-978 but dropped from v0.2 — the CLI
 // has no `collection schema` command, and consumers can read each
@@ -89,6 +90,7 @@ var padCollectionTool = ToolDef{
 		"list":   passThrough([]string{"collection", "list"}),
 		"create": passThrough([]string{"collection", "create"}),
 		"update": passThrough([]string{"collection", "update"}),
+		"delete": passThrough([]string{"collection", "delete"}),
 	},
 }
 
@@ -117,6 +119,11 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
+  delete  — Soft-delete a collection AND every item in it. Owner-only,
+            irreversible from MCP (restore via API/DB backup). Required:
+            workspace, slug. Pairs with update for the onboarding flow —
+            remove seeded collections that don't fit before creating the
+            right ones.
 
 Schema for an individual collection is included in the list response — read it
 from there rather than calling list again. v0.2 does not expose a dedicated
