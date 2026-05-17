@@ -171,8 +171,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**
-- "set up my workspace" / "onboard me" / "scan this codebase" → Onboarding workflow (see below). Software templates scan the codebase; non-software workspaces run their own template-specific onboarding.
-- **"use pad to get IDEA-1"** (or `PLAN-2` / `TASK-3` / `DOC-4` in a fresh `startup` workspace) → Fetch the seed item with `pad item show <REF> --format markdown` and let its body guide you. It's a first-person note from the workspace owner's future self. After capturing something useful, update the seed item's status to its terminal value (Ideas: `implemented`, Plans: `completed`, Tasks: `done`, Docs: `archived`) so the dashboard hint disappears.
+- "set up my workspace" / "onboard me" / "scan this codebase" / **"use pad to get IDEA-1"** (legacy phrasing — the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired in PLAN-1496 / TASK-1501) → Dispatch to the `/pad onboard` playbook. Every workspace now auto-seeds it (TASK-1500), so it's always invokable. The playbook body teaches you the interview flow: discover the domain, propose collections, adapt seeded conventions/playbooks to the project's actual tooling, suggest roles, seed a first item. Do NOT try to fetch `IDEA-1` directly — it no longer exists in any newly-created workspace.
 
 **Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
 
