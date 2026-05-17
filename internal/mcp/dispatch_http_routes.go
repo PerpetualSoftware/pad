@@ -253,6 +253,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",
 		}.toRouteMapper(),
+		"collection update": mapCollectionUpdate,
 		"role list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles",
@@ -599,6 +600,70 @@ func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 		urlPath += "?include_terminal=true"
 	}
 	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapCollectionUpdate dispatches `pad collection update <slug>
+// [--name ...] [--icon ...] [--description ...] [--prefix ...]
+// [--schema ...] [--fields ...] [--sort-order ...]`.
+//
+// PATCH /api/v1/workspaces/{ws}/collections/{slug} with a body matching
+// models.CollectionUpdate. Only the keys actually present on `input`
+// are included — every CollectionUpdate field is a pointer, so omitted
+// fields preserve the existing value server-side.
+//
+// `schema` is the awkward one: the catalog declares it as a JSON object
+// for MCP ergonomics (agents send `{"fields":[...]}` as a nested
+// object), but CollectionUpdate.Schema is *string. The
+// CollectionUpdate UnmarshalJSON does NOT do the object→string
+// coercion for schema (only for settings — see collection.go:140).
+// So we re-marshal an object input here to its JSON-string form
+// before sending. This is symmetric to what the CLI does via
+// collectionSchemaJSONFromFlags.
+func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	slug, _ := input["slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("slug is required")
+	}
+
+	payload := map[string]any{}
+	for _, key := range []string{"name", "icon", "description", "prefix"} {
+		if v, _ := input[key].(string); v != "" {
+			payload[key] = v
+		}
+	}
+	if v, ok := input["sort_order"]; ok && v != nil {
+		// JSON numbers arrive as float64; CollectionUpdate.SortOrder
+		// is *int, but encoding/json on the receiving side coerces
+		// fine since the field's tag is plain integer.
+		payload["sort_order"] = v
+	}
+	// schema: accept either an object (preferred MCP shape) or a
+	// pre-encoded JSON string. The receiver expects a string.
+	if rawSchema, ok := input["schema"]; ok && rawSchema != nil {
+		switch s := rawSchema.(type) {
+		case string:
+			if s != "" {
+				payload["schema"] = s
+			}
+		default:
+			encoded, err := json.Marshal(rawSchema)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("encode schema: %w", err)
+			}
+			payload["schema"] = string(encoded)
+		}
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/collections/" + url.PathEscape(slug)
+	return http.MethodPatch, urlPath, body, nil
 }
 
 // mapRoleCreate dispatches `pad role create <name> [--description ...]

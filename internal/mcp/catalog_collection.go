@@ -1,7 +1,14 @@
 package mcp
 
-// padCollectionTool exposes collection management. Two actions in
-// v0.2: list (read-only) and create (admin-mutating).
+// padCollectionTool exposes collection management. Three actions:
+// list (read-only), create (admin-mutating), update (admin-mutating).
+//
+// `update` (TASK-1510) is the adaptation primitive for the `/pad
+// onboard` playbook (PLAN-1496): the agent rewrites the seeded schema
+// during onboarding so collection field shapes, status enums, icons,
+// and names match the project's actual vocabulary instead of the
+// template defaults. Server-side handler at handlers_collections.go
+// requires the workspace owner role; viewers/editors can't mutate.
 //
 // `schema` was discussed in DOC-978 but dropped from v0.2 — the CLI
 // has no `collection schema` command, and consumers can read each
@@ -20,9 +27,14 @@ var padCollectionTool = ToolDef{
 		Workspace: true,
 		Params: []ParamDef{
 			{
+				Name:        "slug",
+				Type:        "string",
+				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update; identifies which collection to mutate.",
+			},
+			{
 				Name:        "name",
 				Type:        "string",
-				Description: "Display name of the collection. Required for action=create.",
+				Description: "Display name of the collection. Required for action=create. Optional for action=update — provide to rename.",
 			},
 			{
 				Name:        "fields",
@@ -61,15 +73,26 @@ var padCollectionTool = ToolDef{
 				Type:        "string",
 				Description: "Field key to group by when in board view. Optional for action=create. Defaults to \"status\".",
 			},
+			{
+				Name:        "prefix",
+				Type:        "string",
+				Description: "Issue-ID prefix (e.g. \"TASK\", \"BUG\"). Optional for action=update — provide to change how new items in this collection are numbered.",
+			},
+			{
+				Name:        "sort_order",
+				Type:        "number",
+				Description: "Display sort order (lower = appears first). Optional for action=update.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{
 		"list":   passThrough([]string{"collection", "list"}),
 		"create": passThrough([]string{"collection", "create"}),
+		"update": passThrough([]string{"collection", "update"}),
 	},
 }
 
-const padCollectionToolDescription = `Collection management — list and create collection types.
+const padCollectionToolDescription = `Collection management — list, create, and update collection types.
 
 Actions:
   list    — List collections in the workspace with their schemas + counts.
@@ -84,6 +107,16 @@ Actions:
             active/complete counts) or when fields need defaults, computed
             flags, suffixes, or relation collections — the DSL cannot express
             those.
+  update  — Update an existing collection's name, icon, description, prefix,
+            schema, or sort order. Workspace owner only.
+            Required: workspace, slug.
+            Optional: name, icon, description, prefix, fields OR schema
+                      (mutually exclusive), sort_order. Only fields you
+                      explicitly set are mutated; everything else is left
+                      untouched.
+            This is the adaptation primitive for the onboarding playbook
+            (/pad onboard) — rewrite seeded collections to match the
+            project's actual vocabulary instead of template defaults.
 
 Schema for an individual collection is included in the list response — read it
 from there rather than calling list again. v0.2 does not expose a dedicated

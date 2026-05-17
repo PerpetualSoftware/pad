@@ -82,6 +82,142 @@ func TestMapItemStarred_RequiresWorkspace(t *testing.T) {
 	}
 }
 
+// --- Collections (TASK-1510 / PLAN-1496) ---
+
+// TestMapCollectionUpdate_BuildsPatchBody confirms the mapper routes
+// to the canonical PATCH endpoint and copies through every supported
+// flat-string field. Schema-object → string coercion has its own test
+// below.
+func TestMapCollectionUpdate_BuildsPatchBody(t *testing.T) {
+	m, p, body, err := mapCollectionUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "tasks",
+		"name":        "Issues",
+		"icon":        "🎯",
+		"description": "Tracks work to ship",
+		"prefix":      "ISS",
+		"sort_order":  float64(2), // JSON numbers arrive as float64
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	if m != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", m)
+	}
+	if p != "/api/v1/workspaces/docapp/collections/tasks" {
+		t.Errorf("path = %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	want := map[string]any{
+		"name":        "Issues",
+		"icon":        "🎯",
+		"description": "Tracks work to ship",
+		"prefix":      "ISS",
+		"sort_order":  float64(2),
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("body[%q] = %v (%T), want %v (%T)", k, got[k], got[k], v, v)
+		}
+	}
+}
+
+// TestMapCollectionUpdate_EncodesSchemaObjectToString verifies the
+// MCP-friendly object form of the `schema` parameter gets re-marshaled
+// to the JSON-string form CollectionUpdate.Schema (*string) actually
+// expects. Without this coercion the server would reject the PATCH.
+func TestMapCollectionUpdate_EncodesSchemaObjectToString(t *testing.T) {
+	schemaObj := map[string]any{
+		"fields": []any{
+			map[string]any{
+				"key":     "status",
+				"type":    "select",
+				"options": []any{"new", "done"},
+			},
+		},
+	}
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"schema":    schemaObj,
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	gotSchema, ok := got["schema"].(string)
+	if !ok {
+		t.Fatalf("schema should serialize as string for server consumption; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Round-trip through CollectionUpdate.UnmarshalJSON to confirm
+	// the server can actually decode this body.
+	var update models.CollectionUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		t.Fatalf("CollectionUpdate.UnmarshalJSON rejected body: %v", err)
+	}
+	if update.Schema == nil || *update.Schema != gotSchema {
+		t.Errorf("CollectionUpdate.Schema round-trip lost data: got %v, body had %q", update.Schema, gotSchema)
+	}
+}
+
+// TestMapCollectionUpdate_PassesSchemaStringVerbatim allows the
+// pre-encoded string form (mirrors what the CLI's
+// collectionSchemaJSONFromFlags produces) so callers can stay
+// symmetric with the create path.
+func TestMapCollectionUpdate_PassesSchemaStringVerbatim(t *testing.T) {
+	schemaStr := `{"fields":[{"key":"status","type":"select","options":["a","b"]}]}`
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"schema":    schemaStr,
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got["schema"] != schemaStr {
+		t.Errorf("schema should pass through unmodified; got %v", got["schema"])
+	}
+}
+
+func TestMapCollectionUpdate_OmitsEmptyFields(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		// All other fields absent — should send an empty body.
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	for _, key := range []string{"name", "icon", "description", "prefix", "sort_order", "schema"} {
+		if _, present := got[key]; present {
+			t.Errorf("empty %q should be omitted; got %v", key, got)
+		}
+	}
+}
+
+func TestMapCollectionUpdate_RequiresWorkspaceAndSlug(t *testing.T) {
+	if _, _, _, err := mapCollectionUpdate(map[string]any{"slug": "tasks"}); err == nil {
+		t.Errorf("expected error when workspace missing")
+	}
+	if _, _, _, err := mapCollectionUpdate(map[string]any{"workspace": "docapp"}); err == nil {
+		t.Errorf("expected error when slug missing")
+	}
+}
+
 // --- Roles ---
 
 func TestMapRoleCreate_BuildsCanonicalBody(t *testing.T) {
