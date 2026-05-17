@@ -12,7 +12,7 @@ Eight resource × action tools, plus `pad_set_workspace` (which takes a `workspa
 
 - `pad_item` — Items: create / update / delete / get / list / move / link / unlink / deps / star / unstar / starred / comment / list-comments / bulk-update / note / decide.
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log.
-- `pad_collection` — Collections: list / create.
+- `pad_collection` — Collections: list / create / update / delete.
 - `pad_project` — Project intelligence: dashboard / next / standup / changelog.
 - `pad_role` — Agent roles: list / create / delete.
 - `pad_search` — Full-text search across items: query.

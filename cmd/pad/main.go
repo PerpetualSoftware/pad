@@ -5537,6 +5537,51 @@ issue-ID equivalent for collections themselves.`,
 	return cmd
 }
 
+// collectionsDeleteCmd soft-deletes a collection. Server-side
+// (store/collections.go::DeleteCollection) sets collections.deleted_at
+// on the collection row and refuses any collection where is_default=true
+// (template-seeded collections are flagged default). Items in the
+// collection are NOT cascaded — they remain in the database with the
+// soft-deleted collection_id. Workspace owner only.
+//
+// For the PLAN-1496 / onboard playbook (TASK-1499), the agent uses
+// this to remove USER-CREATED collections that don't fit the project's
+// workspace shape. Template-seeded defaults must be *adapted* via
+// `pad collection update` instead (rename, reshape schema, change
+// icon) — the store's default-collection guard cannot be bypassed
+// from the CLI today. See IDEA-{follow-up} for the "lift the
+// is_default restriction" discussion (IDEA-1513).
+func collectionsDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <slug>",
+		Short: "Soft-delete a non-default collection (owner-only, irreversible from CLI)",
+		Long: `Soft-delete a collection by slug.
+
+Constraints:
+  - Workspace owner role required.
+  - Cannot delete a default collection (template-seeded ones are
+    marked is_default=true). For seeded collections, use
+    'pad collection update' to adapt them (rename, reshape schema,
+    swap icon) instead.
+  - Items in the collection are NOT cascaded — they remain in the
+    database with the soft-deleted collection_id. The web UI hides
+    them; the API still surfaces them if queried directly.
+  - No 'undelete' subcommand or restore endpoint exists; recovery
+    is only possible from a database backup.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			collSlug := args[0]
+			if err := client.DeleteCollection(ws, collSlug); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted collection %s\n", collSlug)
+			return nil
+		},
+	}
+}
+
 // --- edit ---
 
 func editCmd() *cobra.Command {

@@ -334,6 +334,28 @@ func TestMapCollectionUpdate_AcceptsFieldsDSL(t *testing.T) {
 // CLI's mutual-exclusion guard (collectionSchemaJSONFromFlags). The
 // catalog description says "fields OR schema (mutually exclusive)";
 // the mapper must enforce it.
+// TestRouteTable_CollectionDelete confirms the simple DELETE route
+// substitutes workspace + slug correctly. Owner-only at the server;
+// the route mapper itself just builds the URL.
+func TestRouteTable_CollectionDelete(t *testing.T) {
+	m, p, body, err := routeTable["collection delete"](map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+	})
+	if err != nil {
+		t.Fatalf("routeTable[collection delete]: %v", err)
+	}
+	if m != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", m)
+	}
+	if p != "/api/v1/workspaces/docapp/collections/tasks" {
+		t.Errorf("path = %q", p)
+	}
+	if len(body) != 0 {
+		t.Errorf("expected empty body for DELETE; got %q", string(body))
+	}
+}
+
 func TestMapCollectionUpdate_RejectsFieldsAndSchemaTogether(t *testing.T) {
 	_, _, _, err := mapCollectionUpdate(map[string]any{
 		"workspace": "docapp",

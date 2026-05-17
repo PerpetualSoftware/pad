@@ -257,7 +257,7 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 |---|---|
 | `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `bulk-update`, `note`, `decide` |
 | `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log` |
-| `pad_collection` | `list`, `create` |
+| `pad_collection` | `list`, `create`, `update`, `delete` |
 | `pad_project` | `dashboard`, `next`, `standup`, `changelog` |
 | `pad_role` | `list`, `create`, `delete` |
 | `pad_search` | `query` |
