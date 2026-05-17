@@ -293,7 +293,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 			continue
 		}
 		fieldsStr := string(fieldsJSON)
-		patchBody, err := json.Marshal(map[string]any{"fields": fieldsStr})
+		patchPayload := map[string]any{"fields": fieldsStr}
+		// IDEA-1494: forward the open-children guard override per-row.
+		// Same flag shape as `pad item bulk-update --force` so the
+		// override travels through both transports identically.
+		if b, ok := input["force"].(bool); ok && b {
+			patchPayload["force"] = true
+		}
+		patchBody, err := json.Marshal(patchPayload)
 		if err != nil {
 			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("encode body", err)})
 			continue

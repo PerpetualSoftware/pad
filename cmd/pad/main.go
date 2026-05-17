@@ -3392,6 +3392,7 @@ func updateCmd() *cobra.Command {
 		tags       string
 		fieldFlags []string
 		comment    string
+		force      bool
 	)
 
 	cmd := &cobra.Command{
@@ -3441,6 +3442,9 @@ Examples:
 			}
 			if comment != "" {
 				input.Comment = &comment
+			}
+			if force {
+				input.Force = true
 			}
 
 			// Merge field changes with existing fields
@@ -3529,6 +3533,23 @@ Examples:
 
 			updated, err := client.UpdateItem(ws, slug, input)
 			if err != nil {
+				// IDEA-1494: render the open-children list when the
+				// server rejected the transition because the item has
+				// non-terminal children. The detailed list comes from
+				// the same structured payload MCP clients consume so
+				// the human and machine views agree.
+				if apiErr, ok := err.(*cli.APIError); ok {
+					if oc := apiErr.AsOpenChildren(); oc != nil {
+						fmt.Fprintln(os.Stderr, apiErr.Message)
+						for _, c := range oc.OpenChildren {
+							fmt.Fprintf(os.Stderr, "  %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)
+						}
+						fmt.Fprintln(os.Stderr, "Pass --force to override.")
+						// Return a bare error so cobra exits non-zero
+						// without re-printing the (now-rendered) details.
+						return fmt.Errorf("update rejected: open children present")
+					}
+				}
 				return err
 			}
 
@@ -3561,6 +3582,7 @@ Examples:
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 
 	return cmd
 }
@@ -6478,6 +6500,7 @@ func bulkUpdateCmd() *cobra.Command {
 	var (
 		status   string
 		priority string
+		force    bool
 	)
 
 	cmd := &cobra.Command{
@@ -6553,6 +6576,7 @@ Examples:
 
 				input := models.ItemUpdate{
 					Fields: &fieldsStr,
+					Force:  force,
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)
@@ -6594,6 +6618,7 @@ Examples:
 
 	cmd.Flags().StringVar(&status, "status", "", "set status for all items")
 	cmd.Flags().StringVar(&priority, "priority", "", "set priority for all items")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking items terminal even if children are non-terminal)")
 
 	return cmd
 }

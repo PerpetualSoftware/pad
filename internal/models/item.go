@@ -582,6 +582,15 @@ type ItemUpdate struct {
 	// (since nil pointer means "don't change" in partial updates)
 	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`
 	ClearAgentRole    bool `json:"clear_agent_role,omitempty"`
+
+	// Force, when true, overrides the server-side open-children guard
+	// (IDEA-1494) that otherwise rejects a non-terminal → terminal
+	// done-field transition while the item still has non-terminal
+	// children. Transport-only: the store layer never sees it (the
+	// handler consumes it before calling UpdateItem). Used by `pad item
+	// update --force` and MCP `pad_item.action: update` with
+	// `force: true`.
+	Force bool `json:"force,omitempty"`
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by

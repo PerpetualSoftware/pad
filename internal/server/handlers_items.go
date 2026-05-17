@@ -740,6 +740,29 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Auto-populate date fields on status changes
 		autoPopulateDates(fieldMap, item.Fields, schema)
 
+		// IDEA-1494 open-children guard: refuse non-terminal → terminal
+		// done-field transitions while the item still has non-terminal
+		// children, unless the caller passes Force=true. The check uses
+		// the parent item's collection schema/settings for the done-
+		// field resolution (each child is then evaluated against its
+		// OWN collection in evaluateOpenChildrenGuard). Runs before any
+		// store mutation so a rejection mutates nothing.
+		if !input.Force {
+			var settings models.CollectionSettings
+			if coll.Settings != "" {
+				_ = json.Unmarshal([]byte(coll.Settings), &settings)
+			}
+			details, gerr := s.evaluateOpenChildrenGuard(item.ID, item.Fields, fieldMap, schema, settings)
+			if gerr != nil {
+				writeInternalError(w, gerr)
+				return
+			}
+			if details != nil {
+				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+				return
+			}
+		}
+
 		validatedFields, err := json.Marshal(fieldMap)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields")

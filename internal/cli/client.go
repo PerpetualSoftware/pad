@@ -705,12 +705,46 @@ func (c *Client) GetAuditLog(params models.AuditLogParams) ([]models.Activity, e
 // --- HTTP helpers ---
 
 type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// OpenChildEntry mirrors the server-side openChildEntry payload returned
+// inside APIError.Details when Code == "open_children" (IDEA-1494). The
+// CLI renders its human error list from these entries; MCP-driven agents
+// can introspect the same data to self-recover.
+type OpenChildEntry struct {
+	Ref            string `json:"ref"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	CollectionSlug string `json:"collection_slug"`
+}
+
+// OpenChildrenDetails is the parsed shape of APIError.Details when
+// Code == "open_children".
+type OpenChildrenDetails struct {
+	OpenChildren   []OpenChildEntry `json:"open_children"`
+	DoneField      string           `json:"done_field"`
+	AttemptedValue string           `json:"attempted_value"`
+}
+
+// AsOpenChildren returns the parsed open-children details when this
+// APIError carries them, or nil otherwise. Returns nil for any error
+// other than "open_children" so callers can branch cleanly.
+func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
+	if e == nil || e.Code != "open_children" || len(e.Details) == 0 {
+		return nil
+	}
+	var d OpenChildrenDetails
+	if err := json.Unmarshal(e.Details, &d); err != nil {
+		return nil
+	}
+	return &d
 }
 
 // --- Attachments ---
