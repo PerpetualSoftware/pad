@@ -6436,7 +6436,7 @@ func roleCreateCmd() *cobra.Command {
 func roleUpdateCmd() *cobra.Command {
 	var (
 		name        string
-		slug        string
+		newSlug     string
 		description string
 		icon        string
 		tools       string
@@ -6453,10 +6453,15 @@ Only flags you explicitly set are sent — every other property is left
 untouched. The <slug> positional accepts either the role's current
 slug ("planner") or its UUID.
 
+NOTE: the rename flag is --new-slug, not --slug. This is deliberate:
+the MCP catalog passes the positional via MCP property "slug" and
+the rename target via "new_slug"; calling the CLI flag --slug too
+would collide on the local stdio MCP path (Codex review on PR #574).
+
 Examples:
   pad role update planner --description "Decomposes plans into tasks"
   pad role update reviewer --icon 👁️
-  pad role update implementer --name "Engineer" --slug engineer`,
+  pad role update implementer --name "Engineer" --new-slug engineer`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -6468,8 +6473,8 @@ Examples:
 			if cmd.Flags().Changed("name") {
 				input.Name = &name
 			}
-			if cmd.Flags().Changed("slug") {
-				input.Slug = &slug
+			if cmd.Flags().Changed("new-slug") {
+				input.Slug = &newSlug
 			}
 			if cmd.Flags().Changed("description") {
 				input.Description = &description
@@ -6501,7 +6506,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "new display name")
-	cmd.Flags().StringVar(&slug, "slug", "", "new slug (kebab-case identifier)")
+	cmd.Flags().StringVar(&newSlug, "new-slug", "", "rename target — new slug (kebab-case identifier)")
 	cmd.Flags().StringVar(&description, "description", "", "new description (empty string clears)")
 	cmd.Flags().StringVar(&icon, "icon", "", "new emoji icon (empty string clears)")
 	cmd.Flags().StringVar(&tools, "tools", "", "preferred tools/models string")

@@ -460,7 +460,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "update role",
 				Args:    mkArgs("slug"),
 				Flags: mkFlags(
-					"workspace", "name", "slug", "description", "icon",
+					"workspace", "name", "new-slug", "description", "icon",
 					"tools", "sort-order",
 				),
 			},
