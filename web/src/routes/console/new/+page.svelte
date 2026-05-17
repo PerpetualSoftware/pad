@@ -205,7 +205,14 @@
 					</p>
 					<p class="onboard-help">
 						Don't have an agent connected yet?
-						<a href="/docs/agents" class="inline-link">Connect Claude Code, Cursor, or any MCP client</a>.
+						<a
+							href="https://getpad.dev/docs"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-link"
+						>
+							Connect Claude Code, Cursor, or any MCP client
+						</a>.
 					</p>
 				</div>
 			{:else}
