@@ -233,206 +233,36 @@ func TestSoftwareTemplatesShipStarterPacks(t *testing.T) {
 	}
 }
 
-// TestStartupOnboardingItemsOrderAndShape verifies that StartupOnboardingItems
-// returns the four onboarding seeds in the order Ideas, Plans, Tasks, Docs —
-// the order that produces the IDEA-1 / PLAN-2 / TASK-3 / DOC-4 ref sequence
-// in a fresh workspace. Each item must have a non-empty title, body, and a
-// status field set in Fields. If the order or collection slugs ever drift,
-// the post-signup hint copy (which names IDEA-1) and the design doc
-// (DOC-1139) silently desync.
-func TestStartupOnboardingItemsOrderAndShape(t *testing.T) {
-	items := StartupOnboardingItems()
-	want := []struct {
-		Slug, Status string
-	}{
-		{"ideas", "new"},
-		{"plans", "planned"},
-		{"tasks", "open"},
-		{"docs", "draft"},
-	}
-
-	if len(items) != len(want) {
-		t.Fatalf("StartupOnboardingItems returned %d items, want %d", len(items), len(want))
-	}
-
-	for i, it := range items {
-		if it.CollectionSlug != want[i].Slug {
-			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
-		}
-		if it.Title == "" {
-			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
-		}
-		if it.Content == "" {
-			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
-		}
-		// Status must appear in the Fields JSON. Naive substring check is
-		// enough — the schema validates the full payload elsewhere.
-		wantStatus := `"status":"` + want[i].Status + `"`
-		if !contains(it.Fields, wantStatus) {
-			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
-		}
-	}
-}
-
-// TestStartupTemplateShipsOnboardingSeedItems verifies the startup template
-// references StartupOnboardingItems on its SeedItems field. This is what
-// makes a fresh `pad workspace init --template startup` produce the
-// IDEA-1 / PLAN-2 / TASK-3 / DOC-4 sequence rather than starting at CONVE-1.
-func TestStartupTemplateShipsOnboardingSeedItems(t *testing.T) {
-	tmpl := GetTemplate("startup")
-	if tmpl == nil {
-		t.Fatal("startup template missing")
-	}
-	if len(tmpl.SeedItems) != len(StartupOnboardingItems()) {
-		t.Errorf("startup template SeedItems = %d items, want %d (the onboarding seeds)", len(tmpl.SeedItems), len(StartupOnboardingItems()))
-	}
-	// The first SeedItem MUST go to ideas — it's IDEA-1, what the
-	// post-signup hint names. If this drifts, the hint silently points
-	// at the wrong (or missing) item.
-	if len(tmpl.SeedItems) > 0 && tmpl.SeedItems[0].CollectionSlug != "ideas" {
-		t.Errorf("startup SeedItems[0].CollectionSlug = %q, want %q (IDEA-1 must be first)", tmpl.SeedItems[0].CollectionSlug, "ideas")
-	}
-}
-
-// TestScrumOnboardingItemsOrderAndShape — sister to startup's test for
-// the scrum template (PLAN-1146, DOC-1152). Locks down the order +
-// collection slugs + status fields so the post-signup hint copy
-// (which will name BACK-1) doesn't silently desync.
-func TestScrumOnboardingItemsOrderAndShape(t *testing.T) {
-	items := ScrumOnboardingItems()
-	want := []struct {
-		Slug, Status string
-	}{
-		{"backlog", "new"},
-		{"sprints", "planning"},
-		{"bugs", "new"},
-		{"docs", "draft"},
-	}
-
-	if len(items) != len(want) {
-		t.Fatalf("ScrumOnboardingItems returned %d items, want %d", len(items), len(want))
-	}
-
-	for i, it := range items {
-		if it.CollectionSlug != want[i].Slug {
-			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
-		}
-		if it.Title == "" {
-			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
-		}
-		if it.Content == "" {
-			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
-		}
-		wantStatus := `"status":"` + want[i].Status + `"`
-		if !contains(it.Fields, wantStatus) {
-			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
-		}
-	}
-}
-
-// TestProductOnboardingItemsOrderAndShape — sister test for the product
-// template (PLAN-1146, DOC-1153). Locks the FEAT-1 / FB-2 / ROAD-3 /
-// DOC-4 sequence.
-func TestProductOnboardingItemsOrderAndShape(t *testing.T) {
-	items := ProductOnboardingItems()
-	want := []struct {
-		Slug, Status string
-	}{
-		{"features", "proposed"},
-		{"feedback", "new"},
-		{"roadmap-items", "planned"},
-		{"docs", "draft"},
-	}
-
-	if len(items) != len(want) {
-		t.Fatalf("ProductOnboardingItems returned %d items, want %d", len(items), len(want))
-	}
-
-	for i, it := range items {
-		if it.CollectionSlug != want[i].Slug {
-			t.Errorf("item[%d] CollectionSlug = %q, want %q", i, it.CollectionSlug, want[i].Slug)
-		}
-		if it.Title == "" {
-			t.Errorf("item[%d] (%s) has empty Title", i, it.CollectionSlug)
-		}
-		if it.Content == "" {
-			t.Errorf("item[%d] (%s) has empty Content", i, it.CollectionSlug)
-		}
-		wantStatus := `"status":"` + want[i].Status + `"`
-		if !contains(it.Fields, wantStatus) {
-			t.Errorf("item[%d] (%s) Fields = %q, want it to contain %s", i, it.CollectionSlug, it.Fields, wantStatus)
-		}
-	}
-}
-
-// TestScrumProductTemplatesShipOnboardingSeedItems mirrors the startup
-// version — verifies the templates' SeedItems fields wire to their
-// onboarding helpers.
-func TestScrumProductTemplatesShipOnboardingSeedItems(t *testing.T) {
-	cases := []struct {
-		Name            string
-		WantSeedFn      func() []SeedItem
-		WantPrimarySlug string
-	}{
-		{Name: "scrum", WantSeedFn: ScrumOnboardingItems, WantPrimarySlug: "backlog"},
-		{Name: "product", WantSeedFn: ProductOnboardingItems, WantPrimarySlug: "features"},
-	}
-
-	for _, c := range cases {
-		tmpl := GetTemplate(c.Name)
-		if tmpl == nil {
-			t.Errorf("%s template missing", c.Name)
-			continue
-		}
-		want := c.WantSeedFn()
-		if len(tmpl.SeedItems) != len(want) {
-			t.Errorf("%s template SeedItems = %d items, want %d", c.Name, len(tmpl.SeedItems), len(want))
-			continue
-		}
-		// The first SeedItem MUST go to the template's primary entry
-		// collection (BACK-1 for scrum, FEAT-1 for product). If this
-		// drifts, the post-signup hint silently names a different
-		// (or missing) item.
-		if len(tmpl.SeedItems) > 0 && tmpl.SeedItems[0].CollectionSlug != c.WantPrimarySlug {
-			t.Errorf("%s SeedItems[0].CollectionSlug = %q, want %q (primary entry must be first)", c.Name, tmpl.SeedItems[0].CollectionSlug, c.WantPrimarySlug)
-		}
-	}
-}
-
-// TestTemplatesDeclareOnboardingPrimaryRef verifies the templates that
-// ship the IDEA-1-style onboarding flow have OnboardingPrimaryRef set
-// (so the CLI hint and dashboard banner can read it). Drift here means
-// a template advertises onboarding seeds via SeedItems but doesn't
-// declare which one is "primary" — the CLI hint + dashboard wouldn't
-// know which ref to surface.
+// PLAN-1496 / TASK-1501-1502: the IDEA-1 / BACK-1 / FEAT-1
+// first-person onboarding seed pattern and the OnboardingPrimaryRef
+// plumbing were retired in favor of /pad onboard. The following
+// tests were deleted alongside the symbols they exercised:
 //
-// Templates that intentionally don't ship the IDEA-1-style pattern
-// (hiring, interviewing — see PLAN-1140 paused; demo) MUST leave
-// OnboardingPrimaryRef empty so the CLI hint stays silent for them.
-func TestTemplatesDeclareOnboardingPrimaryRef(t *testing.T) {
-	cases := []struct {
-		Template string
-		WantRef  string // "" means "must be empty"
-	}{
-		{"startup", "IDEA-1"},
-		{"scrum", "BACK-1"},
-		{"product", "FEAT-1"},
-		// Hiring + interviewing intentionally don't declare a primary
-		// (PLAN-1140 paused — agent-onboarding pattern doesn't fit).
-		{"hiring", ""},
-		{"interviewing", ""},
-		// Demo is hidden + has its own seeded shape.
-		{"demo", ""},
-	}
-	for _, c := range cases {
-		tmpl := GetTemplate(c.Template)
-		if tmpl == nil {
-			t.Errorf("%s template missing", c.Template)
-			continue
-		}
-		if tmpl.OnboardingPrimaryRef != c.WantRef {
-			t.Errorf("%s.OnboardingPrimaryRef = %q, want %q", c.Template, tmpl.OnboardingPrimaryRef, c.WantRef)
-		}
+//   - TestStartupOnboardingItemsOrderAndShape
+//   - TestStartupTemplateShipsOnboardingSeedItems
+//   - TestScrumOnboardingItemsOrderAndShape
+//   - TestProductOnboardingItemsOrderAndShape
+//   - TestScrumProductTemplatesShipOnboardingSeedItems
+//   - TestTemplatesDeclareOnboardingPrimaryRef
+//
+// New invariant: software templates (startup, scrum, product) ship
+// no SeedItems and have no OnboardingPrimaryRef. The seeded onboard
+// playbook (TASK-1500) covers what these seeds used to.
+func TestSoftwareTemplatesShipNoSeedItems(t *testing.T) {
+	for _, name := range []string{"startup", "scrum", "product"} {
+		t.Run(name, func(t *testing.T) {
+			tmpl := GetTemplate(name)
+			if tmpl == nil {
+				t.Fatalf("%s template missing", name)
+			}
+			if len(tmpl.SeedItems) != 0 {
+				titles := make([]string, 0, len(tmpl.SeedItems))
+				for _, it := range tmpl.SeedItems {
+					titles = append(titles, it.Title)
+				}
+				t.Errorf("%s template should ship 0 seed items now that the IDEA-1-style flow is retired; got %d (%v)", name, len(tmpl.SeedItems), titles)
+			}
+		})
 	}
 }
 
@@ -862,9 +692,10 @@ func TestBlankTemplateShape(t *testing.T) {
 	if len(tmpl.Playbooks) != 0 {
 		t.Errorf("blank template Playbooks = %d, want 0", len(tmpl.Playbooks))
 	}
-	if tmpl.OnboardingPrimaryRef != "" {
-		t.Errorf("blank template OnboardingPrimaryRef = %q, want empty", tmpl.OnboardingPrimaryRef)
-	}
+	// OnboardingPrimaryRef retired in PLAN-1496 / TASK-1502; the
+	// dashboard banner auto-discovers seeds via item_number=1 + source
+	// instead of reading a struct field. No assertion remains here
+	// because the field no longer exists.
 }
 
 // TestBlankTemplateExcludesSoftwareCollections verifies the blank template

@@ -90,105 +90,43 @@ func TestDashboardEmpty(t *testing.T) {
 	}
 }
 
-// TestDashboardOnboardingSeed_StartupTemplate verifies the dashboard
-// surfaces the seeded onboarding primary entry for `startup` workspaces.
-// The web banner reads OnboardingSeed.Active to decide whether to show
-// itself; locking the field's shape down here is what keeps the banner
-// reliable across templates.
-func TestDashboardOnboardingSeed_StartupTemplate(t *testing.T) {
-	srv := testServer(t)
+// TestDashboardOnboardingSeed_NilForAllTemplates locks the PLAN-1496 /
+// TASK-1501 retirement of the IDEA-1 / BACK-1 / FEAT-1 first-person
+// seed pattern. Before the retirement, this file held three separate
+// tests asserting OnboardingSeed.Ref == "IDEA-1" / "BACK-1" / "FEAT-1"
+// for startup / scrum / product respectively. The seeds no longer ship,
+// so the dashboard's auto-discovery (which looks for item_number=1 +
+// source="template" + created_by="system" in known onboarding-primary
+// collections) finds nothing — and resp.OnboardingSeed should be nil
+// across the board.
+//
+// Hiring + interviewing + blank stay nil for unrelated reasons; covered
+// separately by TestDashboardOnboardingSeed_HiringTemplate and
+// TestDashboardOnboardingSeed_EmptyWorkspace.
+//
+// When/if the dashboard's onboarding-seed discovery is fully cleaned up
+// (the dead code path in handlers_dashboard.go that probes for
+// item_number=1), this test can be deleted along with the handler
+// branch.
+func TestDashboardOnboardingSeed_NilForAllTemplates(t *testing.T) {
+	for _, name := range []string{"startup", "scrum", "product"} {
+		t.Run(name, func(t *testing.T) {
+			srv := testServer(t)
+			rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
+				"name":     "Onboarding Seed " + name,
+				"template": name,
+			})
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
+			}
+			var ws models.Workspace
+			parseJSON(t, rr, &ws)
 
-	// Create a workspace with an explicit template so the seeder lands
-	// the four onboarding items (PLAN-1131).
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
-		"name":     "Onboarding Seed Startup",
-		"template": "startup",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	resp := getDashboard(t, srv, ws.Slug)
-
-	if resp.OnboardingSeed == nil {
-		t.Fatal("expected OnboardingSeed to be populated for startup template; got nil — the dashboard banner will never appear")
-	}
-	if resp.OnboardingSeed.Ref != "IDEA-1" {
-		t.Errorf("OnboardingSeed.Ref = %q, want %q", resp.OnboardingSeed.Ref, "IDEA-1")
-	}
-	if resp.OnboardingSeed.CollectionSlug != "ideas" {
-		t.Errorf("OnboardingSeed.CollectionSlug = %q, want %q", resp.OnboardingSeed.CollectionSlug, "ideas")
-	}
-	if resp.OnboardingSeed.Status != "new" {
-		t.Errorf("OnboardingSeed.Status = %q, want %q (initial status from schema)", resp.OnboardingSeed.Status, "new")
-	}
-	if !resp.OnboardingSeed.Active {
-		t.Error("OnboardingSeed.Active = false, want true (seed is in initial status, banner should show)")
-	}
-	if resp.OnboardingSeed.Title == "" {
-		t.Error("OnboardingSeed.Title is empty — the banner needs a title to render")
-	}
-	if resp.OnboardingSeed.Slug == "" {
-		t.Error("OnboardingSeed.Slug is empty — the 'Read it first' deep link will break")
-	}
-}
-
-// TestDashboardOnboardingSeed_ScrumTemplate is the scrum sibling.
-// Locks BACK-1 + Active=true.
-func TestDashboardOnboardingSeed_ScrumTemplate(t *testing.T) {
-	srv := testServer(t)
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
-		"name":     "Onboarding Seed Scrum",
-		"template": "scrum",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	resp := getDashboard(t, srv, ws.Slug)
-	if resp.OnboardingSeed == nil {
-		t.Fatal("scrum: expected OnboardingSeed populated, got nil")
-	}
-	if resp.OnboardingSeed.Ref != "BACK-1" {
-		t.Errorf("scrum OnboardingSeed.Ref = %q, want %q (PLAN-1146 prefix precondition: explicit BACK prefix on Backlog collection)", resp.OnboardingSeed.Ref, "BACK-1")
-	}
-	if resp.OnboardingSeed.CollectionSlug != "backlog" {
-		t.Errorf("scrum OnboardingSeed.CollectionSlug = %q, want %q", resp.OnboardingSeed.CollectionSlug, "backlog")
-	}
-	if !resp.OnboardingSeed.Active {
-		t.Error("scrum OnboardingSeed.Active = false, want true")
-	}
-}
-
-// TestDashboardOnboardingSeed_ProductTemplate is the product sibling.
-func TestDashboardOnboardingSeed_ProductTemplate(t *testing.T) {
-	srv := testServer(t)
-	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
-		"name":     "Onboarding Seed Product",
-		"template": "product",
-	})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
-	}
-	var ws models.Workspace
-	parseJSON(t, rr, &ws)
-
-	resp := getDashboard(t, srv, ws.Slug)
-	if resp.OnboardingSeed == nil {
-		t.Fatal("product: expected OnboardingSeed populated, got nil")
-	}
-	if resp.OnboardingSeed.Ref != "FEAT-1" {
-		t.Errorf("product OnboardingSeed.Ref = %q, want %q", resp.OnboardingSeed.Ref, "FEAT-1")
-	}
-	if resp.OnboardingSeed.CollectionSlug != "features" {
-		t.Errorf("product OnboardingSeed.CollectionSlug = %q, want %q", resp.OnboardingSeed.CollectionSlug, "features")
-	}
-	if !resp.OnboardingSeed.Active {
-		t.Error("product OnboardingSeed.Active = false, want true")
+			resp := getDashboard(t, srv, ws.Slug)
+			if resp.OnboardingSeed != nil {
+				t.Errorf("%s: expected OnboardingSeed=nil (IDEA-1-style seed pattern retired in PLAN-1496); got %+v", name, resp.OnboardingSeed)
+			}
+		})
 	}
 }
 

@@ -33,10 +33,10 @@ pad server open             # opens the web UI at localhost:7777
 Then, in a fresh agent session in your project, say:
 
 ```
-use pad to get IDEA-1
+/pad onboard
 ```
 
-Your new workspace ships with a thoughtful first idea — IDEA-1 — that the agent reads and uses to help you get set up around your actual project. It's the fastest way to go from empty workspace to "okay, this is mine."
+Your new workspace ships with the canonical `onboard` playbook auto-activated. The agent walks an interview, inspects your codebase if it has shell access, and adapts your workspace's collections, conventions, roles, and playbooks to match the project. It's the fastest way to go from empty workspace to "okay, this is mine."
 
 ## Why Pad?
 
@@ -115,9 +115,7 @@ Agents load relevant conventions automatically. All agent actions are attributed
 
 **Onboard agents to a new codebase:**
 
-```bash
-pad workspace onboard    # Analyzes project structure, saves workspace context, and suggests conventions
-```
+Open an agent session in the workspace directory and run `/pad onboard`. The agent walks an interview, detects your build/test/CI tooling, and adapts your workspace's collections, conventions, roles, and playbooks to match the project. Works for any agent that speaks Pad — Claude Code, MCP-only agents, etc.
 
 ### Collections & Custom Fields
 
@@ -233,9 +231,15 @@ pad server open              # Opens localhost:7777 in your browser
 
 ### 3. Teach your agents the rules
 
+In an agent session inside the workspace:
+
+```
+/pad onboard
+```
+
+The agent walks an interview, detects your tooling, and adapts the workspace's collections, conventions, roles, and playbooks. To browse the library directly:
+
 ```bash
-pad workspace onboard        # Auto-analyze project, save workspace context, and suggest conventions
-# Or browse the convention library
 pad library list --type conventions  # Pre-built conventions you can adopt
 pad library list --type playbooks    # Pre-built multi-step workflows
 ```
@@ -305,7 +309,7 @@ pad workspace list                    List all workspaces
 pad workspace switch <workspace>      Switch active workspace
 pad workspace context                 Show structured workspace context
 pad workspace context set --file X    Update structured workspace context from JSON
-pad workspace onboard                 Analyze project, save workspace context, and suggest conventions
+# Workspace onboarding: run `/pad onboard` from an agent session inside the workspace
 pad workspace members                 List workspace members
 pad workspace invite <email>          Invite a workspace member
 pad workspace join <code>             Accept an invitation

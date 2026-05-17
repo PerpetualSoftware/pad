@@ -108,13 +108,15 @@ pad auth reset-password user@example.com  # Generate reset link (admin fallback)
 # CLI auto-attaches auth token to all API requests
 ```
 
-After a `startup`-template workspace is created (via `pad init` or `pad workspace init` — note that `pad auth setup` only creates the admin account, not a workspace), the success output points new users at the seeded onboarding entry point. Open a fresh agent session in the workspace's directory and say:
+After any workspace is created (via `pad init` or `pad workspace init` — note that `pad auth setup` only creates the admin account, not a workspace), the success output points new users at the canonical onboarding entry point. Open a fresh agent session in the workspace's directory and say:
 
 ```
-use pad to get IDEA-1
+/pad onboard
 ```
 
-`startup`-template workspaces seed `IDEA-1` (plus `PLAN-2`, `TASK-3`, `DOC-4`) as a first-person note from the workspace owner's future self. Any of the four is a viable entry point for `/pad let's discuss <REF>`; `IDEA-1` is the one the post-signup hint surfaces because *"I want to start using Pad"* is itself an idea. See `internal/collections/templates_onboarding.go` for the bodies, and PLAN-1131 for the design history.
+Every new workspace ships with the `onboard` playbook auto-activated (PLAN-1496 / TASK-1499 / TASK-1500). The playbook walks the agent through an interview that adapts the workspace's collections, conventions, roles, and seeded playbooks to match the actual project. Works regardless of which template the user picked (or no template — see the `blank` template).
+
+The pre-PLAN-1496 design seeded `IDEA-1` / `PLAN-2` / `TASK-3` / `DOC-4` (and `BACK-1` / `FEAT-1` siblings for scrum/product) as first-person-future-self notes; that pattern was retired in TASK-1501 / TASK-1502 in favor of the playbook-driven flow.
 
 ### Workspace membership
 ```bash
@@ -164,7 +166,9 @@ pad collection create "Name" --schema '<json>'                # full CollectionS
 pad item edit <ref>           # Open in $EDITOR
 pad workspace init [--template X]  # Create workspace
 pad agent install [tool]      # Install /pad skill for AI tools
-pad workspace onboard         # Analyze codebase, suggest conventions
+# Workspace onboarding: run `/pad onboard` from an agent session inside the
+# workspace (Claude Code, MCP, etc.). The /pad onboard playbook is
+# auto-seeded into every new workspace.
 pad server open               # Open web UI in browser
 pad project watch             # Real-time activity stream
 pad github link [item-ref]    # Link current branch's PR to item
