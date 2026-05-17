@@ -187,7 +187,12 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 	// don't need to be read from the same tx — schemas don't mutate
 	// in the kind of races this guard cares about.
 	ctxCache := make(map[string]doneContext)
-	var open []openChildEntry
+	// Codex round-5 P3: initialize as empty (not nil) so the
+	// hidden-only rejection path serializes `open_children: []`
+	// rather than `null`. The contract documents this field as an
+	// array; clients (CLI renderer, MCP agents) `range` over it
+	// even when hidden_blocker_count > 0.
+	open := []openChildEntry{}
 	hidden := 0
 	for i := range children {
 		child := &children[i]

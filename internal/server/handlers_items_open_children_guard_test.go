@@ -564,6 +564,14 @@ func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) 
 	if len(resp.Error.Details.OpenChildren) != 0 {
 		t.Errorf("expected empty open_children when all blockers hidden, got %v", resp.Error.Details.OpenChildren)
 	}
+	// Codex round-5 P3: open_children must serialize as `[]`, not
+	// `null`, when all blockers are hidden. Clients range over the
+	// array unconditionally; `null` would break their iteration.
+	// Re-parse the raw JSON so we see the wire shape (not the Go
+	// nil-vs-empty-slice distinction the typed unmarshal hides).
+	if !strings.Contains(rr.Body.String(), `"open_children":[]`) {
+		t.Errorf("open_children must serialize as [] (not null) on hidden-only rejection; raw body: %s", rr.Body.String())
+	}
 	if resp.Error.Details.HiddenBlockerCount != 1 {
 		t.Errorf("expected hidden_blocker_count=1, got %d", resp.Error.Details.HiddenBlockerCount)
 	}
