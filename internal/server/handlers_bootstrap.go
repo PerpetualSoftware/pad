@@ -27,6 +27,20 @@ type AgentBootstrap struct {
 	Roles       []BootstrapRole              `json:"roles"`
 	Playbooks   []AgentBootstrapPlaybookMeta `json:"playbooks"`
 	Dashboard   *BootstrapDashboard          `json:"dashboard,omitempty"`
+	// NeedsOnboarding is true when the workspace has ZERO user-created
+	// items — i.e. nothing beyond what SeedCollectionsFromTemplate seeded
+	// at init time. The agent skill reads this on every /pad invocation
+	// and renders a "this workspace hasn't been set up yet — say /pad
+	// onboard" nudge while it's true; the moment any user (or agent on
+	// their behalf) creates the first real item, the flag flips to false
+	// and the nudge disappears. PLAN-1496 / TASK-1504.
+	//
+	// Computed per-request (not stored). The store predicate is "any
+	// item with source != 'template'" — see
+	// Store.WorkspaceHasUserCreatedItems for the rationale on why we
+	// exclude template seeds rather than enumerating user-side source
+	// values.
+	NeedsOnboarding bool `json:"needs_onboarding"`
 }
 
 // BootstrapCollection is the lightweight collection projection delivered
@@ -538,6 +552,17 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		if derr == nil && dash != nil {
 			out.Dashboard = capBootstrapDashboard(dash)
 		}
+	}
+
+	// NeedsOnboarding: workspace-level signal (no per-caller visibility
+	// filtering — see Store.WorkspaceHasUserCreatedItems comment for
+	// the rationale). On a query error we fall back to false, which
+	// matches the safe default of "don't nag the agent." Worst case is
+	// a missed nudge; the opposite (nagging an already-onboarded
+	// workspace) is worse UX. PLAN-1496 / TASK-1504.
+	hasUserItems, hErr := s.store.WorkspaceHasUserCreatedItems(workspaceID)
+	if hErr == nil {
+		out.NeedsOnboarding = !hasUserItems
 	}
 
 	return out, nil

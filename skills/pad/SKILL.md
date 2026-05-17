@@ -36,6 +36,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
+- `needs_onboarding: bool` — true when the workspace has zero user-created items (template seeds don't count). PLAN-1496 / TASK-1504. **When this is true, lead your response with a one-line nudge:** *"This workspace hasn't been set up yet — say `/pad onboard` to walk through setup."* Then proceed with whatever else the user asked. The flag flips to false the moment any user/agent-created item exists; don't nag past that point. If the user has already declined onboarding (look at recent conversation), respect that and skip the nudge for this session.
 
 If the conventions list includes items, treat them as project rules you must follow. The vocabulary depends on the workspace domain — a software workspace ships rules like "use conventional commit format," a hiring workspace ships rules like "anonymize candidate names in exports," a research workspace ships rules like "always cite sources." Follow whatever the workspace has configured.
 
@@ -171,7 +172,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**
-- "set up my workspace" / "onboard me" / "scan this codebase" / **"use pad to get IDEA-1"** (legacy phrasing — the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired in PLAN-1496 / TASK-1501) → Dispatch to the `/pad onboard` playbook (canonical entry; activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active` — only newly-created workspaces auto-seed it, so workspaces created before PLAN-1496 may need a one-time library activation). The playbook body teaches you the interview flow: discover the domain, propose collections, adapt seeded conventions/playbooks to the project's actual tooling, suggest roles, seed a first item. Do NOT try to fetch `IDEA-1` directly — it no longer exists in any newly-created workspace.
+- "set up my workspace" / "onboard me" / "scan this codebase" → `/pad onboard` (canonical entry; activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`). The playbook's body is the script — surface-agnostic interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
+- "use pad to get IDEA-1" → also `/pad onboard`. Legacy phrasing from before PLAN-1496; the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired. Don't try to fetch `IDEA-1` directly — newly-created workspaces don't have it.
 
 **Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
 
@@ -336,33 +338,9 @@ Use the `decompose` invokable playbook: **`/pad decompose <PLAN-ref>`**. Accepts
 3. Run `pad project dashboard --format json` for blockers/attention items
 4. Present as: Yesterday / Today / Blockers format
 
-### Onboarding: "Set up my workspace" / "Scan this codebase"
+### Onboarding
 
-1. **Check workspace state:** `pad project dashboard --format json` — if the workspace already has items, ask if they want to add more or start fresh sections.
-
-2. **Check for a workspace-specific onboarding playbook.** Some templates ship their own onboarding flow:
-   ```bash
-   pad item list playbooks --field status=active --format json
-   ```
-   Look for a playbook whose title starts with "Onboarding" (or is explicitly about onboarding for this workspace type). If one exists, **follow its steps in order** — it's the template's opinion about how to get this kind of workspace set up. The software templates ship "Onboarding to a Project" from the library; non-software templates ship their own (hiring: prompt for first requisition; interviewing: prompt for first application; etc.).
-
-3. **If the playbook is software-flavored or absent, do a codebase scan.** Skip this step for non-code workspaces:
-   - `README.md` / `README` — project overview, setup instructions
-   - `CLAUDE.md` — existing AI/agent instructions
-   - Build config: `Makefile`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `pom.xml`
-   - CI config: `.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`
-   - Directory structure
-   - Detect language, build system, test runner, linter — use the actual commands the project uses when suggesting conventions.
-
-4. **Suggest conventions.** Present relevant conventions from the library as a checklist and ask which to activate. For code workspaces, customize with the actual commands found (e.g., "Run `make test`" instead of "Run the test suite"). For non-code workspaces, lean on the template's starter pack and any conventions that fit the domain.
-
-5. **Draft a seed doc.** Summarize whatever's appropriate for the workspace type — an architecture doc for a codebase, a process doc for hiring, a research-agenda doc for a research workspace. Offer to save as a Doc item.
-
-6. **Propose an initial plan.** For codebases, base it on recent `git log` and open TODOs. For other workspace types, base it on the first thing the user wants to track (the first requisition, the first research question, the first content series). Ask before creating.
-
-7. **Suggest agent roles.** If no roles exist yet, suggest roles appropriate for the workspace type. Dev: Planner, Implementer, Reviewer. Hiring: Recruiter, Hiring Manager, Interviewer. Research: Researcher, Reviewer. Don't auto-create — ask first.
-
-8. **Always confirm before creating each item.** Show what will be created, get approval, then create.
+Use the `/pad onboard` invokable playbook — see the **Onboarding** entry under Natural Language Routing above. The playbook body is the canonical instruction set (interview flow, codebase scan if available, collection/convention/role/playbook adaptation, first-item seed). Don't reimplement it here; this skill is the dispatcher, the playbook is the script. PLAN-1496 / TASK-1499 retired the standalone Onboarding workflow that used to live in this file.
 
 ### Retrospective: "Plan X is done, let's retro"
 

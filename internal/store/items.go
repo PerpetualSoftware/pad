@@ -3259,6 +3259,47 @@ func (s *Store) WorkspaceHasAgentActivity(workspaceID string, collectionIDs, ite
 	return has, nil
 }
 
+// WorkspaceHasUserCreatedItems reports whether ANY non-deleted item
+// in the workspace was created by something other than template
+// seeding. Used by the agent bootstrap to compute the
+// `needs_onboarding` flag — true when zero user-created items exist,
+// false the moment the user (or an agent on their behalf) creates
+// the first real item. PLAN-1496 / TASK-1504.
+//
+// "User-created" is the inverse of "template seed": items written
+// during workspace init via SeedCollectionsFromTemplate carry
+// source="template" + created_by="system". Everything else — CLI,
+// web UI, MCP, future surfaces — is treated as user activity. The
+// query filters on `source != 'template'` rather than enumerating
+// the user-side values so new surfaces (mcp, api, etc.) are
+// included automatically without code changes here.
+//
+// Visibility filtering is intentionally omitted: needs_onboarding
+// is a workspace-level state signal, not a per-user view. Two
+// callers reading bootstrap concurrently should see the same answer
+// regardless of their individual collection-access grants — the
+// flag describes whether the WORKSPACE has been activated, not
+// whether the calling user has done so. Server already gates the
+// bootstrap endpoint on workspace membership, so unauthorized
+// callers never reach this code path.
+//
+// Backed by EXISTS so it short-circuits on the first match.
+func (s *Store) WorkspaceHasUserCreatedItems(workspaceID string) (bool, error) {
+	const query = `
+		SELECT EXISTS(
+			SELECT 1 FROM items
+			WHERE workspace_id = ?
+			  AND deleted_at IS NULL
+			  AND (source IS NULL OR source != 'template')
+		)
+	`
+	var has bool
+	if err := s.db.QueryRow(s.q(query), workspaceID).Scan(&has); err != nil {
+		return false, fmt.Errorf("workspace has user-created items: %w", err)
+	}
+	return has, nil
+}
+
 func hydrateItemComputedMetadata(item *models.Item) {
 	if item == nil {
 		return

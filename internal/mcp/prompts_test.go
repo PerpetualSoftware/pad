@@ -73,8 +73,13 @@ func TestPromptsLockstep_CoreCommands(t *testing.T) {
 			"pad item update PLAN-",
 		},
 		PromptOnboard: {
-			"pad project dashboard",
-			"pad item list playbooks",
+			// PLAN-1496 / TASK-1505: prompt body now delegates to the
+			// /pad onboard library playbook rather than carrying its
+			// own step-by-step script. Lock the dispatch fragments —
+			// these are the operative CLI calls the prompt instructs
+			// agents to run.
+			"pad playbook list",
+			"pad playbook show onboard",
 		},
 	}
 	for name, fragments := range cases {

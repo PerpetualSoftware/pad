@@ -60,31 +60,13 @@ Always confirm before creating or mutating items.
 
 const promptOnboardBody = `# Pad: Onboard workflow
 
-You are helping the user set up a fresh pad workspace, or scan an existing codebase for context.
+The canonical workspace-onboarding interview lives in the ` + "`/pad onboard`" + ` invokable library playbook (PLAN-1496 / TASK-1499). Every new workspace auto-seeds it as ` + "`status=active`" + ` (TASK-1500), so it should be directly invokable.
 
-1. **Check workspace state.** ` + "`pad project dashboard --format json`" + `. If the workspace already has items, ask whether they want to add more or start fresh sections.
+To run it:
 
-2. **Check for a workspace-specific onboarding playbook.** Some templates ship their own:
-   ` + "```bash" + `
-   pad item list playbooks --field status=active --format json
-   ` + "```" + `
-   Look for a playbook whose title starts with "Onboarding" (or is explicitly about onboarding for this workspace type). If one exists, **follow its steps in order** — it's the template's opinion about how to get this kind of workspace set up.
+1. Confirm the playbook is activated. ` + "`pad playbook list --format json`" + ` and look for ` + "`invocation_slug=onboard`" + ` with ` + "`status=active`" + `. If it's missing, activate from the library: ` + "`pad library activate playbook \"Onboard a workspace\"`" + ` (web UI: ` + "`/{ws}/library?tab=playbooks`" + `).
+2. Load the body. ` + "`pad playbook show onboard --format markdown`" + `.
+3. Follow the body's instructions. It teaches you the surface-agnostic interview: discover the domain, propose collections, adapt seeded conventions/playbooks to the project's actual tooling, suggest roles, seed a first item. The body is the source of truth — this prompt is just the dispatcher.
 
-3. **If the playbook is software-flavored or absent, do a codebase scan.** Skip this step for non-code workspaces:
-   - ` + "`README.md`" + ` / ` + "`README`" + ` — project overview, setup instructions
-   - ` + "`CLAUDE.md`" + ` — existing AI/agent instructions
-   - Build config: ` + "`Makefile`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `pom.xml`" + `
-   - CI config: ` + "`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`" + `
-   - Directory structure
-   - Detect language, build system, test runner, linter — use the actual commands the project uses when suggesting conventions.
-
-4. **Suggest conventions.** Present relevant conventions from the library as a checklist and ask which to activate. For code workspaces, customize with the actual commands found (e.g., "Run ` + "`make test`" + `" instead of "Run the test suite"). For non-code workspaces, lean on the template's starter pack.
-
-5. **Draft a seed doc.** Summarize whatever's appropriate for the workspace type — an architecture doc for a codebase, a process doc for hiring, a research-agenda doc for a research workspace. Offer to save as a Doc item.
-
-6. **Propose an initial plan.** For codebases, base it on recent ` + "`git log`" + ` and open TODOs. For other workspace types, base it on the first thing the user wants to track. Ask before creating.
-
-7. **Suggest agent roles.** If no roles exist yet, suggest roles appropriate for the workspace type. Dev: Planner, Implementer, Reviewer. Hiring: Recruiter, Hiring Manager, Interviewer. Research: Researcher, Reviewer. Don't auto-create — ask first.
-
-8. **Always confirm before creating each item.** Show what will be created, get approval, then create.
+The pre-PLAN-1496 step-by-step workflow that used to live here (codebase-scan / suggest-conventions / draft-doc / propose-plan / suggest-roles) was retired in TASK-1505. All of it is now embedded in the playbook body, surface-agnostic so MCP-only agents can follow it too.
 `

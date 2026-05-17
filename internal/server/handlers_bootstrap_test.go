@@ -55,6 +55,86 @@ func TestBootstrapEmptyWorkspace(t *testing.T) {
 	}
 }
 
+// TestBootstrapNeedsOnboardingFlag locks PLAN-1496 / TASK-1504's
+// contract: the `needs_onboarding` flag is true on a freshly-created
+// workspace (no user items yet — only template seeds) and flips to
+// false the moment any user/agent-created item exists.
+//
+// The flag drives the agent skill's bootstrap nudge ("this workspace
+// hasn't been set up yet — say /pad onboard"). If this test breaks,
+// the nudge fires forever or never.
+func TestBootstrapNeedsOnboardingFlag(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Step 1: fresh workspace. createWSForTest hits POST /workspaces
+	// with no Template field, so SeedCollectionsFromTemplate runs
+	// with templateName="" — backward-compat path that ships ONLY
+	// the default system collections and zero seeded items
+	// (TASK-1500's onboard auto-seed is gated on a non-empty
+	// templateName). Same shape pad-cloud uses for its in-process
+	// seed. needs_onboarding should be true here.
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap (initial): %d %s", rr.Code, rr.Body.String())
+	}
+	var b AgentBootstrap
+	parseJSON(t, rr, &b)
+	if !b.NeedsOnboarding {
+		t.Errorf("fresh workspace: needs_onboarding = false, want true (no user items yet)")
+	}
+
+	// Step 2: create a user-side item. Any source != 'template'
+	// flips the flag. Item creation via POST /items defaults to
+	// source='cli' (matches CLI + Remote MCP attribution).
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]any{
+		"title": "First real task",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create user item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Step 3: re-fetch bootstrap; flag must be false now.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap (after user item): %d %s", rr.Code, rr.Body.String())
+	}
+	b = AgentBootstrap{}
+	parseJSON(t, rr, &b)
+	if b.NeedsOnboarding {
+		t.Errorf("after creating user item: needs_onboarding = true, want false (nudge should disappear)")
+	}
+}
+
+// TestBootstrapNeedsOnboardingIgnoresTemplateSeeds is a focused guard:
+// even when a templated workspace ships seeded items
+// (conventions/playbooks/the onboard playbook itself), they MUST NOT
+// flip needs_onboarding to false — only USER-created items count.
+// Otherwise startup/scrum/product workspaces would never show the
+// nudge and the /pad onboard discovery loop falls apart.
+func TestBootstrapNeedsOnboardingIgnoresTemplateSeeds(t *testing.T) {
+	srv := testServer(t)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
+		"name":     "Startup Needs Onboarding",
+		"template": "startup",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap: %d %s", rr.Code, rr.Body.String())
+	}
+	var b AgentBootstrap
+	parseJSON(t, rr, &b)
+	if !b.NeedsOnboarding {
+		t.Errorf("startup template workspace with only seeded conventions/playbooks: needs_onboarding = false, want true (template seeds don't count)")
+	}
+}
+
 // TestBootstrapEmptyArraysNotNull verifies the JSON wire shape: arrays
 // must serialize as [] not null so the agent skill can iterate without
 // defensive nil checks.
