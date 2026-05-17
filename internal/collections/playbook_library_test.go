@@ -38,6 +38,7 @@ func TestPlaybookLibrary_InvokableEntriesPresent(t *testing.T) {
 		"ship":      false,
 		"plan":      false,
 		"decompose": false,
+		"onboard":   false, // PLAN-1496 / TASK-1499
 	}
 
 	invokableCount := 0
@@ -56,8 +57,8 @@ func TestPlaybookLibrary_InvokableEntriesPresent(t *testing.T) {
 		}
 	}
 
-	if invokableCount < 3 {
-		t.Errorf("expected at least 3 invokable library entries; got %d", invokableCount)
+	if invokableCount < 4 {
+		t.Errorf("expected at least 4 invokable library entries (ship/plan/decompose/onboard); got %d", invokableCount)
 	}
 	for slug, present := range wantSlugs {
 		if !present {
@@ -111,6 +112,97 @@ func TestPlaybookLibrary_ShipBodyShared(t *testing.T) {
 	if seed.Title != libraryShip.Title {
 		t.Errorf("library ship.Title %q != ShipPlaybook seed title %q — drift will break activePlaybookTitles matching in the library UI",
 			libraryShip.Title, seed.Title)
+	}
+}
+
+// TestOnboardPlaybook_Contract locks the design contract of the
+// canonical /pad onboard library playbook (PLAN-1496 / TASK-1499):
+//
+//   - InvocationSlug "onboard" (the entry-point the bootstrap nudge
+//     points at).
+//   - Trigger "manual" — the blank template only seeds `manual` as a
+//     playbook trigger option, so any other value would fail validation
+//     when the playbook is seeded into a blank workspace.
+//   - Mode argument is an enum carrying the four documented paths;
+//     defaults and skip-codebase are flags. Drift in the argument
+//     shape breaks the CLI's strict-positional parser and the agent's
+//     NL dispatcher in lockstep.
+//   - Body includes the "ADAPT, DON'T CURATE" rule — the core
+//     posture this playbook teaches. A body that drops that rule has
+//     regressed the design.
+func TestOnboardPlaybook_Contract(t *testing.T) {
+	pb := OnboardPlaybook()
+
+	if pb.InvocationSlug != "onboard" {
+		t.Errorf("InvocationSlug = %q, want %q", pb.InvocationSlug, "onboard")
+	}
+	if pb.Trigger != "manual" {
+		t.Errorf("Trigger = %q, want %q (blank template only seeds 'manual')", pb.Trigger, "manual")
+	}
+	if pb.Scope != "all" {
+		t.Errorf("Scope = %q, want %q", pb.Scope, "all")
+	}
+	if pb.Category != "agent-workflows" {
+		t.Errorf("Category = %q, want %q", pb.Category, "agent-workflows")
+	}
+
+	// Argument shape: mode (enum), defaults (flag), skip-codebase (flag).
+	wantArgs := map[string]string{
+		"mode":          "enum",
+		"defaults":      "flag",
+		"skip-codebase": "flag",
+	}
+	gotArgs := make(map[string]string, len(pb.Arguments))
+	for _, a := range pb.Arguments {
+		name, _ := a["name"].(string)
+		typ, _ := a["type"].(string)
+		gotArgs[name] = typ
+	}
+	for name, want := range wantArgs {
+		if got, ok := gotArgs[name]; !ok {
+			t.Errorf("missing argument %q in onboard playbook", name)
+		} else if got != want {
+			t.Errorf("argument %q has type %q, want %q", name, got, want)
+		}
+	}
+
+	// Mode enum must contain the four documented paths so the strict
+	// CLI parser accepts them.
+	var modeArg map[string]any
+	for _, a := range pb.Arguments {
+		if name, _ := a["name"].(string); name == "mode" {
+			modeArg = a
+			break
+		}
+	}
+	if modeArg == nil {
+		t.Fatal("mode argument not found")
+	}
+	modeEnumRaw, _ := modeArg["enum"].([]string)
+	wantModes := map[string]bool{"auto": false, "build": false, "audit": false, "revisit": false}
+	for _, v := range modeEnumRaw {
+		if _, ok := wantModes[v]; ok {
+			wantModes[v] = true
+		}
+	}
+	for v, present := range wantModes {
+		if !present {
+			t.Errorf("mode enum missing %q (valid values: %v)", v, modeEnumRaw)
+		}
+	}
+
+	// Body must teach the "adapt, don't curate" rule — the core
+	// design posture from PLAN-1496. Use a substring check rather
+	// than a full template lock because the body is allowed to
+	// evolve in wording.
+	if !strings.Contains(pb.Content, "ADAPT, DON'T CURATE") {
+		t.Error("onboard playbook body must contain the 'ADAPT, DON'T CURATE' rule — this is the design posture the playbook teaches; weakening it regresses PLAN-1496's design")
+	}
+	if !strings.Contains(pb.Content, "Mode: build") {
+		t.Error("onboard playbook body must document the build mode (blank workspace path)")
+	}
+	if !strings.Contains(pb.Content, "Mode: audit") {
+		t.Error("onboard playbook body must document the audit mode (templated workspace path)")
 	}
 }
 

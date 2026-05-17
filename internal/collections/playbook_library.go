@@ -65,6 +65,10 @@ func PlaybookLibrary() []PlaybookCategory {
 				// body implies. Body + arguments live in
 				// playbook_library_decompose.go.
 				DecomposePlaybook(),
+				// `onboard` is the workspace bootstrap interview.
+				// Body + arguments live in playbook_library_onboard.go.
+				// PLAN-1496 / TASK-1499.
+				OnboardPlaybook(),
 			},
 		},
 	}
