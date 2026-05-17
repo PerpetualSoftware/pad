@@ -150,7 +150,6 @@ func newRootCmd() *cobra.Command {
 		mcpCmd(),
 		bootstrapCmd(),
 		playbookCmd(),
-		sessionCmd(),
 	)
 
 	rootCmd.SetHelpCommand(helpCmd())
