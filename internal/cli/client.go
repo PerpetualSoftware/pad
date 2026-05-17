@@ -202,8 +202,21 @@ func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models
 }
 
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {
+	return c.MoveItemWithForce(wsSlug, itemSlug, input, false)
+}
+
+// MoveItemWithForce is the open-children-guard-aware variant of
+// MoveItem (IDEA-1494 R3 P1). When `force` is true, the URL gets a
+// `?force=true` query so the server-side move handler skips the guard
+// and still records the collection + fields change. Same escape-hatch
+// semantics as `pad item update --force`.
+func (c *Client) MoveItemWithForce(wsSlug, itemSlug string, input map[string]any, force bool) (*models.Item, error) {
 	var result models.Item
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/move", input, &result)
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/move"
+	if force {
+		path += "?force=true"
+	}
+	return &result, c.post(path, input, &result)
 }
 
 // --- Links ---
@@ -705,12 +718,115 @@ func (c *Client) GetAuditLog(params models.AuditLogParams) ([]models.Activity, e
 // --- HTTP helpers ---
 
 type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// OpenChildEntry mirrors the server-side openChildEntry payload returned
+// inside APIError.Details when Code == "open_children" (IDEA-1494). The
+// CLI renders its human error list from these entries; MCP-driven agents
+// can introspect the same data to self-recover.
+type OpenChildEntry struct {
+	Ref            string `json:"ref"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	CollectionSlug string `json:"collection_slug"`
+}
+
+// OpenChildrenDetails is the parsed shape of APIError.Details when
+// Code == "open_children".
+type OpenChildrenDetails struct {
+	OpenChildren       []OpenChildEntry `json:"open_children"`
+	HiddenBlockerCount int              `json:"hidden_blocker_count"`
+	DoneField          string           `json:"done_field"`
+	AttemptedValue     string           `json:"attempted_value"`
+}
+
+// AsOpenChildren returns the parsed open-children details when this
+// APIError carries them, or nil otherwise. Returns nil for any error
+// other than "open_children" so callers can branch cleanly.
+func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
+	if e == nil || e.Code != "open_children" || len(e.Details) == 0 {
+		return nil
+	}
+	var d OpenChildrenDetails
+	if err := json.Unmarshal(e.Details, &d); err != nil {
+		return nil
+	}
+	return &d
+}
+
+// StructuredErrorMarker is the versioned line prefix the CLI writes
+// to stderr when surfacing a structured error (currently: IDEA-1494's
+// open-children rejection). The JSON line that follows carries the
+// full server-style envelope (code / message / details) so a
+// downstream consumer — the stdio MCP dispatcher's classifyExecError
+// in particular — can detect the rejection and lift the structured
+// payload without parsing free-form human text.
+//
+// Versioned (Codex round-3 P3) so future evolutions of the wire shape
+// don't silently break older parsers — when the payload contract
+// changes incompatibly, bump to `pad-structured-error/v2:` and have
+// the classifier accept both during the transition. The version token
+// is parsed (not just matched as a literal prefix) so older v1-only
+// parsers cleanly ignore unknown versions.
+//
+// IMPORTANT: keep in lockstep with mcp.structuredErrorMarker / the
+// allow-list of structured codes in mcp.allowedStructuredErrorCodes.
+// A change here REQUIRES a corresponding change in
+// internal/mcp/errors.go.
+const StructuredErrorMarker = "pad-structured-error/v1: "
+
+// OpenChildrenErrorMarker is the pre-round-3 marker, retained as a
+// deprecated alias for any out-of-tree consumer that may have hard-
+// coded it. New code MUST use StructuredErrorMarker.
+//
+// Deprecated: use StructuredErrorMarker.
+const OpenChildrenErrorMarker = StructuredErrorMarker
+
+// WriteOpenChildrenError formats an open-children rejection to w in
+// the canonical two-track shape the project guarantees (IDEA-1494 R2):
+//
+//  1. A single `pad-error: {json}\n` line carrying the full structured
+//     payload — consumed by the MCP stdio classifier and anyone else
+//     wanting to introspect the rejection programmatically.
+//  2. Human-readable lines: the message, the per-child list (rendered
+//     from the SAME details struct the JSON line carries — single
+//     source of truth for both views), the hidden-count tag when
+//     applicable, and the `Pass --force to override` reminder.
+//
+// Order matters: machine line first so a consumer that reads stderr
+// line-by-line can dispatch on the first line without buffering all
+// of it. Callers should write nothing else between the marker line
+// and the human block.
+func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetails) {
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    apiErr.Code,
+			"message": apiErr.Message,
+			"details": oc,
+		},
+	}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, apiErr.Message)
+	for _, c := range oc.OpenChildren {
+		fmt.Fprintf(w, "  %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)
+	}
+	if oc.HiddenBlockerCount > 0 {
+		noun := "child"
+		if oc.HiddenBlockerCount != 1 {
+			noun = "children"
+		}
+		fmt.Fprintf(w, "  (+%d hidden %s you don't have access to)\n", oc.HiddenBlockerCount, noun)
+	}
+	fmt.Fprintln(w, "Pass --force to override.")
 }
 
 // --- Attachments ---

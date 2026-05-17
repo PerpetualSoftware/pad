@@ -349,6 +349,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if b, ok := input["pinned"].(bool); ok {
 		payload["pinned"] = b
 	}
+	// IDEA-1494: forward the open-children guard override. When set,
+	// the server-side handler skips the guard and still records the
+	// status transition. Same wire shape the CLI uses (`force: true`
+	// on the ItemUpdate body), so the HTTP dispatcher and ExecDispatcher
+	// paths share one contract.
+	if b, ok := input["force"].(bool); ok && b {
+		payload["force"] = true
+	}
 
 	// Field merging — the actual reason this command needs a custom
 	// dispatcher rather than a routeSpec entry. Match the CLI's

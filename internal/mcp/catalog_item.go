@@ -145,6 +145,17 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. Optional for: comment."},
 	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update."},
 
+	// ── Guard override ── (IDEA-1494)
+	// update/bulk-update reject non-terminal → terminal done-field
+	// transitions while the item still has open (non-terminal)
+	// children, surfacing a 409 with code=open_children plus a
+	// machine-readable details.open_children array (one entry per
+	// blocking child: {ref, title, status, collection_slug}). Setting
+	// force=true skips the guard and still records the transition.
+	// The same flag exists on `pad item update --force` so the CLI
+	// and MCP escape hatches are identical.
+	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry — or set force=true if the children should be intentionally orphaned."},
+
 	// ── Notes / decisions ──
 	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},
 	{Name: "details", Type: "string", Description: "Long-form note body. Optional for: note."},

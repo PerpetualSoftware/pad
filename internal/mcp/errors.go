@@ -115,6 +115,19 @@ const (
 	// detail for debugging without promising any structured shape.
 	ErrServerError ErrorCode = "server_error"
 
+	// ErrOpenChildren fires when handleUpdateItem rejects a
+	// non-terminal → terminal done-field transition because the
+	// item still has non-terminal children (IDEA-1494). The upstream
+	// 409 body carries a `details.open_children` array (refs +
+	// titles + statuses + collection_slug) plus a
+	// `details.hidden_blocker_count` for blockers the caller can't
+	// see. We surface the upstream `code` and `details` verbatim
+	// rather than collapsing to ErrConflict so MCP-driven agents
+	// can self-recover (ship the listed children, then retry — or
+	// pass `force: true` if the children should be intentionally
+	// orphaned). The hint mentions the same escape hatch.
+	ErrOpenChildren ErrorCode = "open_children"
+
 	// ErrRateLimited fires on HTTP 429 responses — either the
 	// general API limiter (per-user, 600/min, burst 60) or the
 	// MCP per-token limiter (60/min/token, burst 60 post-BUG-1430)
@@ -170,6 +183,15 @@ type ErrorPayload struct {
 	// agents see why the call was rejected.
 	RequiredRole string `json:"required_role,omitempty"`
 	CurrentRole  string `json:"current_role,omitempty"`
+
+	// Details carries the upstream error body's `details` object
+	// verbatim when the upstream sets one. Used by ErrOpenChildren
+	// (IDEA-1494) so MCP-driven agents get the same machine-readable
+	// payload — open_children list, hidden_blocker_count, done_field,
+	// attempted_value — that the HTTP API surfaces. json.RawMessage
+	// because the shape is code-specific; clients re-parse against
+	// the known schema for their code branch.
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 // WorkspaceHint is a minimal workspace summary surfaced in the
@@ -294,10 +316,114 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // with the raw stderr preserved in Message.
 // ─────────────────────────────────────────────────────────────────────
 
+// structuredErrorMarker mirrors internal/cli.StructuredErrorMarker —
+// the versioned line prefix the CLI writes to stderr when it surfaces
+// a structured error. Duplicated (rather than imported) so the mcp
+// classifier doesn't pull the cli package's dependency graph in for
+// one string. Codex round-3 P3 introduced the versioned shape.
+//
+// IMPORTANT: keep in lockstep with cli.StructuredErrorMarker AND with
+// allowedStructuredErrorCodes below. A wire-shape change requires
+// bumping both packages and reviewing the allow-list.
+const structuredErrorMarker = "pad-structured-error/v1: "
+
+// allowedStructuredErrorCodes is the whitelist of upstream codes the
+// MCP layer will surface verbatim. Two transports consult it:
+//
+//   - Stdio: extractStructuredCLIError gates the `pad-structured-error/v1:`
+//     marker on this set (Codex round-3 P3).
+//   - HTTP: classifyHTTPStatus's 409 branch gates the upstream
+//     `error.code` pass-through on this set (Codex round-4 P2).
+//
+// Routing BOTH transports through the same whitelist keeps the
+// ErrorCode enum's closed-contract honest — agents see the same set
+// of structured codes regardless of which dispatcher delivered the
+// response. Pre-round-4 the HTTP path forwarded any non-"conflict"
+// upstream code, which silently widened the enum and let the two
+// transports diverge.
+//
+// Adding a new structured code is a TWO-WAY change: the pad handler
+// must emit it (and emit `details` with a stable, agent-safe shape)
+// AND it must be added here. The matching ErrorCode constant in the
+// declarations block at the top of this file should also be added
+// for type safety in test assertions.
+var allowedStructuredErrorCodes = map[string]struct{}{
+	"open_children": {}, // IDEA-1494
+}
+
+// extractStructuredCLIError scans stderr for the
+// `pad-structured-error/v1: {json}\n` marker line and lifts the
+// structured error envelope into an MCP result. Returns nil when no
+// marker is found OR the payload fails any of the hardening checks
+// (caller falls back to the regex-based classifiers).
+//
+// Hardening (Codex round-3 P3):
+//   - Versioned marker. Unknown versions return nil.
+//   - Whitelisted codes. Unknown codes return nil.
+//   - Last-marker-wins. If multiple markers appear in stderr (a
+//     pathological case today, but possible if a future caller emits
+//     several), we use the LAST one — that's the most recent
+//     classification the CLI emitted, and a malicious earlier line
+//     can't pre-empt it.
+//   - Marker must start the line after trimming whitespace; markers
+//     embedded mid-line (e.g. in a quoted log message) are ignored.
+func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
+	if !strings.Contains(stderr, structuredErrorMarker) {
+		return nil
+	}
+	var lastPayload string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, structuredErrorMarker) {
+			continue
+		}
+		lastPayload = strings.TrimPrefix(line, structuredErrorMarker)
+	}
+	if lastPayload == "" {
+		return nil
+	}
+	var env struct {
+		Error struct {
+			Code    string          `json:"code"`
+			Message string          `json:"message"`
+			Details json.RawMessage `json:"details,omitempty"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lastPayload), &env); err != nil {
+		// Malformed marker payload — fall through to regex
+		// classification rather than blowing up the agent.
+		return nil
+	}
+	if env.Error.Code == "" {
+		return nil
+	}
+	if _, ok := allowedStructuredErrorCodes[env.Error.Code]; !ok {
+		// Unknown code. Don't forward — regex classifier handles it.
+		return nil
+	}
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrorCode(env.Error.Code),
+		Message: env.Error.Message,
+		Details: env.Error.Details,
+	})
+}
+
 // classifyExecError turns an exec.Cmd failure (err + stderr) into a
 // structured envelope. lookup is optional — when supplied, no_workspace
 // errors get available_workspaces enrichment.
 func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stderr string, lookup WorkspaceLister) *mcp.CallToolResult {
+	// IDEA-1494 R2: the CLI emits a single `pad-error: {json}` line
+	// on stderr when surfacing the open-children rejection (see
+	// internal/cli/client.go::WriteOpenChildrenError). Detect it
+	// before regex classification so we lift the structured `code`
+	// + `details` straight through to the MCP envelope instead of
+	// pattern-matching free-form text and downgrading to
+	// validation_failed. Matched on a literal prefix to keep the
+	// classifier cheap and the contract obvious.
+	if structured := extractStructuredCLIError(stderr); structured != nil {
+		return structured
+	}
+
 	// BUG-987 bug 11: cobra automatically appends a "Usage: ..." block
 	// to stderr when a command fails with a runtime error. That help
 	// text uses the OLD CLI verb names (e.g. `pad item block`) which
@@ -634,6 +760,29 @@ func classifyHTTPStatusKind(
 	case http.StatusNotFound:
 		return classify404(ctx, cmdKey, route, bodyText, bodyMessage, lookup, kind, refOrSlug)
 	case http.StatusConflict:
+		// IDEA-1494 R2/R4 P2: preserve the upstream `code` + `details`
+		// when the handler emitted a structured rejection — but ONLY
+		// for codes that appear in the shared allow-list
+		// (allowedStructuredErrorCodes, defined below). The stdio
+		// classifier already gates on the same set; routing both
+		// transports through the same whitelist keeps the
+		// ErrorCode enum's closed contract honest (round-4 P2:
+		// HTTP was forwarding any non-"conflict" code, diverging
+		// from stdio).
+		//
+		// New structured codes get added to allowedStructuredErrorCodes
+		// in one place; both transports adopt them in lockstep.
+		// Unknown codes fall through to generic ErrConflict here —
+		// matching what stdio does for an unknown-code marker.
+		upstream := extractUpstreamErrorEnvelope(bodyText)
+		if _, allowed := allowedStructuredErrorCodes[upstream.Code]; allowed {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrorCode(upstream.Code),
+				Message: upstream.Message,
+				Hint:    conflictHintFor(bodyMessage, route),
+				Details: upstream.Details,
+			})
+		}
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrConflict,
 			Message: "Conflict — current state changed beneath this update.",
@@ -785,6 +934,37 @@ func extractUpstreamMessage(body string) string {
 		return env.Error.Message
 	}
 	return ""
+}
+
+// upstreamErrorEnvelope is the broader extractor used when the
+// dispatcher needs to pass through the upstream `code` / `details`
+// fields (not just the message). The pad backend uses the same
+// `{"error":{"code":..., "message":..., "details":{...}}}` shape
+// across every handler that returns writeError-style bodies; this
+// parser lifts those fields when present and reports zero-valued
+// strings / nil RawMessage when not. Single source of truth for the
+// pass-through cases in classifyHTTPStatusKind.
+type upstreamErrorEnvelope struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+func extractUpstreamErrorEnvelope(body string) upstreamErrorEnvelope {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return upstreamErrorEnvelope{}
+	}
+	if strings.EqualFold(body, "404 page not found") {
+		return upstreamErrorEnvelope{}
+	}
+	var env struct {
+		Error upstreamErrorEnvelope `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err == nil {
+		return env.Error
+	}
+	return upstreamErrorEnvelope{}
 }
 
 // itemMissingHint is the per-error-code hint generator for

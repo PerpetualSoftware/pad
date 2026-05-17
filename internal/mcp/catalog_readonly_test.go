@@ -463,11 +463,16 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item update": {
 				Summary: "update item",
 				Args:    mkArgs("ref"),
-				Flags: mkFlags(
-					"workspace", "assign", "category", "comment", "content",
-					"field", "parent", "priority", "role", "status",
-					"tags", "title",
-				),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags(
+						"workspace", "assign", "category", "comment", "content",
+						"field", "parent", "priority", "role", "status",
+						"tags", "title",
+					)
+					// IDEA-1494: --force bypasses the open-children guard.
+					f["force"] = cmdhelp.Flag{Type: "bool"}
+					return f
+				}(),
 			},
 			"item delete": {
 				Summary: "delete item",
@@ -502,6 +507,10 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags: map[string]cmdhelp.Flag{
 					"workspace": {Type: "string"},
 					"field":     {Type: "[]string", Repeatable: true},
+					// IDEA-1494 R3 P1: move now honors the same
+					// open-children guard override the update path
+					// does.
+					"force": {Type: "bool"},
 				},
 			},
 			"item deps": {
@@ -539,7 +548,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item bulk-update": {
 				Summary: "bulk update",
 				Args:    []cmdhelp.Arg{{Name: "ref", Required: true, Repeatable: true}},
-				Flags:   mkFlags("workspace", "priority", "status"),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags("workspace", "priority", "status")
+					f["force"] = cmdhelp.Flag{Type: "bool"}
+					return f
+				}(),
 			},
 			"item note": {
 				Summary: "add note",

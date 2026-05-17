@@ -664,6 +664,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// IDEA-1494: precheck closure populated below when the patch
+	// includes a fields update AND --force is NOT set. Threads into
+	// the three UpdateItem call sites that follow. nil = no guard.
+	var openChildrenPrecheck func(tx *sql.Tx, existing *models.Item) error
+
+	// IDEA-1494 R4 P3: parent-link change is captured here and
+	// applied AFTER the main UpdateItemWithPreCheck succeeds, so a
+	// guard rejection on the status field doesn't leave a committed
+	// link change behind. Hoisted out of the `if input.Fields != nil`
+	// block so the post-write step can read them.
+	var parentValue string
+	var parentProvided bool
+
 	// If fields are being updated, validate against schema
 	if input.Fields != nil {
 		coll, err := s.store.GetCollection(item.CollectionID)
@@ -687,8 +700,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 		// Accepts both "parent" and "plan" as the field key.
 		// Skip this if the schema actually defines a field with that key.
-		var parentValue string
-		var parentProvided bool
+		// (parentValue / parentProvided are declared at outer scope so
+		// the deferred link-write block below can read them — see
+		// IDEA-1494 R4 P3.)
 		for _, key := range []string{"parent", "plan"} {
 			if schemaHasField(schema, key) {
 				continue
@@ -740,6 +754,71 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Auto-populate date fields on status changes
 		autoPopulateDates(fieldMap, item.Fields, schema)
 
+		// IDEA-1494 open-children guard. The actual check runs INSIDE
+		// the store transaction (see Store.UpdateItemWithPreCheck) so
+		// the children-list query and the parent's status write share
+		// a snapshot — closes the TOCTOU window flagged in Codex
+		// round 2 (P2). Here we just stage the inputs and the
+		// visibility filters; the closure runs later under the
+		// workspace seq lock + parent-children advisory lock.
+		if !input.Force {
+			var settings models.CollectionSettings
+			if coll.Settings != "" {
+				_ = json.Unmarshal([]byte(coll.Settings), &settings)
+			}
+			// Pre-compute visibility once. The guard's invariant check
+			// considers ALL children (data integrity); the visibility
+			// filter only affects which children appear in the 409
+			// payload — hidden ones are surfaced as a count.
+			//
+			// Fail CLOSED on visibility-lookup error (Codex round-3 P1):
+			// a swallowed error here would leave visIDs==nil, which
+			// openChildrenGuardChildVisible treats as "no restriction"
+			// — leaking metadata for hidden children. Surfacing the
+			// internal error blocks the update entirely rather than
+			// risk an information leak.
+			visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+			if visErr != nil {
+				writeInternalError(w, visErr)
+				return
+			}
+			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+			if gerr != nil {
+				writeInternalError(w, gerr)
+				return
+			}
+			gctx := openChildrenGuardContext{
+				r:                    r,
+				workspaceID:          workspaceID,
+				itemID:               item.ID,
+				parentSchema:         schema,
+				parentSettings:       settings,
+				newFieldMap:          fieldMap,
+				visibleCollectionIDs: visIDs,
+				guestFullCollIDs:     guestFull,
+				guestGrantedItemIDs:  guestGranted,
+			}
+			openChildrenPrecheck = func(tx *sql.Tx, existing *models.Item) error {
+				// Codex round-3 P2: classify the transition against
+				// the in-tx snapshot of the parent's fields, not the
+				// pre-tx capture. A concurrent writer can change the
+				// done-field value between handler-side read and lock
+				// acquisition; using `existing.Fields` (loaded by
+				// UpdateItemWithPreCheck after the tx began) avoids
+				// both false-fire and false-skip classifications.
+				txCtx := gctx
+				txCtx.currentFieldsJS = existing.Fields
+				details, derr := s.runOpenChildrenGuard(tx, txCtx)
+				if derr != nil {
+					return derr
+				}
+				if details != nil {
+					return &openChildrenGuardError{details: details}
+				}
+				return nil
+			}
+		}
+
 		validatedFields, err := json.Marshal(fieldMap)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields")
@@ -748,22 +827,25 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		validated := string(validatedFields)
 		input.Fields = &validated
 
-		// Update parent link if parent was provided in the update
-		if parentProvided {
-			if parentValue != "" {
-				actor, _ := actorFromRequest(r)
-				if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
-					return
-				}
-			} else {
-				// Parent was explicitly set to empty/null — clear the link
-				if err := s.store.ClearParentLink(item.ID); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
-					return
-				}
-			}
-		}
+		// IDEA-1494 R4 P3: parent-link mutations are DEFERRED until
+		// after the field write succeeds. Pre-fix this block ran the
+		// link update INLINE here — before the precheck even fired —
+		// so a PATCH that combined a parent change with a status flip
+		// could end up with the link committed AND the field write
+		// rejected by the guard. Caller saw 409 but the parent had
+		// already moved.
+		//
+		// Now we record the desired link change and execute it ONLY
+		// when the main UpdateItemWithPreCheck call below succeeds.
+		// A guard rejection short-circuits with the link untouched.
+		// Documented choice: "reorder, don't tx-wrap" — wrapping the
+		// link mutation in the same store tx as UpdateItem would
+		// require threading a tx through SetParentLink (which has
+		// its own tx already, and is also called from the
+		// handler_item_links path). Reordering is the smaller surgery
+		// and preserves atomicity in the failure direction — caller
+		// only sees both writes on success, or neither (with a clear
+		// 409) on rejection.
 	}
 
 	// Designated-applier routing (PLAN-1248 TASK-1257). When the
@@ -880,7 +962,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					return errStaleCollabSnapshot
 				}
 			}
-			updated, uerr := s.store.UpdateItem(item.ID, input)
+			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 			if uerr != nil {
 				return uerr
 			}
@@ -889,6 +971,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		if err != nil {
+			if details, ok := asOpenChildrenGuardError(err); ok {
+				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+				return
+			}
 			if errors.Is(err, errStaleCollabSnapshot) {
 				writeError(w, http.StatusConflict, "stale_collab_snapshot",
 					"This editor's view is out of sync with the server; please reload.")
@@ -944,7 +1030,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Store.UpdateItem's content-versioning peek at Title.
 		// Per Codex review round 9.
 		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
-			updated, uerr := s.store.UpdateItem(item.ID, input)
+			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 			if uerr != nil {
 				return uerr
 			}
@@ -958,8 +1044,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// or directWrite ran the full UpdateItem inside the
 			// lock (fullWriteHandled tracks which).
 			input.Content = nil
+		} else if details, ok := asOpenChildrenGuardError(err); ok {
+			// IDEA-1494 R2: the open-children guard fired inside the
+			// directWrite callback. Don't let applyContentViaCollab's
+			// "any error falls through" policy retry the write —
+			// rejection is final.
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
 		}
-		// Any error path (e.g. ErrAllAppliersTimedOut, retry
+		// Any other error path (e.g. ErrAllAppliersTimedOut, retry
 		// exhaustion) falls through to direct write — graceful
 		// degradation. The helper logs the specifics so operators
 		// see degraded paths.
@@ -969,9 +1062,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if fullWriteHandled {
 		updated = fullWriteUpdated
 	} else {
-		updated, err = s.store.UpdateItem(item.ID, input)
+		updated, err = s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 	}
 	if err != nil {
+		// IDEA-1494 R2: surface the open-children guard rejection as
+		// the structured 409 BEFORE the UNIQUE-constraint / generic
+		// internal-error paths can swallow it. Same shape the
+		// in-handler write produced pre-R2, but now correctly fires
+		// when the guard ran inside the store tx.
+		if details, ok := asOpenChildrenGuardError(err); ok {
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
 		// pass checkUniqueFields and then both hit the partial unique
 		// index on invocation_slug) to 409 conflict, matching the create
@@ -986,6 +1088,34 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if updated == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
+	}
+
+	// IDEA-1494 R4 P3: deferred parent-link mutation. Runs ONLY now
+	// that the main UpdateItemWithPreCheck succeeded (the precheck
+	// passed AND the field write committed). A guard rejection above
+	// `return`s before reaching here, so the link is untouched on
+	// the failure path.
+	//
+	// Failure of the link write itself after a successful field
+	// write is still possible (e.g. SetParentLink discovers a cycle
+	// the cycle-check missed, or a DB error). We surface that as a
+	// 500 with the field write already committed — same partial-
+	// success window the pre-IDEA-1494 code had in the OTHER
+	// direction, and not made worse by the reorder. A future tx-
+	// wrap fix could close this entirely; out of scope for round 4.
+	if parentProvided {
+		if parentValue != "" {
+			actor, _ := actorFromRequest(r)
+			if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
+				return
+			}
+		} else {
+			if err := s.store.ClearParentLink(item.ID); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
+				return
+			}
+		}
 	}
 
 	// Build rich metadata describing what changed
@@ -1259,9 +1389,72 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// IDEA-1494 R3 P1: same open-children guard as the regular update
+	// path. `pad item move ... --field status=completed` would
+	// otherwise bypass it. We classify the proposed transition
+	// against the DESTINATION collection's schema (conservative —
+	// honors the schema the item is moving INTO, so a target-schema
+	// terminal value can't be smuggled in via a source whose schema
+	// doesn't recognize the value as terminal). Visibility filter is
+	// pre-computed and fails closed on lookup error, mirroring the
+	// update path.
+	//
+	// Force override on the move path lives on the URL query
+	// (?force=true). Move's request body shape is already fixed
+	// ({target_collection, field_overrides}) and adding a body
+	// field would require coordinating with the CLI/MCP move
+	// callers; the query param sidesteps that without changing the
+	// JSON contract. Same semantics as `pad item update --force`.
+	moveForce := r.URL.Query().Get("force") == "true"
+
+	var movePrecheck func(tx *sql.Tx, existing *models.Item) error
+	if !moveForce {
+		var destSettings models.CollectionSettings
+		if targetColl.Settings != "" {
+			_ = json.Unmarshal([]byte(targetColl.Settings), &destSettings)
+		}
+		visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+		if visErr != nil {
+			writeInternalError(w, visErr)
+			return
+		}
+		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+		if gerr != nil {
+			writeInternalError(w, gerr)
+			return
+		}
+		mgctx := openChildrenGuardContext{
+			r:                    r,
+			workspaceID:          workspaceID,
+			itemID:               item.ID,
+			parentSchema:         targetSchema,
+			parentSettings:       destSettings,
+			newFieldMap:          result.Fields,
+			visibleCollectionIDs: visIDs,
+			guestFullCollIDs:     guestFull,
+			guestGrantedItemIDs:  guestGranted,
+		}
+		movePrecheck = func(tx *sql.Tx, existing *models.Item) error {
+			txCtx := mgctx
+			txCtx.currentFieldsJS = existing.Fields
+			details, derr := s.runOpenChildrenGuard(tx, txCtx)
+			if derr != nil {
+				return derr
+			}
+			if details != nil {
+				return &openChildrenGuardError{details: details}
+			}
+			return nil
+		}
+	}
+
 	// Move the item
-	moved, err := s.store.MoveItem(item.ID, targetColl.ID, string(fieldsJSON))
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck)
 	if err != nil {
+		if details, ok := asOpenChildrenGuardError(err); ok {
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
