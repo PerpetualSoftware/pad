@@ -117,7 +117,7 @@ Iterate until the user's happy. Then create the collections — one ` + "`pad co
 
 The conventions collection already exists (blank template ships it). Now you fill it.
 
-Browse the convention library (` + "`pad library list --type conventions`" + ` — the CLI surface; MCP users can read the same data via ` + "`pad_meta.action: bootstrap`" + ` workspace state). For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
+Browse the convention library. If the agent has a shell, run ` + "`pad library list --type conventions`" + ` (and ` + "`pad library list --type conventions --category <name>`" + ` to filter). If the agent is MCP-only (no shell), the library catalog is not yet exposed as an MCP tool — work from your own knowledge of common conventions for the workspace's domain, propose them by name to the user, and have the user paste any library bodies they want as the starting text. (Adding an MCP-side library-browse action is tracked in IDEA-1514.) For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
 
 - Library has "Run tests before completing tasks." If the project is Go with a Makefile, your version says "Run ` + "`make test`" + ` before marking a task done. If the build fails, fix it before merging."
 - Library has "Conventional commit format." If the project's existing commits don't follow that style, ASK the user before activating it — maybe they don't want it.
