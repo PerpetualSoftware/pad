@@ -669,6 +669,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// the three UpdateItem call sites that follow. nil = no guard.
 	var openChildrenPrecheck func(tx *sql.Tx, existing *models.Item) error
 
+	// IDEA-1494 R4 P3: parent-link change is captured here and
+	// applied AFTER the main UpdateItemWithPreCheck succeeds, so a
+	// guard rejection on the status field doesn't leave a committed
+	// link change behind. Hoisted out of the `if input.Fields != nil`
+	// block so the post-write step can read them.
+	var parentValue string
+	var parentProvided bool
+
 	// If fields are being updated, validate against schema
 	if input.Fields != nil {
 		coll, err := s.store.GetCollection(item.CollectionID)
@@ -692,8 +700,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 		// Accepts both "parent" and "plan" as the field key.
 		// Skip this if the schema actually defines a field with that key.
-		var parentValue string
-		var parentProvided bool
+		// (parentValue / parentProvided are declared at outer scope so
+		// the deferred link-write block below can read them — see
+		// IDEA-1494 R4 P3.)
 		for _, key := range []string{"parent", "plan"} {
 			if schemaHasField(schema, key) {
 				continue
@@ -818,22 +827,25 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		validated := string(validatedFields)
 		input.Fields = &validated
 
-		// Update parent link if parent was provided in the update
-		if parentProvided {
-			if parentValue != "" {
-				actor, _ := actorFromRequest(r)
-				if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
-					return
-				}
-			} else {
-				// Parent was explicitly set to empty/null — clear the link
-				if err := s.store.ClearParentLink(item.ID); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
-					return
-				}
-			}
-		}
+		// IDEA-1494 R4 P3: parent-link mutations are DEFERRED until
+		// after the field write succeeds. Pre-fix this block ran the
+		// link update INLINE here — before the precheck even fired —
+		// so a PATCH that combined a parent change with a status flip
+		// could end up with the link committed AND the field write
+		// rejected by the guard. Caller saw 409 but the parent had
+		// already moved.
+		//
+		// Now we record the desired link change and execute it ONLY
+		// when the main UpdateItemWithPreCheck call below succeeds.
+		// A guard rejection short-circuits with the link untouched.
+		// Documented choice: "reorder, don't tx-wrap" — wrapping the
+		// link mutation in the same store tx as UpdateItem would
+		// require threading a tx through SetParentLink (which has
+		// its own tx already, and is also called from the
+		// handler_item_links path). Reordering is the smaller surgery
+		// and preserves atomicity in the failure direction — caller
+		// only sees both writes on success, or neither (with a clear
+		// 409) on rejection.
 	}
 
 	// Designated-applier routing (PLAN-1248 TASK-1257). When the
@@ -1076,6 +1088,34 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if updated == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
+	}
+
+	// IDEA-1494 R4 P3: deferred parent-link mutation. Runs ONLY now
+	// that the main UpdateItemWithPreCheck succeeded (the precheck
+	// passed AND the field write committed). A guard rejection above
+	// `return`s before reaching here, so the link is untouched on
+	// the failure path.
+	//
+	// Failure of the link write itself after a successful field
+	// write is still possible (e.g. SetParentLink discovers a cycle
+	// the cycle-check missed, or a DB error). We surface that as a
+	// 500 with the field write already committed — same partial-
+	// success window the pre-IDEA-1494 code had in the OTHER
+	// direction, and not made worse by the reorder. A future tx-
+	// wrap fix could close this entirely; out of scope for round 4.
+	if parentProvided {
+		if parentValue != "" {
+			actor, _ := actorFromRequest(r)
+			if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
+				return
+			}
+		} else {
+			if err := s.store.ClearParentLink(item.ID); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
+				return
+			}
+		}
 	}
 
 	// Build rich metadata describing what changed

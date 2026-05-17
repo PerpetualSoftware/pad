@@ -224,3 +224,62 @@ pad-structured-error/v1: {"error":{"code":"open_children","message":"second","de
 			env.Error.Code, env.Error.Message)
 	}
 }
+
+// TestClassifyHTTPStatus_UnknownConflictCodeFallsBackToErrConflict
+// covers Codex round-4 P2: HTTP and stdio must agree on the closed
+// set of structured codes they surface. Pre-fix the HTTP path
+// forwarded ANY non-"conflict" code; stdio whitelisted only
+// open_children. The two transports diverged on what an agent saw
+// from an upstream that emitted `code=some_future_code`.
+//
+// Post-fix: both consult allowedStructuredErrorCodes. An upstream
+// 409 with a code NOT in the whitelist collapses to generic
+// ErrConflict on the HTTP path, mirroring what the stdio path does
+// for an unknown-code structured marker.
+func TestClassifyHTTPStatus_UnknownConflictCodeFallsBackToErrConflict(t *testing.T) {
+	body := []byte(`{
+		"error": {
+			"code": "some_future_code",
+			"message": "x",
+			"details": {"anything":1}
+		}
+	}`)
+	res := classifyHTTPStatus(context.Background(), "item update", 409, body, nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code != ErrConflict {
+		t.Errorf("unknown upstream code must collapse to ErrConflict on HTTP path; got %q", env.Error.Code)
+	}
+	if len(env.Error.Details) != 0 {
+		t.Errorf("details from un-whitelisted code must not leak; got %s", string(env.Error.Details))
+	}
+}
+
+// TestStructuredErrorCodeParityAcrossTransports asserts that the same
+// "unknown code" rejection produces the same envelope shape from
+// both transports — ie HTTP doesn't widen the enum behind stdio's
+// back. Round-4 P2.
+func TestStructuredErrorCodeParityAcrossTransports(t *testing.T) {
+	httpRes := classifyHTTPStatus(context.Background(), "item update", 409,
+		[]byte(`{"error":{"code":"made_up_code","message":"x"}}`), nil)
+	httpEnv := httpRes.StructuredContent.(ErrorEnvelope)
+
+	stdioRes := classifyExecError(context.Background(),
+		[]string{"item", "update"},
+		errors.New("exit status 1"),
+		`pad-structured-error/v1: {"error":{"code":"made_up_code","message":"x"}}
+`, nil)
+	stdioEnv := stdioRes.StructuredContent.(ErrorEnvelope)
+
+	if httpEnv.Error.Code == ErrorCode("made_up_code") {
+		t.Errorf("HTTP path leaked unknown code: %q", httpEnv.Error.Code)
+	}
+	if stdioEnv.Error.Code == ErrorCode("made_up_code") {
+		t.Errorf("stdio path leaked unknown code: %q", stdioEnv.Error.Code)
+	}
+	// Both transports must agree: neither surfaces the unknown code.
+	// They CAN classify the fallback differently (HTTP → ErrConflict
+	// for 409, stdio → ErrServerError for an unknown stderr line)
+	// because the upstream signals are genuinely different — the
+	// parity contract is "no transport widens the enum beyond the
+	// whitelist," not "both transports produce identical envelopes."
+}

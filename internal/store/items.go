@@ -1712,25 +1712,23 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 		return nil, err
 	}
 
-	// Codex round-3 P1: restoring an item resurrects it as a
-	// (potentially non-terminal) child of its parent. Lock the
-	// parent's children-key so a concurrent UpdateItemWithPreCheck
-	// on that parent sees this resurrection in its post-lock snapshot.
-	// Look up via item_links so we cover both `parent` and
-	// `implements` edges — same inclusion rule
-	// acquireParentChildrenLocksForUpdate uses.
-	var parentID sql.NullString
-	if err := tx.QueryRow(s.q(fmt.Sprintf(`
-		SELECT target_id FROM item_links
-		WHERE source_id = ? AND link_type IN (%s)
-		LIMIT 1
-	`, childLinkTypeSQL())), id).Scan(&parentID); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("lookup parent for restore lock: %w", err)
+	// Codex round-3 P1 / round-4 P1: restoring an item resurrects it
+	// as a (potentially non-terminal) child of EVERY parent it's
+	// linked to (one item can have both a `parent` and an
+	// `implements` link). Lock ALL of those parents' children-keys
+	// via the canonical sorted-multi-lock helper so concurrent
+	// UpdateItemWithPreCheck callers on any of them see this
+	// resurrection in their post-lock snapshots.
+	//
+	// Pre-fix this called AcquireParentChildrenLock for a single
+	// LIMIT 1 row — a multi-parent child would have left another
+	// parent's precheck racing the resurrection.
+	parentIDs, err := s.listParentChildLockKeys(tx, id)
+	if err != nil {
+		return nil, err
 	}
-	if parentID.Valid && parentID.String != "" {
-		if err := s.AcquireParentChildrenLock(tx, parentID.String); err != nil {
-			return nil, err
-		}
+	if err := s.AcquireParentChildrenLocks(tx, parentIDs...); err != nil {
+		return nil, err
 	}
 
 	ts := now()
@@ -1896,7 +1894,7 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	// types (blocks, supersedes, …) don't affect the children-set so
 	// we skip the lock — keeps the common case lock-free.
 	if isChildLinkType(linkType) {
-		if err := s.AcquireParentChildrenLock(tx, input.TargetID); err != nil {
+		if err := s.AcquireParentChildrenLocks(tx, input.TargetID); err != nil {
 			return nil, err
 		}
 	}
@@ -2084,7 +2082,7 @@ func (s *Store) DeleteItemLink(id string) error {
 		return fmt.Errorf("peek item link for delete: %w", err)
 	}
 	if isChildLinkType(linkType) {
-		if err := s.AcquireParentChildrenLock(tx, targetID); err != nil {
+		if err := s.AcquireParentChildrenLocks(tx, targetID); err != nil {
 			return err
 		}
 	}
@@ -2216,7 +2214,7 @@ func (s *Store) ClearParentLink(itemID string) error {
 		return fmt.Errorf("lookup parent for clear: %w", err)
 	}
 	if oldParentID.Valid && oldParentID.String != "" {
-		if err := s.AcquireParentChildrenLock(tx, oldParentID.String); err != nil {
+		if err := s.AcquireParentChildrenLocks(tx, oldParentID.String); err != nil {
 			return err
 		}
 	}
@@ -2576,7 +2574,7 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 //     child insert / child update blocks until this tx commits or
 //     rolls back. No additional locking is needed.
 //   - Postgres: the caller is expected to hold a parent-keyed advisory
-//     lock (see AcquireParentChildrenLock below) so concurrent
+//     lock (see AcquireParentChildrenLocks below) so concurrent
 //     mutations on the same parent's children are serialized against
 //     this read.
 //
@@ -2593,83 +2591,100 @@ func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item,
 }
 
 // acquireParentChildrenLocksForUpdate is the in-tx helper UpdateItem
-// uses to serialize itself against the open-children guard (IDEA-1494
-// R2). It acquires two advisory locks on Postgres:
+// uses to serialize itself against the open-children guard
+// (IDEA-1494 R2 / R4). It acquires the parent-children advisory lock
+// for:
 //
-//  1. the parent-children lock for THIS item's parent (when it has one)
-//     — so a child-status-flip is serialized against any parent-update
-//     precheck that's reading this child via GetChildItemsTx.
-//  2. the parent-children lock for THIS item AS a parent — so any
-//     concurrent precheck running against this item's own children
-//     list waits for our write to commit.
+//  1. EVERY parent the item is currently a child of (via item_links
+//     of type ∈ childLinkTypes — `parent` AND `implements`).
+//     childLinkTypes is the inclusion rule GetChildItems walks, so
+//     this set is exactly the parents whose guard precheck could see
+//     this item as a child.
+//  2. THIS item itself, as a parent — so any concurrent precheck
+//     running against this item's own children list waits.
 //
-// Both keys are namespaced under `pad:parent-children:<id>` so they
-// only contend on the parent ID. SQLite is a no-op because the
-// BEGIN IMMEDIATE write lock already serializes all writers globally.
+// Codex round-4 P1: pre-fix this helper used `LIMIT 1` and only
+// locked one parent. A child of TWO parents (one via `parent`, one
+// via `implements`) would let a status flip race against the
+// un-locked parent's precheck. The query now returns ALL distinct
+// parent target_ids and we lock every one.
 //
-// Order is fixed (parent first, self second) to avoid the classic
-// AB/BA deadlock — two concurrent updaters that touch the same parent
-// always grab that key before the more-specific one.
+// All keys (parents + self) are funnelled through
+// AcquireParentChildrenLocks so they're acquired in a single,
+// canonical sorted order — round-4 P2's deadlock-avoidance contract.
+// No call site outside this helper takes pad:parent-children:* locks
+// in any other order.
 func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
 	}
-	// Look up THIS item's parent (if any) via item_links. Cheap: hits
-	// the (source_id, link_type) index. A NULL/missing row means the
-	// item has no parent — skip step 1.
-	var parentID sql.NullString
-	err := tx.QueryRow(s.q(fmt.Sprintf(`
-		SELECT target_id FROM item_links
+	parentIDs, err := s.listParentChildLockKeys(tx, itemID)
+	if err != nil {
+		return err
+	}
+	keys := append(parentIDs, itemID)
+	return s.AcquireParentChildrenLocks(tx, keys...)
+}
+
+// listParentChildLockKeys returns every target_id this item is the
+// `source_id` of under a childLinkTypes link — i.e. every parent
+// whose children-set includes this item. Used wherever we need to
+// lock all of an item's parents at once (UpdateItem, RestoreItem,
+// link-mutation paths).
+//
+// IMPORTANT: this MUST stay in lockstep with childLinkTypes (the
+// inclusion rule GetChildItems uses). If a new link type joins the
+// children-set, both the query here and the read query must add it
+// together so lock coverage matches read coverage.
+func (s *Store) listParentChildLockKeys(tx *sql.Tx, itemID string) ([]string, error) {
+	rows, err := tx.Query(s.q(fmt.Sprintf(`
+		SELECT DISTINCT target_id FROM item_links
 		WHERE source_id = ? AND link_type IN (%s)
-		LIMIT 1
-	`, childLinkTypeSQL())), itemID).Scan(&parentID)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("lookup parent for advisory lock: %w", err)
+	`, childLinkTypeSQL())), itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list parent lock keys: %w", err)
 	}
-	if parentID.Valid && parentID.String != "" && parentID.String != itemID {
-		if err := s.AcquireParentChildrenLock(tx, parentID.String); err != nil {
-			return err
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan parent lock key: %w", err)
 		}
+		if id == "" || id == itemID {
+			continue
+		}
+		out = append(out, id)
 	}
-	// Acquire the self-as-parent key.
-	return s.AcquireParentChildrenLock(tx, itemID)
+	return out, rows.Err()
 }
 
-// AcquireParentChildrenLock takes a Postgres advisory transaction lock
-// keyed on the parent item ID, serializing concurrent reads/writes
-// against that parent's children for the duration of the caller's tx.
-// No-op on SQLite (BEGIN IMMEDIATE already serializes writers).
+// AcquireParentChildrenLocks is the CANONICAL helper for taking
+// `pad:parent-children:<id>` advisory locks. Every call site that
+// needs to serialize against the open-children guard MUST go through
+// this function — UpdateItemWithPreCheck precheck, MoveItemWithPreCheck
+// precheck, RestoreItem, SetParentLink, ClearParentLink,
+// CreateItemLink (child-link types), DeleteItemLink (child-link
+// types). Ad-hoc single-key acquisition outside this helper is
+// FORBIDDEN — two call sites taking distinct keys in different
+// orders WILL deadlock under contention (the classic AB/BA shape).
 //
-// Used by the open-children guard (IDEA-1494 R2): the guard's
-// children-list query and the subsequent UPDATE of the parent's status
-// must agree on the children set. The advisory lock blocks any other
-// updater that would mutate this parent's children-list view.
-func (s *Store) AcquireParentChildrenLock(tx *sql.Tx, parentItemID string) error {
-	if s.dialect.Driver() != DriverPostgres {
-		return nil
-	}
-	// Distinct lock-key namespace from acquireWorkspaceSeqLock so the
-	// two don't collide and we don't accidentally widen serialization
-	// to "any update in the workspace."
-	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:parent-children:' || $1))", parentItemID); err != nil {
-		return fmt.Errorf("acquire parent-children lock: %w", err)
-	}
-	return nil
-}
-
-// AcquireParentChildrenLocks is the multi-key variant used when a
-// single mutation touches more than one parent's children-set —
-// re-parenting (old parent + new parent), CreateItemLink that attaches
-// a parent/implements link, etc. The caller passes the full set of
-// parent IDs they need to serialize against; this helper deduplicates,
-// sorts them, and acquires the advisory lock for each in sorted order.
+// The contract this helper enforces:
 //
-// Sorting is the deadlock-avoidance contract: every code path that
-// needs to lock multiple parents grabs them in the same total order
-// (string-sort by ID). Two concurrent re-parents that touch the same
-// two IDs in different "from/to" roles will both acquire id_A first,
-// then id_B — no AB/BA deadlock possible. Per Codex round-3 P1
-// (link-mutations bypass).
+//  1. Deduplicate. Repeated IDs in the input collapse to one lock.
+//  2. Drop empties. "" / nil entries don't get locked.
+//  3. Acquire in canonical sorted order (string-sort by ID).
+//     Two concurrent callers that share any subset of IDs always
+//     grab the overlap in the same order → no deadlock.
+//
+// SQLite is a no-op because the global BEGIN IMMEDIATE write lock
+// (set via _txlock=immediate in store.go) already serializes every
+// writer; advisory locks would add no protection there.
+//
+// Per Codex round-3 P1 (link-mutations bypass) + round-4 P2
+// (lock-order asymmetry). If you find yourself writing
+// `pg_advisory_xact_lock(... 'pad:parent-children:' ...)` anywhere
+// outside this helper, route it through here instead.
 func (s *Store) AcquireParentChildrenLocks(tx *sql.Tx, parentItemIDs ...string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
@@ -2688,8 +2703,8 @@ func (s *Store) AcquireParentChildrenLocks(tx *sql.Tx, parentItemIDs ...string) 
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if err := s.AcquireParentChildrenLock(tx, k); err != nil {
-			return err
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:parent-children:' || $1))", k); err != nil {
+			return fmt.Errorf("acquire parent-children lock %q: %w", k, err)
 		}
 	}
 	return nil

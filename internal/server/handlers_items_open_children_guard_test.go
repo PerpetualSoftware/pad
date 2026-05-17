@@ -1071,3 +1071,266 @@ func TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails(t *testing.T) {
 		t.Error("wire details must be populated for bulk-update lift")
 	}
 }
+
+// TestOpenChildrenGuard_MultiParentChildLocksAll covers Codex round-4
+// P1: a child item with BOTH a `parent` link to P1 AND an `implements`
+// link to P2 (two distinct "parents" under childLinkTypes) must
+// serialize against BOTH parents' open-children guard locks when its
+// status flips. Pre-fix the LIMIT 1 lookup grabbed one parent only;
+// the other could race the child's status-flip and miss it.
+//
+// Test shape: build the multi-parent topology, then race
+// (child status flip) vs (P1 terminal-update) vs (P2 terminal-update)
+// across iterations. The forbidden outcome is the same as the round-2
+// race test, applied to either parent: parent committed terminal AND
+// the child's status flip committed BEFORE the parent's commit.
+func TestOpenChildrenGuard_MultiParentChildLocksAll(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	const iterations = 4
+	for i := 0; i < iterations; i++ {
+		// Two plans (P1, P2) + one child task. Attach child to P1 via
+		// the `parent` link_type (regular hierarchy) and to P2 via
+		// the `implements` link_type (the other childLinkType).
+		p1Resp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
+			"title":  "P1",
+			"fields": `{"status":"active"}`,
+		})
+		var p1 models.Item
+		parseJSON(t, p1Resp, &p1)
+		p2Resp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
+			"title":  "P2",
+			"fields": `{"status":"active"}`,
+		})
+		var p2 models.Item
+		parseJSON(t, p2Resp, &p2)
+
+		childResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+			"title":  "multi-parent child",
+			"fields": map[string]interface{}{"status": "open", "parent": p1.Ref},
+		})
+		var child models.Item
+		parseJSON(t, childResp, &child)
+
+		// Add the `implements` link to P2.
+		linkResp := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+child.Ref+"/links", map[string]interface{}{
+			"target_id": p2.ID,
+			"link_type": "implements",
+		})
+		if linkResp.Code != http.StatusCreated {
+			t.Fatalf("iter %d add implements link: %d %s", i, linkResp.Code, linkResp.Body.String())
+		}
+
+		// Race: flip child status to done, while concurrently each
+		// parent attempts the terminal transition. Goroutines so
+		// timing varies across iterations.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+p1.Ref, map[string]interface{}{
+				"fields": map[string]interface{}{"status": "completed"},
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+p2.Ref, map[string]interface{}{
+				"fields": map[string]interface{}{"status": "completed"},
+			})
+		}()
+		time.Sleep(50 * time.Microsecond)
+		_ = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+child.Ref, map[string]interface{}{
+			"fields": map[string]interface{}{"status": "done"},
+		})
+		wg.Wait()
+
+		// Verify the forbidden outcome did not occur for EITHER
+		// parent. Same shape as the round-2 TOCTOU test, applied to
+		// both. A multi-parent child whose status flip wasn't
+		// serialized against P2's lock would let P2 commit terminal
+		// with a stale view that read child=open.
+		childGet := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+child.Ref, nil)
+		var cf models.Item
+		parseJSON(t, childGet, &cf)
+		var cfFields map[string]any
+		_ = json.Unmarshal([]byte(cf.Fields), &cfFields)
+		childStatus, _ := cfFields["status"].(string)
+
+		for _, parentRef := range []string{p1.Ref, p2.Ref} {
+			parentGet := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+parentRef, nil)
+			var pf models.Item
+			parseJSON(t, parentGet, &pf)
+			var pfFields map[string]any
+			_ = json.Unmarshal([]byte(pf.Fields), &pfFields)
+			parentStatus, _ := pfFields["status"].(string)
+			if parentStatus == "completed" && childStatus == "open" {
+				t.Fatalf("iter %d: multi-parent TOCTOU violation — parent %s=completed with child %s still open. Parent lock was missing.",
+					i, parentRef, child.Ref)
+			}
+		}
+	}
+}
+
+// TestOpenChildrenGuard_NoDeadlockUnderReverseOrderConcurrency covers
+// Codex round-4 P2: every call site that takes pad:parent-children:*
+// advisory locks now goes through AcquireParentChildrenLocks (the
+// canonical sorted multi-lock helper). Pre-fix some sites locked
+// parent-then-self; others locked sorted; concurrent reverse-order
+// operations could AB/BA deadlock. With one canonical helper, that's
+// impossible.
+//
+// Test shape: two parents A and B. Race two operations that each
+// touch BOTH A and B:
+//   - Goroutine 1: re-parent child X from A to B (SetParentLink A→B).
+//   - Goroutine 2: re-parent child Y from B to A (SetParentLink B→A).
+//
+// Both will need locks on {A, B}. With sorted acquisition, both
+// always grab A first then B; no deadlock. The test hard-times-out
+// after 5 seconds; if the helpers ever regress to per-call-site
+// ad-hoc ordering, this test hangs and fails the timeout.
+func TestOpenChildrenGuard_NoDeadlockUnderReverseOrderConcurrency(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Two plans + two children. We'll re-parent X and Y in opposite
+	// directions across A and B repeatedly.
+	planA := mustCreate(t, srv, slug, "plans", map[string]interface{}{"title": "A", "fields": `{"status":"active"}`})
+	planB := mustCreate(t, srv, slug, "plans", map[string]interface{}{"title": "B", "fields": `{"status":"active"}`})
+	childX := mustCreate(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "X", "fields": map[string]interface{}{"status": "open", "parent": planA.Ref},
+	})
+	childY := mustCreate(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Y", "fields": map[string]interface{}{"status": "open", "parent": planB.Ref},
+	})
+
+	const rounds = 6
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for i := 0; i < rounds; i++ {
+			wg.Add(2)
+			from1, to1 := planA.Ref, planB.Ref
+			from2, to2 := planB.Ref, planA.Ref
+			if i%2 == 1 {
+				from1, to1 = to1, from1
+				from2, to2 = to2, from2
+			}
+			_ = from1
+			_ = from2
+			go func(parentRef string) {
+				defer wg.Done()
+				_ = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+childX.Ref, map[string]interface{}{
+					"fields": map[string]interface{}{"parent": parentRef, "status": "open"},
+				})
+			}(to1)
+			go func(parentRef string) {
+				defer wg.Done()
+				_ = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+childY.Ref, map[string]interface{}{
+					"fields": map[string]interface{}{"parent": parentRef, "status": "open"},
+				})
+			}(to2)
+			wg.Wait()
+		}
+	}()
+
+	select {
+	case <-done:
+		// All rounds completed without hanging. The sorted multi-
+		// lock helper held the deadlock-avoidance contract.
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK: reverse-order parent-children lock acquisition hung > 5s. AcquireParentChildrenLocks's sorted-acquisition contract regressed.")
+	}
+}
+
+// mustCreate is a small helper for the deadlock test's seeding —
+// keeps the test body focused on the race itself rather than
+// boilerplate response parsing.
+func mustCreate(t *testing.T, srv *Server, wsSlug, collectionSlug string, body map[string]interface{}) models.Item {
+	t.Helper()
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections/"+collectionSlug+"/items", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed %s item: %d %s", collectionSlug, rr.Code, rr.Body.String())
+	}
+	var it models.Item
+	parseJSON(t, rr, &it)
+	return it
+}
+
+// TestOpenChildrenGuard_PatchAtomicRejectionPreservesParentLink
+// covers Codex round-4 P3: a PATCH that combines a parent-link
+// change AND a status flip to terminal, against a parent with open
+// children, must reject the WHOLE PATCH — both the field write and
+// the link change. Pre-fix the link committed before the guard ran,
+// so the caller saw 409 but the parent had already moved.
+func TestOpenChildrenGuard_PatchAtomicRejectionPreservesParentLink(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Two candidate parent plans (oldParent / newParent) + the item
+	// under test (plan with an open child).
+	oldParent := mustCreate(t, srv, slug, "plans", map[string]interface{}{
+		"title": "old parent", "fields": `{"status":"active"}`,
+	})
+	newParent := mustCreate(t, srv, slug, "plans", map[string]interface{}{
+		"title": "new parent", "fields": `{"status":"active"}`,
+	})
+
+	// The item under test is a plan with one open child + an existing
+	// parent link to oldParent.
+	target := mustCreate(t, srv, slug, "plans", map[string]interface{}{
+		"title":  "target",
+		"fields": map[string]interface{}{"status": "active", "parent": oldParent.Ref},
+	})
+	// Attach an open child to target so the guard will fire.
+	mustCreate(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "blocker",
+		"fields": map[string]interface{}{"status": "open", "parent": target.Ref},
+	})
+
+	// Sanity: target's parent IS oldParent right now.
+	parentBefore := readParentRef(t, srv, slug, target.Ref)
+	if parentBefore != oldParent.Ref {
+		t.Fatalf("setup: target's parent should start as %s, got %q", oldParent.Ref, parentBefore)
+	}
+
+	// Combined PATCH: change parent AND mark terminal. The guard
+	// must reject the whole thing.
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+target.Ref, map[string]interface{}{
+		"fields": map[string]interface{}{"status": "completed", "parent": newParent.Ref},
+	})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 from combined parent+terminal PATCH, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// CRITICAL: the parent link must be unchanged. Pre-fix it would
+	// have been newParent because SetParentLink committed before the
+	// guard ran.
+	parentAfter := readParentRef(t, srv, slug, target.Ref)
+	if parentAfter != oldParent.Ref {
+		t.Fatalf("PATCH atomicity violated: parent moved to %q despite 409 (want unchanged %q)",
+			parentAfter, oldParent.Ref)
+	}
+}
+
+// readParentRef returns the ref of the item's current `parent` link
+// target, or "" if there is no parent link. Used by the PATCH-atomic
+// test to assert the link DIDN'T change.
+func readParentRef(t *testing.T, srv *Server, wsSlug, itemRef string) string {
+	t.Helper()
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+wsSlug+"/items/"+itemRef+"/links", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("read links for %s: %d %s", itemRef, rr.Code, rr.Body.String())
+	}
+	var links []models.ItemLink
+	parseJSON(t, rr, &links)
+	for _, l := range links {
+		if l.LinkType == "parent" {
+			// The item is the SOURCE of its parent link; the target
+			// is the parent. Return the parent's ref.
+			return l.TargetRef
+		}
+	}
+	return ""
+}

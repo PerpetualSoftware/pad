@@ -40,7 +40,7 @@ package server
 // The guard query runs INSIDE the same store transaction as the
 // UPDATE, so a concurrent child insert / child status flip can't slip
 // between the read and the write. See Store.UpdateItemWithPreCheck +
-// Store.AcquireParentChildrenLock for the locking shape.
+// Store.AcquireParentChildrenLocks for the locking shape.
 //
 // ── Response (HTTP 409 Conflict) ──────────────────────────────────────
 //

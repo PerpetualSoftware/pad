@@ -327,16 +327,26 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // bumping both packages and reviewing the allow-list.
 const structuredErrorMarker = "pad-structured-error/v1: "
 
-// allowedStructuredErrorCodes is the whitelist of codes the classifier
-// will surface from a `pad-structured-error/v1:` marker (Codex
-// round-3 P3). Unknown codes fall back to the regex classifier rather
-// than getting blindly forwarded — a CLI bug or third-party tool that
-// emits a marker with an unrecognized code can't smuggle an
-// unsanitized payload past the MCP boundary.
+// allowedStructuredErrorCodes is the whitelist of upstream codes the
+// MCP layer will surface verbatim. Two transports consult it:
 //
-// Add a code here ONLY after confirming the upstream CLI path that
-// emits it has been audited (matching wire shape, no PII in details,
-// stable contract).
+//   - Stdio: extractStructuredCLIError gates the `pad-structured-error/v1:`
+//     marker on this set (Codex round-3 P3).
+//   - HTTP: classifyHTTPStatus's 409 branch gates the upstream
+//     `error.code` pass-through on this set (Codex round-4 P2).
+//
+// Routing BOTH transports through the same whitelist keeps the
+// ErrorCode enum's closed-contract honest — agents see the same set
+// of structured codes regardless of which dispatcher delivered the
+// response. Pre-round-4 the HTTP path forwarded any non-"conflict"
+// upstream code, which silently widened the enum and let the two
+// transports diverge.
+//
+// Adding a new structured code is a TWO-WAY change: the pad handler
+// must emit it (and emit `details` with a stable, agent-safe shape)
+// AND it must be added here. The matching ErrorCode constant in the
+// declarations block at the top of this file should also be added
+// for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
 	"open_children": {}, // IDEA-1494
 }
@@ -750,21 +760,22 @@ func classifyHTTPStatusKind(
 	case http.StatusNotFound:
 		return classify404(ctx, cmdKey, route, bodyText, bodyMessage, lookup, kind, refOrSlug)
 	case http.StatusConflict:
-		// IDEA-1494 R2: preserve the upstream `code` + `details`
-		// when the handler emitted a structured rejection. The
-		// open-children guard is the canonical case — agents need
-		// the children list (or the hidden-blocker count) to know
-		// whether to ship children, request elevated access, or
-		// retry with force=true. Collapsing to ErrConflict here
-		// would drop that whole signal.
+		// IDEA-1494 R2/R4 P2: preserve the upstream `code` + `details`
+		// when the handler emitted a structured rejection — but ONLY
+		// for codes that appear in the shared allow-list
+		// (allowedStructuredErrorCodes, defined below). The stdio
+		// classifier already gates on the same set; routing both
+		// transports through the same whitelist keeps the
+		// ErrorCode enum's closed contract honest (round-4 P2:
+		// HTTP was forwarding any non-"conflict" code, diverging
+		// from stdio).
 		//
-		// Generalized as "if the upstream gave us a non-empty,
-		// non-default code, pass it through" rather than special-
-		// casing open_children specifically — any future
-		// structured-409 a handler emits gets the same treatment
-		// without revisiting this branch.
+		// New structured codes get added to allowedStructuredErrorCodes
+		// in one place; both transports adopt them in lockstep.
+		// Unknown codes fall through to generic ErrConflict here —
+		// matching what stdio does for an unknown-code marker.
 		upstream := extractUpstreamErrorEnvelope(bodyText)
-		if upstream.Code != "" && upstream.Code != "conflict" {
+		if _, allowed := allowedStructuredErrorCodes[upstream.Code]; allowed {
 			return NewErrorResult(ErrorPayload{
 				Code:    ErrorCode(upstream.Code),
 				Message: upstream.Message,
