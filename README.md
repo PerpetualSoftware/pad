@@ -33,10 +33,10 @@ pad server open             # opens the web UI at localhost:7777
 Then, in a fresh agent session in your project, say:
 
 ```
-use pad to get IDEA-1
+/pad onboard
 ```
 
-Your new workspace ships with a thoughtful first idea — IDEA-1 — that the agent reads and uses to help you get set up around your actual project. It's the fastest way to go from empty workspace to "okay, this is mine."
+Your new workspace ships with the canonical `onboard` playbook auto-activated. The agent walks an interview, inspects your codebase if it has shell access, and adapts your workspace's collections, conventions, roles, and playbooks to match the project. It's the fastest way to go from empty workspace to "okay, this is mine."
 
 ## Why Pad?
 
