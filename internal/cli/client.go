@@ -728,9 +728,10 @@ type OpenChildEntry struct {
 // OpenChildrenDetails is the parsed shape of APIError.Details when
 // Code == "open_children".
 type OpenChildrenDetails struct {
-	OpenChildren   []OpenChildEntry `json:"open_children"`
-	DoneField      string           `json:"done_field"`
-	AttemptedValue string           `json:"attempted_value"`
+	OpenChildren       []OpenChildEntry `json:"open_children"`
+	HiddenBlockerCount int              `json:"hidden_blocker_count"`
+	DoneField          string           `json:"done_field"`
+	AttemptedValue     string           `json:"attempted_value"`
 }
 
 // AsOpenChildren returns the parsed open-children details when this
@@ -745,6 +746,58 @@ func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
 		return nil
 	}
 	return &d
+}
+
+// OpenChildrenErrorMarker is the line prefix the CLI writes to stderr
+// when surfacing an open-children rejection (IDEA-1494 R2). The single
+// JSON line after the prefix carries the full structured error
+// envelope (code / message / details) so a downstream consumer — the
+// stdio MCP dispatcher's classifyExecError in particular — can detect
+// the rejection and lift the structured payload without parsing free-
+// form human text. The prefix is intentionally distinctive and
+// lowercase-kebab so matchers use a literal `strings.HasPrefix`
+// (no regex compilation needed) and so a human reader can ignore it
+// visually as obvious machine output.
+const OpenChildrenErrorMarker = "pad-error: "
+
+// WriteOpenChildrenError formats an open-children rejection to w in
+// the canonical two-track shape the project guarantees (IDEA-1494 R2):
+//
+//  1. A single `pad-error: {json}\n` line carrying the full structured
+//     payload — consumed by the MCP stdio classifier and anyone else
+//     wanting to introspect the rejection programmatically.
+//  2. Human-readable lines: the message, the per-child list (rendered
+//     from the SAME details struct the JSON line carries — single
+//     source of truth for both views), the hidden-count tag when
+//     applicable, and the `Pass --force to override` reminder.
+//
+// Order matters: machine line first so a consumer that reads stderr
+// line-by-line can dispatch on the first line without buffering all
+// of it. Callers should write nothing else between the marker line
+// and the human block.
+func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetails) {
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    apiErr.Code,
+			"message": apiErr.Message,
+			"details": oc,
+		},
+	}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, OpenChildrenErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, apiErr.Message)
+	for _, c := range oc.OpenChildren {
+		fmt.Fprintf(w, "  %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)
+	}
+	if oc.HiddenBlockerCount > 0 {
+		noun := "child"
+		if oc.HiddenBlockerCount != 1 {
+			noun = "children"
+		}
+		fmt.Fprintf(w, "  (+%d hidden %s you don't have access to)\n", oc.HiddenBlockerCount, noun)
+	}
+	fmt.Fprintln(w, "Pass --force to override.")
 }
 
 // --- Attachments ---

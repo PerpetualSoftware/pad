@@ -1285,6 +1285,29 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 }
 
 func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, error) {
+	return s.UpdateItemWithPreCheck(id, input, nil)
+}
+
+// UpdateItemWithPreCheck is UpdateItem with an optional pre-mutation
+// hook that runs inside the same transaction (and, on Postgres, holds
+// the same workspace advisory lock) as the update itself. Callers can
+// use the hook to enforce cross-row invariants whose decision must be
+// atomic with the write — e.g. the open-children guard (IDEA-1494)
+// needs the children-list query and the parent's status flip to share
+// a tx so a concurrent child insert / child status change can't slip
+// between them.
+//
+// The hook receives the transaction and the freshly-read existing
+// item. Returning a non-nil error rolls the tx back and surfaces the
+// error verbatim — callers can return a sentinel and `errors.Is` it
+// in the handler.
+//
+// Pass a nil precheck for the standard, unchecked update path.
+func (s *Store) UpdateItemWithPreCheck(
+	id string,
+	input models.ItemUpdate,
+	precheck func(tx *sql.Tx, existing *models.Item) error,
+) (*models.Item, error) {
 	existing, err := s.GetItem(id)
 	if err != nil {
 		return nil, err
@@ -1308,6 +1331,42 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	// (no-op on SQLite). Held until COMMIT / ROLLBACK.
 	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 		return nil, err
+	}
+
+	// IDEA-1494 round 2: also acquire the parent-children advisory
+	// lock for THIS item (as a potential parent) AND for its own
+	// parent (when it is itself a child). That gives the open-children
+	// guard a tight serialization:
+	//
+	//   - A parent's UpdateItem precheck holds `pad:parent-children:<parent_id>`
+	//     while reading the children list and writing the parent.
+	//   - A child's UpdateItem holds the same key for its parent
+	//     while it writes itself.
+	//
+	// Result: a child status-flip that would invalidate the parent's
+	// guard cannot interleave between the parent's children-read and
+	// the parent's status-write. SQLite gets this for free from
+	// BEGIN IMMEDIATE; Postgres needs the explicit advisory lock.
+	//
+	// Lock ordering: workspace lock → THIS item's parent lock → THIS
+	// item's own children lock. Both lock keys are namespaced under
+	// `pad:parent-children:` so they only contend on the parent ID;
+	// acquiring two distinct keys in a fixed order can't deadlock.
+	if err := s.acquireParentChildrenLocksForUpdate(tx, id); err != nil {
+		return nil, err
+	}
+
+	// IDEA-1494 round 2: run the caller's invariant check (if any)
+	// AFTER the locks are held but BEFORE any mutation. Closing the
+	// guard-vs-write TOCTOU window relies on this ordering — the
+	// precheck's view of `items` / `item_links` is the same one the
+	// UPDATE below will write against because every concurrent
+	// UpdateItem on this parent (or on any of its children) blocks
+	// on the same advisory key.
+	if precheck != nil {
+		if err := precheck(tx, existing); err != nil {
+			return nil, err
+		}
 	}
 
 	ts := now()
@@ -2303,7 +2362,112 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 // GetChildItems returns all non-deleted child items linked to the given parent
 // via item_links. Returns children from any collection.
 func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
-	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+	return s.getChildItems(s.db, parentItemID)
+}
+
+// GetChildItemsTx is the in-transaction variant of GetChildItems. The
+// underlying query is the same as GetChildItems; using a *sql.Tx ties
+// the read to the caller's transaction so it sees the same snapshot
+// the subsequent UPDATE will write against (IDEA-1494 R2).
+//
+// Atomicity vs. concurrent child mutations is provided by the caller's
+// transaction-scoped locking:
+//
+//   - SQLite: db-wide BEGIN IMMEDIATE write lock (set globally via
+//     `_txlock=immediate`) serializes all writers, so any concurrent
+//     child insert / child update blocks until this tx commits or
+//     rolls back. No additional locking is needed.
+//   - Postgres: the caller is expected to hold a parent-keyed advisory
+//     lock (see AcquireParentChildrenLock below) so concurrent
+//     mutations on the same parent's children are serialized against
+//     this read.
+//
+// FOR UPDATE is intentionally NOT used — the underlying SELECT carries
+// DISTINCT (necessary because item_links can carry both `parent` and
+// the legacy `plan` link_type for the same edge), and Postgres rejects
+// `SELECT DISTINCT … FOR UPDATE`. The advisory-lock pattern sidesteps
+// that constraint while still giving us a serialized snapshot.
+func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item, error) {
+	if tx == nil {
+		return s.GetChildItems(parentItemID)
+	}
+	return s.getChildItems(tx, parentItemID)
+}
+
+// acquireParentChildrenLocksForUpdate is the in-tx helper UpdateItem
+// uses to serialize itself against the open-children guard (IDEA-1494
+// R2). It acquires two advisory locks on Postgres:
+//
+//  1. the parent-children lock for THIS item's parent (when it has one)
+//     — so a child-status-flip is serialized against any parent-update
+//     precheck that's reading this child via GetChildItemsTx.
+//  2. the parent-children lock for THIS item AS a parent — so any
+//     concurrent precheck running against this item's own children
+//     list waits for our write to commit.
+//
+// Both keys are namespaced under `pad:parent-children:<id>` so they
+// only contend on the parent ID. SQLite is a no-op because the
+// BEGIN IMMEDIATE write lock already serializes all writers globally.
+//
+// Order is fixed (parent first, self second) to avoid the classic
+// AB/BA deadlock — two concurrent updaters that touch the same parent
+// always grab that key before the more-specific one.
+func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	// Look up THIS item's parent (if any) via item_links. Cheap: hits
+	// the (source_id, link_type) index. A NULL/missing row means the
+	// item has no parent — skip step 1.
+	var parentID sql.NullString
+	err := tx.QueryRow(s.q(fmt.Sprintf(`
+		SELECT target_id FROM item_links
+		WHERE source_id = ? AND link_type IN (%s)
+		LIMIT 1
+	`, childLinkTypeSQL())), itemID).Scan(&parentID)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("lookup parent for advisory lock: %w", err)
+	}
+	if parentID.Valid && parentID.String != "" && parentID.String != itemID {
+		if err := s.AcquireParentChildrenLock(tx, parentID.String); err != nil {
+			return err
+		}
+	}
+	// Acquire the self-as-parent key.
+	return s.AcquireParentChildrenLock(tx, itemID)
+}
+
+// AcquireParentChildrenLock takes a Postgres advisory transaction lock
+// keyed on the parent item ID, serializing concurrent reads/writes
+// against that parent's children for the duration of the caller's tx.
+// No-op on SQLite (BEGIN IMMEDIATE already serializes writers).
+//
+// Used by the open-children guard (IDEA-1494 R2): the guard's
+// children-list query and the subsequent UPDATE of the parent's status
+// must agree on the children set. The advisory lock blocks any other
+// updater that would mutate this parent's children-list view.
+func (s *Store) AcquireParentChildrenLock(tx *sql.Tx, parentItemID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	// Distinct lock-key namespace from acquireWorkspaceSeqLock so the
+	// two don't collide and we don't accidentally widen serialization
+	// to "any update in the workspace."
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:parent-children:' || $1))", parentItemID); err != nil {
+		return fmt.Errorf("acquire parent-children lock: %w", err)
+	}
+	return nil
+}
+
+// childQueryer is the small surface the children-list query needs from
+// either *sql.DB or *sql.Tx. Lets getChildItems serve both the unlocked
+// and tx-bound paths from one implementation.
+type childQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Item, error) {
+	rows, err := q.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,

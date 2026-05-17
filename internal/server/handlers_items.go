@@ -664,6 +664,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// IDEA-1494: precheck closure populated below when the patch
+	// includes a fields update AND --force is NOT set. Threads into
+	// the three UpdateItem call sites that follow. nil = no guard.
+	var openChildrenPrecheck func(tx *sql.Tx, existing *models.Item) error
+
 	// If fields are being updated, validate against schema
 	if input.Fields != nil {
 		coll, err := s.store.GetCollection(item.CollectionID)
@@ -740,26 +745,49 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Auto-populate date fields on status changes
 		autoPopulateDates(fieldMap, item.Fields, schema)
 
-		// IDEA-1494 open-children guard: refuse non-terminal → terminal
-		// done-field transitions while the item still has non-terminal
-		// children, unless the caller passes Force=true. The check uses
-		// the parent item's collection schema/settings for the done-
-		// field resolution (each child is then evaluated against its
-		// OWN collection in evaluateOpenChildrenGuard). Runs before any
-		// store mutation so a rejection mutates nothing.
+		// IDEA-1494 open-children guard. The actual check runs INSIDE
+		// the store transaction (see Store.UpdateItemWithPreCheck) so
+		// the children-list query and the parent's status write share
+		// a snapshot — closes the TOCTOU window flagged in Codex
+		// round 2 (P2). Here we just stage the inputs and the
+		// visibility filters; the closure runs later under the
+		// workspace seq lock + parent-children advisory lock.
 		if !input.Force {
 			var settings models.CollectionSettings
 			if coll.Settings != "" {
 				_ = json.Unmarshal([]byte(coll.Settings), &settings)
 			}
-			details, gerr := s.evaluateOpenChildrenGuard(item.ID, item.Fields, fieldMap, schema, settings)
+			// Pre-compute visibility once. The guard's invariant check
+			// considers ALL children (data integrity); the visibility
+			// filter only affects which children appear in the 409
+			// payload — hidden ones are surfaced as a count.
+			visIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
 			if gerr != nil {
 				writeInternalError(w, gerr)
 				return
 			}
-			if details != nil {
-				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
-				return
+			gctx := openChildrenGuardContext{
+				r:                    r,
+				workspaceID:          workspaceID,
+				itemID:               item.ID,
+				parentSchema:         schema,
+				parentSettings:       settings,
+				newFieldMap:          fieldMap,
+				currentFieldsJS:      item.Fields,
+				visibleCollectionIDs: visIDs,
+				guestFullCollIDs:     guestFull,
+				guestGrantedItemIDs:  guestGranted,
+			}
+			openChildrenPrecheck = func(tx *sql.Tx, _ *models.Item) error {
+				details, derr := s.runOpenChildrenGuard(tx, gctx)
+				if derr != nil {
+					return derr
+				}
+				if details != nil {
+					return &openChildrenGuardError{details: details}
+				}
+				return nil
 			}
 		}
 
@@ -903,7 +931,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					return errStaleCollabSnapshot
 				}
 			}
-			updated, uerr := s.store.UpdateItem(item.ID, input)
+			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 			if uerr != nil {
 				return uerr
 			}
@@ -912,6 +940,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		if err != nil {
+			if details, ok := asOpenChildrenGuardError(err); ok {
+				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+				return
+			}
 			if errors.Is(err, errStaleCollabSnapshot) {
 				writeError(w, http.StatusConflict, "stale_collab_snapshot",
 					"This editor's view is out of sync with the server; please reload.")
@@ -967,7 +999,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Store.UpdateItem's content-versioning peek at Title.
 		// Per Codex review round 9.
 		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
-			updated, uerr := s.store.UpdateItem(item.ID, input)
+			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 			if uerr != nil {
 				return uerr
 			}
@@ -981,8 +1013,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// or directWrite ran the full UpdateItem inside the
 			// lock (fullWriteHandled tracks which).
 			input.Content = nil
+		} else if details, ok := asOpenChildrenGuardError(err); ok {
+			// IDEA-1494 R2: the open-children guard fired inside the
+			// directWrite callback. Don't let applyContentViaCollab's
+			// "any error falls through" policy retry the write —
+			// rejection is final.
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
 		}
-		// Any error path (e.g. ErrAllAppliersTimedOut, retry
+		// Any other error path (e.g. ErrAllAppliersTimedOut, retry
 		// exhaustion) falls through to direct write — graceful
 		// degradation. The helper logs the specifics so operators
 		// see degraded paths.
@@ -992,9 +1031,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if fullWriteHandled {
 		updated = fullWriteUpdated
 	} else {
-		updated, err = s.store.UpdateItem(item.ID, input)
+		updated, err = s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
 	}
 	if err != nil {
+		// IDEA-1494 R2: surface the open-children guard rejection as
+		// the structured 409 BEFORE the UNIQUE-constraint / generic
+		// internal-error paths can swallow it. Same shape the
+		// in-handler write produced pre-R2, but now correctly fires
+		// when the guard ran inside the store tx.
+		if details, ok := asOpenChildrenGuardError(err); ok {
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
 		// pass checkUniqueFields and then both hit the partial unique
 		// index on invocation_slug) to 409 conflict, matching the create

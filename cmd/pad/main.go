@@ -3540,11 +3540,7 @@ Examples:
 				// the human and machine views agree.
 				if apiErr, ok := err.(*cli.APIError); ok {
 					if oc := apiErr.AsOpenChildren(); oc != nil {
-						fmt.Fprintln(os.Stderr, apiErr.Message)
-						for _, c := range oc.OpenChildren {
-							fmt.Fprintf(os.Stderr, "  %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)
-						}
-						fmt.Fprintln(os.Stderr, "Pass --force to override.")
+						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						// Return a bare error so cobra exits non-zero
 						// without re-printing the (now-rendered) details.
 						return fmt.Errorf("update rejected: open children present")

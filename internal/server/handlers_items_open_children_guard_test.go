@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -350,5 +352,301 @@ func TestOpenChildrenGuard_GuardAppliesToAnyParent(t *testing.T) {
 	})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for task-with-open-subtask, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestOpenChildrenGuard_VisibilitySanitizesPayload covers Codex round 2
+// P1: when a restricted caller updates a parent they CAN see but the
+// parent has children in collections they CAN'T see, the guard's
+// invariant check still considers those hidden children (data
+// integrity — a restricted user can't slip an item past completion by
+// virtue of reduced visibility) but the 409 response sanitizes the
+// payload — hidden children appear only as a count, never with refs
+// or titles.
+func TestOpenChildrenGuard_VisibilitySanitizesPayload(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	// Workspace with two collections: parent's collection (which the
+	// editor CAN see) and "secrets" (which they can't).
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Vis"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	parentColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Plans", Slug: "plans", Prefix: "PLAN",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","completed"],"terminal_options":["completed"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection plans: %v", err)
+	}
+	visibleChildColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Slug: "tasks", Prefix: "TASK",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection tasks: %v", err)
+	}
+	hiddenChildColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Secrets", Slug: "secrets", Prefix: "SEC",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection secrets: %v", err)
+	}
+
+	// Seed the parent + one visible-open child + one hidden-open child.
+	parent, err := srv.store.CreateItem(ws.ID, parentColl.ID, models.ItemCreate{
+		Title: "Parent", Fields: `{"status":"active"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem parent: %v", err)
+	}
+	visibleChild, err := srv.store.CreateItem(ws.ID, visibleChildColl.ID, models.ItemCreate{
+		Title: "Visible task", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem visible child: %v", err)
+	}
+	if _, err := srv.store.SetParentLink(ws.ID, visibleChild.ID, parent.ID, "admin"); err != nil {
+		t.Fatalf("SetParentLink visible: %v", err)
+	}
+	hiddenChild, err := srv.store.CreateItem(ws.ID, hiddenChildColl.ID, models.ItemCreate{
+		Title:  "TOP SECRET — do not leak",
+		Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem hidden child: %v", err)
+	}
+	if _, err := srv.store.SetParentLink(ws.ID, hiddenChild.ID, parent.ID, "admin"); err != nil {
+		t.Fatalf("SetParentLink hidden: %v", err)
+	}
+
+	// Restricted editor: workspace member with collection_access scoped
+	// to the parent's collection + the visible-child collection only.
+	editor, err := srv.store.CreateUser(models.UserCreate{
+		Email: "editor-vis@example.com", Name: "Editor", Username: "editor-vis",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser editor: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, editor.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, editor.ID, "specific", []string{parentColl.ID, visibleChildColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	token, err := srv.store.CreateSession(editor.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// PATCH the parent as the restricted editor.
+	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/workspaces/"+ws.Slug+"/items/"+parent.Slug, map[string]interface{}{
+		"fields": map[string]interface{}{"status": "completed"},
+	}, token)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+	// Leak check: the hidden child's title / ref / collection slug must
+	// NOT appear anywhere in the response.
+	for _, secret := range []string{"TOP SECRET", "do not leak", "secrets", hiddenChild.Slug} {
+		if strings.Contains(body, secret) {
+			t.Errorf("response leaked hidden child material %q: %s", secret, body)
+		}
+	}
+	// Structural assertions.
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				OpenChildren []struct {
+					Ref            string `json:"ref"`
+					Title          string `json:"title"`
+					CollectionSlug string `json:"collection_slug"`
+				} `json:"open_children"`
+				HiddenBlockerCount int `json:"hidden_blocker_count"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.Error.Code != "open_children" {
+		t.Fatalf("expected code=open_children, got %q", resp.Error.Code)
+	}
+	if len(resp.Error.Details.OpenChildren) != 1 {
+		t.Fatalf("expected 1 visible blocker, got %d (%+v)",
+			len(resp.Error.Details.OpenChildren), resp.Error.Details.OpenChildren)
+	}
+	if resp.Error.Details.OpenChildren[0].CollectionSlug != "tasks" {
+		t.Errorf("only the visible-collection child should appear, got slug=%q",
+			resp.Error.Details.OpenChildren[0].CollectionSlug)
+	}
+	if resp.Error.Details.HiddenBlockerCount != 1 {
+		t.Errorf("expected hidden_blocker_count=1, got %d",
+			resp.Error.Details.HiddenBlockerCount)
+	}
+}
+
+// TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage covers
+// the edge case where EVERY blocking child is hidden from the caller —
+// the guard still fires (data integrity) but the human message is
+// generic and `details.open_children` is empty while
+// `hidden_blocker_count` is non-zero.
+func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Vis2"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	parentColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Plans", Slug: "plans", Prefix: "PLAN",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","completed"],"terminal_options":["completed"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	hiddenColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection hidden: %v", err)
+	}
+	parent, _ := srv.store.CreateItem(ws.ID, parentColl.ID, models.ItemCreate{
+		Title: "P", Fields: `{"status":"active"}`,
+	})
+	child, _ := srv.store.CreateItem(ws.ID, hiddenColl.ID, models.ItemCreate{
+		Title: "secret", Fields: `{"status":"open"}`,
+	})
+	if _, err := srv.store.SetParentLink(ws.ID, child.ID, parent.ID, "admin"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	editor, _ := srv.store.CreateUser(models.UserCreate{
+		Email: "e@example.com", Name: "E", Username: "e", Password: "pw-test-12345",
+	})
+	if err := srv.store.AddWorkspaceMember(ws.ID, editor.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	// Editor sees ONLY parentColl; child's collection is invisible.
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, editor.ID, "specific", []string{parentColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	token, _ := srv.store.CreateSession(editor.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+
+	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/workspaces/"+ws.Slug+"/items/"+parent.Slug, map[string]interface{}{
+		"fields": map[string]interface{}{"status": "completed"},
+	}, token)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Message string `json:"message"`
+			Details struct {
+				OpenChildren       []map[string]any `json:"open_children"`
+				HiddenBlockerCount int              `json:"hidden_blocker_count"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp.Error.Details.OpenChildren) != 0 {
+		t.Errorf("expected empty open_children when all blockers hidden, got %v", resp.Error.Details.OpenChildren)
+	}
+	if resp.Error.Details.HiddenBlockerCount != 1 {
+		t.Errorf("expected hidden_blocker_count=1, got %d", resp.Error.Details.HiddenBlockerCount)
+	}
+	if !strings.Contains(resp.Error.Message, "you don't have access to") {
+		t.Errorf("expected hidden-blocker phrasing in message, got %q", resp.Error.Message)
+	}
+}
+
+// TestOpenChildrenGuard_TOCTOURace covers Codex round 2 P2: a child
+// status flip that races a parent-terminal update must NOT slip past
+// the guard. The race is concurrent: a goroutine waits a tick then
+// flips the last open child to terminal while the parent's PATCH is
+// in flight. We retry the race a handful of times because either
+// outcome is acceptable (guard fires OR child commits first then
+// parent succeeds), but the FORBIDDEN outcome — parent completes
+// WITH the child still open — must never occur.
+//
+// In practice the test ALWAYS observes one of the two acceptable
+// outcomes because Store.UpdateItemWithPreCheck holds the parent-
+// children advisory lock (Postgres) / BEGIN IMMEDIATE write lock
+// (SQLite) across the precheck + UPDATE; the racer either runs
+// before or fully after our tx.
+func TestOpenChildrenGuard_TOCTOURace(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Keep the iteration count modest: each iteration costs ~6 HTTP
+	// calls (seed plan, seed child, racer PATCH, parent PATCH, two
+	// post-condition GETs) and the test HTTP stack's rate limiter
+	// rejects sustained bursts. Eight iterations is plenty to surface
+	// any TOCTOU regression — the race window is microseconds, so the
+	// guard's locking either holds or it doesn't.
+	const iterations = 8
+	for i := 0; i < iterations; i++ {
+		plan, children := seedParentAndChildren(t, srv, slug, []string{"open"})
+		child := children[0]
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		// Racer goroutine: flip the open child to done. Tiny sleep
+		// to maximise overlap with the parent PATCH.
+		go func() {
+			defer wg.Done()
+			time.Sleep(100 * time.Microsecond)
+			rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+child.Ref, map[string]interface{}{
+				"fields": map[string]interface{}{"status": "done"},
+			})
+			if rr.Code != http.StatusOK {
+				// Racer can lose the lock-acquisition race; that's
+				// fine, the test just exercises one outcome.
+				return
+			}
+		}()
+
+		// Parent PATCH: attempt the terminal transition.
+		parentRR := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+plan.Ref, map[string]interface{}{
+			"fields": map[string]interface{}{"status": "completed"},
+		})
+		wg.Wait()
+
+		// Verify post-conditions on the data.
+		getResp := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+plan.Ref, nil)
+		if getResp.Code != http.StatusOK {
+			t.Fatalf("iter %d re-read parent: %d", i, getResp.Code)
+		}
+		var freshParent models.Item
+		parseJSON(t, getResp, &freshParent)
+		var pf map[string]any
+		_ = json.Unmarshal([]byte(freshParent.Fields), &pf)
+		parentStatus, _ := pf["status"].(string)
+
+		childResp := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+child.Ref, nil)
+		var freshChild models.Item
+		parseJSON(t, childResp, &freshChild)
+		var cf map[string]any
+		_ = json.Unmarshal([]byte(freshChild.Fields), &cf)
+		childStatus, _ := cf["status"].(string)
+
+		// FORBIDDEN: parent=completed AND child=open. This is the
+		// race the guard exists to prevent.
+		if parentStatus == "completed" && childStatus == "open" {
+			t.Fatalf("iter %d: TOCTOU violation — parent=completed with child still open. parent PATCH status=%d body=%s",
+				i, parentRR.Code, parentRR.Body.String())
+		}
 	}
 }

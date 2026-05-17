@@ -5,29 +5,55 @@ package server
 // every interface (CLI, MCP, web UI) that hits handleUpdateItem.
 //
 // Trigger conditions (all must hold):
-//   1. The PATCH supplies a fields update.
-//   2. The new value for the parent collection's resolved done-field
-//      key is in TerminalValuesForDoneField.
-//   3. The CURRENT value for that key is NOT in the terminal set.
-//      (no-op terminal → terminal and terminal-to-terminal transitions
-//      bypass the guard — only entering the terminal set is gated.)
-//   4. The parent item has at least one non-deleted child whose own
-//      collection schema reports the child as non-terminal.
+//  1. The PATCH supplies a fields update.
+//  2. The new value for the parent collection's resolved done-field
+//     key is in TerminalValuesForDoneField.
+//  3. The CURRENT value for that key is NOT in the terminal set.
+//     (no-op terminal → terminal and terminal-to-terminal transitions
+//     bypass the guard — only entering the terminal set is gated.)
+//  4. The parent item has at least one non-deleted child whose own
+//     collection schema reports the child as non-terminal.
 //
 // The caller can override the guard with `--force` (CLI) / `force: true`
 // (MCP body field). The override still records the status change.
 //
-// Response shape on rejection (HTTP 409 Conflict):
+// ── Visibility (Codex round 2 P1) ─────────────────────────────────────
+// The invariant itself is a DATA-INTEGRITY gate, not a visibility
+// gate: we evaluate it against ALL children (so a caller with reduced
+// visibility can't close a parent that has children they don't see).
+// The 409 response payload, however, is sanitized — only children the
+// caller is allowed to see appear in `details.open_children`. When
+// hidden children contributed to the rejection (in part or in full)
+// the payload carries a separate `hidden_blocker_count` so MCP-driven
+// agents can distinguish:
+//
+//   - len(open_children)==0 + hidden_blocker_count==0 → would not have
+//     rejected (no path here, but the shape is unambiguous);
+//   - len(open_children)==N + hidden_blocker_count==0 → caller can see
+//     every blocker;
+//   - len(open_children)==N + hidden_blocker_count==M → caller sees N
+//     blockers + M additional that they can't access; recovery requires
+//     either coordination with someone who can or `--force` if their
+//     role permits.
+//
+// ── Atomicity (Codex round 2 P2) ──────────────────────────────────────
+// The guard query runs INSIDE the same store transaction as the
+// UPDATE, so a concurrent child insert / child status flip can't slip
+// between the read and the write. See Store.UpdateItemWithPreCheck +
+// Store.AcquireParentChildrenLock for the locking shape.
+//
+// ── Response (HTTP 409 Conflict) ──────────────────────────────────────
 //
 //	{
 //	  "error": {
 //	    "code": "open_children",
-//	    "message": "cannot mark TASK-5 completed: 2 child task(s) still open. Pass --force to override.",
+//	    "message": "cannot mark TASK-5 completed: ...",
 //	    "details": {
 //	      "open_children": [
 //	        {"ref":"TASK-7","title":"...","status":"open","collection_slug":"tasks"},
 //	        ...
 //	      ],
+//	      "hidden_blocker_count": 0,
 //	      "done_field": "status",
 //	      "attempted_value": "completed"
 //	    }
@@ -35,17 +61,34 @@ package server
 //	}
 //
 // `details.open_children` is the canonical machine-readable list — the
-// CLI renders the human message FROM the same list so the two paths
-// agree by construction.
+// CLI renders the human message FROM the same list (plus the hidden
+// count) so the two paths agree by construction.
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// errOpenChildrenGuard is the sentinel the precheck returns to the
+// store layer when the guard fires. The handler unwraps it via
+// errors.As to lift the structured details back out for the 409
+// response. Using a typed sentinel (rather than a generic error)
+// keeps the store/handler boundary clean — the store just sees "the
+// precheck rejected" and rolls back the tx.
+type openChildrenGuardError struct {
+	details *openChildrenDetails
+}
+
+func (e *openChildrenGuardError) Error() string {
+	return fmt.Sprintf("open-children guard: %d visible + %d hidden blocker(s)",
+		len(e.details.OpenChildren), e.details.HiddenBlockerCount)
+}
 
 // itemRefOrSlug formats an item's issue ref (e.g. "TASK-5") when its
 // collection prefix + item number are populated, falling back to its
@@ -69,35 +112,50 @@ type openChildEntry struct {
 	CollectionSlug string `json:"collection_slug"`
 }
 
-// openChildrenError is the structured details payload.
+// openChildrenDetails is the structured details payload returned in
+// the 409 error body. `OpenChildren` is filtered for caller visibility;
+// `HiddenBlockerCount` reports the number of additional blockers that
+// would also need to clear (or be force-overridden) but that the
+// caller can't see.
 type openChildrenDetails struct {
-	OpenChildren   []openChildEntry `json:"open_children"`
-	DoneField      string           `json:"done_field"`
-	AttemptedValue string           `json:"attempted_value"`
+	OpenChildren       []openChildEntry `json:"open_children"`
+	HiddenBlockerCount int              `json:"hidden_blocker_count"`
+	DoneField          string           `json:"done_field"`
+	AttemptedValue     string           `json:"attempted_value"`
 }
 
-// evaluateOpenChildrenGuard returns a non-nil details payload when the
-// proposed update would transition the item into a terminal state and
-// the item has at least one non-terminal child. Returns (nil, nil) when
-// the guard does not apply (no transition, no children, no open
-// children). Errors from store calls propagate.
-//
-// newFieldMap is the post-validation merged fields map (the value about
-// to be persisted). currentFieldsJSON is the item's pre-update fields
-// JSON. parentSchema/parentSettings drive done-field resolution for the
-// parent item being updated. Each child is evaluated against ITS OWN
-// collection's schema + settings (not the parent's).
-func (s *Server) evaluateOpenChildrenGuard(
-	itemID string,
-	currentFieldsJSON string,
-	newFieldMap map[string]any,
-	parentSchema models.CollectionSchema,
-	parentSettings models.CollectionSettings,
-) (*openChildrenDetails, error) {
-	doneKey, terminalValues := models.TerminalValuesForDoneField(parentSchema, parentSettings)
+// openChildrenGuardContext bundles the read-only inputs the precheck
+// closure needs from the handler. Kept as a struct so the closure
+// signature stays narrow.
+type openChildrenGuardContext struct {
+	r               *http.Request
+	workspaceID     string
+	itemID          string
+	parentSchema    models.CollectionSchema
+	parentSettings  models.CollectionSettings
+	newFieldMap     map[string]any
+	currentFieldsJS string
+	// visibility filters, all pre-computed once by the handler.
+	visibleCollectionIDs []string // nil = unrestricted
+	guestFullCollIDs     []string
+	guestGrantedItemIDs  []string
+}
 
-	// New value must be present in the patch and terminal.
-	rawNew, ok := newFieldMap[doneKey]
+// runOpenChildrenGuard executes the guard logic inside the
+// store-layer transaction. Returns:
+//
+//   - (nil, nil) when the guard doesn't apply (no transition, no
+//     children, or all children terminal) — the update should proceed.
+//   - (details, nil) when the guard fires — the caller wraps these in
+//     openChildrenGuardError so the store rolls back. `details` is
+//     already sanitized for visibility.
+//   - (nil, err) on infrastructure errors (DB read failed, etc.).
+func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) (*openChildrenDetails, error) {
+	doneKey, terminalValues := models.TerminalValuesForDoneField(ctx.parentSchema, ctx.parentSettings)
+
+	// Trigger condition #1: the patch must set the resolved done-field
+	// key to a terminal value.
+	rawNew, ok := ctx.newFieldMap[doneKey]
 	if !ok {
 		return nil, nil
 	}
@@ -108,18 +166,15 @@ func (s *Server) evaluateOpenChildrenGuard(
 	if !valueInSet(newStr, terminalValues) {
 		return nil, nil
 	}
-
-	// Current value must NOT already be terminal — we only gate the
-	// non-terminal → terminal edge. terminal → terminal (e.g.
-	// completed → archived) and terminal → same-terminal (no-op) both
+	// Trigger condition #3: the current value must NOT already be
+	// terminal. terminal → terminal and no-op terminal transitions
 	// bypass.
-	currentVal := extractFieldString(currentFieldsJSON, doneKey)
+	currentVal := extractFieldString(ctx.currentFieldsJS, doneKey)
 	if currentVal != "" && valueInSet(currentVal, terminalValues) {
 		return nil, nil
 	}
 
-	// Cheap exit: no children at all.
-	children, err := s.store.GetChildItems(itemID)
+	children, err := s.store.GetChildItemsTx(tx, ctx.itemID)
 	if err != nil {
 		return nil, fmt.Errorf("load children for open-children guard: %w", err)
 	}
@@ -127,26 +182,41 @@ func (s *Server) evaluateOpenChildrenGuard(
 		return nil, nil
 	}
 
-	// Per-child done evaluation against the child's OWN collection
-	// schema. Cache schema+settings per child collection.
+	// Per-child done evaluation against the child's OWN collection.
+	// Cache schema+settings per child collection. The collection rows
+	// don't need to be read from the same tx — schemas don't mutate
+	// in the kind of races this guard cares about.
 	ctxCache := make(map[string]doneContext)
 	var open []openChildEntry
+	hidden := 0
 	for i := range children {
 		child := &children[i]
-		ctx, cached := ctxCache[child.CollectionID]
+		dc, cached := ctxCache[child.CollectionID]
 		if !cached {
 			if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
-				_ = json.Unmarshal([]byte(coll.Schema), &ctx.schema)
+				_ = json.Unmarshal([]byte(coll.Schema), &dc.schema)
 				if coll.Settings != "" {
-					_ = json.Unmarshal([]byte(coll.Settings), &ctx.settings)
+					_ = json.Unmarshal([]byte(coll.Settings), &dc.settings)
 				}
 			}
-			ctxCache[child.CollectionID] = ctx
+			ctxCache[child.CollectionID] = dc
 		}
-		if isItemDone(child.Fields, child.CollectionID, map[string]doneContext{child.CollectionID: ctx}) {
+		// INVARIANT check uses ALL children. A restricted caller still
+		// gets blocked by a non-terminal child they can't see — the
+		// guard's purpose is data integrity, not visibility filtering.
+		if isItemDone(child.Fields, child.CollectionID, map[string]doneContext{child.CollectionID: dc}) {
 			continue
 		}
-		childDoneKey, _ := models.TerminalValuesForDoneField(ctx.schema, ctx.settings)
+
+		// Sanitize the response payload: surface only children this
+		// caller has permission to see. Hidden blockers are counted
+		// separately so the agent knows blocking state exists without
+		// learning ref/title/status of items they can't access.
+		if !s.openChildrenGuardChildVisible(ctx, child) {
+			hidden++
+			continue
+		}
+		childDoneKey, _ := models.TerminalValuesForDoneField(dc.schema, dc.settings)
 		open = append(open, openChildEntry{
 			Ref:            itemRefOrSlug(*child),
 			Title:          child.Title,
@@ -154,36 +224,86 @@ func (s *Server) evaluateOpenChildrenGuard(
 			CollectionSlug: child.CollectionSlug,
 		})
 	}
-	if len(open) == 0 {
+	if len(open) == 0 && hidden == 0 {
 		return nil, nil
 	}
 	return &openChildrenDetails{
-		OpenChildren:   open,
-		DoneField:      doneKey,
-		AttemptedValue: newStr,
+		OpenChildren:       open,
+		HiddenBlockerCount: hidden,
+		DoneField:          doneKey,
+		AttemptedValue:     newStr,
 	}, nil
+}
+
+// openChildrenGuardChildVisible mirrors the visibility check used by
+// the per-parent progress endpoint (handlers_items.go around
+// `progVisIDs` / `isCollectionVisible` / `isItemVisibleToGuest`).
+// Returns true when the caller is unrestricted or when the child
+// passes both the collection-level and item-level guest filters.
+func (s *Server) openChildrenGuardChildVisible(gctx openChildrenGuardContext, child *models.Item) bool {
+	// Unrestricted (admin / owner / no grant filtering in play): nil
+	// visibleCollectionIDs means "see everything." Matches the
+	// progress handler's convention.
+	if gctx.visibleCollectionIDs == nil {
+		return true
+	}
+	if !isCollectionVisible(child.CollectionID, gctx.visibleCollectionIDs) {
+		return false
+	}
+	return s.isItemVisibleToGuest(gctx.r, gctx.workspaceID, child, gctx.guestFullCollIDs, gctx.guestGrantedItemIDs)
 }
 
 // writeOpenChildrenError emits the 409 response with both a human
 // message AND the structured details payload. `parentRef` is the
 // already-formatted parent ref (e.g. "PLAN-12"); the message names the
-// parent + child count and points at --force.
+// parent + child count and points at --force. The phrasing splits on
+// whether any blockers are hidden so the human-readable line carries
+// the same signal `hidden_blocker_count` does for machines.
 func writeOpenChildrenError(w http.ResponseWriter, parentRef string, details *openChildrenDetails) {
-	noun := "child"
-	if len(details.OpenChildren) != 1 {
-		noun = "children"
+	visible := len(details.OpenChildren)
+	hidden := details.HiddenBlockerCount
+	var msg string
+	switch {
+	case visible > 0 && hidden > 0:
+		msg = fmt.Sprintf("cannot mark %s %s: %d open child(ren) still in a non-terminal state, plus %d additional you don't have access to. Pass --force to override.",
+			parentRef, details.AttemptedValue, visible, hidden)
+	case visible > 0:
+		noun := "child"
+		if visible != 1 {
+			noun = "children"
+		}
+		msg = fmt.Sprintf("cannot mark %s %s: %d open %s still in a non-terminal state. Pass --force to override.",
+			parentRef, details.AttemptedValue, visible, noun)
+	default:
+		// hidden > 0 only — the caller can't see any blocking children.
+		noun := "child"
+		if hidden != 1 {
+			noun = "children"
+		}
+		msg = fmt.Sprintf("cannot mark %s %s: blocked by %d open %s you don't have access to. Pass --force to override (if your role permits).",
+			parentRef, details.AttemptedValue, hidden, noun)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "cannot mark %s %s: %d open %s still in a non-terminal state. Pass --force to override.",
-		parentRef, details.AttemptedValue, len(details.OpenChildren), noun)
 
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error": map[string]any{
 			"code":    "open_children",
-			"message": b.String(),
+			"message": msg,
 			"details": details,
 		},
 	})
+}
+
+// asOpenChildrenGuardError unwraps a store-layer error that may carry
+// an openChildrenGuardError sentinel. Returns the sanitized details
+// and true when the error is the guard rejecting the precheck; nil +
+// false for any other error (the handler returns those via the
+// generic upstream-error path).
+func asOpenChildrenGuardError(err error) (*openChildrenDetails, bool) {
+	var sentinel *openChildrenGuardError
+	if errors.As(err, &sentinel) {
+		return sentinel.details, true
+	}
+	return nil, false
 }
 
 // valueInSet does a case-insensitive membership check.
