@@ -89,6 +89,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/PATCH /api/v1/admin/settings` — platform settings (admin-only)
 - `POST /api/v1/admin/test-email` — send test email (admin-only)
 - `POST /api/v1/invitations/{code}/accept` — accept workspace invitation
+- `GET /api/v1/workspaces/{ws}/agent/bootstrap` — one-round-trip agent context (workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + `needs_onboarding` flag). Same payload as the MCP `pad://workspace/{ws}/bootstrap` resource and the `pad_set_workspace` embed.
 
 ## Authentication
 
@@ -232,10 +233,12 @@ Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public d
 - **Templates** are grouped by category so Pad supports more than just software workflows:
   - **Software:** `startup` (default), `scrum`, `product`
   - **People:** `hiring` (company-side: Requisitions → Candidates → Loops → Feedback), `interviewing` (candidate-side: Applications, Interviews, Companies, Contacts)
+  - **Custom:** `blank` — system collections only (Conventions, Playbooks), no user-facing seeds. Designed as the entry point for the `/pad onboard` agent-driven flow (see [Onboarding](#onboarding) below). PLAN-1496 / TASK-1498.
   - *Research / Content / Operations / Personal are reserved categories awaiting their first templates.*
-- Each template ships a curated starter pack (conventions + playbooks + sample items) appropriate to its domain — trigger vocabularies vary (`on-commit` vs `on-candidate-advance` vs `on-interview-scheduled`).
+- Each non-blank template ships a curated starter pack (conventions + playbooks) appropriate to its domain — trigger vocabularies vary (`on-commit` vs `on-candidate-advance` vs `on-interview-scheduled`).
+- **The IDEA-1 / BACK-1 / FEAT-1 first-person seed-item pattern was retired in PLAN-1496** (TASK-1501 / TASK-1502). Templates no longer seed sample items; the `/pad onboard` playbook (auto-seeded into every workspace, TASK-1500) drives setup conversationally instead.
 - Set the template via `pad workspace init --template <name>`. Running `pad init` with no flag in a TTY opens an interactive picker grouped by category. Run `pad workspace init --list-templates` to see the current catalog.
-- See `PLAN-609` and `IDEA-583` in this workspace for the design history.
+- See `PLAN-609` and `IDEA-583` for original design history; `PLAN-1496` for the onboarding refactor.
 
 ## Playbooks
 
@@ -272,6 +275,42 @@ Playbooks are first-class invokable procedures. They live in the `playbooks` col
 - `web/src/lib/playbooks/arguments.ts` — `## Arguments` parser/generator, `INVOCATION_SLUG_PATTERN`, `buildTestInvocation`.
 
 See `PLAN-1377` (invocation model) and `PLAN-1397` (library overhaul) in this workspace for the design history.
+
+## Onboarding
+
+Workspace setup is driven by the canonical **`/pad onboard`** invokable library playbook (PLAN-1496 / TASK-1499). Pad does not run a baked-in CLI onboarding wizard; the playbook body IS the onboarding script, and any agent that can dispatch a playbook (Claude Code, MCP client, CLI) can run it.
+
+**Auto-seeded everywhere.** `pad workspace init` (with any non-blank `--template`) seeds the onboard playbook into the new workspace as `status=active, invocation_slug=onboard` (TASK-1500). The `blank` template ships it as the workspace's ONLY user-facing content. Empty-template-name workspace creation (`SeedCollectionsFromTemplate(ws, "")` — used by tests and direct API callers) intentionally skips the seed; see `internal/store/collections.go::SeedCollectionsFromTemplate` for the gating logic.
+
+**Surface-agnostic body.** The playbook body (`internal/collections/playbook_library_onboard.go::onboardPlaybookBody`) describes intent, not specific CLI commands. It instructs the agent to use whatever surface it has — `pad_item` MCP, `pad item` CLI, `pad_collection` MCP, etc. — and works for pure-MCP agents (no shell) the same as for Claude Code. The body covers four modes: `build` (blank workspace, build from scratch), `audit` (templated workspace, adapt seeded items), `revisit` (already-onboarded, change something specific), and `defaults` (escape hatch — pick sensible defaults and report).
+
+**Adaptation posture, not curation.** The body explicitly tells the agent: library entries are STARTING POINTS, not finished artifacts. Read the rule, rewrite using the project's actual commands and vocabulary. Invent when the library has nothing close. If the template seeded something that doesn't fit, edit or delete it. This is the core posture PLAN-1496 codifies — software templates seed generic "run the test suite" conventions, and `/pad onboard` rewrites them to `make test` / `go test ./...` / whatever the project actually uses.
+
+**Mutation primitives.** The adaptation posture depends on agent-facing mutation tools, exposed by TASK-1510 / TASK-1511 / TASK-1512:
+
+- `pad collection update <slug>` + `pad_collection.action: update` — rename collections, swap icons, reshape schemas (TASK-1510)
+- `pad collection delete <slug>` + `pad_collection.action: delete` — remove user-created collections that don't fit (TASK-1511)
+- `pad role update <slug>` + `pad_role.action: update` — rewrite role descriptions and icons (TASK-1512)
+
+Server handlers existed pre-PLAN-1496; these tasks just wired CLI subcommands and MCP catalog actions to the existing HTTP endpoints. All three are owner-only server-side.
+
+**`needs_onboarding` bootstrap flag.** `AgentBootstrap.NeedsOnboarding` (PLAN-1496 / TASK-1504) is true when the workspace has zero items with `source != 'template'` — i.e. nothing beyond what the template seeded. The agent skill (`skills/pad/SKILL.md`) renders a nudge when true: *"This workspace hasn't been set up yet — say `/pad onboard` to walk through setup."* The flag flips to false the moment any user/agent-created item exists; the nudge stops firing past that point. Computed per-request via `Store.WorkspaceHasUserCreatedItems(workspaceID)` (EXISTS-backed). PLAN-1496 / TASK-1505 also retired the standalone "Onboarding" workflow section from the skill — the playbook body owns that script now.
+
+**Retired surfaces.** The pre-PLAN-1496 design had several surfaces that the playbook replaces; all retired:
+
+- `pad onboard` Cobra subcommand (was: codebase scan + convention suggestions) — TASK-1502.
+- `OnboardingPrimaryRef` field on `WorkspaceTemplate` (was: named IDEA-1 / BACK-1 / FEAT-1 per template) — TASK-1502. Dashboard banner auto-discovers seeds via `item_number=1 + source='template'` if a future template ever wants to reintroduce them.
+- The `*OnboardingItems()` generators in `internal/collections/templates_onboarding*.go` (deleted files) — TASK-1501.
+- The skill's standalone "Onboarding" workflow section — TASK-1505. Replaced by a one-paragraph pointer at the playbook.
+
+**Code map:**
+
+- `internal/collections/playbook_library_onboard.go` — the canonical playbook body + `OnboardPlaybook()` library entry + `OnboardSeedPlaybook()` auto-seed.
+- `internal/collections/templates_blank.go` — minimal trigger/scope vocabularies for the blank template's seeded system collections.
+- `internal/store/collections.go::SeedCollectionsFromTemplate` — wires the auto-seed for every non-empty templateName.
+- `internal/store/items.go::WorkspaceHasUserCreatedItems` — the `needs_onboarding` query predicate.
+- `internal/server/handlers_bootstrap.go::AgentBootstrap.NeedsOnboarding` — the bootstrap field.
+- `skills/pad/SKILL.md` — the nudge-rendering rule in Context Loading; the routing entry under "set up my workspace".
 
 ## Testing
 

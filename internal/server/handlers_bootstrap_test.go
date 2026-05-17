@@ -106,6 +106,70 @@ func TestBootstrapNeedsOnboardingFlag(t *testing.T) {
 	}
 }
 
+// TestBootstrapBlankWorkspaceOnboardReady is the end-to-end happy-path
+// integration test for PLAN-1496. It ties together the three pieces a
+// fresh `blank` workspace needs for the agent-driven onboarding flow
+// to work on day one:
+//
+//  1. needs_onboarding == true so the skill renders the bootstrap nudge.
+//  2. The /pad onboard playbook is seeded into the workspace.
+//  3. The playbook is status=active (so slug routing dispatches to it).
+//
+// Each piece has its own focused test elsewhere (NeedsOnboardingFlag,
+// SeedFromTemplateAlwaysIncludesOnboardPlaybook,
+// OnboardPlaybook_Contract). This test is the integration smoke: if
+// any one of them silently regresses, /pad onboard breaks in a fresh
+// blank workspace and the design's premise collapses. PLAN-1496 /
+// TASK-1507.
+func TestBootstrapBlankWorkspaceOnboardReady(t *testing.T) {
+	srv := testServer(t)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
+		"name":     "Blank Onboard Ready",
+		"template": "blank",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create blank workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap: %d %s", rr.Code, rr.Body.String())
+	}
+	var b AgentBootstrap
+	parseJSON(t, rr, &b)
+
+	if !b.NeedsOnboarding {
+		t.Errorf("blank workspace: needs_onboarding = false, want true — the bootstrap nudge will never fire")
+	}
+
+	// Find the onboard playbook by its invocation_slug. The skill
+	// dispatches /pad onboard by slug-routing through this exact
+	// field; if it's missing or not active, slug routing falls
+	// through to NL and the playbook is effectively invisible.
+	var onboard *AgentBootstrapPlaybookMeta
+	for i := range b.Playbooks {
+		if b.Playbooks[i].InvocationSlug == "onboard" {
+			onboard = &b.Playbooks[i]
+			break
+		}
+	}
+	if onboard == nil {
+		titles := make([]string, 0, len(b.Playbooks))
+		for _, p := range b.Playbooks {
+			titles = append(titles, p.Title)
+		}
+		t.Fatalf("blank workspace bootstrap missing onboard playbook; got titles: %v", titles)
+	}
+	if onboard.Status != "active" {
+		t.Errorf("onboard playbook status = %q, want %q (slug routing only dispatches active playbooks)", onboard.Status, "active")
+	}
+	if onboard.Trigger != "manual" {
+		t.Errorf("onboard playbook trigger = %q, want %q (must be in the blank template's seeded vocabulary)", onboard.Trigger, "manual")
+	}
+}
+
 // TestBootstrapNeedsOnboardingIgnoresTemplateSeeds is a focused guard:
 // even when a templated workspace ships seeded items
 // (conventions/playbooks/the onboard playbook itself), they MUST NOT
