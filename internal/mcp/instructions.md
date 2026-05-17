@@ -14,7 +14,7 @@ Eight resource × action tools, plus `pad_set_workspace` (which takes a `workspa
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log.
 - `pad_collection` — Collections: list / create / update / delete.
 - `pad_project` — Project intelligence: dashboard / next / standup / changelog.
-- `pad_role` — Agent roles: list / create / delete.
+- `pad_role` — Agent roles: list / create / update / delete.
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free.
 - `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity).

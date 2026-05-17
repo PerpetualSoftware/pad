@@ -426,6 +426,118 @@ func TestMapRoleCreate_OmitsEmptyOptionalFields(t *testing.T) {
 	}
 }
 
+// --- Role update (TASK-1512 / PLAN-1496) ---
+
+func TestMapRoleUpdate_BuildsPatchBody(t *testing.T) {
+	m, p, body, err := mapRoleUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "implementer",
+		"name":        "Engineer",
+		"description": "Writes code, ships PRs",
+		"icon":        "🔨",
+		"tools":       "claude-code",
+		"sort_order":  float64(3),
+	})
+	if err != nil {
+		t.Fatalf("mapRoleUpdate: %v", err)
+	}
+	if m != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", m)
+	}
+	if p != "/api/v1/workspaces/docapp/agent-roles/implementer" {
+		t.Errorf("path = %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	want := map[string]any{
+		"name":        "Engineer",
+		"description": "Writes code, ships PRs",
+		"icon":        "🔨",
+		"tools":       "claude-code",
+		"sort_order":  float64(3),
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("body[%q] = %v (%T), want %v (%T)", k, got[k], got[k], v, v)
+		}
+	}
+	// Round-trip through AgentRoleUpdate to confirm the body shape
+	// is what the server's decodeJSON expects.
+	var update models.AgentRoleUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		t.Fatalf("AgentRoleUpdate.Unmarshal rejected body: %v", err)
+	}
+	if update.Name == nil || *update.Name != "Engineer" {
+		t.Errorf("AgentRoleUpdate.Name round-trip wrong: %v", update.Name)
+	}
+}
+
+// TestMapRoleUpdate_NewSlugMapsToBodySlug confirms the disambiguation:
+// MCP input `slug` identifies the role in the path; MCP input `new_slug`
+// becomes the body's `slug` field (rename target). Without this, the
+// catalog would conflate the two meanings on the single `slug` param.
+func TestMapRoleUpdate_NewSlugMapsToBodySlug(t *testing.T) {
+	_, p, body, err := mapRoleUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "implementer",
+		"new_slug":  "engineer",
+	})
+	if err != nil {
+		t.Fatalf("mapRoleUpdate: %v", err)
+	}
+	if p != "/api/v1/workspaces/docapp/agent-roles/implementer" {
+		t.Errorf("path should use lookup slug; got %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got["slug"] != "engineer" {
+		t.Errorf("body[slug] should be the new_slug; got %v", got["slug"])
+	}
+}
+
+// TestMapRoleUpdate_EmptyStringClearsField mirrors the same behavior
+// the collection-update mapper has: explicit empty strings round-trip
+// to the store so the column can be cleared. The CLI's --description
+// "" / --icon "" expose this; the MCP path must preserve it.
+func TestMapRoleUpdate_EmptyStringClearsField(t *testing.T) {
+	_, _, body, err := mapRoleUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "planner",
+		"description": "",
+		"icon":        "",
+	})
+	if err != nil {
+		t.Fatalf("mapRoleUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	for _, key := range []string{"description", "icon"} {
+		v, present := got[key]
+		if !present {
+			t.Errorf("explicit empty %q should be sent through to clear the column; got %v", key, got)
+			continue
+		}
+		if v != "" {
+			t.Errorf("%q should serialize as empty string; got %v (%T)", key, v, v)
+		}
+	}
+}
+
+func TestMapRoleUpdate_RequiresWorkspaceAndSlug(t *testing.T) {
+	if _, _, _, err := mapRoleUpdate(map[string]any{"slug": "planner"}); err == nil {
+		t.Errorf("expected error when workspace missing")
+	}
+	if _, _, _, err := mapRoleUpdate(map[string]any{"workspace": "docapp"}); err == nil {
+		t.Errorf("expected error when slug missing")
+	}
+}
+
 func TestMapRoleCreate_RequiresName(t *testing.T) {
 	_, _, _, err := mapRoleCreate(map[string]any{"workspace": "ws"})
 	if err == nil {

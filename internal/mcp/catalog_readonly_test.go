@@ -93,6 +93,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 
 		{"pad_role", "list"}:   {"role", "list"},
 		{"pad_role", "create"}: {"role", "create"},
+		{"pad_role", "update"}: {"role", "update"},
 		{"pad_role", "delete"}: {"role", "delete"},
 
 		{"pad_search", "query"}: {"item", "search"},
@@ -215,6 +216,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 
 		{"pad_role", "list"}:   {"role", "list"},
 		{"pad_role", "create"}: {"role", "create"},
+		{"pad_role", "update"}: {"role", "update"},
 		{"pad_role", "delete"}: {"role", "delete"},
 
 		{"pad_search", "query"}: {"item", "search"},
@@ -453,6 +455,14 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "create role",
 				Args:    mkArgs("name"),
 				Flags:   mkFlags("workspace", "description", "icon", "tools"),
+			},
+			"role update": {
+				Summary: "update role",
+				Args:    mkArgs("slug"),
+				Flags: mkFlags(
+					"workspace", "name", "slug", "description", "icon",
+					"tools", "sort-order",
+				),
 			},
 			"role delete": {
 				Summary: "delete role",
