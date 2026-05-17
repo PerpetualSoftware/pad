@@ -1895,6 +1895,12 @@ func initCmd() *cobra.Command {
 
 Use --template to choose a workspace template:
   pad workspace init myproject --template scrum
+  pad workspace init myproject --template blank    # build it out via /pad onboard
+
+The 'blank' template ships only the system collections (Conventions,
+Playbooks) plus the canonical /pad onboard playbook. Run /pad onboard
+inside the workspace and the agent will adapt collections, conventions,
+roles, and playbooks to whatever your project actually is.
 
 Use --list-templates to see available templates.
 
@@ -2168,206 +2174,30 @@ func printOnboardingHints(cfg *config.Config, templateName string) {
 	dim := color.New(color.Faint)
 	cyan := color.New(color.FgCyan)
 
+	_ = templateName // PLAN-1496 / TASK-1502: was used to surface the
+	// IDEA-1 / BACK-1 / FEAT-1 ref per template; that whole pattern
+	// retired. /pad onboard is the single entry point now.
+
 	fmt.Println()
 	bold.Println("Get started:")
-	// Surface the seeded onboarding entry-point ref per template
-	// (IDEA-1 / BACK-1 / FEAT-1 / …). Templates that don't ship the
-	// IDEA-1-style first-person onboarding pattern (hiring,
-	// interviewing, demo, custom user templates) skip this line —
-	// they fall through to the generic /pad prompts instead.
-	if ref := onboardingPrimaryRef(templateName); ref != "" {
-		fmt.Printf("  %s  use pad to get %s\n", cyan.Sprint("/pad"), ref)
-	}
-	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "scan this codebase and set up my workspace")
-	fmt.Printf("  %s  %s\n", cyan.Sprint("/pad"), "create a plan for what I'm working on")
+	fmt.Printf("  %s %s\n", cyan.Sprint("/pad"), "onboard")
+	fmt.Println(dim.Sprint("    (open an agent session in this directory and run that command)"))
 	fmt.Println()
 	fmt.Printf("Or open the web UI at %s\n", bold.Sprint(cfg.BrowserURL()))
 	fmt.Println(dim.Sprint("Run 'pad project dashboard' to see your project dashboard"))
 }
 
-// onboardingPrimaryRef returns the seeded onboarding entry-point ref
-// for a template (e.g. "IDEA-1" for startup, "BACK-1" for scrum).
-// Returns "" for templates without the IDEA-1-style onboarding flow,
-// for empty/unknown templates, or for custom user templates.
-//
-// Wraps the collections-package lookup; centralized here so the CLI
-// has a single call site (printOnboardingHints) rather than reaching
-// into the templates registry directly.
-func onboardingPrimaryRef(templateName string) string {
-	if templateName == "" {
-		return ""
-	}
-	tmpl := collections.GetTemplate(templateName)
-	if tmpl == nil {
-		return ""
-	}
-	return tmpl.OnboardingPrimaryRef
-}
-
 // --- onboard ---
-
-func onboardCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "onboard",
-		Short: "Analyze the project, save workspace context, and suggest items",
-		Long: `Analyze the current project directory to detect tooling, save
-machine-readable workspace context, and suggest conventions.
-
-This scans for build config, CI setup, linters, and project structure to
-recommend conventions from the built-in library.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, cfg := getClient()
-			ws := getWorkspace()
-
-			cwd, _ := os.Getwd()
-			info := cli.DetectProject(cwd)
-			context := cli.BuildWorkspaceContext(cwd, info, cfg)
-
-			// Print detection results
-			bold := color.New(color.Bold)
-			dim := color.New(color.Faint)
-			cyan := color.New(color.FgCyan)
-			green := color.New(color.FgGreen)
-
-			bold.Println("🔍 Scanning project...")
-			if info.Language != "" {
-				fmt.Printf("  %s   %s\n", dim.Sprint("Language:"), cyan.Sprint(info.Language))
-			}
-			if info.BuildTool != "" {
-				fmt.Printf("  %s      %s\n", dim.Sprint("Build:"), info.BuildTool)
-			}
-			if info.TestCmd != "" {
-				fmt.Printf("  %s      %s\n", dim.Sprint("Tests:"), info.TestCmd)
-			}
-			if info.HasCI {
-				fmt.Printf("  %s         %s\n", dim.Sprint("CI:"), green.Sprint(info.CIProvider))
-			}
-			if info.HasLinter {
-				fmt.Printf("  %s     %s\n", dim.Sprint("Linter:"), green.Sprint("detected"))
-			}
-			if context != nil {
-				if context.Paths != nil && context.Paths.Web != "" {
-					fmt.Printf("  %s        %s\n", dim.Sprint("Web:"), context.Paths.Web)
-				}
-				if len(context.Repositories) > 1 {
-					fmt.Printf("  %s  %d repos\n", dim.Sprint("Repos:"), len(context.Repositories))
-				}
-			}
-			if info.Language == "" && info.BuildTool == "" {
-				fmt.Println(dim.Sprint("  Could not detect project type."))
-				fmt.Println()
-				fmt.Println("Try using /pad to set up your workspace conversationally:")
-				fmt.Printf("  %s scan this codebase and set up my workspace\n", cyan.Sprint("/pad"))
-				return nil
-			}
-
-			fmt.Println()
-
-			if _, err := client.UpdateWorkspace(ws, models.WorkspaceUpdate{Context: context}); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to save workspace context: %v\n\n", err)
-			} else {
-				fmt.Println(green.Sprint("Saved machine-readable workspace context."))
-				fmt.Println()
-			}
-
-			// Get suggested conventions
-			suggestions := cli.SuggestedConventions(info)
-
-			// Check which are already active
-			existingConventions, _ := client.ListCollectionItems(ws, "conventions", nil)
-			existingTitles := make(map[string]bool)
-			for _, item := range existingConventions {
-				existingTitles[item.Title] = true
-			}
-
-			// Filter to new suggestions only
-			type suggestion struct {
-				title   string
-				content string
-			}
-			var newSuggestions []suggestion
-			for title, content := range suggestions {
-				if !existingTitles[title] {
-					newSuggestions = append(newSuggestions, suggestion{title, content})
-				}
-			}
-
-			if len(newSuggestions) == 0 {
-				fmt.Println("All suggested conventions are already active.")
-				return nil
-			}
-
-			fmt.Printf("Suggested conventions (%d new):\n", len(newSuggestions))
-			for i, s := range newSuggestions {
-				fmt.Printf("  %d. %s\n", i+1, s.title)
-			}
-
-			if !cli.IsTerminal() {
-				// Non-interactive: just print suggestions
-				fmt.Println()
-				fmt.Println("Run 'pad workspace onboard' in a terminal to activate, or use:")
-				fmt.Println("  /pad what conventions should this project follow?")
-				return nil
-			}
-
-			fmt.Print("\nCreate these conventions? (y/N): ")
-			choice := readChoice()
-			if choice != "y" && choice != "Y" {
-				fmt.Println("Skipped. You can activate conventions from the library:")
-				fmt.Printf("  %s/%s/library\n", cfg.BrowserURL(), ws)
-				return nil
-			}
-
-			// Look up library conventions to get structured metadata
-			libraryConventions := collections.ConventionLibrary()
-			libraryMap := make(map[string]collections.LibraryConvention)
-			for _, cat := range libraryConventions {
-				for _, conv := range cat.Conventions {
-					libraryMap[conv.Title] = conv
-				}
-			}
-
-			created := 0
-			for _, s := range newSuggestions {
-				metadata := &models.ItemConventionMetadata{
-					Trigger:     "on-implement",
-					Surfaces:    []string{"all"},
-					Enforcement: "should",
-				}
-				if lc, ok := libraryMap[s.title]; ok {
-					metadata = &models.ItemConventionMetadata{
-						Category:    lc.Category,
-						Trigger:     lc.Trigger,
-						Surfaces:    lc.Surfaces,
-						Enforcement: lc.Enforcement,
-						Commands:    lc.Commands,
-					}
-				}
-
-				fieldsJSON, buildErr := models.BuildConventionItemFields("active", metadata)
-				if buildErr != nil {
-					fmt.Fprintf(os.Stderr, "  Failed to prepare %q: %v\n", s.title, buildErr)
-					continue
-				}
-				_, createErr := client.CreateItem(ws, "conventions", models.ItemCreate{
-					Title:   s.title,
-					Content: s.content,
-					Fields:  fieldsJSON,
-				})
-				if createErr != nil {
-					fmt.Fprintf(os.Stderr, "  Failed to create %q: %v\n", s.title, createErr)
-					continue
-				}
-				fmt.Printf("  Created: %s\n", s.title)
-				created++
-			}
-
-			fmt.Printf("\n%d conventions created.\n", created)
-			return nil
-		},
-	}
-	return cmd
-}
+// The 'pad onboard' Cobra subcommand was retired in PLAN-1496 /
+// TASK-1502. The pre-existing implementation scanned the project
+// directory for build/test/CI markers and offered to seed library
+// conventions — useful behavior, but CLI-only and not reachable from
+// pure-MCP agent surfaces. The /pad onboard playbook (TASK-1499)
+// is the replacement; it works through whatever surface the agent
+// has and is auto-seeded into every new workspace (TASK-1500).
+// The detection helpers in internal/cli/detect.go +
+// workspace_context_detect.go stay — they're still used by the
+// web-side workspace-context save path on workspace creation.
 
 // --- install ---
 

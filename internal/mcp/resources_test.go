@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -245,54 +244,39 @@ func TestFormatItemAsMarkdown_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestReadItem_PreservesIDEAOneOnboardingBodyVerbatim is a contract test
-// for the full pipeline that MCP clients (Claude Desktop, Cursor,
-// Windsurf, …) traverse when an agent says "use pad to get IDEA-1":
+// TestReadItem_PreservesBodyVerbatim is a contract test for the full
+// pipeline that MCP clients (Claude Desktop, Cursor, Windsurf, …)
+// traverse when an agent reads an item resource:
 //
-//  1. The MCP resource handler dispatches `pad item show IDEA-1
+//  1. The MCP resource handler dispatches `pad item show <ref>
 //     --format json` via the fetcher.
 //  2. `formatItemAsMarkdown` composes a markdown document from the
 //     JSON response — heading + fields + body.
 //
-// The contract: the body the workspace seeder ships in
-// `collections.StartupOnboardingItems()` (PLAN-1131 / DOC-1139) MUST
-// reach the agent verbatim. Drift here means agents see a truncated
-// or reformatted onboarding script, breaking the seeded experience
-// silently — exactly the kind of regression the task surfaces.
-//
-// This test pulls the IDEA-1 body from the collections package
-// directly, simulates the `pad item show --format json` envelope,
-// runs it through readItem, and asserts every meaningful section is
-// preserved. Specifically guarded:
-//
-//   - The opening greeting and the "What I'd find useful" section
-//     (tells the agent how to behave).
-//   - The schema-valid "mark this idea implemented" instruction —
-//     guards against the round-1 fix on PR #402 silently regressing
-//     to "mark me done" (which is invalid for the Ideas collection).
-//   - The "If I've already done this before" section (the body's
-//     idempotency contract for re-runs).
-//   - Code-fenced commands (backtick `pad project dashboard` etc.)
-//     and em-dashes — the kind of characters a bad transformation
-//     might mangle.
-func TestReadItem_PreservesIDEAOneOnboardingBodyVerbatim(t *testing.T) {
-	seeds := collections.StartupOnboardingItems()
-	var ideaSeed *collections.SeedItem
-	for i := range seeds {
-		if seeds[i].CollectionSlug == "ideas" {
-			ideaSeed = &seeds[i]
-			break
-		}
-	}
-	if ideaSeed == nil {
-		t.Fatal("expected an Ideas seed item in StartupOnboardingItems; the onboarding seeder shape changed and this test (and the design contract it locks down) needs to follow")
-	}
-
+// Originally PLAN-1131-era this test ran on the IDEA-1 seeded
+// onboarding body verbatim; PLAN-1496 retired that seed pattern
+// (TASK-1501 / TASK-1502), so this version uses a synthetic fixture
+// covering the same edge cases — markdown body must reach the agent
+// unmodified, including its own H1, sub-headings, em-dashes, and
+// code-fenced commands.
+func TestReadItem_PreservesBodyVerbatim(t *testing.T) {
+	// Synthetic fixture covering the original edge cases:
+	//   - body H1 (must stay distinct from the resource heading)
+	//   - sub-heading
+	//   - em-dash and inline code fence
+	//   - schema-valid terminal status guidance (Codex round-1 fix
+	//     on PR #402 specifically: the body says "implemented", not
+	//     "done", because Ideas don't have "done".)
+	const fixtureContent = "# Welcome — let's get this place set up\n\n" +
+		"## What I'd find useful\n\n" +
+		"Read this carefully, then mark this idea implemented when you're ready.\n\n" +
+		"## If I've already done this before\n\n" +
+		"Re-run `pad project dashboard` to see the current state."
 	envelope := map[string]any{
-		"ref":             "IDEA-1",
-		"title":           ideaSeed.Title,
-		"fields":          ideaSeed.Fields,
-		"content":         ideaSeed.Content,
+		"ref":             "IDEA-7",
+		"title":           "Welcome to the workspace",
+		"fields":          `{"status":"new"}`,
+		"content":         fixtureContent,
 		"collection_slug": "ideas",
 	}
 	envBytes, err := json.Marshal(envelope)
@@ -303,7 +287,7 @@ func TestReadItem_PreservesIDEAOneOnboardingBodyVerbatim(t *testing.T) {
 	f := &fakeFetcher{stdout: string(envBytes)}
 	r := &resources{fetcher: f}
 	req := mcp.ReadResourceRequest{}
-	req.Params.URI = "pad://workspace/docapp/items/IDEA-1"
+	req.Params.URI = "pad://workspace/docapp/items/IDEA-7"
 
 	contents, err := r.readItem(context.Background(), req)
 	if err != nil {
@@ -317,47 +301,41 @@ func TestReadItem_PreservesIDEAOneOnboardingBodyVerbatim(t *testing.T) {
 		t.Fatalf("expected TextResourceContents, got %T", contents[0])
 	}
 
-	// The composed heading wraps the body. The body's own H1 (the
-	// seeded title) follows in the body section — not stripped.
-	wantHeading := "# IDEA-1: " + ideaSeed.Title
+	// Resource-level heading wraps the body. The body's own H1
+	// stays present, distinct from the resource heading.
+	wantHeading := "# IDEA-7: Welcome to the workspace"
 	if !strings.Contains(tc.Text, wantHeading) {
 		t.Errorf("composed markdown missing heading %q; got:\n%s", wantHeading, tc.Text)
 	}
 
-	// The full body must be present verbatim. Substring-checking the
-	// entire body (rather than asserting equality of the composed
-	// document) lets future revisions of `formatItemAsMarkdown` reorder
-	// metadata bullets / parent-link rendering without breaking this
-	// contract — the contract is on the body content, not on layout.
-	if !strings.Contains(tc.Text, ideaSeed.Content) {
-		t.Errorf("composed markdown does not contain the full IDEA-1 onboarding body verbatim; the resource pipeline is mangling content somewhere.\n\nwant body to appear:\n%s\n\ngot:\n%s", ideaSeed.Content, tc.Text)
+	// Body content must round-trip verbatim — the resource layer
+	// must not reformat / strip markdown structure. Substring check
+	// rather than equality on the whole document so layout changes
+	// (metadata bullet ordering, etc.) are not regressions.
+	if !strings.Contains(tc.Text, fixtureContent) {
+		t.Errorf("composed markdown does not contain the body verbatim; resource pipeline is mangling content.\n\nwant body to appear:\n%s\n\ngot:\n%s", fixtureContent, tc.Text)
 	}
 
-	// Specific sections we depend on agent-side. Failing any of these
-	// means the body shape changed and the design doc / hint copy may
-	// have drifted out of sync — failure should prompt a re-read of
-	// PLAN-1131 / DOC-1139 before "fixing" the test.
-	requiredFragments := []string{
-		"# Welcome — let's get this place set up", // body's own H1, kept distinct from the resource heading
-		"## What I'd find useful",                 // tells the agent how to behave
-		"Then mark this idea implemented",         // schema-valid terminal status — guards round-1 fix on PR #402
-		"## If I've already done this before",     // body-side idempotency contract for re-runs
-		"`pad project dashboard`",                 // code-fenced command must survive
-	}
-	for _, frag := range requiredFragments {
+	// Specific fragments — em-dash, code-fenced command, schema-
+	// valid terminal status (covers the PR #402 round-1 regression
+	// guard).
+	for _, frag := range []string{
+		"# Welcome — let's get this place set up",
+		"## What I'd find useful",
+		"mark this idea implemented",
+		"## If I've already done this before",
+		"`pad project dashboard`",
+	} {
 		if !strings.Contains(tc.Text, frag) {
-			t.Errorf("composed markdown missing required fragment %q; the IDEA-1 body shape may have drifted from PLAN-1131 / DOC-1139", frag)
+			t.Errorf("composed markdown missing required fragment %q", frag)
 		}
 	}
 
-	// Status field must surface in the metadata bullets so MCP clients
-	// that surface fields prominently (resource listings) can show that
-	// IDEA-1 is `new` and the user hasn't engaged yet.
 	if !strings.Contains(tc.Text, "- **status:** new") {
 		t.Errorf("composed markdown missing `- **status:** new` field row; metadata rendering broke")
 	}
 
-	wantArgs := []string{"item", "show", "IDEA-1", "--workspace", "docapp", "--format", "json"}
+	wantArgs := []string{"item", "show", "IDEA-7", "--workspace", "docapp", "--format", "json"}
 	if !equalSlice(f.gotArgs, wantArgs) {
 		t.Errorf("dispatched args = %v, want %v", f.gotArgs, wantArgs)
 	}

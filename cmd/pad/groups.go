@@ -43,7 +43,9 @@ func workspaceCmd() *cobra.Command {
 		switchCmd(),
 		workspacesCmd(),
 		workspaceContextCmd(),
-		onboardCmd(),
+		// onboardCmd() retired in PLAN-1496 / TASK-1502 — replaced by
+		// the /pad onboard library playbook (TASK-1499), which works
+		// for MCP-only agents too.
 		membersCmd(),
 		inviteCmd(),
 		joinCmd(),
