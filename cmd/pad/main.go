@@ -5311,41 +5311,12 @@ func readSchemaInputBytes(input string, stdin io.Reader) ([]byte, error) {
 	}
 }
 
-// parseFieldsDSL parses the legacy --fields DSL (key:type[:options];...) into
-// a CollectionSchema. Empty input returns an empty schema with no error.
+// parseFieldsDSL is the cmd/pad-local alias for the canonical parser
+// at collections.ParseFieldsDSL. Moved up to internal/collections so
+// the MCP HTTP route mapper can share the same parser when accepting
+// `fields=...` on `pad_collection update` (PR #572).
 func parseFieldsDSL(fieldsDSL string) (models.CollectionSchema, error) {
-	schema := models.CollectionSchema{}
-	if fieldsDSL == "" {
-		return schema, nil
-	}
-	for _, f := range strings.Split(fieldsDSL, ";") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		parts := strings.SplitN(f, ":", 3)
-		if len(parts) < 2 {
-			return schema, fmt.Errorf("invalid field definition: %q (expected key:type[:options])", f)
-		}
-		fd := models.FieldDef{
-			Key:   parts[0],
-			Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
-			Type:  parts[1],
-		}
-		if len(parts) == 3 && parts[2] != "" {
-			fd.Options = strings.Split(parts[2], ",")
-		}
-		// First select field gets required+default — preserved for
-		// backward compat with the pre-existing DSL behavior.
-		if fd.Type == "select" && fd.Key == "status" {
-			fd.Required = true
-			if len(fd.Options) > 0 {
-				fd.Default = fd.Options[0]
-			}
-		}
-		schema.Fields = append(schema.Fields, fd)
-	}
-	return schema, nil
+	return collections.ParseFieldsDSL(fieldsDSL)
 }
 
 func collectionsCreateCmd() *cobra.Command {

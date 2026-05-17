@@ -218,6 +218,89 @@ func TestMapCollectionUpdate_RequiresWorkspaceAndSlug(t *testing.T) {
 	}
 }
 
+// TestMapCollectionUpdate_EmptyStringClearsField guards a Codex round-1
+// finding: the catalog advertises icon/description as clearable (the
+// CLI flag help says `--icon "" / --description ""` clears the column,
+// and the store treats *string("") as "clear"). The mapper must use
+// key-presence semantics — not v != "" — so MCP HTTP callers can clear
+// fields the same way CLI callers can.
+func TestMapCollectionUpdate_EmptyStringClearsField(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "tasks",
+		"icon":        "",
+		"description": "",
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	for _, key := range []string{"icon", "description"} {
+		v, present := got[key]
+		if !present {
+			t.Errorf("explicit empty %q should be sent through to clear the column; got %v", key, got)
+			continue
+		}
+		if v != "" {
+			t.Errorf("%q should serialize as empty string; got %v (%T)", key, v, v)
+		}
+	}
+}
+
+// TestMapCollectionUpdate_AcceptsFieldsDSL covers the second Codex
+// finding: the catalog advertises `fields OR schema`, but the original
+// mapper only handled `schema`. Calling with `fields=...` must produce
+// a valid schema PATCH body, parsed through the shared
+// collections.FieldsDSLToSchemaJSON helper.
+func TestMapCollectionUpdate_AcceptsFieldsDSL(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"fields":    "status:select:open,done;priority:select:high,medium,low",
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	schemaStr, ok := got["schema"].(string)
+	if !ok || schemaStr == "" {
+		t.Fatalf("fields DSL should produce schema string; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Confirm it's parseable as a CollectionSchema with the expected fields.
+	var parsed models.CollectionSchema
+	if err := json.Unmarshal([]byte(schemaStr), &parsed); err != nil {
+		t.Fatalf("schema JSON is not a valid CollectionSchema: %v\n%s", err, schemaStr)
+	}
+	if len(parsed.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d: %+v", len(parsed.Fields), parsed.Fields)
+	}
+	if parsed.Fields[0].Key != "status" || parsed.Fields[1].Key != "priority" {
+		t.Errorf("field order/keys wrong: %+v", parsed.Fields)
+	}
+}
+
+// TestMapCollectionUpdate_RejectsFieldsAndSchemaTogether mirrors the
+// CLI's mutual-exclusion guard (collectionSchemaJSONFromFlags). The
+// catalog description says "fields OR schema (mutually exclusive)";
+// the mapper must enforce it.
+func TestMapCollectionUpdate_RejectsFieldsAndSchemaTogether(t *testing.T) {
+	_, _, _, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"fields":    "status:select:a,b",
+		"schema":    map[string]any{"fields": []any{}},
+	})
+	if err == nil {
+		t.Errorf("expected error when both fields and schema are passed")
+	}
+}
+
 // --- Roles ---
 
 func TestMapRoleCreate_BuildsCanonicalBody(t *testing.T) {

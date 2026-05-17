@@ -630,9 +630,22 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 	}
 
 	payload := map[string]any{}
+	// String fields use KEY PRESENCE (not "v != \"\"") because every
+	// CollectionUpdate field is a pointer server-side, and the store
+	// honors *string("") as "clear this column" (collections.go:271+).
+	// The CLI's --icon "" / --description "" flag help advertises this
+	// behavior; the MCP HTTP path must preserve it. Codex review on
+	// PR #572 caught the empty-string filter regression.
 	for _, key := range []string{"name", "icon", "description", "prefix"} {
-		if v, _ := input[key].(string); v != "" {
-			payload[key] = v
+		v, ok := input[key]
+		if !ok || v == nil {
+			continue
+		}
+		// Coerce string-typed input only — non-string values in these
+		// keys are programmer error and we'd rather the server reject
+		// the body than silently mishandle it.
+		if s, ok := v.(string); ok {
+			payload[key] = s
 		}
 	}
 	if v, ok := input["sort_order"]; ok && v != nil {
@@ -641,9 +654,19 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 		// fine since the field's tag is plain integer.
 		payload["sort_order"] = v
 	}
-	// schema: accept either an object (preferred MCP shape) or a
-	// pre-encoded JSON string. The receiver expects a string.
-	if rawSchema, ok := input["schema"]; ok && rawSchema != nil {
+	// schema vs fields: the catalog advertises both forms as mutually
+	// exclusive (matching `pad collection create`/`update`). The CLI
+	// resolves them via collectionSchemaJSONFromFlags; we mirror that
+	// resolution here so HTTP MCP callers get parity. Either input
+	// produces a JSON-encoded string on the wire — CollectionUpdate.
+	// Schema is *string and its UnmarshalJSON does not coerce objects.
+	rawSchema, hasSchema := input["schema"]
+	rawFields, _ := input["fields"].(string)
+	if hasSchema && rawFields != "" {
+		return "", "", nil, fmt.Errorf("fields and schema are mutually exclusive")
+	}
+	switch {
+	case hasSchema && rawSchema != nil:
 		switch s := rawSchema.(type) {
 		case string:
 			if s != "" {
@@ -656,6 +679,12 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 			}
 			payload["schema"] = string(encoded)
 		}
+	case rawFields != "":
+		schemaJSON, err := collections.FieldsDSLToSchemaJSON(rawFields)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse fields DSL: %w", err)
+		}
+		payload["schema"] = schemaJSON
 	}
 
 	body, err := json.Marshal(payload)
