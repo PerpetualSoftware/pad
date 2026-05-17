@@ -887,6 +887,43 @@ func TestBlankTemplateExcludesSoftwareCollections(t *testing.T) {
 	}
 }
 
+// TestBlankTemplateUsesMinimalVocabularies locks in the design choice
+// from PLAN-1496 / TASK-1498: the blank template's seeded system
+// collections use deliberately tiny trigger/scope option sets so the
+// template doesn't leak a domain. The /pad onboard playbook is
+// expected to broaden these via `pad collection update` (TASK-1510)
+// once the interview reveals what the workspace's actual vocabulary
+// should be (software gets on-commit/on-implement, hiring gets
+// on-candidate-advance, etc.).
+//
+// If this test breaks, it means someone added a domain-flavored
+// trigger or scope to the blank seed — that change needs a different
+// task and a fresh design conversation.
+func TestBlankTemplateUsesMinimalVocabularies(t *testing.T) {
+	tmpl := GetTemplate("blank")
+	if tmpl == nil {
+		t.Fatal("blank template missing")
+	}
+	for _, c := range tmpl.Collections {
+		switch c.Slug {
+		case "conventions":
+			if got := findFieldOptions(c, "trigger"); !reflect.DeepEqual(got, BlankConventionTriggers) {
+				t.Errorf("conventions.trigger options = %v, want %v (minimal seed)", got, BlankConventionTriggers)
+			}
+			if got := findFieldOptions(c, "scope"); !reflect.DeepEqual(got, BlankConventionScopes) {
+				t.Errorf("conventions.scope options = %v, want %v (minimal seed)", got, BlankConventionScopes)
+			}
+		case "playbooks":
+			if got := findFieldOptions(c, "trigger"); !reflect.DeepEqual(got, BlankPlaybookTriggers) {
+				t.Errorf("playbooks.trigger options = %v, want %v (minimal seed)", got, BlankPlaybookTriggers)
+			}
+			if got := findFieldOptions(c, "scope"); !reflect.DeepEqual(got, BlankPlaybookScopes) {
+				t.Errorf("playbooks.scope options = %v, want %v (minimal seed)", got, BlankPlaybookScopes)
+			}
+		}
+	}
+}
+
 // TestBlankTemplateAppearsInPicker verifies the blank template is surfaced
 // by GroupTemplatesByCategory under a Custom group. The picker iterates
 // this helper, so a missing Custom group would hide the template entirely.

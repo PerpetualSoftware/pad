@@ -736,13 +736,30 @@ var templates = []WorkspaceTemplate{
 	hiringTemplate(),
 	interviewingTemplate(),
 	{
+		// blank — minimal entry-point for the /pad onboard playbook
+		// flow (PLAN-1496 / TASK-1498; originally IDEA-1479).
+		//
+		// Ships only the two SYSTEM collections (Conventions,
+		// Playbooks) — infrastructure the rest of the pipeline
+		// assumes exists (bootstrap surfaces them, the convention
+		// loader queries them, the onboard playbook itself lives in
+		// `playbooks`). No user-facing collections, no seeded
+		// conventions, no seeded playbooks, no sample items.
+		//
+		// Trigger / scope vocabularies are deliberately minimal
+		// (`always`+`manual`, `all`) so the seed doesn't leak a
+		// domain. The /pad onboard playbook calls `pad collection
+		// update` (TASK-1510) during its interview to broaden the
+		// vocabulary to whatever the workspace's actual domain
+		// needs — software gets `on-commit` / `on-implement`,
+		// hiring gets `on-candidate-advance`, etc.
 		Name:        "blank",
 		Category:    CategoryCustom,
-		Description: "Just Conventions & Playbooks — build the rest yourself",
-		Icon:        "\U0001F4DD", // 📝
+		Description: "Empty workspace — run /pad onboard to build it out",
+		Icon:        "✨", // ✨
 		Collections: []DefaultCollection{
-			conventionsCollection(0, SoftwareConventionTriggers, SoftwareConventionScopes),
-			playbooksCollection(1, SoftwarePlaybookTriggers, SoftwarePlaybookScopes),
+			conventionsCollection(0, BlankConventionTriggers, BlankConventionScopes),
+			playbooksCollection(1, BlankPlaybookTriggers, BlankPlaybookScopes),
 		},
 		// No SeedItems, no Conventions, no Playbooks, no OnboardingPrimaryRef —
 		// system rails only. Users build the rest via `pad collection create`.
