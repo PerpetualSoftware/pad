@@ -119,11 +119,15 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
-  delete  — Soft-delete a collection AND every item in it. Owner-only,
-            irreversible from MCP (restore via API/DB backup). Required:
-            workspace, slug. Pairs with update for the onboarding flow —
-            remove seeded collections that don't fit before creating the
-            right ones.
+  delete  — Soft-delete a collection. Owner-only, irreversible from MCP
+            (restore via API/DB backup). Required: workspace, slug.
+            Constraints:
+              - Cannot delete a default (template-seeded) collection.
+                Adapt those via update instead (rename, reshape schema).
+              - Items in the collection are NOT cascaded — they remain
+                in the database with the soft-deleted collection_id.
+                The web UI hides them; raw API queries still surface
+                them.
 
 Schema for an individual collection is included in the list response — read it
 from there rather than calling list again. v0.2 does not expose a dedicated
