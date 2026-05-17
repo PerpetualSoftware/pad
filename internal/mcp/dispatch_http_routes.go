@@ -287,6 +287,7 @@ func init() {
 
 		// --- Roles (admin) ---
 		"role create": mapRoleCreate,
+		"role update": mapRoleUpdate,
 		"role delete": routeSpec{
 			method:       http.MethodDelete,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles/{slug}",
@@ -701,6 +702,64 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/collections/" + url.PathEscape(slug)
+	return http.MethodPatch, urlPath, body, nil
+}
+
+// mapRoleUpdate dispatches `pad role update <slug>
+// [--name ...] [--slug ...] [--description ...] [--icon ...]
+// [--tools ...] [--sort-order ...]`.
+//
+// PATCH /api/v1/workspaces/{ws}/agent-roles/{slug} with a body
+// matching models.AgentRoleUpdate. The path's {slug} identifies the
+// role to mutate (server resolves slug-or-UUID via
+// store.ResolveAgentRoleID); the body's `slug` field, populated from
+// MCP input `new_slug`, supplies the rename target so the two
+// semantics stay disambiguated on the MCP surface.
+//
+// String fields use KEY PRESENCE (not "v != \"\"") because every
+// AgentRoleUpdate field is a pointer, and the store treats *string("")
+// as "clear this column" the same way collections do. The CLI's flag
+// help advertises empty-string clears for description and icon — the
+// MCP surface preserves that behavior.
+func mapRoleUpdate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	slug, _ := input["slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("slug is required")
+	}
+
+	payload := map[string]any{}
+	// Standard string fields — key presence, not value-non-empty,
+	// so empty strings can clear.
+	for _, key := range []string{"name", "description", "icon", "tools"} {
+		v, ok := input[key]
+		if !ok || v == nil {
+			continue
+		}
+		if s, ok := v.(string); ok {
+			payload[key] = s
+		}
+	}
+	// new_slug → body["slug"]: the rename target lives under a
+	// distinct MCP input key so it doesn't collide with the
+	// lookup slug in the path.
+	if v, ok := input["new_slug"]; ok && v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			payload["slug"] = s
+		}
+	}
+	if v, ok := input["sort_order"]; ok && v != nil {
+		payload["sort_order"] = v
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles/" + url.PathEscape(slug)
 	return http.MethodPatch, urlPath, body, nil
 }
 
