@@ -30,7 +30,7 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "slug",
 				Type:        "string",
-				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update; identifies which collection to mutate.",
+				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update and action=delete; identifies which collection to mutate.",
 			},
 			{
 				Name:        "name",
@@ -94,7 +94,7 @@ var padCollectionTool = ToolDef{
 	},
 }
 
-const padCollectionToolDescription = `Collection management — list, create, and update collection types.
+const padCollectionToolDescription = `Collection management — list, create, update, and delete collection types.
 
 Actions:
   list    — List collections in the workspace with their schemas + counts.
@@ -119,8 +119,9 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
-  delete  — Soft-delete a collection. Owner-only, irreversible from MCP
-            (restore via API/DB backup). Required: workspace, slug.
+  delete  — Soft-delete a collection. Owner-only. No restore endpoint
+            exists — recovery requires a database backup. Required:
+            workspace, slug.
             Constraints:
               - Cannot delete a default (template-seeded) collection.
                 Adapt those via update instead (rename, reshape schema).

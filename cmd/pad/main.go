@@ -5566,8 +5566,8 @@ Constraints:
   - Items in the collection are NOT cascaded — they remain in the
     database with the soft-deleted collection_id. The web UI hides
     them; the API still surfaces them if queried directly.
-  - No 'undelete' subcommand exists; restore via the API or a
-    database backup.`,
+  - No 'undelete' subcommand or restore endpoint exists; recovery
+    is only possible from a database backup.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

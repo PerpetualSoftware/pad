@@ -139,9 +139,13 @@ func (c *Client) UpdateCollection(wsSlug, collSlug string, input models.Collecti
 	return &result, c.patch("/workspaces/"+wsSlug+"/collections/"+collSlug, input, &result)
 }
 
-// DeleteCollection soft-deletes a collection and all items in it.
-// Server-side requires the workspace `owner` role
-// (handlers_collections.go::handleDeleteCollection).
+// DeleteCollection soft-deletes a collection by setting
+// collections.deleted_at. Items in the collection are NOT cascaded;
+// they remain in the database with the soft-deleted collection_id.
+// Server-side rejects collections where is_default=true (template
+// seeds) and requires the workspace `owner` role
+// (handlers_collections.go::handleDeleteCollection,
+// store/collections.go:316).
 func (c *Client) DeleteCollection(wsSlug, collSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/collections/" + collSlug)
 }
