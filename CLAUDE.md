@@ -164,7 +164,9 @@ pad collection create "Name" --schema '<json>'                # full CollectionS
 pad item edit <ref>           # Open in $EDITOR
 pad workspace init [--template X]  # Create workspace
 pad agent install [tool]      # Install /pad skill for AI tools
-pad workspace onboard         # Analyze codebase, suggest conventions
+# Workspace onboarding: run `/pad onboard` from an agent session inside the
+# workspace (Claude Code, MCP, etc.). The /pad onboard playbook is
+# auto-seeded into every new workspace.
 pad server open               # Open web UI in browser
 pad project watch             # Real-time activity stream
 pad github link [item-ref]    # Link current branch's PR to item
