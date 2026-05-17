@@ -761,7 +761,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// considers ALL children (data integrity); the visibility
 			// filter only affects which children appear in the 409
 			// payload — hidden ones are surfaced as a count.
-			visIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+			//
+			// Fail CLOSED on visibility-lookup error (Codex round-3 P1):
+			// a swallowed error here would leave visIDs==nil, which
+			// openChildrenGuardChildVisible treats as "no restriction"
+			// — leaking metadata for hidden children. Surfacing the
+			// internal error blocks the update entirely rather than
+			// risk an information leak.
+			visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+			if visErr != nil {
+				writeInternalError(w, visErr)
+				return
+			}
 			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
 			if gerr != nil {
 				writeInternalError(w, gerr)
@@ -774,13 +785,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				parentSchema:         schema,
 				parentSettings:       settings,
 				newFieldMap:          fieldMap,
-				currentFieldsJS:      item.Fields,
 				visibleCollectionIDs: visIDs,
 				guestFullCollIDs:     guestFull,
 				guestGrantedItemIDs:  guestGranted,
 			}
-			openChildrenPrecheck = func(tx *sql.Tx, _ *models.Item) error {
-				details, derr := s.runOpenChildrenGuard(tx, gctx)
+			openChildrenPrecheck = func(tx *sql.Tx, existing *models.Item) error {
+				// Codex round-3 P2: classify the transition against
+				// the in-tx snapshot of the parent's fields, not the
+				// pre-tx capture. A concurrent writer can change the
+				// done-field value between handler-side read and lock
+				// acquisition; using `existing.Fields` (loaded by
+				// UpdateItemWithPreCheck after the tx began) avoids
+				// both false-fire and false-skip classifications.
+				txCtx := gctx
+				txCtx.currentFieldsJS = existing.Fields
+				details, derr := s.runOpenChildrenGuard(tx, txCtx)
 				if derr != nil {
 					return derr
 				}
@@ -1330,9 +1349,72 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// IDEA-1494 R3 P1: same open-children guard as the regular update
+	// path. `pad item move ... --field status=completed` would
+	// otherwise bypass it. We classify the proposed transition
+	// against the DESTINATION collection's schema (conservative —
+	// honors the schema the item is moving INTO, so a target-schema
+	// terminal value can't be smuggled in via a source whose schema
+	// doesn't recognize the value as terminal). Visibility filter is
+	// pre-computed and fails closed on lookup error, mirroring the
+	// update path.
+	//
+	// Force override on the move path lives on the URL query
+	// (?force=true). Move's request body shape is already fixed
+	// ({target_collection, field_overrides}) and adding a body
+	// field would require coordinating with the CLI/MCP move
+	// callers; the query param sidesteps that without changing the
+	// JSON contract. Same semantics as `pad item update --force`.
+	moveForce := r.URL.Query().Get("force") == "true"
+
+	var movePrecheck func(tx *sql.Tx, existing *models.Item) error
+	if !moveForce {
+		var destSettings models.CollectionSettings
+		if targetColl.Settings != "" {
+			_ = json.Unmarshal([]byte(targetColl.Settings), &destSettings)
+		}
+		visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+		if visErr != nil {
+			writeInternalError(w, visErr)
+			return
+		}
+		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+		if gerr != nil {
+			writeInternalError(w, gerr)
+			return
+		}
+		mgctx := openChildrenGuardContext{
+			r:                    r,
+			workspaceID:          workspaceID,
+			itemID:               item.ID,
+			parentSchema:         targetSchema,
+			parentSettings:       destSettings,
+			newFieldMap:          result.Fields,
+			visibleCollectionIDs: visIDs,
+			guestFullCollIDs:     guestFull,
+			guestGrantedItemIDs:  guestGranted,
+		}
+		movePrecheck = func(tx *sql.Tx, existing *models.Item) error {
+			txCtx := mgctx
+			txCtx.currentFieldsJS = existing.Fields
+			details, derr := s.runOpenChildrenGuard(tx, txCtx)
+			if derr != nil {
+				return derr
+			}
+			if details != nil {
+				return &openChildrenGuardError{details: details}
+			}
+			return nil
+		}
+	}
+
 	// Move the item
-	moved, err := s.store.MoveItem(item.ID, targetColl.ID, string(fieldsJSON))
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck)
 	if err != nil {
+		if details, ok := asOpenChildrenGuardError(err); ok {
+			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

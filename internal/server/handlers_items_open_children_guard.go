@@ -193,7 +193,14 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 		child := &children[i]
 		dc, cached := ctxCache[child.CollectionID]
 		if !cached {
-			if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
+			// Codex round-3 P3: include soft-deleted collections so a
+			// child still attached to a soft-deleted collection is
+			// evaluated against its own done-field schema, not the
+			// default-status fallback (which would false-block when
+			// the collection's done-field is e.g. `resolution` with
+			// custom terminal_options). Mirrors the inclusion rule
+			// childrenDoneFiltersForParent uses (items.go ≈2165).
+			if coll, cerr := s.store.GetCollectionAnyState(child.CollectionID); cerr == nil && coll != nil {
 				_ = json.Unmarshal([]byte(coll.Schema), &dc.schema)
 				if coll.Settings != "" {
 					_ = json.Unmarshal([]byte(coll.Settings), &dc.settings)

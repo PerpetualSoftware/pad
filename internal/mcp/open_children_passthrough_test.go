@@ -102,7 +102,7 @@ func TestClassifyHTTPStatus_ConflictWithoutCodeFallsToErrConflict(t *testing.T) 
 
 func TestClassifyExecError_OpenChildrenMarkerLiftsStructuredPayload(t *testing.T) {
 	stderr := `Error: connecting to backend
-pad-error: {"error":{"code":"open_children","message":"cannot mark PLAN-5 completed: 1 open child still in a non-terminal state. Pass --force to override.","details":{"open_children":[{"ref":"TASK-7","title":"x","status":"open","collection_slug":"tasks"}],"hidden_blocker_count":0,"done_field":"status","attempted_value":"completed"}}}
+pad-structured-error/v1: {"error":{"code":"open_children","message":"cannot mark PLAN-5 completed: 1 open child still in a non-terminal state. Pass --force to override.","details":{"open_children":[{"ref":"TASK-7","title":"x","status":"open","collection_slug":"tasks"}],"hidden_blocker_count":0,"done_field":"status","attempted_value":"completed"}}}
 cannot mark PLAN-5 completed: 1 open child still in a non-terminal state. Pass --force to override.
   TASK-7 — x (status=open)
 Pass --force to override.
@@ -143,5 +143,84 @@ func TestClassifyExecError_NoMarkerFallsThrough(t *testing.T) {
 	env := res.StructuredContent.(ErrorEnvelope)
 	if env.Error.Code == ErrOpenChildren {
 		t.Errorf("plain validation stderr must not be classified as open_children")
+	}
+}
+
+// TestClassifyExecError_UnknownStructuredCodeFallsThrough covers
+// Codex round-3 P3 marker hardening: even with a well-formed
+// pad-structured-error/v1 marker, a code that's NOT in the allow-list
+// must not be surfaced — fall back to regex classification instead.
+// Prevents a CLI bug or third-party tool from smuggling an
+// unsanitized code past the MCP boundary.
+func TestClassifyExecError_UnknownStructuredCodeFallsThrough(t *testing.T) {
+	stderr := `pad-structured-error/v1: {"error":{"code":"made_up_code","message":"x"}}
+Error: invalid status value
+`
+	res := classifyExecError(context.Background(),
+		[]string{"item", "update"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code == ErrorCode("made_up_code") {
+		t.Errorf("unknown structured code must not be surfaced; got %q", env.Error.Code)
+	}
+}
+
+// TestClassifyExecError_OldMarkerVersionIgnored confirms that an
+// older (or unrecognized future) marker version is ignored rather
+// than parsed. Validates the "version token is parsed, not just
+// prefix-matched" property — agents on the new mcp build won't be
+// confused by stderr from a stale CLI binary that still uses the
+// pre-round-3 unversioned `pad-error:` shape.
+func TestClassifyExecError_OldMarkerVersionIgnored(t *testing.T) {
+	stderr := `pad-error: {"error":{"code":"open_children","message":"x"}}
+Error: invalid status value
+`
+	res := classifyExecError(context.Background(),
+		[]string{"item", "update"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code == ErrOpenChildren {
+		t.Errorf("pre-v1 unversioned marker must not be lifted; got %q", env.Error.Code)
+	}
+}
+
+// TestClassifyExecError_MarkerEmbeddedMidLineIgnored ensures a marker
+// substring inside a quoted log message can't impersonate a real
+// structured error. The classifier requires the marker at the line's
+// start (after whitespace trim) — embedded variants fall through.
+func TestClassifyExecError_MarkerEmbeddedMidLineIgnored(t *testing.T) {
+	stderr := `Error: backend logged "pad-structured-error/v1: {\"error\":{\"code\":\"open_children\"}}"
+`
+	res := classifyExecError(context.Background(),
+		[]string{"item", "update"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code == ErrOpenChildren {
+		t.Errorf("embedded marker must not be lifted; got %q", env.Error.Code)
+	}
+}
+
+// TestClassifyExecError_LastMarkerWins confirms multiple markers
+// resolve to the LAST one — a malicious earlier line can't pre-empt
+// the CLI's actual final classification.
+func TestClassifyExecError_LastMarkerWins(t *testing.T) {
+	stderr := `pad-structured-error/v1: {"error":{"code":"made_up_code","message":"first"}}
+pad-structured-error/v1: {"error":{"code":"open_children","message":"second","details":{"open_children":[]}}}
+`
+	res := classifyExecError(context.Background(),
+		[]string{"item", "update"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code != ErrOpenChildren {
+		t.Errorf("expected the later marker to win; got %q (message=%q)",
+			env.Error.Code, env.Error.Message)
 	}
 }

@@ -316,56 +316,86 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // with the raw stderr preserved in Message.
 // ─────────────────────────────────────────────────────────────────────
 
-// openChildrenStderrMarker mirrors internal/cli.OpenChildrenErrorMarker
-// — the line prefix the CLI writes to stderr when it surfaces an
-// IDEA-1494 open-children rejection. We deliberately duplicate the
-// constant rather than importing internal/cli (which would pull a
-// hefty dependency graph into the mcp classifier just for a string).
-// If you change the marker in one place, change it in both.
-const openChildrenStderrMarker = "pad-error: "
+// structuredErrorMarker mirrors internal/cli.StructuredErrorMarker —
+// the versioned line prefix the CLI writes to stderr when it surfaces
+// a structured error. Duplicated (rather than imported) so the mcp
+// classifier doesn't pull the cli package's dependency graph in for
+// one string. Codex round-3 P3 introduced the versioned shape.
+//
+// IMPORTANT: keep in lockstep with cli.StructuredErrorMarker AND with
+// allowedStructuredErrorCodes below. A wire-shape change requires
+// bumping both packages and reviewing the allow-list.
+const structuredErrorMarker = "pad-structured-error/v1: "
+
+// allowedStructuredErrorCodes is the whitelist of codes the classifier
+// will surface from a `pad-structured-error/v1:` marker (Codex
+// round-3 P3). Unknown codes fall back to the regex classifier rather
+// than getting blindly forwarded — a CLI bug or third-party tool that
+// emits a marker with an unrecognized code can't smuggle an
+// unsanitized payload past the MCP boundary.
+//
+// Add a code here ONLY after confirming the upstream CLI path that
+// emits it has been audited (matching wire shape, no PII in details,
+// stable contract).
+var allowedStructuredErrorCodes = map[string]struct{}{
+	"open_children": {}, // IDEA-1494
+}
 
 // extractStructuredCLIError scans stderr for the
-// `pad-error: {json}\n` marker line and lifts the structured error
-// envelope into an MCP result. Returns nil when no marker is found
+// `pad-structured-error/v1: {json}\n` marker line and lifts the
+// structured error envelope into an MCP result. Returns nil when no
+// marker is found OR the payload fails any of the hardening checks
 // (caller falls back to the regex-based classifiers).
 //
-// The marker can appear anywhere in stderr — earlier lines may carry
-// cobra noise or interleaved log output — so we scan line-by-line
-// rather than requiring it at byte 0. First match wins; later
-// `pad-error:` lines (currently impossible but cheap to be defensive
-// about) are ignored.
+// Hardening (Codex round-3 P3):
+//   - Versioned marker. Unknown versions return nil.
+//   - Whitelisted codes. Unknown codes return nil.
+//   - Last-marker-wins. If multiple markers appear in stderr (a
+//     pathological case today, but possible if a future caller emits
+//     several), we use the LAST one — that's the most recent
+//     classification the CLI emitted, and a malicious earlier line
+//     can't pre-empt it.
+//   - Marker must start the line after trimming whitespace; markers
+//     embedded mid-line (e.g. in a quoted log message) are ignored.
 func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
-	if !strings.Contains(stderr, openChildrenStderrMarker) {
+	if !strings.Contains(stderr, structuredErrorMarker) {
 		return nil
 	}
+	var lastPayload string
 	for _, line := range strings.Split(stderr, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, openChildrenStderrMarker) {
+		if !strings.HasPrefix(line, structuredErrorMarker) {
 			continue
 		}
-		payload := strings.TrimPrefix(line, openChildrenStderrMarker)
-		var env struct {
-			Error struct {
-				Code    string          `json:"code"`
-				Message string          `json:"message"`
-				Details json.RawMessage `json:"details,omitempty"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(payload), &env); err != nil {
-			// Malformed marker payload — fall through to regex
-			// classification rather than blowing up the agent.
-			return nil
-		}
-		if env.Error.Code == "" {
-			return nil
-		}
-		return NewErrorResult(ErrorPayload{
-			Code:    ErrorCode(env.Error.Code),
-			Message: env.Error.Message,
-			Details: env.Error.Details,
-		})
+		lastPayload = strings.TrimPrefix(line, structuredErrorMarker)
 	}
-	return nil
+	if lastPayload == "" {
+		return nil
+	}
+	var env struct {
+		Error struct {
+			Code    string          `json:"code"`
+			Message string          `json:"message"`
+			Details json.RawMessage `json:"details,omitempty"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lastPayload), &env); err != nil {
+		// Malformed marker payload — fall through to regex
+		// classification rather than blowing up the agent.
+		return nil
+	}
+	if env.Error.Code == "" {
+		return nil
+	}
+	if _, ok := allowedStructuredErrorCodes[env.Error.Code]; !ok {
+		// Unknown code. Don't forward — regex classifier handles it.
+		return nil
+	}
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrorCode(env.Error.Code),
+		Message: env.Error.Message,
+		Details: env.Error.Details,
+	})
 }
 
 // classifyExecError turns an exec.Cmd failure (err + stderr) into a

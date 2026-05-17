@@ -3640,6 +3640,7 @@ func deleteCmd() *cobra.Command {
 // --- move ---
 
 func moveCmd() *cobra.Command {
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "move <ref> <target-collection>",
 		Short: "Move an item to a different collection",
@@ -3677,8 +3678,18 @@ Examples:
 				input["field_overrides"] = overrides
 			}
 
-			moved, err := client.MoveItem(ws, args[0], input)
+			moved, err := client.MoveItemWithForce(ws, args[0], input, force)
 			if err != nil {
+				// IDEA-1494 R3 P1: render the open-children rejection
+				// the same way the regular update path does, so
+				// `pad item move ... --field status=completed` against
+				// a plan with open children fails informatively.
+				if apiErr, ok := err.(*cli.APIError); ok {
+					if oc := apiErr.AsOpenChildren(); oc != nil {
+						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
+						return fmt.Errorf("move rejected: open children present")
+					}
+				}
 				return err
 			}
 
@@ -3687,6 +3698,7 @@ Examples:
 		},
 	}
 	cmd.Flags().StringArray("field", nil, "set field values in target collection (key=value)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard when the move would write a terminal done-field value")
 	return cmd
 }
 
@@ -6530,9 +6542,17 @@ Examples:
 				Ref     string         `json:"ref"`
 				Applied map[string]any `json:"applied"`
 			}
+			// updateFailure carries the structured server error per row
+			// so MCP-driven agents see code + details (IDEA-1494 R3 P2).
+			// `Error` stays as the human-readable message for backward
+			// compatibility with non-MCP CLI consumers; `Code` and
+			// `Details` populate when the server returned a structured
+			// envelope (currently: only open_children rejections).
 			type updateFailure struct {
-				Ref   string `json:"ref"`
-				Error string `json:"error"`
+				Ref     string          `json:"ref"`
+				Error   string          `json:"error"`
+				Code    string          `json:"code,omitempty"`
+				Details json.RawMessage `json:"details,omitempty"`
 			}
 			updated := make([]updateResult, 0, len(args))
 			failed := make([]updateFailure, 0)
@@ -6577,10 +6597,37 @@ Examples:
 
 				_, err = client.UpdateItem(ws, slug, input)
 				if err != nil {
+					// IDEA-1494 R3 P2: preserve the structured server
+					// error per row so the JSON envelope (and any
+					// MCP-driven agent reading it) sees code +
+					// details — not just a flattened string. The
+					// human text output continues to show the bare
+					// message.
+					row := updateFailure{Ref: slug, Error: err.Error()}
+					if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code != "" {
+						row.Code = apiErr.Code
+						if len(apiErr.Details) > 0 {
+							row.Details = apiErr.Details
+						}
+					}
 					if formatFlag != "json" {
 						fmt.Printf("  %s %s — %s\n", red.Sprint("✗"), slug, err)
+						// For open_children rejections also render the
+						// blocking-child list inline so the human
+						// reader doesn't have to switch to --format
+						// json to see what blocked.
+						if apiErr, ok := err.(*cli.APIError); ok {
+							if oc := apiErr.AsOpenChildren(); oc != nil {
+								for _, c := range oc.OpenChildren {
+									fmt.Printf("      %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)
+								}
+								if oc.HiddenBlockerCount > 0 {
+									fmt.Printf("      (+%d hidden blocker(s) you don't have access to)\n", oc.HiddenBlockerCount)
+								}
+							}
+						}
 					}
-					failed = append(failed, updateFailure{Ref: slug, Error: err.Error()})
+					failed = append(failed, row)
 					continue
 				}
 

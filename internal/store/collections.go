@@ -89,6 +89,45 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	return &c, nil
 }
 
+// GetCollectionAnyState is GetCollection without the
+// `deleted_at IS NULL` filter — used by the open-children guard
+// (IDEA-1494 R3 P3) so a child still attached to a soft-deleted
+// collection is evaluated against ITS collection's actual done-field
+// schema instead of falling back to the default `status` terminal
+// list (which would mis-classify children of custom-done-field
+// collections as non-terminal and produce false blockers).
+//
+// Mirrors the inclusion rule baked into childrenDoneFiltersForParent /
+// doneFiltersForWorkspace, both of which already include soft-deleted
+// collections for exactly this reason.
+func (s *Store) GetCollectionAnyState(id string) (*models.Collection, error) {
+	var c models.Collection
+	var createdAt, updatedAt string
+	var deletedAt *string
+	var isDefault bool
+
+	err := s.db.QueryRow(s.q(`
+		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
+		FROM collections
+		WHERE id = ?
+	`), id).Scan(
+		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
+		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+		&createdAt, &updatedAt, &deletedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get collection (any state): %w", err)
+	}
+	c.IsDefault = isDefault
+	c.CreatedAt = parseTime(createdAt)
+	c.UpdatedAt = parseTime(updatedAt)
+	c.DeletedAt = parseTimePtr(deletedAt)
+	return &c, nil
+}
+
 func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collection, error) {
 	var id string
 	err := s.db.QueryRow(s.q(`

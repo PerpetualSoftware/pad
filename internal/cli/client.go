@@ -202,8 +202,21 @@ func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models
 }
 
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {
+	return c.MoveItemWithForce(wsSlug, itemSlug, input, false)
+}
+
+// MoveItemWithForce is the open-children-guard-aware variant of
+// MoveItem (IDEA-1494 R3 P1). When `force` is true, the URL gets a
+// `?force=true` query so the server-side move handler skips the guard
+// and still records the collection + fields change. Same escape-hatch
+// semantics as `pad item update --force`.
+func (c *Client) MoveItemWithForce(wsSlug, itemSlug string, input map[string]any, force bool) (*models.Item, error) {
 	var result models.Item
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/move", input, &result)
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/move"
+	if force {
+		path += "?force=true"
+	}
+	return &result, c.post(path, input, &result)
 }
 
 // --- Links ---
@@ -748,17 +761,33 @@ func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
 	return &d
 }
 
-// OpenChildrenErrorMarker is the line prefix the CLI writes to stderr
-// when surfacing an open-children rejection (IDEA-1494 R2). The single
-// JSON line after the prefix carries the full structured error
-// envelope (code / message / details) so a downstream consumer — the
-// stdio MCP dispatcher's classifyExecError in particular — can detect
-// the rejection and lift the structured payload without parsing free-
-// form human text. The prefix is intentionally distinctive and
-// lowercase-kebab so matchers use a literal `strings.HasPrefix`
-// (no regex compilation needed) and so a human reader can ignore it
-// visually as obvious machine output.
-const OpenChildrenErrorMarker = "pad-error: "
+// StructuredErrorMarker is the versioned line prefix the CLI writes
+// to stderr when surfacing a structured error (currently: IDEA-1494's
+// open-children rejection). The JSON line that follows carries the
+// full server-style envelope (code / message / details) so a
+// downstream consumer — the stdio MCP dispatcher's classifyExecError
+// in particular — can detect the rejection and lift the structured
+// payload without parsing free-form human text.
+//
+// Versioned (Codex round-3 P3) so future evolutions of the wire shape
+// don't silently break older parsers — when the payload contract
+// changes incompatibly, bump to `pad-structured-error/v2:` and have
+// the classifier accept both during the transition. The version token
+// is parsed (not just matched as a literal prefix) so older v1-only
+// parsers cleanly ignore unknown versions.
+//
+// IMPORTANT: keep in lockstep with mcp.structuredErrorMarker / the
+// allow-list of structured codes in mcp.allowedStructuredErrorCodes.
+// A change here REQUIRES a corresponding change in
+// internal/mcp/errors.go.
+const StructuredErrorMarker = "pad-structured-error/v1: "
+
+// OpenChildrenErrorMarker is the pre-round-3 marker, retained as a
+// deprecated alias for any out-of-tree consumer that may have hard-
+// coded it. New code MUST use StructuredErrorMarker.
+//
+// Deprecated: use StructuredErrorMarker.
+const OpenChildrenErrorMarker = StructuredErrorMarker
 
 // WriteOpenChildrenError formats an open-children rejection to w in
 // the canonical two-track shape the project guarantees (IDEA-1494 R2):
@@ -784,7 +813,7 @@ func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetai
 		},
 	}
 	if data, err := json.Marshal(envelope); err == nil {
-		fmt.Fprintln(w, OpenChildrenErrorMarker+string(data))
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
 	fmt.Fprintln(w, apiErr.Message)
 	for _, c := range oc.OpenChildren {

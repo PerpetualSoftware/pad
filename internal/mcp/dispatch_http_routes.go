@@ -1011,6 +1011,12 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 	}
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/items/%s/move",
 		url.PathEscape(workspace), url.PathEscape(ref))
+	// IDEA-1494 R3 P1: forward the open-children guard override into
+	// the URL query, matching the server-side contract (handler reads
+	// ?force=true). Same wire shape `pad item move --force` uses.
+	if b, ok := input["force"].(bool); ok && b {
+		urlPath += "?force=true"
+	}
 	return http.MethodPost, urlPath, body, nil
 }
 
