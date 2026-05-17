@@ -257,14 +257,84 @@ func TestSeedFromBlankTemplate(t *testing.T) {
 		t.Errorf("blank workspace missing required system collection %q", slug)
 	}
 
-	// No items should be seeded — neither sample items, conventions, nor
-	// playbooks.
+	// Exactly one seeded item: the universal /pad onboard playbook
+	// (PLAN-1496 / TASK-1500). No sample items, no seeded conventions,
+	// no other playbooks — the blank template's whole point is "agent
+	// drives setup", and the onboard playbook is what makes /pad
+	// onboard invokable on day one.
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("blank workspace has %d items, want 1 (the seeded onboard playbook)", len(items))
+	}
+	if len(items) >= 1 && items[0].Title != "Onboard a workspace" {
+		t.Errorf("blank workspace's sole seeded item should be the onboard playbook; got %q", items[0].Title)
+	}
+}
+
+// TestSeedFromTemplateAlwaysIncludesOnboardPlaybook covers TASK-1500's
+// contract: the /pad onboard playbook is auto-seeded into EVERY
+// workspace created with a real template (blank, startup, scrum,
+// product, hiring, interviewing — anything that calls
+// SeedCollectionsFromTemplate with a non-empty templateName).
+//
+// The empty-template-name path (templateName == "") is the explicit
+// backward-compat escape hatch for tests and direct API callers and
+// must NOT get the auto-seed; that's covered by the existing
+// dashboard / list-items tests in internal/server/ which all rely on
+// "empty Template + zero items" semantics.
+func TestSeedFromTemplateAlwaysIncludesOnboardPlaybook(t *testing.T) {
+	for _, name := range []string{"blank", "startup", "scrum", "product", "hiring", "interviewing"} {
+		t.Run(name, func(t *testing.T) {
+			s := testStore(t)
+			ws := createTestWorkspace(t, s, name+" Onboard Seed Test")
+			if err := s.SeedCollectionsFromTemplate(ws.ID, name); err != nil {
+				t.Fatalf("SeedCollectionsFromTemplate(%s) error: %v", name, err)
+			}
+			items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: "playbooks"})
+			if err != nil {
+				t.Fatalf("ListItems error: %v", err)
+			}
+			var found bool
+			for _, it := range items {
+				if it.Title == "Onboard a workspace" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				titles := make([]string, 0, len(items))
+				for _, it := range items {
+					titles = append(titles, it.Title)
+				}
+				t.Errorf("template %q workspace missing the /pad onboard playbook; got playbook titles: %v", name, titles)
+			}
+		})
+	}
+}
+
+// TestSeedWithEmptyTemplateNameSkipsOnboard locks the escape-hatch
+// invariant: SeedCollectionsFromTemplate(ws, "") must NOT auto-seed
+// the onboard playbook. This is the path tests and direct API
+// callers use to get a bare workspace.
+func TestSeedWithEmptyTemplateNameSkipsOnboard(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Empty-Template Onboard Skip Test")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, ""); err != nil {
+		t.Fatalf("SeedCollectionsFromTemplate(ws, \"\") error: %v", err)
+	}
 	items, err := s.ListItems(ws.ID, models.ItemListParams{})
 	if err != nil {
 		t.Fatalf("ListItems error: %v", err)
 	}
 	if len(items) != 0 {
-		t.Errorf("blank workspace has %d items, want 0", len(items))
+		titles := make([]string, 0, len(items))
+		for _, it := range items {
+			titles = append(titles, it.Title)
+		}
+		t.Errorf("empty-template path should seed zero items; got %d (%v)", len(items), titles)
 	}
 }
 

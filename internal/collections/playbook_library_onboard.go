@@ -1,5 +1,7 @@
 package collections
 
+import "encoding/json"
+
 // playbook_library_onboard.go ships the canonical `/pad onboard`
 // library playbook (PLAN-1496 / TASK-1499). This is the workspace's
 // adaptive bootstrap interview — the playbook the agent runs to turn
@@ -115,7 +117,7 @@ Iterate until the user's happy. Then create the collections — one ` + "`pad co
 
 The conventions collection already exists (blank template ships it). Now you fill it.
 
-Browse the convention library (` + "`pad library list-conventions`" + ` or the equivalent MCP query — check what's actually available in the agent's surface). For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
+Browse the convention library (` + "`pad library list --type conventions`" + ` — the CLI surface; MCP users can read the same data via ` + "`pad_meta.action: bootstrap`" + ` workspace state). For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
 
 - Library has "Run tests before completing tasks." If the project is Go with a Makefile, your version says "Run ` + "`make test`" + ` before marking a task done. If the build fails, fix it before merging."
 - Library has "Conventional commit format." If the project's existing commits don't follow that style, ASK the user before activating it — maybe they don't want it.
@@ -242,6 +244,36 @@ var onboardPlaybookArguments = []map[string]any{
 		"type":        "flag",
 		"description": "Skip the codebase auto-detection step. Useful for non-code workspaces (hiring, research, content) and for cases where the user wants to drive the conversation rather than have the agent volunteer detected commands.",
 	},
+}
+
+// OnboardSeedPlaybook returns the onboard playbook as a SeedPlaybook
+// ready for SeedCollectionsFromTemplate to insert into a new workspace
+// at init time. PLAN-1496 / TASK-1500 — auto-seeded into EVERY new
+// workspace regardless of template, so /pad onboard is always
+// invokable on day one without the user having to activate it from
+// the library first. The seed shares its body + argument spec with
+// OnboardPlaybook() so the library entry and the seeded item never
+// drift (same pattern ShipPlaybook uses for `ship`).
+//
+// trigger="manual" + scope="all" stay inside the blank template's
+// minimal seeded vocabulary (BlankPlaybookTriggers / Scopes) AND
+// inside every domain template's vocabulary, so the seed validates
+// against the playbooks collection schema regardless of which
+// template the workspace was created from.
+func OnboardSeedPlaybook() SeedPlaybook {
+	fields := map[string]any{
+		"status":          "active",
+		"trigger":         "manual",
+		"scope":           "all",
+		"invocation_slug": "onboard",
+		"arguments":       onboardPlaybookArguments,
+	}
+	encoded, _ := json.Marshal(fields)
+	return SeedPlaybook{
+		Title:   "Onboard a workspace",
+		Content: onboardPlaybookBody,
+		Fields:  string(encoded),
+	}
 }
 
 // OnboardPlaybook returns the library entry for the canonical

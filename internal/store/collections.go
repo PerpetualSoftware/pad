@@ -620,6 +620,30 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		}
 	}
 
+	// Universal onboard playbook (PLAN-1496 / TASK-1500). Auto-seeded
+	// into every workspace created via a real template — including
+	// `blank` (where it's the only payload) and the opinionated
+	// software/people templates (where it complements the seeded
+	// starter pack with the "/pad onboard" entry point for further
+	// adaptation).
+	//
+	// Skipped when templateName == "" — that's the explicit
+	// backward-compat escape hatch for tests and direct API callers
+	// who want a bare workspace with default system collections and
+	// NO seeded content. cmd/pad/init.go ALWAYS supplies a non-empty
+	// template (interactive picker or defaultTemplateName), so real
+	// user-facing workspace creation always lands here.
+	//
+	// Seeded last so any future template that ships its own
+	// "Onboard a workspace"-titled playbook can take precedence —
+	// the seedItem helper is idempotent by title inside a collection.
+	if templateName != "" {
+		onboardSeed := collections.OnboardSeedPlaybook()
+		if err := seedItem("playbooks", onboardSeed.Title, onboardSeed.Content, onboardSeed.Fields); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
