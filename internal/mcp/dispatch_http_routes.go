@@ -657,28 +657,33 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 	// schema vs fields: the catalog advertises both forms as mutually
 	// exclusive (matching `pad collection create`/`update`). The CLI
 	// resolves them via collectionSchemaJSONFromFlags; we mirror that
-	// resolution here so HTTP MCP callers get parity. Either input
-	// produces a JSON-encoded string on the wire — CollectionUpdate.
-	// Schema is *string and its UnmarshalJSON does not coerce objects.
+	// resolution here so HTTP MCP callers get parity.
+	//
+	// Normalize empty inputs as absent BEFORE checking exclusivity so
+	// optional empty params (`schema:null`, `schema:""`) don't block a
+	// legitimate `fields=...` update. Mirrors the relaxed handling on
+	// collection create.
 	rawSchema, hasSchema := input["schema"]
+	if rawSchema == nil {
+		hasSchema = false
+	} else if s, ok := rawSchema.(string); ok && s == "" {
+		hasSchema = false
+	}
 	rawFields, _ := input["fields"].(string)
 	if hasSchema && rawFields != "" {
 		return "", "", nil, fmt.Errorf("fields and schema are mutually exclusive")
 	}
 	switch {
-	case hasSchema && rawSchema != nil:
-		switch s := rawSchema.(type) {
-		case string:
-			if s != "" {
-				payload["schema"] = s
-			}
-		default:
-			encoded, err := json.Marshal(rawSchema)
-			if err != nil {
-				return "", "", nil, fmt.Errorf("encode schema: %w", err)
-			}
-			payload["schema"] = string(encoded)
+	case hasSchema:
+		// Reuse the encoder collection-create uses (dispatch_http_routes.go:418).
+		// Backfills missing field labels via the Title-Case-of-key heuristic and
+		// validates the schema shape before sending — catches malformed objects
+		// at the boundary instead of letting the server return a 400.
+		encoded, err := encodeSchemaForBody(rawSchema)
+		if err != nil {
+			return "", "", nil, err
 		}
+		payload["schema"] = string(encoded)
 	case rawFields != "":
 		schemaJSON, err := collections.FieldsDSLToSchemaJSON(rawFields)
 		if err != nil {

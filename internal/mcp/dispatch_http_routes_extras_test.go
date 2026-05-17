@@ -166,11 +166,15 @@ func TestMapCollectionUpdate_EncodesSchemaObjectToString(t *testing.T) {
 	}
 }
 
-// TestMapCollectionUpdate_PassesSchemaStringVerbatim allows the
-// pre-encoded string form (mirrors what the CLI's
-// collectionSchemaJSONFromFlags produces) so callers can stay
-// symmetric with the create path.
-func TestMapCollectionUpdate_PassesSchemaStringVerbatim(t *testing.T) {
+// TestMapCollectionUpdate_AcceptsSchemaString lets callers pass the
+// pre-encoded JSON string form (mirrors what the CLI's
+// collectionSchemaJSONFromFlags produces) so MCP and CLI stay
+// symmetric with the create path. The encoder validates + backfills
+// missing labels — verbatim pass-through is NOT a property we
+// promise (Codex round-2 finding on PR #572: schema bodies should
+// go through encodeSchemaForBody so structured-but-label-missing
+// input gets normalized the same way collection-create handles it).
+func TestMapCollectionUpdate_AcceptsSchemaString(t *testing.T) {
 	schemaStr := `{"fields":[{"key":"status","type":"select","options":["a","b"]}]}`
 	_, _, body, err := mapCollectionUpdate(map[string]any{
 		"workspace": "docapp",
@@ -184,8 +188,49 @@ func TestMapCollectionUpdate_PassesSchemaStringVerbatim(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if got["schema"] != schemaStr {
-		t.Errorf("schema should pass through unmodified; got %v", got["schema"])
+	gotSchema, ok := got["schema"].(string)
+	if !ok || gotSchema == "" {
+		t.Fatalf("schema-string input should still produce a schema string; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Round-trip parity: the encoded schema decodes to a valid
+	// CollectionSchema containing the same field key the input had.
+	var parsed models.CollectionSchema
+	if err := json.Unmarshal([]byte(gotSchema), &parsed); err != nil {
+		t.Fatalf("encoded schema is not a valid CollectionSchema: %v\n%s", err, gotSchema)
+	}
+	if len(parsed.Fields) != 1 || parsed.Fields[0].Key != "status" {
+		t.Errorf("schema round-trip lost the status field: %+v", parsed.Fields)
+	}
+	// And the missing label gets backfilled — the encoder uses the
+	// Title-Case-of-key heuristic, matching collection create.
+	if parsed.Fields[0].Label != "Status" {
+		t.Errorf("missing label should be backfilled to %q; got %q", "Status", parsed.Fields[0].Label)
+	}
+}
+
+// TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields covers the
+// Codex round-2 P3 finding: optional empty params should normalize as
+// "absent" before the mutual-exclusion check fires, so an MCP client
+// that sends `schema:null` (or `""`) plus a real `fields=...` update
+// doesn't get a spurious exclusivity error.
+func TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields(t *testing.T) {
+	for _, emptySchema := range []any{nil, ""} {
+		_, _, body, err := mapCollectionUpdate(map[string]any{
+			"workspace": "docapp",
+			"slug":      "tasks",
+			"schema":    emptySchema,
+			"fields":    "status:select:open,done",
+		})
+		if err != nil {
+			t.Fatalf("empty schema=%v + fields should NOT trip exclusivity: %v", emptySchema, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, ok := got["schema"].(string); !ok {
+			t.Errorf("fields should still produce a schema PATCH body even when schema=%v; got %v", emptySchema, got)
+		}
 	}
 }
 
