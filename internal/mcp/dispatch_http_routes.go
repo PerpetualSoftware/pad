@@ -253,6 +253,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",
 		}.toRouteMapper(),
+		"collection update": mapCollectionUpdate,
 		"role list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles",
@@ -599,6 +600,104 @@ func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 		urlPath += "?include_terminal=true"
 	}
 	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapCollectionUpdate dispatches `pad collection update <slug>
+// [--name ...] [--icon ...] [--description ...] [--prefix ...]
+// [--schema ...] [--fields ...] [--sort-order ...]`.
+//
+// PATCH /api/v1/workspaces/{ws}/collections/{slug} with a body matching
+// models.CollectionUpdate. Only the keys actually present on `input`
+// are included — every CollectionUpdate field is a pointer, so omitted
+// fields preserve the existing value server-side.
+//
+// `schema` is the awkward one: the catalog declares it as a JSON object
+// for MCP ergonomics (agents send `{"fields":[...]}` as a nested
+// object), but CollectionUpdate.Schema is *string. The
+// CollectionUpdate UnmarshalJSON does NOT do the object→string
+// coercion for schema (only for settings — see collection.go:140).
+// So we re-marshal an object input here to its JSON-string form
+// before sending. This is symmetric to what the CLI does via
+// collectionSchemaJSONFromFlags.
+func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	slug, _ := input["slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("slug is required")
+	}
+
+	payload := map[string]any{}
+	// String fields use KEY PRESENCE (not "v != \"\"") because every
+	// CollectionUpdate field is a pointer server-side, and the store
+	// honors *string("") as "clear this column" (collections.go:271+).
+	// The CLI's --icon "" / --description "" flag help advertises this
+	// behavior; the MCP HTTP path must preserve it. Codex review on
+	// PR #572 caught the empty-string filter regression.
+	for _, key := range []string{"name", "icon", "description", "prefix"} {
+		v, ok := input[key]
+		if !ok || v == nil {
+			continue
+		}
+		// Coerce string-typed input only — non-string values in these
+		// keys are programmer error and we'd rather the server reject
+		// the body than silently mishandle it.
+		if s, ok := v.(string); ok {
+			payload[key] = s
+		}
+	}
+	if v, ok := input["sort_order"]; ok && v != nil {
+		// JSON numbers arrive as float64; CollectionUpdate.SortOrder
+		// is *int, but encoding/json on the receiving side coerces
+		// fine since the field's tag is plain integer.
+		payload["sort_order"] = v
+	}
+	// schema vs fields: the catalog advertises both forms as mutually
+	// exclusive (matching `pad collection create`/`update`). The CLI
+	// resolves them via collectionSchemaJSONFromFlags; we mirror that
+	// resolution here so HTTP MCP callers get parity.
+	//
+	// Normalize empty inputs as absent BEFORE checking exclusivity so
+	// optional empty params (`schema:null`, `schema:""`) don't block a
+	// legitimate `fields=...` update. Mirrors the relaxed handling on
+	// collection create.
+	rawSchema, hasSchema := input["schema"]
+	if rawSchema == nil {
+		hasSchema = false
+	} else if s, ok := rawSchema.(string); ok && s == "" {
+		hasSchema = false
+	}
+	rawFields, _ := input["fields"].(string)
+	if hasSchema && rawFields != "" {
+		return "", "", nil, fmt.Errorf("fields and schema are mutually exclusive")
+	}
+	switch {
+	case hasSchema:
+		// Reuse the encoder collection-create uses (dispatch_http_routes.go:418).
+		// Backfills missing field labels via the Title-Case-of-key heuristic and
+		// validates the schema shape before sending — catches malformed objects
+		// at the boundary instead of letting the server return a 400.
+		encoded, err := encodeSchemaForBody(rawSchema)
+		if err != nil {
+			return "", "", nil, err
+		}
+		payload["schema"] = string(encoded)
+	case rawFields != "":
+		schemaJSON, err := collections.FieldsDSLToSchemaJSON(rawFields)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse fields DSL: %w", err)
+		}
+		payload["schema"] = schemaJSON
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/collections/" + url.PathEscape(slug)
+	return http.MethodPatch, urlPath, body, nil
 }
 
 // mapRoleCreate dispatches `pad role create <name> [--description ...]

@@ -114,11 +114,12 @@ func itemCmd() *cobra.Command {
 func collectionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collection",
-		Short: "List and create collections",
+		Short: "List, create, and update collections",
 	}
 	cmd.AddCommand(
 		collectionsCmd(),
 		collectionsCreateCmd(),
+		collectionsUpdateCmd(),
 	)
 	return cmd
 }

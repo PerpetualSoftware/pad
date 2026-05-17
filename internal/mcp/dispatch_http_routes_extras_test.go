@@ -82,6 +82,270 @@ func TestMapItemStarred_RequiresWorkspace(t *testing.T) {
 	}
 }
 
+// --- Collections (TASK-1510 / PLAN-1496) ---
+
+// TestMapCollectionUpdate_BuildsPatchBody confirms the mapper routes
+// to the canonical PATCH endpoint and copies through every supported
+// flat-string field. Schema-object → string coercion has its own test
+// below.
+func TestMapCollectionUpdate_BuildsPatchBody(t *testing.T) {
+	m, p, body, err := mapCollectionUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "tasks",
+		"name":        "Issues",
+		"icon":        "🎯",
+		"description": "Tracks work to ship",
+		"prefix":      "ISS",
+		"sort_order":  float64(2), // JSON numbers arrive as float64
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	if m != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", m)
+	}
+	if p != "/api/v1/workspaces/docapp/collections/tasks" {
+		t.Errorf("path = %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	want := map[string]any{
+		"name":        "Issues",
+		"icon":        "🎯",
+		"description": "Tracks work to ship",
+		"prefix":      "ISS",
+		"sort_order":  float64(2),
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("body[%q] = %v (%T), want %v (%T)", k, got[k], got[k], v, v)
+		}
+	}
+}
+
+// TestMapCollectionUpdate_EncodesSchemaObjectToString verifies the
+// MCP-friendly object form of the `schema` parameter gets re-marshaled
+// to the JSON-string form CollectionUpdate.Schema (*string) actually
+// expects. Without this coercion the server would reject the PATCH.
+func TestMapCollectionUpdate_EncodesSchemaObjectToString(t *testing.T) {
+	schemaObj := map[string]any{
+		"fields": []any{
+			map[string]any{
+				"key":     "status",
+				"type":    "select",
+				"options": []any{"new", "done"},
+			},
+		},
+	}
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"schema":    schemaObj,
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	gotSchema, ok := got["schema"].(string)
+	if !ok {
+		t.Fatalf("schema should serialize as string for server consumption; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Round-trip through CollectionUpdate.UnmarshalJSON to confirm
+	// the server can actually decode this body.
+	var update models.CollectionUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		t.Fatalf("CollectionUpdate.UnmarshalJSON rejected body: %v", err)
+	}
+	if update.Schema == nil || *update.Schema != gotSchema {
+		t.Errorf("CollectionUpdate.Schema round-trip lost data: got %v, body had %q", update.Schema, gotSchema)
+	}
+}
+
+// TestMapCollectionUpdate_AcceptsSchemaString lets callers pass the
+// pre-encoded JSON string form (mirrors what the CLI's
+// collectionSchemaJSONFromFlags produces) so MCP and CLI stay
+// symmetric with the create path. The encoder validates + backfills
+// missing labels — verbatim pass-through is NOT a property we
+// promise (Codex round-2 finding on PR #572: schema bodies should
+// go through encodeSchemaForBody so structured-but-label-missing
+// input gets normalized the same way collection-create handles it).
+func TestMapCollectionUpdate_AcceptsSchemaString(t *testing.T) {
+	schemaStr := `{"fields":[{"key":"status","type":"select","options":["a","b"]}]}`
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"schema":    schemaStr,
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	gotSchema, ok := got["schema"].(string)
+	if !ok || gotSchema == "" {
+		t.Fatalf("schema-string input should still produce a schema string; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Round-trip parity: the encoded schema decodes to a valid
+	// CollectionSchema containing the same field key the input had.
+	var parsed models.CollectionSchema
+	if err := json.Unmarshal([]byte(gotSchema), &parsed); err != nil {
+		t.Fatalf("encoded schema is not a valid CollectionSchema: %v\n%s", err, gotSchema)
+	}
+	if len(parsed.Fields) != 1 || parsed.Fields[0].Key != "status" {
+		t.Errorf("schema round-trip lost the status field: %+v", parsed.Fields)
+	}
+	// And the missing label gets backfilled — the encoder uses the
+	// Title-Case-of-key heuristic, matching collection create.
+	if parsed.Fields[0].Label != "Status" {
+		t.Errorf("missing label should be backfilled to %q; got %q", "Status", parsed.Fields[0].Label)
+	}
+}
+
+// TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields covers the
+// Codex round-2 P3 finding: optional empty params should normalize as
+// "absent" before the mutual-exclusion check fires, so an MCP client
+// that sends `schema:null` (or `""`) plus a real `fields=...` update
+// doesn't get a spurious exclusivity error.
+func TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields(t *testing.T) {
+	for _, emptySchema := range []any{nil, ""} {
+		_, _, body, err := mapCollectionUpdate(map[string]any{
+			"workspace": "docapp",
+			"slug":      "tasks",
+			"schema":    emptySchema,
+			"fields":    "status:select:open,done",
+		})
+		if err != nil {
+			t.Fatalf("empty schema=%v + fields should NOT trip exclusivity: %v", emptySchema, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, ok := got["schema"].(string); !ok {
+			t.Errorf("fields should still produce a schema PATCH body even when schema=%v; got %v", emptySchema, got)
+		}
+	}
+}
+
+func TestMapCollectionUpdate_OmitsEmptyFields(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		// All other fields absent — should send an empty body.
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	for _, key := range []string{"name", "icon", "description", "prefix", "sort_order", "schema"} {
+		if _, present := got[key]; present {
+			t.Errorf("empty %q should be omitted; got %v", key, got)
+		}
+	}
+}
+
+func TestMapCollectionUpdate_RequiresWorkspaceAndSlug(t *testing.T) {
+	if _, _, _, err := mapCollectionUpdate(map[string]any{"slug": "tasks"}); err == nil {
+		t.Errorf("expected error when workspace missing")
+	}
+	if _, _, _, err := mapCollectionUpdate(map[string]any{"workspace": "docapp"}); err == nil {
+		t.Errorf("expected error when slug missing")
+	}
+}
+
+// TestMapCollectionUpdate_EmptyStringClearsField guards a Codex round-1
+// finding: the catalog advertises icon/description as clearable (the
+// CLI flag help says `--icon "" / --description ""` clears the column,
+// and the store treats *string("") as "clear"). The mapper must use
+// key-presence semantics — not v != "" — so MCP HTTP callers can clear
+// fields the same way CLI callers can.
+func TestMapCollectionUpdate_EmptyStringClearsField(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace":   "docapp",
+		"slug":        "tasks",
+		"icon":        "",
+		"description": "",
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	for _, key := range []string{"icon", "description"} {
+		v, present := got[key]
+		if !present {
+			t.Errorf("explicit empty %q should be sent through to clear the column; got %v", key, got)
+			continue
+		}
+		if v != "" {
+			t.Errorf("%q should serialize as empty string; got %v (%T)", key, v, v)
+		}
+	}
+}
+
+// TestMapCollectionUpdate_AcceptsFieldsDSL covers the second Codex
+// finding: the catalog advertises `fields OR schema`, but the original
+// mapper only handled `schema`. Calling with `fields=...` must produce
+// a valid schema PATCH body, parsed through the shared
+// collections.FieldsDSLToSchemaJSON helper.
+func TestMapCollectionUpdate_AcceptsFieldsDSL(t *testing.T) {
+	_, _, body, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"fields":    "status:select:open,done;priority:select:high,medium,low",
+	})
+	if err != nil {
+		t.Fatalf("mapCollectionUpdate: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	schemaStr, ok := got["schema"].(string)
+	if !ok || schemaStr == "" {
+		t.Fatalf("fields DSL should produce schema string; got %T (%v)", got["schema"], got["schema"])
+	}
+	// Confirm it's parseable as a CollectionSchema with the expected fields.
+	var parsed models.CollectionSchema
+	if err := json.Unmarshal([]byte(schemaStr), &parsed); err != nil {
+		t.Fatalf("schema JSON is not a valid CollectionSchema: %v\n%s", err, schemaStr)
+	}
+	if len(parsed.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d: %+v", len(parsed.Fields), parsed.Fields)
+	}
+	if parsed.Fields[0].Key != "status" || parsed.Fields[1].Key != "priority" {
+		t.Errorf("field order/keys wrong: %+v", parsed.Fields)
+	}
+}
+
+// TestMapCollectionUpdate_RejectsFieldsAndSchemaTogether mirrors the
+// CLI's mutual-exclusion guard (collectionSchemaJSONFromFlags). The
+// catalog description says "fields OR schema (mutually exclusive)";
+// the mapper must enforce it.
+func TestMapCollectionUpdate_RejectsFieldsAndSchemaTogether(t *testing.T) {
+	_, _, _, err := mapCollectionUpdate(map[string]any{
+		"workspace": "docapp",
+		"slug":      "tasks",
+		"fields":    "status:select:a,b",
+		"schema":    map[string]any{"fields": []any{}},
+	})
+	if err == nil {
+		t.Errorf("expected error when both fields and schema are passed")
+	}
+}
+
 // --- Roles ---
 
 func TestMapRoleCreate_BuildsCanonicalBody(t *testing.T) {

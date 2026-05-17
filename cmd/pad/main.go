@@ -5311,41 +5311,12 @@ func readSchemaInputBytes(input string, stdin io.Reader) ([]byte, error) {
 	}
 }
 
-// parseFieldsDSL parses the legacy --fields DSL (key:type[:options];...) into
-// a CollectionSchema. Empty input returns an empty schema with no error.
+// parseFieldsDSL is the cmd/pad-local alias for the canonical parser
+// at collections.ParseFieldsDSL. Moved up to internal/collections so
+// the MCP HTTP route mapper can share the same parser when accepting
+// `fields=...` on `pad_collection update` (PR #572).
 func parseFieldsDSL(fieldsDSL string) (models.CollectionSchema, error) {
-	schema := models.CollectionSchema{}
-	if fieldsDSL == "" {
-		return schema, nil
-	}
-	for _, f := range strings.Split(fieldsDSL, ";") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		parts := strings.SplitN(f, ":", 3)
-		if len(parts) < 2 {
-			return schema, fmt.Errorf("invalid field definition: %q (expected key:type[:options])", f)
-		}
-		fd := models.FieldDef{
-			Key:   parts[0],
-			Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
-			Type:  parts[1],
-		}
-		if len(parts) == 3 && parts[2] != "" {
-			fd.Options = strings.Split(parts[2], ",")
-		}
-		// First select field gets required+default — preserved for
-		// backward compat with the pre-existing DSL behavior.
-		if fd.Type == "select" && fd.Key == "status" {
-			fd.Required = true
-			if len(fd.Options) > 0 {
-				fd.Default = fd.Options[0]
-			}
-		}
-		schema.Fields = append(schema.Fields, fd)
-	}
-	return schema, nil
+	return collections.ParseFieldsDSL(fieldsDSL)
 }
 
 func collectionsCreateCmd() *cobra.Command {
@@ -5447,6 +5418,121 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 	cmd.Flags().StringVar(&layout, "layout", "fields-primary", "item detail layout: fields-primary, content-primary, balanced")
 	cmd.Flags().StringVar(&defaultView, "default-view", "list", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
+
+	return cmd
+}
+
+// collectionsUpdateCmd updates an existing collection's name, icon,
+// description, prefix, schema, or sort order. Only flags the caller
+// explicitly sets are sent — every CollectionUpdate field is a pointer
+// type server-side so omitted values are preserved.
+//
+// --schema (and the legacy --fields alias) accept the same input modes
+// as `pad collection create`: inline JSON literal, @path to a file, or
+// "-" for stdin. The flag is parsed via the shared
+// collectionSchemaJSONFromFlags helper so DSL parity stays.
+//
+// Schema changes can rename / reshape select options on existing items
+// via the server-side `migrations []FieldMigration` field; that's not
+// exposed on the CLI flag surface here because the typical agent flow
+// is "rewrite the seeded schema during onboarding before items exist"
+// (PLAN-1496 → TASK-1499). When the migration path is needed, drive
+// the PATCH through the API client directly.
+func collectionsUpdateCmd() *cobra.Command {
+	var (
+		name        string
+		icon        string
+		description string
+		prefix      string
+		fieldsDSL   string
+		schemaInput string
+		sortOrder   int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "update <slug>",
+		Short: "Update an existing collection",
+		Long: `Update an existing collection's name, icon, description, prefix,
+schema, or sort order.
+
+Only flags you explicitly set are sent — every other property is left
+untouched. Use this to rename collections, swap icons, or reshape the
+schema (e.g. change status enum options or add/remove fields).
+
+The --schema and --fields flags accept the same input modes as
+'pad collection create':
+
+  --fields  Compact DSL for the simple case: key:type[:option1,option2,...]
+  --schema  Full CollectionSchema JSON: inline, @path, or - for stdin
+
+Examples:
+  pad collection update tasks --name Issues --icon 🎯
+  pad collection update conventions --description "Updated rules"
+  pad collection update bugs --schema @./new-bug-schema.json
+  pad collection update tasks --fields "status:select:open,doing,done;priority:select:high,medium,low"
+
+Collections can be referenced by slug (e.g. 'tasks') only — there is no
+issue-ID equivalent for collections themselves.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			collSlug := args[0]
+
+			input := models.CollectionUpdate{}
+
+			if cmd.Flags().Changed("name") {
+				input.Name = &name
+			}
+			if cmd.Flags().Changed("icon") {
+				input.Icon = &icon
+			}
+			if cmd.Flags().Changed("description") {
+				input.Description = &description
+			}
+			if cmd.Flags().Changed("prefix") {
+				input.Prefix = &prefix
+			}
+			if cmd.Flags().Changed("sort-order") {
+				input.SortOrder = &sortOrder
+			}
+
+			// Schema is only resolved when the user passed --schema or --fields.
+			// Calling the helper with both empty returns "{}" which would wipe
+			// the existing schema — guard against that footgun.
+			if cmd.Flags().Changed("schema") || cmd.Flags().Changed("fields") {
+				schemaJSON, err := collectionSchemaJSONFromFlags(schemaInput, fieldsDSL, os.Stdin)
+				if err != nil {
+					return err
+				}
+				input.Schema = &schemaJSON
+			}
+
+			updated, err := client.UpdateCollection(ws, collSlug, input)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(updated)
+			}
+
+			collIcon := updated.Icon
+			if collIcon == "" {
+				collIcon = "📦"
+			}
+			fmt.Printf("Updated collection %s %s (slug: %s)\n", collIcon, updated.Name, updated.Slug)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "new display name")
+	cmd.Flags().StringVar(&icon, "icon", "", "new emoji icon (use empty string to clear)")
+	cmd.Flags().StringVar(&description, "description", "", "new description (use empty string to clear)")
+	cmd.Flags().StringVar(&prefix, "prefix", "", "new issue-ID prefix (e.g. TASK, BUG)")
+	cmd.Flags().StringVar(&fieldsDSL, "fields", "", "replacement schema via DSL: \"key:type[:options]; ...\"")
+	cmd.Flags().StringVar(&schemaInput, "schema", "", "replacement CollectionSchema JSON: inline, @path, or - for stdin")
+	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "new sort order (lower = appears first)")
 
 	return cmd
 }
