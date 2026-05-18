@@ -1350,7 +1350,38 @@ export const api = {
 	connectedApps: {
 		list: () => request<{ items: ConnectedApp[] }>('/connected-apps'),
 		revoke: (id: string) =>
-			request<void>(`/connected-apps/${encodeURIComponent(id)}`, { method: 'DELETE' })
+			request<void>(`/connected-apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+		// PLAN-1519 / TASK-1524 / IDEA-1517 §3: per-connection mutations.
+		// Each method returns the updated ConnectedApp DTO so callers
+		// can re-render without a separate list refresh.
+		rename: (id: string, name: string) =>
+			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/name`, {
+				method: 'PATCH',
+				body: JSON.stringify({ name })
+			}),
+		updateFlags: (
+			id: string,
+			flags: {
+				may_create_workspaces: boolean;
+				all_current_workspaces: boolean;
+				include_future_workspaces: boolean;
+			}
+		) =>
+			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/flags`, {
+				method: 'PATCH',
+				body: JSON.stringify(flags)
+			}),
+		addWorkspace: (id: string, workspaceSlug: string) =>
+			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/workspaces`, {
+				method: 'POST',
+				body: JSON.stringify({ workspace: workspaceSlug })
+			}),
+		removeWorkspace: (id: string, workspaceSlug: string) =>
+			request<ConnectedApp>(
+				`/connected-apps/${encodeURIComponent(id)}/workspaces/${encodeURIComponent(workspaceSlug)}`,
+				{ method: 'DELETE' }
+			)
 	},
 
 	// ── URL Import ───────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
-	import type { ConnectedApp } from '$lib/types';
+	import type { ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
 	// chain the user has authorized via the MCP API and lets them
@@ -20,6 +20,128 @@
 	let confirmTarget = $state<ConnectedApp | null>(null);
 	let revoking = $state(false);
 	let revokeError = $state('');
+
+	// PLAN-1519 / TASK-1524 / IDEA-1517 §3: per-card edit panel state.
+	// editingId tracks which card has its panel open (one at a time);
+	// the per-app errors / pending flags hang off the id so multiple
+	// concurrent mutations across cards don't cross-talk.
+	let editingId = $state<string | null>(null);
+	let nameDrafts = $state<Record<string, string>>({});
+	let editErrors = $state<Record<string, string>>({});
+	let savingFlag = $state<Record<string, boolean>>({});
+	let userWorkspaces = $state<Workspace[] | null>(null);
+	let workspacesError = $state('');
+	let addPickerSlug = $state<Record<string, string>>({});
+
+	async function loadWorkspaces() {
+		if (userWorkspaces !== null) return;
+		try {
+			const list = await api.workspaces.list();
+			userWorkspaces = Array.isArray(list) ? list : [];
+		} catch (e) {
+			workspacesError = e instanceof Error ? e.message : 'Failed to load workspaces';
+			userWorkspaces = [];
+		}
+	}
+
+	function openEdit(app: ConnectedApp) {
+		editingId = app.id;
+		nameDrafts[app.id] = app.name ?? '';
+		editErrors[app.id] = '';
+		addPickerSlug[app.id] = '';
+		loadWorkspaces();
+	}
+
+	function closeEdit() {
+		editingId = null;
+	}
+
+	function setError(id: string, message: string) {
+		editErrors = { ...editErrors, [id]: message };
+	}
+
+	function clearError(id: string) {
+		if (editErrors[id]) setError(id, '');
+	}
+
+	function replaceApp(updated: ConnectedApp) {
+		apps = apps.map((a) => (a.id === updated.id ? { ...a, ...updated } : a));
+	}
+
+	async function saveName(app: ConnectedApp) {
+		const draft = (nameDrafts[app.id] ?? '').trim();
+		if (draft === (app.name ?? '')) return; // no-op
+		savingFlag[app.id] = true;
+		clearError(app.id);
+		try {
+			const updated = await api.connectedApps.rename(app.id, draft);
+			replaceApp(updated);
+		} catch (e) {
+			setError(app.id, e instanceof Error ? e.message : 'Failed to rename');
+		} finally {
+			savingFlag[app.id] = false;
+		}
+	}
+
+	async function toggleFlag(
+		app: ConnectedApp,
+		key: 'may_create_workspaces' | 'all_current_workspaces' | 'include_future_workspaces',
+		next: boolean
+	) {
+		savingFlag[app.id] = true;
+		clearError(app.id);
+		const flags = {
+			may_create_workspaces: app.may_create_workspaces ?? true,
+			all_current_workspaces: app.all_current_workspaces ?? true,
+			include_future_workspaces: app.include_future_workspaces ?? true,
+			[key]: next
+		};
+		try {
+			const updated = await api.connectedApps.updateFlags(app.id, flags);
+			replaceApp(updated);
+		} catch (e) {
+			setError(app.id, e instanceof Error ? e.message : 'Failed to update flags');
+		} finally {
+			savingFlag[app.id] = false;
+		}
+	}
+
+	async function addWorkspaceToApp(app: ConnectedApp) {
+		const slug = (addPickerSlug[app.id] ?? '').trim();
+		if (!slug) return;
+		savingFlag[app.id] = true;
+		clearError(app.id);
+		try {
+			const updated = await api.connectedApps.addWorkspace(app.id, slug);
+			replaceApp(updated);
+			addPickerSlug[app.id] = '';
+		} catch (e) {
+			setError(app.id, e instanceof Error ? e.message : 'Failed to add workspace');
+		} finally {
+			savingFlag[app.id] = false;
+		}
+	}
+
+	async function removeWorkspaceFromApp(app: ConnectedApp, slug: string) {
+		savingFlag[app.id] = true;
+		clearError(app.id);
+		try {
+			const updated = await api.connectedApps.removeWorkspace(app.id, slug);
+			replaceApp(updated);
+		} catch (e) {
+			setError(app.id, e instanceof Error ? e.message : 'Failed to remove workspace');
+		} finally {
+			savingFlag[app.id] = false;
+		}
+	}
+
+	// Available workspaces to add: any membership the user has that
+	// isn't already in this connection's allow-list.
+	function pickableFor(app: ConnectedApp): Workspace[] {
+		if (!userWorkspaces) return [];
+		const inList = new Set((app.allowed_workspaces ?? []).filter((s) => s !== '*'));
+		return userWorkspaces.filter((ws) => !inList.has(ws.slug));
+	}
 
 	const TIER_LABELS: Record<ConnectedApp['capability_tier'], string> = {
 		read_only: 'Read only',
@@ -64,7 +186,19 @@
 		return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 	}
 
-	function isAnyWorkspace(ws: string[] | null | undefined): boolean {
+	// Returns true iff the user should see the "Any workspace" badge
+	// in the card's summary view. Post-Codex-#585-round-2 the wire
+	// shape sends BOTH the wildcard flag AND the staged slug list,
+	// so the badge is driven by the flag (the slug list may carry
+	// pre-staged rows that are inert until the user flips the flag).
+	// Legacy fallback for older wire shapes (no all_current flag,
+	// nil/empty list, ["*"] sentinel) preserved so a stale frontend
+	// against a fresh backend doesn't lose the badge.
+	function isAnyWorkspace(app: ConnectedApp): boolean {
+		if (app.all_current_workspaces === true) return true;
+		if (app.all_current_workspaces === false) return false;
+		// Older wire shape: infer from the slug list.
+		const ws = app.allowed_workspaces;
 		if (ws == null) return true;
 		if (ws.length === 0) return true;
 		if (ws.length === 1 && ws[0] === '*') return true;
@@ -172,7 +306,7 @@
 	{:else}
 		<div class="apps-list">
 			{#each apps as app (app.id)}
-				{@const anyWs = isAnyWorkspace(app.allowed_workspaces)}
+				{@const anyWs = isAnyWorkspace(app)}
 				{@const wsList = anyWs ? [] : (app.allowed_workspaces ?? [])}
 				{@const showAllChips = chipsExpanded[app.id]}
 				{@const visibleChips = showAllChips ? wsList : wsList.slice(0, 3)}
@@ -283,8 +417,171 @@
 					</div>
 
 					<div class="app-actions">
+						<button
+							class="btn"
+							onclick={() => (editingId === app.id ? closeEdit() : openEdit(app))}
+							aria-expanded={editingId === app.id}
+						>
+							{editingId === app.id ? 'Done' : 'Edit'}
+						</button>
 						<button class="btn btn-danger" onclick={() => openConfirm(app)}>Revoke</button>
 					</div>
+
+					{#if editingId === app.id}
+						{@const eaWsList = (app.allowed_workspaces ?? []).filter((s) => s !== '*')}
+						{@const pickable = pickableFor(app)}
+						{@const isAll = app.all_current_workspaces ?? true}
+						<div class="edit-panel" role="region" aria-label="Edit {app.client_name}">
+							{#if editErrors[app.id]}
+								<p class="edit-error">{editErrors[app.id]}</p>
+							{/if}
+
+							<div class="edit-field">
+								<label class="edit-label" for="name-{app.id}">Connection name</label>
+								<div class="edit-row">
+									<input
+										id="name-{app.id}"
+										class="edit-input"
+										type="text"
+										maxlength="120"
+										placeholder="e.g. Cursor on MacBook"
+										bind:value={nameDrafts[app.id]}
+										disabled={!!savingFlag[app.id]}
+									/>
+									<button
+										class="btn"
+										onclick={() => saveName(app)}
+										disabled={!!savingFlag[app.id] ||
+											(nameDrafts[app.id] ?? '').trim() === (app.name ?? '')}
+									>
+										Save
+									</button>
+								</div>
+								{#if !(app.name ?? '')}
+									<p class="edit-hint">
+										Name your connection so you can tell it apart from other apps.
+									</p>
+								{/if}
+							</div>
+
+							<div class="edit-field">
+								<span class="edit-label">Scope flags</span>
+								<label class="edit-toggle">
+									<input
+										type="checkbox"
+										checked={app.may_create_workspaces ?? true}
+										disabled={!!savingFlag[app.id]}
+										onchange={(e) =>
+											toggleFlag(
+												app,
+												'may_create_workspaces',
+												(e.currentTarget as HTMLInputElement).checked
+											)}
+									/>
+									<span>Let this app create new workspaces</span>
+								</label>
+								<label class="edit-toggle">
+									<input
+										type="checkbox"
+										checked={app.all_current_workspaces ?? true}
+										disabled={!!savingFlag[app.id]}
+										onchange={(e) =>
+											toggleFlag(
+												app,
+												'all_current_workspaces',
+												(e.currentTarget as HTMLInputElement).checked
+											)}
+									/>
+									<span>Cover all my current workspaces (wildcard)</span>
+								</label>
+								<label class="edit-toggle">
+									<input
+										type="checkbox"
+										checked={app.include_future_workspaces ?? true}
+										disabled={!!savingFlag[app.id]}
+										onchange={(e) =>
+											toggleFlag(
+												app,
+												'include_future_workspaces',
+												(e.currentTarget as HTMLInputElement).checked
+											)}
+									/>
+									<span>Auto-add new workspaces I create</span>
+								</label>
+							</div>
+
+							<!-- Workspace allow-list editor (TASK-1524 / Codex review
+								 #585 round 1): always rendered so users in wildcard
+								 mode can pre-stage workspaces before flipping
+								 all_current_workspaces=off. The backend's
+								 empty_allowlist guard rejects the toggle when the
+								 join table is empty; pre-staging in wildcard mode
+								 is the mechanism that lets a user transition
+								 through that state cleanly. -->
+							<div class="edit-field">
+								<div class="edit-label-row">
+									<span class="edit-label">Workspace allow-list</span>
+									{#if isAll}
+										<span class="edit-badge">Inert while wildcard is on</span>
+									{/if}
+								</div>
+								<div class="ws-chips">
+									{#each eaWsList as ws (ws)}
+										<span class="chip">
+											{ws}
+											<button
+												type="button"
+												class="chip-remove"
+												aria-label="Remove {ws}"
+												disabled={!!savingFlag[app.id] || (!isAll && eaWsList.length <= 1)}
+												onclick={() => removeWorkspaceFromApp(app, ws)}
+											>
+												×
+											</button>
+										</span>
+									{/each}
+									{#if eaWsList.length === 0}
+										<span class="ws-empty">
+											{#if isAll}
+												No workspaces staged — add one if you plan to switch off
+												"Cover all my current workspaces".
+											{:else}
+												No workspaces — add one below.
+											{/if}
+										</span>
+									{/if}
+								</div>
+								{#if !isAll && eaWsList.length <= 1}
+									<p class="edit-hint">
+										You can't remove the last workspace — switch to "Cover all my current
+										workspaces" first or revoke the connection.
+									</p>
+								{/if}
+								<div class="edit-row add-row">
+									<select
+										class="edit-input"
+										bind:value={addPickerSlug[app.id]}
+										disabled={!!savingFlag[app.id]}
+									>
+										<option value="">Add a workspace…</option>
+										{#each pickable as ws (ws.slug)}
+											<option value={ws.slug}>{ws.name}</option>
+										{/each}
+									</select>
+									<button
+										class="btn"
+										onclick={() => addWorkspaceToApp(app)}
+										disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
+									>
+										Add
+									</button>
+								</div>
+								{#if workspacesError}
+									<p class="edit-hint edit-hint-error">{workspacesError}</p>
+								{/if}
+							</div>
+						</div>
+					{/if}
 				</article>
 			{/each}
 		</div>
@@ -703,5 +1000,135 @@
 		.app-actions .btn {
 			width: 100%;
 		}
+	}
+
+	/* PLAN-1519 / TASK-1524 edit panel — appears below the card body
+	   when the user clicks Edit. Inline rather than modal so two
+	   cards can stay readable side-by-side; the existing card layout
+	   already accommodates an expanded "Details" block below the
+	   actions row. */
+	.edit-panel {
+		grid-column: 1 / -1;
+		margin-top: 1rem;
+		padding: 1rem;
+		border-top: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+
+	.edit-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.edit-label {
+		font-weight: 600;
+		font-size: 0.85rem;
+		color: var(--text-secondary, #555);
+	}
+
+	.edit-label-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.edit-badge {
+		font-size: 0.75rem;
+		padding: 0.15rem 0.5rem;
+		border-radius: 4px;
+		background: var(--bg-muted, #f0f0f0);
+		color: var(--text-tertiary, #666);
+		font-weight: normal;
+	}
+
+	.edit-row {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.edit-input {
+		flex: 1 1 auto;
+		padding: 0.45rem 0.65rem;
+		font-size: 0.9rem;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg-input, var(--bg));
+		color: inherit;
+	}
+
+	.edit-toggle {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+
+	.edit-toggle input {
+		margin: 0;
+	}
+
+	.edit-hint {
+		font-size: 0.8rem;
+		color: var(--text-tertiary, #777);
+		margin: 0;
+	}
+
+	.edit-hint-error {
+		color: var(--danger, #b00);
+	}
+
+	.edit-error {
+		padding: 0.5rem 0.75rem;
+		background: var(--bg-error, #fee);
+		color: var(--danger, #b00);
+		border-radius: 6px;
+		font-size: 0.85rem;
+		margin: 0;
+	}
+
+	.ws-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+
+	.ws-empty {
+		font-size: 0.85rem;
+		color: var(--text-tertiary, #777);
+		font-style: italic;
+	}
+
+	.chip-remove {
+		margin-left: 0.3rem;
+		border: none;
+		background: transparent;
+		color: inherit;
+		font-size: 1rem;
+		line-height: 1;
+		cursor: pointer;
+		opacity: 0.6;
+	}
+
+	.chip-remove:hover:not(:disabled) {
+		opacity: 1;
+	}
+
+	.chip-remove:disabled {
+		cursor: not-allowed;
+		opacity: 0.3;
+	}
+
+	.add-row {
+		margin-top: 0.5rem;
+	}
+
+	.add-row .edit-input {
+		min-width: 0;
 	}
 </style>

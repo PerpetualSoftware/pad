@@ -200,11 +200,28 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 			return nil, fmt.Errorf("hydrate connection access %s: %w", reqID, accessErr)
 		}
 		if access.HasConnection {
+			conn.AllCurrentWorkspaces = access.AllCurrentWorkspaces
+			// Pre-Codex-#585-round-2 the wildcard case set
+			// AllowedWorkspaces to nil because the slugs were
+			// "irrelevant" (wildcard covers everything). But Phase D's
+			// mutation UI lets users PRE-STAGE workspaces while
+			// wildcard is on, so the join table can hold rows that
+			// the UI needs to render even when the flag is on. Always
+			// populate from the join table; the UI uses the flag (not
+			// the slug list emptiness) to decide whether to render
+			// the "Any workspace" badge. GetOAuthConnectionAccess
+			// itself still short-circuits on wildcard for the hot
+			// path; this read uses a direct lookup below so we get
+			// the staged rows regardless.
 			if access.AllCurrentWorkspaces {
-				conn.AllCurrentWorkspaces = true
-				conn.AllowedWorkspaces = nil
+				// Direct join-table read — bypasses the access
+				// projection's wildcard short-circuit.
+				slugs, slugErr := s.ListConnectionWorkspaceSlugs(reqID)
+				if slugErr != nil {
+					return nil, fmt.Errorf("list staged workspaces %s: %w", reqID, slugErr)
+				}
+				conn.AllowedWorkspaces = slugs
 			} else {
-				conn.AllCurrentWorkspaces = false
 				conn.AllowedWorkspaces = access.WorkspaceSlugs
 			}
 			// Pull the rest of the connection metadata (name + the
