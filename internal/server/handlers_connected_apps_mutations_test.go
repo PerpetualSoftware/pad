@@ -207,6 +207,53 @@ func TestHandleUpdateConnectedAppFlags_EmptyAllowListBlocked(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage is
+// the regression guard for Codex review #585 round 1: a wildcard
+// connection must be able to flip to "specific workspaces" after
+// the user has pre-staged at least one workspace via the add-
+// workspace endpoint. The pre-fix code path called
+// GetOAuthConnectionAccess, which short-circuits on wildcard and
+// reports zero slugs, making the toggle impossible regardless of
+// pre-staging.
+func TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage(t *testing.T) {
+	srv, _ := connectedAppsTestServer(t)
+	user, tok := loginTestUser(t, srv)
+	// Wildcard connection — no join rows yet.
+	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{
+		RequestID:            "prestage-chain",
+		UserID:               user.ID,
+		AllCurrentWorkspaces: true,
+	}); err != nil {
+		t.Fatalf("CreateOAuthConnection: %v", err)
+	}
+	// Seed a workspace the user owns.
+	_, slug := mustSeedWorkspaceForMutation(t, srv, user.ID, "prestage-ws", "owner")
+	// Add it to the connection (allowed even while wildcard is on —
+	// it's inert until the flag flips).
+	if rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/prestage-chain/workspaces",
+		map[string]string{"workspace": slug}, tok); rr.Code != http.StatusOK {
+		t.Fatalf("pre-stage add: status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	// Now flip wildcard off — must succeed since the join table has 1 row.
+	rr := doAuthedJSON(srv, "PATCH", "/api/v1/connected-apps/prestage-chain/flags",
+		map[string]bool{
+			"may_create_workspaces":     true,
+			"all_current_workspaces":    false,
+			"include_future_workspaces": true,
+		}, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("post-prestage flag flip should succeed; status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	var dto connectedAppDTO
+	_ = json.Unmarshal(rr.Body.Bytes(), &dto)
+	if dto.AllCurrentWorkspaces {
+		t.Errorf("AllCurrentWorkspaces should be false post-flip; got true")
+	}
+	if len(dto.AllowedWorkspaces) != 1 || dto.AllowedWorkspaces[0] != slug {
+		t.Errorf("AllowedWorkspaces should reflect the pre-staged slug; got %v", dto.AllowedWorkspaces)
+	}
+}
+
 func TestHandleAddConnectedAppWorkspace_HappyPath(t *testing.T) {
 	srv, _ := connectedAppsTestServer(t)
 	user, tok, _ := seedConnectedAppForMutations(t, srv, "add-ws-chain")

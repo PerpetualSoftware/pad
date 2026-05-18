@@ -345,6 +345,40 @@ func (s *Store) RemoveConnectionWorkspace(requestID, workspaceID string) error {
 	return nil
 }
 
+// ConnectionWorkspaceCount returns the raw row count from
+// oauth_connection_workspaces for a given request_id — regardless of
+// the parent connection's all_current_workspaces flag.
+//
+// Why a separate method when GetOAuthConnectionAccess already exists:
+// GetOAuthConnectionAccess intentionally short-circuits when
+// all_current_workspaces=true and returns an empty WorkspaceSlugs
+// list (the wildcard skips the join). That's correct for the
+// introspection hot path — when wildcard is on, slugs are irrelevant
+// — but the connections-page mutation UI needs to know whether the
+// join table actually has rows so a wildcard→specific toggle can
+// verify the user has pre-staged at least one workspace. Codex
+// review #585 round 1 caught the bug where the flags handler called
+// GetOAuthConnectionAccess on a wildcard connection and always saw
+// zero slugs, making the toggle impossible.
+//
+// Returns (count, nil) for any connection state; (0, err) on I/O
+// failure. Zero requestID returns (0, nil) — same defensive shape
+// as the other request_id-keyed helpers.
+func (s *Store) ConnectionWorkspaceCount(requestID string) (int, error) {
+	if requestID == "" {
+		return 0, nil
+	}
+	var n int
+	err := s.db.QueryRow(s.q(`
+        SELECT COUNT(*) FROM oauth_connection_workspaces
+         WHERE request_id = ?
+    `), requestID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("oauth_connections: count workspaces: %w", err)
+	}
+	return n, nil
+}
+
 // IsConnectionWorkspaceAllowed reports whether workspace_id appears in
 // the connection's allow-list. Used internally by GetOAuthConnectionAccess
 // when callers want a single-pair check rather than the slug projection

@@ -397,13 +397,20 @@ func (s *Server) handleUpdateConnectedAppFlags(w http.ResponseWriter, r *http.Re
 	// the API enforces it too in case of direct calls. IDEA-1517 §3
 	// Acceptance bullet: "Empty allow-list with all_current_workspaces=0
 	// is disallowed — UI prevents and backend validates."
+	//
+	// Count via ConnectionWorkspaceCount (not GetOAuthConnectionAccess)
+	// — the access projection intentionally short-circuits the join
+	// when the CURRENT row is wildcard, but we need to know the count
+	// regardless of current state so a user pre-staging workspaces in
+	// wildcard mode can subsequently flip the toggle. Codex review
+	// #585 round 1 caught the always-empty-on-wildcard read.
 	if !body.AllCurrentWorkspaces {
-		access, err := s.store.GetOAuthConnectionAccess(id)
+		n, err := s.store.ConnectionWorkspaceCount(id)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		if !access.HasConnection || len(access.WorkspaceSlugs) == 0 {
+		if n == 0 {
 			writeError(w, http.StatusBadRequest, "empty_allowlist",
 				"Cannot switch to 'specific workspaces' with no workspaces selected. Add at least one workspace first.")
 			return
@@ -505,21 +512,28 @@ func (s *Server) handleRemoveConnectedAppWorkspace(w http.ResponseWriter, r *htt
 		return
 	}
 	if !conn.AllCurrentWorkspaces {
-		access, err := s.store.GetOAuthConnectionAccess(id)
+		// Need the actual row count (not via the access projection,
+		// which short-circuits on wildcard). Also need to know
+		// whether THIS slug is in the list — removing a slug that
+		// isn't in the list shouldn't trip the guard. Combined:
+		// a removal that would leave zero rows iff the slug IS in
+		// the list AND total count == 1.
+		allowed, err := s.store.IsConnectionWorkspaceAllowed(id, ws.ID)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		remaining := 0
-		for _, s := range access.WorkspaceSlugs {
-			if s != slug {
-				remaining++
+		if allowed {
+			n, countErr := s.store.ConnectionWorkspaceCount(id)
+			if countErr != nil {
+				writeInternalError(w, countErr)
+				return
 			}
-		}
-		if remaining == 0 {
-			writeError(w, http.StatusBadRequest, "empty_allowlist",
-				"Removing the last workspace would orphan this connection. Switch to 'All my workspaces' or revoke the connection instead.")
-			return
+			if n <= 1 {
+				writeError(w, http.StatusBadRequest, "empty_allowlist",
+					"Removing the last workspace would orphan this connection. Switch to 'All my workspaces' or revoke the connection instead.")
+				return
+			}
 		}
 	}
 

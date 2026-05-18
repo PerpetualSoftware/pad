@@ -498,58 +498,76 @@
 								</label>
 							</div>
 
-							{#if !isAll}
-								<div class="edit-field">
+							<!-- Workspace allow-list editor (TASK-1524 / Codex review
+								 #585 round 1): always rendered so users in wildcard
+								 mode can pre-stage workspaces before flipping
+								 all_current_workspaces=off. The backend's
+								 empty_allowlist guard rejects the toggle when the
+								 join table is empty; pre-staging in wildcard mode
+								 is the mechanism that lets a user transition
+								 through that state cleanly. -->
+							<div class="edit-field">
+								<div class="edit-label-row">
 									<span class="edit-label">Workspace allow-list</span>
-									<div class="ws-chips">
-										{#each eaWsList as ws (ws)}
-											<span class="chip">
-												{ws}
-												<button
-													type="button"
-													class="chip-remove"
-													aria-label="Remove {ws}"
-													disabled={!!savingFlag[app.id] || eaWsList.length <= 1}
-													onclick={() => removeWorkspaceFromApp(app, ws)}
-												>
-													×
-												</button>
-											</span>
-										{/each}
-										{#if eaWsList.length === 0}
-											<span class="ws-empty">No workspaces — add one below.</span>
-										{/if}
-									</div>
-									{#if eaWsList.length <= 1}
-										<p class="edit-hint">
-											You can't remove the last workspace — switch to "Cover all my current
-											workspaces" first or revoke the connection.
-										</p>
-									{/if}
-									<div class="edit-row add-row">
-										<select
-											class="edit-input"
-											bind:value={addPickerSlug[app.id]}
-											disabled={!!savingFlag[app.id]}
-										>
-											<option value="">Add a workspace…</option>
-											{#each pickable as ws (ws.slug)}
-												<option value={ws.slug}>{ws.name}</option>
-											{/each}
-										</select>
-										<button
-											class="btn"
-											onclick={() => addWorkspaceToApp(app)}
-											disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
-										>
-											Add
-										</button>
-									</div>
-									{#if workspacesError}
-										<p class="edit-hint edit-hint-error">{workspacesError}</p>
+									{#if isAll}
+										<span class="edit-badge">Inert while wildcard is on</span>
 									{/if}
 								</div>
-							{/if}
+								<div class="ws-chips">
+									{#each eaWsList as ws (ws)}
+										<span class="chip">
+											{ws}
+											<button
+												type="button"
+												class="chip-remove"
+												aria-label="Remove {ws}"
+												disabled={!!savingFlag[app.id] || (!isAll && eaWsList.length <= 1)}
+												onclick={() => removeWorkspaceFromApp(app, ws)}
+											>
+												×
+											</button>
+										</span>
+									{/each}
+									{#if eaWsList.length === 0}
+										<span class="ws-empty">
+											{#if isAll}
+												No workspaces staged — add one if you plan to switch off
+												"Cover all my current workspaces".
+											{:else}
+												No workspaces — add one below.
+											{/if}
+										</span>
+									{/if}
+								</div>
+								{#if !isAll && eaWsList.length <= 1}
+									<p class="edit-hint">
+										You can't remove the last workspace — switch to "Cover all my current
+										workspaces" first or revoke the connection.
+									</p>
+								{/if}
+								<div class="edit-row add-row">
+									<select
+										class="edit-input"
+										bind:value={addPickerSlug[app.id]}
+										disabled={!!savingFlag[app.id]}
+									>
+										<option value="">Add a workspace…</option>
+										{#each pickable as ws (ws.slug)}
+											<option value={ws.slug}>{ws.name}</option>
+										{/each}
+									</select>
+									<button
+										class="btn"
+										onclick={() => addWorkspaceToApp(app)}
+										disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
+									>
+										Add
+									</button>
+								</div>
+								{#if workspacesError}
+									<p class="edit-hint edit-hint-error">{workspacesError}</p>
+								{/if}
+							</div>
 						</div>
 					{/if}
 				</article>
@@ -997,6 +1015,22 @@
 		font-weight: 600;
 		font-size: 0.85rem;
 		color: var(--text-secondary, #555);
+	}
+
+	.edit-label-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.edit-badge {
+		font-size: 0.75rem;
+		padding: 0.15rem 0.5rem;
+		border-radius: 4px;
+		background: var(--bg-muted, #f0f0f0);
+		color: var(--text-tertiary, #666);
+		font-weight: normal;
 	}
 
 	.edit-row {
