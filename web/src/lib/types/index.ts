@@ -138,6 +138,29 @@ export interface WorkspaceMembership {
 
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
+// ClaimCodeResponse is the wire shape returned by
+// GET /api/v1/workspaces/{slug}/claim-code (PLAN-1519 / TASK-1525 /
+// IDEA-1517 §4). Two mutually-exclusive states:
+//
+//   - suppressed=false → `code` is set; the modal renders the digits
+//     + the locked prompt block and lets the user copy either.
+//   - suppressed=true  → `code` is omitted; the modal renders the
+//     "your agent can already see this workspace — Connected apps"
+//     hint instead. `suppression_grant_name` is the name of the
+//     covering connection if available (may be empty).
+//
+// `expires_at` is the END of the CURRENT 5-minute bucket in RFC3339;
+// verification still accepts the previous bucket for ~5 additional
+// minutes (sliding 5–10 min lifetime). UI drives a countdown from
+// here.
+export interface ClaimCodeResponse {
+	workspace: string;
+	code?: string;
+	expires_at: string;
+	suppressed: boolean;
+	suppression_grant_name?: string;
+}
+
 export interface Workspace {
 	id: string;
 	name: string;

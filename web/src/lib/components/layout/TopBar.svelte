@@ -906,6 +906,7 @@
 				serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
 				workspaceSlug={workspaceStore.current.slug}
 				workspaceName={workspaceStore.current.name}
+				mcpPublicUrl={authStore.mcpPublicUrl}
 			/>
 		{/if}
 	</header>
@@ -1041,6 +1042,7 @@
 				serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
 				workspaceSlug={workspaceStore.current.slug}
 				workspaceName={workspaceStore.current.name}
+				mcpPublicUrl={authStore.mcpPublicUrl}
 			/>
 		{/if}
 	</header>
