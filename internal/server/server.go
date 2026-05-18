@@ -939,6 +939,14 @@ func (s *Server) setupRouter() {
 				r.Use(s.requireCloudMode)
 				r.Get("/connected-apps", s.handleListConnectedApps)
 				r.Delete("/connected-apps/{id}", s.handleRevokeConnectedApp)
+				// PLAN-1519 / TASK-1524 / IDEA-1517 §3: mutation
+				// endpoints for the connections-page UI. Per-field
+				// patches rather than a general PATCH for cleaner
+				// error envelopes + audit shape.
+				r.Patch("/connected-apps/{id}/name", s.handleRenameConnectedApp)
+				r.Patch("/connected-apps/{id}/flags", s.handleUpdateConnectedAppFlags)
+				r.Post("/connected-apps/{id}/workspaces", s.handleAddConnectedAppWorkspace)
+				r.Delete("/connected-apps/{id}/workspaces/{slug}", s.handleRemoveConnectedAppWorkspace)
 			})
 
 			// Templates

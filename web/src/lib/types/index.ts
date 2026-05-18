@@ -1060,6 +1060,15 @@ export interface ConnectedApp {
 	connected_at: string;
 	last_used_at?: string;
 	calls_30d: number;
+
+	// PLAN-1519 / TASK-1524 / IDEA-1517 §3: connection-level state
+	// surfaced for the mutation UI. `name` empty until the user names
+	// the connection (backfilled rows start blank); the three scope
+	// flags default ON for backfilled connections + new-grant defaults.
+	name?: string;
+	may_create_workspaces?: boolean;
+	all_current_workspaces?: boolean;
+	include_future_workspaces?: boolean;
 }
 
 // ─── Helper functions ────────────────────────────────────────────────────────
