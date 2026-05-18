@@ -76,11 +76,11 @@ func seedActiveAccessTokenForChain(t *testing.T, s *store.Store, requestID, user
 // doesn't care which auth shape the caller used.
 
 type claimCodeResponse struct {
-	Workspace             string `json:"workspace"`
-	Code                  string `json:"code,omitempty"`
-	ExpiresAt             string `json:"expires_at"`
-	Suppressed            bool   `json:"suppressed"`
-	SuppressionGrantName  string `json:"suppression_grant_name,omitempty"`
+	Workspace            string `json:"workspace"`
+	Code                 string `json:"code,omitempty"`
+	ExpiresAt            string `json:"expires_at"`
+	Suppressed           bool   `json:"suppressed"`
+	SuppressionGrantName string `json:"suppression_grant_name,omitempty"`
 }
 
 func newClaimCodeEnv(t *testing.T) *claimTestEnv {

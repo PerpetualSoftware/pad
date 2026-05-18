@@ -25,12 +25,24 @@ build-go:
 
 install: build
 	@# Stop running server, install binary, clear stale pid.
-	@# CAUTION: `killall -9 pad` is SYSTEM-WIDE. If another user (or another
-	@# project on the same machine) is also running a `pad` process, it will
-	@# get killed too. Designed for single-developer local setups; don't run
-	@# `make install` on a shared host.
-	-killall -9 $(BINARY) 2>/dev/null
-	@sleep 1
+	@# CAUTION: `pkill -x pad` is SYSTEM-WIDE (matches the binary name on the
+	@# whole host). If another user or project on the same machine is running
+	@# a `pad` process, it will get signaled too. Designed for single-developer
+	@# local setups; don't run `make install` on a shared host.
+	@#
+	@# SIGTERM (not SIGKILL) so the server's graceful-shutdown path runs:
+	@# it closes the event bus, which terminates SSE handler goroutines so
+	@# the http.Server can write the final 0-chunk before closing each
+	@# stream. SIGKILL drops every open SSE connection mid-write, leaving
+	@# every browser tab with `ERR_INCOMPLETE_CHUNKED_ENCODING` and a noisy
+	@# reconnect storm. Falls back to SIGKILL after 5s for stuck processes.
+	@# BUG-1531 / SSE follow-up.
+	-pkill -TERM -x $(BINARY) 2>/dev/null; \
+		for i in 1 2 3 4 5; do \
+			pgrep -x $(BINARY) >/dev/null 2>&1 || break; \
+			sleep 1; \
+		done; \
+		pkill -KILL -x $(BINARY) 2>/dev/null || true
 	@mkdir -p $(INSTALL_DIR)
 	cp -f $(BINARY) $(INSTALL_DIR)/$(BINARY)
 	rm -f ~/.pad/pad.pid
