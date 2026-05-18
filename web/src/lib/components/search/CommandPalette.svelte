@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -378,6 +379,24 @@
 	// doSearch from offset 0 and wipe an in-flight `loadMore` append.
 	// Codex round 7 P2 of TASK-1365.
 	//
+	// SAME EXCEPTION for bare-digit queries (BUG-1531): a bare digit
+	// short-circuits to `exactItemNumberLookup` — a single deterministic
+	// item-number match. Subscribing to every workspace's epoch + every
+	// workspace's bootstrapState made the effect re-fire on every SSE-
+	// driven `applyDelta` / re-bootstrap, and the bare-digit path runs
+	// synchronously fast enough that the re-fires stacked inside a
+	// single tick → `effect_update_depth_exceeded`. We accept slightly
+	// staler "go to N" results until the next user keystroke; that's
+	// fine because Enter on a bare-digit query already forces a fresh
+	// server fetch (see the Enter handler).
+	//
+	// Additionally, `doSearch` is called via `untrack` so its INTERNAL
+	// reads (it reads bootstrapStateFor for every ready workspace via
+	// `readyWorkspaces()`, plus the current workspace's bootstrapState)
+	// don't add hidden tracked dependencies to this effect. The
+	// dependencies that should re-fire this effect are the ones
+	// explicitly `void`ed below — nothing else.
+	//
 	// `doSearch` handles the empty-query case internally by clearing
 	// results — so the effect can fire on every transition (including
 	// "user backspaced to empty") without leaving stale results visible.
@@ -389,13 +408,14 @@
 		void filterStatus;
 		const trimmed = query.trim();
 		const parsed = trimmed ? parseSearchQuery(trimmed) : null;
-		if (!parsed?.body) {
+		const isBareDigit = !!trimmed && /^\d+$/.test(trimmed);
+		if (!parsed?.body && !isBareDigit) {
 			void localIndex.bootstrapStateFor(workspaceStore.current?.slug ?? '');
 			for (const ws of workspaceStore.workspaces) {
 				void localSearch.epoch(ws.slug);
 			}
 		}
-		doSearch();
+		untrack(() => doSearch());
 	});
 
 	function loadAllWorkspacesPref(): boolean {
