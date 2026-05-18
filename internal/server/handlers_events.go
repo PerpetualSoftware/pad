@@ -13,6 +13,28 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// sseKeepaliveInterval is how often we write a comment line to an
+// otherwise-idle SSE stream so (a) intermediate proxies/LBs don't
+// idle the connection out, and (b) the kernel-level TCP keep-alive
+// has traffic to ride. Must land well inside the http.Server's
+// IdleTimeout (httpIdleTimeout in server.go) — the init() guard
+// below enforces 3 × keepalive < IdleTimeout so a couple of dropped
+// writes don't slip past the deadline.
+//
+// Bumping this past httpIdleTimeout / 3 without bumping
+// httpIdleTimeout in lockstep is a programming error caught at
+// process start, not at runtime. BUG-1532.
+const sseKeepaliveInterval = 30 * time.Second
+
+func init() {
+	if 3*sseKeepaliveInterval >= httpIdleTimeout {
+		panic(fmt.Sprintf(
+			"invariant violated: 3 × sseKeepaliveInterval (%s) must be < httpIdleTimeout (%s); "+
+				"bump httpIdleTimeout in server.go or reduce sseKeepaliveInterval. BUG-1532.",
+			3*sseKeepaliveInterval, httpIdleTimeout))
+	}
+}
+
 // handleSSE streams Server-Sent Events for a workspace.
 // GET /api/v1/events?workspace=<slug>
 //
@@ -132,11 +154,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Send initial connected event
-	writeSSEEvent(w, "connected", 0, map[string]string{
+	// Send initial connected event. If even this first write fails the
+	// client is already gone — bail before subscribing to anything
+	// else. BUG-1532.
+	if err := writeSSEEvent(w, "connected", 0, map[string]string{
 		"workspace_id": ws.ID,
 		"workspace":    ws.Slug,
-	})
+	}); err != nil {
+		slog.Debug("SSE: initial connected write failed, closing",
+			"workspace", ws.Slug, "error", err)
+		return
+	}
 	flusher.Flush()
 
 	// Replay missed events if the client provided Last-Event-ID.
@@ -149,16 +177,24 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// Gap too large — buffer evicted. Tell client to do a full sync.
 				slog.Info("SSE replay gap too large, sending sync_required",
 					"workspace", ws.Slug, "last_event_id", lastID)
-				writeSSEEvent(w, "sync_required", 0, map[string]string{
+				if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
 					"reason": "Event buffer exceeded. Full sync required.",
-				})
+				}); err != nil {
+					slog.Debug("SSE: sync_required write failed, closing",
+						"workspace", ws.Slug, "error", err)
+					return
+				}
 				flusher.Flush()
 			} else if len(missed) > 0 {
 				slog.Info("SSE replaying missed events",
 					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
 				for _, event := range missed {
 					if sseEventVisible(event) {
-						writeSSEEvent(w, event.Type, event.ID, event)
+						if err := writeSSEEvent(w, event.Type, event.ID, event); err != nil {
+							slog.Debug("SSE: replay write failed, closing",
+								"workspace", ws.Slug, "error", err)
+							return
+						}
 						flusher.Flush()
 					}
 				}
@@ -167,8 +203,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Keepalive ticker
-	keepalive := time.NewTicker(30 * time.Second)
+	// Keepalive ticker — see sseKeepaliveInterval doc for why the
+	// interval is linked to httpIdleTimeout.
+	keepalive := time.NewTicker(sseKeepaliveInterval)
 	defer keepalive.Stop()
 
 	// Membership revalidation timer. The initial subscribe only checked
@@ -207,13 +244,32 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if sseEventVisible(event) {
-				writeSSEEvent(w, event.Type, event.ID, event)
+				// Broken-pipe / EOF on the live event path means the
+				// client has gone away. Exit the handler so the bus
+				// subscription is released (the deferred Unsubscribe
+				// runs) and we stop pulling events off the channel for
+				// a peer that can't receive them. ctx.Done() will fire
+				// on the next iteration anyway in most cases, but
+				// surfacing the write error closes the gap where the
+				// client TCP went away but the cancellation hasn't
+				// propagated yet. BUG-1532.
+				if err := writeSSEEvent(w, event.Type, event.ID, event); err != nil {
+					slog.Debug("SSE: event write failed, closing",
+						"workspace", ws.Slug, "event_type", event.Type, "error", err)
+					return
+				}
 				flusher.Flush()
 			}
 
 		case <-keepalive.C:
-			// Send keepalive comment to prevent proxy/LB timeouts
-			fmt.Fprintf(w, ": keepalive\n\n")
+			// Send keepalive comment to prevent proxy/LB timeouts.
+			// Write error → client gone → exit. Same rationale as the
+			// event-write path above. BUG-1532.
+			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+				slog.Debug("SSE: keepalive write failed, closing",
+					"workspace", ws.Slug, "error", err)
+				return
+			}
 			flusher.Flush()
 
 		case <-membershipCheck.C:
@@ -225,11 +281,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 					"workspace", ws.Slug, "user_id", sseUserID)
 				// Tell the client why — the frontend's EventSource handler
 				// can use this to redirect to login / dismiss the workspace
-				// instead of reconnecting in a tight loop.
-				writeSSEEvent(w, "unauthorized", 0, map[string]string{
+				// instead of reconnecting in a tight loop. Best-effort:
+				// if the write fails the client is already gone, which
+				// is operationally equivalent to "they got the message"
+				// — either way we exit.
+				if err := writeSSEEvent(w, "unauthorized", 0, map[string]string{
 					"reason": "Your access to this workspace was revoked.",
-				})
-				flusher.Flush()
+				}); err != nil {
+					slog.Debug("SSE: unauthorized write failed (client likely already gone)",
+						"workspace", ws.Slug, "error", err)
+				} else {
+					flusher.Flush()
+				}
 				return
 			}
 			// Still a member — but the scope of that membership may have
@@ -480,15 +543,24 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 
 // writeSSEEvent writes a single SSE event to the response writer.
 // If eventID > 0, an "id:" field is included for Last-Event-ID support.
-func writeSSEEvent(w http.ResponseWriter, eventType string, eventID int64, data interface{}) {
+//
+// Returns nil for both the happy path AND the JSON-marshal failure
+// path: a marshal error is local to this event and shouldn't tear
+// down a healthy stream. Returns the underlying Fprintf error only
+// when the actual network write fails — the caller should treat that
+// as "the stream is gone" and exit the handler so the bus
+// subscription is released and we don't keep pulling events off the
+// channel for a broken peer. BUG-1532.
+func writeSSEEvent(w http.ResponseWriter, eventType string, eventID int64, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		slog.Error("failed to marshal SSE event", "error", err)
-		return
+		slog.Error("failed to marshal SSE event", "error", err, "event_type", eventType)
+		return nil
 	}
 	if eventID > 0 {
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", eventID, eventType, jsonData)
+		_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", eventID, eventType, jsonData)
 	} else {
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, jsonData)
+		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, jsonData)
 	}
+	return err
 }

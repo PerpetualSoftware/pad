@@ -462,3 +462,65 @@ func TestSSELimitsExistingConnectionsUnaffected(t *testing.T) {
 		t.Errorf("expected 1 subscriber still active, got %d", got)
 	}
 }
+
+// failingWriter is an http.ResponseWriter whose Write always returns
+// an error. Used to verify writeSSEEvent surfaces write failures
+// rather than swallowing them. BUG-1532.
+type failingWriter struct {
+	header http.Header
+	err    error
+}
+
+func (f *failingWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = http.Header{}
+	}
+	return f.header
+}
+func (f *failingWriter) Write(_ []byte) (int, error) { return 0, f.err }
+func (f *failingWriter) WriteHeader(_ int)           {}
+
+// TestWriteSSEEvent_SurfacesWriteErrors locks in the BUG-1532 contract:
+// writeSSEEvent must return the underlying write error so the handler
+// can exit cleanly when the client has gone away. Previously the error
+// was silently dropped from fmt.Fprintf and the handler kept looping.
+func TestWriteSSEEvent_SurfacesWriteErrors(t *testing.T) {
+	want := fmt.Errorf("broken pipe")
+	fw := &failingWriter{err: want}
+
+	got := writeSSEEvent(fw, "item.created", 42, map[string]string{"k": "v"})
+	if got == nil {
+		t.Fatal("writeSSEEvent: expected write error, got nil")
+	}
+	// fmt.Fprintf wraps Write errors verbatim; the underlying error
+	// must be reachable for callers that want to distinguish broken-pipe
+	// from real bugs.
+	if !strings.Contains(got.Error(), want.Error()) {
+		t.Errorf("writeSSEEvent error: got %q, want it to contain %q", got.Error(), want.Error())
+	}
+}
+
+// TestWriteSSEEvent_MarshalErrorIsLocal verifies that a JSON-marshal
+// failure for a single event does NOT bubble up as a write error —
+// the caller would otherwise tear down a healthy stream because one
+// payload had an un-marshalable field. BUG-1532.
+func TestWriteSSEEvent_MarshalErrorIsLocal(t *testing.T) {
+	// Channels aren't JSON-encodable; json.Marshal returns
+	// UnsupportedTypeError.
+	got := writeSSEEvent(httptest.NewRecorder(), "weird", 0, make(chan int))
+	if got != nil {
+		t.Fatalf("writeSSEEvent on un-marshalable data: got %v, want nil (marshal errors should not tear down the stream)", got)
+	}
+}
+
+// TestSSEKeepaliveIdleTimeoutInvariant is a belt-and-suspenders check
+// for the relationship enforced by handlers_events.go's init() guard.
+// If this assertion ever flips, the init() guard would panic at
+// process start, but having it in the test suite gives an immediate,
+// readable failure during local development. BUG-1532.
+func TestSSEKeepaliveIdleTimeoutInvariant(t *testing.T) {
+	if 3*sseKeepaliveInterval >= httpIdleTimeout {
+		t.Fatalf("invariant: 3 × sseKeepaliveInterval (%s) must be < httpIdleTimeout (%s)",
+			3*sseKeepaliveInterval, httpIdleTimeout)
+	}
+}
