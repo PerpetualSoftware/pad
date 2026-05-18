@@ -1,0 +1,443 @@
+package store
+
+import (
+	"path/filepath"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// BackfillOAuthConnections tests (PLAN-1519 / TASK-1522 / IDEA-1517 §2).
+//
+// What's covered:
+//
+//   - Pre-TASK-952 session (no key)           → all_current=1, no join rows.
+//   - Wildcard session (`["*"]`)              → all_current=1, no join rows.
+//   - Explicit slug list, all slugs resolvable → all_current=0, one join
+//                                                row per slug, added_by='user'.
+//   - Explicit slug list with a deleted slug   → unresolved counter ticks,
+//                                                the rest of the slugs land.
+//   - Multi-row chain (refresh-token rotation) → newest row drives the
+//                                                seeded shape, not earliest.
+//   - Refresh-only chain (no access row)       → still backfilled.
+//   - Idempotent re-run                        → no double inserts, counters
+//                                                report zero new work.
+//   - Empty database                           → no-op, no error.
+
+func newBackfillTestStore(t *testing.T) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "backfill.db"))
+	if err != nil {
+		t.Fatalf("New store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func seedBackfillUser(t *testing.T, s *Store, email string) string {
+	t.Helper()
+	u, err := s.CreateUser(models.UserCreate{
+		Email: email, Name: "Backfill Tester",
+		Password: "pw-backfill-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return u.ID
+}
+
+func seedBackfillWorkspace(t *testing.T, s *Store, name, ownerID string) (id, slug string) {
+	t.Helper()
+	w, err := s.CreateWorkspace(models.WorkspaceCreate{Name: name, OwnerID: ownerID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace %s: %v", name, err)
+	}
+	return w.ID, w.Slug
+}
+
+// seedBackfillClient mirrors seedClient in connected_apps_test.go but
+// stays internal to this file so the backfill suite can run in
+// isolation when other tests in the package fail.
+func seedBackfillClient(t *testing.T, s *Store, name string) string {
+	t.Helper()
+	c, err := s.CreateOAuthClient(models.OAuthClientCreate{
+		Name:                    name,
+		RedirectURIs:            []string{"https://example.test/cb"},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+		Scopes:                  []string{"pad:read", "pad:write"},
+		Public:                  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateOAuthClient: %v", err)
+	}
+	return c.ID
+}
+
+func seedBackfillAccess(t *testing.T, s *Store, requestID, clientID, subject string, ts time.Time, sessionData string) {
+	t.Helper()
+	if err := s.CreateAccessToken(models.OAuthRequest{
+		Signature:     newID(),
+		RequestID:     requestID,
+		RequestedAt:   ts,
+		ClientID:      clientID,
+		GrantedScopes: "pad:read pad:write",
+		SessionData:   sessionData,
+		Subject:       subject,
+	}); err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+}
+
+func seedBackfillRefresh(t *testing.T, s *Store, requestID, clientID, subject string, ts time.Time, sessionData string) {
+	t.Helper()
+	if err := s.CreateRefreshToken(models.OAuthRequest{
+		Signature:     newID(),
+		RequestID:     requestID,
+		RequestedAt:   ts,
+		ClientID:      clientID,
+		GrantedScopes: "pad:read pad:write",
+		SessionData:   sessionData,
+		Subject:       subject,
+	}); err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+}
+
+func TestBackfillOAuthConnections_EmptyDatabase(t *testing.T) {
+	s := newBackfillTestStore(t)
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.ChainsSeen != 0 || res.ConnectionsCreated != 0 || res.WorkspacesAdded != 0 {
+		t.Errorf("empty DB result = %+v, want all zero", res)
+	}
+}
+
+func TestBackfillOAuthConnections_PreTASK952_WildcardSemantic(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "pre-952@example.com")
+	client := seedBackfillClient(t, s, "Pre-952 Client")
+
+	// No allowed_workspaces key in session.Extra at all — pre-TASK-952
+	// token shape. Should seed all_current_workspaces=1.
+	seedBackfillAccess(t, s, "pre-952-chain", client, uid, time.Now().UTC(), `{"extra":{}}`)
+
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 {
+		t.Errorf("ConnectionsCreated = %d, want 1", res.ConnectionsCreated)
+	}
+	if res.WorkspacesAdded != 0 {
+		t.Errorf("WorkspacesAdded = %d, want 0 (wildcard shape)", res.WorkspacesAdded)
+	}
+
+	conn, err := s.GetOAuthConnection("pre-952-chain")
+	if err != nil {
+		t.Fatalf("GetOAuthConnection: %v", err)
+	}
+	if !conn.AllCurrentWorkspaces {
+		t.Errorf("all_current_workspaces = false, want true for pre-TASK-952 token")
+	}
+	if !conn.MayCreateWorkspaces || !conn.IncludeFutureWorkspaces {
+		t.Errorf("scope flags should default ON for backfilled rows, got %+v", conn)
+	}
+	if conn.Name != "" {
+		t.Errorf("backfilled name should be empty; got %q", conn.Name)
+	}
+}
+
+func TestBackfillOAuthConnections_Wildcard(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "wildcard@example.com")
+	client := seedBackfillClient(t, s, "Wildcard Client")
+
+	seedBackfillAccess(t, s, "wc-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["*"]}}`)
+
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 || res.WorkspacesAdded != 0 {
+		t.Errorf("result = %+v, want 1 connection / 0 workspaces", res)
+	}
+	conn, _ := s.GetOAuthConnection("wc-chain")
+	if !conn.AllCurrentWorkspaces {
+		t.Errorf("wildcard should map to all_current=true")
+	}
+}
+
+func TestBackfillOAuthConnections_ExplicitList(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "explicit@example.com")
+	client := seedBackfillClient(t, s, "Explicit Client")
+	_, alphaSlug := seedBackfillWorkspace(t, s, "alpha", uid)
+	_, betaSlug := seedBackfillWorkspace(t, s, "beta", uid)
+
+	seedBackfillAccess(t, s, "exp-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+alphaSlug+`","`+betaSlug+`"]}}`)
+
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 {
+		t.Errorf("ConnectionsCreated = %d, want 1", res.ConnectionsCreated)
+	}
+	if res.WorkspacesAdded != 2 {
+		t.Errorf("WorkspacesAdded = %d, want 2", res.WorkspacesAdded)
+	}
+	if res.UnresolvedSlugs != 0 {
+		t.Errorf("UnresolvedSlugs = %d, want 0", res.UnresolvedSlugs)
+	}
+
+	conn, _ := s.GetOAuthConnection("exp-chain")
+	if conn.AllCurrentWorkspaces {
+		t.Errorf("explicit-list chain should have all_current=false")
+	}
+	access, _ := s.GetOAuthConnectionAccess("exp-chain")
+	gotSlugs := append([]string(nil), access.WorkspaceSlugs...)
+	sort.Strings(gotSlugs)
+	want := []string{alphaSlug, betaSlug}
+	sort.Strings(want)
+	if len(gotSlugs) != 2 || gotSlugs[0] != want[0] || gotSlugs[1] != want[1] {
+		t.Errorf("WorkspaceSlugs = %v, want %v", gotSlugs, want)
+	}
+}
+
+func TestBackfillOAuthConnections_UnresolvedSlugIsCounted(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "unresolved@example.com")
+	client := seedBackfillClient(t, s, "Unresolved Client")
+	_, realSlug := seedBackfillWorkspace(t, s, "real-ws", uid)
+
+	// Mix one real slug with one that points at a workspace that
+	// doesn't exist. The backfill should land the real one and tick
+	// the unresolved counter — not fail the whole chain.
+	seedBackfillAccess(t, s, "u-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+realSlug+`","never-existed"]}}`)
+
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.WorkspacesAdded != 1 {
+		t.Errorf("WorkspacesAdded = %d, want 1", res.WorkspacesAdded)
+	}
+	if res.UnresolvedSlugs != 1 {
+		t.Errorf("UnresolvedSlugs = %d, want 1", res.UnresolvedSlugs)
+	}
+}
+
+func TestBackfillOAuthConnections_NewestRowDrivesShape(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "rotation@example.com")
+	client := seedBackfillClient(t, s, "Rotation Client")
+	_, alphaSlug := seedBackfillWorkspace(t, s, "alpha-rot", uid)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	// Oldest row has wildcard; newest row has an explicit list.
+	// Backfill must take the explicit list (the user's most recent
+	// scope decision). If we accidentally picked the oldest row we'd
+	// seed all_current=true and zero join rows.
+	seedBackfillAccess(t, s, "rot-chain", client, uid, now.Add(-2*time.Hour),
+		`{"extra":{"allowed_workspaces":["*"]}}`)
+	seedBackfillAccess(t, s, "rot-chain", client, uid, now,
+		`{"extra":{"allowed_workspaces":["`+alphaSlug+`"]}}`)
+
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	conn, _ := s.GetOAuthConnection("rot-chain")
+	if conn.AllCurrentWorkspaces {
+		t.Errorf("newest row was explicit; all_current should be false, got %+v", conn)
+	}
+	access, _ := s.GetOAuthConnectionAccess("rot-chain")
+	if len(access.WorkspaceSlugs) != 1 || access.WorkspaceSlugs[0] != alphaSlug {
+		t.Errorf("WorkspaceSlugs = %v, want [%q]", access.WorkspaceSlugs, alphaSlug)
+	}
+}
+
+func TestBackfillOAuthConnections_RefreshOnlyChain(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "refresh-only@example.com")
+	client := seedBackfillClient(t, s, "Refresh Client")
+
+	// Chain lives only on the refresh side (access token already
+	// expired, but the refresh hasn't been used yet). Backfill must
+	// still seed it.
+	seedBackfillRefresh(t, s, "r-only-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["*"]}}`)
+
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 {
+		t.Errorf("ConnectionsCreated = %d, want 1 for refresh-only chain", res.ConnectionsCreated)
+	}
+}
+
+// TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace is the
+// regression guard for Codex review #583 round 2: a user who removes a
+// slug from their connection's allow-list (via Phase D's mutation UI)
+// must NOT see the slug come back on the next server restart's
+// backfill run. Backfill is a one-shot seed; once the oauth_connections
+// row exists, the new tables are authoritative and the legacy
+// session.Extra payload is frozen reference data, not a source of
+// truth the backfill keeps reconciling against.
+func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "resurrect@example.com")
+	client := seedBackfillClient(t, s, "Resurrect Client")
+	keepID, keepSlug := seedBackfillWorkspace(t, s, "keep", uid)
+	removeID, removeSlug := seedBackfillWorkspace(t, s, "remove", uid)
+
+	seedBackfillAccess(t, s, "res-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+keepSlug+`","`+removeSlug+`"]}}`)
+
+	// First run seeds both slugs.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("first BackfillOAuthConnections: %v", err)
+	}
+
+	// User removes the second workspace via the connections-page UI.
+	// (Simulated directly through the store — the wire path lands in
+	// Phase D, but the semantic is identical.)
+	if err := s.RemoveConnectionWorkspace("res-chain", removeID); err != nil {
+		t.Fatalf("RemoveConnectionWorkspace: %v", err)
+	}
+
+	// Second backfill run — the same session.Extra still references
+	// the removed slug, but we must NOT reinstate it.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("second BackfillOAuthConnections: %v", err)
+	}
+
+	allowedKeep, err := s.IsConnectionWorkspaceAllowed("res-chain", keepID)
+	if err != nil {
+		t.Fatalf("IsConnectionWorkspaceAllowed keep: %v", err)
+	}
+	if !allowedKeep {
+		t.Errorf("keep workspace should still be in allow-list (backfill must not touch it)")
+	}
+	allowedRemoved, err := s.IsConnectionWorkspaceAllowed("res-chain", removeID)
+	if err != nil {
+		t.Fatalf("IsConnectionWorkspaceAllowed remove: %v", err)
+	}
+	if allowedRemoved {
+		t.Errorf("removed workspace must NOT be resurrected by backfill rerun (user's removal would silently revert)")
+	}
+}
+
+// TestBackfillOAuthConnections_AtomicOnMidLoopFailure verifies that
+// the per-chain transaction rolls BOTH the parent oauth_connections
+// row AND any join rows back when a slug INSERT fails mid-loop. The
+// regression guard for Codex review #583 round 3: without atomicity,
+// a partial seed (parent inserted, slug loop crashed) would leave the
+// connection permanently scoped to an incomplete allow-list because
+// the subsequent backfill sees the parent row and short-circuits.
+//
+// We force a mid-loop INSERT failure by stuffing the same slug twice
+// into session.Extra. The second INSERT against
+// oauth_connection_workspaces hits the (request_id, workspace_id) PK
+// uniqueness constraint, raising an error. The atomic rollback should
+// unwind the parent row too — re-running backfill on a CORRECTED
+// payload (deduped) then succeeds.
+//
+// In practice the consent flow would never emit a duplicate slug, but
+// the test exercises the same rollback path any other error would
+// trigger (network glitch, FK violation, etc.).
+func TestBackfillOAuthConnections_AtomicOnMidLoopFailure(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "atomic@example.com")
+	client := seedBackfillClient(t, s, "Atomic Client")
+	_, slug := seedBackfillWorkspace(t, s, "atomic-ws", uid)
+
+	// Duplicate slug → second insert violates PK, errors mid-loop.
+	seedBackfillAccess(t, s, "atomic-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+slug+`","`+slug+`"]}}`)
+
+	// First run: chain processing fails. The backfill logs the chain
+	// at WARN + continues, but the parent row + any partial join
+	// rows must be rolled back so the next clean run can finish the
+	// seed.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("first BackfillOAuthConnections: %v", err)
+	}
+	if _, err := s.GetOAuthConnection("atomic-chain"); err == nil {
+		t.Fatalf("parent row should have rolled back on mid-loop INSERT failure")
+	}
+
+	// Simulate the operator fixing the corrupt session.Extra by
+	// deleting the chain's existing token rows and reseeding with a
+	// clean payload. In production this would happen naturally on
+	// the next token refresh through /authorize/decide.
+	if _, err := s.db.Exec(`DELETE FROM oauth_access_tokens WHERE request_id = ?`, "atomic-chain"); err != nil {
+		t.Fatalf("DELETE oauth_access_tokens: %v", err)
+	}
+	seedBackfillAccess(t, s, "atomic-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+slug+`"]}}`)
+
+	// Second run: clean payload. Atomic insert lands parent + slug
+	// together. No half-seeded artifact from the first failed run.
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("second BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 || res.WorkspacesAdded != 1 {
+		t.Errorf("clean retry should fully seed; got %+v", res)
+	}
+}
+
+func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "idem@example.com")
+	client := seedBackfillClient(t, s, "Idem Client")
+	_, alphaSlug := seedBackfillWorkspace(t, s, "alpha-idem", uid)
+
+	seedBackfillAccess(t, s, "idem-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+alphaSlug+`"]}}`)
+
+	first, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("first BackfillOAuthConnections: %v", err)
+	}
+	if first.ConnectionsCreated != 1 || first.WorkspacesAdded != 1 {
+		t.Errorf("first run = %+v, want 1 conn / 1 workspace", first)
+	}
+
+	second, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("second BackfillOAuthConnections: %v", err)
+	}
+	// Idempotent: chain scan re-counts but every counter for "new
+	// work" must report 0 — pre-insert existence probes prevent
+	// no-op INSERTs from incrementing the counters. Codex review
+	// #583 round 1 caught the prior over-report; this assertion is
+	// the regression guard.
+	if second.ConnectionsCreated != 0 {
+		t.Errorf("idempotent re-run ConnectionsCreated = %d, want 0", second.ConnectionsCreated)
+	}
+	if second.WorkspacesAdded != 0 {
+		t.Errorf("idempotent re-run WorkspacesAdded = %d, want 0", second.WorkspacesAdded)
+	}
+	access, err := s.GetOAuthConnectionAccess("idem-chain")
+	if err != nil {
+		t.Fatalf("GetOAuthConnectionAccess: %v", err)
+	}
+	if len(access.WorkspaceSlugs) != 1 {
+		t.Errorf("after idempotent re-run, WorkspaceSlugs = %v; want exactly 1 entry", access.WorkspaceSlugs)
+	}
+	if second.ChainsSeen != 1 {
+		t.Errorf("second run ChainsSeen = %d, want 1", second.ChainsSeen)
+	}
+}

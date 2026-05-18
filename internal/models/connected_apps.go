@@ -49,15 +49,33 @@ type OAuthConnection struct {
 	LogoURL      string
 	RedirectURIs []string
 
-	// AllowedWorkspaces is the workspace allow-list set at consent
-	// time (TASK-952). Three shapes:
-	//   - nil — pre-TASK-952 token (no consent payload). Treated as
-	//     "any workspace the user belongs to."
-	//   - ["*"] — wildcard (user explicitly granted any).
-	//   - explicit slugs — the user's selection.
-	// The page renders chips per slug, or an "Any workspace" badge
-	// for nil / wildcard.
+	// AllowedWorkspaces is the workspace allow-list. Post-TASK-1522
+	// it's the projection of oauth_connection_workspaces rows joined
+	// to workspaces by ID (slug list, sorted). Two shapes the UI
+	// renders against:
+	//   - nil — the connection's all_current_workspaces flag is on
+	//     (covers every workspace the user is a member of). UI shows
+	//     an "Any workspace" badge.
+	//   - explicit slugs — all_current_workspaces=false; UI shows the
+	//     slug list as chips.
+	// (Pre-TASK-1522 the same field also held ["*"] for wildcard
+	// tokens; the backfill normalizes those to the flag and the field
+	// is nil for them now. The wire DTO's nullable shape is unchanged
+	// so frontend code keeps working.)
 	AllowedWorkspaces []string
+
+	// Connection-level scope flags + name from oauth_connections
+	// (PLAN-1519 / TASK-1520 / IDEA-1517 §2). Pre-TASK-1522 these
+	// were unsourced (the field didn't exist); post-backfill every
+	// active connection has a row and the values mean what the page
+	// should render. Phase D's mutation UI reads + writes these.
+	//
+	// Name is empty string for backfilled rows that haven't been
+	// renamed yet — UI prompts on first connections-page visit.
+	Name                    string
+	MayCreateWorkspaces     bool
+	AllCurrentWorkspaces    bool
+	IncludeFutureWorkspaces bool
 
 	// GrantedScopes is the raw space-separated scope string fosite
 	// recorded at grant time. Surfaced in the per-connection expand

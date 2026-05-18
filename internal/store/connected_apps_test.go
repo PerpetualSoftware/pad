@@ -111,6 +111,18 @@ func TestListUserOAuthConnections_DeduplicatesChain(t *testing.T) {
 	seedAccess(t, s, "chain-1", clientID, uid, now.Add(-2*time.Hour), sessionData, "pad:read pad:write", true)
 	seedAccess(t, s, "chain-1", clientID, uid, now.Add(-1*time.Hour), sessionData, "pad:read pad:write", true)
 
+	// Workspace + backfill so the rewritten read path (TASK-1522)
+	// projects AllowedWorkspaces from oauth_connection_workspaces
+	// instead of the retired session.Extra parse. Production wires
+	// the same call at startup; tests do it explicitly.
+	ownerForWS := seedUser(t, s, "chain-1-ws-owner@example.com")
+	if _, wsErr := s.CreateWorkspace(models.WorkspaceCreate{Name: "docapp", OwnerID: ownerForWS}); wsErr != nil {
+		t.Fatalf("CreateWorkspace docapp: %v", wsErr)
+	}
+	if _, bfErr := s.BackfillOAuthConnections(); bfErr != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", bfErr)
+	}
+
 	conns, err := s.ListUserOAuthConnections(uid)
 	if err != nil {
 		t.Fatalf("ListUserOAuthConnections: %v", err)
@@ -263,29 +275,57 @@ func TestClassifyCapabilityTier(t *testing.T) {
 	}
 }
 
-func TestParseAllowedWorkspacesFromSession(t *testing.T) {
+// TestExtractAllowedWorkspacesFromSessionExtra covers the parse helper
+// that drives the TASK-1522 backfill from session.Extra into the new
+// oauth_connections + oauth_connection_workspaces tables. Replaces the
+// retired parseAllowedWorkspacesFromSession test (which was the
+// previous read-path's parse helper, removed when the read path
+// switched to the new tables).
+//
+// Shape mapping (per IDEA-1517 §2 backfill spec):
+//
+//   - missing / malformed / non-array → (hasKey=false, isStar=false, slugs=nil)
+//     → seeder writes all_current_workspaces=1, no join rows.
+//   - ["*"] singleton                  → (hasKey=true, isStar=true, slugs=nil)
+//     → seeder writes all_current_workspaces=1, no join rows.
+//   - explicit slug list               → (hasKey=true, isStar=false, slugs=<list>)
+//     → seeder writes all_current_workspaces=0, one join row per slug.
+func TestExtractAllowedWorkspacesFromSessionExtra(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want []string
+		name      string
+		in        string
+		wantKey   bool
+		wantStar  bool
+		wantSlugs []string
 	}{
-		{"empty", "", nil},
-		{"missing extra key", `{"extra":{}}`, nil},
-		{"string slice", `{"extra":{"allowed_workspaces":["alpha","beta"]}}`, []string{"alpha", "beta"}},
-		{"wildcard", `{"extra":{"allowed_workspaces":["*"]}}`, []string{"*"}},
-		{"non-string elements skipped", `{"extra":{"allowed_workspaces":["alpha",42,"beta"]}}`, []string{"alpha", "beta"}},
-		{"malformed", `not json`, nil},
+		{"empty session", "", false, false, nil},
+		{"missing extra key", `{"extra":{}}`, false, false, nil},
+		{"explicit slug list", `{"extra":{"allowed_workspaces":["alpha","beta"]}}`, true, false, []string{"alpha", "beta"}},
+		{"wildcard singleton", `{"extra":{"allowed_workspaces":["*"]}}`, true, true, nil},
+		{"non-string elements dropped", `{"extra":{"allowed_workspaces":["alpha",42,"beta"]}}`, true, false, []string{"alpha", "beta"}},
+		{"explicit empty list", `{"extra":{"allowed_workspaces":[]}}`, true, false, nil},
+		{"wildcard mixed with slug", `{"extra":{"allowed_workspaces":["*","alpha"]}}`, true, false, []string{"*", "alpha"}},
+		{"malformed JSON", `not json`, false, false, nil},
+		{"non-array value", `{"extra":{"allowed_workspaces":"alpha"}}`, false, false, nil},
 	}
 	for _, tc := range cases {
-		got := parseAllowedWorkspacesFromSession(tc.in)
-		if len(got) != len(tc.want) {
-			t.Errorf("%s: len = %d, want %d (got %v)", tc.name, len(got), len(tc.want), got)
-			continue
-		}
-		for i := range got {
-			if got[i] != tc.want[i] {
-				t.Errorf("%s: [%d] = %q, want %q", tc.name, i, got[i], tc.want[i])
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractAllowedWorkspacesFromSessionExtra(tc.in)
+			if got.hasKey != tc.wantKey {
+				t.Errorf("hasKey = %v, want %v", got.hasKey, tc.wantKey)
 			}
-		}
+			if got.isStar != tc.wantStar {
+				t.Errorf("isStar = %v, want %v", got.isStar, tc.wantStar)
+			}
+			if len(got.slugs) != len(tc.wantSlugs) {
+				t.Errorf("slugs len = %d (%v), want %d (%v)", len(got.slugs), got.slugs, len(tc.wantSlugs), tc.wantSlugs)
+				return
+			}
+			for i := range got.slugs {
+				if got.slugs[i] != tc.wantSlugs[i] {
+					t.Errorf("slugs[%d] = %q, want %q", i, got.slugs[i], tc.wantSlugs[i])
+				}
+			}
+		})
 	}
 }

@@ -500,6 +500,42 @@ func serveCmd() *cobra.Command {
 						"endpoints", "/oauth/{register,authorize,token,claim}",
 						"audience", oauthSrv.AllowedAudience(),
 					)
+
+					// One-shot backfill of pre-TASK-1522 grant chains
+					// into oauth_connections + oauth_connection_workspaces
+					// (PLAN-1519 / TASK-1522 / IDEA-1517 §2). Idempotent:
+					// the inserts are ON CONFLICT DO NOTHING / INSERT OR
+					// IGNORE, so re-running on every startup is cheap and
+					// safe. The rewritten ListUserOAuthConnections reads
+					// from the new tables; running this BEFORE the HTTP
+					// server starts means /console/connected-apps never
+					// renders an empty page during the brief window
+					// between server-up and backfill-complete.
+					//
+					// Backfill failures don't abort startup — a partial
+					// run leaves the tables in a consistent state the
+					// next run completes (per-chain failures are logged
+					// and the run continues). The rewritten read path
+					// also has a defensive fallback for chains without
+					// connection rows, so any chain the backfill misses
+					// still renders.
+					if bf, bfErr := s.BackfillOAuthConnections(); bfErr != nil {
+						slog.Warn("oauth_connections backfill failed; non-fatal",
+							"error", bfErr)
+					} else if bf.ConnectionsCreated > 0 || bf.WorkspacesAdded > 0 {
+						slog.Info("oauth_connections backfill complete",
+							"chains_seen", bf.ChainsSeen,
+							"connections_created", bf.ConnectionsCreated,
+							"workspaces_added", bf.WorkspacesAdded,
+							"unresolved_slugs", bf.UnresolvedSlugs,
+						)
+					} else if bf.ChainsSeen > 0 {
+						// Quiet log on steady-state re-runs (chains
+						// scanned, nothing new to write) so ops can
+						// confirm the call ran without log noise.
+						slog.Debug("oauth_connections backfill no-op",
+							"chains_seen", bf.ChainsSeen)
+					}
 				} else {
 					slog.Warn("PAD_MCP_PUBLIC_URL not set — OAuth server NOT mounted (no canonical audience to bind tokens to)")
 				}

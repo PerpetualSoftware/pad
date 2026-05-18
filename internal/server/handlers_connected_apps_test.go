@@ -137,6 +137,26 @@ func TestHandleListConnectedApps_DTOShapeAndAuditEnrichment(t *testing.T) {
 	seedGrantChain(t, srv, clientID, user.ID, "shape-chain",
 		`{"extra":{"allowed_workspaces":["alpha","beta"]}}`, "pad:read pad:write")
 
+	// TASK-1522: the read path now projects allowed_workspaces from
+	// oauth_connection_workspaces, not session.Extra. Mirror production
+	// startup by creating the referenced workspaces + running the
+	// backfill so the slugs resolve to real rows and seed join entries.
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "shape-chain-ws-owner@example.com", Name: "Owner",
+		Password: "pw-shape-owner-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser ws-owner: %v", err)
+	}
+	for _, slug := range []string{"alpha", "beta"} {
+		if _, wsErr := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: slug, OwnerID: owner.ID}); wsErr != nil {
+			t.Fatalf("CreateWorkspace %s: %v", slug, wsErr)
+		}
+	}
+	if _, bfErr := srv.store.BackfillOAuthConnections(); bfErr != nil {
+		t.Fatalf("BackfillOAuthConnections: %v", bfErr)
+	}
+
 	// Seed a couple of audit rows so calls_30d > 0 + last_used populates.
 	insertAudit := func(ts time.Time) {
 		err := srv.store.InsertMCPAuditEntry(models.MCPAuditEntryInput{
