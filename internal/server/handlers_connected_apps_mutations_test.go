@@ -254,6 +254,48 @@ func TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage(t *testi
 	}
 }
 
+// TestHandleAddConnectedAppWorkspace_VisibleUnderWildcard is the
+// regression guard for Codex review #585 round 2: pre-staging a
+// workspace while wildcard is on must surface that workspace in
+// the response DTO's allowed_workspaces array, so the UI can render
+// the chip + offer a remove button. Pre-fix the DTO suppressed
+// staged slugs under wildcard, leaving them invisible until the
+// user flipped wildcard off.
+func TestHandleAddConnectedAppWorkspace_VisibleUnderWildcard(t *testing.T) {
+	srv, _ := connectedAppsTestServer(t)
+	user, tok := loginTestUser(t, srv)
+	// Wildcard connection.
+	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{
+		RequestID:            "stage-wildcard-chain",
+		UserID:               user.ID,
+		AllCurrentWorkspaces: true,
+	}); err != nil {
+		t.Fatalf("CreateOAuthConnection: %v", err)
+	}
+	_, slug := mustSeedWorkspaceForMutation(t, srv, user.ID, "stage-wildcard-ws", "owner")
+
+	rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/stage-wildcard-chain/workspaces",
+		map[string]string{"workspace": slug}, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	var dto connectedAppDTO
+	_ = json.Unmarshal(rr.Body.Bytes(), &dto)
+	if !dto.AllCurrentWorkspaces {
+		t.Errorf("AllCurrentWorkspaces flipped from true; should remain true (staged != active)")
+	}
+	found := false
+	for _, s := range dto.AllowedWorkspaces {
+		if s == slug {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("staged workspace %q should appear in DTO.AllowedWorkspaces even under wildcard; got %v", slug, dto.AllowedWorkspaces)
+	}
+}
+
 func TestHandleAddConnectedAppWorkspace_HappyPath(t *testing.T) {
 	srv, _ := connectedAppsTestServer(t)
 	user, tok, _ := seedConnectedAppForMutations(t, srv, "add-ws-chain")

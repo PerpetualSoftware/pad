@@ -186,7 +186,19 @@
 		return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 	}
 
-	function isAnyWorkspace(ws: string[] | null | undefined): boolean {
+	// Returns true iff the user should see the "Any workspace" badge
+	// in the card's summary view. Post-Codex-#585-round-2 the wire
+	// shape sends BOTH the wildcard flag AND the staged slug list,
+	// so the badge is driven by the flag (the slug list may carry
+	// pre-staged rows that are inert until the user flips the flag).
+	// Legacy fallback for older wire shapes (no all_current flag,
+	// nil/empty list, ["*"] sentinel) preserved so a stale frontend
+	// against a fresh backend doesn't lose the badge.
+	function isAnyWorkspace(app: ConnectedApp): boolean {
+		if (app.all_current_workspaces === true) return true;
+		if (app.all_current_workspaces === false) return false;
+		// Older wire shape: infer from the slug list.
+		const ws = app.allowed_workspaces;
 		if (ws == null) return true;
 		if (ws.length === 0) return true;
 		if (ws.length === 1 && ws[0] === '*') return true;
@@ -294,7 +306,7 @@
 	{:else}
 		<div class="apps-list">
 			{#each apps as app (app.id)}
-				{@const anyWs = isAnyWorkspace(app.allowed_workspaces)}
+				{@const anyWs = isAnyWorkspace(app)}
 				{@const wsList = anyWs ? [] : (app.allowed_workspaces ?? [])}
 				{@const showAllChips = chipsExpanded[app.id]}
 				{@const visibleChips = showAllChips ? wsList : wsList.slice(0, 3)}

@@ -321,14 +321,15 @@ func (s *Server) respondWithConnection(w http.ResponseWriter, userID, requestID 
 		writeInternalError(w, err)
 		return
 	}
-	access, err := s.store.GetOAuthConnectionAccess(requestID)
+	// Always read the staged slugs from the join table — even when
+	// wildcard is on, the UI needs to render pre-staged rows so the
+	// user can remove a mistake before flipping wildcard off. Codex
+	// review #585 round 2 caught the gap where wildcard hid the
+	// staged list, leaving the user no way to manage it.
+	allowedSlugs, err := s.store.ListConnectionWorkspaceSlugs(requestID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
-	}
-	var allowedSlugs []string
-	if !access.AllCurrentWorkspaces {
-		allowedSlugs = access.WorkspaceSlugs
 	}
 	writeJSON(w, http.StatusOK, connectionToDTO(models.OAuthConnection{
 		RequestID:               conn.RequestID,

@@ -379,6 +379,45 @@ func (s *Store) ConnectionWorkspaceCount(requestID string) (int, error) {
 	return n, nil
 }
 
+// ListConnectionWorkspaceSlugs returns the join table's slug list
+// for requestID, regardless of the parent connection's wildcard
+// flag. Companion to ConnectionWorkspaceCount — same rationale
+// (the connections-page UI needs to render pre-staged workspaces
+// while wildcard is on; GetOAuthConnectionAccess's hot-path
+// short-circuit hides them). Sorted lexicographically so the UI
+// renders chips in a stable order across calls.
+//
+// Unexported because the only consumer is ListUserOAuthConnections
+// in connected_apps.go; if other paths ever need it, hoist to an
+// exported method.
+func (s *Store) ListConnectionWorkspaceSlugs(requestID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+        SELECT w.slug
+          FROM oauth_connection_workspaces cw
+          JOIN workspaces w ON w.id = cw.workspace_id
+         WHERE cw.request_id = ?
+    `), requestID)
+	if err != nil {
+		return nil, fmt.Errorf("oauth_connections: list workspace slugs: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0, 4)
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("oauth_connections: scan slug: %w", err)
+		}
+		if slug != "" {
+			out = append(out, slug)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("oauth_connections: rows: %w", err)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // IsConnectionWorkspaceAllowed reports whether workspace_id appears in
 // the connection's allow-list. Used internally by GetOAuthConnectionAccess
 // when callers want a single-pair check rather than the slug projection
