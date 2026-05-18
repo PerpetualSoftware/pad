@@ -292,6 +292,13 @@ func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	user, sessionToken := loginTestUser(t, srv)
 
+	// Seed one workspace so the consent UI renders its allow-list +
+	// access-mode controls (the new TASK-1523 template hides those
+	// when the user has zero memberships, surfacing a "create or join
+	// one first" empty state). The render-renders-fields assertion
+	// below needs at least one workspace to be present.
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Render Project", "render-project", "owner")
+
 	verifier := "code-verifier-abc123-must-be-43-to-128-chars-long"
 	challenge := s256Challenge(verifier)
 
@@ -330,12 +337,15 @@ func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 	if strings.Contains(body, `value="admin"`) {
 		t.Error("consent UI must NOT render pad:admin tier radio (not requested)")
 	}
-	// Workspace allow-list section.
+	// Workspace allow-list section (TASK-1523: new shape uses
+	// `workspace_access` radio + `allowed_workspaces` checkboxes for
+	// the "specific" mode picker — the legacy ["*"] value was retired
+	// in favor of the radio mode).
 	if !strings.Contains(body, `name="allowed_workspaces"`) {
 		t.Error("consent UI must include the workspace allow-list field")
 	}
-	if !strings.Contains(body, `value="*"`) {
-		t.Error("consent UI must offer the wildcard workspace option")
+	if !strings.Contains(body, `name="workspace_access"`) {
+		t.Error("consent UI must include the workspace_access radio per IDEA-1517 §2a")
 	}
 	if !strings.Contains(body, user.Name) {
 		t.Errorf("consent UI must surface the username %q for clarity", user.Name)
@@ -936,7 +946,11 @@ func TestConsent_RendersUserWorkspaces(t *testing.T) {
 		if !strings.Contains(body, ws.name) {
 			t.Errorf("workspace name %q not displayed", ws.name)
 		}
-		if !strings.Contains(body, "you are "+ws.role) {
+		// Role label appears next to each workspace row. TASK-1523's
+		// new template renders the bare role string (e.g. "owner")
+		// alongside the workspace name; the pre-TASK-1523 wording was
+		// "you are owner" which the row layout no longer needs.
+		if !strings.Contains(body, ws.role) {
 			t.Errorf("role %q not surfaced for workspace %q", ws.role, ws.slug)
 		}
 	}
@@ -1081,9 +1095,15 @@ func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
 		t.Errorf("granted scope: got %q, want exactly %q (selective consent)", scope, "pad:write")
 	}
 
-	// Introspect to confirm the session.Extra carries the workspace
-	// allow-list. Use a separate grant for the bearer (fosite
-	// rejects self-bearer-introspect).
+	// Introspect to confirm the token is active. Pre-TASK-1523 this
+	// assertion also pinned allowed_workspaces in the introspection
+	// response; the new design (PLAN-1519 / TASK-1523) writes the
+	// allow-list to oauth_connection_workspaces instead of
+	// session.Extra, so the introspection response no longer carries
+	// it. The assertion below moves to the new tables — same
+	// guarantee, new shape. Use a separate grant for the bearer
+	// (fosite rejects self-bearer-introspect).
+	_ = access
 	bearerTokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
 		"verifier-approve-bearer-quick-brown-fox-jumps-over-l")
 	bearer, _ := bearerTokens["access_token"].(string)
@@ -1099,21 +1119,30 @@ func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
 	if active, _ := ir["active"].(bool); !active {
 		t.Fatalf("introspected token should be active; got %v", ir)
 	}
-	// session.Extra is serialized as top-level fields by fosite's
-	// WriteIntrospectionResponse (introspection_response_writer.go:197-209).
-	// allowed_workspaces must be the list the user picked.
-	got, ok := ir["allowed_workspaces"].([]any)
-	if !ok {
-		t.Fatalf("allowed_workspaces missing from introspection response; got %v", ir)
+
+	// New invariant: the oauth_connections row created by the consent
+	// flow must carry name + scope flags, and the join table must
+	// hold the selected workspace slugs (TASK-1523 / IDEA-1517 §2a).
+	// Locate the chain via the user's connection list; the most
+	// recent connection is this approve flow's grant.
+	conns, err := srv.store.ListUserOAuthConnections(user.ID)
+	if err != nil {
+		t.Fatalf("ListUserOAuthConnections: %v", err)
+	}
+	if len(conns) == 0 {
+		t.Fatalf("expected at least one connection after approve flow")
+	}
+	c := conns[0]
+	if c.AllCurrentWorkspaces {
+		t.Errorf("specific-workspaces consent should yield all_current_workspaces=false; got true")
 	}
 	want := map[string]bool{"alpha": true, "beta": true}
-	if len(got) != len(want) {
-		t.Fatalf("allowed_workspaces length: got %d, want %d (entries: %v)", len(got), len(want), got)
+	if len(c.AllowedWorkspaces) != len(want) {
+		t.Fatalf("AllowedWorkspaces length: got %d (%v), want %d", len(c.AllowedWorkspaces), c.AllowedWorkspaces, len(want))
 	}
-	for _, v := range got {
-		s, _ := v.(string)
-		if !want[s] {
-			t.Errorf("unexpected workspace in allow-list: %q", s)
+	for _, slug := range c.AllowedWorkspaces {
+		if !want[slug] {
+			t.Errorf("unexpected workspace in allow-list: %q", slug)
 		}
 	}
 }
@@ -1177,13 +1206,181 @@ func TestConsent_ApproveWithWildcard(t *testing.T) {
 	}, bearer)
 	var ir map[string]any
 	parseJSON(t, rrIntro, &ir)
-	got, ok := ir["allowed_workspaces"].([]any)
-	if !ok || len(got) != 1 {
-		t.Fatalf("allowed_workspaces should be exactly [\"*\"]; got %v", ir["allowed_workspaces"])
+	if active, _ := ir["active"].(bool); !active {
+		t.Fatalf("introspected token should be active; got %v", ir)
 	}
-	if s, _ := got[0].(string); s != "*" {
-		t.Errorf("allowed_workspaces[0]: got %q, want %q", s, "*")
+
+	// New invariant (TASK-1523): wildcard consent yields
+	// all_current_workspaces=true on the oauth_connections row and
+	// no rows in oauth_connection_workspaces. The legacy assertion
+	// against the introspection response's allowed_workspaces field
+	// was tied to session.Extra (no longer written); the new shape
+	// is queryable via the connections-list reader.
+	sess, err := srv.store.ValidateSession(sessionToken)
+	if err != nil || sess == nil {
+		t.Fatalf("resolve session: %v", err)
 	}
+	conns, err := srv.store.ListUserOAuthConnections(sess.User.ID)
+	if err != nil || len(conns) == 0 {
+		t.Fatalf("ListUserOAuthConnections: %v (count=%d)", err, len(conns))
+	}
+	// At least one of the user's connections must carry the wildcard
+	// shape — multiple test grants flow through the same user, so
+	// match on the predicate rather than asserting on a specific
+	// chain.
+	foundWildcard := false
+	for _, c := range conns {
+		if c.AllCurrentWorkspaces && len(c.AllowedWorkspaces) == 0 {
+			foundWildcard = true
+			break
+		}
+	}
+	if !foundWildcard {
+		t.Errorf("expected at least one wildcard connection (all_current_workspaces=true, no join rows); got %+v", conns)
+	}
+}
+
+// TestConsent_ApproveWithNewShape covers the TASK-1523 / IDEA-1517 §2a
+// consent flow shape: connection_name + workspace_access radio +
+// may_create_workspaces checkbox. Verifies the parsed values land on
+// the oauth_connections row exactly as the user picked them.
+func TestConsent_ApproveWithNewShape(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha-new", "owner")
+
+	verifier := "verifier-new-shape-quick-brown-fox-1234567890-abcdef"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"new-shape-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"read"},
+		// New TASK-1523 form shape.
+		"connection_name":  {"Cursor on MacBook"},
+		"workspace_access": {"specific"},
+		// may_create_workspaces unchecked → flag stays off.
+		"allowed_workspaces": {"alpha-new"},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	// Extract request_id from the issued auth code. The redirect's
+	// `code` query param maps to oauth_authorization_codes.signature,
+	// which carries the same request_id as the oauth_connections row
+	// we just inserted in the decide handler.
+	cbURL, _ := url.Parse(rr.Header().Get("Location"))
+	authCode := cbURL.Query().Get("code")
+	if authCode == "" {
+		t.Fatalf("decide redirect missing code: %s", rr.Header().Get("Location"))
+	}
+
+	// Query oauth_connections directly rather than going through
+	// ListUserOAuthConnections (which filters on active=TRUE access
+	// or refresh tokens; in this test we haven't exchanged the code
+	// yet, so no access_token exists and ListUserOAuthConnections
+	// would return empty). The connection row is what the decide
+	// handler is responsible for writing — that's what we assert.
+	var requestID string
+	row := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT request_id FROM oauth_authorization_codes ORDER BY requested_at DESC LIMIT 1`))
+	if err := row.Scan(&requestID); err != nil {
+		t.Fatalf("scan request_id: %v", err)
+	}
+	conn, err := srv.store.GetOAuthConnection(requestID)
+	if err != nil {
+		t.Fatalf("GetOAuthConnection: %v", err)
+	}
+	if conn.UserID != user.ID {
+		t.Errorf("connection.UserID = %q, want %q", conn.UserID, user.ID)
+	}
+	if conn.Name != "Cursor on MacBook" {
+		t.Errorf("Name = %q, want %q", conn.Name, "Cursor on MacBook")
+	}
+	if conn.AllCurrentWorkspaces {
+		t.Errorf("AllCurrentWorkspaces = true, want false (workspace_access=specific)")
+	}
+	if conn.IncludeFutureWorkspaces {
+		t.Errorf("IncludeFutureWorkspaces = true, want false (workspace_access=specific)")
+	}
+	if conn.MayCreateWorkspaces {
+		t.Errorf("MayCreateWorkspaces = true, want false (checkbox unchecked)")
+	}
+	access, err := srv.store.GetOAuthConnectionAccess(requestID)
+	if err != nil {
+		t.Fatalf("GetOAuthConnectionAccess: %v", err)
+	}
+	if len(access.WorkspaceSlugs) != 1 || access.WorkspaceSlugs[0] != "alpha-new" {
+		t.Errorf("WorkspaceSlugs = %v, want [alpha-new]", access.WorkspaceSlugs)
+	}
+}
+
+// TestConsent_SuggestedNamePrefill verifies that the ?suggested_name=
+// query parameter prefills the connection_name input on the consent
+// screen (IDEA-1517 §2a — clients can suggest a default name to help
+// users tell their connections apart later).
+func TestConsent_SuggestedNamePrefill(t *testing.T) {
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	user, sessionToken := loginTestUser(t, srv)
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Render WS", "render-ws", "owner")
+
+	verifier := "verifier-suggested-name-quick-brown-fox-jumps-over"
+	challenge := s256Challenge(verifier)
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"suggested-name-state"},
+		"suggested_name":        {"Cursor on Linux Workstation"},
+	}
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authorize render: %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// Suggested name must land on the connection_name input's value
+	// attribute. Use a simple substring match — html/template escapes
+	// the value, but plain ASCII passes through unchanged.
+	if !strings.Contains(body, `value="Cursor on Linux Workstation"`) {
+		t.Errorf("consent UI did not prefill connection_name from ?suggested_name=; body excerpt: %s",
+			extractAroundSubstring(body, "connection-name", 200))
+	}
+}
+
+// extractAroundSubstring returns body[match-radius:match+radius] when
+// substr is present, or a "(not found)" sentinel. Helper for the
+// error message above — gives the test a useful failure dump without
+// printing the entire 10kB consent page.
+func extractAroundSubstring(body, substr string, radius int) string {
+	idx := strings.Index(body, substr)
+	if idx < 0 {
+		return "(substring " + substr + " not in body)"
+	}
+	start := idx - radius
+	if start < 0 {
+		start = 0
+	}
+	end := idx + radius
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[start:end]
 }
 
 // TestConsent_ApproveWithoutWorkspaceSelection_Rejected pins the

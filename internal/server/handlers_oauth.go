@@ -17,6 +17,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // OAuth 2.1 authorization-server HTTP handlers (PLAN-943 TASK-951).
@@ -701,8 +702,8 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	decision := r.FormValue("decision")
-	if decision == "deny" {
+	choice := r.FormValue("decision")
+	if choice == "deny" {
 		// TASK-961: explicit user denial → "abandoned". Distinct from
 		// "failed" so dashboards can surface user-facing trust signal
 		// (high abandonment % = clients asking for too much, or
@@ -712,7 +713,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 			fosite.ErrAccessDenied.WithHint("The user denied the consent."))
 		return
 	}
-	if decision != "approve" {
+	if choice != "approve" {
 		s.recordOAuthFlow("failed")
 		writeError(w, http.StatusBadRequest, "invalid_request",
 			"decision must be 'approve' or 'deny'")
@@ -720,7 +721,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Parse + validate the consent payload.
-	tierScope, allowedWorkspaces, vErr := s.parseConsentPayload(r, ar, user)
+	decision, vErr := s.parseConsentPayload(r, ar, user)
 	if vErr != nil {
 		// Validation failures are user-fixable (re-render with an
 		// error message would be friendlier, but a 400 + JSON envelope
@@ -736,21 +737,77 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	// Grant exactly the chosen tier — selective consent. No loop over
 	// GetRequestedScopes; that would re-grant every scope the client
 	// asked for, defeating the user's tier choice.
-	ar.GrantScope(tierScope)
+	ar.GrantScope(decision.TierScope)
 	for _, aud := range ar.GetRequestedAudience() {
 		ar.GrantAudience(aud)
 	}
 
 	// Build the session that fosite serializes alongside the code.
 	// Subject = pad user ID (used by MCPBearerAuth's introspection
-	// branch to resolve the bearer to a user). Extra carries the
-	// workspace allow-list; TASK-953 reads it at /mcp time + does
-	// the live role lookup. Round-trips via storage.go's JSON marshal.
+	// branch to resolve the bearer to a user).
+	//
+	// PLAN-1519 / TASK-1523: connection-level state (name, scope flags,
+	// allow-list) now lives in oauth_connections + oauth_connection_workspaces
+	// keyed by ar.GetID() (the OAuth grant chain identifier, preserved
+	// across refresh-token rotation). Pre-TASK-1523 this state was
+	// stashed in session.Extra["allowed_workspaces"] and re-minted on
+	// every refresh — fine for read-only data, but the new design
+	// makes the state mutable (Phase D's connections-page UI edits
+	// it post-grant) so it can't live per-token. session.Extra is no
+	// longer written for new grants; the dual-read introspection gate
+	// (TASK-1520) keeps reading both shapes during the soak period so
+	// pre-TASK-1523 tokens still gate correctly.
 	session := oauth.NewSession(user.ID)
-	session.SetAllowedWorkspaces(allowedWorkspaces)
+
+	// Persist the per-connection state BEFORE minting the auth code.
+	// Ordering matters: if NewAuthorizeResponse succeeds and our
+	// INSERT later fails, the user gets a usable code with no
+	// connection-level state — the dual-read gate would see no
+	// session.Extra (we stopped writing it) AND no oauth_connections
+	// row, which falls back to the "no allow-list" path. That would
+	// silently broaden the user's grant. Inserting first makes the
+	// failure mode "INSERT failed → user sees an error and retries,"
+	// which is the correct safety posture.
+	//
+	// The downside: a successful INSERT followed by a NewAuthorizeResponse
+	// failure leaves an orphan oauth_connections row. Harmless —
+	// it'll never be referenced by any token (fosite didn't mint
+	// one), and the operator can prune later or the row sits
+	// inertly until the user revokes it from the connections page.
+	if err := s.store.CreateOAuthConnection(store.OAuthConnection{
+		RequestID:               ar.GetID(),
+		UserID:                  user.ID,
+		Name:                    decision.Name,
+		MayCreateWorkspaces:     decision.MayCreateWorkspaces,
+		AllCurrentWorkspaces:    decision.AllCurrentWorkspaces,
+		IncludeFutureWorkspaces: decision.IncludeFutureWorkspaces,
+	}); err != nil {
+		s.recordOAuthFlow("failed")
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Could not persist connection. Please retry.")
+		return
+	}
+	for _, wsID := range decision.AllowedWorkspaceIDs {
+		if err := s.store.AddConnectionWorkspace(ar.GetID(), wsID, store.AddedByUser); err != nil {
+			// Roll back the parent row so the next attempt starts
+			// clean (otherwise a re-submit would 500 on the parent
+			// INSERT's PK conflict). DeleteOAuthConnection cascades
+			// via the FK ON DELETE CASCADE in migration 059.
+			_ = s.store.DeleteOAuthConnection(ar.GetID())
+			s.recordOAuthFlow("failed")
+			writeError(w, http.StatusInternalServerError, "internal_error",
+				"Could not persist workspace allow-list. Please retry.")
+			return
+		}
+	}
 
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(ctx, ar, session)
 	if err != nil {
+		// Orphan the oauth_connections row: harmless (no token
+		// references it), but log so ops can spot a pattern of
+		// fosite failures that leave residue.
+		slog.Warn("oauth: fosite NewAuthorizeResponse failed after persisting connection; row orphaned",
+			"request_id", ar.GetID(), "error", err)
 		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
 		return
@@ -766,10 +823,39 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	s.oauthServer.Provider().WriteAuthorizeResponse(ctx, w, ar, resp)
 }
 
+// consentDecision is the structured result of parseConsentPayload —
+// everything handleOAuthAuthorizeDecide needs to grant the scope and
+// write the new oauth_connections + oauth_connection_workspaces rows
+// (PLAN-1519 / TASK-1523 / IDEA-1517 §2a).
+type consentDecision struct {
+	// TierScope is the chosen "pad:<tier>" scope string ready for
+	// ar.GrantScope.
+	TierScope string
+
+	// Name is the user's display name for this connection, trimmed
+	// + length-capped. Empty string is valid (the connections-page
+	// UI will prompt to name on first visit).
+	Name string
+
+	// MayCreateWorkspaces / AllCurrentWorkspaces / IncludeFutureWorkspaces
+	// are the three scope flags from IDEA-1517 §2a's UI-to-flag
+	// mapping table:
+	//   - "All my workspaces"            → AllCurrent=true,  IncludeFuture=true
+	//   - "Only specific workspaces"     → AllCurrent=false, IncludeFuture=false
+	//   - "Let this app create…" checkbox → MayCreate follows
+	MayCreateWorkspaces     bool
+	AllCurrentWorkspaces    bool
+	IncludeFutureWorkspaces bool
+
+	// AllowedWorkspaceIDs is the resolved workspace ID list for the
+	// "Only specific workspaces" path. Empty when AllCurrentWorkspaces
+	// is true (the wildcard case skips the join table).
+	AllowedWorkspaceIDs []string
+}
+
 // parseConsentPayload extracts and validates the user's tier choice
-// + workspace allow-list from the consent form. Returns the chosen
-// tier as a "pad:<tier>" scope string ready to GrantScope, and the
-// allow-list as either ["*"] (wildcard) or a list of slugs.
+// + workspace access mode + creation flag + per-workspace selection
+// from the consent form (PLAN-1519 / TASK-1523 / IDEA-1517 §2a).
 //
 // Validation rules:
 //
@@ -777,24 +863,23 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 //   - capability_tier MUST also be in the client's requested scopes
 //     (fosite's grant-time check would reject otherwise — fail fast
 //     here with a cleaner error).
-//   - allowed_workspaces MUST be non-empty (after coalescing).
-//   - If "*" appears, the result is exactly ["*"] regardless of any
-//     other slugs sent (matches the UI's mutual-exclusion behaviour
-//   - defends against tampered forms that send both).
-//   - Each non-wildcard slug MUST be a workspace the user is
-//     currently a member of (defense in depth).
+//   - workspace_access MUST be "all" or "specific".
+//   - When "specific", allowed_workspaces MUST be non-empty AND each
+//     slug MUST be a workspace the user is currently a member of
+//     (defense in depth against tampered forms).
+//   - When "all", any allowed_workspaces values are ignored (the
+//     wildcard makes per-workspace selection meaningless).
 //
-// Returns wrapped errors with WithMessage strings safe to surface to
-// the user.
-func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequester, user *models.User) (tierScope string, allowedWorkspaces []string, err error) {
+// Returns wrapped errors with messages safe to surface to the user.
+func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequester, user *models.User) (*consentDecision, error) {
 	tier := r.FormValue("capability_tier")
 	switch tier {
 	case "read", "write", "admin":
 		// ok
 	default:
-		return "", nil, errors.New("capability_tier must be 'read', 'write', or 'admin'")
+		return nil, errors.New("capability_tier must be 'read', 'write', or 'admin'")
 	}
-	tierScope = "pad:" + tier
+	tierScope := "pad:" + tier
 
 	// Mirror the consent UI's tier-radio constraint server-side. The
 	// UI hides radios for tiers the client didn't request, but a
@@ -808,46 +893,105 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 		}
 	}
 	if !requestedTier {
-		return "", nil, fmt.Errorf("capability_tier %q is not among the scopes the client requested", tier)
+		return nil, fmt.Errorf("capability_tier %q is not among the scopes the client requested", tier)
 	}
 
+	access := r.FormValue("workspace_access")
+	if access == "" {
+		// Backward-compat shim for clients still posting the
+		// pre-TASK-1523 form shape (one allowed_workspaces multi-value
+		// field where ["*"] meant wildcard and a slug list meant
+		// explicit). The new UI renders a radio + an "any" choice, but
+		// existing test fixtures and any external script posting
+		// directly against /oauth/authorize/decide would otherwise
+		// break. Derive workspace_access from the legacy form: any
+		// "*" value → all; non-empty slug list → specific; empty →
+		// unset (the explicit-mode validation below catches the
+		// "user picked nothing" case with the right error message).
+		raw := r.PostForm["allowed_workspaces"]
+		for _, w := range raw {
+			if w == "*" {
+				access = "all"
+				break
+			}
+		}
+		if access == "" && len(raw) > 0 {
+			access = "specific"
+		}
+	}
+	switch access {
+	case "all", "specific":
+		// ok
+	default:
+		return nil, errors.New("workspace_access must be 'all' or 'specific'")
+	}
+
+	// Trim + length-cap the connection name. Same posture as the
+	// suggested_name URL-param handler in renderConsent — keep the
+	// stored value reasonable so the connections-page card width
+	// stays sane. Empty string is valid: the connections-page UI
+	// prompts the user to name it on first visit.
+	name := strings.TrimSpace(r.FormValue("connection_name"))
+	if len(name) > 120 {
+		name = name[:120]
+	}
+
+	// may_create_workspaces is a checkbox — present (value="1") if
+	// checked, absent otherwise. Treat any non-empty value as true
+	// so we're tolerant of form encoders that emit "on" or "true".
+	mayCreate := r.FormValue("may_create_workspaces") != ""
+
+	decision := &consentDecision{
+		TierScope:               tierScope,
+		Name:                    name,
+		MayCreateWorkspaces:     mayCreate,
+		AllCurrentWorkspaces:    access == "all",
+		IncludeFutureWorkspaces: access == "all",
+	}
+
+	if access == "all" {
+		// Wildcard path — no per-workspace validation needed.
+		return decision, nil
+	}
+
+	// "specific" path: resolve slugs → workspace IDs.
 	raw := r.PostForm["allowed_workspaces"]
 	if len(raw) == 0 {
-		return "", nil, errors.New("at least one workspace must be selected")
+		return nil, errors.New("pick at least one workspace, or switch to 'All my workspaces'")
 	}
-
-	// Wildcard wins if present — the UI enforces mutual exclusion,
-	// and a tampered form sending both should still resolve to the
-	// safer wildcard interpretation (rather than partial allow-list).
-	for _, w := range raw {
-		if w == "*" {
-			return tierScope, []string{"*"}, nil
-		}
-	}
-
-	// Validate every slug against the user's current memberships.
-	// Tampered submissions land here.
 	memberships, mErr := s.store.GetUserWorkspaceMemberships(user.ID)
 	if mErr != nil {
-		return "", nil, fmt.Errorf("load memberships: %w", mErr)
+		return nil, fmt.Errorf("load memberships: %w", mErr)
 	}
-	memberSet := make(map[string]struct{}, len(memberships))
+	memberSet := make(map[string]string, len(memberships)) // slug → workspace_id
 	for _, m := range memberships {
-		memberSet[m.WorkspaceSlug] = struct{}{}
+		memberSet[m.WorkspaceSlug] = m.WorkspaceID
 	}
-	out := make([]string, 0, len(raw))
 	seen := make(map[string]struct{}, len(raw))
+	ids := make([]string, 0, len(raw))
 	for _, slug := range raw {
-		if _, ok := memberSet[slug]; !ok {
-			return "", nil, fmt.Errorf("you are not a member of workspace %q", slug)
+		if slug == "" {
+			continue
+		}
+		wsID, ok := memberSet[slug]
+		if !ok {
+			return nil, fmt.Errorf("you are not a member of workspace %q", slug)
 		}
 		if _, dup := seen[slug]; dup {
-			continue // de-dupe; defensive against form tampering
+			continue
 		}
 		seen[slug] = struct{}{}
-		out = append(out, slug)
+		ids = append(ids, wsID)
 	}
-	return tierScope, out, nil
+	if len(ids) == 0 {
+		// Could only happen if every entry was the empty string —
+		// tampered form. Same "pick at least one" error so the
+		// downstream JSON envelope mirrors what the user would see
+		// from the empty-list path.
+		return nil, errors.New("pick at least one workspace, or switch to 'All my workspaces'")
+	}
+	decision.AllowedWorkspaceIDs = ids
+	return decision, nil
 }
 
 // =====================================================================
@@ -1141,16 +1285,19 @@ var consentTmpl = template.Must(template.New("consent").Parse(`<!doctype html>
 * { box-sizing: border-box; }
 body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  max-width: 540px; margin: 2em auto; padding: 0 1em; color: #1a1a1a;
+  max-width: 560px; margin: 2em auto; padding: 0 1em; color: #1a1a1a;
 }
 @media (prefers-color-scheme: dark) {
   body { color: #e8e8e8; background: #1a1a1a; }
-  fieldset, .client-card { border-color: #444; background: #222; }
+  fieldset, .client-card, .picker { border-color: #444; background: #222; }
   .role { color: #aaa; }
   .hint, .footer { color: #999; }
   button { background: #333; color: #e8e8e8; border-color: #555; }
   button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
   a { color: #6ea8fe; }
+  input[type=text], input[type=search] {
+    background: #2a2a2a; color: #e8e8e8; border-color: #555;
+  }
 }
 h1 { font-size: 1.5em; margin: 0 0 .25em; }
 .client-card {
@@ -1168,25 +1315,54 @@ fieldset {
   margin: 1.25em 0;
 }
 legend { font-weight: 600; padding: 0 .4em; }
-.ws-row, .tier-row {
+.field-label {
+  display: block; font-weight: 600; margin: 0 0 .35em;
+}
+.field-helper { color: #666; font-size: .88em; margin: .25em 0 .75em; }
+input[type=text], input[type=search] {
+  width: 100%; padding: .55em .7em; font-size: 1em;
+  border: 1px solid #ccc; border-radius: 7px; background: #fff; color: inherit;
+}
+.ws-row, .tier-row, .access-row, .create-row {
   display: flex; align-items: baseline; gap: .6em;
   padding: .35em 0; cursor: pointer;
 }
-.ws-row input, .tier-row input { flex: 0 0 auto; margin-top: 2px; }
+.ws-row input, .tier-row input, .access-row input, .create-row input {
+  flex: 0 0 auto; margin-top: 2px;
+}
 .ws-name { flex: 1 1 auto; }
 .role { color: #666; font-size: .9em; }
-.tier-row .desc { color: #555; font-size: .92em; margin-left: .4em; }
-.wildcard-warning {
-  display: none; margin: .5em 0 0; padding: .6em .8em;
+.tier-row .desc, .access-row .desc, .create-row .desc {
+  color: #555; font-size: .92em; margin-left: .4em;
+}
+.picker {
+  display: none; margin-top: .75em; padding: .85em 1em;
+  border: 1px solid #ddd; border-radius: 8px; background: #fcfcfc;
+}
+.picker.show { display: block; }
+.picker .picker-search { margin-bottom: .6em; }
+.picker-count { color: #666; font-size: .88em; margin-top: .5em; }
+.future-warning {
+  display: none; margin: .6em 0 0; padding: .6em .8em;
   background: #fff3cd; border-left: 3px solid #f0c000;
   font-size: .9em; border-radius: 4px;
 }
-.wildcard-warning.show { display: block; }
+.future-warning.show { display: block; }
 @media (prefers-color-scheme: dark) {
-  .wildcard-warning { background: #3a2f00; border-left-color: #d4a400; color: #f0d873; }
+  .future-warning { background: #3a2f00; border-left-color: #d4a400; color: #f0d873; }
+  .picker { background: #1c1c1c; }
 }
 .hint { color: #555; font-size: .9em; margin: .75em 0; }
-.actions { margin-top: 2em; display: flex; gap: .75em; justify-content: flex-end; }
+.footer-disclosure {
+  margin: 1.5em 0; padding: .85em 1em;
+  background: #f5f5f5; border-radius: 8px; color: #555; font-size: .9em;
+}
+@media (prefers-color-scheme: dark) {
+  .footer-disclosure { background: #2a2a2a; color: #aaa; }
+}
+.actions {
+  margin-top: 1.5em; display: flex; gap: .75em; justify-content: flex-end;
+}
 button {
   padding: .65em 1.4em; border-radius: 8px; border: 1px solid #ccc;
   font-size: 1em; font-weight: 500; cursor: pointer; background: #f5f5f5;
@@ -1197,17 +1373,29 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 .footer { margin-top: 2em; font-size: .85em; color: #888; }
 .footer a { color: inherit; }
 .no-ws { color: #b00; }
+.allow-helper {
+  color: #b00; font-size: .85em; margin-top: .35em;
+  display: none;
+}
+.allow-helper.show { display: block; }
+/* Mobile: stack the action buttons full-width per IDEA-1517 §2a's
+   mobile mockup — Authorize above Deny, primary action on top. */
+@media (max-width: 480px) {
+  body { margin: 1em auto; padding: 0 .75em; }
+  .actions { flex-direction: column-reverse; gap: .5em; }
+  .actions button { width: 100%; }
+}
 </style>
 </head>
 <body>
 <h1>Authorize {{.ClientName}}</h1>
-<p>Signed in as <strong>{{.Username}}</strong>.</p>
+<p>Signed in as <strong>{{.Username}}</strong>{{if .UserEmail}} ({{.UserEmail}}){{end}}.</p>
 
 <div class="client-card">
   {{if .ClientLogoURL}}<img class="logo" src="{{.ClientLogoURL}}" alt="">{{end}}
   <div class="meta">
     <strong>{{.ClientName}}</strong>
-    <small>is requesting access to your Pad workspaces.</small>
+    <small>wants to access your Pad on your behalf.</small>
   </div>
 </div>
 
@@ -1216,30 +1404,16 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
   {{range $k, $vs := .HiddenFields}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
 
   <fieldset>
-    <legend>Workspaces this connection can access</legend>
-    {{if .Workspaces}}
-      {{range .Workspaces}}
-      <label class="ws-row">
-        <input type="checkbox" name="allowed_workspaces" value="{{.Slug}}" class="ws-checkbox">
-        <span class="ws-name">{{.Name}}</span>
-        <span class="role">(you are {{.Role}})</span>
-      </label>
-      {{end}}
-    {{else}}
-      <p class="no-ws">You are not a member of any workspaces yet. Create or join one to authorize this app.</p>
-    {{end}}
-    <label class="ws-row">
-      <input type="checkbox" name="allowed_workspaces" value="*" id="ws-wildcard">
-      <span class="ws-name">Allow access to any workspace I currently or later have access to</span>
-    </label>
-    <div class="wildcard-warning" id="wildcard-warning">
-      This connection will be able to access any workspace you join in the future, without
-      asking again. Only choose this if you trust the app fully.
-    </div>
+    <legend>Name this connection</legend>
+    <label class="field-label" for="connection-name">Display name</label>
+    <input type="text" id="connection-name" name="connection_name" maxlength="120"
+           value="{{.SuggestedName}}" autocomplete="off"
+           placeholder="e.g. Cursor on MacBook">
+    <p class="field-helper">So you can tell your connections apart later. Editable any time from <a href="/console/connected-apps">Settings → Connected apps</a>.</p>
   </fieldset>
 
   <fieldset>
-    <legend>Access level</legend>
+    <legend>What it can do</legend>
     {{if .CanRead}}
       <label class="tier-row">
         <input type="radio" name="capability_tier" value="read"{{if eq .DefaultTier "read"}} checked{{end}}>
@@ -1260,56 +1434,134 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
     {{end}}
   </fieldset>
 
+  <fieldset>
+    <legend>Which workspaces</legend>
+    {{if .Workspaces}}
+      <label class="access-row">
+        <input type="radio" name="workspace_access" value="all" id="access-all"{{if .DefaultWildcard}} checked{{end}}>
+        <span><strong>All my workspaces</strong><span class="desc">— includes workspaces you join or create later.</span></span>
+      </label>
+      <label class="access-row">
+        <input type="radio" name="workspace_access" value="specific" id="access-specific"{{if not .DefaultWildcard}} checked{{end}}>
+        <span><strong>Only specific workspaces</strong><span class="desc">— you'll pick them next.</span></span>
+      </label>
+
+      <div class="picker" id="picker">
+        {{if gt .WorkspaceCount 10}}
+        <div class="picker-search">
+          <input type="search" id="picker-search" placeholder="Search workspaces…" autocomplete="off">
+        </div>
+        {{end}}
+        <div id="picker-list">
+          {{range .Workspaces}}
+          <label class="ws-row" data-name="{{.Name}}">
+            <input type="checkbox" name="allowed_workspaces" value="{{.Slug}}" class="ws-checkbox">
+            <span class="ws-name">{{.Name}}</span>
+            <span class="role">{{.Role}}</span>
+          </label>
+          {{end}}
+        </div>
+        <div class="picker-count" id="picker-count">0 of {{.WorkspaceCount}} selected</div>
+      </div>
+
+      <div class="future-warning" id="future-warning">
+        This connection will be able to access any workspace you join in the future, without
+        asking again. Pick "Only specific workspaces" to restrict.
+      </div>
+    {{else}}
+      <p class="no-ws">You are not a member of any workspaces yet. Create or join one to authorize this app.</p>
+    {{end}}
+  </fieldset>
+
+  <fieldset>
+    <legend>Workspace creation</legend>
+    <label class="create-row">
+      <input type="checkbox" name="may_create_workspaces" value="1"{{if .DefaultMayCreate}} checked{{end}}>
+      <span><strong>Let this app create new workspaces</strong><span class="desc">— workspaces it creates will be added to this connection.</span></span>
+    </label>
+  </fieldset>
+
   <p class="hint">
     Effective permissions are also limited by your role in each workspace —
     e.g. if you're a Viewer in a workspace, you can read but not write there
-    even at "Read and write" level. If your membership changes, this
-    connection's permissions change immediately.
+    even at "Read and write" level.
   </p>
 
-  <p class="hint">
-    You can revoke access any time from
-    <a href="/console/connected-apps">app.getpad.dev/console/connected-apps</a>.
-  </p>
+  <div class="footer-disclosure">
+    By authorizing, you allow <strong>{{.ClientName}}</strong> to act on your behalf in the scopes above.
+    You can revoke or change permissions any time at <a href="/console/connected-apps">Settings → Connected apps</a>.
+  </div>
+
+  <p class="allow-helper" id="allow-helper">Pick at least one workspace, or switch to "All my workspaces."</p>
 
   <div class="actions">
-    <button type="submit" name="decision" value="deny">Cancel</button>
-    <button type="submit" name="decision" value="approve" class="primary" id="allow-btn" disabled>Allow access</button>
+    <button type="submit" name="decision" value="deny">Deny</button>
+    <button type="submit" name="decision" value="approve" class="primary" id="allow-btn">Authorize {{.ClientName}}</button>
   </div>
 </form>
 
 <script nonce="{{.Nonce}}">
 (function(){
-  var wildcard = document.getElementById('ws-wildcard');
-  var wsBoxes = document.querySelectorAll('input.ws-checkbox');
+  var accessAll = document.getElementById('access-all');
+  var accessSpecific = document.getElementById('access-specific');
+  var picker = document.getElementById('picker');
+  var pickerSearch = document.getElementById('picker-search');
+  var pickerCount = document.getElementById('picker-count');
+  var futureWarning = document.getElementById('future-warning');
   var allowBtn = document.getElementById('allow-btn');
-  var warning = document.getElementById('wildcard-warning');
+  var allowHelper = document.getElementById('allow-helper');
+  var wsBoxes = document.querySelectorAll('input.ws-checkbox');
+  var wsRows = document.querySelectorAll('#picker-list .ws-row');
+
+  function selectedCount() {
+    var n = 0;
+    for (var i = 0; i < wsBoxes.length; i++) if (wsBoxes[i].checked) n++;
+    return n;
+  }
+
+  function updatePickerCount() {
+    if (!pickerCount) return;
+    var total = wsBoxes.length;
+    pickerCount.textContent = selectedCount() + ' of ' + total + ' selected';
+  }
 
   function refresh() {
-    var anySpecific = false;
-    for (var i = 0; i < wsBoxes.length; i++) {
-      if (wsBoxes[i].checked) { anySpecific = true; break; }
-    }
-    if (wildcard.checked) {
-      // Wildcard wins: disable per-workspace, show warning.
-      for (var j = 0; j < wsBoxes.length; j++) {
-        wsBoxes[j].checked = false;
-        wsBoxes[j].disabled = true;
-      }
-      warning.classList.add('show');
+    var isAll = accessAll && accessAll.checked;
+    if (picker) picker.classList.toggle('show', !isAll);
+    if (futureWarning) futureWarning.classList.toggle('show', isAll);
+    updatePickerCount();
+    if (isAll) {
       allowBtn.disabled = false;
+      if (allowHelper) allowHelper.classList.remove('show');
       return;
     }
-    // Wildcard off: re-enable per-workspace, hide warning.
-    for (var k = 0; k < wsBoxes.length; k++) wsBoxes[k].disabled = false;
-    warning.classList.remove('show');
-    allowBtn.disabled = !anySpecific;
+    // "specific" mode: Authorize disabled until ≥1 workspace picked.
+    var n = selectedCount();
+    allowBtn.disabled = n === 0;
+    if (allowHelper) allowHelper.classList.toggle('show', n === 0);
   }
-  wildcard.addEventListener('change', refresh);
-  for (var n = 0; n < wsBoxes.length; n++) {
-    wsBoxes[n].addEventListener('change', refresh);
+
+  if (accessAll) accessAll.addEventListener('change', refresh);
+  if (accessSpecific) accessSpecific.addEventListener('change', refresh);
+  for (var i = 0; i < wsBoxes.length; i++) wsBoxes[i].addEventListener('change', refresh);
+
+  if (pickerSearch) {
+    pickerSearch.addEventListener('input', function() {
+      var q = pickerSearch.value.toLowerCase().trim();
+      for (var i = 0; i < wsRows.length; i++) {
+        var name = (wsRows[i].getAttribute('data-name') || '').toLowerCase();
+        wsRows[i].style.display = (q === '' || name.indexOf(q) !== -1) ? '' : 'none';
+      }
+    });
   }
-  refresh();
+
+  // Initial paint.
+  if (!accessAll) {
+    // No workspaces at all — leave Authorize disabled.
+    allowBtn.disabled = true;
+  } else {
+    refresh();
+  }
 })();
 </script>
 </body></html>`))
@@ -1317,16 +1569,21 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 // consentData is the template's data shape. Field names match the
 // template's references; adding a new field requires updating both.
 type consentData struct {
-	ClientName    string
-	ClientLogoURL string
-	Username      string
-	Workspaces    []consentWorkspaceRow // user's workspace memberships
-	CanRead       bool                  // tier radios — true iff client requested the corresponding pad:* scope
-	CanWrite      bool
-	CanAdmin      bool
-	DefaultTier   string // "read" / "write" / "admin" — initially-checked radio
-	CSRF          string
-	HiddenFields  url.Values
+	ClientName       string
+	ClientLogoURL    string
+	Username         string
+	UserEmail        string
+	Workspaces       []consentWorkspaceRow // user's workspace memberships
+	CanRead          bool                  // tier radios — true iff client requested the corresponding pad:* scope
+	CanWrite         bool
+	CanAdmin         bool
+	DefaultTier      string // "read" / "write" / "admin" — initially-checked radio
+	CSRF             string
+	HiddenFields     url.Values
+	SuggestedName    string // prefill for the connection name field (?suggested_name= URL param, IDEA-1517 §2a)
+	WorkspaceCount   int    // len(Workspaces); template uses for search-input gating (only when >10)
+	DefaultWildcard  bool   // pre-select "All my workspaces" radio (default-on per §2a)
+	DefaultMayCreate bool   // pre-tick "Let this app create new workspaces" (default-on per §2a)
 
 	// Nonce authorizes the inline UI-state <script> in the consent
 	// template under the strict CSP pad serves on every response
@@ -1456,18 +1713,38 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 		"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 		nonce))
 
+	// suggested_name comes off the URL (?suggested_name=...). Per
+	// IDEA-1517 §2a the client app may pre-suggest a display name —
+	// "Cursor on MacBook," "Claude Desktop work account," etc. — to
+	// help users tell their connections apart later. The user can
+	// edit before submit; nothing client-side is binding.
+	//
+	// Trim + cap defensively. Long suggested names would just truncate
+	// in the connections-page UI; capping at 120 chars matches the
+	// schema column's effective-text limit (TEXT in SQLite, no hard
+	// cap in PG, but 120 keeps the connections-page card width sane).
+	suggested := strings.TrimSpace(r.URL.Query().Get("suggested_name"))
+	if len(suggested) > 120 {
+		suggested = suggested[:120]
+	}
+
 	data := consentData{
-		ClientName:    clientName,
-		ClientLogoURL: logo,
-		Username:      user.Name,
-		Workspaces:    rows,
-		CanRead:       canRead,
-		CanWrite:      canWrite,
-		CanAdmin:      canAdmin,
-		DefaultTier:   defaultTier,
-		CSRF:          csrf,
-		HiddenFields:  hidden,
-		Nonce:         nonce,
+		ClientName:       clientName,
+		ClientLogoURL:    logo,
+		Username:         user.Name,
+		UserEmail:        user.Email,
+		Workspaces:       rows,
+		CanRead:          canRead,
+		CanWrite:         canWrite,
+		CanAdmin:         canAdmin,
+		DefaultTier:      defaultTier,
+		CSRF:             csrf,
+		HiddenFields:     hidden,
+		SuggestedName:    suggested,
+		WorkspaceCount:   len(rows),
+		DefaultWildcard:  true, // "All my workspaces" default-on per IDEA-1517 §2a
+		DefaultMayCreate: true, // "Let this app create new workspaces" default-on per §2a
+		Nonce:            nonce,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Cache-Control: no-store — the page carries a CSRF token tied
