@@ -238,6 +238,20 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	// the backfill must not stomp it. Same posture as IDEA-1517 §2's
 	// "name defaults to empty until the user edits."
 
+	if !created {
+		// Parent already existed from a prior backfill run — the
+		// connection-level state (name, scope flags) AND the join
+		// table is user-owned post-backfill. Specifically: if the
+		// user removes a workspace via RemoveConnectionWorkspace, a
+		// subsequent backfill re-adding it from stale session.Extra
+		// would silently revert their decision on every restart.
+		// Codex review #583 round 2 caught the regression.
+		//
+		// "Backfill" means SEED — once. After that the new tables
+		// are authoritative. The slug loop below only runs when we
+		// just inserted a fresh parent row.
+		return created, 0, 0, nil
+	}
 	if explicit == nil {
 		// Wildcard / pre-TASK-952 — no join rows to write.
 		return created, 0, 0, nil
@@ -246,24 +260,15 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	// Resolve each slug to a workspace ID. Missing slugs (workspace
 	// deleted, never existed in this DB) skip without failing; the
 	// unresolved count surfaces in the result so ops can spot data
-	// hygiene issues. Existence-probe each (request_id, workspace_id)
-	// pair before insert so the slugsAdded counter reflects new
-	// rows, not "OR IGNORE" no-ops.
+	// hygiene issues. No need for IsConnectionWorkspaceAllowed
+	// probes here — by construction the parent row was just inserted,
+	// so the join table cannot contain any rows for this request_id
+	// yet (Phase A's CASCADE FK ensures parent + join lifecycle stay
+	// linked).
 	for _, slug := range explicit {
 		ws, getErr := s.GetWorkspaceBySlug(slug)
 		if getErr != nil || ws == nil {
 			slugsMissed++
-			continue
-		}
-		alreadyAllowed, checkErr := s.IsConnectionWorkspaceAllowed(requestID, ws.ID)
-		if checkErr != nil {
-			return created, slugsAdded, slugsMissed, fmt.Errorf("check workspace %s: %w", slug, checkErr)
-		}
-		if alreadyAllowed {
-			// Pre-existing join row from a prior backfill run. Don't
-			// re-issue the INSERT — the OR-IGNORE would no-op anyway,
-			// but skipping keeps the DB write path cleaner and the
-			// counter honest.
 			continue
 		}
 		if err := s.AddConnectionWorkspace(requestID, ws.ID, AddedByUser); err != nil {

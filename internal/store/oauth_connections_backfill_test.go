@@ -286,6 +286,58 @@ func TestBackfillOAuthConnections_RefreshOnlyChain(t *testing.T) {
 	}
 }
 
+// TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace is the
+// regression guard for Codex review #583 round 2: a user who removes a
+// slug from their connection's allow-list (via Phase D's mutation UI)
+// must NOT see the slug come back on the next server restart's
+// backfill run. Backfill is a one-shot seed; once the oauth_connections
+// row exists, the new tables are authoritative and the legacy
+// session.Extra payload is frozen reference data, not a source of
+// truth the backfill keeps reconciling against.
+func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "resurrect@example.com")
+	client := seedBackfillClient(t, s, "Resurrect Client")
+	keepID, keepSlug := seedBackfillWorkspace(t, s, "keep", uid)
+	removeID, removeSlug := seedBackfillWorkspace(t, s, "remove", uid)
+
+	seedBackfillAccess(t, s, "res-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+keepSlug+`","`+removeSlug+`"]}}`)
+
+	// First run seeds both slugs.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("first BackfillOAuthConnections: %v", err)
+	}
+
+	// User removes the second workspace via the connections-page UI.
+	// (Simulated directly through the store — the wire path lands in
+	// Phase D, but the semantic is identical.)
+	if err := s.RemoveConnectionWorkspace("res-chain", removeID); err != nil {
+		t.Fatalf("RemoveConnectionWorkspace: %v", err)
+	}
+
+	// Second backfill run — the same session.Extra still references
+	// the removed slug, but we must NOT reinstate it.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("second BackfillOAuthConnections: %v", err)
+	}
+
+	allowedKeep, err := s.IsConnectionWorkspaceAllowed("res-chain", keepID)
+	if err != nil {
+		t.Fatalf("IsConnectionWorkspaceAllowed keep: %v", err)
+	}
+	if !allowedKeep {
+		t.Errorf("keep workspace should still be in allow-list (backfill must not touch it)")
+	}
+	allowedRemoved, err := s.IsConnectionWorkspaceAllowed("res-chain", removeID)
+	if err != nil {
+		t.Fatalf("IsConnectionWorkspaceAllowed remove: %v", err)
+	}
+	if allowedRemoved {
+		t.Errorf("removed workspace must NOT be resurrected by backfill rerun (user's removal would silently revert)")
+	}
+}
+
 func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "idem@example.com")
