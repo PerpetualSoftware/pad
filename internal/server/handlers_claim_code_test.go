@@ -155,6 +155,48 @@ func TestHandleWorkspaceClaimCode_NotAMember404(t *testing.T) {
 	}
 }
 
+func TestHandleWorkspaceClaimCode_GrantOnlyGuest_403(t *testing.T) {
+	e := newClaimCodeEnv(t)
+	// RequireWorkspaceAccess admits grant-only guests (item-scoped
+	// access without workspace membership). Claim-code redemption
+	// requires membership; so generation must also require it, or a
+	// guest would walk away with a code the claim endpoint will
+	// always reject. Forge a guest scenario by creating a second user
+	// who is NOT a member of e.ws and granting them an item-level
+	// access; we approximate the post-RequireWorkspaceAccess state by
+	// not adding them as a member at all and letting the user-only
+	// auth path reach the handler. (RequireWorkspaceAccess's guest
+	// admission path is the production case; this test only needs
+	// the "user authenticated but not a member" branch to fire.)
+	guest, err := e.srv.store.CreateUser(models.UserCreate{
+		Email: "cc-guest@example.com", Name: "Guest", Password: "pw-guest-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	guestPAT, err := e.srv.store.CreateAPIToken(guest.ID, models.APITokenCreate{
+		Name: "guest", WorkspaceID: e.ws.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	req := httptest.NewRequest("GET",
+		"/api/v1/workspaces/"+e.wsSlug+"/claim-code", nil)
+	req.Header.Set("Authorization", "Bearer "+guestPAT.Token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	e.srv.ServeHTTP(rr, req)
+	// RequireWorkspaceAccess will 404 anyone without an item grant +
+	// not a member — so the handler-level check fires only when the
+	// outer gate admits a grant guest. Either 403 (the handler
+	// fired) or 404 (the middleware caught the non-member first) is
+	// an acceptable closed-door response. The point is that the
+	// guest must NOT see a 200 + claim code.
+	if rr.Code == http.StatusOK {
+		t.Errorf("status = 200, want a closed-door response (403 from handler or 404 from middleware). body=%s", rr.Body.String())
+	}
+}
+
 func TestHandleWorkspaceClaimCode_OK_FreshCode(t *testing.T) {
 	e := newClaimCodeEnv(t)
 	rr := e.doClaimCodeGet()

@@ -177,11 +177,28 @@
 		countdownTimer = setInterval(tick, 1000);
 	}
 
+	// Monotonic sequence id for in-flight claim-code requests. The
+	// modal stays mounted across workspace switches (TopBar reuses
+	// the same instance as the user navigates between workspaces),
+	// so an older fetch can resolve AFTER a newer one and stomp
+	// `claimState` with stale suppression / a code for the wrong
+	// workspace. Each fetchClaimCode() captures its own seq + the
+	// slug it was issued for; the state write only commits when
+	// BOTH still match the latest values. Mirrors the
+	// refreshHasAgentActivity guard in ConnectBanner.svelte.
+	let claimFetchSeq = 0;
+
 	async function fetchClaimCode() {
 		if (!workspaceSlug) return;
+		const mySeq = ++claimFetchSeq;
+		const mySlug = workspaceSlug;
 		claimState = { kind: 'loading' };
 		try {
-			const data = await api.workspaces.claimCode(workspaceSlug);
+			const data = await api.workspaces.claimCode(mySlug);
+			// Drop the response if a newer fetch has been issued OR the
+			// user navigated to a different workspace while we were
+			// awaiting the network.
+			if (mySeq !== claimFetchSeq || mySlug !== workspaceSlug) return;
 			if (data.suppressed) {
 				clearCountdown();
 				claimState = {
@@ -193,6 +210,7 @@
 			claimState = { kind: 'ready', data };
 			startCountdown(data.expires_at);
 		} catch (err) {
+			if (mySeq !== claimFetchSeq || mySlug !== workspaceSlug) return;
 			clearCountdown();
 			if (err instanceof PadApiError && err.code === 'claim_disabled') {
 				claimState = { kind: 'disabled' };
