@@ -205,9 +205,14 @@ func (s *Store) GetOAuthConnectionAccess(requestID string) (OAuthConnectionAcces
 // (Phase C will treat it as a programmer bug and 500). No UPSERT here —
 // the mutation methods below cover the post-create edit path.
 //
-// Defaults: scope flags default ON if not supplied (zero value matches
-// IDEA-1517 §2a). Caller passes the post-consent values straight from
-// the form; this method does not interpret.
+// Scope flags are written verbatim from the caller — the schema-level
+// DEFAULT TRUE on each column is unreachable through this code path
+// because all three values are always supplied. The Phase C handler is
+// responsible for translating the consent UI's two-section radio +
+// checkbox interface (IDEA-1517 §2a) into the three Go bool fields
+// before calling here; the "default on" semantic lives at the form-
+// rendering layer, not in the store. Codex review #581 round 1 caught
+// the docstring/behaviour mismatch.
 func (s *Store) CreateOAuthConnection(c OAuthConnection) error {
 	if c.RequestID == "" {
 		return fmt.Errorf("oauth_connections: request_id required")

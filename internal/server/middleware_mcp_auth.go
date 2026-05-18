@@ -393,13 +393,29 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	}
 	access, accessErr := s.store.GetOAuthConnectionAccess(ar.GetID())
 	if accessErr != nil {
-		// I/O error reading the connection — log and treat as "no
-		// new-table state for this connection" so we fall back to
-		// the legacy path. Don't fail the request: an outage of the
-		// new tables must not regress existing OAuth grants that
-		// only need the Extra path to pass.
-		slog.Warn("oauth_connections access lookup failed; falling back to session.Extra",
+		// I/O error reading the connection — fail CLOSED. We cannot
+		// know whether this grant is scoped or unrestricted without a
+		// successful read; falling through to the legacy-Extra-only
+		// path would silently widen a post-Phase-C connection (where
+		// the new tables are authoritative and session.Extra is empty
+		// by design) into "no allow-list," granting access to every
+		// workspace the user is a member of. Codex review #581 round
+		// 1 caught the regression.
+		//
+		// Mirrors the IntrospectToken storage-error policy a few
+		// branches up: storage failures collapse to a 401 rather than
+		// a 500 because (a) we cannot validate the grant, so the
+		// client MUST not proceed, and (b) a spec-shaped 401 + retry
+		// is the same recovery path the client would take for a
+		// transient outage anyway. The slog.Warn lets ops spot the
+		// underlying DB issue via existing alerting.
+		slog.Warn("oauth_connections access lookup failed; failing closed",
 			"request_id", ar.GetID(), "error", accessErr)
+		if s.metrics != nil {
+			s.metrics.MCPAuthzDenialsTotal.WithLabelValues("connection_lookup_error").Inc()
+		}
+		s.writeMCPUnauthorized(w, r, "invalid_token", "Token validation failed; please retry.")
+		return
 	}
 	if allowed := mergeAllowedWorkspaces(extraAllowed, access); allowed != nil {
 		ctx = WithTokenAllowedWorkspaces(ctx, allowed)
