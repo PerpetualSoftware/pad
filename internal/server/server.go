@@ -1344,6 +1344,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
+// httpIdleTimeout caps the keep-alive idle window on every HTTP
+// connection. Tracked here (not in handlers_events.go) because it
+// applies to ALL connections, not just SSE — but it has a hard
+// invariant relationship with sseKeepaliveInterval: an idle SSE
+// stream is kept alive by periodic comment writes, and those must
+// land more frequently than IdleTimeout or the connection will be
+// closed mid-stream by the http.Server. The guard in
+// handlers_events.go's init() enforces 3 × sseKeepaliveInterval <
+// httpIdleTimeout so we tolerate one or two missed/dropped writes
+// (network blip, scheduler hiccup) before tripping the deadline.
+const httpIdleTimeout = 120 * time.Second
+
 func (s *Server) ListenAndServe(addr string) error {
 	s.ensureRouter()
 
@@ -1352,7 +1364,7 @@ func (s *Server) ListenAndServe(addr string) error {
 		Handler:           s.router,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		IdleTimeout:       httpIdleTimeout,
 		// Cap total header bytes (default 1 MB) to 64 KB — well above any
 		// legitimate request (cookies, auth, content-type, a few CSRF/CORS
 		// headers) and tight enough to cheaply reject header-flood DoS.
