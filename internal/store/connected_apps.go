@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -40,16 +39,19 @@ var ErrConnectionNotFound = errors.New("connected_apps: connection not found")
 // in the chain still has active=TRUE — revoked chains drop off the
 // list immediately rather than lingering.
 //
-// Implementation walks oauth_access_tokens grouped by request_id,
-// taking MIN(requested_at) as ConnectedAt + the most recent row's
-// session_data + granted_scopes (which carry the consent allow-list
-// and scope policy). Joins to oauth_clients for the DCR metadata.
+// Post-TASK-1522 read path: connection-level state (name, scope flags,
+// workspace allow-list) now reads from oauth_connections +
+// oauth_connection_workspaces. We still walk oauth_access_tokens +
+// oauth_refresh_tokens to know which chains are active and to pull
+// ConnectedAt + GrantedScopes (those live per-token, not per-grant).
+// The backfill in BackfillOAuthConnections seeds the new tables once
+// at startup so this read path sees every legacy chain too — no
+// dual-shape fork inside the read loop.
 //
-// The audit-log enrichments (LastUsedAt + Calls30d) come from the
-// caller — we return MCPConnectionStatsForUser separately so the
-// caller can call both methods in parallel if they want, and so the
-// store layer doesn't require the audit table to be present (this
-// method works on a fresh install with no audit rows yet).
+// Two queries: one chain scan, one batch-hydrate of the connection
+// rows. Slug projection lives in a per-chain helper because the join
+// shape is small (a handful of slugs per chain at most) and stays
+// readable.
 //
 // Sort: ConnectedAt DESC so newest authorizations land at the top of
 // the page, which matches every other "list of things I've added"
@@ -67,7 +69,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	// a handful of clients, not thousands), so the in-memory dedup
 	// is cheap.
 	rows, err := s.db.Query(s.q(`
-		SELECT request_id, client_id, requested_at, session_data, granted_scopes
+		SELECT request_id, client_id, requested_at, granted_scopes
 		FROM oauth_access_tokens
 		WHERE subject = ? AND active = ?
 		ORDER BY request_id, requested_at DESC
@@ -78,42 +80,38 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	defer rows.Close()
 
 	type chainAgg struct {
-		clientID      string
-		earliest      time.Time
-		newest        time.Time
-		newestSession string
-		newestScopes  string
+		clientID     string
+		earliest     time.Time
+		newest       time.Time
+		newestScopes string
 	}
 	chains := make(map[string]*chainAgg)
-	for rows.Next() {
-		var (
-			reqID, clientID, sessionData, scopes string
-			requestedAt                          string
-		)
-		if err := rows.Scan(&reqID, &clientID, &requestedAt, &sessionData, &scopes); err != nil {
-			return nil, fmt.Errorf("scan user connection (access): %w", err)
-		}
+	absorb := func(reqID, clientID, requestedAt, scopes string) {
 		ts := parseTime(requestedAt)
 		c, ok := chains[reqID]
 		if !ok {
-			c = &chainAgg{
-				clientID:      clientID,
-				earliest:      ts,
-				newest:        ts,
-				newestSession: sessionData,
-				newestScopes:  scopes,
+			chains[reqID] = &chainAgg{
+				clientID:     clientID,
+				earliest:     ts,
+				newest:       ts,
+				newestScopes: scopes,
 			}
-			chains[reqID] = c
-			continue
+			return
 		}
 		if ts.Before(c.earliest) {
 			c.earliest = ts
 		}
 		if ts.After(c.newest) {
 			c.newest = ts
-			c.newestSession = sessionData
 			c.newestScopes = scopes
 		}
+	}
+	for rows.Next() {
+		var reqID, clientID, scopes, requestedAt string
+		if err := rows.Scan(&reqID, &clientID, &requestedAt, &scopes); err != nil {
+			return nil, fmt.Errorf("scan user connection (access): %w", err)
+		}
+		absorb(reqID, clientID, requestedAt, scopes)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate user connections (access): %w", err)
@@ -126,7 +124,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	// call in a while would see an empty list right after a token
 	// expiry.
 	rrows, err := s.db.Query(s.q(`
-		SELECT request_id, client_id, requested_at, session_data, granted_scopes
+		SELECT request_id, client_id, requested_at, granted_scopes
 		FROM oauth_refresh_tokens
 		WHERE subject = ? AND active = ?
 		ORDER BY request_id, requested_at DESC
@@ -136,34 +134,11 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	}
 	defer rrows.Close()
 	for rrows.Next() {
-		var (
-			reqID, clientID, sessionData, scopes string
-			requestedAt                          string
-		)
-		if err := rrows.Scan(&reqID, &clientID, &requestedAt, &sessionData, &scopes); err != nil {
+		var reqID, clientID, scopes, requestedAt string
+		if err := rrows.Scan(&reqID, &clientID, &requestedAt, &scopes); err != nil {
 			return nil, fmt.Errorf("scan user connection (refresh): %w", err)
 		}
-		ts := parseTime(requestedAt)
-		c, ok := chains[reqID]
-		if !ok {
-			c = &chainAgg{
-				clientID:      clientID,
-				earliest:      ts,
-				newest:        ts,
-				newestSession: sessionData,
-				newestScopes:  scopes,
-			}
-			chains[reqID] = c
-			continue
-		}
-		if ts.Before(c.earliest) {
-			c.earliest = ts
-		}
-		if ts.After(c.newest) {
-			c.newest = ts
-			c.newestSession = sessionData
-			c.newestScopes = scopes
-		}
+		absorb(reqID, clientID, requestedAt, scopes)
 	}
 	if err := rrows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate user connections (refresh): %w", err)
@@ -196,13 +171,51 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	for reqID, c := range chains {
 		client := clientCache[c.clientID]
 		conn := models.OAuthConnection{
-			RequestID:         reqID,
-			ClientID:          c.clientID,
-			ConnectedAt:       c.earliest,
-			GrantedScopes:     c.newestScopes,
-			CapabilityTier:    classifyCapabilityTier(c.newestScopes),
-			AllowedWorkspaces: parseAllowedWorkspacesFromSession(c.newestSession),
+			RequestID:      reqID,
+			ClientID:       c.clientID,
+			ConnectedAt:    c.earliest,
+			GrantedScopes:  c.newestScopes,
+			CapabilityTier: classifyCapabilityTier(c.newestScopes),
 		}
+
+		// Hydrate from oauth_connections + oauth_connection_workspaces.
+		// Backfilled chains all have a row; brand-new chains that
+		// somehow reach the read path before Phase C2's write hook
+		// fires fall back to the pre-TASK-1522 default (any workspace,
+		// scope flags all on, no name) so the page still renders the
+		// connection rather than silently dropping it. Defense in
+		// depth — the backfill at startup should keep this branch
+		// unreachable in production.
+		if access, accessErr := s.GetOAuthConnectionAccess(reqID); accessErr == nil && access.HasConnection {
+			if access.AllCurrentWorkspaces {
+				conn.AllCurrentWorkspaces = true
+				conn.AllowedWorkspaces = nil
+			} else {
+				conn.AllCurrentWorkspaces = false
+				conn.AllowedWorkspaces = access.WorkspaceSlugs
+			}
+			// Pull the rest of the connection metadata (name + the
+			// other two scope flags) with one PK lookup. Same cost
+			// shape as GetOAuthConnectionAccess; combined this is two
+			// indexed reads per chain, which on user-scale lists
+			// (~handful) is well under the audit-log enrichment cost.
+			if meta, metaErr := s.GetOAuthConnection(reqID); metaErr == nil {
+				conn.Name = meta.Name
+				conn.MayCreateWorkspaces = meta.MayCreateWorkspaces
+				conn.IncludeFutureWorkspaces = meta.IncludeFutureWorkspaces
+			}
+		} else {
+			// No oauth_connections row — treat as the legacy "any
+			// workspace, default-on flags" shape so existing UI keeps
+			// rendering. ListUserOAuthConnections returns the same
+			// nil AllowedWorkspaces semantic the pre-TASK-1522 read
+			// path used for pre-TASK-952 / wildcard tokens, so the
+			// DTO + frontend behave identically.
+			conn.AllCurrentWorkspaces = true
+			conn.MayCreateWorkspaces = true
+			conn.IncludeFutureWorkspaces = true
+		}
+
 		if client != nil {
 			conn.ClientName = client.Name
 			conn.LogoURL = client.LogoURL
@@ -327,53 +340,14 @@ func classifyCapabilityTier(scopes string) models.CapabilityTier {
 	return models.CapabilityTierUnknown
 }
 
-// parseAllowedWorkspacesFromSession extracts the workspace allow-list
-// from a serialized fosite session. The producer side
-// (oauth.Session.SetAllowedWorkspaces in /authorize/decide) stashes
-// the list under the "allowed_workspaces" key in DefaultSession.Extra.
-// JSON round-trip mangles []string into []interface{}, so we accept
-// both shapes here — same as oauth.Session.AllowedWorkspaces.
-//
-// Returns nil for missing key (pre-TASK-952 token); empty []string
-// for an explicit empty list (would be unusual but distinguishable
-// from "unset"); the slug list otherwise. The handler surfaces
-// nil + ["*"] as "Any workspace"; anything else as chips.
-//
-// Defensive: any parse failure returns nil rather than propagating
-// — a malformed session payload shouldn't 500 the connected-apps
-// page. Worst case the user sees "Any workspace" instead of the
-// actual chip list, which is a less-bad failure mode than a broken
-// page.
-func parseAllowedWorkspacesFromSession(sessionData string) []string {
-	if sessionData == "" {
-		return nil
-	}
-	// fosite serializes the session as JSON. We only care about
-	// session.Extra.allowed_workspaces — peek into that path
-	// without depending on the fosite types.
-	var outer struct {
-		Extra map[string]interface{} `json:"extra"`
-	}
-	if err := json.Unmarshal([]byte(sessionData), &outer); err != nil || outer.Extra == nil {
-		return nil
-	}
-	raw, ok := outer.Extra["allowed_workspaces"]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case []string:
-		out := make([]string, len(v))
-		copy(out, v)
-		return out
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, e := range v {
-			if s, ok := e.(string); ok && s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return nil
-}
+// parseAllowedWorkspacesFromSession was retired in TASK-1522 when the
+// connected-apps read path switched to consuming oauth_connections +
+// oauth_connection_workspaces instead of parsing session.Extra strings.
+// The session.Extra producer side still exists (oauth.Session.
+// SetAllowedWorkspaces) until Phase C2 retires it from
+// /authorize/decide; the dual-read introspection gate in
+// internal/server/middleware_mcp_auth.go consults both shapes during
+// transition. After the soak period (tracked in PLAN-1519 follow-ups)
+// the producer + dual-read can come out together. See
+// internal/store/oauth_connections_backfill.go for the migration that
+// seeded the new tables from the existing session.Extra payloads.
