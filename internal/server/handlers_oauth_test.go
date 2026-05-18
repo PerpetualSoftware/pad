@@ -1123,8 +1123,13 @@ func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
 	// New invariant: the oauth_connections row created by the consent
 	// flow must carry name + scope flags, and the join table must
 	// hold the selected workspace slugs (TASK-1523 / IDEA-1517 §2a).
-	// Locate the chain via the user's connection list; the most
-	// recent connection is this approve flow's grant.
+	// We can't rely on conns[0] being this approve flow's grant: the
+	// bearer-mint above (runAuthCodeFlow) creates a SECOND connection
+	// with `allowed_workspaces=["*"]`, and ListUserOAuthConnections
+	// orders ConnectedAt DESC — so conns[0] is the wildcard bearer
+	// row, not the alpha+beta row this test asserts on. Locate by
+	// shape instead: the specific-workspaces flow is the only one
+	// here with AllCurrentWorkspaces=false.
 	conns, err := srv.store.ListUserOAuthConnections(user.ID)
 	if err != nil {
 		t.Fatalf("ListUserOAuthConnections: %v", err)
@@ -1132,9 +1137,15 @@ func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
 	if len(conns) == 0 {
 		t.Fatalf("expected at least one connection after approve flow")
 	}
-	c := conns[0]
-	if c.AllCurrentWorkspaces {
-		t.Errorf("specific-workspaces consent should yield all_current_workspaces=false; got true")
+	var c *models.OAuthConnection
+	for i := range conns {
+		if !conns[i].AllCurrentWorkspaces {
+			c = &conns[i]
+			break
+		}
+	}
+	if c == nil {
+		t.Fatalf("no specific-workspaces connection found among %d connections", len(conns))
 	}
 	want := map[string]bool{"alpha": true, "beta": true}
 	if len(c.AllowedWorkspaces) != len(want) {
