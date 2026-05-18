@@ -57,6 +57,27 @@ var padWorkspaceTool = ToolDef{
 				Type:        "number",
 				Description: "Maximum entries to return. Optional for action=audit-log.",
 			},
+			// --- TASK-1521: workspace lifecycle ---
+			{
+				Name:        "name",
+				Type:        "string",
+				Description: "Human-readable workspace name. Required for action=create.",
+			},
+			{
+				Name:        "slug",
+				Type:        "string",
+				Description: "Workspace slug (kebab-case, globally unique). Optional for action=create; derived from name when omitted.",
+			},
+			{
+				Name:        "template",
+				Type:        "string",
+				Description: "Template to seed collections from (e.g. \"startup\", \"scrum\", \"blank\"). Optional for action=create.",
+			},
+			{
+				Name:        "code",
+				Type:        "string",
+				Description: "6-digit claim code generated in the workspace's \"Connect project\" modal. Required for action=claim.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{
@@ -65,6 +86,9 @@ var padWorkspaceTool = ToolDef{
 		"invite":    passThrough([]string{"workspace", "invite"}),
 		"storage":   passThrough([]string{"workspace", "storage"}),
 		"audit-log": actionWorkspaceAuditLog,
+		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4.
+		"create": passThrough([]string{"workspace", "create"}),
+		"claim":  passThrough([]string{"workspace", "claim"}),
 	},
 }
 
@@ -99,7 +123,7 @@ func actionWorkspaceAuditLog(ctx context.Context, input map[string]any, env Acti
 	return env.Dispatch(ctx, []string{"workspace", "audit-log"}, input)
 }
 
-const padWorkspaceToolDescription = `Workspace operations — discovery, membership, storage, and audit log.
+const padWorkspaceToolDescription = `Workspace operations — discovery, membership, storage, audit log, and lifecycle.
 
 Actions:
   list       — List workspaces visible to the current user. No params; admins see all,
@@ -115,6 +139,22 @@ Actions:
                Optional: action_filter, actor, days, limit.
                Note: the underlying endpoint is global, so this returns entries
                across all workspaces filtered by the supplied params.
+  create     — Create a new workspace.
+               Required: name.
+               Optional: slug (derived from name when omitted), template (e.g.
+               "startup" / "scrum" / "blank").
+               When called over an OAuth-bound MCP session whose grant has
+               may_create_workspaces=true, the new workspace is auto-added to
+               that connection's allow-list — usable immediately, no re-auth.
+  claim      — Redeem a 6-digit claim code to add a workspace to the calling
+               OAuth connection's allow-list.
+               Required: workspace, code.
+               Generate the code in the workspace's web UI ("Connect project"
+               modal). Valid for 5–10 minutes (sliding window). Errors: 401
+               invalid_code, 404 not_found (workspace doesn't exist or you're
+               not a member), 412 connection_not_persisted (pre-Phase-C grant
+               — re-authorize).
 
-Use pad_workspace when an agent needs to discover, manage membership, or audit
-workspace activity. For item-level operations use pad_item.`
+Use pad_workspace when an agent needs to discover, manage membership, audit
+workspace activity, or bring a new/additional workspace into this connection.
+For item-level operations use pad_item.`

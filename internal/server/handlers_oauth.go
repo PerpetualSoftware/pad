@@ -80,6 +80,34 @@ func (s *Server) SetOAuthServer(srv *oauth.Server) {
 	s.wireOAuthMetricsObserver()
 }
 
+// SetClaimSecret wires the HMAC key used to derive + verify stateless
+// 6-digit claim codes for the POST /api/v1/oauth/claim endpoint
+// (PLAN-1519 / TASK-1521 / IDEA-1517 §4). MUST be called before
+// setupRouter so the route is mounted; production wires the deployment's
+// 32-byte encryption key from cmd/pad/main.go right after SetOAuthServer.
+//
+// secret must be at least 16 bytes of cryptographically-strong
+// material. Shorter values are accepted by the setter (so tests can
+// pass deterministic fixtures) but the handler short-circuits to a
+// 412 "claim_disabled" envelope on every request — the same envelope
+// it returns when the secret is nil — so a misconfigured deployment
+// surfaces the issue rather than silently accepting forgeable codes.
+//
+// Passing nil clears any previously-set secret, disabling the
+// endpoint. Useful in tests that exercise the disabled-deployment
+// branch without spinning up a fresh server.
+func (s *Server) SetClaimSecret(secret []byte) {
+	if secret == nil {
+		s.claimSecret = nil
+		return
+	}
+	// Defensive copy — caller mutating the slice after the call must
+	// not retroactively change every future claim derivation.
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	s.claimSecret = cp
+}
+
 // registerOAuthRoutes mounts the OAuth endpoints on r. Called from
 // setupRouter at the same level as the MCP routes. No-op when
 // either cloud mode is off or SetOAuthServer was never called —

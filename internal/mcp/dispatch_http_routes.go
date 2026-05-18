@@ -339,6 +339,14 @@ func init() {
 		// can pass an explicit `workspace` param to scope if they want).
 		"workspace audit-log": mapWorkspaceAuditLog,
 		"workspace invite":    mapWorkspaceInvite,
+		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle
+		// over MCP. `create` POSTs to /api/v1/workspaces; the handler's
+		// auto-add side effect uses the request context's OAuth identity
+		// (WithMCPTokenIdentity) to insert into oauth_connection_workspaces
+		// when may_create_workspaces=true. `claim` POSTs to
+		// /api/v1/oauth/claim with the same payload shape.
+		"workspace create": mapWorkspaceCreate,
+		"workspace claim":  mapWorkspaceClaim,
 
 		// --- TASK-968 follow-up: project intelligence + admin extras ---
 		// `project next` returns the full dashboard JSON — same shape the
@@ -947,6 +955,66 @@ func mapWorkspaceAuditLog(input map[string]any) (string, string, []byte, error) 
 		urlPath += "?" + encoded
 	}
 	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapWorkspaceCreate dispatches `pad workspace create <name>
+// [--slug X] [--template X]`.
+//
+// POST /api/v1/workspaces with body {name, slug?, template?} —
+// matches models.WorkspaceCreate. Auto-add-to-allow-list is a
+// server-side side effect; the dispatcher just forwards the create
+// call. PLAN-1519 / TASK-1521 / IDEA-1517 §1.
+//
+// `workspace` is intentionally NOT passed in the body: the resource
+// is being CREATED, not addressed by an existing slug. If the caller
+// supplied `slug`, that becomes the workspace's slug; otherwise the
+// server derives one from `name`. The session-default workspace
+// injection that mergeDispatchInput performs is therefore irrelevant
+// here — we just ignore an incidental `workspace` key.
+func mapWorkspaceCreate(input map[string]any) (string, string, []byte, error) {
+	name, _ := input["name"].(string)
+	if name == "" {
+		return "", "", nil, fmt.Errorf("name is required")
+	}
+	payload := map[string]any{"name": name}
+	if v, _ := input["slug"].(string); v != "" {
+		payload["slug"] = v
+	}
+	if v, _ := input["template"].(string); v != "" {
+		payload["template"] = v
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	return http.MethodPost, "/api/v1/workspaces", body, nil
+}
+
+// mapWorkspaceClaim dispatches `pad workspace claim <code>
+// --workspace <slug>`.
+//
+// POST /api/v1/oauth/claim with body {workspace, code} —
+// see internal/server/handlers_oauth_claim.go for the response shape
+// and error envelope. PLAN-1519 / TASK-1521 / IDEA-1517 §4.
+//
+// Both inputs are required at the MCP boundary. The server-side
+// handler enforces the constant-time HMAC check + sliding 5–10 min
+// lifetime; this mapper is a pure pass-through.
+func mapWorkspaceClaim(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, fmt.Errorf("workspace is required")
+	}
+	code, _ := input["code"].(string)
+	if code == "" {
+		return "", "", nil, fmt.Errorf("code is required")
+	}
+	payload := map[string]any{"workspace": workspace, "code": code}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	return http.MethodPost, "/api/v1/oauth/claim", body, nil
 }
 
 // mapWorkspaceInvite dispatches `pad workspace invite <email>

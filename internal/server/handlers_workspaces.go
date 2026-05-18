@@ -3,12 +3,14 @@ package server
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 func normalizeWorkspaceInput(input *models.WorkspaceCreate) error {
@@ -254,7 +256,67 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
 	}
 
+	// OAuth connection auto-add (PLAN-1519 / TASK-1521 / IDEA-1517 §1):
+	// when the creating call came over an OAuth-bound MCP session AND
+	// that connection has `may_create_workspaces=true`, immediately
+	// add the new workspace to the connection's allow-list with
+	// added_by='agent-create'. The agent can then use the workspace
+	// without a re-auth round-trip — the whole point of the "agent
+	// creates and immediately uses" flow.
+	//
+	// Best-effort: any error here logs but does NOT fail the response.
+	// The workspace already exists; failing the response would be
+	// confusing ("create succeeded but you got an error") and the user
+	// can always re-grant via the Connect-project modal. PAT auth has
+	// no request_id and the no-op short-circuits at the kind check.
+	s.maybeAutoAddCreatorConnection(r, ws.ID)
+
 	writeJSON(w, http.StatusCreated, ws)
+}
+
+// maybeAutoAddCreatorConnection inserts the newly-created workspace
+// into the calling OAuth connection's allow-list when the grant has
+// `may_create_workspaces=true`. No-op when:
+//
+//   - The calling token isn't an OAuth grant (PAT, CLI session token —
+//     they don't carry a request_id).
+//   - The grant's connection row doesn't exist (pre-Phase-C tokens
+//     fall here until backfill).
+//   - The flag is off (user explicitly scoped out creation power at
+//     consent time or via the connections-page mutation UI).
+//
+// Errors are logged at WARN, never propagated. The caller's response
+// must not fail because of an auth-bookkeeping issue post-creation.
+func (s *Server) maybeAutoAddCreatorConnection(r *http.Request, workspaceID string) {
+	kind, requestID := MCPTokenIdentityFromContext(r.Context())
+	if kind != "oauth" || requestID == "" {
+		return
+	}
+	conn, err := s.store.GetOAuthConnection(requestID)
+	if err != nil || conn == nil {
+		// Includes ErrOAuthConnectionNotFound (pre-Phase-C grant) and
+		// any I/O error. Silent — the workspace is already created,
+		// the auto-add is a convenience the user can recover via the
+		// Connect modal.
+		return
+	}
+	if !conn.MayCreateWorkspaces {
+		// User declined creation power at consent. Respect that —
+		// the workspace exists but doesn't auto-join the connection;
+		// the user can claim it post-hoc via the Connect modal if
+		// they change their mind.
+		return
+	}
+	if err := s.store.AddConnectionWorkspace(requestID, workspaceID, store.AddedByAgentCreate); err != nil {
+		// Idempotent on the store side — re-creation through the
+		// same connection (very unlikely with fresh IDs) would no-op.
+		// Any error here is genuinely unexpected; log so ops sees it.
+		slog.Warn("auto-add workspace to OAuth connection failed",
+			"request_id", requestID,
+			"workspace_id", workspaceID,
+			"error", err,
+		)
+	}
 }
 
 func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {

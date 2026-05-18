@@ -80,6 +80,9 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_workspace", "invite"}:    {"workspace", "invite"},
 		{"pad_workspace", "storage"}:   {"workspace", "storage"},
 		{"pad_workspace", "audit-log"}: {"workspace", "audit-log"},
+		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle.
+		{"pad_workspace", "create"}: {"workspace", "create"},
+		{"pad_workspace", "claim"}:  {"workspace", "claim"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -203,6 +206,9 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_workspace", "invite"}:    {"workspace", "invite"},
 		{"pad_workspace", "storage"}:   {"workspace", "storage"},
 		{"pad_workspace", "audit-log"}: {"workspace", "audit-log"},
+		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle.
+		{"pad_workspace", "create"}: {"workspace", "create"},
+		{"pad_workspace", "claim"}:  {"workspace", "claim"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -261,6 +267,9 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"message":           "test message",
 		"summary":           "test summary",
 		"decision":          "test decision",
+		// PLAN-1519 / TASK-1521 — workspace.claim needs a `code` positional;
+		// `name` (above) doubles as the workspace.create positional.
+		"code": "123456",
 	}
 
 	for _, def := range Catalog {
@@ -398,6 +407,17 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags:   mkFlags("workspace", "role"),
 			},
 			"workspace storage": {Summary: "storage", Flags: mkFlags("workspace")},
+			// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle.
+			"workspace create": {
+				Summary: "create workspace non-interactively",
+				Args:    mkArgs("name"),
+				Flags:   mkFlags("slug", "template"),
+			},
+			"workspace claim": {
+				Summary: "claim a workspace by 6-digit code",
+				Args:    mkArgs("code"),
+				Flags:   mkFlags("workspace"),
+			},
 			"workspace audit-log": {
 				Summary: "audit log",
 				Flags: map[string]cmdhelp.Flag{

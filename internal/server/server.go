@@ -93,6 +93,16 @@ type Server struct {
 	// mount on self-hosted deployments. See handlers_oauth.go.
 	oauthServer *oauth.Server
 
+	// claimSecret is the HMAC key for stateless 6-digit claim codes
+	// (PLAN-1519 / TASK-1521 / IDEA-1517 §4). Wired by SetClaimSecret
+	// at startup — production reuses the deployment's 32-byte
+	// encryption key (cfg.EncryptionKey) since both are server-
+	// stable secrets with equivalent rotation cadence. nil/short →
+	// /api/v1/oauth/claim returns 412 "claim_disabled" on every
+	// request, surfacing a clear misconfiguration signal rather than
+	// silently accepting forgeable codes.
+	claimSecret []byte
+
 	// oauthMetricsWired records whether wireOAuthMetricsObserver has
 	// already attached the active-tokens callback collector. Re-
 	// registering would panic via prometheus.MustRegister, so the flag
@@ -964,6 +974,16 @@ func (s *Server) setupRouter() {
 
 			// Share link resolution (outside workspace scope, no auth required)
 			r.Get("/s/{token}", s.handleResolveShareLink)
+
+			// Claim-code redemption (PLAN-1519 / TASK-1521 / IDEA-1517 §4).
+			// POST /api/v1/oauth/claim with body {workspace, code} grants
+			// the calling OAuth connection access to one workspace via a
+			// stateless 6-digit HMAC code the user generated in the web
+			// UI's "Connect project" modal. Auth: standard /api/v1 chain
+			// (TokenAuth + RequireAuth); the handler itself short-circuits
+			// the side effect when the caller isn't an OAuth grant (PAT /
+			// CLI session) and 412s when the claim secret isn't wired.
+			r.Post("/oauth/claim", s.handleOAuthClaim)
 
 			// Workspaces
 			r.Route("/workspaces", func(r chi.Router) {

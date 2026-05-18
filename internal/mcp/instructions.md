@@ -63,6 +63,12 @@ pad_item.action: list, collection: "conventions", status: "active"
 
 Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when relevant.
 
+## Adding a workspace to this connection
+
+If the user references a workspace this connection can't see (you'll get a 403 from workspace tools, or the workspace won't appear in `pad_workspace.list`), tell the user you can't see that workspace with your current permissions, then walk them through how to grant access: open Pad in their browser → switch to that workspace → avatar menu → "Connect project..." A 6-digit claim code will appear. Have them paste it back in chat, then call `pad_workspace.claim` with `{workspace: "<slug>", code: "<6 digits>"}`. The workspace joins this connection's allow-list and stays until the user revokes it via `/console/connected-apps`. No re-auth required.
+
+For brand-new workspaces, `pad_workspace.create` with `{name: "<name>"}` (and optional `template`) creates the workspace AND auto-adds it to this connection's allow-list in one call — no claim code needed. Only works when the user granted "may create workspaces" at consent time; if that scope was declined the create call still succeeds but the workspace doesn't auto-join — direct the user to the claim flow above to bring it in.
+
 ## Multi-step workflows
 
 Four prompts ship with the server: `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard`. Use them when the user wants help planning, brainstorming, retrospecting, or onboarding into a workspace — they encode the multi-step Pad-aware playbook for each.

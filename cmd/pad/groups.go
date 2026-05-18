@@ -39,6 +39,8 @@ func workspaceCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		initCmd(),
+		workspaceCreateCmd(),
+		workspaceClaimCmd(),
 		linkCmd(),
 		switchCmd(),
 		workspacesCmd(),

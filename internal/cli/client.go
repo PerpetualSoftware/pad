@@ -117,6 +117,29 @@ func (c *Client) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mo
 	return &result, c.patch("/workspaces/"+slug, input, &result)
 }
 
+// ClaimWorkspaceResponse is the shape of POST /api/v1/oauth/claim.
+// `AlreadyAdded` reports whether the workspace was already in the
+// calling connection's allow-list (idempotent re-claim returns true).
+// `Note` is populated only for PAT / CLI-session callers that have no
+// OAuth grant to add the workspace to — see handleOAuthClaim for the
+// design rationale.
+type ClaimWorkspaceResponse struct {
+	Workspace    string `json:"workspace"`
+	WorkspaceID  string `json:"workspace_id"`
+	AlreadyAdded bool   `json:"already_added"`
+	Note         string `json:"note,omitempty"`
+}
+
+// ClaimWorkspace redeems a 6-digit claim code against the
+// /api/v1/oauth/claim endpoint, granting the calling OAuth connection
+// access to the named workspace. Used by `pad workspace claim` and
+// by the MCP `pad_workspace.action: claim` route.
+func (c *Client) ClaimWorkspace(workspaceSlug, code string) (*ClaimWorkspaceResponse, error) {
+	var result ClaimWorkspaceResponse
+	body := map[string]string{"workspace": workspaceSlug, "code": code}
+	return &result, c.post("/oauth/claim", body, &result)
+}
+
 // --- Collections ---
 
 func (c *Client) ListCollections(wsSlug string) ([]models.Collection, error) {

@@ -488,8 +488,16 @@ func serveCmd() *cobra.Command {
 						return fmt.Errorf("init OAuth server: %w", oauthErr)
 					}
 					srv.SetOAuthServer(oauthSrv)
+					// Same key powers stateless 6-digit claim codes
+					// (PLAN-1519 / TASK-1521 / IDEA-1517 §4). Reusing
+					// keyBytes here keeps the cloud-mode secret surface
+					// to a single 32-byte value the operator already
+					// rotates; the OAuth signing path and the claim
+					// HMAC path have the same rotation cadence + blast
+					// radius, so a shared secret is the right call.
+					srv.SetClaimSecret(keyBytes)
 					slog.Info("OAuth server mounted",
-						"endpoints", "/oauth/{register,authorize,token}",
+						"endpoints", "/oauth/{register,authorize,token,claim}",
 						"audience", oauthSrv.AllowedAudience(),
 					)
 				} else {
@@ -1852,6 +1860,131 @@ func joinCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- workspace create (non-interactive) ---
+//
+// `pad workspace init` is the interactive entry point: it ensures
+// auth, prompts when needed, and CWD-links the new workspace. That's
+// the right shape for a human at a terminal. The MCP `pad_workspace.
+// action: create` route needs a non-interactive equivalent that hits
+// POST /api/v1/workspaces directly with structured args — no TTY
+// prompts, no CWD-link side effect. `pad workspace create` is that
+// surface; the stdio MCP dispatcher (ExecDispatcher) shells out to
+// it via passThrough, and humans can call it too if they want the
+// thin direct shape.
+//
+// See PLAN-1519 / TASK-1521 / IDEA-1517 §1.
+
+func workspaceCreateCmd() *cobra.Command {
+	var (
+		slugFlag     string
+		templateFlag string
+	)
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create a workspace non-interactively (use 'pad workspace init' for the guided flow)",
+		Long: `Create a new workspace by name. Non-interactive — no prompts, no
+CWD link side effect. Hits POST /api/v1/workspaces directly with the
+supplied name + optional slug + template.
+
+For the guided flow that ensures auth, picks a template interactively,
+and links the CWD, use 'pad workspace init' instead. The 'create' shape
+exists to back the MCP pad_workspace.action: create route + scripts
+that just want the workspace row.
+
+When called over an OAuth-bound MCP session whose grant has
+may_create_workspaces=true, the new workspace is auto-added to that
+connection's allow-list (PLAN-1519 / TASK-1521 / IDEA-1517 §1) so
+the agent can use it immediately without re-auth.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws, err := client.CreateWorkspace(models.WorkspaceCreate{
+				Name:     args[0],
+				Slug:     slugFlag,
+				Template: templateFlag,
+			})
+			if err != nil {
+				return fmt.Errorf("create workspace: %w", err)
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(ws)
+			}
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Created workspace %q (slug: %s)\n", green("✓"), ws.Name, ws.Slug)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&slugFlag, "slug", "", "Workspace slug (default: derived from name)")
+	cmd.Flags().StringVar(&templateFlag, "template", "", "Template to seed collections from (run 'pad workspace init --list-templates' to see options)")
+	return cmd
+}
+
+// --- workspace claim ---
+//
+// `pad workspace claim <code> --workspace <slug>` redeems a 6-digit
+// stateless HMAC claim code at POST /api/v1/oauth/claim, granting the
+// calling OAuth connection access to one specific workspace.
+//
+// The CLI ships this command primarily so the stdio MCP dispatcher
+// (ExecDispatcher) can shell out to it via passThrough for the
+// `pad_workspace.action: claim` route — claim itself is meaningful
+// only over a cloud-mode OAuth MCP session (PAT / CLI session tokens
+// already see every workspace the user belongs to), but the handler
+// returns a clear note when called outside that context so a confused
+// CLI caller isn't left guessing.
+//
+// See PLAN-1519 / TASK-1521 / IDEA-1517 §4.
+
+func workspaceClaimCmd() *cobra.Command {
+	var workspaceSlug string
+	cmd := &cobra.Command{
+		Use:   "claim <code>",
+		Short: "Redeem a 6-digit claim code to add a workspace to this OAuth connection's allow-list",
+		Long: `Redeem a 6-digit claim code at POST /api/v1/oauth/claim, granting the
+calling OAuth connection access to one specific workspace.
+
+Generate the code in the workspace's web UI ("Connect project" modal,
+avatar menu). The code is valid for 5–10 minutes (sliding window).
+
+Claim is meaningful only over cloud-mode OAuth MCP sessions where
+workspace allow-lists actually constrain access. CLI session tokens
+and PATs already see every workspace you belong to; running this from
+the CLI succeeds (the code verifies) but the side effect no-ops —
+the response 'note' field explains.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if workspaceSlug == "" {
+				workspaceSlug = getWorkspace()
+			}
+			if workspaceSlug == "" {
+				return fmt.Errorf("--workspace is required (no workspace linked in this directory)")
+			}
+			client, _ := getClient()
+			resp, err := client.ClaimWorkspace(workspaceSlug, args[0])
+			if err != nil {
+				return fmt.Errorf("claim workspace: %w", err)
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(resp)
+			}
+			green := color.New(color.FgGreen).SprintFunc()
+			dim := color.New(color.Faint)
+			if resp.AlreadyAdded {
+				fmt.Printf("%s Workspace %q already in this connection's allow-list (no change)\n",
+					green("✓"), resp.Workspace)
+			} else {
+				fmt.Printf("%s Claimed workspace %q\n", green("✓"), resp.Workspace)
+			}
+			if resp.Note != "" {
+				fmt.Println(dim.Sprint(resp.Note))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&workspaceSlug, "workspace", "", "Workspace slug to claim (defaults to CWD-linked workspace)")
+	return cmd
 }
 
 // --- reset-password ---
