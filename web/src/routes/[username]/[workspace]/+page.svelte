@@ -4,6 +4,7 @@
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
@@ -526,6 +527,7 @@
 	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
 	workspaceSlug={wsSlug}
 	workspaceName={workspaceStore.current?.name ?? ''}
+	mcpPublicUrl={authStore.mcpPublicUrl}
 />
 
 {#if wsSlug}

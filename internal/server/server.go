@@ -1011,6 +1011,13 @@ func (s *Server) setupRouter() {
 					// Activity (workspace level)
 					r.Get("/activity", s.handleListWorkspaceActivity)
 
+					// Claim-code generation + smart suppression (PLAN-1519
+					// / TASK-1525 / IDEA-1517 §4). Inherits
+					// RequireWorkspaceAccess so any member can pull a code
+					// for any workspace they belong to — membership IS
+					// the consent. See handlers_claim_code.go.
+					r.Get("/claim-code", s.handleWorkspaceClaimCode)
+
 					// Documents (v1 — will be replaced by items in Phase 2)
 					r.Route("/documents", func(r chi.Router) {
 						r.Get("/", s.handleListDocuments)

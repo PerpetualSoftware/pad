@@ -54,7 +54,8 @@ import type {
 	WorkspaceStorageInfo,
 	AttachmentListFilters,
 	AttachmentListResponse,
-	ConnectedApp
+	ConnectedApp,
+	ClaimCodeResponse
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -348,6 +349,15 @@ export const api = {
 				method: 'PUT',
 				body: JSON.stringify(updates)
 			}),
+
+		// Generate a 6-digit stateless claim code for this workspace, OR
+		// (when an active OAuth connection of the calling user already
+		// covers it) report `suppressed: true` so the modal can render
+		// the "your agent can already see this workspace" hint instead.
+		// Backed by GET /api/v1/workspaces/{slug}/claim-code
+		// (PLAN-1519 / TASK-1525 / IDEA-1517 §4).
+		claimCode: (slug: string) =>
+			request<ClaimCodeResponse>(`/workspaces/${slug}/claim-code`),
 
 		// importBundle uploads a workspace tar.gz bundle to the bundle-import
 		// endpoint. The server dispatches on Content-Type

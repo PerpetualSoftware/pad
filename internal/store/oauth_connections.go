@@ -444,6 +444,67 @@ func (s *Store) IsConnectionWorkspaceAllowed(requestID, workspaceID string) (boo
 	return true, nil
 }
 
+// IsWorkspaceCoveredForUser reports whether the given workspace is
+// already covered by any of the user's active OAuth connections —
+// either by the connection's wildcard flag (all_current_workspaces=1)
+// or by an explicit row in oauth_connection_workspaces.
+//
+// "Active" follows the same definition ListUserOAuthConnections uses
+// (`internal/store/connected_apps.go`): at least one access OR refresh
+// token in the chain still has active=TRUE. Revoked chains are
+// invisible here so a dangling oauth_connections row from a revoked
+// chain doesn't suppress the claim-code modal.
+//
+// Used by the claim-code generation endpoint (PLAN-1519 / TASK-1525)
+// to power the modal's "smart suppression" UI: if the workspace is
+// already covered, the modal replaces the code display with a hint
+// that points at /console/connected-apps instead of generating a
+// code the user would have nothing to do with.
+//
+// Returns the matching connection's human-readable Name (may be empty
+// — name is user-supplied at /authorize and many existing connections
+// don't have one yet). On no match, returns ("", false, nil). Limits
+// the underlying query to one row — the modal only needs "is there
+// any?" and the first match is sufficient.
+func (s *Store) IsWorkspaceCoveredForUser(userID, workspaceID string) (string, bool, error) {
+	if userID == "" || workspaceID == "" {
+		return "", false, nil
+	}
+	trueVal := s.dialect.BoolToInt(true)
+	var name string
+	err := s.db.QueryRow(s.q(`
+        SELECT oc.name
+          FROM oauth_connections oc
+         WHERE oc.user_id = ?
+           AND (
+             EXISTS (
+               SELECT 1 FROM oauth_access_tokens t
+                WHERE t.request_id = oc.request_id AND t.active = ?
+             )
+             OR EXISTS (
+               SELECT 1 FROM oauth_refresh_tokens t
+                WHERE t.request_id = oc.request_id AND t.active = ?
+             )
+           )
+           AND (
+             oc.all_current_workspaces = ?
+             OR EXISTS (
+               SELECT 1 FROM oauth_connection_workspaces cw
+                WHERE cw.request_id = oc.request_id
+                  AND cw.workspace_id = ?
+             )
+           )
+         LIMIT 1
+    `), userID, trueVal, trueVal, trueVal, workspaceID).Scan(&name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("oauth_connections: coverage check: %w", err)
+	}
+	return name, true, nil
+}
+
 // DeleteOAuthConnection removes the row + cascades to
 // oauth_connection_workspaces. Phase D's "Revoke" handler calls this
 // after RevokeRefreshTokenFamily + RevokeAccessTokenFamily so the
