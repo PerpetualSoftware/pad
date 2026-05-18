@@ -338,6 +338,66 @@ func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T)
 	}
 }
 
+// TestBackfillOAuthConnections_AtomicOnMidLoopFailure verifies that
+// the per-chain transaction rolls BOTH the parent oauth_connections
+// row AND any join rows back when a slug INSERT fails mid-loop. The
+// regression guard for Codex review #583 round 3: without atomicity,
+// a partial seed (parent inserted, slug loop crashed) would leave the
+// connection permanently scoped to an incomplete allow-list because
+// the subsequent backfill sees the parent row and short-circuits.
+//
+// We force a mid-loop INSERT failure by stuffing the same slug twice
+// into session.Extra. The second INSERT against
+// oauth_connection_workspaces hits the (request_id, workspace_id) PK
+// uniqueness constraint, raising an error. The atomic rollback should
+// unwind the parent row too — re-running backfill on a CORRECTED
+// payload (deduped) then succeeds.
+//
+// In practice the consent flow would never emit a duplicate slug, but
+// the test exercises the same rollback path any other error would
+// trigger (network glitch, FK violation, etc.).
+func TestBackfillOAuthConnections_AtomicOnMidLoopFailure(t *testing.T) {
+	s := newBackfillTestStore(t)
+	uid := seedBackfillUser(t, s, "atomic@example.com")
+	client := seedBackfillClient(t, s, "Atomic Client")
+	_, slug := seedBackfillWorkspace(t, s, "atomic-ws", uid)
+
+	// Duplicate slug → second insert violates PK, errors mid-loop.
+	seedBackfillAccess(t, s, "atomic-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+slug+`","`+slug+`"]}}`)
+
+	// First run: chain processing fails. The backfill logs the chain
+	// at WARN + continues, but the parent row + any partial join
+	// rows must be rolled back so the next clean run can finish the
+	// seed.
+	if _, err := s.BackfillOAuthConnections(); err != nil {
+		t.Fatalf("first BackfillOAuthConnections: %v", err)
+	}
+	if _, err := s.GetOAuthConnection("atomic-chain"); err == nil {
+		t.Fatalf("parent row should have rolled back on mid-loop INSERT failure")
+	}
+
+	// Simulate the operator fixing the corrupt session.Extra by
+	// deleting the chain's existing token rows and reseeding with a
+	// clean payload. In production this would happen naturally on
+	// the next token refresh through /authorize/decide.
+	if _, err := s.db.Exec(`DELETE FROM oauth_access_tokens WHERE request_id = ?`, "atomic-chain"); err != nil {
+		t.Fatalf("DELETE oauth_access_tokens: %v", err)
+	}
+	seedBackfillAccess(t, s, "atomic-chain", client, uid, time.Now().UTC(),
+		`{"extra":{"allowed_workspaces":["`+slug+`"]}}`)
+
+	// Second run: clean payload. Atomic insert lands parent + slug
+	// together. No half-seeded artifact from the first failed run.
+	res, err := s.BackfillOAuthConnections()
+	if err != nil {
+		t.Fatalf("second BackfillOAuthConnections: %v", err)
+	}
+	if res.ConnectionsCreated != 1 || res.WorkspacesAdded != 1 {
+		t.Errorf("clean retry should fully seed; got %+v", res)
+	}
+}
+
 func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "idem@example.com")

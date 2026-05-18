@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -218,98 +220,120 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	allowed := extractAllowedWorkspacesFromSessionExtra(chain.SessionData)
 	allCurrent, explicit := allowed.toShape()
 
-	// Probe BEFORE the insert so the counter reflects actual new
-	// work — RowsAffected isn't portable across SQLite + Postgres
-	// for "OR IGNORE" / "ON CONFLICT DO NOTHING" semantics (some
-	// drivers report 0, some 1), and a wall-clock heuristic over
-	// updated_at vs created_at over-reports on every steady-state
-	// startup once the row's been backfilled and never edited.
-	// Codex review #583 round 1 caught the over-report.
-	if _, getErr := s.GetOAuthConnection(requestID); getErr != nil {
-		// Row doesn't exist — we're about to insert it. Insert and
-		// flag created=true.
-		if err := s.insertOAuthConnectionIfAbsent(requestID, chain.UserID, allCurrent); err != nil {
-			return false, 0, 0, fmt.Errorf("insert parent: %w", err)
+	// Per-chain transaction (Codex review #583 round 3) so the parent
+	// row and ALL join rows land atomically. Previous round 2's gate
+	// "only seed slugs when parent was just created" protected
+	// user-removed workspaces from resurrection but introduced a new
+	// failure mode: if the process crashed (or AddConnectionWorkspace
+	// errored) between parent insert and the slug loop completing, a
+	// subsequent backfill would see created=false and skip the
+	// unfinished slug seeding — leaving the connection permanently
+	// scoped to a partial allow-list.
+	//
+	// The atomic invariant: either all rows for this chain commit, or
+	// none do. A crash mid-loop rolls the parent insert back too, so
+	// the NEXT backfill sees the chain as un-seeded and retries from
+	// scratch — preserving both Codex round 2's "no resurrection"
+	// guarantee and round 3's "no permanent partial seed."
+	//
+	// Scope: per-chain (small) tx, not whole-backfill. The original
+	// rationale for the no-transaction design was to avoid holding a
+	// writer lock across O(thousands) of chains; that concern doesn't
+	// apply at chain granularity (one row + a handful of join rows
+	// inserts, sub-millisecond hold).
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
 		}
-		created = true
-	}
-	// Re-runs on an existing row don't update — connection-level
-	// state (name + scope flags) is user-owned post-backfill and
-	// the backfill must not stomp it. Same posture as IDEA-1517 §2's
-	// "name defaults to empty until the user edits."
+	}()
 
-	if !created {
-		// Parent already existed from a prior backfill run — the
-		// connection-level state (name, scope flags) AND the join
-		// table is user-owned post-backfill. Specifically: if the
-		// user removes a workspace via RemoveConnectionWorkspace, a
-		// subsequent backfill re-adding it from stale session.Extra
-		// would silently revert their decision on every restart.
-		// Codex review #583 round 2 caught the regression.
-		//
-		// "Backfill" means SEED — once. After that the new tables
-		// are authoritative. The slug loop below only runs when we
-		// just inserted a fresh parent row.
-		return created, 0, 0, nil
+	// Existence check inside the tx so concurrent writers (theoretical:
+	// the OAuth-server's /authorize/decide handler running while
+	// backfill is up) can't insert between probe and seed.
+	var one int
+	probeErr := tx.QueryRow(s.q(`SELECT 1 FROM oauth_connections WHERE request_id = ?`), requestID).Scan(&one)
+	switch {
+	case probeErr == nil:
+		// Parent already exists from a prior backfill or live consent
+		// flow. The new tables are authoritative — leave the row + its
+		// join entries alone. This is the path that protects user
+		// removals (Codex review round 2) from getting resurrected.
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, 0, 0, fmt.Errorf("commit (no-op): %w", commitErr)
+		}
+		committed = true
+		return false, 0, 0, nil
+	case !errors.Is(probeErr, sql.ErrNoRows):
+		return false, 0, 0, fmt.Errorf("probe parent: %w", probeErr)
 	}
+
+	// Parent missing — atomic seed begins. Insert parent.
+	insertStmt := `
+        INSERT INTO oauth_connections (
+            request_id, user_id, name,
+            may_create_workspaces, all_current_workspaces, include_future_workspaces
+        ) VALUES (?, ?, '', ?, ?, ?)
+    `
+	// No need for OR IGNORE / ON CONFLICT here — we just probed inside
+	// the same tx and confirmed absence. A racing inserter would
+	// surface as a PK violation; let it propagate so the rollback
+	// fires cleanly and the next backfill retries.
+	if _, err := tx.Exec(s.q(insertStmt),
+		requestID, chain.UserID,
+		s.dialect.BoolToInt(true), // may_create_workspaces default ON
+		s.dialect.BoolToInt(allCurrent),
+		s.dialect.BoolToInt(true), // include_future_workspaces default ON
+	); err != nil {
+		return false, 0, 0, fmt.Errorf("insert parent: %w", err)
+	}
+
 	if explicit == nil {
-		// Wildcard / pre-TASK-952 — no join rows to write.
-		return created, 0, 0, nil
+		// Wildcard / pre-TASK-952 — commit parent-only, no join rows.
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, 0, 0, fmt.Errorf("commit (wildcard): %w", commitErr)
+		}
+		committed = true
+		return true, 0, 0, nil
 	}
 
-	// Resolve each slug to a workspace ID. Missing slugs (workspace
-	// deleted, never existed in this DB) skip without failing; the
-	// unresolved count surfaces in the result so ops can spot data
-	// hygiene issues. No need for IsConnectionWorkspaceAllowed
-	// probes here — by construction the parent row was just inserted,
-	// so the join table cannot contain any rows for this request_id
-	// yet (Phase A's CASCADE FK ensures parent + join lifecycle stay
-	// linked).
+	// Explicit-list path: resolve each slug + insert join row within
+	// the same tx. Workspace lookups use the regular DB handle (not
+	// the tx) because the workspaces table is read-only relative to
+	// this transaction — no risk of dirty reads, and keeping the
+	// lookup off the tx avoids holding the writer lock during the
+	// (very rare) deleted-slug fast-path. SQLite + Postgres both honor
+	// repeatable reads of static data here.
 	for _, slug := range explicit {
 		ws, getErr := s.GetWorkspaceBySlug(slug)
 		if getErr != nil || ws == nil {
 			slugsMissed++
 			continue
 		}
-		if err := s.AddConnectionWorkspace(requestID, ws.ID, AddedByUser); err != nil {
-			return created, slugsAdded, slugsMissed, fmt.Errorf("insert workspace %s: %w", slug, err)
+		// Plain INSERT (no OR IGNORE / ON CONFLICT) — by construction
+		// the parent row was just minted in this tx, so the join
+		// table has no pre-existing rows for this request_id. A
+		// duplicate slug in the source list is the only edge that
+		// could trip the PK; treat it as a programmer-error data
+		// shape and let the rollback fire so the operator notices.
+		if _, err := tx.Exec(s.q(`
+            INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
+            VALUES (?, ?, ?)
+        `), requestID, ws.ID, AddedByUser); err != nil {
+			return false, 0, 0, fmt.Errorf("insert workspace %s: %w", slug, err)
 		}
 		slugsAdded++
 	}
-	return created, slugsAdded, slugsMissed, nil
-}
 
-// insertOAuthConnectionIfAbsent inserts the oauth_connections row
-// idempotently. all_current_workspaces is the only flag derived from
-// session.Extra; the other two default to ON per IDEA-1517 §2a
-// ("all scope flags default to on" for the migrated set so existing
-// connections preserve their behaviour until the user edits them).
-func (s *Store) insertOAuthConnectionIfAbsent(requestID, userID string, allCurrent bool) error {
-	var stmt string
-	switch s.dialect.Driver() {
-	case DriverPostgres:
-		stmt = `
-            INSERT INTO oauth_connections (
-                request_id, user_id, name,
-                may_create_workspaces, all_current_workspaces, include_future_workspaces
-            ) VALUES (?, ?, '', ?, ?, ?)
-            ON CONFLICT (request_id) DO NOTHING
-        `
-	default:
-		stmt = `
-            INSERT OR IGNORE INTO oauth_connections (
-                request_id, user_id, name,
-                may_create_workspaces, all_current_workspaces, include_future_workspaces
-            ) VALUES (?, ?, '', ?, ?, ?)
-        `
+	if commitErr := tx.Commit(); commitErr != nil {
+		return false, slugsAdded, slugsMissed, fmt.Errorf("commit: %w", commitErr)
 	}
-	_, err := s.db.Exec(s.q(stmt),
-		requestID, userID,
-		s.dialect.BoolToInt(true), // may_create_workspaces default ON
-		s.dialect.BoolToInt(allCurrent),
-		s.dialect.BoolToInt(true), // include_future_workspaces default ON
-	)
-	return err
+	committed = true
+	return true, slugsAdded, slugsMissed, nil
 }
 
 // extractedAllowed captures one of the three IDEA-1517 §2 backfill
