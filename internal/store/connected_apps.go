@@ -179,14 +179,27 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 		}
 
 		// Hydrate from oauth_connections + oauth_connection_workspaces.
-		// Backfilled chains all have a row; brand-new chains that
-		// somehow reach the read path before Phase C2's write hook
-		// fires fall back to the pre-TASK-1522 default (any workspace,
-		// scope flags all on, no name) so the page still renders the
-		// connection rather than silently dropping it. Defense in
-		// depth — the backfill at startup should keep this branch
-		// unreachable in production.
-		if access, accessErr := s.GetOAuthConnectionAccess(reqID); accessErr == nil && access.HasConnection {
+		// Three branches:
+		//   - access lookup errored      → surface (Codex #583 round 4:
+		//                                  silently broadening to "any
+		//                                  workspace" on a real store
+		//                                  failure could expose
+		//                                  workspaces the user explicitly
+		//                                  scoped out via the Phase D
+		//                                  mutation UI).
+		//   - HasConnection == true      → project flags + slugs.
+		//   - HasConnection == false     → defensive fallback (legacy
+		//                                  "any workspace, default-on
+		//                                  flags"); reachable only if a
+		//                                  chain somehow exists without
+		//                                  a backfilled connection row,
+		//                                  which startup backfill should
+		//                                  prevent in production.
+		access, accessErr := s.GetOAuthConnectionAccess(reqID)
+		if accessErr != nil {
+			return nil, fmt.Errorf("hydrate connection access %s: %w", reqID, accessErr)
+		}
+		if access.HasConnection {
 			if access.AllCurrentWorkspaces {
 				conn.AllCurrentWorkspaces = true
 				conn.AllowedWorkspaces = nil
@@ -199,11 +212,16 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 			// shape as GetOAuthConnectionAccess; combined this is two
 			// indexed reads per chain, which on user-scale lists
 			// (~handful) is well under the audit-log enrichment cost.
-			if meta, metaErr := s.GetOAuthConnection(reqID); metaErr == nil {
-				conn.Name = meta.Name
-				conn.MayCreateWorkspaces = meta.MayCreateWorkspaces
-				conn.IncludeFutureWorkspaces = meta.IncludeFutureWorkspaces
+			meta, metaErr := s.GetOAuthConnection(reqID)
+			if metaErr != nil {
+				// HasConnection said the row exists; a follow-up
+				// lookup failing is a genuine store error — same
+				// rationale as the access lookup above.
+				return nil, fmt.Errorf("hydrate connection metadata %s: %w", reqID, metaErr)
 			}
+			conn.Name = meta.Name
+			conn.MayCreateWorkspaces = meta.MayCreateWorkspaces
+			conn.IncludeFutureWorkspaces = meta.IncludeFutureWorkspaces
 		} else {
 			// No oauth_connections row — treat as the legacy "any
 			// workspace, default-on flags" shape so existing UI keeps

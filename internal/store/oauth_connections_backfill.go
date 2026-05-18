@@ -308,9 +308,26 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	// lookup off the tx avoids holding the writer lock during the
 	// (very rare) deleted-slug fast-path. SQLite + Postgres both honor
 	// repeatable reads of static data here.
+	//
+	// Slug resolution distinguishes two failure modes:
+	//   - (nil, nil) — workspace doesn't exist (deleted, never
+	//     existed, renamed since consent). Counted in slugsMissed +
+	//     continues; the missing slug is data hygiene, not a
+	//     correctness blocker.
+	//   - (nil, err) — real I/O failure on the store-side query.
+	//     Surface so the per-chain transaction ROLLS BACK rather
+	//     than committing a partial allow-list. Without this branch
+	//     a real DB error mid-loop would silently emit a chain
+	//     scoped to only the slugs lookup succeeded for — and the
+	//     next backfill would short-circuit on parentExists, making
+	//     the partial scope permanent. Codex review #583 round 4
+	//     caught the gap.
 	for _, slug := range explicit {
 		ws, getErr := s.GetWorkspaceBySlug(slug)
-		if getErr != nil || ws == nil {
+		if getErr != nil {
+			return false, 0, 0, fmt.Errorf("workspace lookup %s: %w", slug, getErr)
+		}
+		if ws == nil {
 			slugsMissed++
 			continue
 		}
