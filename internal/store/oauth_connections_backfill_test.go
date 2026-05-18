@@ -307,13 +307,17 @@ func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second BackfillOAuthConnections: %v", err)
 	}
-	// Idempotent: chain scan re-counts but no new oauth_connections
-	// rows are inserted. The AddConnectionWorkspace path uses INSERT
-	// OR IGNORE / ON CONFLICT DO NOTHING, so re-issuing the same join
-	// inserts is a no-op at the DB layer; the WorkspacesAdded counter
-	// reflects calls that returned success (including no-op no-error
-	// inserts), so we don't assert on the counter value. The real
-	// invariant is the resulting row count below.
+	// Idempotent: chain scan re-counts but every counter for "new
+	// work" must report 0 — pre-insert existence probes prevent
+	// no-op INSERTs from incrementing the counters. Codex review
+	// #583 round 1 caught the prior over-report; this assertion is
+	// the regression guard.
+	if second.ConnectionsCreated != 0 {
+		t.Errorf("idempotent re-run ConnectionsCreated = %d, want 0", second.ConnectionsCreated)
+	}
+	if second.WorkspacesAdded != 0 {
+		t.Errorf("idempotent re-run WorkspacesAdded = %d, want 0", second.WorkspacesAdded)
+	}
 	access, err := s.GetOAuthConnectionAccess("idem-chain")
 	if err != nil {
 		t.Fatalf("GetOAuthConnectionAccess: %v", err)

@@ -218,47 +218,52 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	allowed := extractAllowedWorkspacesFromSessionExtra(chain.SessionData)
 	allCurrent, explicit := allowed.toShape()
 
-	// Insert the parent row. Use the dialect's INSERT-or-IGNORE form
-	// so a re-run is a clean no-op when the row already exists.
-	if err := s.insertOAuthConnectionIfAbsent(requestID, chain.UserID, allCurrent); err != nil {
-		return false, 0, 0, fmt.Errorf("insert parent: %w", err)
-	}
-
-	// Was this a fresh insert? Probe via a SELECT; cheap (PK lookup)
-	// and lets the result reporting stay accurate across re-runs.
-	// (RowsAffected isn't portable here — SQLite reports 0 for "or
-	// ignore" hits in some driver versions, Postgres reports the
-	// expected 1/0. Probing is the safe path.)
+	// Probe BEFORE the insert so the counter reflects actual new
+	// work — RowsAffected isn't portable across SQLite + Postgres
+	// for "OR IGNORE" / "ON CONFLICT DO NOTHING" semantics (some
+	// drivers report 0, some 1), and a wall-clock heuristic over
+	// updated_at vs created_at over-reports on every steady-state
+	// startup once the row's been backfilled and never edited.
+	// Codex review #583 round 1 caught the over-report.
 	if _, getErr := s.GetOAuthConnection(requestID); getErr != nil {
-		// Parent disappeared between insert + probe — extreme race,
-		// skip the join writes rather than FK-violate.
-		return false, 0, 0, nil
+		// Row doesn't exist — we're about to insert it. Insert and
+		// flag created=true.
+		if err := s.insertOAuthConnectionIfAbsent(requestID, chain.UserID, allCurrent); err != nil {
+			return false, 0, 0, fmt.Errorf("insert parent: %w", err)
+		}
+		created = true
 	}
-
-	// Heuristic: if explicit is non-nil, we're on the "fresh write"
-	// path on first pass. On a re-run we can't distinguish "we wrote
-	// this last time" from "we wrote this just now," but the only
-	// observable difference is the `created` flag returned for the
-	// counters — which the caller treats as a logging metric, not a
-	// correctness signal. To keep the count meaningful on first runs,
-	// use a side query: a chain whose updated_at == created_at is one
-	// we just inserted. This is best-effort; on re-runs the counter
-	// will under-report rather than over-report, which is fine.
-	created = wasFreshlyInserted(s, requestID)
+	// Re-runs on an existing row don't update — connection-level
+	// state (name + scope flags) is user-owned post-backfill and
+	// the backfill must not stomp it. Same posture as IDEA-1517 §2's
+	// "name defaults to empty until the user edits."
 
 	if explicit == nil {
 		// Wildcard / pre-TASK-952 — no join rows to write.
 		return created, 0, 0, nil
 	}
 
-	// Resolve each slug to a workspace ID and insert. Missing slugs
-	// (workspace deleted, never existed in this DB) skip without
-	// failing; the unresolved count surfaces in the result so ops
-	// can spot data hygiene issues.
+	// Resolve each slug to a workspace ID. Missing slugs (workspace
+	// deleted, never existed in this DB) skip without failing; the
+	// unresolved count surfaces in the result so ops can spot data
+	// hygiene issues. Existence-probe each (request_id, workspace_id)
+	// pair before insert so the slugsAdded counter reflects new
+	// rows, not "OR IGNORE" no-ops.
 	for _, slug := range explicit {
 		ws, getErr := s.GetWorkspaceBySlug(slug)
 		if getErr != nil || ws == nil {
 			slugsMissed++
+			continue
+		}
+		alreadyAllowed, checkErr := s.IsConnectionWorkspaceAllowed(requestID, ws.ID)
+		if checkErr != nil {
+			return created, slugsAdded, slugsMissed, fmt.Errorf("check workspace %s: %w", slug, checkErr)
+		}
+		if alreadyAllowed {
+			// Pre-existing join row from a prior backfill run. Don't
+			// re-issue the INSERT — the OR-IGNORE would no-op anyway,
+			// but skipping keeps the DB write path cleaner and the
+			// counter honest.
 			continue
 		}
 		if err := s.AddConnectionWorkspace(requestID, ws.ID, AddedByUser); err != nil {
@@ -300,29 +305,6 @@ func (s *Store) insertOAuthConnectionIfAbsent(requestID, userID string, allCurre
 		s.dialect.BoolToInt(true), // include_future_workspaces default ON
 	)
 	return err
-}
-
-// wasFreshlyInserted reports whether the oauth_connections row for
-// requestID has updated_at equal to created_at — the cheap "did we
-// just insert this?" probe used to keep the backfill counters
-// accurate without relying on per-driver RowsAffected semantics.
-//
-// On re-runs (no insert happened, no UPDATE either) this returns
-// true as well, so the counter is technically a "freshly created or
-// untouched since" reading. That's fine for the logging use case:
-// operators care about "did the backfill find work to do," and
-// over-counting on a long-stale row is no worse than missing it.
-// First-run reporting is the meaningful axis and the equality check
-// works there.
-func wasFreshlyInserted(s *Store, requestID string) bool {
-	var createdAt, updatedAt string
-	err := s.db.QueryRow(s.q(`
-        SELECT created_at, updated_at FROM oauth_connections WHERE request_id = ?
-    `), requestID).Scan(&createdAt, &updatedAt)
-	if err != nil {
-		return false
-	}
-	return createdAt == updatedAt
 }
 
 // extractedAllowed captures one of the three IDEA-1517 §2 backfill
