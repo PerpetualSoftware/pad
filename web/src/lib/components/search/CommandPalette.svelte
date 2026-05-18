@@ -406,6 +406,15 @@
 		void searchAllWorkspaces;
 		void filterCollection;
 		void filterStatus;
+		// Track the current workspace slug unconditionally. Before
+		// untrack()ing doSearch(), the slug was a tracked dep by virtue
+		// of doSearch's own read inside the effect — switching workspaces
+		// with the palette open re-fired the effect. Now that doSearch
+		// is untracked, body / bare-digit queries (which skip the local-
+		// index dep block below) would otherwise miss workspace switches
+		// and leave `loading` stuck while an in-flight server response
+		// gets discarded by `isSameDispatch()`. Codex round 1 of BUG-1531.
+		void workspaceStore.current?.slug;
 		const trimmed = query.trim();
 		const parsed = trimmed ? parseSearchQuery(trimmed) : null;
 		const isBareDigit = !!trimmed && /^\d+$/.test(trimmed);
