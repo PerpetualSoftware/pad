@@ -350,22 +350,25 @@
 							</a>
 						</div>
 					{:else if claimState.kind === 'disabled'}
+						<!--
+							"claim_disabled" only fires on self-host deployments
+							that don't have `PAD_MCP_PUBLIC_URL` wired — the
+							OAuth server (and with it the claim secret) only
+							mounts under that env var. In that configuration
+							agents connect via stdio MCP (`pad mcp serve`) or
+							the CLI, both of which inherit the user's session
+							token from ~/.pad/credentials.json and see every
+							workspace the user is a member of. There IS no
+							per-workspace OAuth grant to claim into — so the
+							right copy doesn't redirect users to "set something
+							up", it tells them they're already done.
+						-->
 						<div class="info-panel">
 							<p class="info-panel-body">
-								Claim codes aren’t available on this deployment. Use the
-								<button
-									class="inline-link-btn"
-									type="button"
-									onclick={() => mcpPublicUrl && (activeTab = 'mcp')}
-									disabled={!mcpPublicUrl}
-								>MCP tab</button>
-								to authorize an agent from scratch, or the
-								<button
-									class="inline-link-btn"
-									type="button"
-									onclick={() => (activeTab = 'cli')}
-								>CLI tab</button>
-								for terminal access.
+								<strong>No claim code needed on this deployment.</strong>
+								Agents connected via the CLI or stdio MCP use your user
+								session and already have access to every workspace
+								you’re a member of.
 							</p>
 						</div>
 					{:else if claimState.kind === 'error'}
@@ -627,8 +630,20 @@
 					>
 						Troubleshooting
 					</a>
-					<span class="footer-sep">&middot;</span>
-					<a href={CONNECTED_APPS_HREF}>Connected agents &rarr;</a>
+					<!--
+						Hide the Connected apps link on self-host deployments
+						without remote MCP (mcpPublicUrl empty). That page
+						lists OAuth grants only, and self-host without
+						`PAD_MCP_PUBLIC_URL` never mounts the OAuth server —
+						so the page would be empty by definition. Linking
+						users there is a dead end; matches the
+						"claim_disabled" copy that tells the same audience
+						they're already done.
+					-->
+					{#if mcpPublicUrl}
+						<span class="footer-sep">&middot;</span>
+						<a href={CONNECTED_APPS_HREF}>Connected agents &rarr;</a>
+					{/if}
 				</div>
 			</div>
 		</div>
