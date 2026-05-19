@@ -31,6 +31,15 @@ type DashboardResponse struct {
 	// workspace's agent loop is wired up and the banner stops nagging
 	// the user on this workspace.
 	HasAgentActivity bool `json:"has_agent_activity"`
+	// NeedsOnboarding is true when the workspace has zero items with
+	// source != 'template' — i.e. nothing beyond what the template
+	// seeded. Mirrors the canonical AgentBootstrap.NeedsOnboarding
+	// flag (PLAN-1496 / TASK-1504) so the web UI can render its
+	// onboarding nudge without making a second bootstrap call. Flips
+	// false the moment any user/agent-sourced item exists; the
+	// dashboard's onboarding banner uses this as its sole gating
+	// signal post IDEA-1516 / TASK-1530.
+	NeedsOnboarding bool `json:"needs_onboarding"`
 	// OnboardingSeed identifies the seeded onboarding entry point for
 	// the workspace (e.g. IDEA-1 for `startup`, BACK-1 for `scrum`,
 	// FEAT-1 for `product`) when present and untouched. The web UI's
@@ -365,6 +374,18 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		return nil, err
 	}
 	resp.HasAgentActivity = hasAgent
+
+	// needs_onboarding mirrors AgentBootstrap.NeedsOnboarding (TASK-1504):
+	// true when the workspace has zero items with source != 'template'.
+	// Web UI's onboarding nudge banner (TASK-1530) reads this from the
+	// dashboard fetch the page already does, so no second round-trip
+	// against the heavier bootstrap endpoint is needed. Predicate is the
+	// same EXISTS-backed store helper bootstrap uses.
+	hasUserItems, err := s.store.WorkspaceHasUserCreatedItems(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	resp.NeedsOnboarding = !hasUserItems
 
 	// Summary: items grouped by collection slug and status field
 	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})
