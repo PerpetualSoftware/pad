@@ -82,6 +82,22 @@
 		}
 	});
 
+	// Phase F (PLAN-1519 / TASK-1526): consume the post-create Connect-modal
+	// auto-open signal staged by CreateWorkspaceModal via +layout.svelte.
+	// Kept as its OWN effect per CONVE-606 — entangling it with the
+	// dismissed-state sync (or with the load() effect below) would re-fire
+	// on unrelated reactive churn. The consume helper is single-shot, so
+	// re-runs after a workspace switch are harmless: any non-matching slug
+	// is left in place for the right destination page to pick up.
+	$effect(() => {
+		if (!browser || !wsSlug) return;
+		const requestedSlug = uiStore.connectAfterNavigateSlug;
+		if (requestedSlug && requestedSlug === wsSlug) {
+			uiStore.consumeConnectAfterNavigate();
+			connectOpen = true;
+		}
+	});
+
 	function dismissOnboarding() {
 		onboardingDismissed = true;
 		if (browser) localStorage.setItem(`pad-onboarding-dismissed-${wsSlug}`, 'true');
