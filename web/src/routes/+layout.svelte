@@ -185,8 +185,22 @@
 
 {#if !authReady}
 	<!-- Auth check in progress — blank screen to avoid flash -->
-{:else if isAuthPage || isSharePage || isConsolePage}
+{:else if isAuthPage || isSharePage}
 	{@render children()}
+{:else if isConsolePage}
+	<!--
+		Console pages render their own chrome and bypass the app shell
+		below, but they still need the global CreateWorkspaceModal +
+		toast surface — the /console "Create Workspace" CTA and the
+		/console/new redirect (TASK-1529) both fire
+		`uiStore.openCreateWorkspace()`, which is a no-op unless the
+		modal is actually mounted somewhere in the tree.
+	-->
+	{@render children()}
+	<CreateWorkspaceModal
+		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
+	/>
+	<ToastContainer />
 {:else}
 	{#if uiStore.isMobile}
 		<!--
