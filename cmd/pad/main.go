@@ -3441,6 +3441,7 @@ func updateCmd() *cobra.Command {
 		fieldFlags []string
 		comment    string
 		force      bool
+		sortOrder  int
 	)
 
 	cmd := &cobra.Command{
@@ -3471,6 +3472,17 @@ Examples:
 
 			if title != "" {
 				input.Title = &title
+			}
+
+			// --sort-order sets the top-level items.sort_order column.
+			// Don't accept negative values — sort_order is an ascending
+			// rank, and the drag handler in ChildItems.svelte assumes
+			// non-negative indices.
+			if cmd.Flags().Changed("sort-order") {
+				if sortOrder < 0 {
+					return fmt.Errorf("--sort-order must be >= 0")
+				}
+				input.SortOrder = &sortOrder
 			}
 
 			// Handle content
@@ -3625,6 +3637,7 @@ Examples:
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
+	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order rank (lower appears first; used by child lists and drag-reorder)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 
