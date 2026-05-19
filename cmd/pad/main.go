@@ -2226,7 +2226,7 @@ Unlike 'pad workspace init', this does NOT create a new workspace — it only li
 Use 'pad workspace list' to see available workspaces.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			client, cfg := getClient()
 			cwd, _ := os.Getwd()
 			nameOrSlug := args[0]
 
@@ -2263,7 +2263,12 @@ Use 'pad workspace list' to see available workspaces.`,
 				return fmt.Errorf("workspace %q does not exist — use 'pad workspace init %s' to create it", nameOrSlug, nameOrSlug)
 			}
 
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(getConfig())); err != nil {
+			// Use the cfg returned by getClient() — it carries the
+			// .pad.toml URL override that getClient just used to
+			// reach the server. Re-deriving from raw getConfig()
+			// would drop the URL when relinking inside an existing
+			// remote-pinned directory whose global config is local.
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 				return fmt.Errorf("write .pad.toml: %w", err)
 			}
 
@@ -2778,14 +2783,17 @@ func switchCmd() *cobra.Command {
 		Short: "Link current directory to a different workspace",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			client, cfg := getClient()
 			ws, err := client.GetWorkspace(args[0])
 			if err != nil {
 				return fmt.Errorf("workspace %q not found", args[0])
 			}
 
 			cwd, _ := os.Getwd()
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(getConfig())); err != nil {
+			// Reuse cfg from getClient() so the .pad.toml URL
+			// override that just routed the API call also drives
+			// the URL we write into the new .pad.toml.
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 				return err
 			}
 			fmt.Printf("Switched to workspace %q\n", ws.Name)
