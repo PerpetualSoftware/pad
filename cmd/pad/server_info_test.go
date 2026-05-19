@@ -26,7 +26,7 @@ func TestCollectServerInfoRemoteAuthenticated(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(prevWD) })
 
-	if err := cli.WriteWorkspaceLink(projectDir, "pad"); err != nil {
+	if err := cli.WriteWorkspaceLink(projectDir, "pad", ""); err != nil {
 		t.Fatalf("write workspace link: %v", err)
 	}
 

@@ -28,7 +28,7 @@ import (
 // The subprocess-based ExecDispatcher works for local stdio MCP
 // because the user IS the subprocess owner — `pad mcp serve` inherits
 // the credentials in `~/.pad/credentials.json`. For remote MCP at
-// `api.getpad.dev/mcp`, multiple OAuth users share one process; the
+// `mcp.getpad.dev/mcp`, multiple OAuth users share one process; the
 // dispatcher can't shell out to `pad item create` because the
 // subprocess would have no credentials for the requesting user, and
 // minting an ephemeral PAT per call adds DB churn we'd rather avoid.

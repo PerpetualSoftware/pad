@@ -80,6 +80,12 @@ Examples:
 
 			// ── Step 1: Configuration ──────────────────────────────────
 			cfg := getConfig()
+			// Honour the directory's .pad.toml URL pin (if any) so a
+			// re-run of `pad init` inside a remote-linked directory
+			// talks to the right server even when the global config
+			// points elsewhere. Server/admin commands skip this — see
+			// applyPadTomlOverride's contract.
+			applyPadTomlOverride(cfg)
 			if !cfg.IsConfigured() {
 				if !canPromptForConfig() {
 					return fmt.Errorf("Pad is not configured. Run 'pad auth configure' first, or run 'pad init' in an interactive terminal")
@@ -277,6 +283,20 @@ Examples:
 	return cmd
 }
 
+// padTomlURLFor returns the URL to write into .pad.toml for the given
+// client config. Local-mode workspaces get the empty string (the default
+// loopback server is implied and pinning it would just bake in the user's
+// current port choice). Any non-local mode (remote, cloud) gets the
+// configured BaseURL so the directory targets the right server regardless
+// of which workspace the user's global ~/.pad/config.toml points at.
+// See BUG-1535.
+func padTomlURLFor(cfg *config.Config) string {
+	if cfg == nil || cfg.Mode == "" || cfg.Mode == config.ModeLocal {
+		return ""
+	}
+	return cfg.BaseURL()
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 // ensureWorkspace checks if the current directory is linked to a workspace.
@@ -328,7 +348,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 			return ws, false, "", nil
 		}
 
-		if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+		if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 			return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 		}
 		green.Print("✓ ")
@@ -360,7 +380,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 	}
 
 	if ws != nil {
-		if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+		if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 			return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 		}
 		green.Print("✓ ")
@@ -397,7 +417,7 @@ func ensureWorkspace(client *cli.Client, cfg *config.Config, cwd, name, wsSlug, 
 		return nil, false, "", fmt.Errorf("create workspace: %w", err)
 	}
 
-	if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+	if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 		return nil, false, "", fmt.Errorf("write .pad.toml: %w", err)
 	}
 

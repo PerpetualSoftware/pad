@@ -33,7 +33,7 @@ func NewClient(host string, port int) *Client {
 	return NewClientFromURL(fmt.Sprintf("http://%s:%d", host, port))
 }
 
-// NewClientFromURL creates a client from a full base URL (e.g., "https://api.getpad.dev").
+// NewClientFromURL creates a client from a full base URL (e.g., "https://app.getpad.dev").
 func NewClientFromURL(baseURL string) *Client {
 	baseURL = strings.TrimRight(baseURL, "/")
 	c := &Client{

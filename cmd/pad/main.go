@@ -129,7 +129,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
 	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json, markdown")
-	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://api.getpad.dev)")
+	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://app.getpad.dev)")
 
 	rootCmd.AddCommand(
 		padInitCmd(),
@@ -182,15 +182,56 @@ func getConfig() *config.Config {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
-	// --url flag takes highest precedence
+	// --url flag takes highest precedence. An explicit --url is an
+	// unambiguous "talk to this server" signal from the user, so it
+	// promotes Mode to remote even if the existing config.toml has
+	// mode=local — without that promotion the .pad.toml URL pin
+	// (padTomlURLFor) would treat the directory as local and skip
+	// writing the URL. See BUG-1535.
 	if urlFlag != "" {
 		cfg.URL = urlFlag
 		cfg.LoadedFromFlags = true
-		if cfg.Mode == "" {
+		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
 			cfg.Mode = config.ModeRemote
 		}
 	}
 	return cfg
+}
+
+// applyPadTomlOverride layers the per-directory .pad.toml `url` field on top
+// of cfg when present and Mode is not already explicitly set by --url. The
+// override exists so that a user in a directory linked to a non-local
+// workspace (remote/cloud) talks to the correct server without needing
+// --url on every command — see BUG-1535.
+//
+// IMPORTANT: this MUST NOT be applied to server/admin commands that
+// configure or operate the local Pad server process — `pad server start`,
+// `pad server stop`, `pad auth setup`, `pad auth configure`. For those
+// commands the .pad.toml URL is a CLIENT-direction signal that would
+// either contaminate the server's PublicLinkBaseURL or cause `pad auth
+// setup` to refuse to run locally. Call this from client-API entry
+// points (getConfiguredConfig, the pad init client phase) instead.
+func applyPadTomlOverride(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	// An explicit --url flag (LoadedFromFlags) already represents the
+	// user's intent; don't second-guess it with a directory pin.
+	if cfg.LoadedFromFlags {
+		return
+	}
+	pt, _ := cli.LoadPadToml()
+	if pt == nil || pt.URL == "" {
+		return
+	}
+	cfg.URL = pt.URL
+	if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
+		cfg.Mode = config.ModeRemote
+	}
+	// Treat this as configured for IsConfigured() so client-API entry
+	// points don't nag with a "not configured" prompt when the directory
+	// is clearly linked to a specific server.
+	cfg.LoadedFromFile = true
 }
 
 func getClient() (*cli.Client, *config.Config) {
@@ -2185,7 +2226,7 @@ Unlike 'pad workspace init', this does NOT create a new workspace — it only li
 Use 'pad workspace list' to see available workspaces.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			client, cfg := getClient()
 			cwd, _ := os.Getwd()
 			nameOrSlug := args[0]
 
@@ -2222,7 +2263,12 @@ Use 'pad workspace list' to see available workspaces.`,
 				return fmt.Errorf("workspace %q does not exist — use 'pad workspace init %s' to create it", nameOrSlug, nameOrSlug)
 			}
 
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+			// Use the cfg returned by getClient() — it carries the
+			// .pad.toml URL override that getClient just used to
+			// reach the server. Re-deriving from raw getConfig()
+			// would drop the URL when relinking inside an existing
+			// remote-pinned directory whose global config is local.
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 				return fmt.Errorf("write .pad.toml: %w", err)
 			}
 
@@ -2737,14 +2783,17 @@ func switchCmd() *cobra.Command {
 		Short: "Link current directory to a different workspace",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			client, cfg := getClient()
 			ws, err := client.GetWorkspace(args[0])
 			if err != nil {
 				return fmt.Errorf("workspace %q not found", args[0])
 			}
 
 			cwd, _ := os.Getwd()
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+			// Reuse cfg from getClient() so the .pad.toml URL
+			// override that just routed the API call also drives
+			// the URL we write into the new .pad.toml.
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
 				return err
 			}
 			fmt.Printf("Switched to workspace %q\n", ws.Name)

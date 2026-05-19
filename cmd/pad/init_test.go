@@ -134,7 +134,7 @@ func TestEnsureWorkspaceSlugNotFound(t *testing.T) {
 // different workspace, a slug attach must error rather than rewrite the link.
 func TestEnsureWorkspaceSlugRefusesClobber(t *testing.T) {
 	project := setupEnsureWorkspaceTest(t)
-	if err := cli.WriteWorkspaceLink(project, "already-linked"); err != nil {
+	if err := cli.WriteWorkspaceLink(project, "already-linked", ""); err != nil {
 		t.Fatalf("write existing link: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestEnsureWorkspaceSlugRefusesClobber(t *testing.T) {
 // is already linked to is a no-op (returns the workspace, doesn't error).
 func TestEnsureWorkspaceSlugIdempotent(t *testing.T) {
 	project := setupEnsureWorkspaceTest(t)
-	if err := cli.WriteWorkspaceLink(project, "my-cool-project"); err != nil {
+	if err := cli.WriteWorkspaceLink(project, "my-cool-project", ""); err != nil {
 		t.Fatalf("write existing link: %v", err)
 	}
 

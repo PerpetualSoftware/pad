@@ -11,6 +11,13 @@ import (
 // PadToml represents the per-project workspace link file.
 type PadToml struct {
 	Workspace string `toml:"workspace"`
+	// URL is the base URL of the Pad server hosting this workspace (e.g.
+	// "https://app.getpad.dev" or a self-hosted remote). When set, it
+	// overrides the user's global ~/.pad/config.toml URL so the directory
+	// targets the right server regardless of which workspace the user's
+	// default config points at. Empty for local-mode workspaces (the
+	// default loopback server is implied). See BUG-1535.
+	URL       string `toml:"url,omitempty"`
 	AgentName string `toml:"agent_name,omitempty"` // optional: identifies which AI agent is acting
 }
 
@@ -78,12 +85,18 @@ func LoadPadToml() (*PadToml, error) {
 }
 
 // WriteWorkspaceLink writes a .pad.toml in the given directory.
-func WriteWorkspaceLink(dir, slug string) error {
+//
+// serverURL is the base URL of the Pad server hosting this workspace. Pass
+// the empty string for local-mode workspaces; pass cfg.BaseURL() (or
+// equivalently cfg.URL) for any non-local mode (remote, cloud) so that the
+// directory targets the right server even when the user's global config
+// points at a different one. See BUG-1535.
+func WriteWorkspaceLink(dir, slug, serverURL string) error {
 	path := filepath.Join(dir, ".pad.toml")
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return toml.NewEncoder(f).Encode(PadToml{Workspace: slug})
+	return toml.NewEncoder(f).Encode(PadToml{Workspace: slug, URL: serverURL})
 }
