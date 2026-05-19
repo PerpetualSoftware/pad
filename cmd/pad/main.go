@@ -129,7 +129,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
 	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json, markdown")
-	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://api.getpad.dev)")
+	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://app.getpad.dev)")
 
 	rootCmd.AddCommand(
 		padInitCmd(),
@@ -182,11 +182,32 @@ func getConfig() *config.Config {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
-	// --url flag takes highest precedence
+	// Per-directory .pad.toml URL override. When a workspace was linked
+	// against a non-local server (remote/cloud), the .pad.toml in that
+	// directory pins the server URL so the CLI talks to the right host
+	// regardless of where the user's global ~/.pad/config.toml points.
+	// See BUG-1535. The --url flag still wins below; an explicit override
+	// on the command line trumps the directory pin.
+	if pt, _ := cli.LoadPadToml(); pt != nil && pt.URL != "" {
+		cfg.URL = pt.URL
+		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
+			cfg.Mode = config.ModeRemote
+		}
+		// Treat this as configured for IsConfigured() — the user
+		// linked this directory to a specific server, so the CLI
+		// should not nag with "not configured" prompts here.
+		cfg.LoadedFromFile = true
+	}
+	// --url flag takes highest precedence. An explicit --url is an
+	// unambiguous "talk to this server" signal from the user, so it
+	// promotes Mode to remote even if the existing config.toml has
+	// mode=local — without that promotion the .pad.toml URL pin
+	// (padTomlURLFor) would treat the directory as local and skip
+	// writing the URL. See BUG-1535.
 	if urlFlag != "" {
 		cfg.URL = urlFlag
 		cfg.LoadedFromFlags = true
-		if cfg.Mode == "" {
+		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
 			cfg.Mode = config.ModeRemote
 		}
 	}
@@ -2222,7 +2243,7 @@ Use 'pad workspace list' to see available workspaces.`,
 				return fmt.Errorf("workspace %q does not exist — use 'pad workspace init %s' to create it", nameOrSlug, nameOrSlug)
 			}
 
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(getConfig())); err != nil {
 				return fmt.Errorf("write .pad.toml: %w", err)
 			}
 
@@ -2744,7 +2765,7 @@ func switchCmd() *cobra.Command {
 			}
 
 			cwd, _ := os.Getwd()
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug); err != nil {
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(getConfig())); err != nil {
 				return err
 			}
 			fmt.Printf("Switched to workspace %q\n", ws.Name)
