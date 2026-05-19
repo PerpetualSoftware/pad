@@ -67,6 +67,12 @@ Modes:
 
 func getConfiguredConfig() *config.Config {
 	cfg := getConfig()
+	// Layer the per-directory .pad.toml URL override on top of the
+	// global config so client-API commands hit the workspace's server.
+	// Server/admin commands (pad server start/stop, pad auth setup,
+	// pad auth configure) intentionally skip this — they call getConfig
+	// directly. See BUG-1535 and applyPadTomlOverride's contract.
+	applyPadTomlOverride(cfg)
 	if cfg.IsConfigured() {
 		return cfg
 	}

@@ -182,22 +182,6 @@ func getConfig() *config.Config {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
-	// Per-directory .pad.toml URL override. When a workspace was linked
-	// against a non-local server (remote/cloud), the .pad.toml in that
-	// directory pins the server URL so the CLI talks to the right host
-	// regardless of where the user's global ~/.pad/config.toml points.
-	// See BUG-1535. The --url flag still wins below; an explicit override
-	// on the command line trumps the directory pin.
-	if pt, _ := cli.LoadPadToml(); pt != nil && pt.URL != "" {
-		cfg.URL = pt.URL
-		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
-			cfg.Mode = config.ModeRemote
-		}
-		// Treat this as configured for IsConfigured() — the user
-		// linked this directory to a specific server, so the CLI
-		// should not nag with "not configured" prompts here.
-		cfg.LoadedFromFile = true
-	}
 	// --url flag takes highest precedence. An explicit --url is an
 	// unambiguous "talk to this server" signal from the user, so it
 	// promotes Mode to remote even if the existing config.toml has
@@ -212,6 +196,42 @@ func getConfig() *config.Config {
 		}
 	}
 	return cfg
+}
+
+// applyPadTomlOverride layers the per-directory .pad.toml `url` field on top
+// of cfg when present and Mode is not already explicitly set by --url. The
+// override exists so that a user in a directory linked to a non-local
+// workspace (remote/cloud) talks to the correct server without needing
+// --url on every command — see BUG-1535.
+//
+// IMPORTANT: this MUST NOT be applied to server/admin commands that
+// configure or operate the local Pad server process — `pad server start`,
+// `pad server stop`, `pad auth setup`, `pad auth configure`. For those
+// commands the .pad.toml URL is a CLIENT-direction signal that would
+// either contaminate the server's PublicLinkBaseURL or cause `pad auth
+// setup` to refuse to run locally. Call this from client-API entry
+// points (getConfiguredConfig, the pad init client phase) instead.
+func applyPadTomlOverride(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	// An explicit --url flag (LoadedFromFlags) already represents the
+	// user's intent; don't second-guess it with a directory pin.
+	if cfg.LoadedFromFlags {
+		return
+	}
+	pt, _ := cli.LoadPadToml()
+	if pt == nil || pt.URL == "" {
+		return
+	}
+	cfg.URL = pt.URL
+	if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
+		cfg.Mode = config.ModeRemote
+	}
+	// Treat this as configured for IsConfigured() so client-API entry
+	// points don't nag with a "not configured" prompt when the directory
+	// is clearly linked to a specific server.
+	cfg.LoadedFromFile = true
 }
 
 func getClient() (*cli.Client, *config.Config) {

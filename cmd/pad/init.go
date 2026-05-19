@@ -80,6 +80,12 @@ Examples:
 
 			// ── Step 1: Configuration ──────────────────────────────────
 			cfg := getConfig()
+			// Honour the directory's .pad.toml URL pin (if any) so a
+			// re-run of `pad init` inside a remote-linked directory
+			// talks to the right server even when the global config
+			// points elsewhere. Server/admin commands skip this — see
+			// applyPadTomlOverride's contract.
+			applyPadTomlOverride(cfg)
 			if !cfg.IsConfigured() {
 				if !canPromptForConfig() {
 					return fmt.Errorf("Pad is not configured. Run 'pad auth configure' first, or run 'pad init' in an interactive terminal")
