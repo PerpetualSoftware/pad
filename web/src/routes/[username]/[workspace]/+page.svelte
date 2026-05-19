@@ -8,8 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
-	import OnboardingChecklist from '$lib/components/OnboardingChecklist.svelte';
-	import OnboardingIdeaBanner from '$lib/components/OnboardingIdeaBanner.svelte';
+	import OnboardingNudgeBanner from '$lib/components/OnboardingNudgeBanner.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -67,13 +66,13 @@
 		if (mem !== null) isOwner = mem.role === 'owner';
 	});
 
-	// The dashboard response carries an `onboarding_seed` field when the
-	// workspace has a seeded onboarding primary (IDEA-1 / BACK-1 / FEAT-1
-	// per template). The OnboardingIdeaBanner shows only when that seed
-	// is still active (status equals its initial value — agent has not
-	// yet engaged). The server computes `active` so the frontend doesn't
-	// need a per-collection "what's the initial status" map.
-	let onboardingSeed = $derived(dashboard?.onboarding_seed);
+	// Post IDEA-1516 / TASK-1530: the canonical onboarding signal is
+	// `dashboard.needs_onboarding` (mirrors AgentBootstrap.NeedsOnboarding
+	// from PLAN-1496 / TASK-1504). The old `onboarding_seed` field still
+	// rides on the dashboard response (its backend cleanup is out of
+	// scope) but no longer has a consumer in this page — the
+	// OnboardingIdeaBanner that read it was retired with this task.
+	let needsOnboarding = $derived(dashboard?.needs_onboarding ?? false);
 
 	// Sync dismissed state from localStorage when workspace changes
 	$effect(() => {
@@ -271,44 +270,31 @@
 			</div>
 		</header>
 
-		<!-- 2. Onboarding -->
-		<!-- Onboarding seed banner: shown only while the seeded primary entry
-		     is still untouched (server returns active=true when its status
-		     equals the schema initial value). Once the user engages the
-		     agent and the status flips, the next dashboard poll returns
-		     active=false and the banner disappears. The OnboardingChecklist
-		     below remains gated on totalItems === 0 — its surface is empty
-		     / non-templated workspaces; this banner is the surface for
-		     templated (seeded) workspaces. -->
-		{#if onboardingSeed?.active && !onboardingDismissed}
+		<!-- 2. Onboarding nudge (IDEA-1516 §3 / TASK-1530) -->
+		<!--
+			Single banner triggered by `dashboard.needs_onboarding`. The
+			pre-IDEA-1516 design split this into two banners — an
+			OnboardingIdeaBanner gated on the seeded primary entry
+			(IDEA-1 / BACK-1 / FEAT-1) plus an OnboardingChecklist gated
+			on totalItems === 0. Both were wired to retired signals
+			(seed-item pattern from PLAN-1496, item-count heuristic
+			predating needs_onboarding) and produced two competing CTAs
+			in the same screen. The new banner reads the canonical
+			AgentBootstrap.NeedsOnboarding signal (mirrored onto the
+			dashboard response by TASK-1530's backend change) and
+			delegates "Connect agent →" to the workspace's already-mounted
+			ConnectWorkspaceModal — same modal the Phase F auto-open hook
+			and ConnectBanner use.
+		-->
+		{#if needsOnboarding && !onboardingDismissed}
 			<div class="onboarding-wrapper">
-				<OnboardingIdeaBanner
+				<OnboardingNudgeBanner
 					{wsSlug}
-					{username}
-					primaryRef={onboardingSeed.ref}
-					ideaSlug={onboardingSeed.slug}
-					collectionSlug={onboardingSeed.collection_slug}
+					onconnect={() => (connectOpen = true)}
+					ondismiss={dismissOnboarding}
 				/>
 			</div>
-		{/if}
-		{#if totalItems === 0 && !onboardingDismissed}
-			<div class="onboarding-wrapper">
-				<OnboardingChecklist {wsSlug} {username} byCollection={dashboard.summary.by_collection} collectionSlugs={collections.map(c => c.slug)} ondismiss={dismissOnboarding} />
-				<button class="connect-card" type="button" onclick={() => (connectOpen = true)}>
-					<span class="connect-card-icon" aria-hidden="true">
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<polyline points="4 17 10 11 4 5" />
-							<line x1="12" y1="19" x2="20" y2="19" />
-						</svg>
-					</span>
-					<span class="connect-card-body">
-						<span class="connect-card-title">Connect your local project</span>
-						<span class="connect-card-subtitle">Manage this workspace from your terminal with the pad CLI.</span>
-					</span>
-					<span class="connect-card-cta" aria-hidden="true">&rarr;</span>
-				</button>
-			</div>
-		{:else if totalItems === 0 && onboardingDismissed}
+		{:else if needsOnboarding && onboardingDismissed}
 			<div class="onboarding-reshow">
 				<button class="reshow-btn" onclick={showOnboarding}>Show setup guide</button>
 			</div>
@@ -648,63 +634,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
-	}
-	/* Connect-your-local-project card — sibling under OnboardingChecklist. */
-	.connect-card {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		width: 100%;
-		padding: var(--space-3) var(--space-4);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		text-align: left;
-		cursor: pointer;
-		color: inherit;
-		transition: border-color 0.15s, background 0.15s, transform 0.05s;
-	}
-	.connect-card:hover {
-		border-color: var(--accent-blue);
-		background: color-mix(in srgb, var(--accent-blue) 4%, var(--bg-secondary));
-	}
-	.connect-card:active {
-		transform: translateY(1px);
-	}
-	.connect-card-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		border-radius: var(--radius);
-		background: var(--bg-tertiary);
-		color: var(--accent-blue);
-		flex-shrink: 0;
-	}
-	.connect-card-body {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		flex: 1;
-		min-width: 0;
-	}
-	.connect-card-title {
-		font-size: 0.95em;
-		font-weight: 600;
-		color: var(--text-primary);
-	}
-	.connect-card-subtitle {
-		font-size: 0.82em;
-		color: var(--text-muted);
-	}
-	.connect-card-cta {
-		font-size: 1.1em;
-		color: var(--text-muted);
-		flex-shrink: 0;
-	}
-	.connect-card:hover .connect-card-cta {
-		color: var(--accent-blue);
 	}
 	.onboarding-reshow {
 		margin-bottom: var(--space-4);

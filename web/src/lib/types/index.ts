@@ -751,6 +751,11 @@ export interface DashboardResponse {
 	// the underlying store query also matches). Drives the connect-agent
 	// banner's auto-hide.
 	has_agent_activity: boolean;
+	// needs_onboarding mirrors AgentBootstrap.NeedsOnboarding (PLAN-1496 /
+	// TASK-1504): true when the workspace has zero items with
+	// source != 'template'. Drives the post-IDEA-1516 onboarding nudge
+	// banner. Flips false the moment any user/agent-sourced item exists.
+	needs_onboarding: boolean;
 	// onboarding_seed identifies the seeded onboarding entry for the
 	// workspace (e.g. IDEA-1 for `startup`, BACK-1 for `scrum`,
 	// FEAT-1 for `product`). Present + active drives the
