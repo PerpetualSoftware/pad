@@ -10,6 +10,12 @@ let createWorkspaceOpen = $state(false);
 let quickAddRequested = $state(false);
 let quickAddTargetSlug = $state<string | null>(null);
 let collectionSearchHandler = $state<(() => void) | null>(null);
+// Slug of a workspace whose Connect modal should auto-open as soon as the
+// user lands on its workspace page. Set by CreateWorkspaceModal (via
+// +layout.svelte's onWorkspaceCreated wire-up) right before `goto`; consumed
+// by the workspace +page.svelte when its slug matches. Mirrors the
+// request/clear pattern used by quickAdd above. PLAN-1519 / TASK-1526.
+let connectAfterNavigateSlug = $state<string | null>(null);
 
 if (browser) {
 	window.addEventListener('resize', () => {
@@ -76,6 +82,20 @@ export const uiStore = {
 	get quickAddTargetSlug() { return quickAddTargetSlug; },
 	requestQuickAdd(collectionSlug?: string) { quickAddTargetSlug = collectionSlug ?? null; quickAddRequested = true; },
 	clearQuickAddRequest() { quickAddRequested = false; quickAddTargetSlug = null; },
+
+	// Connect-modal auto-open signal (PLAN-1519 / TASK-1526). Fired by
+	// CreateWorkspaceModal after a successful create/import, consumed by
+	// the workspace +page.svelte when the user lands on the matching
+	// workspace. Always read via `consumeConnectAfterNavigate()` so the
+	// signal is single-shot — re-reading the value would leave the request
+	// stuck and reopen the modal on every reactive re-run.
+	get connectAfterNavigateSlug() { return connectAfterNavigateSlug; },
+	requestConnectAfterNavigate(slug: string) { connectAfterNavigateSlug = slug; },
+	consumeConnectAfterNavigate(): string | null {
+		const slug = connectAfterNavigateSlug;
+		connectAfterNavigateSlug = null;
+		return slug;
+	},
 
 	// Collection search (Cmd+F) registry — pages that want to handle Cmd+F
 	// register a handler on mount and unregister on destroy. The layout's

@@ -239,7 +239,17 @@
 	</div>
 
 	<CommandPalette />
-	<CreateWorkspaceModal />
+	<!--
+		Stage the Connect-modal auto-open signal (PLAN-1519 / TASK-1526)
+		from the post-create/import success path. The modal handles its
+		own goto() so the signal is sitting on uiStore by the time the
+		workspace +page.svelte mounts and consumes it. Import is wired
+		intentionally — claim-code value is independent of how the
+		workspace got created.
+	-->
+	<CreateWorkspaceModal
+		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
+	/>
 	<ToastContainer />
 	<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
 {/if}
