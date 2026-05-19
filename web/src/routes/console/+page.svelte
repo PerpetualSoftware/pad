@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { uiStore } from '$lib/stores/ui.svelte';
 	import type { Workspace } from '$lib/types';
 
 	let workspaces = $state<Workspace[]>([]);
@@ -16,6 +20,23 @@
 	);
 
 	onMount(async () => {
+		// Honor the openCreate=1 query param staged by /console/new's
+		// redirect (IDEA-1516 §1). Open the modal and scrub the param
+		// from the URL so a subsequent refresh doesn't re-open it.
+		// Lives in onMount (not an $effect) so it runs exactly once
+		// per page mount — modal-toggle is a side-effect, not reactive
+		// state derived from the URL.
+		if (browser && page.url.searchParams.get('openCreate') === '1') {
+			uiStore.openCreateWorkspace();
+			const cleaned = new URL(page.url);
+			cleaned.searchParams.delete('openCreate');
+			void goto(cleaned.pathname + cleaned.search + cleaned.hash, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true,
+			});
+		}
+
 		try {
 			workspaces = await api.workspaces.list();
 		} catch (err) {
@@ -49,13 +70,13 @@
 		<section class="section">
 			<div class="section-header">
 				<h2 class="section-title">Your Workspaces</h2>
-				<a href="/console/new" class="create-btn">Create Workspace</a>
+				<button type="button" class="create-btn" onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</button>
 			</div>
 
 			{#if ownedWorkspaces.length === 0}
 				<div class="empty-state">
 					<p class="empty-text">You don't have any workspaces yet.</p>
-					<a href="/console/new" class="empty-action">Create your first workspace</a>
+					<button type="button" class="empty-action" onclick={() => uiStore.openCreateWorkspace()}>Create your first workspace</button>
 				</div>
 			{:else}
 				<div class="workspace-grid">
@@ -154,10 +175,13 @@
 		padding: var(--space-2) var(--space-4);
 		background: var(--accent-blue);
 		color: #fff;
+		border: none;
 		border-radius: var(--radius);
+		font-family: inherit;
 		font-size: 0.85rem;
 		font-weight: 500;
 		text-decoration: none;
+		cursor: pointer;
 		transition: opacity 0.15s;
 	}
 
@@ -253,8 +277,17 @@
 	}
 
 	.empty-action {
+		background: none;
+		border: none;
+		padding: 0;
 		color: var(--accent-blue);
+		font-family: inherit;
 		font-size: 0.9rem;
 		font-weight: 500;
+		cursor: pointer;
+	}
+
+	.empty-action:hover {
+		text-decoration: underline;
 	}
 </style>
