@@ -58,14 +58,20 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tri-state bool filters: only set the pointer when the param is
-	// present, so omitting it means "no filter" (not "false").
+	// present, so omitting it means "no filter" (not "false"). Uses
+	// strconv.ParseBool so the full set of canonical truthy/falsy values
+	// is accepted ("true"/"True"/"TRUE"/"1"/"t" and the parallel falses);
+	// anything else is treated as "no filter" rather than silently false
+	// (Codex review on PR #599).
 	if v := q.Get("disabled"); v != "" {
-		b := v == "true" || v == "1"
-		params.Disabled = &b
+		if b, err := strconv.ParseBool(v); err == nil {
+			params.Disabled = &b
+		}
 	}
 	if v := q.Get("has_workspaces"); v != "" {
-		b := v == "true" || v == "1"
-		params.HasWorkspaces = &b
+		if b, err := strconv.ParseBool(v); err == nil {
+			params.HasWorkspaces = &b
+		}
 	}
 	if v := q.Get("active_within_days"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

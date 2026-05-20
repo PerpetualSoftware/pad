@@ -387,26 +387,33 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	// LEFT JOIN against grouped subqueries (not bare workspaces/attachments)
 	// so the row count stays one-per-user even when a user owns 50 workspaces
 	// with thousands of attachments each.
-	const fromClause = `
-		FROM users u
+	const workspaceCountJoin = `
 		LEFT JOIN (
 			SELECT owner_id, COUNT(*) AS cnt
 			FROM workspaces
 			WHERE deleted_at IS NULL
 			GROUP BY owner_id
-		) wc ON wc.owner_id = u.id
+		) wc ON wc.owner_id = u.id`
+	const storageBytesJoin = `
 		LEFT JOIN (
 			SELECT w.owner_id, COALESCE(SUM(a.size_bytes), 0) AS bytes
 			FROM workspaces w
 			JOIN attachments a ON a.workspace_id = w.id AND a.deleted_at IS NULL
 			WHERE w.deleted_at IS NULL
 			GROUP BY w.owner_id
-		) sb ON sb.owner_id = u.id
-	`
+		) sb ON sb.owner_id = u.id`
 
-	// Count query — uses the same FROM + WHERE so HasWorkspaces filtering
-	// is consistent with the page result.
-	countQuery := s.q("SELECT COUNT(*) " + fromClause + " " + whereClause)
+	// Page query needs both aggregations (the row carries them). The count
+	// query only needs the workspace_count join when HasWorkspaces filtering
+	// is active — skipping the storage SUM avoids scanning every attachment
+	// on every list call (Codex review on PR #599).
+	fromClause := "FROM users u" + workspaceCountJoin + storageBytesJoin
+	countFromClause := "FROM users u"
+	if params.HasWorkspaces != nil {
+		countFromClause += workspaceCountJoin
+	}
+
+	countQuery := s.q("SELECT COUNT(*) " + countFromClause + " " + whereClause)
 	var total int
 	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("search users count: %w", err)
