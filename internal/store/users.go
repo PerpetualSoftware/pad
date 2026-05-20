@@ -27,7 +27,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, last_active_at, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, last_active_at, last_write_at, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -36,19 +36,22 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var u models.User
 	var createdAt, updatedAt string
 
-	var disabledAt, lastActiveAt sql.NullString
+	var disabledAt, lastActiveAt, lastWriteAt sql.NullString
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
-		&disabledAt, &lastActiveAt, &createdAt, &updatedAt,
+		&disabledAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
 	)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
 	}
 	if lastActiveAt.Valid {
 		u.LastActiveAt = lastActiveAt.String
+	}
+	if lastWriteAt.Valid {
+		u.LastWriteAt = lastWriteAt.String
 	}
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -244,21 +247,94 @@ func (s *Store) ListUsers() ([]models.User, error) {
 }
 
 // AdminUserSearchParams holds parameters for the admin user search query.
+// Filters apply ANDed; nil pointer fields mean "no filter" (distinguished
+// from the zero value so e.g. Disabled=false can mean "show enabled users
+// only" rather than "no filter").
 type AdminUserSearchParams struct {
 	Query  string // Search in email, name, username
 	Plan   string // Filter by plan (free, pro, self-hosted)
+	Role   string // Filter by role (admin, member)
 	Limit  int    // Max results (default 50, max 200)
 	Offset int    // Pagination offset
+
+	// Sort key. One of: email, last_write, last_active, storage, workspaces,
+	// created. Empty defaults to "created" desc to preserve legacy order.
+	Sort string
+	// Order direction: "asc" or "desc". Empty defaults to desc.
+	Order string
+
+	// ActiveWithinDays filters to users whose last_write_at is within the
+	// last N days. nil = no filter. Zero days is invalid (treated as nil).
+	ActiveWithinDays *int
+	// HasWorkspaces: nil = no filter, true = workspace_count > 0,
+	// false = workspace_count == 0.
+	HasWorkspaces *bool
+	// Disabled: nil = no filter, true = disabled_at IS NOT NULL, false = IS NULL.
+	Disabled *bool
+}
+
+// AdminUserListEntry is one row returned by SearchUsers: the User model
+// plus the cheap aggregations the admin user table renders at a glance.
+// PLAN-1542 / TASK-1544.
+type AdminUserListEntry struct {
+	models.User
+	// WorkspaceCount is the number of non-deleted workspaces this user owns.
+	WorkspaceCount int `json:"workspace_count"`
+	// StorageBytes is the SUM(size_bytes) of all non-deleted attachments
+	// across workspaces this user owns. Matches WorkspaceStorageUsage's
+	// definition (includes derived blobs like thumbnails).
+	StorageBytes int64 `json:"storage_bytes"`
+	// Status is a computed bucket for at-a-glance triage. One of:
+	// "disabled", "no-workspace", "inactive", "active". Precedence:
+	// disabled > no-workspace > inactive (>=30d since last write or never)
+	// > active.
+	Status string `json:"status"`
 }
 
 // AdminUserSearchResult holds the paginated search results.
 type AdminUserSearchResult struct {
-	Users []models.User `json:"users"`
-	Total int           `json:"total"`
+	Users []AdminUserListEntry `json:"users"`
+	Total int                  `json:"total"`
+}
+
+// computeAdminUserStatus derives the at-a-glance status pill from the
+// underlying fields. Precedence is intentional: a disabled user with no
+// workspace is still "disabled" first, because that's the most actionable
+// signal for the admin. Exported for unit testing.
+func computeAdminUserStatus(disabledAt, lastWriteAt string, workspaceCount int) string {
+	if disabledAt != "" {
+		return "disabled"
+	}
+	if workspaceCount == 0 {
+		return "no-workspace"
+	}
+	if lastWriteAt == "" {
+		return "inactive"
+	}
+	t, err := time.Parse(time.RFC3339, lastWriteAt)
+	if err != nil {
+		// Malformed timestamp — treat as inactive rather than crashing the
+		// list view. The row is still useful; the status pill just isn't
+		// claiming "active" for a value we can't parse.
+		return "inactive"
+	}
+	if time.Since(t) > 30*24*time.Hour {
+		return "inactive"
+	}
+	return "active"
 }
 
 // SearchUsers returns a filtered, paginated list of users for admin management.
-// Filters and pagination are pushed into SQL to avoid loading all users into memory.
+//
+// Each row carries the User model plus two cheap aggregations the admin
+// table renders at a glance: workspace_count (non-deleted workspaces owned)
+// and storage_bytes (SUM of non-deleted attachments across owned workspaces).
+// Both are computed via LEFT JOIN against pre-grouped subqueries so the
+// aggregation doesn't multiply the user count.
+//
+// Filters and pagination are pushed into SQL to avoid loading all users
+// into memory; sort/filter/pagination is documented on AdminUserSearchParams.
+// PLAN-1542 / TASK-1544.
 func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResult, error) {
 	if params.Limit <= 0 || params.Limit > 200 {
 		params.Limit = 50
@@ -272,12 +348,35 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 
 	if params.Query != "" {
 		q := "%" + strings.ToLower(params.Query) + "%"
-		where = append(where, "(LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(username) LIKE ?)")
+		where = append(where, "(LOWER(u.email) LIKE ? OR LOWER(u.name) LIKE ? OR LOWER(u.username) LIKE ?)")
 		args = append(args, q, q, q)
 	}
 	if params.Plan != "" {
-		where = append(where, "plan = ?")
+		where = append(where, "u.plan = ?")
 		args = append(args, params.Plan)
+	}
+	if params.Role != "" {
+		where = append(where, "u.role = ?")
+		args = append(args, params.Role)
+	}
+	if params.Disabled != nil {
+		if *params.Disabled {
+			where = append(where, "u.disabled_at IS NOT NULL")
+		} else {
+			where = append(where, "u.disabled_at IS NULL")
+		}
+	}
+	if params.ActiveWithinDays != nil && *params.ActiveWithinDays > 0 {
+		cutoff := time.Now().UTC().Add(-time.Duration(*params.ActiveWithinDays) * 24 * time.Hour).Format(time.RFC3339)
+		where = append(where, "u.last_write_at >= ?")
+		args = append(args, cutoff)
+	}
+	if params.HasWorkspaces != nil {
+		if *params.HasWorkspaces {
+			where = append(where, "COALESCE(wc.cnt, 0) > 0")
+		} else {
+			where = append(where, "COALESCE(wc.cnt, 0) = 0")
+		}
 	}
 
 	whereClause := ""
@@ -285,15 +384,49 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	// Get total count
-	countQuery := s.q("SELECT COUNT(*) FROM users " + whereClause)
+	// LEFT JOIN against grouped subqueries (not bare workspaces/attachments)
+	// so the row count stays one-per-user even when a user owns 50 workspaces
+	// with thousands of attachments each.
+	const workspaceCountJoin = `
+		LEFT JOIN (
+			SELECT owner_id, COUNT(*) AS cnt
+			FROM workspaces
+			WHERE deleted_at IS NULL
+			GROUP BY owner_id
+		) wc ON wc.owner_id = u.id`
+	const storageBytesJoin = `
+		LEFT JOIN (
+			SELECT w.owner_id, COALESCE(SUM(a.size_bytes), 0) AS bytes
+			FROM workspaces w
+			JOIN attachments a ON a.workspace_id = w.id AND a.deleted_at IS NULL
+			WHERE w.deleted_at IS NULL
+			GROUP BY w.owner_id
+		) sb ON sb.owner_id = u.id`
+
+	// Page query needs both aggregations (the row carries them). The count
+	// query only needs the workspace_count join when HasWorkspaces filtering
+	// is active — skipping the storage SUM avoids scanning every attachment
+	// on every list call (Codex review on PR #599).
+	fromClause := "FROM users u" + workspaceCountJoin + storageBytesJoin
+	countFromClause := "FROM users u"
+	if params.HasWorkspaces != nil {
+		countFromClause += workspaceCountJoin
+	}
+
+	countQuery := s.q("SELECT COUNT(*) " + countFromClause + " " + whereClause)
 	var total int
 	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("search users count: %w", err)
 	}
 
-	// Get paginated results
-	query := s.q("SELECT " + userColumns + " FROM users " + whereClause + " ORDER BY created_at DESC LIMIT ? OFFSET ?")
+	// Resolve sort. Allow-list to prevent injection; default matches the
+	// pre-T1544 behavior (created_at DESC).
+	orderBy := adminUserSortClause(params.Sort, params.Order)
+
+	// Build the column list: alias the userColumns onto `u.` so scanUser
+	// keeps working. The two aggregation columns come after.
+	aliasedUserCols := prefixColumns(userColumns, "u.")
+	query := s.q(`SELECT ` + aliasedUserCols + `, COALESCE(wc.cnt, 0), COALESCE(sb.bytes, 0) ` + fromClause + ` ` + whereClause + ` ORDER BY ` + orderBy + ` LIMIT ? OFFSET ?`)
 	fullArgs := append(args, params.Limit, params.Offset)
 	rows, err := s.db.Query(query, fullArgs...)
 	if err != nil {
@@ -301,23 +434,96 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	}
 	defer rows.Close()
 
-	var users []models.User
+	entries := make([]AdminUserListEntry, 0)
 	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
+		var entry AdminUserListEntry
+		var createdAt, updatedAt string
+		var disabledAt, lastActiveAt, lastWriteAt sql.NullString
+		var workspaceCount int
+		var storageBytes int64
+		if err := rows.Scan(
+			&entry.ID, &entry.Email, &entry.Username, &entry.Name, &entry.PasswordHash, &entry.Role, &entry.AvatarURL,
+			&entry.TOTPSecret, &entry.TOTPEnabled, &entry.RecoveryCodes,
+			&entry.Plan, &entry.PlanExpiresAt, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
+			&entry.PasswordSet,
+			&disabledAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
+			&workspaceCount, &storageBytes,
+		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
 		}
-		_ = s.decryptUserTOTP(u)
-		users = append(users, *u)
+		if disabledAt.Valid {
+			entry.DisabledAt = disabledAt.String
+		}
+		if lastActiveAt.Valid {
+			entry.LastActiveAt = lastActiveAt.String
+		}
+		if lastWriteAt.Valid {
+			entry.LastWriteAt = lastWriteAt.String
+		}
+		entry.CreatedAt = parseTime(createdAt)
+		entry.UpdatedAt = parseTime(updatedAt)
+		entry.WorkspaceCount = workspaceCount
+		entry.StorageBytes = storageBytes
+		entry.Status = computeAdminUserStatus(entry.DisabledAt, entry.LastWriteAt, entry.WorkspaceCount)
+		_ = s.decryptUserTOTP(&entry.User)
+		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("search users rows: %w", err)
 	}
 
 	return &AdminUserSearchResult{
-		Users: users,
+		Users: entries,
 		Total: total,
 	}, nil
+}
+
+// adminUserSortClause maps the public sort key + order into a safe ORDER BY
+// expression. Hard-coded allow-list to avoid SQL injection; an unknown key
+// falls back to the legacy default (created_at DESC).
+func adminUserSortClause(key, order string) string {
+	dir := "DESC"
+	if strings.EqualFold(order, "asc") {
+		dir = "ASC"
+	}
+	switch key {
+	case "email":
+		return "u.email " + dir
+	case "last_write":
+		// NULL last writes go to the bottom in DESC order, top in ASC. The
+		// COALESCE forces nulls to sort opposite-extreme so the page is
+		// usable either way.
+		if dir == "DESC" {
+			return "u.last_write_at DESC NULLS LAST, u.created_at DESC"
+		}
+		return "u.last_write_at ASC NULLS LAST, u.created_at ASC"
+	case "last_active":
+		if dir == "DESC" {
+			return "u.last_active_at DESC NULLS LAST, u.created_at DESC"
+		}
+		return "u.last_active_at ASC NULLS LAST, u.created_at ASC"
+	case "storage":
+		return "COALESCE(sb.bytes, 0) " + dir + ", u.created_at DESC"
+	case "workspaces":
+		return "COALESCE(wc.cnt, 0) " + dir + ", u.created_at DESC"
+	case "created", "":
+		return "u.created_at " + dir
+	default:
+		return "u.created_at DESC"
+	}
+}
+
+// prefixColumns rewrites a comma-separated SELECT list with the given
+// prefix, e.g. "id, email" with "u." → "u.id, u.email". Small helper to
+// keep userColumns as a single source of truth even when we need to
+// alias the users table in a JOIN.
+func prefixColumns(cols, prefix string) string {
+	parts := strings.Split(cols, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = prefix + strings.TrimSpace(p)
+	}
+	return strings.Join(out, ", ")
 }
 
 // UserCount returns the total number of registered users.

@@ -14,69 +14,117 @@ import (
 
 // --- Admin User Management (TASK-502) ---
 
-// handleAdminListUsers returns a paginated list of users with plan info.
+// handleAdminListUsers returns a paginated list of users with plan info,
+// cheap aggregations (workspace_count, storage_bytes, last_write_at,
+// status), and sort/filter support. PLAN-1542 / TASK-1544.
+//
 // GET /api/v1/admin/users?q=search&plan=free&offset=0&limit=50
+//
+//	Additional query params:
+//	  role=admin|member               filter by role
+//	  disabled=true|false             filter disabled state (omit = both)
+//	  active_within_days=N            only users with last_write_at within N days
+//	  has_workspaces=true|false       filter on workspace_count > 0 (omit = both)
+//	  sort=email|last_write|last_active|storage|workspaces|created
+//	  order=asc|desc                  default desc
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
 
+	q := r.URL.Query()
+
 	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
 	}
 	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
+	if v := q.Get("offset"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			offset = n
 		}
 	}
 
-	result, err := s.store.SearchUsers(store.AdminUserSearchParams{
-		Query:  r.URL.Query().Get("q"),
-		Plan:   r.URL.Query().Get("plan"),
+	params := store.AdminUserSearchParams{
+		Query:  q.Get("q"),
+		Plan:   q.Get("plan"),
+		Role:   q.Get("role"),
 		Limit:  limit,
 		Offset: offset,
-	})
+		Sort:   q.Get("sort"),
+		Order:  q.Get("order"),
+	}
+
+	// Tri-state bool filters: only set the pointer when the param is
+	// present, so omitting it means "no filter" (not "false"). Uses
+	// strconv.ParseBool so the full set of canonical truthy/falsy values
+	// is accepted ("true"/"True"/"TRUE"/"1"/"t" and the parallel falses);
+	// anything else is treated as "no filter" rather than silently false
+	// (Codex review on PR #599).
+	if v := q.Get("disabled"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			params.Disabled = &b
+		}
+	}
+	if v := q.Get("has_workspaces"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			params.HasWorkspaces = &b
+		}
+	}
+	if v := q.Get("active_within_days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			params.ActiveWithinDays = &n
+		}
+	}
+
+	result, err := s.store.SearchUsers(params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 
 	type adminUser struct {
-		ID            string `json:"id"`
-		Email         string `json:"email"`
-		Username      string `json:"username"`
-		Name          string `json:"name"`
-		Role          string `json:"role"`
-		Plan          string `json:"plan"`
-		PlanExpiresAt string `json:"plan_expires_at,omitempty"`
-		PlanOverrides string `json:"plan_overrides,omitempty"`
-		TOTPEnabled   bool   `json:"totp_enabled"`
-		DisabledAt    string `json:"disabled_at,omitempty"`
-		LastActiveAt  string `json:"last_active_at,omitempty"`
-		CreatedAt     string `json:"created_at"`
-		UpdatedAt     string `json:"updated_at"`
+		ID             string `json:"id"`
+		Email          string `json:"email"`
+		Username       string `json:"username"`
+		Name           string `json:"name"`
+		Role           string `json:"role"`
+		Plan           string `json:"plan"`
+		PlanExpiresAt  string `json:"plan_expires_at,omitempty"`
+		PlanOverrides  string `json:"plan_overrides,omitempty"`
+		TOTPEnabled    bool   `json:"totp_enabled"`
+		DisabledAt     string `json:"disabled_at,omitempty"`
+		LastActiveAt   string `json:"last_active_at,omitempty"`
+		LastWriteAt    string `json:"last_write_at,omitempty"`
+		CreatedAt      string `json:"created_at"`
+		UpdatedAt      string `json:"updated_at"`
+		WorkspaceCount int    `json:"workspace_count"`
+		StorageBytes   int64  `json:"storage_bytes"`
+		Status         string `json:"status"`
 	}
 
 	users := make([]adminUser, 0, len(result.Users))
 	for _, u := range result.Users {
 		users = append(users, adminUser{
-			ID:            u.ID,
-			Email:         u.Email,
-			Username:      u.Username,
-			Name:          u.Name,
-			Role:          u.Role,
-			Plan:          u.Plan,
-			PlanExpiresAt: u.PlanExpiresAt,
-			PlanOverrides: u.PlanOverrides,
-			TOTPEnabled:   u.TOTPEnabled,
-			DisabledAt:    u.DisabledAt,
-			LastActiveAt:  u.LastActiveAt,
-			CreatedAt:     u.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:     u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:             u.ID,
+			Email:          u.Email,
+			Username:       u.Username,
+			Name:           u.Name,
+			Role:           u.Role,
+			Plan:           u.Plan,
+			PlanExpiresAt:  u.PlanExpiresAt,
+			PlanOverrides:  u.PlanOverrides,
+			TOTPEnabled:    u.TOTPEnabled,
+			DisabledAt:     u.DisabledAt,
+			LastActiveAt:   u.LastActiveAt,
+			LastWriteAt:    u.LastWriteAt,
+			CreatedAt:      u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:      u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			WorkspaceCount: u.WorkspaceCount,
+			StorageBytes:   u.StorageBytes,
+			Status:         u.Status,
 		})
 	}
 
