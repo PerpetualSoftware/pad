@@ -947,34 +947,27 @@ type AdminUserWorkspaceDetail struct {
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 }
 
-// terminal item statuses. Hardcoded for now — a proper terminal-aware
-// count would JOIN against collections.schema and pull each collection's
-// terminal_options. Follow-up tracked alongside TASK-1545. Values cover
-// the canonical terminals across the default templates: software (done,
-// completed, archived, rejected, implemented, cancelled).
-var adminOpenItemTerminalStatuses = []string{"done", "completed", "rejected", "archived", "implemented", "cancelled"}
-
 // adminOpenItemsCountClause returns a SQL fragment (no leading AND) that
-// excludes terminal-status items. Built from adminOpenItemTerminalStatuses
-// so the list is single-sourced.
-func adminOpenItemsCountClause() string {
-	if len(adminOpenItemTerminalStatuses) == 0 {
-		return "1=1"
+// excludes terminal-status items. Single-sourced from
+// models.DefaultTerminalStatuses to match the rest of the codebase, and
+// uses the dialect's JSON-extract helper so the query runs identically on
+// SQLite and Postgres. Wraps the extracted value in LOWER(COALESCE(...,'')
+// so items with NULL/missing status (NULL NOT IN (...) is not TRUE in SQL)
+// and case-variant statuses still register as "open" — matching how
+// search.go and items.go interpret terminal-status checks.
+func (s *Store) adminOpenItemsCountClause() (clause string, args []interface{}) {
+	terms := models.DefaultTerminalStatuses
+	if len(terms) == 0 {
+		return "1=1", nil
 	}
-	placeholders := make([]string, len(adminOpenItemTerminalStatuses))
-	for i := range placeholders {
+	placeholders := make([]string, len(terms))
+	args = make([]interface{}, len(terms))
+	for i, v := range terms {
 		placeholders[i] = "?"
+		args[i] = strings.ToLower(v)
 	}
-	return "JSON_EXTRACT(i.fields, '$.status') NOT IN (" + strings.Join(placeholders, ", ") + ")"
-}
-
-// adminOpenItemTerminalArgs returns the bound args for adminOpenItemsCountClause.
-func adminOpenItemTerminalArgs() []interface{} {
-	out := make([]interface{}, len(adminOpenItemTerminalStatuses))
-	for i, v := range adminOpenItemTerminalStatuses {
-		out[i] = v
-	}
-	return out
+	expr := "LOWER(COALESCE(" + s.dialect.JSONExtractText("i.fields", "status") + ", ''))"
+	return expr + " NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // GetUserWorkspacesDetailed returns each workspace this user is a member
@@ -983,8 +976,7 @@ func adminOpenItemTerminalArgs() []interface{} {
 // T1552; the headroom is for future tabs that might want the full list).
 // PLAN-1542 / TASK-1545.
 func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDetail, error) {
-	openClause := adminOpenItemsCountClause()
-	openArgs := adminOpenItemTerminalArgs()
+	openClause, openArgs := s.adminOpenItemsCountClause()
 
 	// Aggregations live in correlated subqueries rather than a wide JOIN +
 	// GROUP BY because the workspaces a single user belongs to are at most
