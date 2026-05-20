@@ -42,10 +42,9 @@
 		// Keep modalUser around so the closing animation (if any) doesn't
 		// blank the modal mid-fade; cleared on next open.
 	}
-	// Called by the modal's Settings tab after any save. Mirror the same
-	// merge pattern used by the inline-expand handlers so both UIs see
-	// the same row state until T1555 removes the inline expand.
-	// PLAN-1542 / TASK-1551.
+	// Called by the modal's Settings tab after any save — merges the
+	// refetched user into the table row and the bound modalUser so the
+	// list stays in sync without a full reload. PLAN-1542 / TASK-1551.
 	function onModalUserUpdated(updated: AdminUser) {
 		users = users.map((u) => (u.id === updated.id ? { ...u, ...updated } : u));
 		if (modalUser && modalUser.id === updated.id) modalUser = { ...modalUser, ...updated };
