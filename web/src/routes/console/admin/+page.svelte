@@ -1,9 +1,32 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { adminFetch, adminPatch, adminPost, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 
+	// --- List + pagination + filter + sort state (PLAN-1542 / TASK-1549) ---
+	// All filter state is reactive $state; we rebuild the query string on
+	// every loadList() call and reset offset to 0 on any filter/sort change.
+	// URL params reflect the filter/sort set so admins can paste a link
+	// (e.g. "all disabled pro users sorted by storage desc"). The search
+	// input is deliberately NOT in the URL — it changes on every keystroke
+	// and would clutter history.
+	type SortKey = 'email' | 'last_write' | 'last_active' | 'storage' | 'workspaces' | 'created';
+	type SortOrder = 'asc' | 'desc';
+	const PAGE_LIMIT = 50;
+
 	let users = $state<AdminUser[]>([]);
+	let total = $state(0);
+	let offset = $state(0);
+	let loadingMore = $state(false);
 	let search = $state('');
+	let planFilter = $state('');
+	let roleFilter = $state('');
+	let statusFilter = $state(''); // disabled / no-workspace / inactive / active / ''
+	let activeWithinDaysFilter = $state(''); // '7' | '30' | '90' | ''
+	let hasWorkspacesFilter = $state(''); // 'true' | 'false' | ''
+	let sortKey = $state<SortKey>('created');
+	let sortOrder = $state<SortOrder>('desc');
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
 	let editRole = $state('member');
@@ -47,26 +70,129 @@
 	let userWorkspaces = $state<{ workspace_name: string; workspace_slug: string; owner_username: string; role: string; joined_at: string }[]>([]);
 	let workspacesLoading = $state(false);
 
-	async function loadUsers() {
-		loading = true;
+	// buildQueryParams renders the current filter/sort/pagination state
+	// into a URLSearchParams. Sort and filter values are always present
+	// when non-default so the server resolves them consistently.
+	function buildQueryParams(opts: { offset?: number; includeSearch?: boolean } = {}): URLSearchParams {
+		const p = new URLSearchParams();
+		if (opts.includeSearch && search) p.set('q', search);
+		if (planFilter) p.set('plan', planFilter);
+		if (roleFilter) p.set('role', roleFilter);
+		if (statusFilter === 'disabled') p.set('disabled', 'true');
+		else if (statusFilter && statusFilter !== '') {
+			// Server doesn't filter on the computed status directly; for
+			// non-disabled buckets we approximate (no-workspace via
+			// has_workspaces=false, inactive via NOT active_within_days).
+			// "active" can't be derived without a "min last-write" param,
+			// so it's a client-side filter only — handled below in
+			// applyClientStatusFilter().
+			if (statusFilter === 'no-workspace') p.set('has_workspaces', 'false');
+		}
+		if (activeWithinDaysFilter) p.set('active_within_days', activeWithinDaysFilter);
+		if (hasWorkspacesFilter) p.set('has_workspaces', hasWorkspacesFilter);
+		if (sortKey !== 'created' || sortOrder !== 'desc') {
+			p.set('sort', sortKey);
+			p.set('order', sortOrder);
+		}
+		p.set('limit', String(PAGE_LIMIT));
+		p.set('offset', String(opts.offset ?? offset));
+		return p;
+	}
+
+	// applyClientStatusFilter narrows the response to the active/inactive
+	// status buckets the server can't directly express. Server already
+	// handled "disabled" and "no-workspace"; "active" and "inactive" are
+	// computed via the row's status field.
+	function applyClientStatusFilter(rows: AdminUser[]): AdminUser[] {
+		if (statusFilter !== 'active' && statusFilter !== 'inactive') return rows;
+		return rows.filter((u) => u.status === statusFilter);
+	}
+
+	async function loadList(reset: boolean = true) {
+		if (reset) {
+			loading = true;
+			offset = 0;
+		} else {
+			loadingMore = true;
+		}
 		error = '';
 		try {
-			const result = await adminFetch('/admin/users');
-			users = result.users ?? result;
+			const params = buildQueryParams({ offset: reset ? 0 : offset, includeSearch: true });
+			const result = await adminFetch('/admin/users?' + params.toString());
+			const rows: AdminUser[] = applyClientStatusFilter(result.users ?? result);
+			users = reset ? rows : [...users, ...rows];
+			total = typeof result.total === 'number' ? result.total : users.length;
+			// Sync filter/sort state back to URL (skip on reset=false to
+			// avoid spamming history during paginated "load more").
+			if (reset) syncURL();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load users';
 		} finally {
 			loading = false;
+			loadingMore = false;
 		}
 	}
 
-	async function searchUsers() {
-		try {
-			const result = await adminFetch(`/admin/users?q=${encodeURIComponent(search)}`);
-			users = result.users ?? result;
-		} catch {
-			/* keep existing */
+	// loadMore appends the next page without resetting offset.
+	async function loadMore() {
+		offset += PAGE_LIMIT;
+		await loadList(false);
+	}
+
+	// onFilterChange resets pagination + reloads. Bound to every filter
+	// input + the sort header clicks.
+	function onFilterChange() {
+		offset = 0;
+		loadList(true);
+	}
+
+	function setSort(key: SortKey) {
+		if (sortKey === key) {
+			sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key;
+			// Default direction: desc for time/numeric, asc for email.
+			sortOrder = key === 'email' ? 'asc' : 'desc';
 		}
+		onFilterChange();
+	}
+
+	// Search button (or Enter in search input) — same as a filter change.
+	function searchUsers() {
+		onFilterChange();
+	}
+
+	// syncURL pushes filter/sort state into the URL via SvelteKit's goto,
+	// replaceState so we don't litter browser history. Search query is
+	// excluded; see buildQueryParams note.
+	function syncURL() {
+		const p = buildQueryParams({ offset: 0, includeSearch: false });
+		p.delete('limit');
+		p.delete('offset');
+		const qs = p.toString();
+		const target = qs ? `?${qs}` : page.url.pathname;
+		goto(target, { replaceState: true, noScroll: true, keepFocus: true });
+	}
+
+	// hydrateFromURL pulls filter/sort state off the URL on first load
+	// so a pasted link restores the view.
+	function hydrateFromURL() {
+		const p = page.url.searchParams;
+		planFilter = p.get('plan') ?? '';
+		roleFilter = p.get('role') ?? '';
+		hasWorkspacesFilter = p.get('has_workspaces') ?? '';
+		activeWithinDaysFilter = p.get('active_within_days') ?? '';
+		const s = p.get('sort');
+		if (s === 'email' || s === 'last_write' || s === 'last_active' || s === 'storage' || s === 'workspaces' || s === 'created') {
+			sortKey = s;
+		}
+		const o = p.get('order');
+		if (o === 'asc' || o === 'desc') sortOrder = o;
+		// statusFilter is derived; the URL carries it only via has_workspaces=false
+		// (no-workspace) or disabled=true (disabled). active/inactive aren't
+		// representable on the URL today.
+		if (p.get('disabled') === 'true') statusFilter = 'disabled';
+		else if (p.get('has_workspaces') === 'false') statusFilter = 'no-workspace';
 	}
 
 	function selectUser(u: AdminUser) {
@@ -384,7 +510,8 @@
 	}
 
 	onMount(() => {
-		loadUsers();
+		hydrateFromURL();
+		loadList(true);
 	});
 </script>
 
@@ -394,7 +521,7 @@
 	{:else if error}
 		<div class="error-msg">
 			<p>{error}</p>
-			<button class="btn" onclick={loadUsers}>Retry</button>
+			<button class="btn" onclick={() => loadList(true)}>Retry</button>
 		</div>
 	{:else}
 		<div class="search-row">
@@ -410,21 +537,103 @@
 			<button class="btn" onclick={searchUsers}>Search</button>
 		</div>
 
+		<!-- Filter bar (PLAN-1542 / TASK-1549). Each control fires
+		     onFilterChange so the list reloads from offset=0 and the
+		     URL updates. -->
+		<div class="filter-bar">
+			<label class="filter-field">
+				<span class="filter-label">Role</span>
+				<select bind:value={roleFilter} onchange={onFilterChange}>
+					<option value="">All</option>
+					<option value="admin">admin</option>
+					<option value="member">member</option>
+				</select>
+			</label>
+
+			{#if adminStore.stats?.cloud_mode}
+				<label class="filter-field">
+					<span class="filter-label">Plan</span>
+					<select bind:value={planFilter} onchange={onFilterChange}>
+						<option value="">All</option>
+						<option value="free">free</option>
+						<option value="pro">pro</option>
+						<option value="self-hosted">self-hosted</option>
+					</select>
+				</label>
+			{/if}
+
+			<label class="filter-field">
+				<span class="filter-label">Status</span>
+				<select bind:value={statusFilter} onchange={onFilterChange}>
+					<option value="">All</option>
+					<option value="active">active</option>
+					<option value="inactive">inactive</option>
+					<option value="disabled">disabled</option>
+					<option value="no-workspace">no-workspace</option>
+				</select>
+			</label>
+
+			<label class="filter-field">
+				<span class="filter-label">Active within</span>
+				<select bind:value={activeWithinDaysFilter} onchange={onFilterChange}>
+					<option value="">Any</option>
+					<option value="7">7 days</option>
+					<option value="30">30 days</option>
+					<option value="90">90 days</option>
+				</select>
+			</label>
+
+			<label class="filter-field">
+				<span class="filter-label">Has workspaces</span>
+				<select bind:value={hasWorkspacesFilter} onchange={onFilterChange}>
+					<option value="">All</option>
+					<option value="true">Yes</option>
+					<option value="false">No</option>
+				</select>
+			</label>
+
+			{#if planFilter || roleFilter || statusFilter || activeWithinDaysFilter || hasWorkspacesFilter}
+				<button
+					class="btn btn-sub"
+					onclick={() => {
+						planFilter = '';
+						roleFilter = '';
+						statusFilter = '';
+						activeWithinDaysFilter = '';
+						hasWorkspacesFilter = '';
+						onFilterChange();
+					}}>Clear filters</button
+				>
+			{/if}
+		</div>
+
 		<div class="table-wrap">
 			<table class="table">
 				<thead>
 					<tr>
 						<th>Name</th>
 						<th>Role</th>
-						<th>Workspaces</th>
-						<th>Email</th>
+						<th class="sortable" onclick={() => setSort('workspaces')}
+							>Workspaces <span class="sort-ind">{sortKey === 'workspaces' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
+						<th class="sortable" onclick={() => setSort('email')}
+							>Email <span class="sort-ind">{sortKey === 'email' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
 						{#if adminStore.stats?.cloud_mode}
 							<th>Plan</th>
 						{/if}
-						<th>Storage</th>
-						<th>Last Write</th>
-						<th>Last Active</th>
-						<th>Created</th>
+						<th class="sortable" onclick={() => setSort('storage')}
+							>Storage <span class="sort-ind">{sortKey === 'storage' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
+						<th class="sortable" onclick={() => setSort('last_write')}
+							>Last Write <span class="sort-ind">{sortKey === 'last_write' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
+						<th class="sortable" onclick={() => setSort('last_active')}
+							>Last Active <span class="sort-ind">{sortKey === 'last_active' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
+						<th class="sortable" onclick={() => setSort('created')}
+							>Created <span class="sort-ind">{sortKey === 'created' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
+						>
 					</tr>
 				</thead>
 				<tbody>
@@ -693,6 +902,21 @@
 					{/each}
 				</tbody>
 			</table>
+			{#if total > 0}
+				<div class="pager">
+					<span class="pager-info"
+						>Showing <strong>{users.length}</strong> of <strong>{total}</strong>{#if statusFilter === 'active' || statusFilter === 'inactive'}
+							(client-filtered){/if}</span
+					>
+					{#if users.length < total}
+						<button class="btn" disabled={loadingMore} onclick={loadMore}
+							>{loadingMore ? 'Loading…' : 'Load more'}</button
+						>
+					{/if}
+				</div>
+			{:else if !loading}
+				<div class="pager pager-empty">No users match the current filters.</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -715,6 +939,74 @@
 	}
 	.search-input:focus {
 		border-color: var(--accent-blue);
+	}
+
+	/* Filter bar (PLAN-1542 / TASK-1549) */
+	.filter-bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+		align-items: end;
+		margin-top: var(--space-3);
+	}
+	.filter-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		font-size: 0.8rem;
+	}
+	.filter-label {
+		color: var(--text-muted);
+		font-size: 0.75rem;
+	}
+	.filter-field select {
+		padding: 4px var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		outline: none;
+	}
+	.btn-sub {
+		background: transparent;
+		color: var(--text-muted);
+		border: 1px dashed var(--border);
+		align-self: end;
+	}
+
+	/* Sortable column headers */
+	th.sortable {
+		cursor: pointer;
+		user-select: none;
+	}
+	th.sortable:hover {
+		background: var(--bg-tertiary);
+	}
+	.sort-ind {
+		display: inline-block;
+		min-width: 10px;
+		color: var(--accent-blue);
+		font-size: 0.7rem;
+		margin-left: 2px;
+	}
+
+	/* Pager */
+	.pager {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: var(--space-3) 0;
+		gap: var(--space-3);
+		font-size: 0.85rem;
+	}
+	.pager-info {
+		color: var(--text-muted);
+	}
+	.pager-empty {
+		justify-content: center;
+		font-style: italic;
+		color: var(--text-muted);
 	}
 
 	/* Buttons */
