@@ -78,16 +78,15 @@
 		if (opts.includeSearch && search) p.set('q', search);
 		if (planFilter) p.set('plan', planFilter);
 		if (roleFilter) p.set('role', roleFilter);
+		// statusFilter and hasWorkspacesFilter are independent; we used to
+		// auto-map statusFilter=no-workspace to has_workspaces=false but
+		// that conflicted with the explicit hasWorkspacesFilter and broke
+		// the server-side status precedence (disabled > no-workspace).
+		// Now: statusFilter is always applied client-side via
+		// applyClientStatusFilter; only the "disabled" case gets a server
+		// hint so the result set is smaller for the common case (Codex
+		// review on PR #604, finding 1+2+3).
 		if (statusFilter === 'disabled') p.set('disabled', 'true');
-		else if (statusFilter && statusFilter !== '') {
-			// Server doesn't filter on the computed status directly; for
-			// non-disabled buckets we approximate (no-workspace via
-			// has_workspaces=false, inactive via NOT active_within_days).
-			// "active" can't be derived without a "min last-write" param,
-			// so it's a client-side filter only — handled below in
-			// applyClientStatusFilter().
-			if (statusFilter === 'no-workspace') p.set('has_workspaces', 'false');
-		}
 		if (activeWithinDaysFilter) p.set('active_within_days', activeWithinDaysFilter);
 		if (hasWorkspacesFilter) p.set('has_workspaces', hasWorkspacesFilter);
 		if (sortKey !== 'created' || sortOrder !== 'desc') {
@@ -99,12 +98,12 @@
 		return p;
 	}
 
-	// applyClientStatusFilter narrows the response to the active/inactive
-	// status buckets the server can't directly express. Server already
-	// handled "disabled" and "no-workspace"; "active" and "inactive" are
-	// computed via the row's status field.
+	// applyClientStatusFilter narrows the response to the selected status
+	// bucket using the server-computed `status` field on each row. Server
+	// precedence (disabled > no-workspace > inactive > active) is preserved
+	// because we filter on the exact value, not approximations.
 	function applyClientStatusFilter(rows: AdminUser[]): AdminUser[] {
-		if (statusFilter !== 'active' && statusFilter !== 'inactive') return rows;
+		if (!statusFilter) return rows;
 		return rows.filter((u) => u.status === statusFilter);
 	}
 
@@ -133,10 +132,22 @@
 		}
 	}
 
-	// loadMore appends the next page without resetting offset.
+	// loadMore appends the next page without resetting offset. On failure,
+	// rolls back the offset so a retry doesn't skip a page (Codex review
+	// on PR #604). Also guards against re-entrant calls while a page is
+	// in flight.
 	async function loadMore() {
+		if (loadingMore || loading) return;
+		const prevOffset = offset;
 		offset += PAGE_LIMIT;
-		await loadList(false);
+		try {
+			await loadList(false);
+		} catch {
+			offset = prevOffset;
+		}
+		// Belt-and-braces: if loadList caught the error internally and set
+		// `error`, also roll back so the next click retries the same page.
+		if (error) offset = prevOffset;
 	}
 
 	// onFilterChange resets pagination + reloads. Bound to every filter
@@ -164,11 +175,19 @@
 
 	// syncURL pushes filter/sort state into the URL via SvelteKit's goto,
 	// replaceState so we don't litter browser history. Search query is
-	// excluded; see buildQueryParams note.
+	// excluded (changes per keystroke). Status is its own URL param
+	// (rather than smuggled through has_workspaces/disabled) so all four
+	// buckets — active/inactive/disabled/no-workspace — round-trip
+	// losslessly (Codex review on PR #604).
 	function syncURL() {
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
 		p.delete('offset');
+		// buildQueryParams stamps disabled=true for statusFilter=disabled
+		// (server hint). Strip it from the URL; statusFilter is the
+		// canonical representation in the URL.
+		p.delete('disabled');
+		if (statusFilter) p.set('status', statusFilter);
 		const qs = p.toString();
 		const target = qs ? `?${qs}` : page.url.pathname;
 		goto(target, { replaceState: true, noScroll: true, keepFocus: true });
@@ -188,11 +207,10 @@
 		}
 		const o = p.get('order');
 		if (o === 'asc' || o === 'desc') sortOrder = o;
-		// statusFilter is derived; the URL carries it only via has_workspaces=false
-		// (no-workspace) or disabled=true (disabled). active/inactive aren't
-		// representable on the URL today.
-		if (p.get('disabled') === 'true') statusFilter = 'disabled';
-		else if (p.get('has_workspaces') === 'false') statusFilter = 'no-workspace';
+		const st = p.get('status');
+		if (st === 'active' || st === 'inactive' || st === 'disabled' || st === 'no-workspace') {
+			statusFilter = st;
+		}
 	}
 
 	function selectUser(u: AdminUser) {
@@ -610,30 +628,40 @@
 		<div class="table-wrap">
 			<table class="table">
 				<thead>
+					<!-- Sortable headers are keyboard-accessible buttons inside
+					     the cell so they participate in tab order; aria-sort
+					     conveys current state to screen readers. PLAN-1542 /
+					     TASK-1549. -->
 					<tr>
 						<th>Name</th>
 						<th>Role</th>
-						<th class="sortable" onclick={() => setSort('workspaces')}
-							>Workspaces <span class="sort-ind">{sortKey === 'workspaces' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
-						<th class="sortable" onclick={() => setSort('email')}
-							>Email <span class="sort-ind">{sortKey === 'email' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
+						<th aria-sort={sortKey === 'workspaces' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('workspaces')}
+								>Workspaces <span class="sort-ind">{sortKey === 'workspaces' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
+						<th aria-sort={sortKey === 'email' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('email')}
+								>Email <span class="sort-ind">{sortKey === 'email' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
 						{#if adminStore.stats?.cloud_mode}
 							<th>Plan</th>
 						{/if}
-						<th class="sortable" onclick={() => setSort('storage')}
-							>Storage <span class="sort-ind">{sortKey === 'storage' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
-						<th class="sortable" onclick={() => setSort('last_write')}
-							>Last Write <span class="sort-ind">{sortKey === 'last_write' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
-						<th class="sortable" onclick={() => setSort('last_active')}
-							>Last Active <span class="sort-ind">{sortKey === 'last_active' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
-						<th class="sortable" onclick={() => setSort('created')}
-							>Created <span class="sort-ind">{sortKey === 'created' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></th
-						>
+						<th aria-sort={sortKey === 'storage' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('storage')}
+								>Storage <span class="sort-ind">{sortKey === 'storage' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
+						<th aria-sort={sortKey === 'last_write' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('last_write')}
+								>Last Write <span class="sort-ind">{sortKey === 'last_write' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
+						<th aria-sort={sortKey === 'last_active' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('last_active')}
+								>Last Active <span class="sort-ind">{sortKey === 'last_active' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
+						<th aria-sort={sortKey === 'created' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}>
+							<button type="button" class="sort-btn" onclick={() => setSort('created')}
+								>Created <span class="sort-ind">{sortKey === 'created' ? (sortOrder === 'asc' ? '▲' : '▼') : ''}</span></button>
+						</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -975,20 +1003,33 @@
 		align-self: end;
 	}
 
-	/* Sortable column headers */
-	th.sortable {
+	/* Sortable column headers — button-inside-th pattern so they're
+	   keyboard-focusable and announce as buttons. */
+	.sort-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: transparent;
+		border: 0;
+		padding: 0;
+		font: inherit;
+		color: inherit;
 		cursor: pointer;
 		user-select: none;
 	}
-	th.sortable:hover {
-		background: var(--bg-tertiary);
+	.sort-btn:hover {
+		color: var(--accent-blue);
+	}
+	.sort-btn:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
+		border-radius: 2px;
 	}
 	.sort-ind {
 		display: inline-block;
 		min-width: 10px;
 		color: var(--accent-blue);
 		font-size: 0.7rem;
-		margin-left: 2px;
 	}
 
 	/* Pager */
