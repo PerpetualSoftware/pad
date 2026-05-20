@@ -79,12 +79,28 @@ func TestListUserActivity(t *testing.T) {
 		t.Fatalf("pagination overlap: page1=%v page2=%v", page1, page2)
 	}
 
-	// Hard cap at 50: ask for 1000, get at most 50 (we seeded 3, so 3 here).
-	got, err = s.ListUserActivity(alice.ID, models.ActivityListParams{Limit: 1000})
+	// Inner safety cap at 100: ask for 10000, get at most 100 (we seeded
+	// 3, so 3 here). The handler caps per-page at 50 + 1 probe; this
+	// inner cap is just protection against pathological internal callers.
+	got, err = s.ListUserActivity(alice.ID, models.ActivityListParams{Limit: 10000})
 	if err != nil {
 		t.Fatalf("cap: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("cap: want 3 got %d", len(got))
+	}
+
+	// Regression for Codex finding: handler's limit+1 probe at the public
+	// max (50) must reach the store untruncated. Seed 51 activities,
+	// request 51 from the store, expect 51 rows.
+	for i := 0; i < 48; i++ {
+		mk(alice.ID, "updated")
+	}
+	got, err = s.ListUserActivity(alice.ID, models.ActivityListParams{Limit: 51})
+	if err != nil {
+		t.Fatalf("51-probe: %v", err)
+	}
+	if len(got) != 51 {
+		t.Fatalf("51-probe: want 51 (alice has 51 activities); got %d", len(got))
 	}
 }

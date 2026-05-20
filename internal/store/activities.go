@@ -335,8 +335,13 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 50 {
-		limit = 50
+	// Cap at 100 (rather than 50) so the handler's limit+1 "has more?" probe
+	// at the public page-size ceiling of 50 still works without the store
+	// silently truncating to 50 and tricking next_offset into reporting
+	// null. The handler is the source of truth for the per-page maximum;
+	// this is an inner-safety cap only (Codex review on PR #601).
+	if limit > 100 {
+		limit = 100
 	}
 	query += fmt.Sprintf(" LIMIT %d", limit)
 	if params.Offset > 0 {
