@@ -894,6 +894,7 @@ func (s *Server) setupRouter() {
 				r.Patch("/users/{userID}", s.handleAdminUpdateUser)
 				r.Post("/users/{userID}/reset-password", s.handleAdminResetPassword)
 				r.Get("/users/{userID}/workspaces", s.handleAdminGetUserWorkspaces)
+				r.Get("/users/{userID}/detail", s.handleAdminGetUserDetail)
 				r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
 				r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
 

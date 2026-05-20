@@ -177,6 +177,60 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminGetUserDetail returns a combined per-user payload: the user
+// vitals plus a per-workspace breakdown enriched with aggregations
+// (collections_count, items_open, items_total, members_count,
+// storage_bytes, last_activity_at). Powers the Workspaces tab of the
+// admin user modal (T1552) in a single round-trip.
+//
+// PLAN-1542 / TASK-1545. GET /api/v1/admin/users/{userID}/detail.
+func (s *Server) handleAdminGetUserDetail(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	workspaces, err := s.store.GetUserWorkspacesDetailed(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if workspaces == nil {
+		// Defensive: ensure JSON serializes as `[]` rather than `null`.
+		workspaces = []store.AdminUserWorkspaceDetail{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"user": map[string]interface{}{
+			"id":              user.ID,
+			"email":           user.Email,
+			"username":        user.Username,
+			"name":            user.Name,
+			"role":            user.Role,
+			"plan":            user.Plan,
+			"plan_expires_at": user.PlanExpiresAt,
+			"plan_overrides":  user.PlanOverrides,
+			"totp_enabled":    user.TOTPEnabled,
+			"disabled_at":     user.DisabledAt,
+			"last_active_at":  user.LastActiveAt,
+			"last_write_at":   user.LastWriteAt,
+			"created_at":      user.CreatedAt,
+			"updated_at":      user.UpdatedAt,
+		},
+		"workspaces": workspaces,
+	})
+}
+
 // handleAdminGetUserWorkspaces returns workspace memberships for a user.
 // GET /api/v1/admin/users/{userID}/workspaces
 func (s *Server) handleAdminGetUserWorkspaces(w http.ResponseWriter, r *http.Request) {
