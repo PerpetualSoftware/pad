@@ -177,6 +177,37 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminGetUserMetrics returns the windowed engagement metrics for
+// a single user — days_since_write, writes_7d, collections_touched_30d.
+// Powers the metric tiles on the admin user modal's Overview tab (T1553).
+//
+// Intentionally a small set of cheap signals. Per-request API tracking
+// is filed as a follow-up (IDEA-1556) and will surface as an additive
+// api_requests_7d field once the request-log table exists.
+//
+// PLAN-1542 / TASK-1547. GET /api/v1/admin/users/{userID}/metrics.
+func (s *Server) handleAdminGetUserMetrics(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	if user, err := s.store.GetUser(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	metrics, err := s.store.GetUserMetrics(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
 // handleAdminGetUserActivity returns a paginated chronological feed of
 // activities originated by the user — item writes, comments, logins,
 // account changes the user made themselves. Powers the Activity tab of

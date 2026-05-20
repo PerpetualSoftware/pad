@@ -700,6 +700,100 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 // ErrLastAdmin is returned when a role change would leave zero admins.
 var ErrLastAdmin = fmt.Errorf("cannot demote the last admin")
 
+// AdminUserMetrics carries the windowed engagement metrics rendered by the
+// admin user modal's Overview tab (T1553). Values are intentionally a
+// small handful of cheap signals; per-request API tracking is filed as a
+// follow-up (IDEA-1556). PLAN-1542 / TASK-1547.
+type AdminUserMetrics struct {
+	// DaysSinceWrite is days since users.last_write_at, rounded down.
+	// nil when the user has never had a write recorded.
+	DaysSinceWrite *int `json:"days_since_write"`
+	// Writes7d is the count of write activities (items + comments)
+	// authored in the last 7 days.
+	Writes7d int `json:"writes_7d"`
+	// CollectionsTouched30d is the count of DISTINCT collection_ids
+	// touched by this user's item-write activities in the last 30 days.
+	CollectionsTouched30d int `json:"collections_touched_30d"`
+}
+
+// GetUserMetrics computes the AdminUserMetrics bundle. Cheap by design:
+//   - days_since_write reads users.last_write_at directly (one row)
+//   - writes_7d is a COUNT over activities (indexed on user_id, created_at)
+//   - collections_touched_30d JOINs activities to items to pull collection_id
+//     (items.last_modified_by is an attribution string, not a user FK — see
+//     the T1543 architecture note — so we go through activities.user_id).
+//
+// PLAN-1542 / TASK-1547. Caching is intentionally not implemented here;
+// the queries are all index-backed scalar aggregations, and a per-user
+// short cache lives more naturally at the handler boundary if needed.
+func (s *Store) GetUserMetrics(userID string) (*AdminUserMetrics, error) {
+	now := time.Now().UTC()
+	cutoff7d := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	cutoff30d := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+
+	out := &AdminUserMetrics{}
+
+	// days_since_write
+	var lwa sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT last_write_at FROM users WHERE id = ?`), userID).Scan(&lwa); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user not found")
+		}
+		return nil, fmt.Errorf("get user metrics last_write_at: %w", err)
+	}
+	if lwa.Valid && lwa.String != "" {
+		if t, err := time.Parse(time.RFC3339, lwa.String); err == nil {
+			d := int(now.Sub(t).Hours() / 24)
+			if d < 0 {
+				d = 0
+			}
+			out.DaysSinceWrite = &d
+		}
+	}
+
+	// writes_7d — write-class activities by this user in the last 7d.
+	writeActions := []string{"created", "updated", "archived", "restored", "moved", "commented"}
+	placeholders := make([]string, len(writeActions))
+	args := make([]interface{}, 0, len(writeActions)+2)
+	args = append(args, userID, cutoff7d)
+	for i, a := range writeActions {
+		placeholders[i] = "?"
+		args = append(args, a)
+	}
+	writesQuery := s.q(`
+		SELECT COUNT(*)
+		FROM activities
+		WHERE user_id = ? AND created_at >= ?
+		  AND action IN (` + strings.Join(placeholders, ", ") + `)
+	`)
+	if err := s.db.QueryRow(writesQuery, args...).Scan(&out.Writes7d); err != nil {
+		return nil, fmt.Errorf("get user metrics writes_7d: %w", err)
+	}
+
+	// collections_touched_30d — DISTINCT collection_id of items the user
+	// has authored writes for in the last 30d. Restrict to item-scoped
+	// activities (document_id IS NOT NULL); commented activities live on
+	// the same document so they count too.
+	args = args[:0]
+	args = append(args, userID, cutoff30d)
+	for _, a := range writeActions {
+		args = append(args, a)
+	}
+	collQuery := s.q(`
+		SELECT COUNT(DISTINCT i.collection_id)
+		FROM activities a
+		JOIN items i ON i.id = a.document_id
+		WHERE a.user_id = ? AND a.created_at >= ?
+		  AND a.action IN (` + strings.Join(placeholders, ", ") + `)
+		  AND i.deleted_at IS NULL
+	`)
+	if err := s.db.QueryRow(collQuery, args...).Scan(&out.CollectionsTouched30d); err != nil {
+		return nil, fmt.Errorf("get user metrics collections_touched_30d: %w", err)
+	}
+
+	return out, nil
+}
+
 // TouchUserActivity updates last_active_at for a user, throttled to avoid
 // write amplification. Only writes if the stored value is older than 5 minutes.
 // Accepts a context so callers can bound the write duration.
