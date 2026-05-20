@@ -18,6 +18,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { tick } from 'svelte';
 	import type { AdminUser } from '$lib/stores/admin.svelte';
+	import UserSettingsForm from './UserSettingsForm.svelte';
 
 	export type UserModalTab = 'overview' | 'workspaces' | 'activity' | 'settings';
 
@@ -26,9 +27,12 @@
 		open: boolean;
 		initialTab?: UserModalTab;
 		onClose: () => void;
+		/** Bubbled from the Settings tab when a save completes — parent
+		 *  uses it to keep the table row in sync. PLAN-1542 / TASK-1551. */
+		onUserUpdated?: (updated: AdminUser) => void;
 	}
 
-	let { user, open = $bindable(), initialTab, onClose }: Props = $props();
+	let { user, open = $bindable(), initialTab, onClose, onUserUpdated }: Props = $props();
 
 	// Current tab. Restored from URL hash on open so a reload keeps the
 	// admin on the same tab; written back on tab change. Initialized to
@@ -223,7 +227,7 @@
 						{:else if t.key === 'activity'}
 							<p class="placeholder">Activity tab content arrives in TASK-1554.</p>
 						{:else if t.key === 'settings'}
-							<p class="placeholder">Settings & overrides tab content arrives in TASK-1551.</p>
+							<UserSettingsForm {user} {onUserUpdated} />
 						{/if}
 					</div>
 				{/each}

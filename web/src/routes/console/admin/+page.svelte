@@ -44,6 +44,14 @@
 		// Keep modalUser around so the closing animation (if any) doesn't
 		// blank the modal mid-fade; cleared on next open.
 	}
+	// Called by the modal's Settings tab after any save. Mirror the same
+	// merge pattern used by the inline-expand handlers so both UIs see
+	// the same row state until T1555 removes the inline expand.
+	// PLAN-1542 / TASK-1551.
+	function onModalUserUpdated(updated: AdminUser) {
+		users = users.map((u) => (u.id === updated.id ? { ...u, ...updated } : u));
+		if (modalUser && modalUser.id === updated.id) modalUser = { ...modalUser, ...updated };
+	}
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
 	let editRole = $state('member');
@@ -969,7 +977,12 @@
 <!-- Per-user detail modal — shell only as of TASK-1550; tab content
      arrives across T1551–T1554, and T1555 deletes the parallel inline-
      expand block above. -->
-<UserModal bind:open={modalOpen} user={modalUser} onClose={closeUserModal} />
+<UserModal
+	bind:open={modalOpen}
+	user={modalUser}
+	onClose={closeUserModal}
+	onUserUpdated={onModalUserUpdated}
+/>
 
 <style>
 	/* Search */
