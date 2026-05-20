@@ -252,6 +252,195 @@ func TestCountBillingAggregates(t *testing.T) {
 	}
 }
 
+// TestComputeAdminUserStatus locks in the precedence order: disabled wins
+// over no-workspace wins over inactive wins over active. Documented in the
+// admin user list contract (PLAN-1542 / TASK-1544).
+func TestComputeAdminUserStatus(t *testing.T) {
+	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	old := time.Now().UTC().Add(-60 * 24 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name           string
+		disabledAt     string
+		lastWriteAt    string
+		workspaceCount int
+		want           string
+	}{
+		{"disabled overrides everything", "2026-01-01T00:00:00Z", recent, 5, "disabled"},
+		{"disabled with no workspace still disabled", "2026-01-01T00:00:00Z", "", 0, "disabled"},
+		{"no workspace beats inactive", "", "", 0, "no-workspace"},
+		{"never written, has workspace", "", "", 3, "inactive"},
+		{"wrote long ago", "", old, 1, "inactive"},
+		{"wrote recently", "", recent, 1, "active"},
+		{"malformed timestamp treated as inactive", "", "not-a-date", 1, "inactive"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := computeAdminUserStatus(c.disabledAt, c.lastWriteAt, c.workspaceCount)
+			if got != c.want {
+				t.Fatalf("want %q got %q", c.want, got)
+			}
+		})
+	}
+}
+
+// TestSearchUsersAggregations verifies that SearchUsers returns correct
+// workspace_count + storage_bytes + status aggregations and that the new
+// sort/filter knobs route to the right rows. Single end-to-end test against
+// a multi-user fixture; finer-grained assertions are split into subtests.
+func TestSearchUsersAggregations(t *testing.T) {
+	s := testStore(t)
+
+	// Three users:
+	//   alice — owns 2 workspaces; one has a 100-byte attachment, one empty
+	//   bob   — owns 1 workspace, no attachments
+	//   carol — owns 0 workspaces, disabled
+	alice := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	bob := createTestUser(t, s, "bob@example.com", "Bob", "password123")
+	carol := createTestUser(t, s, "carol@example.com", "Carol", "password123")
+	if err := s.DisableUser(carol.ID); err != nil {
+		t.Fatalf("disable carol: %v", err)
+	}
+
+	mkWS := func(owner string, slug string) string {
+		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: slug, Slug: slug, OwnerID: owner})
+		if err != nil {
+			t.Fatalf("create ws %s: %v", slug, err)
+		}
+		return ws.ID
+	}
+	aliceWS1 := mkWS(alice.ID, "alice-ws-1")
+	mkWS(alice.ID, "alice-ws-2")
+	mkWS(bob.ID, "bob-ws-1")
+
+	// Drop a 100-byte attachment row into alice's first workspace. Skip the
+	// real upload pipeline (we don't need blob bytes for the SUM check).
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, created_at)
+		VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+	`), newID(), aliceWS1, alice.ID, "k1", "h1", "text/plain", int64(100), "a.txt", now()); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+
+	// Plain list (no filters) — all three users, ordered by created_at DESC
+	// (carol newest, alice oldest because tests insert in order).
+	res, err := s.SearchUsers(AdminUserSearchParams{})
+	if err != nil {
+		t.Fatalf("SearchUsers: %v", err)
+	}
+	if res.Total != 3 {
+		t.Fatalf("total: want 3 got %d", res.Total)
+	}
+	if len(res.Users) != 3 {
+		t.Fatalf("rows: want 3 got %d", len(res.Users))
+	}
+	byEmail := map[string]AdminUserListEntry{}
+	for _, u := range res.Users {
+		byEmail[u.Email] = u
+	}
+	if got := byEmail["alice@example.com"].WorkspaceCount; got != 2 {
+		t.Errorf("alice workspace_count: want 2 got %d", got)
+	}
+	if got := byEmail["alice@example.com"].StorageBytes; got != 100 {
+		t.Errorf("alice storage_bytes: want 100 got %d", got)
+	}
+	if got := byEmail["bob@example.com"].WorkspaceCount; got != 1 {
+		t.Errorf("bob workspace_count: want 1 got %d", got)
+	}
+	if got := byEmail["bob@example.com"].StorageBytes; got != 0 {
+		t.Errorf("bob storage_bytes: want 0 got %d", got)
+	}
+	if got := byEmail["carol@example.com"].WorkspaceCount; got != 0 {
+		t.Errorf("carol workspace_count: want 0 got %d", got)
+	}
+	// Status precedence: carol = disabled (regardless of workspace_count=0).
+	if got := byEmail["carol@example.com"].Status; got != "disabled" {
+		t.Errorf("carol status: want disabled got %q", got)
+	}
+	// Bob has a workspace but never wrote anything → inactive.
+	if got := byEmail["bob@example.com"].Status; got != "inactive" {
+		t.Errorf("bob status: want inactive got %q", got)
+	}
+
+	t.Run("filter disabled=true", func(t *testing.T) {
+		yes := true
+		res, err := s.SearchUsers(AdminUserSearchParams{Disabled: &yes})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Total != 1 || res.Users[0].Email != "carol@example.com" {
+			t.Fatalf("want only carol; got total=%d users=%v", res.Total, res.Users)
+		}
+	})
+
+	t.Run("filter has_workspaces=true", func(t *testing.T) {
+		yes := true
+		res, err := s.SearchUsers(AdminUserSearchParams{HasWorkspaces: &yes})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Total != 2 {
+			t.Fatalf("want 2 (alice+bob), got total=%d", res.Total)
+		}
+	})
+
+	t.Run("sort by workspaces desc", func(t *testing.T) {
+		res, err := s.SearchUsers(AdminUserSearchParams{Sort: "workspaces", Order: "desc"})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Users[0].Email != "alice@example.com" {
+			t.Fatalf("want alice first (2 workspaces); got %v", res.Users[0].Email)
+		}
+	})
+
+	t.Run("sort by storage desc", func(t *testing.T) {
+		res, err := s.SearchUsers(AdminUserSearchParams{Sort: "storage", Order: "desc"})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Users[0].Email != "alice@example.com" {
+			t.Fatalf("want alice first (100 bytes); got %v", res.Users[0].Email)
+		}
+	})
+
+	t.Run("sort by email asc", func(t *testing.T) {
+		res, err := s.SearchUsers(AdminUserSearchParams{Sort: "email", Order: "asc"})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		emails := []string{res.Users[0].Email, res.Users[1].Email, res.Users[2].Email}
+		want := []string{"alice@example.com", "bob@example.com", "carol@example.com"}
+		for i := range want {
+			if emails[i] != want[i] {
+				t.Fatalf("asc sort: want %v got %v", want, emails)
+			}
+		}
+	})
+
+	t.Run("active_within_days filters on last_write_at", func(t *testing.T) {
+		// Touch alice's last_write_at to "now"; bob stays NULL.
+		s.TouchUserWrite(t.Context(), alice.ID)
+		n := 7
+		res, err := s.SearchUsers(AdminUserSearchParams{ActiveWithinDays: &n})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Total != 1 || res.Users[0].Email != "alice@example.com" {
+			t.Fatalf("want only alice; got total=%d users=%v", res.Total, res.Users)
+		}
+	})
+
+	t.Run("query filter still works", func(t *testing.T) {
+		res, err := s.SearchUsers(AdminUserSearchParams{Query: "alice"})
+		if err != nil {
+			t.Fatalf("SearchUsers: %v", err)
+		}
+		if res.Total != 1 || res.Users[0].Email != "alice@example.com" {
+			t.Fatalf("query filter: want only alice; got total=%d", res.Total)
+		}
+	})
+}
+
 // TestTouchUserWrite verifies the last_write_at bump path:
 //   - empty userID is a no-op
 //   - first call populates the column

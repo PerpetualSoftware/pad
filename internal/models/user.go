@@ -24,7 +24,8 @@ type User struct {
 	OAuthProviders   string    `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
 	PasswordSet      bool      `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
 	DisabledAt       string    `json:"disabled_at,omitempty"`    // Non-empty = account disabled
-	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request
+	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request (any read or write)
+	LastWriteAt      string    `json:"last_write_at,omitempty"`  // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
