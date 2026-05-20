@@ -177,6 +177,73 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdminGetUserActivity returns a paginated chronological feed of
+// activities originated by the user — item writes, comments, logins,
+// account changes the user made themselves. Powers the Activity tab of
+// the admin user modal (T1554). PLAN-1542 / TASK-1546.
+//
+// GET /api/v1/admin/users/{userID}/activity?limit=20&offset=0&action=...
+//
+//	Returns: {"events":[...], "next_offset": int|null}
+//	next_offset is set when more results may exist (limit+1 lookup); null
+//	when the page is the last.
+func (s *Server) handleAdminGetUserActivity(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	if user, err := s.store.GetUser(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+
+	params := models.ActivityListParams{
+		Action: r.URL.Query().Get("action"),
+	}
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	// Ask for limit+1 so we can detect "more available" without a second
+	// COUNT query. Trim the extra before responding.
+	params.Limit = limit + 1
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			params.Offset = n
+		}
+	}
+
+	activities, err := s.store.ListUserActivity(userID, params)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	hasMore := len(activities) > limit
+	if hasMore {
+		activities = activities[:limit]
+	}
+
+	resp := map[string]interface{}{
+		"events": activities,
+	}
+	if hasMore {
+		resp["next_offset"] = params.Offset + limit
+	} else {
+		resp["next_offset"] = nil
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleAdminGetUserDetail returns a combined per-user payload: the user
 // vitals plus a per-workspace breakdown enriched with aggregations
 // (collections_count, items_open, items_total, members_count,
