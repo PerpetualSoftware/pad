@@ -554,6 +554,14 @@ export interface ItemUpdate {
 	last_modified_by?: string;
 	source?: string;
 	comment?: string;
+	/**
+	 * When true, overrides the server-side open-children guard (IDEA-1494)
+	 * that otherwise rejects non-terminal → terminal done-field transitions
+	 * while the item still has non-terminal children. Mirror of the
+	 * CLI's `--force` flag and `models.ItemUpdate.Force` server-side.
+	 * BUG-1538 / TASK-1539.
+	 */
+	force?: boolean;
 }
 
 // ─── Versions ────────────────────────────────────────────────────────────────
@@ -876,6 +884,14 @@ export interface PlaybookLibraryResponse {
 export interface ApiError {
 	code: string;
 	message: string;
+	/**
+	 * Optional structured details supplied by the server for codes that
+	 * carry recovery information. Shape varies by code — e.g.
+	 * `open_children` (IDEA-1494) returns
+	 * `{ open_children: [...], hidden_blocker_count: N, done_field, attempted_value }`.
+	 * Consumers branching on `code` cast this to the matching shape.
+	 */
+	details?: Record<string, unknown>;
 }
 
 // ─── Admin Billing Stats (PLAN-825) ──────────────────────────────────────────

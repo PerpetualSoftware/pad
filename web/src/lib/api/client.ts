@@ -62,9 +62,19 @@ const BASE = '/api/v1';
 
 class PadApiError extends Error {
 	code: string;
+	/**
+	 * Structured details for error codes that carry recovery
+	 * information. Shape varies by code; call sites branching on
+	 * `code` cast to the matching payload. The canonical consumer
+	 * today is `open_children` (IDEA-1494 / BUG-1538), whose details
+	 * carry `{ open_children, hidden_blocker_count, done_field,
+	 * attempted_value }`. Undefined for codes that don't supply it.
+	 */
+	details?: Record<string, unknown>;
 	constructor(err: ApiError) {
 		super(err.message);
 		this.code = err.code;
+		this.details = err.details;
 	}
 }
 

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
-	import { api, type ImportURLResponse } from '$lib/api/client';
+	import { api, PadApiError, type ImportURLResponse } from '$lib/api/client';
+	import { confirmOpenChildrenOrThrow } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -1043,13 +1044,55 @@
 	async function updateField(key: string, value: any) {
 		if (!item) return;
 		const updated = { ...fields, [key]: value };
+		const payload = JSON.stringify(updated);
+		const targetItem = item;
+		const targetWs = wsSlug;
 		saveStatus = 'saving';
+
+		const doUpdate = (force: boolean) =>
+			api.items.update(targetWs, targetItem.id, {
+				fields: payload,
+				...(force ? { force: true } : {})
+			});
+
 		try {
-			item = await api.items.update(wsSlug, item.id, { fields: JSON.stringify(updated) });
+			const fresh = await doUpdate(false);
+			if (item && item.id === targetItem.id) item = fresh;
 			showSaved();
-		} catch {
-			saveStatus = 'idle';
-			toastStore.show('Failed to save', 'error');
+		} catch (e) {
+			// BUG-1538 / TASK-1539: same open-children-guard recovery
+			// path as the collection page's handleStatusChange. When the
+			// user is editing the done-field (status) inline on the
+			// detail page, surface the structured 409 and offer to
+			// force-override instead of toasting a vague "Failed to
+			// save".
+			const parentRef = formatItemRef(targetItem) ?? targetItem.slug;
+			try {
+				const forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+				if (forced) {
+					if (item && item.id === targetItem.id) item = forced;
+					showSaved();
+					return;
+				}
+				// User declined to override. Snap the on-page field back
+				// to its prior value by leaving `item.fields` untouched
+				// and dropping the in-flight save indicator.
+				saveStatus = 'idle';
+				toastStore.show('Status change cancelled', 'info');
+			} catch (inner) {
+				saveStatus = 'idle';
+				if (inner !== e) {
+					const msg = inner instanceof Error ? inner.message : 'Failed to save';
+					console.error('Forced field update failed:', inner);
+					toastStore.show(msg, 'error');
+				} else {
+					// Re-thrown original (non-open_children) error.
+					if (!(e instanceof PadApiError) || e.code !== 'open_children') {
+						console.error('Failed to save field:', e);
+						toastStore.show('Failed to save', 'error');
+					}
+				}
+			}
 		}
 	}
 

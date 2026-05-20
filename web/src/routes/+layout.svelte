@@ -14,6 +14,7 @@
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
+	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
 	import { isMod, isInputFocused } from '$lib/utils/keyboard';
 	import KeyboardShortcuts from '$lib/components/common/KeyboardShortcuts.svelte';
 
@@ -201,6 +202,7 @@
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
 	<ToastContainer />
+	<OpenChildrenDialog />
 {:else}
 	{#if uiStore.isMobile}
 		<!--
@@ -265,6 +267,7 @@
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
 	<ToastContainer />
+	<OpenChildrenDialog />
 	<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
 {/if}
 

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api, PadApiError } from '$lib/api/client';
 	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
-	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId } from '$lib/types';
+	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -24,6 +24,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import { confirmOpenChildrenOrThrow } from '$lib/items/openChildrenError';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -763,18 +764,55 @@
 		if (!wsSlug) return;
 		const fields = parseFields(item);
 		fields[groupField] = newValue;
+		const fieldsPayload = JSON.stringify(fields);
+		const ws = wsSlug;
+		const parentRef = formatItemRef(item) ?? item.slug;
+
+		const doUpdate = (force: boolean) =>
+			api.items.update(ws, item.id, { fields: fieldsPayload, ...(force ? { force: true } : {}) });
+
 		try {
-			const updated = await api.items.update(wsSlug, item.id, {
-				fields: JSON.stringify(fields)
-			});
+			const updated = await doUpdate(false);
 			// Push the canonical post-update row into the local index;
 			// the `items` derived view re-renders automatically.
-			localIndex.upsert(wsSlug, updated);
+			localIndex.upsert(ws, updated);
 			toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 		} catch (e) {
-			console.error('Failed to update item:', e);
-			toastStore.show('Failed to update status', 'error');
-			throw e; // Re-throw so BoardView knows the move failed
+			// BUG-1538 / TASK-1539: the server's open-children guard
+			// (IDEA-1494) returns a structured 409 when transitioning a
+			// parent to a terminal status while it still has open
+			// children. Offer the user the same `--force` override the
+			// CLI has, then retry on confirm. confirmOpenChildrenOrThrow
+			// re-throws non-open_children errors to the catch tail.
+			try {
+				const forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+				if (forced) {
+					localIndex.upsert(ws, forced);
+					toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
+					return;
+				}
+				// User cancelled the override; surface a quiet info toast
+				// so it's clear nothing happened, then signal the caller
+				// (BoardView) that the move did not persist.
+				toastStore.show('Status change cancelled', 'info');
+				throw e;
+			} catch (inner) {
+				if (inner !== e) {
+					// Inner error is the retry's failure, not the original
+					// guard. Surface its message if we have one.
+					const msg = inner instanceof Error ? inner.message : 'Failed to update status';
+					console.error('Forced status update failed:', inner);
+					toastStore.show(msg, 'error');
+					throw inner;
+				}
+				console.error('Failed to update item:', e);
+				// Only show the generic toast when we DIDN'T already show
+				// the open-children-cancelled info toast above.
+				if (!(e instanceof PadApiError) || e.code !== 'open_children') {
+					toastStore.show('Failed to update status', 'error');
+				}
+				throw e; // Re-throw so BoardView knows the move failed
+			}
 		}
 	}
 
