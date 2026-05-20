@@ -308,17 +308,24 @@ func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *
 func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action string, r *http.Request, metadata string) (string, error) {
 	actor, source := actorFromRequest(r)
 	metadata = agentMeta(r, metadata)
-	return s.store.CreateActivityDebounced(models.Activity{
+	uid := currentUserID(r)
+	id, err := s.store.CreateActivityDebounced(models.Activity{
 		WorkspaceID: workspaceID,
 		DocumentID:  documentID,
 		Action:      action,
 		Actor:       actor,
 		Source:      source,
 		Metadata:    metadata,
-		UserID:      currentUserID(r),
+		UserID:      uid,
 		IPAddress:   clientIP(r),
 		UserAgent:   r.Header.Get("User-Agent"),
 	})
+	// Bump last_write_at on the actor. Every action that flows through this
+	// helper (created/updated/archived/restored/moved/commented) is a write.
+	// PLAN-1542 / TASK-1543. TouchUserWrite is throttled + no-ops on empty
+	// userID, so we can call unconditionally.
+	s.store.TouchUserWrite(r.Context(), uid)
+	return id, err
 }
 
 // logAuditEvent logs a non-workspace audit event (e.g. login, logout).

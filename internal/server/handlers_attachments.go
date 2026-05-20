@@ -254,6 +254,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Uploads count as user writes for engagement-metric purposes (PLAN-1542
+	// / TASK-1543). Attachments don't go through logActivity, so the hook is
+	// explicit here. Throttled + no-ops on empty userID.
+	s.store.TouchUserWrite(r.Context(), currentUserID(r))
+
 	// Bump the storage-usage cache so the next GET sees fresh used_bytes
 	// without waiting for TTL expiry. Done eagerly here (and after each
 	// thumbnail derivation / transform) so the Settings → Storage UI
