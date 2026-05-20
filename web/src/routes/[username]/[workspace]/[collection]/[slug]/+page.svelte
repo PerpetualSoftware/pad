@@ -1926,15 +1926,28 @@
 		const sourceSlug = item.slug;
 		const sourceWs = wsSlug;
 		const sourceUsername = username;
+		const sourceCollSlug = collSlug;
+		const sourceItemSlug = itemSlug;
 		const parentRef = formatItemRef(sourceItem) ?? sourceItem.slug;
 		const doMove = (force: boolean) =>
 			api.items.move(sourceWs, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
 		// After the modal resolves, only honor the success path's
-		// navigation/toast if the page still represents the same item.
-		// On a stale match we keep the move silent rather than yanking
-		// the user away from whatever they navigated to.
+		// navigation/toast if the page is STILL on the source item.
+		// We check both `item.id` (cheap object-identity guard) AND
+		// the route params (page.params.{username,workspace,
+		// collection,slug}) — during same-component navigation `item`
+		// can briefly still hold the old object while the URL has
+		// already advanced. Comparing both closes that race
+		// (Codex review round 3 P1). Stale resolutions complete
+		// silently rather than yanking the user back.
 		const navIfStillCurrent = (toSlug: string) => {
-			if (item && item.id === sourceItem.id && wsSlug === sourceWs && username === sourceUsername) {
+			const itemStillCurrent = item && item.id === sourceItem.id;
+			const routeStillCurrent =
+				wsSlug === sourceWs &&
+				username === sourceUsername &&
+				collSlug === sourceCollSlug &&
+				itemSlug === sourceItemSlug;
+			if (itemStillCurrent && routeStillCurrent) {
 				goto(`/${sourceUsername}/${sourceWs}/${targetSlug}/${toSlug}`, { replaceState: true });
 			}
 		};
