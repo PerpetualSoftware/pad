@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { adminFetch, adminPatch, adminPost, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
+	import UserModal from '$lib/components/admin/UserModal.svelte';
 
 	// --- List + pagination + filter + sort state (PLAN-1542 / TASK-1549) ---
 	// All filter state is reactive $state; we rebuild the query string on
@@ -27,6 +28,22 @@
 	let hasWorkspacesFilter = $state(''); // 'true' | 'false' | ''
 	let sortKey = $state<SortKey>('created');
 	let sortOrder = $state<SortOrder>('desc');
+
+	// Modal state. T1550 lands the shell; T1551–T1554 fill the tabs;
+	// T1555 then deletes the inline-expand block below. During T1550–T1554
+	// both UIs coexist — clicking a row opens the modal AND toggles the
+	// inline expand. This is the explicit broken state from the plan.
+	let modalUser = $state<AdminUser | null>(null);
+	let modalOpen = $state(false);
+	function openUserModal(u: AdminUser) {
+		modalUser = u;
+		modalOpen = true;
+	}
+	function closeUserModal() {
+		modalOpen = false;
+		// Keep modalUser around so the closing animation (if any) doesn't
+		// blank the modal mid-fade; cleared on next open.
+	}
 	let selectedId = $state<string | null>(null);
 	let editPlan = $state('free');
 	let editRole = $state('member');
@@ -670,7 +687,7 @@
 							class="user-row"
 							class:selected={selectedId === user.id}
 							class:disabled-row={!!user.disabled_at}
-							onclick={() => selectUser(user)}
+							onclick={() => { selectUser(user); openUserModal(user); }}
 						>
 							<td>
 								{user.name || user.username}
@@ -948,6 +965,11 @@
 		</div>
 	{/if}
 </div>
+
+<!-- Per-user detail modal — shell only as of TASK-1550; tab content
+     arrives across T1551–T1554, and T1555 deletes the parallel inline-
+     expand block above. -->
+<UserModal bind:open={modalOpen} user={modalUser} onClose={closeUserModal} />
 
 <style>
 	/* Search */
