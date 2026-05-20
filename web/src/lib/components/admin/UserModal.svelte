@@ -21,6 +21,7 @@
 	import UserSettingsForm from './UserSettingsForm.svelte';
 	import UserWorkspacesTab from './UserWorkspacesTab.svelte';
 	import UserOverviewTab from './UserOverviewTab.svelte';
+	import UserActivityTab from './UserActivityTab.svelte';
 
 	export type UserModalTab = 'overview' | 'workspaces' | 'activity' | 'settings';
 
@@ -227,7 +228,7 @@
 						{:else if t.key === 'workspaces'}
 							<UserWorkspacesTab {user} active={activeTab === 'workspaces'} />
 						{:else if t.key === 'activity'}
-							<p class="placeholder">Activity tab content arrives in TASK-1554.</p>
+							<UserActivityTab {user} active={activeTab === 'activity'} />
 						{:else if t.key === 'settings'}
 							<UserSettingsForm {user} {onUserUpdated} />
 						{/if}
@@ -339,9 +340,6 @@
 	.user-modal-panel.active {
 		display: block;
 	}
-	.placeholder {
-		color: var(--text-muted);
-		font-style: italic;
-		margin: 0;
-	}
+	/* .placeholder rule removed — all four tabs now render real content
+	   as of TASK-1554. No remaining users of the class. */
 </style>
