@@ -160,12 +160,17 @@
 		return editRole === 'admin' ? 'Promote' : 'Demote';
 	}
 
+	// All async handlers snapshot user.id (and the target email for the
+	// typed-confirm gate) at entry so a mid-flight modal swap to a
+	// different user can't fetch/mutate the wrong row (Codex review on
+	// PR #606). Mirrors the inline-expand handlers' pattern.
 	async function changeRole() {
+		const userId = user.id;
 		roleSaving = true;
 		roleMsg = '';
 		try {
-			await adminPatch(`/admin/users/${user.id}`, { role: editRole });
-			const updated = await adminFetch(`/admin/users/${user.id}`);
+			await adminPatch(`/admin/users/${userId}`, { role: editRole });
+			const updated = await adminFetch(`/admin/users/${userId}`);
 			onUserUpdated?.(updated as AdminUser);
 			roleMsg = 'Role updated';
 			roleConfirm = false;
@@ -177,11 +182,12 @@
 	}
 
 	async function resetPassword() {
+		const userId = user.id;
 		resetSaving = true;
 		resetError = '';
 		resetResult = null;
 		try {
-			const result = await adminPost(`/admin/users/${user.id}/reset-password`);
+			const result = await adminPost(`/admin/users/${userId}/reset-password`);
 			resetResult = result;
 		} catch (e) {
 			resetError = e instanceof Error ? e.message : 'Password reset failed';
@@ -192,19 +198,24 @@
 	}
 
 	async function toggleDisable() {
+		const userId = user.id;
+		const targetEmail = user.email;
 		const wasDisabled = !!user.disabled_at;
-		// Typed-email confirmation gate on the destructive side only.
-		// Enable doesn't need it.
-		if (!wasDisabled && disableTyped.trim() !== user.email) {
-			disableMsg = 'Type the user’s email exactly to confirm.';
+		// Typed-email confirmation gate on the destructive side only. The
+		// comparison trims whitespace because paste from various sources
+		// (terminal, table cells, mail clients) often picks up surrounding
+		// space; the UI copy already says "paste tolerant" implicitly via
+		// the placeholder.
+		if (!wasDisabled && disableTyped.trim() !== targetEmail) {
+			disableMsg = 'Type the user’s email to confirm (paste tolerant).';
 			return;
 		}
 		disableSaving = true;
 		disableMsg = '';
 		try {
 			const action = wasDisabled ? 'enable' : 'disable';
-			await adminPost(`/admin/users/${user.id}/${action}`);
-			const updated = await adminFetch(`/admin/users/${user.id}`);
+			await adminPost(`/admin/users/${userId}/${action}`);
+			const updated = await adminFetch(`/admin/users/${userId}`);
 			onUserUpdated?.(updated as AdminUser);
 			disableMsg = wasDisabled ? 'User re-enabled' : 'User disabled';
 			disableConfirm = false;
@@ -217,6 +228,7 @@
 	}
 
 	async function saveUser() {
+		const userId = user.id;
 		saving = true;
 		saveMsg = '';
 		storageOverrideError = '';
@@ -248,11 +260,11 @@
 			}
 			const overridesJSON =
 				Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : '';
-			await adminPatch(`/admin/users/${user.id}`, {
+			await adminPatch(`/admin/users/${userId}`, {
 				plan: editPlan,
 				plan_overrides: overridesJSON
 			});
-			const updated = await adminFetch(`/admin/users/${user.id}`);
+			const updated = await adminFetch(`/admin/users/${userId}`);
 			onUserUpdated?.(updated as AdminUser);
 			saveMsg = 'Saved';
 		} catch (e) {
@@ -375,7 +387,11 @@
 							class="btn btn-danger"
 							type="button"
 							disabled={disableSaving || disableTyped.trim() !== user.email}
-							onclick={toggleDisable}>{disableSaving ? 'Disabling…' : 'Disable'}</button
+							onclick={toggleDisable}
+							title={disableTyped.trim() === user.email
+								? 'Disable this account'
+								: `Type ${user.email} to enable this button (paste tolerant)`}
+							>{disableSaving ? 'Disabling…' : 'Disable'}</button
 						>
 						<button
 							class="btn btn-sub"
