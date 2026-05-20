@@ -252,6 +252,63 @@ func TestCountBillingAggregates(t *testing.T) {
 	}
 }
 
+// TestTouchUserWrite verifies the last_write_at bump path:
+//   - empty userID is a no-op
+//   - first call populates the column
+//   - second call within 5 minutes does NOT overwrite (throttle)
+//   - a forced backdated timestamp followed by Touch DOES overwrite (past throttle)
+func TestTouchUserWrite(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "writer@example.com", "Writer", "password123")
+	ctx := t.Context()
+
+	// Empty userID: silent no-op, no error, no row touched.
+	s.TouchUserWrite(ctx, "")
+
+	readLastWrite := func() string {
+		t.Helper()
+		var lw *string
+		if err := s.db.QueryRow(s.q(`SELECT last_write_at FROM users WHERE id = ?`), u.ID).Scan(&lw); err != nil {
+			t.Fatalf("query last_write_at: %v", err)
+		}
+		if lw == nil {
+			return ""
+		}
+		return *lw
+	}
+
+	if got := readLastWrite(); got != "" {
+		t.Fatalf("expected last_write_at to start NULL, got %q", got)
+	}
+
+	// First call populates the column.
+	s.TouchUserWrite(ctx, u.ID)
+	first := readLastWrite()
+	if first == "" {
+		t.Fatalf("expected last_write_at to be set after first touch")
+	}
+
+	// Second call within the throttle window must not overwrite — re-touch
+	// then verify the value is unchanged. (Without throttle the value would
+	// change because `now()` advances per call.)
+	time.Sleep(1100 * time.Millisecond) // ensure now() RFC3339 second-resolution moves forward
+	s.TouchUserWrite(ctx, u.ID)
+	if got := readLastWrite(); got != first {
+		t.Fatalf("expected throttle to suppress second write within 5m; first=%q got=%q", first, got)
+	}
+
+	// Backdate to outside the throttle window, then touch — value SHOULD
+	// move forward.
+	old := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`UPDATE users SET last_write_at = ? WHERE id = ?`), old, u.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	s.TouchUserWrite(ctx, u.ID)
+	if got := readLastWrite(); got == old {
+		t.Fatalf("expected touch outside throttle to advance last_write_at; still %q", got)
+	}
+}
+
 // insertWithPlanAndDate is a test-only helper that inserts a user with a
 // specific plan + created_at timestamp. CreateUser doesn't expose either
 // directly. Times are RFC3339-formatted strings (matching store.now) so

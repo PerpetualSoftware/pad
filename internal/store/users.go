@@ -506,6 +506,27 @@ func (s *Store) TouchUserActivity(ctx context.Context, userID string) {
 	`), ts, userID, throttleTime(ts))
 }
 
+// TouchUserWrite updates last_write_at for a user, throttled to avoid write
+// amplification. Only writes if the stored value is older than 5 minutes.
+// Best-effort: errors are swallowed (matches TouchUserActivity).
+//
+// Unlike last_active_at (which fires on any authenticated request), this is
+// only called from write-path handler sites — item create/update/delete/move,
+// comment authored, attachment uploaded. See handlers_documents.go's
+// logActivityWithMetaReturningID and handlers_attachments.go's upload handler.
+//
+// Silent no-op on empty userID so callers don't have to guard.
+func (s *Store) TouchUserWrite(ctx context.Context, userID string) {
+	if userID == "" {
+		return
+	}
+	ts := now()
+	s.db.ExecContext(ctx, s.q(`
+		UPDATE users SET last_write_at = ?
+		WHERE id = ? AND (last_write_at IS NULL OR last_write_at < ?)
+	`), ts, userID, throttleTime(ts))
+}
+
 // throttleTime returns a timestamp 5 minutes before the given RFC3339 time string.
 func throttleTime(ts string) string {
 	t, err := time.Parse(time.RFC3339, ts)

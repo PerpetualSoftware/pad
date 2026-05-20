@@ -232,6 +232,12 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Comment replies don't go through logActivity (no "commented" activity
+	// row is emitted for replies — see handleCreateComment for the non-reply
+	// path that does). Bump last_write_at explicitly so engagement metrics
+	// reflect reply authorship too (PLAN-1542 / TASK-1543).
+	s.store.TouchUserWrite(r.Context(), currentUserID(r))
+
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""
 	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
