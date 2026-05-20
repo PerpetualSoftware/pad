@@ -19,6 +19,7 @@
 	import { tick } from 'svelte';
 	import type { AdminUser } from '$lib/stores/admin.svelte';
 	import UserSettingsForm from './UserSettingsForm.svelte';
+	import UserWorkspacesTab from './UserWorkspacesTab.svelte';
 
 	export type UserModalTab = 'overview' | 'workspaces' | 'activity' | 'settings';
 
@@ -223,7 +224,7 @@
 						{#if t.key === 'overview'}
 							<p class="placeholder">Overview tab content arrives in TASK-1553.</p>
 						{:else if t.key === 'workspaces'}
-							<p class="placeholder">Workspaces tab content arrives in TASK-1552.</p>
+							<UserWorkspacesTab {user} active={activeTab === 'workspaces'} />
 						{:else if t.key === 'activity'}
 							<p class="placeholder">Activity tab content arrives in TASK-1554.</p>
 						{:else if t.key === 'settings'}
