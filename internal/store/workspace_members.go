@@ -922,6 +922,129 @@ type AdminUserWorkspace struct {
 	JoinedAt      string `json:"joined_at"`
 }
 
+// AdminUserWorkspaceDetail extends AdminUserWorkspace with per-workspace
+// aggregations rendered in the admin user modal's Workspaces tab.
+// PLAN-1542 / TASK-1545.
+type AdminUserWorkspaceDetail struct {
+	AdminUserWorkspace
+	// CollectionsCount excludes system collections (playbooks, conventions —
+	// collections.is_system = 1). Counts non-deleted user-facing collections.
+	CollectionsCount int `json:"collections_count"`
+	// ItemsOpen counts non-deleted items whose status is NOT in the
+	// terminal set. The terminal set is currently hardcoded (see
+	// adminOpenItemsCountClause); a schema-aware terminal_options check
+	// is a separate follow-up.
+	ItemsOpen int `json:"items_open"`
+	// ItemsTotal counts all non-deleted items in the workspace.
+	ItemsTotal int `json:"items_total"`
+	// MembersCount counts workspace_members rows (includes the owner).
+	MembersCount int `json:"members_count"`
+	// StorageBytes mirrors WorkspaceStorageUsage's definition: SUM of
+	// non-deleted attachment size_bytes (including derived blobs).
+	StorageBytes int64 `json:"storage_bytes"`
+	// LastActivityAt is MAX(items.updated_at) across non-deleted items.
+	// Empty string when the workspace has no items yet.
+	LastActivityAt string `json:"last_activity_at,omitempty"`
+}
+
+// adminOpenItemsCountClause returns a SQL fragment (no leading AND) that
+// excludes terminal-status items. Single-sourced from
+// models.DefaultTerminalStatuses to match the rest of the codebase, and
+// uses the dialect's JSON-extract helper so the query runs identically on
+// SQLite and Postgres. Wraps the extracted value in LOWER(COALESCE(...,'')
+// so items with NULL/missing status (NULL NOT IN (...) is not TRUE in SQL)
+// and case-variant statuses still register as "open" — matching how
+// search.go and items.go interpret terminal-status checks.
+func (s *Store) adminOpenItemsCountClause() (clause string, args []interface{}) {
+	terms := models.DefaultTerminalStatuses
+	if len(terms) == 0 {
+		return "1=1", nil
+	}
+	placeholders := make([]string, len(terms))
+	args = make([]interface{}, len(terms))
+	for i, v := range terms {
+		placeholders[i] = "?"
+		args[i] = strings.ToLower(v)
+	}
+	expr := "LOWER(COALESCE(" + s.dialect.JSONExtractText("i.fields", "status") + ", ''))"
+	return expr + " NOT IN (" + strings.Join(placeholders, ", ") + ")", args
+}
+
+// GetUserWorkspacesDetailed returns each workspace this user is a member
+// of with the per-workspace aggregations the admin modal's Workspaces tab
+// renders. Caps the result at 50 rows (frontend caps display at 20 in
+// T1552; the headroom is for future tabs that might want the full list).
+// PLAN-1542 / TASK-1545.
+func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDetail, error) {
+	openClause, openArgs := s.adminOpenItemsCountClause()
+
+	// Aggregations live in correlated subqueries rather than a wide JOIN +
+	// GROUP BY because the workspaces a single user belongs to are at most
+	// tens, not thousands — the subquery cost is fine and the SQL stays
+	// readable. items_open uses JSON_EXTRACT on the fields blob to read
+	// the status field, matching how the rest of the store queries it
+	// (see search.go).
+	query := `
+		SELECT
+			w.id, w.name, w.slug,
+			COALESCE(ou.username, ''),
+			wm.role, wm.created_at,
+			(SELECT COUNT(*) FROM collections c
+				WHERE c.workspace_id = w.id AND c.deleted_at IS NULL AND c.is_system = 0),
+			(SELECT COUNT(*) FROM items i
+				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL AND ` + openClause + `),
+			(SELECT COUNT(*) FROM items i
+				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL),
+			(SELECT COUNT(*) FROM workspace_members wm2 WHERE wm2.workspace_id = w.id),
+			(SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a
+				WHERE a.workspace_id = w.id AND a.deleted_at IS NULL),
+			(SELECT MAX(i.updated_at) FROM items i
+				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL)
+		FROM workspace_members wm
+		JOIN workspaces w ON w.id = wm.workspace_id
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE wm.user_id = ? AND w.deleted_at IS NULL
+		ORDER BY w.name ASC
+		LIMIT 50`
+
+	// Two placeholder copies of openArgs because the subquery is
+	// referenced once but each `?` is a separate placeholder. The order
+	// is: openClause placeholders first, then wm.user_id.
+	args := make([]interface{}, 0, len(openArgs)+1)
+	args = append(args, openArgs...)
+	args = append(args, userID)
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get user workspaces detailed: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]AdminUserWorkspaceDetail, 0)
+	for rows.Next() {
+		var d AdminUserWorkspaceDetail
+		var lastActivity sql.NullString
+		if err := rows.Scan(
+			&d.WorkspaceID, &d.WorkspaceName, &d.WorkspaceSlug,
+			&d.OwnerUsername,
+			&d.Role, &d.JoinedAt,
+			&d.CollectionsCount,
+			&d.ItemsOpen,
+			&d.ItemsTotal,
+			&d.MembersCount,
+			&d.StorageBytes,
+			&lastActivity,
+		); err != nil {
+			return nil, fmt.Errorf("scan workspace detail: %w", err)
+		}
+		if lastActivity.Valid {
+			d.LastActivityAt = lastActivity.String
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // GetUserWorkspaceMemberships returns workspace memberships for admin user detail.
 func (s *Store) GetUserWorkspaceMemberships(userID string) ([]AdminUserWorkspace, error) {
 	rows, err := s.db.Query(s.q(`
