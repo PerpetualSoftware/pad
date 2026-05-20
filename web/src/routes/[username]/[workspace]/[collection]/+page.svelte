@@ -24,7 +24,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
-	import { confirmOpenChildrenOrThrow } from '$lib/items/openChildrenError';
+	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -781,38 +781,38 @@
 			// BUG-1538 / TASK-1539: the server's open-children guard
 			// (IDEA-1494) returns a structured 409 when transitioning a
 			// parent to a terminal status while it still has open
-			// children. Offer the user the same `--force` override the
-			// CLI has, then retry on confirm. confirmOpenChildrenOrThrow
-			// re-throws non-open_children errors to the catch tail.
-			try {
-				const forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+			// children. Branch on the error shape so a USER cancel of
+			// the modal doesn't get logged as an "update failure" and
+			// the toast/log noise matches user intent.
+			if (isOpenChildrenError(e)) {
+				let forced;
+				try {
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+				} catch (retryErr) {
+					// The retry-with-force itself failed (network /
+					// 500 / fresh validation error). Surface that
+					// distinctly from the original guard.
+					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to update status';
+					console.error('Forced status update failed:', retryErr);
+					toastStore.show(msg, 'error');
+					throw retryErr;
+				}
 				if (forced) {
 					localIndex.upsert(ws, forced);
 					toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 					return;
 				}
-				// User cancelled the override; surface a quiet info toast
-				// so it's clear nothing happened, then signal the caller
-				// (BoardView) that the move did not persist.
+				// User cancelled the override. Quiet info toast — this
+				// is an intentional no-op, not a failure. Re-throw so
+				// the BoardView drag-handler can unwind its optimistic
+				// reorder.
 				toastStore.show('Status change cancelled', 'info');
 				throw e;
-			} catch (inner) {
-				if (inner !== e) {
-					// Inner error is the retry's failure, not the original
-					// guard. Surface its message if we have one.
-					const msg = inner instanceof Error ? inner.message : 'Failed to update status';
-					console.error('Forced status update failed:', inner);
-					toastStore.show(msg, 'error');
-					throw inner;
-				}
-				console.error('Failed to update item:', e);
-				// Only show the generic toast when we DIDN'T already show
-				// the open-children-cancelled info toast above.
-				if (!(e instanceof PadApiError) || e.code !== 'open_children') {
-					toastStore.show('Failed to update status', 'error');
-				}
-				throw e; // Re-throw so BoardView knows the move failed
 			}
+			// Any other failure mode — network, validation, 500, etc.
+			console.error('Failed to update item:', e);
+			toastStore.show('Failed to update status', 'error');
+			throw e; // Re-throw so BoardView knows the move failed
 		}
 	}
 

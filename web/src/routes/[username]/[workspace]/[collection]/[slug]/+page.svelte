@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { api, PadApiError, type ImportURLResponse } from '$lib/api/client';
-	import { confirmOpenChildrenOrThrow } from '$lib/items/openChildrenError';
+	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -1066,9 +1066,20 @@
 			// detail page, surface the structured 409 and offer to
 			// force-override instead of toasting a vague "Failed to
 			// save".
-			const parentRef = formatItemRef(targetItem) ?? targetItem.slug;
-			try {
-				const forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+			if (isOpenChildrenError(e)) {
+				const parentRef = formatItemRef(targetItem) ?? targetItem.slug;
+				let forced;
+				try {
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+				} catch (retryErr) {
+					// The force retry itself failed (network / 500 /
+					// fresh validation error after the override).
+					saveStatus = 'idle';
+					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to save';
+					console.error('Forced field update failed:', retryErr);
+					toastStore.show(msg, 'error');
+					return;
+				}
 				if (forced) {
 					if (item && item.id === targetItem.id) item = forced;
 					showSaved();
@@ -1076,23 +1087,19 @@
 				}
 				// User declined to override. Snap the on-page field back
 				// to its prior value by leaving `item.fields` untouched
-				// and dropping the in-flight save indicator.
+				// (FieldEditor re-renders from `value` prop) and drop
+				// the in-flight save indicator. Force `item` to a fresh
+				// reference so child components re-prop unambiguously
+				// even if they cache by identity.
 				saveStatus = 'idle';
+				if (item && item.id === targetItem.id) item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
-			} catch (inner) {
-				saveStatus = 'idle';
-				if (inner !== e) {
-					const msg = inner instanceof Error ? inner.message : 'Failed to save';
-					console.error('Forced field update failed:', inner);
-					toastStore.show(msg, 'error');
-				} else {
-					// Re-thrown original (non-open_children) error.
-					if (!(e instanceof PadApiError) || e.code !== 'open_children') {
-						console.error('Failed to save field:', e);
-						toastStore.show('Failed to save', 'error');
-					}
-				}
+				return;
 			}
+			// Any other failure mode — network, validation, 500, etc.
+			saveStatus = 'idle';
+			console.error('Failed to save field:', e);
+			toastStore.show('Failed to save', 'error');
 		}
 	}
 
@@ -1909,11 +1916,39 @@
 		if (!item || moving) return;
 		moving = true;
 		showMoveMenu = false;
+		// Capture identity so an in-flight modal-decision doesn't apply
+		// to a navigation that happened in the meantime.
+		const sourceSlug = item.slug;
+		const parentRef = formatItemRef(item) ?? item.slug;
+		const doMove = (force: boolean) =>
+			api.items.move(wsSlug, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
 		try {
-			const moved = await api.items.move(wsSlug, item.slug, targetSlug);
+			const moved = await doMove(false);
 			toastStore.show(`Moved to ${targetSlug}`, 'success');
 			goto(`/${username}/${wsSlug}/${targetSlug}/${moved.slug}`, { replaceState: true });
 		} catch (e: any) {
+			// BUG-1538 / Codex review round 1: the server's
+			// open-children guard also fires on POST /move when the
+			// move would land the parent terminal in the target
+			// collection. Wire the same modal + ?force=true override
+			// path used for PATCH status changes.
+			if (isOpenChildrenError(e)) {
+				let forced;
+				try {
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doMove(true));
+				} catch (retryErr: any) {
+					console.error('Forced move failed:', retryErr);
+					toastStore.show(retryErr?.message ?? 'Failed to move item', 'error');
+					return; // outer finally still resets `moving`
+				}
+				if (forced) {
+					toastStore.show(`Moved to ${targetSlug}`, 'success');
+					goto(`/${username}/${wsSlug}/${targetSlug}/${forced.slug}`, { replaceState: true });
+				} else {
+					toastStore.show('Move cancelled', 'info');
+				}
+				return;
+			}
 			toastStore.show(e.message ?? 'Failed to move item', 'error');
 		} finally {
 			moving = false;

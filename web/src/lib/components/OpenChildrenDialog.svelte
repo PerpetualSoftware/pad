@@ -16,6 +16,25 @@
 	import { openChildrenDialog } from '$lib/stores/openChildrenDialog.svelte';
 
 	let active = $derived(openChildrenDialog.active);
+	let cancelBtn: HTMLButtonElement | undefined = $state();
+	let modalEl: HTMLDivElement | undefined = $state();
+	let previouslyFocused: HTMLElement | null = null;
+
+	// On open: remember whatever had focus so we can restore it on
+	// close, then move focus to the safe action (Cancel) — keyboard
+	// users land on a defined target and the destructive "Override"
+	// action stays one Tab away. On close: restore the original focus
+	// so the user lands back where they were (drag handle, status
+	// dropdown, etc.).
+	$effect(() => {
+		if (active) {
+			previouslyFocused = (document.activeElement as HTMLElement) ?? null;
+			cancelBtn?.focus();
+		} else if (previouslyFocused) {
+			previouslyFocused.focus();
+			previouslyFocused = null;
+		}
+	});
 
 	function onCancel() {
 		openChildrenDialog.cancel();
@@ -25,15 +44,47 @@
 		openChildrenDialog.confirm();
 	}
 
+	// Focus trap. While the dialog is open, Tab / Shift-Tab cycle
+	// between the focusable elements WITHIN the modal — anything
+	// outside is off-limits until the user cancels or confirms.
+	// Cheap implementation: collect focusable descendants on each
+	// Tab press (modal contents are small + static while open) and
+	// wrap selection at the ends.
+	function trapTab(e: KeyboardEvent) {
+		if (!active || e.key !== 'Tab' || !modalEl) return;
+		const nodes = modalEl.querySelectorAll<HTMLElement>(
+			'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"]), input, select, textarea'
+		);
+		if (nodes.length === 0) return;
+		const first = nodes[0];
+		const last = nodes[nodes.length - 1];
+		const current = document.activeElement as HTMLElement | null;
+		if (e.shiftKey && current === first) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && current === last) {
+			e.preventDefault();
+			first.focus();
+		} else if (current && !modalEl.contains(current)) {
+			// Focus escaped (e.g. via programmatic blur) — re-anchor.
+			e.preventDefault();
+			first.focus();
+		}
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (!active) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onCancel();
-		} else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+			return;
+		}
+		if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
 			onConfirm();
+			return;
 		}
+		trapTab(e);
 	}
 
 	// Item URLs are /[username]/[workspace]/[collection]/[slug]. The
@@ -62,7 +113,7 @@
 		aria-labelledby="open-children-title"
 		tabindex="-1"
 	>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal" bind:this={modalEl} onclick={(e) => e.stopPropagation()}>
 			<div class="modal-header">
 				<h2 id="open-children-title">Children still open</h2>
 				<button class="close-btn" type="button" onclick={onCancel} aria-label="Cancel"
@@ -121,7 +172,12 @@
 			</div>
 
 			<div class="modal-footer">
-				<button type="button" class="btn btn-secondary" onclick={onCancel}>Cancel</button>
+				<button
+					bind:this={cancelBtn}
+					type="button"
+					class="btn btn-secondary"
+					onclick={onCancel}>Cancel</button
+				>
 				<button type="button" class="btn btn-danger" onclick={onConfirm}>
 					Override and mark {active.details.attempted_value}
 				</button>
