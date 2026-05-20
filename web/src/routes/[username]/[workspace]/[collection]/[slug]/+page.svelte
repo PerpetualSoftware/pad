@@ -1916,16 +1916,32 @@
 		if (!item || moving) return;
 		moving = true;
 		showMoveMenu = false;
-		// Capture identity so an in-flight modal-decision doesn't apply
-		// to a navigation that happened in the meantime.
+		// Capture FULL route identity (workspace, username, source
+		// slug, source item id, parent ref) at the moment the user
+		// kicked off the move. If the user navigates while the
+		// open-children modal is up, we don't want a confirmed force
+		// retry to fire against the new route's workspace — that
+		// could move the wrong item (Codex review round 2 P1).
+		const sourceItem = item;
 		const sourceSlug = item.slug;
-		const parentRef = formatItemRef(item) ?? item.slug;
+		const sourceWs = wsSlug;
+		const sourceUsername = username;
+		const parentRef = formatItemRef(sourceItem) ?? sourceItem.slug;
 		const doMove = (force: boolean) =>
-			api.items.move(wsSlug, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
+			api.items.move(sourceWs, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
+		// After the modal resolves, only honor the success path's
+		// navigation/toast if the page still represents the same item.
+		// On a stale match we keep the move silent rather than yanking
+		// the user away from whatever they navigated to.
+		const navIfStillCurrent = (toSlug: string) => {
+			if (item && item.id === sourceItem.id && wsSlug === sourceWs && username === sourceUsername) {
+				goto(`/${sourceUsername}/${sourceWs}/${targetSlug}/${toSlug}`, { replaceState: true });
+			}
+		};
 		try {
 			const moved = await doMove(false);
 			toastStore.show(`Moved to ${targetSlug}`, 'success');
-			goto(`/${username}/${wsSlug}/${targetSlug}/${moved.slug}`, { replaceState: true });
+			navIfStillCurrent(moved.slug);
 		} catch (e: any) {
 			// BUG-1538 / Codex review round 1: the server's
 			// open-children guard also fires on POST /move when the
@@ -1943,7 +1959,7 @@
 				}
 				if (forced) {
 					toastStore.show(`Moved to ${targetSlug}`, 'success');
-					goto(`/${username}/${wsSlug}/${targetSlug}/${forced.slug}`, { replaceState: true });
+					navIfStillCurrent(forced.slug);
 				} else {
 					toastStore.show('Move cancelled', 'info');
 				}
