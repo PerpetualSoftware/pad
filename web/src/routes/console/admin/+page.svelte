@@ -364,6 +364,22 @@
 		return formatDate(dateStr);
 	}
 
+	// writeRecency buckets the last-write timestamp into a CSS class:
+	//   recent: < 7 days (green)
+	//   stale:  < 30 days (yellow)
+	//   cold:   ≥ 30 days (red)
+	//   never:  null (gray)
+	// Buckets are the visual half of the API's "status" pill — the pill
+	// names the overall user state, this cell colors the write-age cell
+	// at a glance. PLAN-1542 / TASK-1548.
+	function writeRecency(dateStr: string | null): 'recent' | 'stale' | 'cold' | 'never' {
+		if (!dateStr) return 'never';
+		const days = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+		if (days < 7) return 'recent';
+		if (days < 30) return 'stale';
+		return 'cold';
+	}
+
 	onMount(() => {
 		loadUsers();
 	});
@@ -397,10 +413,13 @@
 					<tr>
 						<th>Name</th>
 						<th>Role</th>
+						<th>Workspaces</th>
 						<th>Email</th>
 						{#if adminStore.stats?.cloud_mode}
 							<th>Plan</th>
 						{/if}
+						<th>Storage</th>
+						<th>Last Write</th>
 						<th>Last Active</th>
 						<th>Created</th>
 					</tr>
@@ -415,8 +434,11 @@
 						>
 							<td>
 								{user.name || user.username}
-								{#if user.disabled_at}
-									<span class="badge disabled">disabled</span>
+								<!-- Status pill replaces the legacy "disabled" badge.
+								     "active" is the common case; omit the pill to avoid
+								     visual noise. Other states call out problems. -->
+								{#if user.status && user.status !== 'active'}
+									<span class="badge status-{user.status}">{user.status}</span>
 								{/if}
 							</td>
 							<td
@@ -424,6 +446,7 @@
 									>{user.role || 'member'}</span
 								></td
 							>
+							<td class="num-cell">{user.workspace_count ?? 0}</td>
 							<td>{user.email}</td>
 							{#if adminStore.stats?.cloud_mode}
 								<td
@@ -432,6 +455,11 @@
 									></td
 								>
 							{/if}
+							<td class="num-cell">{formatStorageBytes(user.storage_bytes ?? 0)}</td>
+							<td
+								class="date-cell write-{writeRecency(user.last_write_at)}"
+								title={user.last_write_at || ''}
+								>{relativeTime(user.last_write_at)}</td>
 							<td class="date-cell muted"
 								title={user.last_active_at || ''}
 								>{relativeTime(user.last_active_at)}</td>
@@ -439,7 +467,7 @@
 						</tr>
 						{#if selectedId === user.id}
 							<tr class="edit-row">
-								<td colspan={adminStore.stats?.cloud_mode ? 6 : 5}>
+								<td colspan={adminStore.stats?.cloud_mode ? 9 : 8}>
 									<div class="edit-panel">
 										<div class="edit-field">
 											<label for="edit-role">Role</label>
@@ -775,6 +803,39 @@
 		background: color-mix(in srgb, #ef4444 15%, transparent);
 		color: #ef4444;
 		margin-left: var(--space-2);
+	}
+	/* Status pill — server-side computed (disabled / no-workspace / inactive /
+	   active). "active" never renders; the other three call out something
+	   actionable. PLAN-1542 / TASK-1548. */
+	.badge.status-disabled {
+		background: color-mix(in srgb, #ef4444 15%, transparent);
+		color: #ef4444;
+		margin-left: var(--space-2);
+	}
+	.badge.status-no-workspace {
+		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
+		color: var(--text-muted);
+		margin-left: var(--space-2);
+	}
+	.badge.status-inactive {
+		background: color-mix(in srgb, #f59e0b 15%, transparent);
+		color: #f59e0b;
+		margin-left: var(--space-2);
+	}
+	/* Numeric cells (workspace_count, storage_bytes) — right-aligned and
+	   tabular figures so digits line up vertically across rows. */
+	.num-cell {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	/* Last-write recency coloring — see writeRecency() in the script. */
+	.date-cell.write-recent { color: #10b981; }
+	.date-cell.write-stale { color: #f59e0b; }
+	.date-cell.write-cold { color: #ef4444; }
+	.date-cell.write-never {
+		color: var(--text-muted);
+		font-style: italic;
 	}
 	.disabled-row {
 		opacity: 0.6;

@@ -22,6 +22,24 @@ export interface AdminUser {
 	totp_enabled: boolean;
 	disabled_at: string | null;
 	last_active_at: string | null;
+	/**
+	 * Last mutating action (item/comment/attachment) — distinct from
+	 * last_active_at, which fires on any authenticated request including
+	 * reads. Wired by Store.TouchUserWrite. PLAN-1542 / TASK-1543.
+	 */
+	last_write_at: string | null;
+	/** Number of non-deleted workspaces this user owns. */
+	workspace_count: number;
+	/**
+	 * Total attachment bytes across owned workspaces (matches
+	 * WorkspaceStorageUsage's definition; includes derived blobs).
+	 */
+	storage_bytes: number;
+	/**
+	 * Computed status pill. Precedence: disabled > no-workspace > inactive
+	 * (>30d or never wrote) > active. Server-side in computeAdminUserStatus.
+	 */
+	status: 'active' | 'inactive' | 'disabled' | 'no-workspace';
 	created_at: string;
 }
 
