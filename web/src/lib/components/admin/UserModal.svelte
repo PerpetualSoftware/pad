@@ -20,6 +20,7 @@
 	import type { AdminUser } from '$lib/stores/admin.svelte';
 	import UserSettingsForm from './UserSettingsForm.svelte';
 	import UserWorkspacesTab from './UserWorkspacesTab.svelte';
+	import UserOverviewTab from './UserOverviewTab.svelte';
 
 	export type UserModalTab = 'overview' | 'workspaces' | 'activity' | 'settings';
 
@@ -222,7 +223,7 @@
 						data-testid="user-modal-panel-{t.key}"
 					>
 						{#if t.key === 'overview'}
-							<p class="placeholder">Overview tab content arrives in TASK-1553.</p>
+							<UserOverviewTab {user} active={activeTab === 'overview'} />
 						{:else if t.key === 'workspaces'}
 							<UserWorkspacesTab {user} active={activeTab === 'workspaces'} />
 						{:else if t.key === 'activity'}
