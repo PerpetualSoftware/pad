@@ -159,6 +159,18 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Aggregations for the list-row merge. The list endpoint returns
+	// these per-row; this single-user endpoint is hit after PATCH/POST
+	// mutations to refresh a row, so it must return the same shape or
+	// the merged row goes stale (Codex review on PR #603).
+	storageBytes, err := s.store.UserStorageUsage(user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	wsCount := len(workspaces)
+	status := store.ComputeAdminUserStatusValue(user.DisabledAt, user.LastWriteAt, wsCount)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":              user.ID,
 		"email":           user.Email,
@@ -171,9 +183,12 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"totp_enabled":    user.TOTPEnabled,
 		"disabled_at":     user.DisabledAt,
 		"last_active_at":  user.LastActiveAt,
+		"last_write_at":   user.LastWriteAt,
 		"created_at":      user.CreatedAt,
 		"updated_at":      user.UpdatedAt,
-		"workspace_count": len(workspaces),
+		"workspace_count": wsCount,
+		"storage_bytes":   storageBytes,
+		"status":          status,
 	})
 }
 

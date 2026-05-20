@@ -297,6 +297,33 @@ type AdminUserSearchResult struct {
 	Total int                  `json:"total"`
 }
 
+// ComputeAdminUserStatusValue is the exported wrapper around
+// computeAdminUserStatus. Used by handlers that compute the status pill
+// for a single-user response (e.g. after a PATCH refresh).
+// PLAN-1542 / TASK-1548.
+func ComputeAdminUserStatusValue(disabledAt, lastWriteAt string, workspaceCount int) string {
+	return computeAdminUserStatus(disabledAt, lastWriteAt, workspaceCount)
+}
+
+// UserStorageUsage returns the SUM(size_bytes) of all non-deleted
+// attachments across workspaces owned by this user. Matches the
+// per-workspace WorkspaceStorageUsage definition. PLAN-1542 / TASK-1548
+// (Codex review on PR #603 — single-user endpoint needs the same
+// aggregate as the list endpoint so row-merge keeps the value fresh).
+func (s *Store) UserStorageUsage(userID string) (int64, error) {
+	var total sql.NullInt64
+	err := s.db.QueryRow(s.q(`
+		SELECT COALESCE(SUM(a.size_bytes), 0)
+		FROM attachments a
+		JOIN workspaces w ON w.id = a.workspace_id
+		WHERE w.owner_id = ? AND w.deleted_at IS NULL AND a.deleted_at IS NULL
+	`), userID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("user storage usage: %w", err)
+	}
+	return total.Int64, nil
+}
+
 // computeAdminUserStatus derives the at-a-glance status pill from the
 // underlying fields. Precedence is intentional: a disabled user with no
 // workspace is still "disabled" first, because that's the most actionable

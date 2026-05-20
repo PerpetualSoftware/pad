@@ -376,7 +376,10 @@
 		if (!dateStr) return 'never';
 		const days = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
 		if (days < 7) return 'recent';
-		if (days < 30) return 'stale';
+		// 30 days inclusive is "stale" to match server-side
+		// computeAdminUserStatus which only flips to inactive on > 30 days
+		// (Codex review on PR #603).
+		if (days <= 30) return 'stale';
 		return 'cold';
 	}
 
@@ -459,6 +462,7 @@
 							<td
 								class="date-cell write-{writeRecency(user.last_write_at)}"
 								title={user.last_write_at || ''}
+								aria-label={`Last write: ${relativeTime(user.last_write_at)} (${writeRecency(user.last_write_at)})`}
 								>{relativeTime(user.last_write_at)}</td>
 							<td class="date-cell muted"
 								title={user.last_active_at || ''}
