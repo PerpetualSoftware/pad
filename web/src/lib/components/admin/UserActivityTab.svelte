@@ -38,7 +38,12 @@
 	let events = $state<ActivityEvent[]>([]);
 	let loading = $state(false);
 	let loadingMore = $state(false);
+	// loadError is the top-of-tab error used when the INITIAL fetch fails
+	// and there's nothing to show. loadMoreError is a separate inline
+	// message for append failures so an already-rendered feed doesn't
+	// flip back to a "Retry" full-tab state (Codex review on PR #609).
 	let loadError = $state('');
+	let loadMoreError = $state('');
 	let nextOffset = $state<number | null>(0);
 	let fetchedForUserId = $state<string | null>(null);
 
@@ -75,6 +80,7 @@
 		const userId = user.id;
 		const offset = nextOffset;
 		loadingMore = true;
+		loadMoreError = '';
 		try {
 			const result = await fetchPage(userId, offset);
 			if (user.id !== userId) return;
@@ -82,7 +88,11 @@
 			nextOffset = result.next_offset;
 		} catch (e) {
 			if (user.id !== userId) return;
-			loadError = e instanceof Error ? e.message : 'Failed to load activity';
+			// Append failure — keep the already-loaded feed visible and
+			// surface an inline error near the Load more button so the
+			// admin can retry without losing context (Codex review on
+			// PR #609).
+			loadMoreError = e instanceof Error ? e.message : 'Failed to load more activity';
 		} finally {
 			if (user.id === userId) loadingMore = false;
 		}
@@ -102,9 +112,13 @@
 
 	// Action → icon. SVG-free for now; emoji glyphs are good enough as a
 	// chronological scan aid. The Activity tab is a triage view, not a
-	// design showpiece. PLAN-1542 / TASK-1554.
+	// design showpiece. Coverage: every action constant in
+	// internal/models/activity.go that can land in this endpoint's user-
+	// authored feed (PLAN-1542 / TASK-1554, expanded per Codex review on
+	// PR #609).
 	function iconFor(action: string): string {
 		switch (action) {
+			// Item / comment writes
 			case 'created':
 				return '📄';
 			case 'updated':
@@ -117,10 +131,45 @@
 				return '↩️';
 			case 'moved':
 				return '➡️';
+			// Auth events
 			case 'login':
 				return '🔑';
+			case 'login_failed':
+				return '🚫';
 			case 'logout':
 				return '🚪';
+			case 'register':
+				return '🆕';
+			case 'bootstrap':
+				return '🌱';
+			case 'password_changed':
+			case 'password_reset':
+				return '🔒';
+			// API tokens
+			case 'token_created':
+			case 'token_revoked':
+			case 'token_rotated':
+				return '🎟️';
+			// TOTP
+			case 'totp_enabled':
+			case 'totp_disabled':
+				return '🔐';
+			// OAuth
+			case 'oauth_login':
+			case 'oauth_login_failed':
+				return '🔗';
+			// Membership / role admin actions the user themselves authored
+			case 'member_invited':
+			case 'member_removed':
+				return '👥';
+			case 'role_changed':
+				return '🛡️';
+			case 'settings_changed':
+				return '⚙️';
+			case 'session_ip_changed':
+				return '🌐';
+			case 'account_deleted':
+				return '❌';
 			default:
 				return '·';
 		}
@@ -142,12 +191,49 @@
 				return 'Moved an item';
 			case 'login':
 				return 'Logged in';
+			case 'login_failed':
+				return 'Login failed';
 			case 'logout':
 				return 'Logged out';
+			case 'register':
+				return 'Registered account';
 			case 'bootstrap':
 				return 'First admin bootstrap';
+			case 'password_changed':
+				return 'Changed password';
+			case 'password_reset':
+				return 'Reset password';
+			case 'token_created':
+				return 'Created an API token';
+			case 'token_revoked':
+				return 'Revoked an API token';
+			case 'token_rotated':
+				return 'Rotated an API token';
+			case 'totp_enabled':
+				return 'Enabled two-factor auth';
+			case 'totp_disabled':
+				return 'Disabled two-factor auth';
+			case 'oauth_login':
+				return 'Logged in via OAuth';
+			case 'oauth_login_failed':
+				return 'OAuth login failed';
+			case 'member_invited':
+				return 'Invited a workspace member';
+			case 'member_removed':
+				return 'Removed a workspace member';
+			case 'role_changed':
+				return 'Changed a user role';
+			case 'settings_changed':
+				return 'Updated settings';
+			case 'session_ip_changed':
+				return 'Session IP changed';
+			case 'account_deleted':
+				return 'Deleted account';
 			default:
-				return ev.action;
+				// Fallback for any new event type we haven't taught the UI
+				// about yet — render the raw action with snake_case
+				// flattened to spaces.
+				return ev.action.replace(/_/g, ' ');
 		}
 	}
 
@@ -197,11 +283,16 @@
 			</li>
 		{/each}
 	</ul>
-	{#if nextOffset !== null}
+	{#if nextOffset !== null || loadMoreError}
 		<div class="load-more-row">
-			<button class="btn" type="button" disabled={loadingMore} onclick={loadMore}
-				>{loadingMore ? 'Loading…' : 'Load more'}</button
-			>
+			{#if loadMoreError}
+				<span class="load-more-error">{loadMoreError}</span>
+			{/if}
+			{#if nextOffset !== null}
+				<button class="btn" type="button" disabled={loadingMore} onclick={loadMore}
+					>{loadingMore ? 'Loading…' : loadMoreError ? 'Retry' : 'Load more'}</button
+				>
+			{/if}
 		</div>
 	{/if}
 {/if}
@@ -289,7 +380,13 @@
 	.load-more-row {
 		display: flex;
 		justify-content: center;
+		align-items: center;
+		gap: var(--space-3);
 		padding: var(--space-3) 0 0;
+	}
+	.load-more-error {
+		color: #ef4444;
+		font-size: 0.8rem;
 	}
 	.btn {
 		padding: 6px 14px;
