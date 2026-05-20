@@ -301,6 +301,56 @@ func collapseChanges(s string) string {
 	return sb.String()
 }
 
+// ListUserActivity returns activities originated by the given user, in
+// reverse-chronological order. Powers the Activity tab of the admin user
+// modal (T1554 consumer). Filters to activities where a.user_id = userID —
+// i.e. events this user authored (item writes, comments, logins, etc.).
+//
+// Admin actions targeting this user (e.g. role_changed where this user is
+// the target rather than the actor) live in metadata.target_user_id and
+// are NOT included here; that's a separate "received" sub-feed that would
+// need a JSON predicate. Filed as follow-up when needed.
+//
+// Pagination uses offset (matches sibling ListWorkspaceActivity /
+// ListDocumentActivity). For per-user feeds this is fine — datasets are
+// bounded and "between-page drift" is acceptable for an admin tool.
+// PLAN-1542 / TASK-1546.
+func (s *Store) ListUserActivity(userID string, params models.ActivityListParams) ([]models.Activity, error) {
+	query := `
+		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
+		FROM activities a
+		LEFT JOIN users u ON a.user_id = u.id
+		WHERE a.user_id = ?
+	`
+	args := []interface{}{userID}
+
+	if params.Action != "" {
+		query += " AND a.action = ?"
+		args = append(args, params.Action)
+	}
+
+	query += " ORDER BY a.created_at DESC, a.id DESC"
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	query += fmt.Sprintf(" LIMIT %d", limit)
+	if params.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET %d", params.Offset)
+	}
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list user activity: %w", err)
+	}
+	defer rows.Close()
+	return scanActivitiesWithUser(rows)
+}
+
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
 		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
