@@ -166,6 +166,18 @@
 				return '🛡️';
 			case 'settings_changed':
 				return '⚙️';
+			// Admin-on-user audit events. When the actor is an admin
+			// modifying another user, the row's user_id is the admin's;
+			// so these CAN appear in this feed and need icons.
+			case 'plan_changed':
+			case 'plan_overrides_changed':
+				return '💳';
+			case 'password_reset_by_admin':
+				return '🛠️';
+			case 'user_disabled':
+				return '⛔';
+			case 'user_enabled':
+				return '✅';
 			case 'session_ip_changed':
 				return '🌐';
 			case 'account_deleted':
@@ -227,6 +239,16 @@
 				return 'Updated settings';
 			case 'session_ip_changed':
 				return 'Session IP changed';
+			case 'plan_changed':
+				return 'Changed a user’s plan';
+			case 'plan_overrides_changed':
+				return 'Changed plan overrides for a user';
+			case 'password_reset_by_admin':
+				return 'Reset a user’s password (admin)';
+			case 'user_disabled':
+				return 'Disabled a user account';
+			case 'user_enabled':
+				return 'Re-enabled a user account';
 			case 'account_deleted':
 				return 'Deleted account';
 			default:
