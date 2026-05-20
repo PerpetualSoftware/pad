@@ -49,23 +49,26 @@
 		{ key: 'settings', label: 'Settings & overrides' }
 	];
 
+	// Hash round-trip uses URLSearchParams so other hash params (used
+	// elsewhere on the admin page or by other tabs) survive. Previous
+	// regex-replace approach corrupted hashes where tab= was the first
+	// key but other params followed (Codex review on PR #605).
+	function readHashParams(): URLSearchParams {
+		if (typeof window === 'undefined') return new URLSearchParams();
+		return new URLSearchParams(window.location.hash.replace(/^#/, ''));
+	}
+
 	function parseHashTab(): UserModalTab | null {
-		if (typeof window === 'undefined') return null;
-		const m = window.location.hash.match(/tab=([a-z]+)/);
-		if (!m) return null;
-		const t = m[1];
+		const t = readHashParams().get('tab');
 		if (t === 'overview' || t === 'workspaces' || t === 'activity' || t === 'settings') return t;
 		return null;
 	}
 
 	function writeHashTab(t: UserModalTab) {
 		if (typeof window === 'undefined') return;
-		// Preserve any other hash params; replace only tab=.
-		const hash = window.location.hash.replace(/[#&]?tab=[^&]*/, '');
-		const sep = hash.startsWith('#') ? '&' : '#';
-		const next = hash + sep + 'tab=' + t;
-		// History-quiet update — admins paste these all the time but
-		// flipping tabs shouldn't litter back-button history.
+		const params = readHashParams();
+		params.set('tab', t);
+		const next = '#' + params.toString();
 		history.replaceState(null, '', window.location.pathname + window.location.search + next);
 	}
 
@@ -74,19 +77,25 @@
 		writeHashTab(t);
 	}
 
-	// When the modal opens, capture the trigger element so we can restore
-	// focus on close, hydrate the active tab from the URL hash (if present),
-	// and pull focus into the modal.
+	// Open transition tracker — Svelte 5 $effect re-runs on any read
+	// dependency change. We only want to capture previousFocus / hydrate
+	// the tab on the open=false → true transition, not whenever
+	// initialTab or any other reactive value changes mid-open (Codex
+	// review on PR #605).
+	let wasOpen = false;
 	$effect(() => {
-		if (open) {
+		if (open && !wasOpen) {
 			previousFocus = (document.activeElement as HTMLElement) ?? null;
 			const fromHash = parseHashTab();
-			if (fromHash) activeTab = fromHash;
-			else activeTab = initialTab ?? 'overview';
+			activeTab = fromHash ?? initialTab ?? 'overview';
 			tick().then(() => closeBtnEl?.focus());
-		} else if (previousFocus && document.contains(previousFocus)) {
-			previousFocus.focus();
+			wasOpen = true;
+		} else if (!open && wasOpen) {
+			if (previousFocus && document.contains(previousFocus)) {
+				previousFocus.focus();
+			}
 			previousFocus = null;
+			wasOpen = false;
 		}
 	});
 
@@ -100,9 +109,19 @@
 			return;
 		}
 		if (e.key === 'Tab' && modalEl) {
-			const focusables = modalEl.querySelectorAll<HTMLElement>(
+			// Filter out elements inside hidden tabpanels — otherwise the
+			// modal's three off-screen panels (tabindex=0) make `last`
+			// point at the wrong element and Tab can escape the trap on
+			// non-Settings tabs (Codex review on PR #605).
+			const all = modalEl.querySelectorAll<HTMLElement>(
 				'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 			);
+			const focusables: HTMLElement[] = [];
+			for (const el of all) {
+				if (el.closest('[hidden]')) continue;
+				if (el.offsetParent === null && el !== modalEl) continue;
+				focusables.push(el);
+			}
 			if (focusables.length === 0) return;
 			const first = focusables[0];
 			const last = focusables[focusables.length - 1];
