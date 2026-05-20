@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { adminFetch, adminPatch, adminPost, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
+	import { adminFetch, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 	import UserModal from '$lib/components/admin/UserModal.svelte';
 
 	// --- List + pagination + filter + sort state (PLAN-1542 / TASK-1549) ---
@@ -29,10 +29,8 @@
 	let sortKey = $state<SortKey>('created');
 	let sortOrder = $state<SortOrder>('desc');
 
-	// Modal state. T1550 lands the shell; T1551–T1554 fill the tabs;
-	// T1555 then deletes the inline-expand block below. During T1550–T1554
-	// both UIs coexist — clicking a row opens the modal AND toggles the
-	// inline expand. This is the explicit broken state from the plan.
+	// Per-user modal state. The modal owns every detail surface;
+	// the inline-expand was removed in TASK-1555.
 	let modalUser = $state<AdminUser | null>(null);
 	let modalOpen = $state(false);
 	function openUserModal(u: AdminUser) {
@@ -451,9 +449,7 @@
 	{/if}
 </div>
 
-<!-- Per-user detail modal — shell only as of TASK-1550; tab content
-     arrives across T1551–T1554, and T1555 deletes the parallel inline-
-     expand block above. -->
+<!-- Per-user detail modal — Overview, Workspaces, Activity, Settings. -->
 <UserModal
 	bind:open={modalOpen}
 	user={modalUser}
@@ -580,14 +576,6 @@
 		color: var(--text-primary);
 		border-color: var(--text-muted);
 	}
-	.btn.primary {
-		background: var(--accent-blue);
-		color: #fff;
-		border-color: transparent;
-	}
-	.btn.primary:hover {
-		opacity: 0.9;
-	}
 	.btn:disabled {
 		opacity: 0.5;
 		cursor: default;
@@ -645,11 +633,6 @@
 		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
 		color: var(--accent-orange, #f59e0b);
 	}
-	.badge.disabled {
-		background: color-mix(in srgb, #ef4444 15%, transparent);
-		color: #ef4444;
-		margin-left: var(--space-2);
-	}
 	/* Status pill — server-side computed (disabled / no-workspace / inactive /
 	   active). "active" never renders; the other three call out something
 	   actionable. PLAN-1542 / TASK-1548. */
@@ -685,21 +668,6 @@
 	}
 	.disabled-row {
 		opacity: 0.6;
-	}
-	.btn.danger {
-		border-color: #ef4444;
-		color: #ef4444;
-	}
-	.btn.danger:hover {
-		background: color-mix(in srgb, #ef4444 10%, transparent);
-	}
-	.btn.primary.danger {
-		background: #ef4444;
-		color: #fff;
-		border-color: transparent;
-	}
-	.btn.primary.danger:hover {
-		opacity: 0.9;
 	}
 
 	/* Edit-panel + plan-override + ws-list CSS lived here until TASK-1555.
