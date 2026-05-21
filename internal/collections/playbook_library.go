@@ -8,7 +8,8 @@ package collections
 // both unset for trigger-only checklist playbooks (legacy shape).
 type LibraryPlaybook struct {
 	Title          string           `json:"title"`
-	Content        string           `json:"content"`
+	Content        string           `json:"content,omitempty"`         // omitted when summary mode is on (?summary=true)
+	Summary        string           `json:"summary,omitempty"`         // injected when summary mode is on; first non-heading paragraph, ~240 char cap
 	Category       string           `json:"category"`                  // workflow, planning, quality, operations
 	Trigger        string           `json:"trigger"`                   // on-implement, on-triage, on-release, on-plan, on-review, on-deploy, manual
 	Scope          string           `json:"scope"`                     // all, backend, frontend, etc.
