@@ -211,29 +211,29 @@
 				{/each}
 			</div>
 
-			<div class="user-modal-body">
-				{#each TABS as t (t.key)}
-					<div
-						role="tabpanel"
-						tabindex="0"
-						id="user-modal-panel-{t.key}"
-						aria-labelledby="user-modal-tab-{t.key}"
-						class="user-modal-panel"
-						class:active={activeTab === t.key}
-						hidden={activeTab !== t.key}
-						data-testid="user-modal-panel-{t.key}"
-					>
-						{#if t.key === 'overview'}
-							<UserOverviewTab {user} active={activeTab === 'overview'} />
-						{:else if t.key === 'workspaces'}
-							<UserWorkspacesTab {user} active={activeTab === 'workspaces'} />
-						{:else if t.key === 'activity'}
-							<UserActivityTab {user} active={activeTab === 'activity'} />
-						{:else if t.key === 'settings'}
-							<UserSettingsForm {user} {onUserUpdated} />
-						{/if}
-					</div>
-				{/each}
+			<!-- Only the active tab's component is mounted. The earlier
+			     version rendered all four panels under {#each} + hidden,
+			     which mounted every tab's $effect on modal open (and
+			     amplified the UserSettingsForm hydration loop). Switching
+			     tabs now mounts/unmounts the tab body — the lazy-fetch
+			     guards in each tab already cope with that. -->
+			<div
+				class="user-modal-body"
+				role="tabpanel"
+				tabindex="0"
+				id="user-modal-panel-{activeTab}"
+				aria-labelledby="user-modal-tab-{activeTab}"
+				data-testid="user-modal-panel-{activeTab}"
+			>
+				{#if activeTab === 'overview'}
+					<UserOverviewTab {user} active={true} />
+				{:else if activeTab === 'workspaces'}
+					<UserWorkspacesTab {user} active={true} />
+				{:else if activeTab === 'activity'}
+					<UserActivityTab {user} active={true} />
+				{:else if activeTab === 'settings'}
+					<UserSettingsForm {user} {onUserUpdated} />
+				{/if}
 			</div>
 		</div>
 	</div>
@@ -337,9 +337,8 @@
 		padding: var(--space-4);
 		flex: 1;
 	}
-	.user-modal-panel.active {
-		display: block;
-	}
+	/* .user-modal-panel.active rule removed — tabs are now mount-on-active,
+	   so no panel needs an "active" toggle class. */
 	/* .placeholder rule removed — all four tabs now render real content
 	   as of TASK-1554. No remaining users of the class. */
 </style>

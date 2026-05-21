@@ -56,6 +56,11 @@
 
 	async function loadAll() {
 		const userId = user.id;
+		// Claim this userId BEFORE the await so a second hydration trigger
+		// (e.g. parent re-passes user with same id but new object ref) can't
+		// race in and fire a duplicate concurrent fetch. Cleared on error
+		// so retries via re-activation still work.
+		fetchedForUserId = userId;
 		metricsLoading = true;
 		recentLoading = true;
 		metricsError = '';
@@ -97,7 +102,12 @@
 			});
 
 		await Promise.all([metricsP, recentP]);
-		if (user.id === userId) fetchedForUserId = userId;
+		// fetchedForUserId was already set at function entry to prevent
+		// duplicate concurrent fetches. If both branches errored, clear it
+		// so the next activation can retry.
+		if (user.id === userId && metricsError && recentError) {
+			fetchedForUserId = null;
+		}
 	}
 
 	function recencyBucket(days: number | null): 'recent' | 'stale' | 'cold' | 'never' {
