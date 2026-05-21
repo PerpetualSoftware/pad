@@ -117,7 +117,12 @@ Iterate until the user's happy. Then create the collections — one ` + "`pad co
 
 The conventions collection already exists (blank template ships it). Now you fill it.
 
-Browse the convention library. If the agent has a shell, run ` + "`pad library list --type conventions`" + ` (and ` + "`pad library list --type conventions --category <name>`" + ` to filter). If the agent is MCP-only (no shell), the library catalog is not yet exposed as an MCP tool — work from your own knowledge of common conventions for the workspace's domain, propose them by name to the user, and have the user paste any library bodies they want as the starting text. (Adding an MCP-side library-browse action is tracked in IDEA-1514.) For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
+Browse the convention library:
+
+- **CLI:** ` + "`pad library list --type conventions`" + ` (filter with ` + "`--category <name>`" + `; full body of one entry via ` + "`pad library get \"<title>\"`" + `).
+- **MCP:** ` + "`pad_library`" + ` with ` + "`action: list, type: conventions`" + ` (and optional ` + "`category`" + `). Full body of one entry via ` + "`pad_library`" + ` with ` + "`action: get, title: \"<title>\"`" + `. Same shape on both surfaces. Closed by PLAN-1560 (IDEA-1514).
+
+For each convention that's plausibly relevant, READ ITS BODY, then rewrite using this project's actual commands. Examples:
 
 - Library has "Run tests before completing tasks." If the project is Go with a Makefile, your version says "Run ` + "`make test`" + ` before marking a task done. If the build fails, fix it before merging."
 - Library has "Conventional commit format." If the project's existing commits don't follow that style, ASK the user before activating it — maybe they don't want it.
@@ -137,9 +142,12 @@ Don't auto-create. Propose, confirm, then create with ` + "`pad role create`" + 
 
 ### B5. Activate or rewrite library playbooks
 
-Browse the playbook library. The canonical invokable playbooks are ` + "`plan`" + `, ` + "`decompose`" + `, and ` + "`ship`" + ` (software workspaces lean on all three; non-software workspaces might want only ` + "`plan`" + `). For each that's relevant:
+Browse the playbook library. The canonical invokable playbooks are ` + "`plan`" + `, ` + "`decompose`" + `, and ` + "`ship`" + ` (software workspaces lean on all three; non-software workspaces might want only ` + "`plan`" + `).
+
+Browse it the same way as conventions — ` + "`pad library list --type playbooks`" + ` (CLI) or ` + "`pad_library`" + ` with ` + "`action: list, type: playbooks`" + ` (MCP). The list returns summaries by default; ` + "`pad library get \"<title>\"`" + ` / ` + "`pad_library`" + ` with ` + "`action: get, title: \"<title>\"`" + ` pulls the full body of one entry. For each that's relevant:
 
 - Read the library body.
+- Activate via ` + "`pad library activate \"<title>\"`" + ` (CLI) or ` + "`pad_library`" + ` with ` + "`action: activate, title: \"<title>\"`" + ` (MCP).
 - If it needs project-specific tweaks (the seeded ` + "`ship`" + ` references ` + "`make install`" + ` — change it if the project uses ` + "`npm run build`" + ` instead), activate AND THEN immediately edit the playbook body via ` + "`pad item update <PLAYB-ref> --stdin`" + ` with the rewritten content.
 - If it doesn't fit at all, skip.
 
