@@ -18,6 +18,7 @@
   (T1552) — not here.
 -->
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { adminFetch, adminPatch, adminPost, type AdminUser } from '$lib/stores/admin.svelte';
 
 	interface Props {
@@ -66,31 +67,58 @@
 	// type the target email exactly before the Disable button enables.
 	let disableTyped = $state('');
 
-	// Hydrate state from the user prop whenever it changes (modal reopened
-	// on a different row, or parent re-fetched after a save).
+	// Hydrate form state when the modal switches to a different user.
+	//
+	// Reactive-loop note: an earlier version of this effect read user.plan /
+	// user.role / user.plan_overrides directly and wrote to editOverrides
+	// (= {} then per-key mutation). Combined with the {#each overrideFields}
+	// template using bind:value={editOverrides[f.key]}, the bind machinery
+	// would re-subscribe every time editOverrides got a fresh proxy from
+	// the `= {}` write, which scheduled the effect's tracking owner — that
+	// looped on modal open and froze the UI.
+	//
+	// Fix: gate the hydration on user.id change ONLY (a primitive read, no
+	// proxy churn). Then wrap all writes in untrack() so they don't add
+	// themselves to this effect's dependency set. Reading user.* inside
+	// untrack also makes the reset insensitive to incidental prop spreads
+	// from the parent — onModalUserUpdated creates a new modalUser object
+	// after every save, but we don't want to nuke unsaved form state on
+	// that path. Form state is the authoritative source while the modal
+	// is open; we only re-hydrate on a user *swap*.
+	let lastHydratedUserId = $state<string | null>(null);
 	$effect(() => {
-		editPlan = user.plan || 'free';
-		editRole = user.role || 'member';
-		const ov = parsePlanOverrides(user.plan_overrides);
-		editOverrides = {};
-		extraOverrides = {};
-		for (const f of overrideFields) {
-			editOverrides[f.key] = f.key in ov ? String(ov[f.key]) : '';
-		}
-		editStorageOverride = 'storage_bytes' in ov ? formatStorageBytes(ov.storage_bytes) : '';
-		storageOverrideError = '';
-		for (const [k, v] of Object.entries(ov)) {
-			if (!overrideFieldKeys.has(k)) extraOverrides[k] = v;
-		}
-		saveMsg = '';
-		roleConfirm = false;
-		roleMsg = '';
-		resetConfirm = false;
-		resetResult = null;
-		resetError = '';
-		disableConfirm = false;
-		disableTyped = '';
-		disableMsg = '';
+		const uid = user.id;
+		if (uid === lastHydratedUserId) return;
+		untrack(() => {
+			editPlan = user.plan || 'free';
+			editRole = user.role || 'member';
+			const ov = parsePlanOverrides(user.plan_overrides);
+			const next: Record<string, string> = {};
+			const extra: Record<string, number> = {};
+			for (const f of overrideFields) {
+				next[f.key] = f.key in ov ? String(ov[f.key]) : '';
+			}
+			for (const [k, v] of Object.entries(ov)) {
+				if (!overrideFieldKeys.has(k)) extra[k] = v;
+			}
+			// Single assignment per state var — building the new objects
+			// first and assigning once avoids the "reassign then mutate"
+			// pattern that thrashed bind:value subscriptions.
+			editOverrides = next;
+			extraOverrides = extra;
+			editStorageOverride = 'storage_bytes' in ov ? formatStorageBytes(ov.storage_bytes) : '';
+			storageOverrideError = '';
+			saveMsg = '';
+			roleConfirm = false;
+			roleMsg = '';
+			resetConfirm = false;
+			resetResult = null;
+			resetError = '';
+			disableConfirm = false;
+			disableTyped = '';
+			disableMsg = '';
+			lastHydratedUserId = uid;
+		});
 	});
 
 	function parsePlanOverrides(raw: unknown): Record<string, number> {

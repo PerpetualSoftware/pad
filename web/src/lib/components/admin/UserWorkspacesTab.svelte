@@ -53,6 +53,10 @@
 
 	async function loadDetail() {
 		const userId = user.id;
+		// Claim this userId BEFORE the await so a re-trigger of the
+		// gating effect (parent passes a new object ref with the same id)
+		// can't race in and fire a duplicate fetch.
+		fetchedForUserId = userId;
 		loading = true;
 		loadError = '';
 		workspaces = [];
@@ -62,10 +66,14 @@
 			// Defensive: only commit if the modal hasn't swapped underneath us.
 			if (user.id !== userId) return;
 			workspaces = (data.workspaces ?? []) as WorkspaceDetail[];
-			fetchedForUserId = userId;
 		} catch (e) {
 			if (user.id !== userId) return;
 			loadError = e instanceof Error ? e.message : 'Failed to load workspaces';
+			// fetchedForUserId stays set on failure. Clearing it while
+			// the tab is still active would re-trigger the gating
+			// $effect immediately and fire loadDetail() again — under
+			// a persistent outage that's an infinite fetch loop.
+			// Retry is explicit via the Retry button below.
 		} finally {
 			if (user.id === userId) loading = false;
 		}

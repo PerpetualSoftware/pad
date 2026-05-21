@@ -211,29 +211,32 @@
 				{/each}
 			</div>
 
-			<div class="user-modal-body">
-				{#each TABS as t (t.key)}
-					<div
-						role="tabpanel"
-						tabindex="0"
-						id="user-modal-panel-{t.key}"
-						aria-labelledby="user-modal-tab-{t.key}"
-						class="user-modal-panel"
-						class:active={activeTab === t.key}
-						hidden={activeTab !== t.key}
-						data-testid="user-modal-panel-{t.key}"
-					>
-						{#if t.key === 'overview'}
-							<UserOverviewTab {user} active={activeTab === 'overview'} />
-						{:else if t.key === 'workspaces'}
-							<UserWorkspacesTab {user} active={activeTab === 'workspaces'} />
-						{:else if t.key === 'activity'}
-							<UserActivityTab {user} active={activeTab === 'activity'} />
-						{:else if t.key === 'settings'}
-							<UserSettingsForm {user} {onUserUpdated} />
-						{/if}
-					</div>
-				{/each}
+			<!-- Lazy-fetch tabs (Overview / Workspaces / Activity) mount
+			     only when active so their fetches fire on first
+			     selection. Settings is kept mounted with a hidden toggle
+			     so unsaved overrides / typed-disable text aren't lost
+			     if an admin briefly switches to Workspaces and back.
+			     UserSettingsForm has no fetch — just synchronous state —
+			     so keeping it alive is cheap. Its hydration $effect is
+			     gated on user.id so the original loop stays fixed. -->
+			<div
+				class="user-modal-body"
+				role="tabpanel"
+				tabindex="0"
+				id="user-modal-panel-{activeTab}"
+				aria-labelledby="user-modal-tab-{activeTab}"
+				data-testid="user-modal-panel-{activeTab}"
+			>
+				{#if activeTab === 'overview'}
+					<UserOverviewTab {user} active={true} />
+				{:else if activeTab === 'workspaces'}
+					<UserWorkspacesTab {user} active={true} />
+				{:else if activeTab === 'activity'}
+					<UserActivityTab {user} active={true} />
+				{/if}
+				<div hidden={activeTab !== 'settings'}>
+					<UserSettingsForm {user} {onUserUpdated} />
+				</div>
 			</div>
 		</div>
 	</div>
@@ -337,9 +340,8 @@
 		padding: var(--space-4);
 		flex: 1;
 	}
-	.user-modal-panel.active {
-		display: block;
-	}
+	/* .user-modal-panel.active rule removed — tabs are now mount-on-active,
+	   so no panel needs an "active" toggle class. */
 	/* .placeholder rule removed — all four tabs now render real content
 	   as of TASK-1554. No remaining users of the class. */
 </style>

@@ -57,6 +57,10 @@
 
 	async function loadInitial() {
 		const userId = user.id;
+		// Claim this userId BEFORE the await so a re-trigger of the
+		// gating effect (parent passes a new object ref with the same id)
+		// can't race in and fire a duplicate fetch.
+		fetchedForUserId = userId;
 		loading = true;
 		loadError = '';
 		events = [];
@@ -66,10 +70,14 @@
 			if (user.id !== userId) return;
 			events = result.events;
 			nextOffset = result.next_offset;
-			fetchedForUserId = userId;
 		} catch (e) {
 			if (user.id !== userId) return;
 			loadError = e instanceof Error ? e.message : 'Failed to load activity';
+			// fetchedForUserId stays set on failure. Clearing it while
+			// the tab is still active would re-trigger the gating
+			// $effect immediately and fire loadInitial() again — under
+			// a persistent outage that's an infinite fetch loop.
+			// Retry is explicit via the Retry button below.
 		} finally {
 			if (user.id === userId) loading = false;
 		}
