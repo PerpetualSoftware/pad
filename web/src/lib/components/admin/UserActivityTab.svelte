@@ -73,8 +73,11 @@
 		} catch (e) {
 			if (user.id !== userId) return;
 			loadError = e instanceof Error ? e.message : 'Failed to load activity';
-			// Clear the claim so retry via re-activation works.
-			fetchedForUserId = null;
+			// fetchedForUserId stays set on failure. Clearing it while
+			// the tab is still active would re-trigger the gating
+			// $effect immediately and fire loadInitial() again — under
+			// a persistent outage that's an infinite fetch loop.
+			// Retry is explicit via the Retry button below.
 		} finally {
 			if (user.id === userId) loading = false;
 		}
