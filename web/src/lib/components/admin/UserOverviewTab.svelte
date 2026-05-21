@@ -102,14 +102,11 @@
 			});
 
 		await Promise.all([metricsP, recentP]);
-		// Clear the claim if EITHER branch failed so a retry-via-
-		// reactivation can refetch the failed side. We accept that the
-		// successful side will be re-fetched too; that's cheap and the
-		// alternative (per-branch flags) would only matter under repeated
-		// partial outages of one endpoint.
-		if (user.id === userId && (metricsError || recentError)) {
-			fetchedForUserId = null;
-		}
+		// fetchedForUserId stays set on failure. Clearing it while the
+		// tab is still active would re-trigger the gating $effect and
+		// fire loadAll() again immediately — under a persistent outage
+		// that's an infinite fetch loop. Retry is explicit via the
+		// inline retry buttons below.
 	}
 
 	function recencyBucket(days: number | null): 'recent' | 'stale' | 'cold' | 'never' {
@@ -194,7 +191,12 @@
 </section>
 
 {#if metricsError}
-	<div class="state-msg error">{metricsError}</div>
+	<div class="state-msg error">
+		{metricsError}
+		<button class="btn-retry" type="button" disabled={metricsLoading} onclick={loadAll}
+			>{metricsLoading ? 'Retrying…' : 'Retry'}</button
+		>
+	</div>
 {/if}
 
 <!-- Recent items — filtered from /activity to item-write actions only.
@@ -205,7 +207,12 @@
 	{#if recentLoading}
 		<div class="state-msg">Loading…</div>
 	{:else if recentError}
-		<div class="state-msg error">{recentError}</div>
+		<div class="state-msg error">
+			{recentError}
+			<button class="btn-retry" type="button" disabled={recentLoading} onclick={loadAll}
+				>{recentLoading ? 'Retrying…' : 'Retry'}</button
+			>
+		</div>
 	{:else if recentItems.length === 0}
 		<div class="state-msg empty">No recent item writes by this user.</div>
 	{:else}
@@ -354,5 +361,22 @@
 	}
 	.state-msg.empty {
 		font-style: italic;
+	}
+	.btn-retry {
+		margin-left: var(--space-2);
+		padding: 4px 10px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		cursor: pointer;
+		font-size: 0.8rem;
+	}
+	.btn-retry:hover {
+		background: var(--bg-tertiary);
+	}
+	.btn-retry[disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>
