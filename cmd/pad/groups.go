@@ -136,6 +136,7 @@ func libraryGroupCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		libraryCmd(),
+		libraryGetCmd(),
 		libraryActivateCmd(),
 	)
 	return cmd

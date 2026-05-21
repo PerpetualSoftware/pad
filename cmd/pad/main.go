@@ -5786,40 +5786,73 @@ func normalizeCollectionSlug(input string) string {
 func libraryCmd() *cobra.Command {
 	var categoryFilter string
 	var typeFilter string
+	var fullFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "Browse pre-built conventions and playbooks",
 		Long: `Browse the convention and playbook libraries and activate items in your workspace.
 
+JSON output: conventions always carry their full content (bodies are short).
+Playbooks carry a short ` + "`summary`" + ` instead of full ` + "`content`" + ` by default — use
+` + "`--full`" + ` to opt into full playbook bodies (e.g. when piping into a tool that
+needs the entire text). For one entry's full body use ` + "`pad library get <title>`" + `.
+
 Examples:
   pad library list                     # List both conventions and playbooks
   pad library list --type conventions  # List conventions only
   pad library list --type playbooks    # List playbooks only
-  pad library list --category git      # Filter by category
-  pad library list --format json       # JSON output
+  pad library list --category git      # Server-side category filter
+  pad library list --format json       # JSON output (playbook bodies as summaries)
+  pad library list --full --format json   # JSON output, full playbook bodies
+  pad library get "Ship tasks"            # Full body of one entry
   pad library activate "Commit after task completion"  # Activate a convention or playbook`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 
 			showConventions := typeFilter == "" || typeFilter == "conventions"
 			showPlaybooks := typeFilter == "" || typeFilter == "playbooks"
+			if !showConventions && !showPlaybooks {
+				return fmt.Errorf("unknown --type %q (expected: conventions, playbooks)", typeFilter)
+			}
 
+			// Fetch each side once. Default: playbook bodies as summaries.
+			// --full opts into full bodies (passes summary=false to the server).
+			var lib *cli.ConventionLibraryResponse
+			var plib *cli.PlaybookLibraryResponse
+			var err error
 			if showConventions {
-				lib, err := client.GetConventionLibrary()
+				lib, err = client.GetConventionLibrary(categoryFilter)
 				if err != nil {
 					return err
 				}
-
-				if formatFlag == "json" && !showPlaybooks {
-					return cli.PrintJSON(lib)
+			}
+			if showPlaybooks {
+				plib, err = client.GetPlaybookLibrary(categoryFilter, !fullFlag)
+				if err != nil {
+					return err
 				}
+			}
 
+			// JSON output paths.
+			if formatFlag == "json" {
+				switch {
+				case showConventions && showPlaybooks:
+					return cli.PrintJSON(map[string]interface{}{
+						"conventions": lib,
+						"playbooks":   plib,
+					})
+				case showConventions:
+					return cli.PrintJSON(lib)
+				default:
+					return cli.PrintJSON(plib)
+				}
+			}
+
+			// Table output.
+			if showConventions {
 				fmt.Printf("\n=== CONVENTIONS ===\n")
 				for _, cat := range lib.Categories {
-					if categoryFilter != "" && cat.Name != categoryFilter {
-						continue
-					}
 					fmt.Printf("\n%s (%s)\n", strings.ToUpper(cat.Name), cat.Description)
 					fmt.Println(strings.Repeat("─", 60))
 
@@ -5843,36 +5876,25 @@ Examples:
 			}
 
 			if showPlaybooks {
-				plib, err := client.GetPlaybookLibrary()
-				if err != nil {
-					return err
-				}
-
-				if formatFlag == "json" && !showConventions {
-					return cli.PrintJSON(plib)
-				}
-
 				fmt.Printf("\n=== PLAYBOOKS ===\n")
 				for _, cat := range plib.Categories {
-					if categoryFilter != "" && cat.Name != categoryFilter {
-						continue
-					}
 					fmt.Printf("\n%s (%s)\n", strings.ToUpper(cat.Name), cat.Description)
 					fmt.Println(strings.Repeat("─", 60))
 
 					for _, pb := range cat.Playbooks {
-						fmt.Printf("  %-45s %s [%s]\n", pb.Title, pb.Trigger, pb.Scope)
+						invocationTag := ""
+						if pb.InvocationSlug != "" {
+							invocationTag = " /pad " + pb.InvocationSlug
+						}
+						fmt.Printf("  %-45s %s [%s]%s\n", pb.Title, pb.Trigger, pb.Scope, invocationTag)
+						// Surface the summary as a hint line when the server
+						// returned one (default mode). Skipped under --full so
+						// the table output doesn't double-print the body.
+						if !fullFlag && pb.Summary != "" {
+							fmt.Printf("    %s\n", truncateForTable(pb.Summary, 80))
+						}
 					}
 				}
-			}
-
-			if formatFlag == "json" && showConventions && showPlaybooks {
-				lib, _ := client.GetConventionLibrary()
-				plib, _ := client.GetPlaybookLibrary()
-				return cli.PrintJSON(map[string]interface{}{
-					"conventions": lib,
-					"playbooks":   plib,
-				})
 			}
 
 			fmt.Println()
@@ -5880,9 +5902,111 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&categoryFilter, "category", "", "filter by category")
+	cmd.Flags().StringVar(&categoryFilter, "category", "", "server-side filter by category")
 	cmd.Flags().StringVar(&typeFilter, "type", "", "filter by type: conventions, playbooks")
+	cmd.Flags().BoolVar(&fullFlag, "full", false, "return full playbook bodies instead of summaries")
 	return cmd
+}
+
+// truncateForTable shortens a string to fit a table column, appending an
+// ellipsis when truncation occurs. Operates on runes so multi-byte
+// characters don't get sliced mid-codepoint. Used by `pad library list`
+// to render the playbook summary hint line in table mode.
+func truncateForTable(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func libraryGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <title>",
+		Short: "Show the full body of one library convention or playbook by exact title",
+		Long: `Fetch a single library entry by exact title match. Conventions are checked
+first, then playbooks — same precedence ` + "`pad library activate`" + ` uses, so a title
+resolves to the same kind in both surfaces.
+
+Pair with ` + "`pad library list`" + ` (which returns summaries for playbooks by default)
+to browse, then ` + "`pad library get`" + ` for the full body of any entry you want to
+read end-to-end before activating.
+
+Examples:
+  pad library get "Commit after task completion"   # Convention
+  pad library get "Ship tasks"                     # Playbook
+  pad library get "Ship tasks" --format json       # Full envelope
+`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			title := args[0]
+
+			entry, err := client.GetLibraryEntry(title)
+			if err != nil {
+				// Surface 404 as a clean exit-1 instead of the raw envelope.
+				if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_found" {
+					return fmt.Errorf("not found in library: %q", title)
+				}
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(entry)
+			}
+
+			// Human-readable card.
+			switch entry.Type {
+			case "convention":
+				c := entry.Convention
+				if c == nil {
+					return fmt.Errorf("server returned type=convention with no payload")
+				}
+				fmt.Printf("\n%s\n", c.Title)
+				fmt.Println(strings.Repeat("─", 60))
+				fmt.Printf("Type:        convention\n")
+				fmt.Printf("Category:    %s\n", c.Category)
+				fmt.Printf("Trigger:     %s\n", c.Trigger)
+				if len(c.Surfaces) > 0 {
+					fmt.Printf("Surfaces:    %s\n", strings.Join(c.Surfaces, ", "))
+				}
+				if c.Enforcement != "" {
+					fmt.Printf("Enforcement: %s\n", c.Enforcement)
+				}
+				if len(c.Commands) > 0 {
+					fmt.Printf("Commands:    %s\n", strings.Join(c.Commands, " ; "))
+				}
+				fmt.Println(strings.Repeat("─", 60))
+				fmt.Println(c.Content)
+			case "playbook":
+				p := entry.Playbook
+				if p == nil {
+					return fmt.Errorf("server returned type=playbook with no payload")
+				}
+				fmt.Printf("\n%s\n", p.Title)
+				fmt.Println(strings.Repeat("─", 60))
+				fmt.Printf("Type:           playbook\n")
+				fmt.Printf("Category:       %s\n", p.Category)
+				fmt.Printf("Trigger:        %s\n", p.Trigger)
+				fmt.Printf("Scope:          %s\n", p.Scope)
+				if p.InvocationSlug != "" {
+					fmt.Printf("Invocation:     /pad %s\n", p.InvocationSlug)
+				}
+				if len(p.Arguments) > 0 {
+					fmt.Printf("Arguments:      %d declared (see body's `## Arguments` section)\n", len(p.Arguments))
+				}
+				fmt.Println(strings.Repeat("─", 60))
+				fmt.Println(p.Content)
+			default:
+				return fmt.Errorf("unexpected library entry type: %q", entry.Type)
+			}
+			fmt.Println()
+			return nil
+		},
+	}
 }
 
 func libraryActivateCmd() *cobra.Command {
@@ -5902,8 +6026,9 @@ Examples:
 
 			title := args[0]
 
-			// First check conventions library
-			lib, err := client.GetConventionLibrary()
+			// First check conventions library. No category filter; activate
+			// needs to scan the whole list. Bodies are full by default.
+			lib, err := client.GetConventionLibrary("")
 			if err != nil {
 				return err
 			}
@@ -5952,8 +6077,9 @@ Examples:
 				return nil
 			}
 
-			// Then check playbooks library
-			plib, err := client.GetPlaybookLibrary()
+			// Then check playbooks library. summary=false — we activate the
+			// full body into the workspace, not the truncated hint.
+			plib, err := client.GetPlaybookLibrary("", false)
 			if err != nil {
 				return err
 			}
