@@ -102,10 +102,12 @@
 			});
 
 		await Promise.all([metricsP, recentP]);
-		// fetchedForUserId was already set at function entry to prevent
-		// duplicate concurrent fetches. If both branches errored, clear it
-		// so the next activation can retry.
-		if (user.id === userId && metricsError && recentError) {
+		// Clear the claim if EITHER branch failed so a retry-via-
+		// reactivation can refetch the failed side. We accept that the
+		// successful side will be re-fetched too; that's cheap and the
+		// alternative (per-branch flags) would only matter under repeated
+		// partial outages of one endpoint.
+		if (user.id === userId && (metricsError || recentError)) {
 			fetchedForUserId = null;
 		}
 	}

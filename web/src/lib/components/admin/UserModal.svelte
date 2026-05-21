@@ -211,12 +211,14 @@
 				{/each}
 			</div>
 
-			<!-- Only the active tab's component is mounted. The earlier
-			     version rendered all four panels under {#each} + hidden,
-			     which mounted every tab's $effect on modal open (and
-			     amplified the UserSettingsForm hydration loop). Switching
-			     tabs now mounts/unmounts the tab body — the lazy-fetch
-			     guards in each tab already cope with that. -->
+			<!-- Lazy-fetch tabs (Overview / Workspaces / Activity) mount
+			     only when active so their fetches fire on first
+			     selection. Settings is kept mounted with a hidden toggle
+			     so unsaved overrides / typed-disable text aren't lost
+			     if an admin briefly switches to Workspaces and back.
+			     UserSettingsForm has no fetch — just synchronous state —
+			     so keeping it alive is cheap. Its hydration $effect is
+			     gated on user.id so the original loop stays fixed. -->
 			<div
 				class="user-modal-body"
 				role="tabpanel"
@@ -231,9 +233,10 @@
 					<UserWorkspacesTab {user} active={true} />
 				{:else if activeTab === 'activity'}
 					<UserActivityTab {user} active={true} />
-				{:else if activeTab === 'settings'}
-					<UserSettingsForm {user} {onUserUpdated} />
 				{/if}
+				<div hidden={activeTab !== 'settings'}>
+					<UserSettingsForm {user} {onUserUpdated} />
+				</div>
 			</div>
 		</div>
 	</div>
