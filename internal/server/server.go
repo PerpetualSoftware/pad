@@ -961,6 +961,10 @@ func (s *Server) setupRouter() {
 			// Playbook Library
 			r.Get("/playbook-library", s.handlePlaybookLibrary)
 
+			// Single library entry by title (conventions first, then playbooks).
+			// TASK-1561 / PLAN-1560.
+			r.Get("/library/entry", s.handleLibraryEntry)
+
 			// URL import — fetch a remote page and return markdown.
 			// Side-effect-free; the client decides what to do with the
 			// markdown. See PLAN-1467 / TASK-1472 / internal/urlimport.

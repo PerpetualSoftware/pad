@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -853,9 +854,9 @@ func TestPlaybookSummaryPrefersFirstParagraph(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := playbookSummary(tc.body)
+			got := collections.PlaybookSummary(tc.body)
 			if got != tc.want {
-				t.Errorf("playbookSummary() = %q, want %q", got, tc.want)
+				t.Errorf("collections.PlaybookSummary() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -866,7 +867,7 @@ func TestPlaybookSummaryPrefersFirstParagraph(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		long += "abcdefghij"
 	}
-	got := playbookSummary(long)
+	got := collections.PlaybookSummary(long)
 	if len(got) > 240 {
 		t.Errorf("long summary not capped at 240 chars; got %d", len(got))
 	}
