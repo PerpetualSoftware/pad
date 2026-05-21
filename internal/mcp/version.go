@@ -65,7 +65,14 @@ const CmdhelpVersion = "0.1"
 //     context. Purely additive; older clients that ignore unknown
 //     keys keep working.
 //   - pad://workspace/{ws}/bootstrap resource added.
-//   - "0.4" — current. PLAN-1410: comprehensive bootstrap-payload
+//   - "0.5" — current. PLAN-1560 / TASK-1563: adds `pad_library` to the
+//     catalog as the ninth resource × action tool. Three actions —
+//     list / get / activate — surface the global convention + playbook
+//     library (previously CLI-only) to MCP callers. Pure addition; no
+//     existing tool/action/param/bootstrap shapes changed. Backwards-
+//     compatible for any v0.4 consumer that doesn't enumerate the new
+//     tool.
+//   - "0.4" — PLAN-1410: comprehensive bootstrap-payload
 //     trim, cutting ~40% of bytes off the AgentBootstrap response.
 //     Same tool catalog (still eight resource × action tools +
 //     pad_set_workspace); the shape changes are entirely inside the
@@ -107,7 +114,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.4"
+const ToolSurfaceVersion = "0.5"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

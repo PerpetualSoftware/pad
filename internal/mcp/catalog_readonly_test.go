@@ -29,6 +29,8 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 		"pad_search":     false,
 		"pad_item":       false,
 		"pad_playbook":   false,
+		// pad_library — PLAN-1560 / TASK-1563. Closes IDEA-1514.
+		"pad_library": false,
 	}
 	for _, def := range Catalog {
 		if _, ok := want[def.Name]; ok {
@@ -125,6 +127,16 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_playbook", "list"}: {"playbook", "list"},
 		{"pad_playbook", "get"}:  {"playbook", "show"},
 		{"pad_playbook", "run"}:  {"playbook", "run"},
+
+		// pad_library actions (PLAN-1560 / TASK-1563). All three
+		// passThrough to `pad library <subcommand>` — list composes both
+		// library endpoints with category + summary forwarding in the
+		// HTTPHandlerDispatcher path; get is a single GET to
+		// /library/entry; activate POSTs an item into conventions or
+		// playbooks based on title precedence.
+		{"pad_library", "list"}:     {"library", "list"},
+		{"pad_library", "get"}:      {"library", "get"},
+		{"pad_library", "activate"}: {"library", "activate"},
 	}
 
 	// Actions whose dispatch is too custom for the cmdPath bijection —
@@ -679,6 +691,28 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					{Name: "args", Required: false, Repeatable: true},
 				},
 				Flags: mkFlags("workspace"),
+			},
+			// pad_library surface (PLAN-1560 / TASK-1563). list / get /
+			// activate passThrough to `pad library <subcommand>`. The
+			// HTTPHandlerDispatcher path uses category + full inputs to
+			// build query strings; the ExecDispatcher path forwards them
+			// as CLI flags via BuildCLIArgs.
+			"library list": {
+				Summary: "list library",
+				Flags: map[string]cmdhelp.Flag{
+					"category": {Type: "string"},
+					"type":     {Type: "string"},
+					"full":     {Type: "bool"},
+				},
+			},
+			"library get": {
+				Summary: "get one library entry",
+				Args:    mkArgs("title"),
+			},
+			"library activate": {
+				Summary: "activate library entry",
+				Args:    mkArgs("title"),
+				Flags:   mkFlags("workspace"),
 			},
 		},
 	}

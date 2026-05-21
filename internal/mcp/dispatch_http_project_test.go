@@ -663,6 +663,105 @@ func TestDispatch_LibraryList_RejectsUnknownType(t *testing.T) {
 	}
 }
 
+// TestDispatch_LibraryList_ForwardsCategoryAndSummary pins TASK-1563's
+// extension to dispatchLibraryList: `category` flows to BOTH endpoints
+// as a query param, and the default `summary=true` flag passes to the
+// playbook endpoint unless input.full=true.
+func TestDispatch_LibraryList_ForwardsCategoryAndSummary(t *testing.T) {
+	cases := []struct {
+		name              string
+		input             map[string]any
+		wantConvQuery     string
+		wantPlaybookQuery string
+	}{
+		{
+			name:              "defaults — summary=true, no category",
+			input:             map[string]any{},
+			wantConvQuery:     "",
+			wantPlaybookQuery: "summary=true",
+		},
+		{
+			name:              "category set — forwards to both",
+			input:             map[string]any{"category": "git"},
+			wantConvQuery:     "category=git",
+			wantPlaybookQuery: "category=git&summary=true",
+		},
+		{
+			name:              "full=true — suppresses summary",
+			input:             map[string]any{"full": true},
+			wantConvQuery:     "",
+			wantPlaybookQuery: "",
+		},
+		{
+			name:              "category + full — category forwarded, summary suppressed",
+			input:             map[string]any{"category": "agent-workflows", "full": true},
+			wantConvQuery:     "category=agent-workflows",
+			wantPlaybookQuery: "category=agent-workflows",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			var convQuery, pbQuery string
+			mux.HandleFunc("/api/v1/convention-library", func(w http.ResponseWriter, r *http.Request) {
+				convQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"categories":[]}`))
+			})
+			mux.HandleFunc("/api/v1/playbook-library", func(w http.ResponseWriter, r *http.Request) {
+				pbQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"categories":[]}`))
+			})
+			d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+			res, err := d.Dispatch(
+				WithDispatchInput(context.Background(), tc.input),
+				[]string{"library", "list"}, nil,
+			)
+			if err != nil || res.IsError {
+				t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+			}
+			if convQuery != tc.wantConvQuery {
+				t.Errorf("convention query = %q, want %q", convQuery, tc.wantConvQuery)
+			}
+			if pbQuery != tc.wantPlaybookQuery {
+				t.Errorf("playbook query = %q, want %q", pbQuery, tc.wantPlaybookQuery)
+			}
+		})
+	}
+}
+
+// TestDispatch_LibraryGet_RoutesToEntryEndpoint confirms the routeTable
+// entry resolves: the dispatcher calls /library/entry?title=X and
+// returns the response payload as the structured content.
+func TestDispatch_LibraryGet_RoutesToEntryEndpoint(t *testing.T) {
+	mux := http.NewServeMux()
+	var seenQuery string
+	mux.HandleFunc("/api/v1/library/entry", func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"convention","convention":{"title":"Commit after task completion","content":"..."}}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{"title": "Commit after task completion"}),
+		[]string{"library", "get"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if !strings.Contains(seenQuery, "title=") {
+		t.Errorf("expected ?title=... in query, got %q", seenQuery)
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map structured content; got %#v", res.StructuredContent)
+	}
+	if payload["type"] != "convention" {
+		t.Errorf("expected type=convention, got %v", payload["type"])
+	}
+}
+
 // --- item bulk-update ---
 
 func TestBulkUpdateRefs_AcceptsCommonShapes(t *testing.T) {
