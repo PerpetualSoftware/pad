@@ -561,10 +561,13 @@ func userActorLabel(user *models.User) string {
 //   - --type playbooks      → returns the playbook library (plib).
 //   - (no --type)           → returns {conventions: lib, playbooks: plib}.
 //
-// `--category` is intentionally not applied here — the CLI also
-// doesn't filter the JSON output by category (it's purely a
-// human-readable rendering filter). Agents that want category
-// filtering can apply it client-side over the returned categories[].
+// Inputs honored (PLAN-1560 / TASK-1561+TASK-1563):
+//   - type:     restricts to conventions or playbooks (above).
+//   - category: server-side category filter; case-sensitive exact match.
+//     Forwarded to BOTH endpoints when set.
+//   - full:     when true, playbooks come back with full bodies. Default
+//     (full=false) passes ?summary=true so MCP agents browse
+//     the catalog without blowing their context budget.
 //
 // The endpoints are global (no workspace), so we don't read
 // `workspace` from input. Both endpoints require an authenticated
@@ -586,18 +589,45 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryList(
 			"Pass `type=conventions`, `type=playbooks`, or omit for both."), nil
 	}
 
+	category, _ := input["category"].(string)
+	full, _ := input["full"].(bool)
+
+	// Build query strings per endpoint. Convention endpoint takes only
+	// category; playbook endpoint takes both category and summary.
+	conventionQuery := url.Values{}
+	playbookQuery := url.Values{}
+	if category != "" {
+		conventionQuery.Set("category", category)
+		playbookQuery.Set("category", category)
+	}
+	if !full {
+		// Default: summary mode for playbooks. MCP callers want compact
+		// payloads; CLI default already does this too. Opt back in via
+		// full=true.
+		playbookQuery.Set("summary", "true")
+	}
+
+	conventionPath := "/api/v1/convention-library"
+	if encoded := conventionQuery.Encode(); encoded != "" {
+		conventionPath += "?" + encoded
+	}
+	playbookPath := "/api/v1/playbook-library"
+	if encoded := playbookQuery.Encode(); encoded != "" {
+		playbookPath += "?" + encoded
+	}
+
 	var conventions any
 	var playbooks any
 
 	if wantConventions {
-		v, errRes := d.fetchLibraryEndpoint(ctx, user, cmdKey, "/api/v1/convention-library")
+		v, errRes := d.fetchLibraryEndpoint(ctx, user, cmdKey, conventionPath)
 		if errRes != nil {
 			return errRes, nil
 		}
 		conventions = v
 	}
 	if wantPlaybooks {
-		v, errRes := d.fetchLibraryEndpoint(ctx, user, cmdKey, "/api/v1/playbook-library")
+		v, errRes := d.fetchLibraryEndpoint(ctx, user, cmdKey, playbookPath)
 		if errRes != nil {
 			return errRes, nil
 		}

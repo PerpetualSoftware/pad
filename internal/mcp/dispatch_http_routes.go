@@ -249,6 +249,18 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/playbooks/{ref}",
 		}.toRouteMapper(),
 		"playbook run": mapPlaybookRun,
+
+		// Library single-entry lookup (PLAN-1560 / TASK-1561 endpoint,
+		// TASK-1563 MCP wiring). Workspace-free — the library is global.
+		// list/activate stay as explicit cases in dispatch_http.go (they
+		// compose multiple endpoints / mutate); get is a clean GET so a
+		// routeSpec covers it.
+		"library get": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/library/entry",
+			queryParams:  map[string]string{"title": "title"},
+		}.toRouteMapper(),
+
 		"collection list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections",
