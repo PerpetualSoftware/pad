@@ -393,9 +393,18 @@ type LibraryConvention struct {
 }
 
 // GetConventionLibrary fetches the convention library from the server.
-func (c *Client) GetConventionLibrary() (*ConventionLibraryResponse, error) {
+//
+// category — when non-empty, server-side filter against LibraryCategory.Name
+// (case-sensitive exact match). PLAN-1560 / TASK-1561.
+func (c *Client) GetConventionLibrary(category string) (*ConventionLibraryResponse, error) {
+	path := "/convention-library"
+	if category != "" {
+		params := url.Values{}
+		params.Set("category", category)
+		path += "?" + params.Encode()
+	}
 	var result ConventionLibraryResponse
-	return &result, c.get("/convention-library", &result)
+	return &result, c.get(path, &result)
 }
 
 // --- Playbook Library ---
@@ -417,9 +426,15 @@ type PlaybookCategory struct {
 // InvocationSlug and Arguments are PLAN-1377's invocation surface and
 // must round-trip through `pad library activate` so a library entry
 // that declares them produces a `/pad <slug>`-routable workspace item.
+//
+// Content vs Summary: the server returns full Content by default; passing
+// summary=true on the library-list endpoint strips Content and returns a
+// short Summary instead (PLAN-1560 / TASK-1561). Both fields use omitempty
+// so a single struct round-trips both shapes without zero-value noise.
 type LibraryPlaybook struct {
 	Title          string           `json:"title"`
-	Content        string           `json:"content"`
+	Content        string           `json:"content,omitempty"`
+	Summary        string           `json:"summary,omitempty"`
 	Category       string           `json:"category"`
 	Trigger        string           `json:"trigger"`
 	Scope          string           `json:"scope"`
@@ -428,9 +443,50 @@ type LibraryPlaybook struct {
 }
 
 // GetPlaybookLibrary fetches the playbook library from the server.
-func (c *Client) GetPlaybookLibrary() (*PlaybookLibraryResponse, error) {
+//
+// category — when non-empty, server-side filter against PlaybookCategory.Name
+// (case-sensitive exact match).
+// summary — when true, server strips LibraryPlaybook.Content and injects
+// Summary (first non-heading paragraph, ~240 char cap). Use false for
+// activate/get-by-title flows that need the full body. PLAN-1560 / TASK-1561.
+func (c *Client) GetPlaybookLibrary(category string, summary bool) (*PlaybookLibraryResponse, error) {
+	params := url.Values{}
+	if category != "" {
+		params.Set("category", category)
+	}
+	if summary {
+		params.Set("summary", "true")
+	}
+	path := "/playbook-library"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
 	var result PlaybookLibraryResponse
-	return &result, c.get("/playbook-library", &result)
+	return &result, c.get(path, &result)
+}
+
+// --- Library Entry ---
+
+// LibraryEntryResponse is the envelope returned by /library/entry. Exactly
+// one of Convention or Playbook is set; Type is "convention" or "playbook"
+// so callers can switch without inspecting which pointer is non-nil.
+type LibraryEntryResponse struct {
+	Type       string             `json:"type"`
+	Convention *LibraryConvention `json:"convention,omitempty"`
+	Playbook   *LibraryPlaybook   `json:"playbook,omitempty"`
+}
+
+// GetLibraryEntry fetches one library entry by exact title match. Conventions-
+// first precedence — a title that resolves to a convention is returned as
+// one even if a playbook of the same title existed. Returns *APIError with
+// Code="not_found" when the title doesn't match anything; CLI callers can
+// type-assert to detect that case. PLAN-1560 / TASK-1561 (endpoint) +
+// TASK-1562 (CLI plumbing).
+func (c *Client) GetLibraryEntry(title string) (*LibraryEntryResponse, error) {
+	params := url.Values{}
+	params.Set("title", title)
+	var result LibraryEntryResponse
+	return &result, c.get("/library/entry?"+params.Encode(), &result)
 }
 
 // --- Webhooks ---

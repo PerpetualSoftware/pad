@@ -34,9 +34,7 @@ type libraryEntryResponse struct {
 func (s *Server) handleLibraryEntry(w http.ResponseWriter, r *http.Request) {
 	title := r.URL.Query().Get("title")
 	if title == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "title query parameter is required",
-		})
+		writeError(w, http.StatusBadRequest, "bad_request", "title query parameter is required")
 		return
 	}
 
@@ -56,7 +54,6 @@ func (s *Server) handleLibraryEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusNotFound, map[string]string{
-		"error": "not found in convention or playbook library: " + title,
-	})
+	writeError(w, http.StatusNotFound, "not_found",
+		"not found in convention or playbook library: "+title)
 }

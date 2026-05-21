@@ -271,20 +271,44 @@ func TestLibraryEntry_Playbook(t *testing.T) {
 	}
 }
 
-// TestLibraryEntry_MissingTitle — 400 when title is missing.
+// TestLibraryEntry_MissingTitle — 400 in the canonical {error: {code, message}}
+// envelope (matches the rest of the API). CLI parseError relies on this shape.
 func TestLibraryEntry_MissingTitle(t *testing.T) {
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry", nil)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing title, got %d", rr.Code)
 	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	parseJSON(t, rr, &resp)
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("expected error.code=bad_request, got %q", resp.Error.Code)
+	}
+	if resp.Error.Message == "" {
+		t.Error("expected non-empty error.message")
+	}
 }
 
-// TestLibraryEntry_NotFound — 404 when title doesn't match anything.
+// TestLibraryEntry_NotFound — 404 with the canonical envelope.
 func TestLibraryEntry_NotFound(t *testing.T) {
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry?title="+url.QueryEscape("definitely not a real library entry"), nil)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rr.Code)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	parseJSON(t, rr, &resp)
+	if resp.Error.Code != "not_found" {
+		t.Errorf("expected error.code=not_found, got %q", resp.Error.Code)
 	}
 }
