@@ -951,10 +951,11 @@ type AdminUserWorkspaceDetail struct {
 // excludes terminal-status items. Single-sourced from
 // models.DefaultTerminalStatuses to match the rest of the codebase, and
 // uses the dialect's JSON-extract helper so the query runs identically on
-// SQLite and Postgres. Wraps the extracted value in LOWER(COALESCE(...,'')
-// so items with NULL/missing status (NULL NOT IN (...) is not TRUE in SQL)
-// and case-variant statuses still register as "open" — matching how
-// search.go and items.go interpret terminal-status checks.
+// SQLite and Postgres. The extracted value is COALESCEd against the empty
+// string and LOWER-cased so items with NULL/missing status (NULL NOT IN
+// (...) is not TRUE in SQL) and case-variant statuses still register as
+// "open" — matching how search.go and items.go interpret terminal-status
+// checks.
 func (s *Store) adminOpenItemsCountClause() (clause string, args []interface{}) {
 	terms := models.DefaultTerminalStatuses
 	if len(terms) == 0 {
