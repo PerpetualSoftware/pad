@@ -571,7 +571,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrNotFound,
 		Message: fmt.Sprintf("%s: %q not found in convention or playbook library", cmdKey, title),
-		Hint:    "Use `pad_project action=library-list` to enumerate available titles.",
+		Hint:    "Use `pad_library action=list` to enumerate available titles.",
 	}), nil
 }
 
