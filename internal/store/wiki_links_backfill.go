@@ -96,7 +96,16 @@ func (s *Store) BackfillWikiLinks() (*BackfillWikiLinksResult, error) {
 		// Short-circuit: an item that already has rows in the
 		// wiki-links table was indexed at write time and doesn't
 		// need re-parsing. Cheap EXISTS check.
-		var has int
+		//
+		// Scanned into a bool — not an int — because `SELECT EXISTS`
+		// returns a boolean on Postgres (`true`/`false`) and an
+		// integer 0/1 on SQLite. Both database/sql drivers in use
+		// (modernc.org/sqlite and lib/pq) coerce their native
+		// representation into Go's bool, so this single shape works
+		// on both engines. Scanning into `int` happened to work on
+		// SQLite but blew up on Postgres, silently disabling the
+		// backfill there (Codex round-3 P1).
+		var has bool
 		if err := s.db.QueryRow(s.q(`
 			SELECT EXISTS(SELECT 1 FROM item_wiki_links WHERE source_item_id = ?)
 		`), ir.id).Scan(&has); err != nil {
@@ -105,7 +114,7 @@ func (s *Store) BackfillWikiLinks() (*BackfillWikiLinksResult, error) {
 			result.Errors++
 			continue
 		}
-		if has == 1 {
+		if has {
 			continue
 		}
 
