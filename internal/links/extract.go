@@ -65,9 +65,13 @@ type WikiLinkRef struct {
 
 // REF_PATTERN matches a Pad item ref like TASK-5 or BUG-585. Mirrors
 // the renderer's REF_PATTERN constant in web/src/lib/utils/markdown.ts
-// (we deliberately keep the same shape so server-side and client-side
-// extraction agree on what "a ref" looks like).
-var refPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
+// — case-insensitive so `[[task-5]]` parses the same way the renderer
+// resolves it. Without this parity the renderer would render a mixed-
+// case ref as a clickable link while the index silently dropped it
+// (Codex round-1 P2). The Display segment is parsed separately so
+// case-only differences in the prefix collapse to the canonical
+// uppercase form at storage time — see parseBody.
+var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 
 // wikiLinkPattern matches `[[...]]` non-greedily. We split the body
 // ourselves to handle the `|Display` segment and the cross-workspace
@@ -359,11 +363,18 @@ func parseBody(body string) *WikiLinkRef {
 		// Fall through to title — the renderer's fallback policy.
 	}
 
-	// Ref form: a bare REF-N pattern.
+	// Ref form: a bare REF-N pattern. Normalize the prefix to upper-
+	// case at this single chokepoint — collection prefixes are
+	// canonically uppercase in `collections.prefix`, and the
+	// resolver/backlinks queries compare against that column. The
+	// renderer accepts mixed case for input convenience; we store
+	// the canonical form so the index has one shape per (workspace,
+	// prefix, number) and downstream callers don't need to be
+	// case-aware (Codex round-1 P2).
 	if refPattern.MatchString(body) {
 		return &WikiLinkRef{
 			Kind:    WikiLinkKindRef,
-			Ref:     body,
+			Ref:     canonicalizeRef(body),
 			Display: display,
 		}
 	}
@@ -386,4 +397,21 @@ var workspaceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-
 
 func isWorkspaceSlug(s string) bool {
 	return workspaceSlugPattern.MatchString(s)
+}
+
+// canonicalizeRef uppercases the prefix portion of a "PREFIX-N" ref
+// so the index has a single canonical shape per (workspace, prefix,
+// number) regardless of how the author cased the source. The number
+// segment is unchanged (it can only contain digits per refPattern).
+//
+// `[[task-5]]` → "TASK-5". `[[Task-5]]` → "TASK-5". `[[TASK-5]]` →
+// "TASK-5" (no-op). Inputs that don't contain a hyphen pass through
+// untouched (refPattern would have rejected them anyway; callers
+// invariantly hold to "matches refPattern" before calling).
+func canonicalizeRef(ref string) string {
+	dash := strings.LastIndexByte(ref, '-')
+	if dash < 0 {
+		return strings.ToUpper(ref)
+	}
+	return strings.ToUpper(ref[:dash]) + ref[dash:]
 }

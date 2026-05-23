@@ -175,7 +175,7 @@ func TestExtractWikiLinks_Edge(t *testing.T) {
 		{"empty brackets", "Here is [[]] which shouldn't match."},
 		{"single bracket", "[A-1] should not match."},
 		{"nested brackets", "[[[A-1]]] shouldn't either."},
-		{"lowercase ref", "[[task-5]] is not a ref."},
+		{"number-led not a ref", "[[5-task]] is not a ref shape."},
 		{"missing number", "[[TASK]] needs a number."},
 		{"bracket with newline body", "[[A-1\nB-2]] is malformed."},
 	}
@@ -211,24 +211,73 @@ func TestExtractWikiLinks_PositionIsByteOffset(t *testing.T) {
 }
 
 // TestExtractWikiLinks_RefVsTitleFallback exercises the parseBody
-// decision tree. A body that LOOKS like ref but isn't (mismatched
-// case, missing number, etc.) should fall through to title and
-// therefore be hidden in Phase 1.
+// decision tree. After Codex round-1 P2, the refPattern is
+// case-insensitive — `[[Task-5]]` and `[[task-5]]` now parse as the
+// ref kind (and normalize to "TASK-5" for storage), matching the
+// renderer's behavior. Inputs that don't look like a ref at all
+// still fall through to title.
 func TestExtractWikiLinks_RefVsTitleFallback(t *testing.T) {
-	t.Run("ref-shaped body parses as ref", func(t *testing.T) {
+	t.Run("uppercase ref-shaped body parses as ref", func(t *testing.T) {
 		got := ExtractWikiLinks("[[TASK-5]]")
 		if len(got) != 1 || got[0].Kind != WikiLinkKindRef {
 			t.Errorf("expected single ref kind, got %+v", got)
 		}
+		if got[0].Ref != "TASK-5" {
+			t.Errorf("Ref: got %q, want TASK-5", got[0].Ref)
+		}
 	})
-	t.Run("not-quite-ref body falls to title and is hidden", func(t *testing.T) {
-		// "Task-5" lowercase doesn't match REF_PATTERN; parseBody
-		// returns a title-kind ref; Phase 1 gates it out.
+	t.Run("mixed-case body parses as ref, normalized to uppercase", func(t *testing.T) {
 		got := ExtractWikiLinks("[[Task-5]]")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref-kind result (case-insensitive match), got %d: %+v", len(got), got)
+		}
+		if got[0].Kind != WikiLinkKindRef {
+			t.Errorf("Kind: got %q, want ref", got[0].Kind)
+		}
+		if got[0].Ref != "TASK-5" {
+			t.Errorf("Ref should be canonicalized to uppercase: got %q want TASK-5", got[0].Ref)
+		}
+	})
+	t.Run("lowercase body parses as ref, normalized to uppercase", func(t *testing.T) {
+		got := ExtractWikiLinks("[[task-5]]")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref-kind result, got %d", len(got))
+		}
+		if got[0].Ref != "TASK-5" {
+			t.Errorf("Ref: got %q want TASK-5", got[0].Ref)
+		}
+	})
+	t.Run("non-ref body falls to title and is hidden", func(t *testing.T) {
+		// "5-Task" (number-led) doesn't match REF_PATTERN even
+		// with the relaxed case rule; parseBody returns a
+		// title-kind ref; Phase 1 gates it out.
+		got := ExtractWikiLinks("[[5-Task]]")
 		if len(got) != 0 {
 			t.Errorf("expected 0 (title-kind hidden), got %+v", got)
 		}
 	})
+}
+
+// TestCanonicalizeRef is the unit-level check on the helper. The
+// integration coverage lives in TestWikiLinks_MixedCaseRefIndexed
+// (store) — but the helper's edge cases (no-hyphen, all-uppercase
+// already, multi-hyphen prefix) are easier to assert directly.
+func TestCanonicalizeRef(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"TASK-5", "TASK-5"},
+		{"task-5", "TASK-5"},
+		{"Task-5", "TASK-5"},
+		{"PLAYBOOK-12345", "PLAYBOOK-12345"},
+		{"playbook-12345", "PLAYBOOK-12345"},
+	}
+	for _, tc := range cases {
+		got := canonicalizeRef(tc.in)
+		if got != tc.want {
+			t.Errorf("canonicalizeRef(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }
 
 // assertLinks compares two WikiLinkRef slices for the fields Phase 1

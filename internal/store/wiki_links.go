@@ -171,13 +171,46 @@ func splitRef(ref string) (prefix string, number int, ok bool) {
 //
 // `limit` and `offset` paginate. A limit <=0 is normalized to a
 // hard cap (300) so a buggy caller can't ask for unbounded results.
-func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int) ([]models.Backlink, error) {
+//
+// `visibleCollectionIDs` constrains the source collections the caller
+// is allowed to see. Pass nil for "no restriction" (owners, editors,
+// CLI/MCP root-scoped tokens). Pass an empty slice for "see nothing"
+// (deliberately locked-out caller). Pass a non-empty slice to gate
+// SQL-side; this matters for correct LIMIT/OFFSET pagination — Codex
+// round-1 P1 — otherwise the handler would have to over-fetch and
+// trim, and pages would unpredictably shrink under restricted access.
+func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int, visibleCollectionIDs []string) ([]models.Backlink, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 50
 	}
 	if offset < 0 {
 		offset = 0
 	}
+
+	// An empty (non-nil) visibility set means "show nothing." Return
+	// an empty slice up-front so we don't issue a `WHERE c.id IN ()`
+	// query that's syntactically dialect-divergent (Postgres rejects
+	// the empty-list form; SQLite is more permissive). Mirrors the
+	// renderer's locked-out branch (returns the 🔒 broken link rather
+	// than fetching).
+	if visibleCollectionIDs != nil && len(visibleCollectionIDs) == 0 {
+		return nil, nil
+	}
+
+	// Build the visibility predicate. nil → omit (no restriction);
+	// non-empty → IN (?, ?, ...) with positional placeholders that
+	// work in both SQLite and Postgres after s.q() rewrites them.
+	visClause := ""
+	args := []interface{}{targetItemID, workspaceID, targetItemID}
+	if visibleCollectionIDs != nil {
+		placeholders := make([]string, len(visibleCollectionIDs))
+		for i, cid := range visibleCollectionIDs {
+			placeholders[i] = "?"
+			args = append(args, cid)
+		}
+		visClause = " AND s.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	args = append(args, limit, offset)
 
 	rows, err := s.db.Query(s.q(`
 		SELECT s.id, c.prefix, s.item_number, s.title, c.slug, c.icon,
@@ -188,10 +221,10 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		WHERE wl.target_item_id = ?
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
-		  AND s.id != ?
+		  AND s.id != ?`+visClause+`
 		ORDER BY s.updated_at DESC, wl.position ASC
 		LIMIT ? OFFSET ?
-	`), targetItemID, workspaceID, targetItemID, limit, offset)
+	`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query backlinks: %w", err)
 	}

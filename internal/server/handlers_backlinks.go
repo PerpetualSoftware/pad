@@ -20,10 +20,15 @@ import (
 //   - The TARGET item must be visible to the requester (visibility
 //     check via requireItemVisible). If the requester can't see the
 //     target, they don't get to know who links to it.
-//   - SOURCE items are filtered by per-row collection visibility +
-//     guest grants — a backlink from a hidden collection or a
-//     guest-walled item is dropped so this endpoint can't leak the
-//     existence of unviewable items via the snippet field.
+//   - SOURCE items are filtered by per-row collection visibility in
+//     SQL (via visibleCollectionIDs → GetBacklinks). Filtering in
+//     SQL — not post-fetch — is essential for correct pagination:
+//     the LIMIT/OFFSET counts visible rows, not raw rows. Otherwise
+//     a restricted user asking for limit=50 could receive an empty
+//     page even when later visible backlinks exist (Codex round-1
+//     P1). Item-level guest grants apply on top of the collection
+//     gate; they're rare enough that the residual handler-side trim
+//     doesn't materially shrink pages.
 //
 // Pagination:
 //   - `?limit=N` (1–300, default 50). Out-of-range values are
@@ -65,7 +70,19 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	backlinks, err := s.store.GetBacklinks(item.ID, workspaceID, limit, offset)
+	// Visibility gate. nil → no restriction (owner/editor/root tokens);
+	// non-empty → SQL-side filter for SOURCE collection visibility.
+	// Passing this into the store query (not filtering after the
+	// fetch) is what makes the LIMIT/OFFSET pagination correct for
+	// restricted users — see the function-level comment above and
+	// Codex round-1 P1.
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+
+	backlinks, err := s.store.GetBacklinks(item.ID, workspaceID, limit, offset, visibleIDs)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -77,15 +94,12 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Per-source visibility filter. The store-level query already
-	// gates source.deleted_at IS NULL and excludes self-links, but
-	// it has no view into the requester's permissions — that's
-	// strictly an HTTP-layer concern.
-	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-	if visErr != nil {
-		writeInternalError(w, visErr)
-		return
-	}
+	// Item-level guest grants apply on top of the SQL collection
+	// gate. These are item-by-item ACL overrides; pushing them into
+	// SQL would mean expanding the WHERE clause per request, which
+	// isn't worth it for an N≤50 page. For the common authenticated
+	// case (no guest grants active) this loop runs N times and drops
+	// nothing.
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
 	if grantErr != nil {
 		writeInternalError(w, grantErr)
@@ -94,17 +108,8 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 	if visibleIDs != nil {
 		filtered := backlinks[:0]
 		for _, bl := range backlinks {
-			// Re-resolve the source item just enough to apply
-			// the existing visibility helpers. A second lookup
-			// per backlink isn't free, but for N≤50 it's well
-			// within the latency budget; if this becomes hot
-			// we can extend GetBacklinks to return collection_id
-			// alongside the slug.
 			src, err := s.store.GetItem(bl.SourceItemID)
 			if err != nil || src == nil {
-				continue
-			}
-			if !isCollectionVisible(src.CollectionID, visibleIDs) {
 				continue
 			}
 			if !s.isItemVisibleToGuest(r, workspaceID, src, fullCollIDs, grantedItemIDs) {

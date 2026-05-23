@@ -20,7 +20,7 @@ func TestWikiLinks_CreateItemIndexesRefs(t *testing.T) {
 	source := createTestItem(t, s, ws.ID, col.ID, "Source item",
 		"Please see ["+"["+target.CollectionPrefix+"-"+itoa(*target.ItemNumber)+"]] for context.")
 
-	backlinks, err := s.GetBacklinks(target.ID, ws.ID, 50, 0)
+	backlinks, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
 		"Mentions [["+refOf(a)+"]] only.")
 
 	// A should have one backlink.
-	got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0)
+	got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, nil)
 	if len(got) != 1 {
 		t.Fatalf("step 1: expected A to have 1 backlink, got %d", len(got))
 	}
@@ -67,10 +67,10 @@ func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
 	if _, err := s.UpdateItem(source.ID, models.ItemUpdate{Content: &newContent}); err != nil {
 		t.Fatalf("UpdateItem: %v", err)
 	}
-	if got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0); len(got) != 0 {
+	if got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, nil); len(got) != 0 {
 		t.Errorf("step 2: A should have 0 backlinks after rewrite, got %d", len(got))
 	}
-	if got, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0); len(got) != 1 {
+	if got, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0, nil); len(got) != 1 {
 		t.Errorf("step 2: B should have 1 backlink after rewrite, got %d", len(got))
 	}
 }
@@ -89,7 +89,7 @@ func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
 	source := createTestItem(t, s, ws.ID, col.ID, "Source",
 		"Mentions [["+refOf(target)+"]].")
 
-	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0); len(got) != 1 {
+	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil); len(got) != 1 {
 		t.Fatalf("baseline: expected 1 backlink, got %d", len(got))
 	}
 
@@ -99,7 +99,7 @@ func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
 	if err := s.DeleteItem(source.ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
 	}
-	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0); len(got) != 0 {
+	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil); len(got) != 0 {
 		t.Errorf("after soft-delete source: expected 0 backlinks, got %d", len(got))
 	}
 }
@@ -120,7 +120,7 @@ func TestWikiLinks_SelfLinkHidden(t *testing.T) {
 	if _, err := s.UpdateItem(self.ID, models.ItemUpdate{Content: &body}); err != nil {
 		t.Fatalf("UpdateItem: %v", err)
 	}
-	got, err := s.GetBacklinks(self.ID, ws.ID, 50, 0)
+	got, err := s.GetBacklinks(self.ID, ws.ID, 50, 0, nil)
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestWikiLinks_RepeatedRefStoresMultipleRows(t *testing.T) {
 
 	// GetBacklinks returns one row per stored row (snippet differs
 	// per position). Display dedupe is a higher layer's concern.
-	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0)
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestWikiLinks_CodeBlocksExcludedAtIndexTime(t *testing.T) {
 		"After block."
 	createTestItem(t, s, ws.ID, col.ID, "Mixed", body)
 
-	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0)
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -250,10 +250,110 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	}
 
 	// The reverse-index query should still find the source.
-	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0)
+	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
 	if len(bls) != 1 {
 		t.Errorf("after backfill: expected 1 backlink, got %d", len(bls))
 	}
+}
+
+// TestWikiLinks_MixedCaseRefIndexed regresses Codex round-1 P2: a
+// body containing `[[task-5]]` must produce a backlink row pointing
+// at the same target as `[[TASK-5]]`. Renderer permissiveness and
+// indexer behavior have to agree, otherwise users see broken silent
+// data divergence.
+func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	// Author writes a mixed-case ref. Renderer accepts; indexer
+	// must too. The store should normalize to the canonical
+	// uppercase form so the backlinks query (which compares
+	// against `collections.prefix`, canonically uppercase)
+	// returns the row.
+	lc := strings.ToLower(refOf(target))
+	createTestItem(t, s, ws.ID, col.ID, "Lowercased ref source", "See ["+"["+lc+"]] please.")
+
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(bls) != 1 {
+		t.Fatalf("expected 1 backlink for mixed-case ref input, got %d", len(bls))
+	}
+	// The stored target_ref should be the canonical uppercase form.
+	var storedRef string
+	err = s.db.QueryRow(s.q(`SELECT target_ref FROM item_wiki_links WHERE source_item_id = ?`),
+		bls[0].SourceItemID).Scan(&storedRef)
+	if err != nil {
+		t.Fatalf("read stored target_ref: %v", err)
+	}
+	if storedRef != refOf(target) {
+		t.Errorf("stored target_ref should be uppercase %q, got %q", refOf(target), storedRef)
+	}
+}
+
+// TestWikiLinks_VisibilityAwarePagination regresses Codex round-1 P1:
+// when GetBacklinks is called with a visibility-restricted
+// `visibleCollectionIDs` slice, the LIMIT/OFFSET counts only visible
+// rows. A page asking for `limit=2` must return 2 visible rows even
+// if the underlying raw set has hidden rows interleaved with them.
+//
+// Setup:
+//   - target receives 3 backlinks: src1 (visible), src2 (HIDDEN), src3 (visible).
+//   - With nil visibility (no restriction): all 3 are returned.
+//   - With visibility = [visible collection only]: limit=2 returns
+//     [src3, src1] (newest-first), NOT [src3] (which would be the
+//     bug — hidden src2 silently consuming a slot).
+func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	visible := createTestCollection(t, s, ws.ID, "Visible")
+	hidden := createTestCollection(t, s, ws.ID, "Hidden")
+
+	target := createTestItem(t, s, ws.ID, visible.ID, "Target", "")
+	tref := refOf(target)
+	// Insert in update_at order: src1 → src2 → src3.
+	// Newest (src3) appears first in the sorted result.
+	createTestItem(t, s, ws.ID, visible.ID, "Src1 visible", "Refs ["+"["+tref+"]].")
+	createTestItem(t, s, ws.ID, hidden.ID, "Src2 hidden", "Refs ["+"["+tref+"]].")
+	createTestItem(t, s, ws.ID, visible.ID, "Src3 visible", "Refs ["+"["+tref+"]].")
+
+	t.Run("nil visibility returns all 3", func(t *testing.T) {
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+		if err != nil {
+			t.Fatalf("GetBacklinks: %v", err)
+		}
+		if len(bls) != 3 {
+			t.Errorf("nil visibility: expected 3 backlinks, got %d", len(bls))
+		}
+	})
+
+	t.Run("visible-only limit=2 returns 2 visible rows", func(t *testing.T) {
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 2, 0, []string{visible.ID})
+		if err != nil {
+			t.Fatalf("GetBacklinks: %v", err)
+		}
+		if len(bls) != 2 {
+			t.Fatalf("expected exactly 2 visible backlinks (limit honored), got %d: %+v", len(bls), bls)
+		}
+		for _, bl := range bls {
+			if bl.SourceCollectionSlug != "visible" {
+				t.Errorf("expected only visible-collection sources, got slug=%q", bl.SourceCollectionSlug)
+			}
+		}
+	})
+
+	t.Run("empty visibility returns nothing", func(t *testing.T) {
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, []string{})
+		if err != nil {
+			t.Fatalf("GetBacklinks: %v", err)
+		}
+		if len(bls) != 0 {
+			t.Errorf("empty visibility set: expected 0 backlinks, got %d", len(bls))
+		}
+	})
 }
 
 // refOf builds a PREFIX-NUMBER string from a fresh item — used by the
