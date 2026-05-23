@@ -119,12 +119,35 @@ func fencedCodeRanges(content string) [][2]int {
 			i += nl + 1
 			continue
 		}
-		// At a line start. Count backticks.
-		tickStart := i
-		for i < n && content[i] == '`' {
-			i++
+		// At a line start. CommonMark allows 0-3 leading spaces of
+		// indentation before a fence opener (4+ spaces makes it an
+		// indented code block, which is a different construct). Skip
+		// up to 3 leading spaces but bail if we hit a 4th — the
+		// renderer would treat that line as code, not a fence opener,
+		// and we'd risk false-positive on a wiki-link inside an
+		// indented-code paragraph. Codex round-5 finding #2.
+		fenceLineStart := i
+		spaces := 0
+		for spaces < 4 && fenceLineStart < n && content[fenceLineStart] == ' ' {
+			fenceLineStart++
+			spaces++
 		}
-		tickCount := i - tickStart
+		if spaces >= 4 {
+			// Indented code, not a fence. Skip the line.
+			nl := strings.IndexByte(content[i:], '\n')
+			if nl < 0 {
+				return ranges
+			}
+			i += nl + 1
+			continue
+		}
+		// Count backticks starting at fenceLineStart.
+		tickStart := fenceLineStart
+		j := fenceLineStart
+		for j < n && content[j] == '`' {
+			j++
+		}
+		tickCount := j - tickStart
 		if tickCount < 3 {
 			// Not a fence opener; skip to next newline.
 			nl := strings.IndexByte(content[i:], '\n')
@@ -134,10 +157,12 @@ func fencedCodeRanges(content string) [][2]int {
 			i += nl + 1
 			continue
 		}
+		i = j
 		// Found an opener. Find the closing fence: a line that
-		// starts with at least `tickCount` backticks. If no closer
-		// exists, the fence runs to EOF (covers the rest of the
-		// content).
+		// starts with at least `tickCount` backticks (allowing
+		// matching 0-3 space indent — see findFenceCloser). If no
+		// closer exists, the fence runs to EOF (covers the rest
+		// of the content).
 		closer := findFenceCloser(content, i, tickCount)
 		if closer < 0 {
 			ranges = append(ranges, [2]int{tickStart, n})
@@ -146,19 +171,21 @@ func fencedCodeRanges(content string) [][2]int {
 		// closer points at the start of the closing tick run;
 		// advance past it (and any extra backticks) to find the
 		// end of the block.
-		j := closer
-		for j < n && content[j] == '`' {
-			j++
+		k := closer
+		for k < n && content[k] == '`' {
+			k++
 		}
-		ranges = append(ranges, [2]int{tickStart, j})
-		i = j
+		ranges = append(ranges, [2]int{tickStart, k})
+		i = k
 	}
 	return ranges
 }
 
 // findFenceCloser scans forward from `start` looking for a line that
-// begins with at least `tickCount` consecutive backticks. Returns the
-// index of the first backtick of the closer, or -1 if none exists.
+// begins with at least `tickCount` consecutive backticks (after up to
+// three leading spaces of optional indentation, matching CommonMark
+// fenced-code semantics). Returns the index of the first backtick of
+// the closer, or -1 if none exists.
 func findFenceCloser(content string, start, tickCount int) int {
 	i := start
 	n := len(content)
@@ -172,13 +199,26 @@ func findFenceCloser(content string, start, tickCount int) int {
 		if lineStart >= n {
 			return -1
 		}
-		// Count backticks at the start of this line.
-		j := lineStart
+		// CommonMark allows the closing fence to be indented 0-3
+		// spaces, independent of the opener's indentation. 4+ spaces
+		// would be an indented-code line, not a closer.
+		closerStart := lineStart
+		spaces := 0
+		for spaces < 4 && closerStart < n && content[closerStart] == ' ' {
+			closerStart++
+			spaces++
+		}
+		if spaces >= 4 {
+			i = lineStart
+			continue
+		}
+		// Count backticks at this position.
+		j := closerStart
 		for j < n && content[j] == '`' {
 			j++
 		}
-		if j-lineStart >= tickCount {
-			return lineStart
+		if j-closerStart >= tickCount {
+			return closerStart
 		}
 		i = lineStart
 	}

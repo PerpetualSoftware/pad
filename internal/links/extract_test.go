@@ -140,6 +140,40 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		}
 	})
 
+	t.Run("multi-backtick inline code excludes ref", func(t *testing.T) {
+		// CommonMark inline-code spans support multi-backtick
+		// delimiters (`code` and ``code`` are both spans). Our
+		// permissive matcher treats any backtick run as an opener
+		// and closes on the next backtick run — which covers this
+		// case correctly: ``see [[X]]`` becomes a single [0, end)
+		// range, the embedded link is excluded.
+		content := "``see [[INSIDE-1]]`` and [[REAL-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"REAL-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("indented fenced block (CommonMark 0-3 spaces)", func(t *testing.T) {
+		// CommonMark allows fenced code blocks indented 0-3 spaces;
+		// marked() (the renderer's markdown parser) implements this.
+		// Our extractor must mirror or we false-positive on every
+		// indented code example users write.
+		content := "Before [[A-1]]\n" +
+			"   ```\n" +
+			"   echo [[INSIDE-1]]\n" +
+			"   ```\n" +
+			"After [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
 	t.Run("inline code adjacent to real link", func(t *testing.T) {
 		// `code-with-link` then [[REAL-1]] — closer of inline span
 		// must not accidentally include the real link.
