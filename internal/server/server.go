@@ -1117,6 +1117,7 @@ func (s *Server) setupRouter() {
 						r.Get("/timeline", s.handleListItemTimeline)
 						r.Get("/children", s.handleGetItemChildren)
 						r.Get("/progress", s.handleGetItemProgress)
+						r.Get("/backlinks", s.handleGetItemBacklinks)
 						r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
 						r.Get("/grants", s.handleListItemGrants)
 						r.Post("/grants", s.handleCreateItemGrant)

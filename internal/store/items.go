@@ -215,6 +215,16 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		}
 	}
 
+	// Index [[...]] wiki-links from the new content. Lives inside the
+	// same tx as the items INSERT so partial state never lands and a
+	// content rollback also rolls back the index rows. Empty content
+	// is fine — replaceWikiLinks short-circuits after deleting any
+	// prior rows (there are none on initial create). PLAN-1593 /
+	// TASK-1594.
+	if err := s.replaceWikiLinks(tx, id, workspaceID, input.Content); err != nil {
+		return fmt.Errorf("index wiki links: %w", err)
+	}
+
 	return tx.Commit()
 }
 
@@ -1638,6 +1648,19 @@ func (s *Store) UpdateItemWithPreCheck(
 	_, err = tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update item: %w", err)
+	}
+
+	// Re-index [[...]] wiki-links if the content was part of this
+	// update (regardless of whether the new content equals the old —
+	// the caller already paid the UPDATE cost so the delete-then-insert
+	// is cheap and keeps the index consistent if a previous reparse
+	// left stale rows). When `input.Content == nil` the content wasn't
+	// touched, so the existing rows remain valid and we skip work.
+	// PLAN-1593 / TASK-1594.
+	if input.Content != nil {
+		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, *input.Content); err != nil {
+			return nil, fmt.Errorf("index wiki links: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

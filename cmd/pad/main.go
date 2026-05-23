@@ -355,6 +355,27 @@ func serveCmd() *cobra.Command {
 				slog.Info("Encrypted plaintext TOTP secrets", "count", n)
 			}
 
+			// Backfill: populate item_wiki_links from existing item bodies
+			// (PLAN-1593 / TASK-1594). Idempotent — items already indexed
+			// at write time get a cheap EXISTS-skip; only newly-introduced
+			// items (e.g. from a fresh migration) actually parse. Failures
+			// here aren't fatal: a partial run leaves the table consistent
+			// and the next boot picks up where this one stopped.
+			if bf, err := s.BackfillWikiLinks(); err != nil {
+				slog.Warn("wiki-link backfill failed; non-fatal", "error", err)
+			} else if bf.ItemsIndexed > 0 {
+				slog.Info("Wiki-link backfill complete",
+					"items_scanned", bf.ItemsScanned,
+					"items_indexed", bf.ItemsIndexed,
+					"links_inserted", bf.LinksInserted,
+					"errors", bf.Errors,
+				)
+			} else if bf.ItemsScanned > 0 {
+				// Steady-state: scanned but nothing new to do.
+				slog.Debug("Wiki-link backfill no-op",
+					"items_scanned", bf.ItemsScanned, "errors", bf.Errors)
+			}
+
 			// Auto-upgrade hook removed in IDEA-1479. The historical
 			// SeedDefaultCollections backfill was incompatible with templates
 			// that intentionally diverge from Defaults() (e.g. `blank`). Future
@@ -3933,6 +3954,90 @@ The source item is blocked by the blocker item. For example:
 			return nil
 		},
 	}
+}
+
+// backlinksCmd serves `pad item backlinks <ref>` — the CLI surface for
+// PLAN-1593's reverse `[[...]]` index. Lists items that contain a
+// `[[<ref>]]` reference to the queried item, with snippet context and
+// relative timestamps.
+//
+// Phase 1: ref-form only (`[[TASK-5]]` / `[[TASK-5|Display]]`). Phase 2
+// will extend the index to title and cross-workspace forms; this
+// command's output shape stays stable.
+func backlinksCmd() *cobra.Command {
+	var (
+		limitFlag  int
+		offsetFlag int
+	)
+	cmd := &cobra.Command{
+		Use:   "backlinks <ref>",
+		Short: "List items that link to this item via [[ref]]",
+		Long: `Show items whose body contains a [[<ref>]] reference to the target.
+
+Backlinks are the reverse of [[]] wiki-links: if BUG-5's body contains
+[[TASK-1]], then "pad item backlinks TASK-1" lists BUG-5 as a source.
+
+Code blocks (fenced and inline) are excluded — example refs in docs
+don't count as real links. Self-links (an item referencing its own
+ref in its own body) are hidden.
+
+Examples:
+  pad item backlinks TASK-5
+  pad item backlinks PLAN-42 --limit 10
+  pad item backlinks IDEA-3 --format json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// Resolve the target so the user sees the friendly
+			// title in the header even when their input was a
+			// ref. Also surfaces "no such item" cleanly before
+			// the backlinks call.
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			backlinks, err := client.GetBacklinks(ws, item.Slug, limitFlag, offsetFlag)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(backlinks)
+			}
+
+			ref := cli.ItemRef(*item)
+			label := item.Title
+			if ref != "" {
+				label = ref + " " + item.Title
+			}
+			if len(backlinks) == 0 {
+				fmt.Printf("No backlinks to %s yet.\n", cli.Bold.Sprint(label))
+				return nil
+			}
+			fmt.Printf("Backlinks to %s\n\n", cli.Bold.Sprint(label))
+			for _, bl := range backlinks {
+				header := bl.SourceRef + " " + bl.SourceTitle
+				if bl.SourceCollectionIcon != "" {
+					header = bl.SourceCollectionIcon + " " + header
+				}
+				fmt.Printf("%s\n", cli.Bold.Sprint(header))
+				if bl.Snippet != "" {
+					cli.Dim.Printf("  %s\n", bl.Snippet)
+				}
+				if bl.DisplayText != "" {
+					cli.Dim.Printf("  (displayed as: %s)\n", bl.DisplayText)
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limitFlag, "limit", 0, "max backlinks to return (default 50, max 300)")
+	cmd.Flags().IntVar(&offsetFlag, "offset", 0, "skip the first N backlinks (for pagination)")
+	return cmd
 }
 
 func depsCmd() *cobra.Command {

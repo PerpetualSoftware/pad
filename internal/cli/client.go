@@ -269,6 +269,31 @@ func (c *Client) DeleteItemLink(wsSlug, linkID string) error {
 	return c.delete("/workspaces/" + wsSlug + "/links/" + linkID)
 }
 
+// GetBacklinks fetches the items that contain a `[[<itemRef>]]`
+// reference to the queried item. Phase 1 returns ref-form backlinks
+// only — title and cross-workspace forms wait for Phase 2 of
+// PLAN-1593. The server applies visibility filtering before
+// returning, so callers see only sources they're allowed to see.
+//
+// `limit` and `offset` paginate (server clamps limit to [1,300]).
+// Zero values fall through to the server default (50).
+func (c *Client) GetBacklinks(wsSlug, itemSlug string, limit, offset int) ([]models.Backlink, error) {
+	q := ""
+	if limit > 0 {
+		q = "?limit=" + strconv.Itoa(limit)
+	}
+	if offset > 0 {
+		if q == "" {
+			q = "?"
+		} else {
+			q += "&"
+		}
+		q += "offset=" + strconv.Itoa(offset)
+	}
+	var result []models.Backlink
+	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/backlinks"+q, &result)
+}
+
 // --- Comments ---
 
 func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error) {

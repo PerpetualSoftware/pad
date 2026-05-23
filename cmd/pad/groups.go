@@ -108,6 +108,7 @@ func itemCmd() *cobra.Command {
 		unimplementsCmd(),
 		relatedCmd(),
 		implementedByCmd(),
+		backlinksCmd(),
 		starCmd(),
 		unstarCmd(),
 		starredCmd(),
