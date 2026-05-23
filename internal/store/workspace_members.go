@@ -991,7 +991,7 @@ func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDe
 			COALESCE(ou.username, ''),
 			wm.role, wm.created_at,
 			(SELECT COUNT(*) FROM collections c
-				WHERE c.workspace_id = w.id AND c.deleted_at IS NULL AND c.is_system = 0),
+				WHERE c.workspace_id = w.id AND c.deleted_at IS NULL AND NOT c.is_system),
 			(SELECT COUNT(*) FROM items i
 				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL AND ` + openClause + `),
 			(SELECT COUNT(*) FROM items i

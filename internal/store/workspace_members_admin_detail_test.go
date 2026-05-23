@@ -38,7 +38,7 @@ func TestGetUserWorkspacesDetailed(t *testing.T) {
 	if _, err := s.db.Exec(s.q(`
 		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), newID(), ws.ID, "Conventions", "conventions", "CONVE", "", "", `{"fields":[]}`, `{}`, 0, 0, 1, now(), now()); err != nil {
+	`), newID(), ws.ID, "Conventions", "conventions", "CONVE", "", "", `{"fields":[]}`, `{}`, 0, false, true, now(), now()); err != nil {
 		t.Fatalf("seed system collection: %v", err)
 	}
 
