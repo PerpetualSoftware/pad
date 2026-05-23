@@ -9,6 +9,19 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
     <a href="https://github.com/sponsors/xarmian"><img src="https://img.shields.io/github/sponsors/xarmian?label=sponsors&logo=github" alt="GitHub Sponsors"></a>
   </p>
+  <p align="center">
+    <a href="https://getpad.dev">Website</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/docs">Docs</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/blog">Blog</a>
+    &nbsp;·&nbsp;
+    <a href="https://getpad.dev/changelog">Changelog</a>
+    &nbsp;·&nbsp;
+    <a href="https://x.com/getpaddev">X</a>
+    &nbsp;·&nbsp;
+    <a href="https://bsky.app/profile/getpaddev.bsky.social">Bluesky</a>
+  </p>
 </p>
 
 ---
