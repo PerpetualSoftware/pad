@@ -20,7 +20,7 @@ func TestWikiLinks_CreateItemIndexesRefs(t *testing.T) {
 	source := createTestItem(t, s, ws.ID, col.ID, "Source item",
 		"Please see ["+"["+target.CollectionPrefix+"-"+itoa(*target.ItemNumber)+"]] for context.")
 
-	backlinks, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	backlinks, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
 		"Mentions [["+refOf(a)+"]] only.")
 
 	// A should have one backlink.
-	got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, nil)
+	got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if len(got) != 1 {
 		t.Fatalf("step 1: expected A to have 1 backlink, got %d", len(got))
 	}
@@ -67,10 +67,10 @@ func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
 	if _, err := s.UpdateItem(source.ID, models.ItemUpdate{Content: &newContent}); err != nil {
 		t.Fatalf("UpdateItem: %v", err)
 	}
-	if got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, nil); len(got) != 0 {
+	if got, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true}); len(got) != 0 {
 		t.Errorf("step 2: A should have 0 backlinks after rewrite, got %d", len(got))
 	}
-	if got, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0, nil); len(got) != 1 {
+	if got, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true}); len(got) != 1 {
 		t.Errorf("step 2: B should have 1 backlink after rewrite, got %d", len(got))
 	}
 }
@@ -89,7 +89,7 @@ func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
 	source := createTestItem(t, s, ws.ID, col.ID, "Source",
 		"Mentions [["+refOf(target)+"]].")
 
-	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil); len(got) != 1 {
+	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true}); len(got) != 1 {
 		t.Fatalf("baseline: expected 1 backlink, got %d", len(got))
 	}
 
@@ -99,7 +99,7 @@ func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
 	if err := s.DeleteItem(source.ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
 	}
-	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil); len(got) != 0 {
+	if got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true}); len(got) != 0 {
 		t.Errorf("after soft-delete source: expected 0 backlinks, got %d", len(got))
 	}
 }
@@ -120,7 +120,7 @@ func TestWikiLinks_SelfLinkHidden(t *testing.T) {
 	if _, err := s.UpdateItem(self.ID, models.ItemUpdate{Content: &body}); err != nil {
 		t.Fatalf("UpdateItem: %v", err)
 	}
-	got, err := s.GetBacklinks(self.ID, ws.ID, 50, 0, nil)
+	got, err := s.GetBacklinks(self.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestWikiLinks_RepeatedRefStoresMultipleRows(t *testing.T) {
 
 	// GetBacklinks returns one row per stored row (snippet differs
 	// per position). Display dedupe is a higher layer's concern.
-	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestWikiLinks_CodeBlocksExcludedAtIndexTime(t *testing.T) {
 		"After block."
 	createTestItem(t, s, ws.ID, col.ID, "Mixed", body)
 
-	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	}
 
 	// The reverse-index query should still find the source.
-	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if len(bls) != 1 {
 		t.Errorf("after backfill: expected 1 backlink, got %d", len(bls))
 	}
@@ -275,7 +275,7 @@ func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
 	lc := strings.ToLower(refOf(target))
 	createTestItem(t, s, ws.ID, col.ID, "Lowercased ref source", "See ["+"["+lc+"]] please.")
 
-	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 	createTestItem(t, s, ws.ID, visible.ID, "Src3 visible", "Refs ["+"["+tref+"]].")
 
 	t.Run("nil visibility returns all 3", func(t *testing.T) {
-		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, nil)
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 		if err != nil {
 			t.Fatalf("GetBacklinks: %v", err)
 		}
@@ -331,7 +331,9 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 	})
 
 	t.Run("visible-only limit=2 returns 2 visible rows", func(t *testing.T) {
-		bls, err := s.GetBacklinks(target.ID, ws.ID, 2, 0, []string{visible.ID})
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 2, 0, BacklinksVisibility{
+			FullCollectionIDs: []string{visible.ID},
+		})
 		if err != nil {
 			t.Fatalf("GetBacklinks: %v", err)
 		}
@@ -346,7 +348,7 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 	})
 
 	t.Run("empty visibility returns nothing", func(t *testing.T) {
-		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, []string{})
+		bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{})
 		if err != nil {
 			t.Fatalf("GetBacklinks: %v", err)
 		}
@@ -354,6 +356,80 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 			t.Errorf("empty visibility set: expected 0 backlinks, got %d", len(bls))
 		}
 	})
+}
+
+// TestWikiLinks_ItemGrantPagination regresses Codex round-2 P1: when
+// a guest has an item-level grant on ONE source item in a collection
+// they can't otherwise see, the rest of that collection must NOT
+// leak into the page. Previously the handler computed
+// `visibleCollectionIDs` as the UNION (full-collection grants ∪
+// collections containing granted items), then filtered each row's
+// item-level visibility in Go AFTER fetching — letting hidden rows
+// consume LIMIT slots. The refactor pushes the precise
+// (FullCollectionIDs OR GrantedItemIDs) predicate into SQL.
+//
+// Setup:
+//   - target in collection A (no relevance to grants — just the item
+//     being linked to).
+//   - Three sources, all linking to target, in collection B (which
+//     the guest has NO full access to):
+//   - src_g: the granted item
+//   - src_x, src_y: also in B, not granted (hidden)
+//   - Guest visibility: FullCollectionIDs=[] (no full access),
+//     GrantedItemIDs=[src_g.ID].
+//
+// Expectation: limit=2 returns exactly [src_g], not [src_g] + leaked
+// rows from B. The bad-pagination version returned 0 or 1 depending
+// on how the hidden rows interleaved.
+func TestWikiLinks_ItemGrantPagination(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	a := createTestCollection(t, s, ws.ID, "A")
+	b := createTestCollection(t, s, ws.ID, "B")
+
+	target := createTestItem(t, s, ws.ID, a.ID, "Target", "")
+	tref := refOf(target)
+
+	// Three sources in B, all referencing target. src_g is the one
+	// we'll grant the guest access to; src_x and src_y are hidden.
+	srcG := createTestItem(t, s, ws.ID, b.ID, "Granted", "Refs [["+tref+"]].")
+	createTestItem(t, s, ws.ID, b.ID, "Hidden X", "Refs [["+tref+"]].")
+	createTestItem(t, s, ws.ID, b.ID, "Hidden Y", "Refs [["+tref+"]].")
+
+	// Sanity: unrestricted view sees all three.
+	all, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks unrestricted: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("baseline: expected 3 unrestricted backlinks, got %d", len(all))
+	}
+
+	// Guest with item-grant only on src_g, no full collection access.
+	vis := BacklinksVisibility{
+		FullCollectionIDs: nil, // no full-collection grants
+		GrantedItemIDs:    []string{srcG.ID},
+	}
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks restricted: %v", err)
+	}
+	if len(bls) != 1 {
+		t.Fatalf("expected exactly 1 backlink (the granted item), got %d: %+v", len(bls), bls)
+	}
+	if bls[0].SourceItemID != srcG.ID {
+		t.Errorf("expected granted item %q, got %q", srcG.ID, bls[0].SourceItemID)
+	}
+
+	// Pagination must agree: limit=2 should still return exactly
+	// [srcG] without the hidden B-collection rows consuming slots.
+	bls2, err := s.GetBacklinks(target.ID, ws.ID, 2, 0, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks restricted limit=2: %v", err)
+	}
+	if len(bls2) != 1 {
+		t.Errorf("limit=2 should return 1 visible row, not silently shrink: got %d", len(bls2))
+	}
 }
 
 // refOf builds a PREFIX-NUMBER string from a fresh item — used by the

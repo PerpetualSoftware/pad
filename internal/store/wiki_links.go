@@ -154,6 +154,32 @@ func splitRef(ref string) (prefix string, number int, ok bool) {
 	return prefix, n, true
 }
 
+// BacklinksVisibility is the per-call visibility scope GetBacklinks
+// applies in SQL. Mirrors the (fullCollIDs, grantedItemIDs) shape
+// `Server.guestResourceFilter` returns so callers can pass the
+// primitives straight through.
+//
+// Semantics:
+//
+//   - Unrestricted == true: no visibility filter; the caller has
+//     full read access to the workspace (admin / full-access
+//     member / root-scoped token). FullCollectionIDs and
+//     GrantedItemIDs are ignored.
+//
+//   - Unrestricted == false: a source row is visible iff
+//     `source.collection_id IN FullCollectionIDs` OR
+//     `source.id IN GrantedItemIDs`. Both empty means "see nothing"
+//     — the query short-circuits to an empty result.
+//
+// Pushing both lists into SQL (rather than post-filtering in Go) is
+// what makes LIMIT/OFFSET pagination correct for guests / restricted
+// members. Codex review of TASK-1594 round-1 P1 + round-2 P1.
+type BacklinksVisibility struct {
+	Unrestricted      bool
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
+}
+
 // GetBacklinks returns the items in `workspaceID` that contain a
 // resolved `[[...]]` reference to `targetItemID`. Phase 1 only
 // returns ref-kind backlinks (the only kind the parser indexes); the
@@ -172,14 +198,10 @@ func splitRef(ref string) (prefix string, number int, ok bool) {
 // `limit` and `offset` paginate. A limit <=0 is normalized to a
 // hard cap (300) so a buggy caller can't ask for unbounded results.
 //
-// `visibleCollectionIDs` constrains the source collections the caller
-// is allowed to see. Pass nil for "no restriction" (owners, editors,
-// CLI/MCP root-scoped tokens). Pass an empty slice for "see nothing"
-// (deliberately locked-out caller). Pass a non-empty slice to gate
-// SQL-side; this matters for correct LIMIT/OFFSET pagination — Codex
-// round-1 P1 — otherwise the handler would have to over-fetch and
-// trim, and pages would unpredictably shrink under restricted access.
-func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int, visibleCollectionIDs []string) ([]models.Backlink, error) {
+// `vis` constrains source visibility in SQL — see BacklinksVisibility.
+// Filtering in SQL is essential for pagination correctness under
+// restricted access: LIMIT/OFFSET counts visible rows, not raw rows.
+func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int, vis BacklinksVisibility) ([]models.Backlink, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 50
 	}
@@ -187,28 +209,41 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		offset = 0
 	}
 
-	// An empty (non-nil) visibility set means "show nothing." Return
-	// an empty slice up-front so we don't issue a `WHERE c.id IN ()`
-	// query that's syntactically dialect-divergent (Postgres rejects
-	// the empty-list form; SQLite is more permissive). Mirrors the
-	// renderer's locked-out branch (returns the 🔒 broken link rather
-	// than fetching).
-	if visibleCollectionIDs != nil && len(visibleCollectionIDs) == 0 {
+	// Restricted + nothing-to-see → empty up-front. Avoids issuing
+	// a `WHERE … IN ()` query (Postgres rejects the empty-list
+	// form; SQLite tolerates it but matches nothing anyway).
+	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
 		return nil, nil
 	}
 
-	// Build the visibility predicate. nil → omit (no restriction);
-	// non-empty → IN (?, ?, ...) with positional placeholders that
-	// work in both SQLite and Postgres after s.q() rewrites them.
+	// Build the visibility predicate. Unrestricted → omit. Otherwise
+	// `collection_id IN (...)` OR `id IN (...)` — either branch alone
+	// is acceptable so a granted-item-only access still resolves; an
+	// empty IN-list is replaced with a sentinel "IN (NULL)" so the
+	// predicate evaluates to FALSE for that branch without breaking
+	// Postgres's empty-list rejection.
 	visClause := ""
 	args := []interface{}{targetItemID, workspaceID, targetItemID}
-	if visibleCollectionIDs != nil {
-		placeholders := make([]string, len(visibleCollectionIDs))
-		for i, cid := range visibleCollectionIDs {
-			placeholders[i] = "?"
-			args = append(args, cid)
+	if !vis.Unrestricted {
+		collClause := "FALSE"
+		if len(vis.FullCollectionIDs) > 0 {
+			placeholders := make([]string, len(vis.FullCollectionIDs))
+			for i, cid := range vis.FullCollectionIDs {
+				placeholders[i] = "?"
+				args = append(args, cid)
+			}
+			collClause = "s.collection_id IN (" + strings.Join(placeholders, ",") + ")"
 		}
-		visClause = " AND s.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+		itemClause := "FALSE"
+		if len(vis.GrantedItemIDs) > 0 {
+			placeholders := make([]string, len(vis.GrantedItemIDs))
+			for i, iid := range vis.GrantedItemIDs {
+				placeholders[i] = "?"
+				args = append(args, iid)
+			}
+			itemClause = "s.id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		visClause = " AND (" + collClause + " OR " + itemClause + ")"
 	}
 	args = append(args, limit, offset)
 
