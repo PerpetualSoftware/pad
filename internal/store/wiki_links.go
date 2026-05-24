@@ -104,28 +104,40 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// Ref didn't resolve — try title fallback. Mirrors the
 			// renderer's "If the ref doesn't resolve we FALL THROUGH
 			// to the legacy title path" at web/src/lib/utils/markdown.ts:513.
-			// Without this fallback, a ref-shaped body like
-			// `[[ISO-9001]]` writes a broken ref-kind row even when
-			// an item literally titled "ISO-9001" exists; GetBacklinks
-			// would never surface the backlink. Codex round 6 #1.
-			//
-			// Use the original ref string as the title candidate.
-			// Cache by candidate so repeat references in the same
-			// body don't re-query.
-			titleCandidate := link.Ref
-			titleHit, ok := resolvedTitles[titleCandidate]
-			if !ok {
-				titleHit = resolveTitleTx(tx, s, workspaceID, titleCandidate)
-				resolvedTitles[titleCandidate] = titleHit
+			// Order matches the renderer:
+			//   (a) If HasDisplay, try FULL body (Ref+"|"+Display)
+			//       as a title — covers literal-pipe titles like
+			//       "ISO-9001|Spec" matching `[[ISO-9001|Spec]]`.
+			//       Codex round 7 P1.
+			//   (b) Try the bare ref string as a title — covers
+			//       `[[ISO-9001]]` matching an item titled "ISO-9001".
+			//       Codex round 6 P1.
+			titleCandidates := []string{link.Ref}
+			storedTitleForFallback := link.Ref
+			storeDisplayForFallback := displayText
+			if link.HasDisplay {
+				fullBody := link.Ref + "|" + link.Display
+				titleCandidates = []string{fullBody, link.Ref}
+			}
+			var titleHit sql.NullString
+			for i, candidate := range titleCandidates {
+				cached, ok := resolvedTitles[candidate]
+				if !ok {
+					cached = resolveTitleTx(tx, s, workspaceID, candidate)
+					resolvedTitles[candidate] = cached
+				}
+				if cached.Valid {
+					titleHit = cached
+					storedTitleForFallback = candidate
+					// If stage (a) matched (i==0 with pipe), the
+					// display segment was absorbed into the title.
+					if i == 0 && link.HasDisplay {
+						storeDisplayForFallback = sql.NullString{}
+					}
+					break
+				}
 			}
 			if titleHit.Valid {
-				// Title fallback resolved — store as a title-kind
-				// row with target_title set to the ref-shaped body.
-				// This lets the rename cascade catch it correctly
-				// (cascadeTitleRename selects on target_kind='title'
-				// + target_item_id). The original ref-shape is lost
-				// to the index, but the backlink surfaces to the
-				// user — matching the renderer.
 				if _, err := tx.Exec(s.q(`
 					INSERT INTO item_wiki_links (
 						source_item_id, target_kind, target_workspace_id,
@@ -133,7 +145,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 						display_text, position
 					) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?)
 				`), sourceItemID, string(links.WikiLinkKindTitle),
-					titleHit, link.Ref, displayText, link.Position); err != nil {
+					titleHit, storedTitleForFallback, storeDisplayForFallback, link.Position); err != nil {
 					return fmt.Errorf("insert wiki link (ref→title fallback): %w", err)
 				}
 				continue
@@ -398,7 +410,21 @@ func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string) sql.NullStr
 // by this cascade.
 //
 // PLAN-1593 / TASK-1595.
-func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTitle, newTitle string) error {
+//
+// `excludeSelf` controls whether the renamed item's own body is part
+// of the cascade:
+//
+//   - false (title-only rename) — INCLUDE self. The user didn't
+//     touch content, so any pre-existing self-ref `[[Old Title]]`
+//     would go stale without rewrite. Cascade refreshes it.
+//   - true (title + content rename) — EXCLUDE self. The user is
+//     actively rewriting content in the same call; their submission
+//     is authoritative. Mirrors documents.go::updateLinksInTx's
+//     pattern of leaving the renamed entity's own content alone.
+//     If their new content contains `[[Old Title]]`, the trailing
+//     replaceWikiLinks correctly stores it as broken — same as the
+//     renderer would render it.
+func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTitle, newTitle string, excludeSelf bool) error {
 	if oldTitle == newTitle {
 		return nil
 	}
@@ -418,44 +444,75 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		return fmt.Errorf("cascade rename: lookup collection slug: %w", err)
 	}
 
-	// (1) Cascade content rewrites. Pull every source currently
-	// pointing at the renamed item via a title-form link, INCLUDING
-	// self-references. The target_workspace_id IS NULL filter
-	// excludes Phase-2b cross-workspace rows (TASK-1597 owns those).
+	// (1) Cascade content rewrites — POSITION-BASED. SELECT each
+	// individual wl row (not DISTINCT sources) along with its
+	// position + target_title. Each row tells us EXACTLY which
+	// bracket in the source content corresponds to a link to the
+	// renamed item; we rewrite only those brackets, leaving any
+	// unrelated literal-pipe `[[OldTitle|alias]]` brackets that
+	// happened to mention items B/C with overlapping titles alone.
 	//
-	// Self-references are INCLUDED so a renamed item's own body
-	// stays consistent — an item whose content writes `[[Old Title]]`
-	// (a self-reference) gets that bracket rewritten to
-	// `[[New Title]]` here. Without self-cascade, a title-only
-	// rename (input.Content == nil) leaves the body's self-ref
-	// pointing at a now-non-existent "Old Title" while the index
-	// still records a working backlink — drift between what the
-	// renderer shows and what the index says. Codex round 5
-	// finding 2. GetBacklinks filters self-links at query time
-	// (s.id != target), so this doesn't affect the panel.
-	rows, err := tx.Query(s.q(`
-		SELECT DISTINCT s.id, s.content, s.workspace_id
+	// Codex round 7 finding 2 caught the prior broad-regex
+	// approach corrupting unrelated brackets: items A "Old Title"
+	// and B "Old Title|alias" both referenced from one source, A
+	// renamed, RewriteWikiTitle's pattern (?i:Old Title) matched
+	// both A's `[[Old Title]]` row AND B's `[[Old Title|alias]]`
+	// bracket (even though B's wl row points at B, not A). The
+	// position-based approach restricts the rewrite to exactly the
+	// brackets the cascade SELECT actually returned.
+	//
+	// target_workspace_id IS NULL filter excludes Phase-2b cross-
+	// workspace rows (TASK-1597 owns those). Self-references
+	// INCLUDED so a renamed item's own body stays consistent
+	// (Codex round 5 finding 2); GetBacklinks filters self-links
+	// at query time so the panel behavior is unchanged.
+	//
+	// ORDER BY source_id, position DESC: descending position so
+	// rewrites at later byte offsets don't shift the offsets of
+	// earlier rows in the same source.
+	selectQuery := `
+		SELECT s.id, s.content, s.workspace_id, wl.position, wl.target_title
 		FROM item_wiki_links wl
 		JOIN items s ON s.id = wl.source_item_id
 		WHERE wl.target_kind = 'title'
 		  AND wl.target_workspace_id IS NULL
 		  AND wl.target_item_id = ?
-		  AND s.deleted_at IS NULL
-	`), renamedItemID)
+		  AND s.deleted_at IS NULL`
+	queryArgs := []interface{}{renamedItemID}
+	if excludeSelf {
+		selectQuery += " AND s.id != ?"
+		queryArgs = append(queryArgs, renamedItemID)
+	}
+	selectQuery += " ORDER BY s.id, wl.position DESC"
+	rows, err := tx.Query(s.q(selectQuery), queryArgs...)
 	if err != nil {
 		return fmt.Errorf("cascade rename: scan sources: %w", err)
 	}
-	type source struct {
-		id, content, workspaceID string
+	type rowInfo struct {
+		position    int
+		targetTitle string
 	}
-	var sources []source
+	type sourceWork struct {
+		id, content, workspaceID string
+		rows                     []rowInfo
+	}
+	var works []sourceWork
+	cursor := -1
 	for rows.Next() {
-		var src source
-		if err := rows.Scan(&src.id, &src.content, &src.workspaceID); err != nil {
+		var (
+			id, content, workspaceID string
+			position                 int
+			targetTitle              string
+		)
+		if err := rows.Scan(&id, &content, &workspaceID, &position, &targetTitle); err != nil {
 			rows.Close()
 			return fmt.Errorf("cascade rename: scan source row: %w", err)
 		}
-		sources = append(sources, src)
+		if cursor < 0 || works[cursor].id != id {
+			works = append(works, sourceWork{id: id, content: content, workspaceID: workspaceID})
+			cursor = len(works) - 1
+		}
+		works[cursor].rows = append(works[cursor].rows, rowInfo{position: position, targetTitle: targetTitle})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -463,40 +520,32 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	}
 	rows.Close()
 
-	// Rewrite each source's content via links.RewriteWikiTitle, which
-	// handles all four title-form shapes — plain / aliased / qualified
-	// / qualified+aliased — with case-insensitive title matching that
-	// mirrors resolveTitleTx's resolution rule. Codex round 1 P1
-	// against this PR caught that a literal ReplaceAll on `[[Old]]`
-	// silently dropped `[[Old|alias]]` and `[[old]]` (mixed case)
-	// rows: they were selected via target_item_id (correctly) but
-	// the rewrite missed them, and the trailing re-parse then sees
-	// the same body, fails to resolve under the new title, and
-	// converts the row to broken — exactly the regression the
-	// cascade exists to prevent.
-	//
-	// The rewriter does NOT distinguish code regions from prose, so
-	// occurrences inside fenced/inline code get rewritten too. The
-	// extractor ignores code regions on indexing, but for rename-
-	// rewrite the code-aware alternative doubles the surface area
-	// for a corner case (user mentioning the renamed item inside a
-	// code sample). Matches the document-rename path's behavior;
-	// acceptable for v2.
+	// Per source: walk its rows (positions descending), rewrite each
+	// bracket via links.RewriteBracketAt, then UPDATE the source's
+	// content + re-parse to refresh the index.
 	ts := now()
-	for _, src := range sources {
-		newContent := links.RewriteWikiTitle(src.content, oldTitle, newTitle, collSlug)
-		if newContent == src.content {
-			// Source had a target_item_id row pointing at us but
-			// the rewriter found no literal occurrences — possible
-			// if a stale row was inserted by an earlier-version
-			// parser, or the body uses a title-escape form
-			// (RewriteWikiTitle's documented limitation). Re-parse
-			// without touching content so the index converges; the
-			// row will flip to broken if no clickable match
-			// remains, matching the renderer's behavior on a body
-			// that would no longer render as a link.
-			if err := s.replaceWikiLinks(tx, src.id, src.workspaceID, src.content); err != nil {
-				return fmt.Errorf("cascade rename: reparse %s: %w", src.id, err)
+	for _, work := range works {
+		newContent := work.content
+		mutated := false
+		for _, r := range work.rows {
+			rewritten := links.RewriteBracketAt(newContent, r.position, r.targetTitle, newTitle, collSlug)
+			if rewritten != newContent {
+				mutated = true
+				newContent = rewritten
+			}
+		}
+		if !mutated {
+			// No bracket matched the expected shape at the recorded
+			// positions — possible if a previous content edit shifted
+			// the offsets in a way replaceWikiLinks didn't catch, or
+			// the bracket uses title-segment escape forms the rewriter
+			// doesn't unescape (documented limitation, parallel to
+			// RewriteWikiTitle's caveat). Re-parse on existing content
+			// so the index converges; the row will flip to broken if
+			// no clickable match remains, matching the renderer's
+			// behavior on a body that would no longer render as a link.
+			if err := s.replaceWikiLinks(tx, work.id, work.workspaceID, work.content); err != nil {
+				return fmt.Errorf("cascade rename: reparse %s: %w", work.id, err)
 			}
 			continue
 		}
@@ -507,11 +556,11 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 			    content_flushed_at = ?,
 			    seq = `+nextWorkspaceSeqSubquery+`
 			WHERE id = ?
-		`), newContent, ts, ts, src.workspaceID, src.id); err != nil {
-			return fmt.Errorf("cascade rename: update source %s: %w", src.id, err)
+		`), newContent, ts, ts, work.workspaceID, work.id); err != nil {
+			return fmt.Errorf("cascade rename: update source %s: %w", work.id, err)
 		}
-		if err := s.replaceWikiLinks(tx, src.id, src.workspaceID, newContent); err != nil {
-			return fmt.Errorf("cascade rename: reparse %s: %w", src.id, err)
+		if err := s.replaceWikiLinks(tx, work.id, work.workspaceID, newContent); err != nil {
+			return fmt.Errorf("cascade rename: reparse %s: %w", work.id, err)
 		}
 	}
 

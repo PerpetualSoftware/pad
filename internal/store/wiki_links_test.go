@@ -1017,6 +1017,63 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor regresses
+// Codex round 7 finding 2: when items A "Old Title" and B
+// "Old Title|alias" are both referenced from one source, renaming A
+// must NOT rewrite the B reference. The prior broad-regex cascade
+// matched `[[Old Title|alias]]` against the A-rename pattern,
+// corrupting the B link. Position-based per-row cascade fixes this
+// — only the brackets whose wl row resolves to A get rewritten.
+func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	a := createTestItem(t, s, ws.ID, col.ID, "Old Title", "")
+	b := createTestItem(t, s, ws.ID, col.ID, "Old Title|alias", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Mentions [[Old Title]] (to A) and [[Old Title|alias]] (to B).")
+
+	// Rename only A.
+	newTitle := "New Title"
+	if _, err := s.UpdateItem(a.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("rename A: %v", err)
+	}
+
+	// A's reference rewritten; B's reference left intact.
+	// Look up the source item by querying via items that mention A.
+	aBacklinksProbe, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(aBacklinksProbe) == 0 {
+		t.Fatalf("expected at least one backlink to A so we can locate source")
+	}
+	srcItem, err := s.GetItem(aBacklinksProbe[0].SourceItemID)
+	if err != nil {
+		t.Fatalf("GetItem source: %v", err)
+	}
+	srcContent := srcItem.Content
+	if !strings.Contains(srcContent, "[[New Title]]") {
+		t.Errorf("A's reference should be rewritten to [[New Title]], got: %q", srcContent)
+	}
+	if !strings.Contains(srcContent, "[[Old Title|alias]]") {
+		t.Errorf("B's reference [[Old Title|alias]] should be untouched, got: %q", srcContent)
+	}
+	if strings.Contains(srcContent, "[[New Title|alias]]") {
+		t.Errorf("B's reference was incorrectly rewritten via A's cascade, got: %q", srcContent)
+	}
+
+	// A's backlinks should include the source (via the rewritten
+	// [[New Title]] bracket).
+	aBls, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(aBls) != 1 {
+		t.Errorf("A should have 1 backlink post-rename, got %d", len(aBls))
+	}
+	// B's backlinks should still include the source (untouched).
+	bBls, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bBls) != 1 {
+		t.Errorf("B should still have 1 backlink (its bracket was untouched), got %d", len(bBls))
+	}
+}
+
 // TestWikiLinks_RefShapedFallsThroughToTitle regresses Codex round 6
 // finding 1. A ref-shaped body like `[[ISO-9001]]` should resolve to
 // an item literally titled "ISO-9001" when no ISO-9001 ref-item
@@ -1041,15 +1098,20 @@ func TestWikiLinks_RefShapedFallsThroughToTitle(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_TitleAndContentRenameCascadesSelfRef regresses Codex
-// round 6 finding 2: a combined title+content update where the new
-// content still contains `[[Old Title]]` must rewrite the self-ref
-// via cascade. The original order (re-index self → cascade) wiped
-// self's `target_item_id=renamedItemID` row before cascade ran,
-// silently missing the self-ref. Fixed by reordering cascade BEFORE
-// the self re-index AND re-reading post-cascade items.content
-// before the final re-index.
-func TestWikiLinks_TitleAndContentRenameCascadesSelfRef(t *testing.T) {
+// TestWikiLinks_TitleAndContentRenameLeavesUserContentVerbatim
+// documents the behavior choice for combined title+content updates:
+// the user's just-submitted content is authoritative, so the cascade
+// EXCLUDES self in this case (excludeSelf=true). If their new
+// content contains `[[Old Title]]`, it stays as written and the
+// index correctly stores it as broken — matching what the renderer
+// would render. This mirrors documents.go::updateLinksInTx, which
+// also leaves the renamed entity's own content alone.
+//
+// The title-only case (input.Content == nil) is the complement:
+// cascade INCLUDES self because there's no fresh user input —
+// stale `[[Old Title]]` would otherwise go broken. Covered by
+// TestWikiLinks_TitleRenameRewritesSelfReferences.
+func TestWikiLinks_TitleAndContentRenameLeavesUserContentVerbatim(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1060,9 +1122,9 @@ func TestWikiLinks_TitleAndContentRenameCascadesSelfRef(t *testing.T) {
 		t.Fatalf("seed self-ref content: %v", err)
 	}
 
-	// Combined title + content rename. New content STILL contains
-	// `[[Old Title]]` (the user wrote it again, perhaps deliberately).
-	// Cascade must catch the self-ref before the re-index.
+	// Combined title + content rename. New content still contains
+	// `[[Old Title]]` because the user wrote it that way. Cascade
+	// must respect the user's submission — DO NOT auto-rewrite.
 	newTitle := "New Title"
 	newBody := "Now updated: [[Old Title]] still mentioned in new content."
 	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{
@@ -1073,11 +1135,16 @@ func TestWikiLinks_TitleAndContentRenameCascadesSelfRef(t *testing.T) {
 	}
 
 	post, _ := s.GetItem(item.ID)
-	if strings.Contains(post.Content, "[[Old Title]]") {
-		t.Errorf("combined update: self-ref should have been cascade-rewritten, got %q", post.Content)
+	// User content stands as written.
+	if !strings.Contains(post.Content, "[[Old Title]]") {
+		t.Errorf("combined update: user's [[Old Title]] should remain verbatim, got %q", post.Content)
 	}
-	if !strings.Contains(post.Content, "[[New Title]]") {
-		t.Errorf("combined update: expected `[[New Title]]` in content, got %q", post.Content)
+	// Backlinks-of-self should be empty: index stores the bracket
+	// as broken (no item titled "Old Title" exists), self-link
+	// filter in GetBacklinks would hide anyway. Either way: 0.
+	got, _ := s.GetBacklinks(item.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 0 {
+		t.Errorf("self/broken refs should produce 0 backlinks, got %d", len(got))
 	}
 }
 

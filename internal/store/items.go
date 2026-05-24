@@ -1687,7 +1687,14 @@ func (s *Store) UpdateItemWithPreCheck(
 	// oldTitle == newTitle so title-shaped-but-unchanged updates
 	// pay nothing. PLAN-1593 / TASK-1595.
 	if input.Title != nil && *input.Title != existing.Title {
-		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title); err != nil {
+		// excludeSelf=true when the caller also supplied new content
+		// — they're authoritatively rewriting the renamed item's own
+		// body and the cascade should respect that. Self-refs in
+		// title-only renames still get cascade-rewritten so stale
+		// `[[Old Title]]` literals in unmodified content don't go
+		// broken. Mirrors documents.go::updateLinksInTx's pattern.
+		excludeSelf := input.Content != nil
+		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title, excludeSelf); err != nil {
 			return nil, fmt.Errorf("cascade title rename: %w", err)
 		}
 	}
