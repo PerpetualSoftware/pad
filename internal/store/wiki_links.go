@@ -1025,19 +1025,42 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 		offset = 0
 	}
 
-	workspaces, err := s.GetUserWorkspaces(requesterUserID)
+	// Workspace enumeration depends on the requester's user role.
+	// Admins have implicit access to every non-deleted workspace
+	// (matches RequireWorkspaceAccess line 481), so for them we
+	// list everything; non-admins use GetUserWorkspaces which
+	// unions memberships + grant-only guest workspaces. Codex
+	// round 1 P2 caught the prior membership-only path silently
+	// hiding cross-ws backlinks from admin users.
+	user, err := s.GetUser(requesterUserID)
 	if err != nil {
-		return nil, fmt.Errorf("enumerate accessible workspaces: %w", err)
+		return nil, fmt.Errorf("lookup requester user: %w", err)
+	}
+	if user == nil {
+		// Stale user ID — return empty rather than err so the
+		// handler's UX surface stays usable.
+		return nil, nil
+	}
+	var workspaces []models.Workspace
+	if user.Role == "admin" {
+		workspaces, err = s.ListWorkspaces()
+		if err != nil {
+			return nil, fmt.Errorf("admin enumerate workspaces: %w", err)
+		}
+	} else {
+		workspaces, err = s.GetUserWorkspaces(requesterUserID)
+		if err != nil {
+			return nil, fmt.Errorf("enumerate accessible workspaces: %w", err)
+		}
 	}
 
-	// Per-workspace safety cap. A single workspace can't return more
-	// than `offset+limit` rows because anything beyond that would be
-	// trimmed by the final paginate slice anyway. Saves transferring
-	// rows we'd discard.
+	// Per-workspace cap is offset+limit because, worst case, all
+	// matching rows come from a single workspace and the global
+	// paginate slice needs at least that many rows from that
+	// workspace. Codex round 1 P2 caught the prior 1000-row
+	// ceiling silently breaking pagination beyond offset>=1000;
+	// the slice math is what bounds the result, not this cap.
 	perWsCap := offset + limit
-	if perWsCap > 1000 {
-		perWsCap = 1000 // hard ceiling — defensive
-	}
 
 	var collected []models.Backlink
 	for _, ws := range workspaces {
@@ -1094,6 +1117,15 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 // (...) OR id IN (...) — with the unrestricted variant skipping the
 // predicate.
 //
+// Ref matching is dual: the exact `target_ref` AND a number-only
+// LIKE fallback. The fallback mirrors resolveRefTx's cross-prefix-
+// move logic — `[[other-ws::OLD-42]]` written before the target
+// moved from OLD to NEW collection still resolves in the renderer
+// via item_number, so the cross-ws index query must too. The LIKE
+// pattern `%-<N>` matches any prefix-N ref because Pad prefixes are
+// alphanumeric (no internal `-`), so trailing `-N` uniquely
+// identifies the suffix. Codex round 1 P2.
+//
 // Each returned Backlink has SourceWorkspaceSlug populated so the
 // caller can route the link to the correct workspace prefix.
 func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
@@ -1102,9 +1134,26 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 	unrestricted bool, fullCollIDs, grantedItemIDs []string,
 	cap int,
 ) ([]models.Backlink, error) {
+	// Derive the number-only LIKE pattern. If targetRef doesn't have
+	// a `-N` suffix (defensive — shouldn't happen for canonical
+	// PREFIX-N inputs), fall back to exact-only matching.
+	likeFallback := ""
+	if dash := strings.LastIndexByte(targetRef, '-'); dash > 0 && dash < len(targetRef)-1 {
+		likeFallback = "%-" + targetRef[dash+1:]
+	}
+
+	refClause := "LOWER(wl.target_ref) = LOWER(?)"
+	args := []interface{}{targetWorkspaceID}
+	if likeFallback != "" {
+		refClause = "(LOWER(wl.target_ref) = LOWER(?) OR LOWER(wl.target_ref) LIKE LOWER(?))"
+		args = append(args, targetRef, likeFallback)
+	} else {
+		args = append(args, targetRef)
+	}
+	args = append(args, sourceWs.ID)
+
 	// Build the visibility predicate same as GetBacklinks.
 	visClause := ""
-	args := []interface{}{targetWorkspaceID, targetRef, sourceWs.ID}
 	if !unrestricted {
 		collClause := "FALSE"
 		if len(fullCollIDs) > 0 {
@@ -1136,7 +1185,7 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 		JOIN collections c ON c.id = s.collection_id
 		WHERE wl.target_kind = 'workspace_ref'
 		  AND wl.target_workspace_id = ?
-		  AND LOWER(wl.target_ref) = LOWER(?)
+		  AND `+refClause+`
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL`+visClause+`
 		ORDER BY s.updated_at DESC, wl.position ASC

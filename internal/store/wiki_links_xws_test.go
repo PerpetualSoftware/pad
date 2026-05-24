@@ -281,6 +281,113 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Codex
+// round 1 P2: admin users have implicit access to every workspace
+// (see middleware_auth.go:481), so the cross-ws enumeration must
+// use a global workspace list for admins instead of
+// GetUserWorkspaces (which returns only memberships + grant guests).
+// Without this fix, an admin querying for backlinks misses cross-ws
+// links from any workspace they're not explicitly a member of.
+func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	admin, err := s.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "password123",
+		Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+			t.Fatalf("owner→%s: %v", ws.Slug, err)
+		}
+	}
+	// Admin is NOT a member of either workspace; only their
+	// admin role grants access.
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	// Admin should see the cross-ws backlink via the global
+	// workspace enumeration path.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks (admin): %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("admin should see cross-ws backlink (admins bypass membership), got %d", len(got))
+	}
+	if len(got) > 0 && got[0].SourceWorkspaceSlug != wsB.Slug {
+		t.Errorf("admin row missing SourceWorkspaceSlug: got %q", got[0].SourceWorkspaceSlug)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceRefNumberFallback regresses Codex round
+// 1 P2: when a target item is moved to a different collection (changing
+// its prefix), `[[other-ws::OLD-N]]` rows must still surface as
+// backlinks under the new prefix. Mirrors resolveRefTx's same-ws
+// fallback by item_number; cross-ws resolves at query time so the
+// query SQL has the OR-LIKE fallback inline.
+func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			t.Fatalf("member %s: %v", ws.Slug, err)
+		}
+	}
+
+	// Target starts in collection OLD.
+	colOld := createTestCollection(t, s, wsA.ID, "OldColl")
+	colNew := createTestCollection(t, s, wsA.ID, "NewColl")
+
+	target := createTestItem(t, s, wsA.ID, colOld.ID, "Target", "")
+	if target.ItemNumber == nil {
+		t.Fatalf("target missing ItemNumber")
+	}
+	originalRef := target.CollectionPrefix + "-" + itoa(*target.ItemNumber)
+
+	// Source in workspace B writes the original-prefix ref.
+	colB := createTestCollection(t, s, wsB.ID, "SourceColl")
+	createTestItem(t, s, wsB.ID, colB.ID, "Source",
+		"See [["+wsA.Slug+"::"+originalRef+"]].")
+
+	// Move target to new collection — changes its prefix.
+	moved, err := s.MoveItem(target.ID, colNew.ID, "{}")
+	if err != nil {
+		t.Fatalf("MoveItem: %v", err)
+	}
+	if moved == nil || moved.ItemNumber == nil {
+		t.Fatalf("moved item missing ItemNumber")
+	}
+	newRef := moved.CollectionPrefix + "-" + itoa(*moved.ItemNumber)
+	if newRef == originalRef {
+		t.Fatalf("expected prefix change, both refs %q", newRef)
+	}
+
+	// Query under the NEW ref — the stored row has OLD ref, but
+	// item_number suffix matches so the fallback should hit.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected number-fallback to surface old-prefix backlink, got %d", len(got))
+	}
+}
+
 // TestResolveBacklinksVisibility_RoleMatrix exercises the request-
 // independent ACL helper across the four caller-visible role
 // shapes: admin, full-access member, restricted member with grants,
