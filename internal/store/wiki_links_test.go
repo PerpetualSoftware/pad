@@ -973,13 +973,15 @@ func TestWikiLinks_TitleRenameNoChangeIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_TitleRenameSelfReferenceUnaffected — if the renamed
-// item mentions its OWN old title in its own body, the cascade must
-// not double-rewrite. The renamed item's own content update is
-// handled by the main UPDATE statement (the test path only updates
-// title here, so content stays as-is); the cascade's s.id != ?
-// filter excludes self-references explicitly.
-func TestWikiLinks_TitleRenameSelfReferenceUnaffected(t *testing.T) {
+// TestWikiLinks_TitleRenameRewritesSelfReferences — Codex round 5
+// finding 2 caught: when the renamed item mentions ITSELF by its
+// (now-old) title in its body, the cascade MUST also rewrite the
+// self-reference. Otherwise a title-only rename leaves the body's
+// `[[Old Title]]` bracket pointing at a now-non-existent title
+// while the index still records a working backlink — index and
+// renderer drift apart. Self-link visibility filtering happens at
+// GetBacklinks query time, so the panel still hides it.
+func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -991,25 +993,62 @@ func TestWikiLinks_TitleRenameSelfReferenceUnaffected(t *testing.T) {
 		t.Fatalf("seed self-ref content: %v", err)
 	}
 
-	// Rename. Self-link filter in GetBacklinks hides this from the
-	// panel; the cascade should NOT rewrite the renamed item's own
-	// content (that's the outer UPDATE's job, but here we're not
-	// updating content, just title — so content stays as-is).
+	// Title-only rename. Cascade INCLUDES self, so the self-ref
+	// gets rewritten in-band — body becomes `[[Renamed Self]]`
+	// pointing at this same item (now titled "Renamed Self").
 	newTitle := "Renamed Self"
 	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
 		t.Fatalf("rename self: %v", err)
 	}
 
-	// Source body unchanged — cascade skipped self.
 	post, _ := s.GetItem(item.ID)
-	if !strings.Contains(post.Content, "[[Self Title]]") {
-		t.Errorf("self-reference should NOT have been rewritten by cascade, got %q", post.Content)
+	if strings.Contains(post.Content, "[[Self Title]]") {
+		t.Errorf("self-reference should have been rewritten by cascade, got %q", post.Content)
+	}
+	if !strings.Contains(post.Content, "[[Renamed Self]]") {
+		t.Errorf("expected `[[Renamed Self]]` in cascade-rewritten content, got %q", post.Content)
 	}
 
-	// Self still hidden from own backlinks panel.
+	// Self still hidden from own backlinks panel — GetBacklinks
+	// filters self-links at query time independent of indexing.
 	got, _ := s.GetBacklinks(item.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if len(got) != 0 {
-		t.Errorf("self-link must stay hidden, got %d", len(got))
+		t.Errorf("self-link must stay hidden in panel, got %d", len(got))
+	}
+}
+
+// TestWikiLinks_DuplicateSlashTitleNoTheft — Codex round 5 finding 1
+// regression. When item "tasks/Setup" exists and a source has a
+// backlink resolved to it via stage 1 (literal match), creating a
+// SECOND item titled "tasks/Setup" must NOT steal the row. The
+// stage-3 retarget UPDATE has an EXISTS clause that scopes the flip
+// to rows whose current target is NOT titled the same as us —
+// i.e. rows resolved via stage-2 qualified fallback to a different
+// item, not via stage-1 to a literal twin.
+func TestWikiLinks_DuplicateSlashTitleNoTheft(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	original := createTestItem(t, s, ws.ID, col.ID, "tasks/Setup", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[tasks/Setup]].")
+	bls, _ := s.GetBacklinks(original.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bls) != 1 {
+		t.Fatalf("baseline: stage-1 literal should resolve, got %d", len(bls))
+	}
+
+	// Create a second item with the same slash-containing title.
+	duplicate := createTestItem(t, s, ws.ID, col.ID, "tasks/Setup", "")
+
+	// Original keeps its backlink — no theft from a literal twin.
+	stillBls, _ := s.GetBacklinks(original.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(stillBls) != 1 {
+		t.Errorf("original slash-title item lost backlink to duplicate creation, got %d", len(stillBls))
+	}
+	// Duplicate has no backlinks — nothing was stolen.
+	dupBls, _ := s.GetBacklinks(duplicate.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(dupBls) != 0 {
+		t.Errorf("duplicate stole backlinks, got %d", len(dupBls))
 	}
 }
 

@@ -361,12 +361,20 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	}
 
 	// (1) Cascade content rewrites. Pull every source currently
-	// pointing at the renamed item via a title-form link. The
-	// target_workspace_id IS NULL filter excludes Phase-2b
-	// cross-workspace rows once those exist — cross-ws cascade is a
-	// separate concern (TASK-1597 owns it). source_item_id !=
-	// renamedItemID drops self-references; the renamed item's own
-	// content rewrite is handled by the outer UPDATE in items.go.
+	// pointing at the renamed item via a title-form link, INCLUDING
+	// self-references. The target_workspace_id IS NULL filter
+	// excludes Phase-2b cross-workspace rows (TASK-1597 owns those).
+	//
+	// Self-references are INCLUDED so a renamed item's own body
+	// stays consistent — an item whose content writes `[[Old Title]]`
+	// (a self-reference) gets that bracket rewritten to
+	// `[[New Title]]` here. Without self-cascade, a title-only
+	// rename (input.Content == nil) leaves the body's self-ref
+	// pointing at a now-non-existent "Old Title" while the index
+	// still records a working backlink — drift between what the
+	// renderer shows and what the index says. Codex round 5
+	// finding 2. GetBacklinks filters self-links at query time
+	// (s.id != target), so this doesn't affect the panel.
 	rows, err := tx.Query(s.q(`
 		SELECT DISTINCT s.id, s.content, s.workspace_id
 		FROM item_wiki_links wl
@@ -375,8 +383,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		  AND wl.target_workspace_id IS NULL
 		  AND wl.target_item_id = ?
 		  AND s.deleted_at IS NULL
-		  AND s.id != ?
-	`), renamedItemID, renamedItemID)
+	`), renamedItemID)
 	if err != nil {
 		return fmt.Errorf("cascade rename: scan sources: %w", err)
 	}
@@ -525,8 +532,21 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 
 	// (3) Literal-arrival retarget. Only meaningful when our title
 	// contains a `/` — then a row with this exact target_title might
-	// have been resolved via stage-2 qualified fallback to a different
-	// item, and our arrival makes the renderer prefer us via stage 1.
+	// have been resolved via stage-2 qualified fallback to a
+	// different item, and our arrival makes the renderer prefer us
+	// via stage 1.
+	//
+	// Codex round 5 finding 1: the broad UPDATE could steal rows
+	// resolved via stage-1 literal match if a SECOND item with the
+	// same slash-containing title arrives. Distinguish stage-1
+	// (literal) from stage-2 (qualified-fallback) resolution by
+	// checking the CURRENT target's title:
+	//   - If target's title equals our literal title (case-
+	//     insensitive), the row resolved via stage 1 to a "twin"
+	//     item — don't steal it.
+	//   - Otherwise the row resolved via stage 2 (target's title is
+	//     just the trailing segment, not the whole `slug/title`) —
+	//     stage 1 now wins, flip the row to us.
 	if strings.Contains(title, "/") {
 		if _, err := tx.Exec(s.q(`
 			UPDATE item_wiki_links
@@ -539,7 +559,12 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 			  AND source_item_id IN (
 			      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL
 			  )
-		`), itemID, itemID, plainTitleNorm, workspaceID); err != nil {
+			  AND EXISTS (
+			      SELECT 1 FROM items t
+			      WHERE t.id = item_wiki_links.target_item_id
+			        AND LOWER(t.title) != ?
+			  )
+		`), itemID, itemID, plainTitleNorm, workspaceID, plainTitleNorm); err != nil {
 			return fmt.Errorf("retarget qualified-fallback to literal: %w", err)
 		}
 	}
