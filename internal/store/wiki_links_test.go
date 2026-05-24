@@ -303,6 +303,28 @@ func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
 	if noDispValid {
 		t.Errorf("[[REF]] should store display_text as NULL")
 	}
+
+	// Wire-shape check: GetBacklinks must surface the distinction
+	// via the *string typed DisplayText field. Codex round-13 P2.
+	withBLs, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	var withBL, noBL *models.Backlink
+	for i, bl := range withBLs {
+		switch bl.SourceItemID {
+		case srcWith.ID:
+			withBL = &withBLs[i]
+		case srcNo.ID:
+			noBL = &withBLs[i]
+		}
+	}
+	if withBL == nil || noBL == nil {
+		t.Fatalf("expected both source backlinks; got withBL=%v noBL=%v", withBL, noBL)
+	}
+	if withBL.DisplayText == nil || *withBL.DisplayText != "" {
+		t.Errorf("[[REF|]] DisplayText should be non-nil pointer to \"\", got %+v", withBL.DisplayText)
+	}
+	if noBL.DisplayText != nil {
+		t.Errorf("[[REF]] DisplayText should be nil, got %+v", *noBL.DisplayText)
+	}
 }
 
 // TestWikiLinks_SnippetIsValidUTF8 — `snippetAround` may slice

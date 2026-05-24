@@ -290,7 +290,11 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 			UpdatedAt:            updatedAt,
 		}
 		if displayText.Valid {
-			bl.DisplayText = displayText.String
+			// Pointer-typed so the JSON wire shape preserves the
+			// nil-vs-empty-string distinction even when the
+			// override is "". Codex round-13 P2.
+			s := displayText.String
+			bl.DisplayText = &s
 		}
 		out = append(out, bl)
 	}

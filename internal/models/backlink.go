@@ -36,8 +36,13 @@ type Backlink struct {
 	Snippet string `json:"snippet"`
 
 	// DisplayText is the [[X|Display]] override the link author
-	// supplied, empty when the link was a bare `[[X]]`.
-	DisplayText string `json:"display_text,omitempty"`
+	// supplied, nil when the link was a bare `[[X]]` (no pipe).
+	// A non-nil pointer to "" represents the editor-distinct case
+	// `[[X|]]` — explicit empty display. Pointer (not omitempty
+	// string) so JSON serialization preserves the distinction:
+	// nil → field omitted, "" → field present and empty. Codex
+	// round-13 P2.
+	DisplayText *string `json:"display_text,omitempty"`
 
 	// UpdatedAt is the source item's updated_at, RFC3339 string.
 	// Used for relative timestamps ("3h ago"); the list is

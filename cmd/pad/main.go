@@ -4027,8 +4027,12 @@ Examples:
 				if bl.Snippet != "" {
 					cli.Dim.Printf("  %s\n", bl.Snippet)
 				}
-				if bl.DisplayText != "" {
-					cli.Dim.Printf("  (displayed as: %s)\n", bl.DisplayText)
+				if bl.DisplayText != nil {
+					// nil = no `|` in body; non-nil = `[[X|...]]`,
+					// including the empty-display `[[X|]]` form.
+					// Show both so the human-readable output
+					// reflects what the editor stored.
+					cli.Dim.Printf("  (displayed as: %s)\n", *bl.DisplayText)
 				}
 				fmt.Println()
 			}
