@@ -1,0 +1,601 @@
+package store
+
+import (
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable is the headline
+// Phase 2b test: a `[[other-ws::TASK-5]]` body in workspace B indexes
+// a workspace_ref row, and querying TASK-5's backlinks from workspace
+// A surfaces the cross-ws source — provided the requester has
+// visibility into workspace B. PLAN-1593 / TASK-1597.
+func TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	// Two workspaces, both owned by `user` so the requester is an
+	// admin-equivalent (owner) in each. The simpler ACL path lets us
+	// focus on the index correctness in this test.
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	if err := s.AddWorkspaceMember(wsA.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user to wsA: %v", err)
+	}
+	if err := s.AddWorkspaceMember(wsB.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user to wsB: %v", err)
+	}
+
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	// Target lives in workspace A.
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+
+	// Source lives in workspace B, references target via `[[wsA.slug::REF]]`.
+	body := "Cross-link to [[" + wsA.Slug + "::" + targetRef + "]] from B."
+	source := createTestItem(t, s, wsB.ID, colB.ID, "Cross source", body)
+
+	// Cross-ws query from A's perspective should find the source.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 cross-ws backlink, got %d: %+v", len(got), got)
+	}
+	bl := got[0]
+	if bl.SourceItemID != source.ID {
+		t.Errorf("SourceItemID: got %q, want %q", bl.SourceItemID, source.ID)
+	}
+	if bl.SourceWorkspaceSlug != wsB.Slug {
+		t.Errorf("SourceWorkspaceSlug: got %q, want %q", bl.SourceWorkspaceSlug, wsB.Slug)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee covers the
+// visibility contract: a user with NO access to workspace B (no
+// membership, no grants) cannot see backlinks from B even when
+// querying their own workspace A's target. The cross-ws traversal
+// enumerates only workspaces the requester has access to via
+// GetUserWorkspaces.
+func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	outsider := createTestUser(t, s, "outsider@example.com", "Outsider", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	if err := s.AddWorkspaceMember(wsA.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("owner→wsA: %v", err)
+	}
+	if err := s.AddWorkspaceMember(wsB.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("owner→wsB: %v", err)
+	}
+	// Outsider is a member of A only — has NO access to B.
+	if err := s.AddWorkspaceMember(wsA.ID, outsider.ID, "editor"); err != nil {
+		t.Fatalf("outsider→wsA: %v", err)
+	}
+
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Source in B",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	// Owner sees the cross-ws backlink.
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, owner.ID, nil, 50, 0)
+	if len(got) != 1 {
+		t.Errorf("owner should see cross-ws backlink, got %d", len(got))
+	}
+	// Outsider does NOT — they have no access to workspace B.
+	got2, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, outsider.ID, nil, 50, 0)
+	if len(got2) != 0 {
+		t.Errorf("outsider should NOT see cross-ws backlink, got %d", len(got2))
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly: a guest
+// in workspace B (only access via a collection_grant on one
+// collection) should see backlinks from that collection but not from
+// other collections in B. Mirrors the same-ws Phase 1 visibility
+// model — Codex round-1/2 P1 — across the cross-ws boundary.
+func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	guest := createTestUser(t, s, "guest@example.com", "Guest", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+			t.Fatalf("owner→%s: %v", ws.Slug, err)
+		}
+	}
+	// Guest is a member of A (so they can ask for A's backlinks),
+	// but has only a guest-style collection_grant in B.
+	if err := s.AddWorkspaceMember(wsA.ID, guest.ID, "editor"); err != nil {
+		t.Fatalf("guest→wsA: %v", err)
+	}
+
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	visibleColB := createTestCollection(t, s, wsB.ID, "Visible") // guest will get grant on this
+	hiddenColB := createTestCollection(t, s, wsB.ID, "Hidden")   // guest CANNOT see
+
+	// Guest's collection grant in B — on Visible only.
+	if _, err := s.CreateCollectionGrant(wsB.ID, visibleColB.ID, guest.ID, "view", owner.ID); err != nil {
+		t.Fatalf("grant visible collection: %v", err)
+	}
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Target", "")
+	targetRef := refOf(target)
+	visibleSrc := createTestItem(t, s, wsB.ID, visibleColB.ID, "Visible source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+	hiddenSrc := createTestItem(t, s, wsB.ID, hiddenColB.ID, "Hidden source",
+		"Also see [["+wsA.Slug+"::"+targetRef+"]].")
+	_ = hiddenSrc
+
+	// Guest sees ONLY the visible-collection source.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("guest should see exactly 1 cross-ws backlink (visible-collection only), got %d: %+v", len(got), got)
+	}
+	if got[0].SourceItemID != visibleSrc.ID {
+		t.Errorf("guest saw wrong source: got %q want %q", got[0].SourceItemID, visibleSrc.ID)
+	}
+	if got[0].SourceWorkspaceSlug != wsB.Slug {
+		t.Errorf("SourceWorkspaceSlug: got %q want %q", got[0].SourceWorkspaceSlug, wsB.Slug)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible: a guest with
+// an item-level grant on ONE source item in workspace B sees only that
+// item, even if other items in B's collections reference the same
+// target. This is the cross-ws equivalent of
+// TestWikiLinks_ItemGrantPagination from Phase 1.
+func TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	guest := createTestUser(t, s, "guest@example.com", "Guest", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+			t.Fatalf("owner→%s: %v", ws.Slug, err)
+		}
+	}
+	if err := s.AddWorkspaceMember(wsA.ID, guest.ID, "editor"); err != nil {
+		t.Fatalf("guest→wsA: %v", err)
+	}
+
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Target", "")
+	targetRef := refOf(target)
+
+	// Two sources in workspace B's same collection, both referencing
+	// the target. Guest gets an item-grant on src1 only.
+	src1 := createTestItem(t, s, wsB.ID, colB.ID, "Granted source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+	src2 := createTestItem(t, s, wsB.ID, colB.ID, "Ungranted source",
+		"Also see [["+wsA.Slug+"::"+targetRef+"]].")
+	_ = src2
+
+	if _, err := s.CreateItemGrant(wsB.ID, src1.ID, guest.ID, "view", owner.ID); err != nil {
+		t.Fatalf("grant item: %v", err)
+	}
+
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
+	if len(got) != 1 {
+		t.Fatalf("guest should see exactly 1 cross-ws backlink (the granted item), got %d: %+v", len(got), got)
+	}
+	if got[0].SourceItemID != src1.ID {
+		t.Errorf("got %q want granted src1 %q", got[0].SourceItemID, src1.ID)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceUnknownSlugBroken: a `[[unknown-ws::TASK-1]]`
+// body where the workspace slug doesn't exist persists as a row with
+// target_workspace_id = NULL. The cross-ws query for that ref against
+// the unknown workspace returns nothing (the FK column doesn't match
+// any wsID). Documents the broken-link semantics consistent with the
+// renderer's resolver-route 404 path.
+func TestWikiLinks_CrossWorkspaceUnknownSlugBroken(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	ws := createTestWorkspace(t, s, "Workspace A")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	// Source references a workspace slug that doesn't exist.
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Cross [[nonexistent-ws::TASK-1]] over.")
+
+	// Some other workspace exists too so the cross-ws query has
+	// something to iterate. The query for "nonexistent-ws"'s ref
+	// against our real wsB obviously misses.
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	if err := s.AddWorkspaceMember(wsB.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user wsB: %v", err)
+	}
+
+	got, _ := s.GetCrossWorkspaceBacklinks(wsB.ID, "TASK-1", user.ID, nil, 50, 0)
+	if len(got) != 0 {
+		t.Errorf("broken cross-ws ref should not surface in cross-ws backlinks, got %d", len(got))
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated double-
+// checks the wire-shape promise: cross-ws Backlink rows MUST set
+// SourceWorkspaceSlug so the renderer can route the link to the
+// foreign workspace. Same-ws rows leave it empty.
+func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			t.Fatalf("member: %v", err)
+		}
+	}
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 cross-ws row, got %d", len(got))
+	}
+	if got[0].SourceWorkspaceSlug != wsB.Slug {
+		t.Errorf("cross-ws row missing SourceWorkspaceSlug: got %q want %q", got[0].SourceWorkspaceSlug, wsB.Slug)
+	}
+
+	// Same-ws GetBacklinks should leave SourceWorkspaceSlug empty.
+	// (Add a same-ws source so we have something to compare.)
+	createTestItem(t, s, wsA.ID, colA.ID, "Same-ws source", "Link [["+targetRef+"]].")
+	sameBls, _ := s.GetBacklinks(target.ID, wsA.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(sameBls) != 1 {
+		t.Fatalf("expected 1 same-ws backlink, got %d", len(sameBls))
+	}
+	if sameBls[0].SourceWorkspaceSlug != "" {
+		t.Errorf("same-ws row leaked SourceWorkspaceSlug: got %q want empty", sameBls[0].SourceWorkspaceSlug)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized regresses
+// Codex round 4 P2. The renderer treats `[[<current-ws>::TASK-1]]`
+// identically to `[[TASK-1]]` (markdown.ts:307 short-circuit), so an
+// indexed workspace_ref row pointing at the current workspace must
+// be normalized to a ref-kind row at write time — otherwise the
+// link surfaces in the renderer but produces no backlink: the
+// same-ws query requires target_item_id (workspace_ref leaves it
+// NULL) and the cross-ws query skips the target workspace.
+func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	tref := refOf(target)
+	// Source uses the fully-qualified same-workspace form.
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"See [["+ws.Slug+"::"+tref+"]] here.")
+
+	// The same-ws GetBacklinks must surface this row — normalization
+	// converted it from workspace_ref to ref-kind so target_item_id
+	// is populated.
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("same-ws fully-qualified ref should surface in same-ws backlinks, got %d", len(got))
+	}
+
+	// Cross-ws query must NOT surface it (correctly attributed to same-ws).
+	cross, _ := s.GetCrossWorkspaceBacklinks(ws.ID, tref, user.ID, nil, 50, 0)
+	if len(cross) != 0 {
+		t.Errorf("same-ws fully-qualified ref should not appear in cross-ws backlinks, got %d", len(cross))
+	}
+}
+
+// TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback regresses
+// Codex round 5 P2. `[[<current-ws>::ISO-9001]]` where no ISO-9001
+// ref-item exists must NOT fall through to title lookup the way
+// bare `[[ISO-9001]]` does. The renderer's same-ws qualified path
+// (markdown.ts:478-481) treats ref-misses as broken without title
+// fallback; the index must match or it creates ghost backlinks the
+// UI doesn't render.
+func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix TASKS
+
+	// Item literally titled "ISO-9001" (no real ISO collection).
+	titledItem := createTestItem(t, s, ws.ID, col.ID, "ISO-9001", "")
+
+	// Source uses same-ws qualified form for a ref that doesn't
+	// resolve. The renderer would render this as broken (no fall-
+	// through to title); our index must NOT create a backlink to
+	// the title-matching item.
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [["+ws.Slug+"::ISO-9001]].")
+
+	got, _ := s.GetBacklinks(titledItem.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 0 {
+		t.Errorf("same-ws qualified ref miss must NOT title-fallback, got %d ghost backlinks", len(got))
+	}
+
+	// For contrast: bare `[[ISO-9001]]` SHOULD title-fallback per
+	// markdown.ts:513 (preserves the Phase 2a behavior).
+	createTestItem(t, s, ws.ID, col.ID, "Source2", "See [[ISO-9001]].")
+	got2, _ := s.GetBacklinks(titledItem.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got2) != 1 {
+		t.Errorf("bare ref miss SHOULD title-fallback, got %d", len(got2))
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Codex
+// round 1 P2: admin users have implicit access to every workspace
+// (see middleware_auth.go:481), so the cross-ws enumeration must
+// use a global workspace list for admins instead of
+// GetUserWorkspaces (which returns only memberships + grant guests).
+// Without this fix, an admin querying for backlinks misses cross-ws
+// links from any workspace they're not explicitly a member of.
+func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	admin, err := s.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "password123",
+		Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+			t.Fatalf("owner→%s: %v", ws.Slug, err)
+		}
+	}
+	// Admin is NOT a member of either workspace; only their
+	// admin role grants access.
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	// Admin should see the cross-ws backlink via the global
+	// workspace enumeration path.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks (admin): %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("admin should see cross-ws backlink (admins bypass membership), got %d", len(got))
+	}
+	if len(got) > 0 && got[0].SourceWorkspaceSlug != wsB.Slug {
+		t.Errorf("admin row missing SourceWorkspaceSlug: got %q", got[0].SourceWorkspaceSlug)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceRefNumberFallback regresses Codex round
+// 1 P2: when a target item is moved to a different collection (changing
+// its prefix), `[[other-ws::OLD-N]]` rows must still surface as
+// backlinks under the new prefix. Mirrors resolveRefTx's same-ws
+// fallback by item_number; cross-ws resolves at query time so the
+// query SQL has the OR-LIKE fallback inline.
+func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			t.Fatalf("member %s: %v", ws.Slug, err)
+		}
+	}
+
+	// Target starts in collection OLD.
+	colOld := createTestCollection(t, s, wsA.ID, "OldColl")
+	colNew := createTestCollection(t, s, wsA.ID, "NewColl")
+
+	target := createTestItem(t, s, wsA.ID, colOld.ID, "Target", "")
+	if target.ItemNumber == nil {
+		t.Fatalf("target missing ItemNumber")
+	}
+	originalRef := target.CollectionPrefix + "-" + itoa(*target.ItemNumber)
+
+	// Source in workspace B writes the original-prefix ref.
+	colB := createTestCollection(t, s, wsB.ID, "SourceColl")
+	createTestItem(t, s, wsB.ID, colB.ID, "Source",
+		"See [["+wsA.Slug+"::"+originalRef+"]].")
+
+	// Move target to new collection — changes its prefix.
+	moved, err := s.MoveItem(target.ID, colNew.ID, "{}")
+	if err != nil {
+		t.Fatalf("MoveItem: %v", err)
+	}
+	if moved == nil || moved.ItemNumber == nil {
+		t.Fatalf("moved item missing ItemNumber")
+	}
+	newRef := moved.CollectionPrefix + "-" + itoa(*moved.ItemNumber)
+	if newRef == originalRef {
+		t.Fatalf("expected prefix change, both refs %q", newRef)
+	}
+
+	// Query under the NEW ref — the stored row has OLD ref, but
+	// item_number suffix matches so the fallback should hit.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected number-fallback to surface old-prefix backlink, got %d", len(got))
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceTokenAllowListFilters regresses Codex
+// round 2 P1: cross-ws traversal must honor the OAuth/MCP token's
+// workspace allow-list (TASK-952). A token consented for workspace
+// A must not return source rows from workspace B even when the
+// underlying user has B access — the consent boundary lives at the
+// token, not the user.
+//
+// nil allowlist → no token gate (PAT or pre-consent token).
+// `[]string{"*"}` → wildcard consent.
+// Explicit list → strict slug match.
+func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			t.Fatalf("member %s: %v", ws.Slug, err)
+		}
+	}
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	t.Run("nil allowlist (PAT / pre-consent) sees cross-ws", func(t *testing.T) {
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("nil allowlist should allow all, got %d", len(got))
+		}
+	})
+
+	t.Run("wildcard allowlist sees cross-ws", func(t *testing.T) {
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{"*"}, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("wildcard should allow all, got %d", len(got))
+		}
+	})
+
+	t.Run("target-only allowlist hides cross-ws sources", func(t *testing.T) {
+		// Token consented for workspace A only — source workspace
+		// B is filtered out even though the user has access.
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{wsA.Slug}, 50, 0)
+		if len(got) != 0 {
+			t.Errorf("workspace-A-only token should NOT see source from B, got %d", len(got))
+		}
+	})
+
+	t.Run("explicit source-workspace allowlist sees cross-ws", func(t *testing.T) {
+		// Token consented for both A and B.
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID,
+			[]string{wsA.Slug, wsB.Slug}, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("A+B allowlist should see cross-ws from B, got %d", len(got))
+		}
+	})
+}
+
+// TestResolveBacklinksVisibility_RoleMatrix exercises the request-
+// independent ACL helper across the four caller-visible role
+// shapes: admin, full-access member, restricted member with grants,
+// guest. Each case asserts the (fullCollIDs, grantedItemIDs) shape
+// against the documented contract. PLAN-1593 / TASK-1597.
+func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+
+	t.Run("admin user returns unrestricted (nil/nil)", func(t *testing.T) {
+		admin, err := s.CreateUser(models.UserCreate{
+			Email: "admin@example.com", Name: "Admin", Password: "password123",
+			Role: "admin",
+		})
+		if err != nil {
+			t.Fatalf("create admin: %v", err)
+		}
+		full, granted, err := s.ResolveBacklinksVisibility(admin.ID, ws.ID, false)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility: %v", err)
+		}
+		if full != nil || granted != nil {
+			t.Errorf("admin should be unrestricted (nil/nil), got %v / %v", full, granted)
+		}
+	})
+
+	t.Run("full-access member returns unrestricted", func(t *testing.T) {
+		full, granted, err := s.ResolveBacklinksVisibility(owner.ID, ws.ID, false)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility: %v", err)
+		}
+		if full != nil || granted != nil {
+			t.Errorf("full-access member should be unrestricted, got %v / %v", full, granted)
+		}
+	})
+
+	t.Run("guest with grants returns grant-only lists", func(t *testing.T) {
+		guest := createTestUser(t, s, "guest@example.com", "Guest", "password123")
+		col := createTestCollection(t, s, ws.ID, "GuestColl")
+		if _, err := s.CreateCollectionGrant(ws.ID, col.ID, guest.ID, "view", owner.ID); err != nil {
+			t.Fatalf("grant collection: %v", err)
+		}
+		full, granted, err := s.ResolveBacklinksVisibility(guest.ID, ws.ID, false)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility: %v", err)
+		}
+		if len(full) != 1 || full[0] != col.ID {
+			t.Errorf("guest fullCollIDs: got %v want [%q]", full, col.ID)
+		}
+		if len(granted) != 0 {
+			t.Errorf("guest grantedItemIDs: got %v want []", granted)
+		}
+	})
+
+	t.Run("non-member non-grant user returns empty lists", func(t *testing.T) {
+		stranger := createTestUser(t, s, "stranger@example.com", "Stranger", "password123")
+		full, granted, err := s.ResolveBacklinksVisibility(stranger.ID, ws.ID, false)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility: %v", err)
+		}
+		// Both lists empty (not nil-nil) — caller interprets as
+		// "no visibility" via BacklinksVisibility.Unrestricted=false
+		// + both lists empty.
+		if len(full) != 0 || len(granted) != 0 {
+			t.Errorf("stranger should have empty visibility, got %v / %v", full, granted)
+		}
+	})
+}

@@ -48,4 +48,15 @@ type Backlink struct {
 	// Used for relative timestamps ("3h ago"); the list is
 	// already ordered most-recent first.
 	UpdatedAt string `json:"updated_at"`
+
+	// SourceWorkspaceSlug is set ONLY for cross-workspace backlinks
+	// (rows produced by Store.GetCrossWorkspaceBacklinks where the
+	// source item lives in a different workspace than the queried
+	// target). Empty / omitted for same-workspace backlinks so the
+	// existing wire shape is unchanged.
+	//
+	// Renderers use this to route the source link to the correct
+	// workspace's URL prefix and to display a workspace badge next
+	// to the backlink. PLAN-1593 / TASK-1597.
+	SourceWorkspaceSlug string `json:"source_workspace_slug,omitempty"`
 }
