@@ -661,6 +661,14 @@ func unescapeWikiBody(s string) string {
 // untouched (refPattern would have rejected them anyway; callers
 // invariantly hold to "matches refPattern" before calling).
 func canonicalizeRef(ref string) string {
+	return CanonicalizeRef(ref)
+}
+
+// CanonicalizeRef is the exported alias for canonicalizeRef so the
+// store layer's same-workspace workspace_ref normalization (Codex
+// round 4 P2 of TASK-1597) can use the same canonicalization without
+// reimplementing the prefix-uppercase logic.
+func CanonicalizeRef(ref string) string {
 	dash := strings.LastIndexByte(ref, '-')
 	if dash < 0 {
 		return strings.ToUpper(ref)

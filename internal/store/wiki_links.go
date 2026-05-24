@@ -80,6 +80,31 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			displayText = sql.NullString{String: link.Display, Valid: true}
 		}
 
+		// Normalize same-workspace fully-qualified refs to ref-kind.
+		// The renderer's L307 short-circuits `[[<this-slug>::REF]]`
+		// to behave identically to `[[REF]]`, so the index must too —
+		// otherwise the link renders + navigates but no backlink
+		// surfaces (the cross-ws path skips the target workspace
+		// and the same-ws path requires target_item_id which
+		// workspace_ref rows leave NULL). Codex round 4 P2.
+		if link.Kind == links.WikiLinkKindWorkspaceRef {
+			cachedWS, hit := resolvedWorkspaces[link.WorkspaceSlug]
+			if !hit {
+				cachedWS = resolveWorkspaceSlugTx(tx, s, link.WorkspaceSlug)
+				resolvedWorkspaces[link.WorkspaceSlug] = cachedWS
+			}
+			if cachedWS.Valid && cachedWS.String == workspaceID {
+				// Promote to ref-kind. links.CanonicalizeRef
+				// handles case-folding (`task-5` → `TASK-5`) so
+				// the row has the same canonical shape as plain
+				// `[[TASK-5]]`.
+				link.Kind = links.WikiLinkKindRef
+				link.Ref = links.CanonicalizeRef(link.Ref)
+				link.RawKey = link.Ref
+				link.WorkspaceSlug = ""
+			}
+		}
+
 		switch link.Kind {
 		case links.WikiLinkKindRef:
 			prefix, number, ok := splitRef(link.Ref)

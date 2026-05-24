@@ -281,6 +281,44 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized regresses
+// Codex round 4 P2. The renderer treats `[[<current-ws>::TASK-1]]`
+// identically to `[[TASK-1]]` (markdown.ts:307 short-circuit), so an
+// indexed workspace_ref row pointing at the current workspace must
+// be normalized to a ref-kind row at write time — otherwise the
+// link surfaces in the renderer but produces no backlink: the
+// same-ws query requires target_item_id (workspace_ref leaves it
+// NULL) and the cross-ws query skips the target workspace.
+func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	tref := refOf(target)
+	// Source uses the fully-qualified same-workspace form.
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"See [["+ws.Slug+"::"+tref+"]] here.")
+
+	// The same-ws GetBacklinks must surface this row — normalization
+	// converted it from workspace_ref to ref-kind so target_item_id
+	// is populated.
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("same-ws fully-qualified ref should surface in same-ws backlinks, got %d", len(got))
+	}
+
+	// Cross-ws query must NOT surface it (correctly attributed to same-ws).
+	cross, _ := s.GetCrossWorkspaceBacklinks(ws.ID, tref, user.ID, nil, 50, 0)
+	if len(cross) != 0 {
+		t.Errorf("same-ws fully-qualified ref should not appear in cross-ws backlinks, got %d", len(cross))
+	}
+}
+
 // TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Codex
 // round 1 P2: admin users have implicit access to every workspace
 // (see middleware_auth.go:481), so the cross-ws enumeration must
