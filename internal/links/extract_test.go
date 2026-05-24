@@ -507,6 +507,20 @@ func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
 		}
 	})
 
+	t.Run("display text preserved verbatim (no TrimSpace)", func(t *testing.T) {
+		// The renderer stores display text verbatim — leading and
+		// trailing whitespace are part of the display. Trimming
+		// in the extractor would silently differ from client
+		// behavior. Codex round-11 P3.
+		got := ExtractWikiLinks(`[[TASK-9|  padded display  ]]`)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(got))
+		}
+		if got[0].Display != "  padded display  " {
+			t.Errorf("Display should be verbatim, got %q", got[0].Display)
+		}
+	})
+
 	t.Run("position still points at opening [[", func(t *testing.T) {
 		// Escapes shouldn't shift Position — it's the byte offset
 		// in the ORIGINAL content, not the unescaped form.

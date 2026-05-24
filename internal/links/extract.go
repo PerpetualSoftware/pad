@@ -487,12 +487,23 @@ func parseBody(body string) *WikiLinkRef {
 	// Split on the FIRST UNESCAPED `|`. `\|` is part of the key or
 	// display text (depending on which side of the split it's on)
 	// and must NOT cleave the body. Mirrors splitWikiBody at
-	// markdown.ts:664.
+	// markdown.ts:664. The display side is preserved verbatim
+	// (post-unescape) — the renderer doesn't trim it, and the
+	// WikiLinkRef.Display doc comment promises verbatim storage.
+	// Trimming would silently differ from client behavior on
+	// padded display text like `[[TASK-1|  spaces  ]]`. Codex
+	// round-11 P3.
 	var display string
 	if key, suffix, ok := splitOnUnescapedPipe(body); ok {
-		display = strings.TrimSpace(unescapeWikiBody(suffix))
+		display = unescapeWikiBody(suffix)
 		body = key
 	}
+	// The key/ref side still gets trimmed because refPattern is
+	// anchored — leading/trailing whitespace would force the whole
+	// body to fall through to the title kind even though the
+	// renderer would resolve it as a ref. parseBody's job is to
+	// recognize the SHAPE; whitespace forgiveness in the key is
+	// part of that.
 	body = unescapeWikiBody(strings.TrimSpace(body))
 	if body == "" {
 		return nil
