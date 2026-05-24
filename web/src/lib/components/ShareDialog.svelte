@@ -54,9 +54,9 @@
 		loadError = '';
 		try {
 			if (type === 'collection') {
-				grants = await api.grants.listCollectionGrants(wsSlug, targetSlug);
+				grants = (await api.grants.listCollectionGrants(wsSlug, targetSlug)) ?? [];
 			} else {
-				grants = await api.grants.listItemGrants(wsSlug, targetSlug);
+				grants = (await api.grants.listItemGrants(wsSlug, targetSlug)) ?? [];
 			}
 		} catch (e: any) {
 			loadError = e.message ?? 'Failed to load grants';
@@ -71,9 +71,9 @@
 		linksError = '';
 		try {
 			if (type === 'collection') {
-				shareLinks = await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug);
+				shareLinks = (await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug)) ?? [];
 			} else {
-				shareLinks = await api.shareLinks.listItemShareLinks(wsSlug, targetSlug);
+				shareLinks = (await api.shareLinks.listItemShareLinks(wsSlug, targetSlug)) ?? [];
 			}
 		} catch (e: any) {
 			linksError = e.message ?? 'Failed to load share links';

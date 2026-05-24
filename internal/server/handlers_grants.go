@@ -34,6 +34,9 @@ func (s *Server) handleListCollectionGrants(w http.ResponseWriter, r *http.Reque
 		writeInternalError(w, err)
 		return
 	}
+	if grants == nil {
+		grants = []models.CollectionGrant{}
+	}
 	writeJSON(w, http.StatusOK, grants)
 }
 
@@ -146,6 +149,9 @@ func (s *Server) handleListItemGrants(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if grants == nil {
+		grants = []models.ItemGrant{}
 	}
 	writeJSON(w, http.StatusOK, grants)
 }
