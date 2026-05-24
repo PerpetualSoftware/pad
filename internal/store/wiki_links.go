@@ -125,9 +125,10 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// insensitive correctness reasons.
 			candidates := []string{link.Title}
 			storeDisplay := displayText
+			fullBody := link.Title // == split key when !HasDisplay
 			if link.HasDisplay {
 				// Stage (a) first, then stage (b).
-				fullBody := link.Title + "|" + link.Display
+				fullBody = link.Title + "|" + link.Display
 				candidates = []string{fullBody, link.Title}
 			}
 			var resolved sql.NullString
@@ -149,6 +150,24 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 					}
 					break
 				}
+			}
+			// Codex round 4: when nothing resolved AND there was a
+			// pipe, key the broken row on the FULL BODY rather than
+			// the split key. The renderer's preferred interpretation
+			// for `[[A|B]]` is "title A|B" (markdown.ts:516); if an
+			// item literally titled "A|B" arrives later,
+			// resolveBrokenTitleLinks needs target_title="A|B" to
+			// find this row. Storing the split key would orphan it
+			// forever (no path retargets "A" → "A|B"). The
+			// remaining asymmetry — a broken row keyed on full body
+			// won't pick up a future split-fallback resolution to a
+			// new item titled "A" — is documented as a v3-promotable
+			// limitation. The full-body path is the renderer's
+			// preferred interpretation, so prioritizing it is the
+			// right tradeoff in the rare case both paths apply.
+			if !resolved.Valid && link.HasDisplay {
+				storedTitle = fullBody
+				storeDisplay = sql.NullString{}
 			}
 			if _, err := tx.Exec(s.q(`
 				INSERT INTO item_wiki_links (

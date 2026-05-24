@@ -779,6 +779,30 @@ func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival regresses
+// Codex round 4: a source body `[[A|B]]` written BEFORE any matching
+// item exists must store target_title="A|B" (the full body), not the
+// split key "A". Otherwise resolveBrokenTitleLinks for a later-
+// arriving item titled "A|B" can't find the row — the index goes
+// stale while the renderer's full-body interpretation would resolve
+// the link correctly.
+func TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Source first; nothing matches.
+	createTestItem(t, s, ws.ID, col.ID, "Source", "Future: [[A|B]] arrives later.")
+
+	// Now create an item literally titled "A|B".
+	target := createTestItem(t, s, ws.ID, col.ID, "A|B", "")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected broken pipe-in-body row to retarget on literal arrival, got %d backlinks", len(got))
+	}
+}
+
 // TestWikiLinks_LiteralPipeInTitleResolves regresses Codex round 3 P1:
 // an item literally titled "A|B" (pipe in title) must match
 // `[[A|B]]` in source content — the renderer's L516-525 tries the
