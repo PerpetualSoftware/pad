@@ -319,6 +319,45 @@ func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) 
 	}
 }
 
+// TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback regresses
+// Codex round 5 P2. `[[<current-ws>::ISO-9001]]` where no ISO-9001
+// ref-item exists must NOT fall through to title lookup the way
+// bare `[[ISO-9001]]` does. The renderer's same-ws qualified path
+// (markdown.ts:478-481) treats ref-misses as broken without title
+// fallback; the index must match or it creates ghost backlinks the
+// UI doesn't render.
+func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+	ws := createTestWorkspace(t, s, "Test")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix TASKS
+
+	// Item literally titled "ISO-9001" (no real ISO collection).
+	titledItem := createTestItem(t, s, ws.ID, col.ID, "ISO-9001", "")
+
+	// Source uses same-ws qualified form for a ref that doesn't
+	// resolve. The renderer would render this as broken (no fall-
+	// through to title); our index must NOT create a backlink to
+	// the title-matching item.
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [["+ws.Slug+"::ISO-9001]].")
+
+	got, _ := s.GetBacklinks(titledItem.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 0 {
+		t.Errorf("same-ws qualified ref miss must NOT title-fallback, got %d ghost backlinks", len(got))
+	}
+
+	// For contrast: bare `[[ISO-9001]]` SHOULD title-fallback per
+	// markdown.ts:513 (preserves the Phase 2a behavior).
+	createTestItem(t, s, ws.ID, col.ID, "Source2", "See [[ISO-9001]].")
+	got2, _ := s.GetBacklinks(titledItem.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got2) != 1 {
+		t.Errorf("bare ref miss SHOULD title-fallback, got %d", len(got2))
+	}
+}
+
 // TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Codex
 // round 1 P2: admin users have implicit access to every workspace
 // (see middleware_auth.go:481), so the cross-ws enumeration must

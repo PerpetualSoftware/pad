@@ -80,13 +80,22 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			displayText = sql.NullString{String: link.Display, Valid: true}
 		}
 
-		// Normalize same-workspace fully-qualified refs to ref-kind.
-		// The renderer's L307 short-circuits `[[<this-slug>::REF]]`
-		// to behave identically to `[[REF]]`, so the index must too —
-		// otherwise the link renders + navigates but no backlink
-		// surfaces (the cross-ws path skips the target workspace
-		// and the same-ws path requires target_item_id which
-		// workspace_ref rows leave NULL). Codex round 4 P2.
+		// Same-workspace fully-qualified refs: `[[<this-slug>::REF]]`.
+		// The renderer's L472-481 short-circuit:
+		//   - Same-workspace qualified form is treated like `[[REF]]`
+		//     for the REF LOOKUP step.
+		//   - BUT on ref miss, the renderer leaves the wiki-link
+		//     verbatim (broken) — it does NOT fall through to title
+		//     lookup like a bare `[[REF]]` would (L513).
+		//
+		// So we handle these inline as ref-kind rows WITHOUT the
+		// title-fallback path: resolved → ref row, unresolved →
+		// broken ref row. Skipping the switch ensures we never
+		// reach the WikiLinkKindRef branch's title-fallback logic.
+		// Codex round 5 P2 caught the round-4 normalization being
+		// over-aggressive — it promoted to Kind=Ref and let title
+		// fallback create ghost backlinks the renderer wouldn't
+		// produce.
 		if link.Kind == links.WikiLinkKindWorkspaceRef {
 			cachedWS, hit := resolvedWorkspaces[link.WorkspaceSlug]
 			if !hit {
@@ -94,14 +103,33 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 				resolvedWorkspaces[link.WorkspaceSlug] = cachedWS
 			}
 			if cachedWS.Valid && cachedWS.String == workspaceID {
-				// Promote to ref-kind. links.CanonicalizeRef
-				// handles case-folding (`task-5` → `TASK-5`) so
-				// the row has the same canonical shape as plain
-				// `[[TASK-5]]`.
-				link.Kind = links.WikiLinkKindRef
-				link.Ref = links.CanonicalizeRef(link.Ref)
-				link.RawKey = link.Ref
-				link.WorkspaceSlug = ""
+				canonicalRef := links.CanonicalizeRef(link.Ref)
+				prefix, number, ok := splitRef(canonicalRef)
+				if !ok {
+					// parseBody vetted the shape — defensive skip.
+					continue
+				}
+				key := refKey{prefix: prefix, number: number}
+				targetID, cached := resolved[key]
+				if !cached {
+					targetID = resolveRefTx(tx, s, workspaceID, prefix, number)
+					resolved[key] = targetID
+				}
+				// Insert as ref-kind row. NO title fallback here —
+				// the renderer's same-ws qualified path doesn't
+				// have one, so we mirror that (a row with
+				// target_item_id=NULL persists as a broken ref).
+				if _, err := tx.Exec(s.q(`
+					INSERT INTO item_wiki_links (
+						source_item_id, target_kind, target_workspace_id,
+						target_item_id, target_ref, target_title,
+						display_text, position
+					) VALUES (?, ?, NULL, ?, ?, NULL, ?, ?)
+				`), sourceItemID, string(links.WikiLinkKindRef),
+					targetID, canonicalRef, displayText, link.Position); err != nil {
+					return fmt.Errorf("insert wiki link (same-ws qualified ref): %w", err)
+				}
+				continue
 			}
 		}
 
