@@ -122,6 +122,26 @@
 		return `/${username}/${ws}/${bl.source_collection_slug}/${bl.source_ref}`;
 	}
 
+	/**
+	 * Compose a unique each-block key per backlink row. The server
+	 * preserves multiplicity (a source body that mentions the target
+	 * three times produces three rows — Phase 1 design decision) so
+	 * `source_item_id` alone is non-unique. Svelte 5 rejects duplicate
+	 * keys at dev time and silently reuses DOM in prod, which would
+	 * make the panel render only one of the N rows from a multi-mention
+	 * source.
+	 *
+	 * Composite key: `${id}|${snippet}|${index-within-group}`. The
+	 * snippet usually differs across positions (centered on the bracket
+	 * byte offset, so unique except in pathological cases like
+	 * adjacent mentions); the index suffix is the unconditional
+	 * tie-breaker that guarantees uniqueness across any rendering of
+	 * the same backlinks array. Codex round 1 P1.
+	 */
+	function rowKey(bl: Backlink, index: number): string {
+		return `${bl.source_item_id}|${bl.snippet}|${index}`;
+	}
+
 	// Render nothing while we don't yet know there are backlinks. Once
 	// loaded, collapse entirely on zero rows — most items have no inbound
 	// links and an empty "Mentioned in" header is just noise. The error
@@ -159,7 +179,7 @@
 						{/if}
 					</div>
 					<ul class="rows">
-						{#each group.rows as bl (bl.source_item_id)}
+						{#each group.rows as bl, blIdx (rowKey(bl, blIdx))}
 							<li class="row">
 								<div class="row-head">
 									<a href={rowHref(bl)} class="row-link">
