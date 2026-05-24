@@ -72,6 +72,21 @@ type WikiLinkRef struct {
 	// not the code-stripped buffer the parser used to find
 	// outside-code matches.
 	Position int
+
+	// RawKey is the untrimmed unescaped key segment (everything
+	// before the first unescaped pipe, or the whole body if no
+	// pipe). Populated for `WikiLinkKindRef` so the ref→title
+	// fallback in the store layer can mirror the renderer's
+	// untrimmed title lookup at web/src/lib/utils/markdown.ts:541-543
+	// — an item literally titled `" TASK-5 "` (with surrounding
+	// whitespace) resolves via the renderer's untrimmed key but
+	// would miss a canonical-trimmed `"TASK-5"` lookup. Codex
+	// round 10 P2.
+	//
+	// Empty for other kinds — title kind already preserves the
+	// untrimmed body in Title, and workspace_ref kinds are
+	// whitespace-free by construction.
+	RawKey string
 }
 
 // REF_PATTERN matches a Pad item ref like TASK-5 or BUG-585. Mirrors
@@ -447,11 +462,14 @@ func isInRanges(pos int, ranges [][2]int) bool {
 // any fenced or inline code region, parses each into a WikiLinkRef,
 // and returns them in source order.
 //
-// Phase 1 of PLAN-1593: only ref-form links (`[[REF-N]]` /
-// `[[REF-N|Display]]`) populate the returned slice. Title-form and
-// workspace_ref-form links are recognized at parse time (so the
-// caller can persist them as `target_kind` placeholders in Phase 2)
-// but are NOT emitted today — Phase 2 will flip that switch.
+// Phase 2a of PLAN-1593 (TASK-1595): emits ref-form (`[[REF-N]]`)
+// AND title-form (`[[Title]]`, `[[collection/Title]]`) links.
+// Cross-workspace `[[workspace::REF]]` links are recognized by
+// parseBody but still gated out — TASK-1597 (Phase 2b) lifts that
+// last gate once the request-independent per-workspace ACL helper
+// lands. The two-step rollout is deliberate: cross-ws backlinks
+// need visibility plumbing that doesn't exist yet, so emitting the
+// rows now would leak indexed-but-unqueryable data.
 //
 // Returns an empty slice on empty input. Never returns an error —
 // any bracket sequence that fails to parse is silently skipped
@@ -478,10 +496,14 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 			continue
 		}
 		ref.Position = linkStart
-		// Phase 1: only emit ref-form. Drop title and workspace_ref
-		// rows so the Phase-1 store sees only what Phase 1 promises
-		// to index. Phase 2 will remove this gate.
-		if ref.Kind != WikiLinkKindRef {
+		// Phase 2a (TASK-1595): emit ref AND title kinds. The
+		// workspace_ref gate stays until TASK-1597 ships the
+		// per-workspace ACL helper — without it the cross-ws
+		// inbound query can't honor source-workspace visibility,
+		// and emitting rows we can't safely query just bloats
+		// the index. parseBody still RECOGNIZES the kind so
+		// removing the gate in Phase 2b is a one-line change.
+		if ref.Kind == WikiLinkKindWorkspaceRef {
 			continue
 		}
 		out = append(out, *ref)
@@ -511,23 +533,32 @@ func parseBody(body string) *WikiLinkRef {
 		hasDisplay = true
 		body = key
 	}
-	// The key/ref side still gets trimmed because refPattern is
-	// anchored — leading/trailing whitespace would force the whole
-	// body to fall through to the title kind even though the
-	// renderer would resolve it as a ref. parseBody's job is to
-	// recognize the SHAPE; whitespace forgiveness in the key is
-	// part of that.
-	body = unescapeWikiBody(strings.TrimSpace(body))
-	if body == "" {
+	// Unescape the post-split key. KEEP UNTRIMMED for the title-kind
+	// fallthrough so the index mirrors the renderer's whitespace-
+	// sensitive title resolution: the renderer compares items.title
+	// against `key` directly with no implicit trim
+	// (web/src/lib/utils/markdown.ts:541-543). If we trimmed here,
+	// `[[ Foo ]]` would index a backlink to item "Foo" that the UI
+	// renders as broken, creating ghost entries in the backlinks
+	// panel. Codex round 9 P2.
+	bodyUnescaped := unescapeWikiBody(body)
+	if bodyUnescaped == "" {
 		return nil
 	}
+	// Trimmed copy for ref / workspace_ref shape detection only.
+	// Refs are whitespace-free by construction (`REF-N`), so this
+	// is forgiveness for `[[ TASK-5 ]]` typed by hand — matches
+	// the renderer's `key.trim()` at L503/L506. The trimmed value
+	// is NEVER stored as target_title.
+	trimmed := strings.TrimSpace(bodyUnescaped)
 
-	// Cross-workspace form: `workspace-slug::REF`. The `::` separator
-	// is unambiguous; if it's present, the workspace + ref must each
-	// match their patterns or the whole thing falls back to title.
-	if sep := strings.Index(body, "::"); sep >= 0 {
-		ws := strings.TrimSpace(body[:sep])
-		rest := strings.TrimSpace(body[sep+2:])
+	// Cross-workspace form: `workspace-slug::REF`. The `::`
+	// separator is unambiguous; if it's present, the workspace +
+	// ref must each match their patterns or the whole thing falls
+	// back to title.
+	if sep := strings.Index(trimmed, "::"); sep >= 0 {
+		ws := strings.TrimSpace(trimmed[:sep])
+		rest := strings.TrimSpace(trimmed[sep+2:])
 		if isWorkspaceSlug(ws) && refPattern.MatchString(rest) {
 			return &WikiLinkRef{
 				Kind:          WikiLinkKindWorkspaceRef,
@@ -540,30 +571,33 @@ func parseBody(body string) *WikiLinkRef {
 		// Fall through to title — the renderer's fallback policy.
 	}
 
-	// Ref form: a bare REF-N pattern. Normalize the prefix to upper-
-	// case at this single chokepoint — collection prefixes are
-	// canonically uppercase in `collections.prefix`, and the
-	// resolver/backlinks queries compare against that column. The
-	// renderer accepts mixed case for input convenience; we store
-	// the canonical form so the index has one shape per (workspace,
-	// prefix, number) and downstream callers don't need to be
-	// case-aware (Codex round-1 P2).
-	if refPattern.MatchString(body) {
+	// Ref form: a bare REF-N pattern (trimmed-shape check). Normalize
+	// the prefix to upper-case at this single chokepoint —
+	// collection prefixes are canonically uppercase in
+	// `collections.prefix`, and the resolver/backlinks queries
+	// compare against that column. The renderer accepts mixed case
+	// for input convenience; we store the canonical form so the
+	// index has one shape per (workspace, prefix, number) and
+	// downstream callers don't need to be case-aware (Codex
+	// round-1 P2).
+	if refPattern.MatchString(trimmed) {
 		return &WikiLinkRef{
 			Kind:       WikiLinkKindRef,
-			Ref:        canonicalizeRef(body),
+			Ref:        canonicalizeRef(trimmed),
+			RawKey:     bodyUnescaped, // untrimmed, for ref→title fallback
 			Display:    display,
 			HasDisplay: hasDisplay,
 		}
 	}
 
 	// Legacy collection-qualified title: `collection/Title`. We
-	// treat the whole body as the title for storage; the resolver
-	// in Phase 2 will split on `/` to bias the lookup.
-	// Plain legacy title.
+	// treat the whole UNTRIMMED body as the title for storage; the
+	// resolver in Phase 2 will split on `/` to bias the lookup.
+	// Plain legacy title — also untrimmed. Whitespace in the body
+	// is preserved verbatim per the renderer.
 	return &WikiLinkRef{
 		Kind:       WikiLinkKindTitle,
-		Title:      body,
+		Title:      bodyUnescaped,
 		Display:    display,
 		HasDisplay: hasDisplay,
 	}

@@ -225,7 +225,32 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		return fmt.Errorf("index wiki links: %w", err)
 	}
 
+	// Phase 2a (TASK-1595): flip any pre-existing broken `[[Title]]`
+	// rows that have been waiting for an item with this title to
+	// arrive. Cheap when no broken rows match (the common case).
+	// Without this, sources that mention the new item by title would
+	// stay broken until either their content is rewritten or the
+	// next migration-driven backfill — both rare.
+	collSlug, err := s.getCollectionSlugTx(tx, collectionID)
+	if err != nil {
+		return fmt.Errorf("lookup collection slug: %w", err)
+	}
+	if err := s.resolveBrokenTitleLinks(tx, id, workspaceID, collSlug, input.Title); err != nil {
+		return fmt.Errorf("resolve broken titles: %w", err)
+	}
+
 	return tx.Commit()
+}
+
+// getCollectionSlugTx reads collections.slug for a collection_id
+// inside the supplied tx. Tiny helper used by the wiki-link cascade
+// hooks that need the slug to build collection-qualified link keys.
+func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, error) {
+	var slug string
+	if err := tx.QueryRow(s.q(`SELECT slug FROM collections WHERE id = ?`), collectionID).Scan(&slug); err != nil {
+		return "", err
+	}
+	return slug, nil
 }
 
 // isUniqueViolation checks whether an error is a unique constraint violation.
@@ -1650,15 +1675,54 @@ func (s *Store) UpdateItemWithPreCheck(
 		return nil, fmt.Errorf("update item: %w", err)
 	}
 
+	// Title rename — cascade to title-form backlinks. Fires whether
+	// content changed or not. ORDER MATTERS: cascade runs BEFORE
+	// replaceWikiLinks(self) so the pre-existing wl rows pointing
+	// at self via target_item_id=renamedItemID are still present
+	// when cascade does its SELECT. Codex round 6 finding 2 caught
+	// the original order (re-index self → cascade) silently
+	// breaking the self-ref cascade on title+content combined
+	// updates: re-indexing self first would delete the self-row
+	// that cascade needs to find. Function early-returns when
+	// oldTitle == newTitle so title-shaped-but-unchanged updates
+	// pay nothing. PLAN-1593 / TASK-1595.
+	if input.Title != nil && *input.Title != existing.Title {
+		// excludeSelf=true when the caller also supplied new content
+		// — they're authoritatively rewriting the renamed item's own
+		// body and the cascade should respect that. Self-refs in
+		// title-only renames still get cascade-rewritten so stale
+		// `[[Old Title]]` literals in unmodified content don't go
+		// broken. Mirrors documents.go::updateLinksInTx's pattern.
+		excludeSelf := input.Content != nil
+		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title, excludeSelf); err != nil {
+			return nil, fmt.Errorf("cascade title rename: %w", err)
+		}
+	}
+
 	// Re-index [[...]] wiki-links if the content was part of this
 	// update (regardless of whether the new content equals the old —
 	// the caller already paid the UPDATE cost so the delete-then-insert
 	// is cheap and keeps the index consistent if a previous reparse
-	// left stale rows). When `input.Content == nil` the content wasn't
-	// touched, so the existing rows remain valid and we skip work.
-	// PLAN-1593 / TASK-1594.
+	// left stale rows). When `input.Content == nil` the content
+	// wasn't touched, so the existing rows remain valid and we skip
+	// work. PLAN-1593 / TASK-1594.
+	//
+	// Read items.content fresh from the DB instead of using
+	// *input.Content directly: cascadeTitleRename above may have
+	// rewritten the renamed item's own content if it contained
+	// self-references (`[[oldTitle]]` → `[[newTitle]]`), and we
+	// want the index to reflect that post-cascade state. Without
+	// the fresh read, this re-index would overwrite the cascade-
+	// rewritten rows back to whatever the user submitted, undoing
+	// the cascade's effect.
 	if input.Content != nil {
-		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, *input.Content); err != nil {
+		currentContent := *input.Content
+		if input.Title != nil && *input.Title != existing.Title {
+			if err := tx.QueryRow(s.q(`SELECT content FROM items WHERE id = ?`), id).Scan(&currentContent); err != nil {
+				return nil, fmt.Errorf("re-read self content after cascade: %w", err)
+			}
+		}
+		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, currentContent); err != nil {
 			return nil, fmt.Errorf("index wiki links: %w", err)
 		}
 	}

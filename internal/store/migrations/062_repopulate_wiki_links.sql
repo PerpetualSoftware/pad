@@ -1,0 +1,22 @@
+-- Migration 062: wipe item_wiki_links so the next BackfillWikiLinks run
+-- repopulates with the Phase 2a extractor vocabulary (refs + titles).
+-- PLAN-1593 / TASK-1595.
+--
+-- Phase 1 (migration 061 + TASK-1594) populated item_wiki_links only for
+-- `[[REF-N]]` forms — title-form links (`[[Title]]`, `[[collection/Title]]`)
+-- were recognized by the parser but gated out at the store. Phase 2a lifts
+-- that gate, so every existing item needs to be re-parsed under the new
+-- extractor to populate title rows. The cheap way to trigger that is to
+-- truncate the table here; the startup hook (Store.BackfillWikiLinks) sees
+-- empty rows for every item and re-parses each one's content from scratch.
+--
+-- Migrations run exactly once per DB, so this fires on the Phase-2a upgrade
+-- boot and never again — subsequent boots see populated rows and short-
+-- circuit normally via the EXISTS check inside BackfillWikiLinks.
+--
+-- Idempotency note: if a workspace somehow had ZERO ref-form links indexed
+-- pre-Phase-2a (impossible if migration 061 ran, but a clean install never
+-- runs this migration's predecessor in isolation), DELETE FROM is still
+-- a no-op on an empty table — safe to apply unconditionally.
+
+DELETE FROM item_wiki_links;

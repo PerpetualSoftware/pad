@@ -61,25 +61,165 @@ func TestExtractWikiLinks_RefForm(t *testing.T) {
 	}
 }
 
-// TestExtractWikiLinks_NonRefFormsHidden verifies that Phase 1's gate
-// suppresses title and workspace_ref kinds from the returned slice —
-// even though parseBody recognizes them. Once Phase 2 lands and the
-// gate is removed, these inputs must start emitting WikiLinkRefs of
-// the corresponding kinds; this test will need updating then.
-func TestExtractWikiLinks_NonRefFormsHidden(t *testing.T) {
+// TestExtractWikiLinks_TitleForms covers Phase 2a title emission:
+// plain `[[Title]]` and `[[collection/Title]]` are now returned with
+// kind=title and the body stored verbatim. The collection-qualified
+// form is stored AS-WRITTEN (e.g. "docs/Setup") so the resolver can
+// try the renderer's order — full-key title match first, `/`-split
+// only on miss — without losing information about how the link was
+// typed. Codex finding #3 from the planning round.
+func TestExtractWikiLinks_TitleForms(t *testing.T) {
+	t.Run("plain title", func(t *testing.T) {
+		got := ExtractWikiLinks("Click [[Some Title]] here.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d: %+v", len(got), got)
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		if got[0].Title != "Some Title" {
+			t.Errorf("Title: got %q, want %q", got[0].Title, "Some Title")
+		}
+		if got[0].Position != 6 {
+			t.Errorf("Position: got %d, want 6", got[0].Position)
+		}
+	})
+
+	t.Run("collection-qualified title stored verbatim", func(t *testing.T) {
+		got := ExtractWikiLinks("Look at [[docs/Setup]] for help.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		// Verbatim — DON'T pre-split. An item literally titled
+		// "docs/Setup" must resolve before the qualified-form
+		// fallback fires; storing the split here would lose that.
+		if got[0].Title != "docs/Setup" {
+			t.Errorf("Title: got %q, want %q", got[0].Title, "docs/Setup")
+		}
+	})
+
+	t.Run("title with display alias", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[Some Title|the page]] for context.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		if got[0].Title != "Some Title" {
+			t.Errorf("Title: got %q, want %q", got[0].Title, "Some Title")
+		}
+		if got[0].Display != "the page" || !got[0].HasDisplay {
+			t.Errorf("Display: got %q (has=%v), want %q (true)",
+				got[0].Display, got[0].HasDisplay, "the page")
+		}
+	})
+
+	t.Run("multiple titles in one body", func(t *testing.T) {
+		got := ExtractWikiLinks("[[First]] and [[Second Title]] and [[third]].")
+		if len(got) != 3 {
+			t.Fatalf("expected 3 links, got %d", len(got))
+		}
+		wantTitles := []string{"First", "Second Title", "third"}
+		for i, w := range wantTitles {
+			if got[i].Kind != WikiLinkKindTitle {
+				t.Errorf("[%d] Kind: got %q, want title", i, got[i].Kind)
+			}
+			if got[i].Title != w {
+				t.Errorf("[%d] Title: got %q, want %q", i, got[i].Title, w)
+			}
+		}
+	})
+}
+
+// TestExtractWikiLinks_TitlePreservesWhitespace regresses Codex
+// round 9 P2 against PR #621. The renderer doesn't trim before
+// title matching (web/src/lib/utils/markdown.ts:541-543), so an
+// item titled "Foo" doesn't match `[[ Foo ]]`. The extractor must
+// preserve whitespace in the title kind too, or the index would
+// surface backlinks the UI can't actually click on. Ref/workspace_ref
+// shape detection still trims (the renderer does the same).
+func TestExtractWikiLinks_TitlePreservesWhitespace(t *testing.T) {
+	t.Run("leading and trailing whitespace preserved in title", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[ Foo ]] for details.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		if got[0].Title != " Foo " {
+			t.Errorf("Title should preserve whitespace, got %q want %q", got[0].Title, " Foo ")
+		}
+	})
+
+	t.Run("padded ref still parses as ref (whitespace forgiveness)", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[ TASK-5 ]] please.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindRef {
+			t.Errorf("padded ref: Kind got %q want ref", got[0].Kind)
+		}
+		if got[0].Ref != "TASK-5" {
+			t.Errorf("padded ref: Ref got %q want TASK-5", got[0].Ref)
+		}
+	})
+
+	t.Run("internal whitespace preserved in title", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[Project  Goals]] (two spaces inside).")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Title != "Project  Goals" {
+			t.Errorf("internal whitespace lost: got %q want %q", got[0].Title, "Project  Goals")
+		}
+	})
+}
+
+// TestExtractWikiLinks_WorkspaceRefStillHidden documents that Phase 2a
+// continues to gate workspace_ref kinds. TASK-1597 lifts this gate
+// once the request-independent ACL helper lands — until then,
+// emitting these rows would create indexed-but-unqueryable data
+// (the cross-ws inbound query can't honor source-workspace
+// visibility yet).
+func TestExtractWikiLinks_WorkspaceRefStillHidden(t *testing.T) {
 	cases := []string{
-		"Click [[Some Title]] here.",           // legacy title
-		"Look at [[docs/Setup]] for help.",     // collection-qualified
-		"Cross [[other-ws::TASK-9]] over.",     // workspace_ref
-		"Cross [[other-ws::TASK-9|over]] too.", // workspace_ref + display
+		"Cross [[other-ws::TASK-9]] over.",
+		"Cross [[other-ws::TASK-9|over]] too.",
 	}
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {
 			got := ExtractWikiLinks(c)
 			if len(got) != 0 {
-				t.Errorf("expected 0 links (Phase 1 hides non-ref forms), got %d: %+v", len(got), got)
+				t.Errorf("expected 0 (Phase 2a still gates workspace_ref), got %d: %+v",
+					len(got), got)
 			}
 		})
+	}
+}
+
+// TestExtractWikiLinks_TitleCodeBlockExclusion ensures Phase 2a
+// titles are excluded from fenced / inline code just like refs were
+// in Phase 1. The exclusion happens at the gate-independent
+// outer scan (linkStart vs ranges), so it's worth a smoke test to
+// catch any regression from lifting the gate.
+func TestExtractWikiLinks_TitleCodeBlockExclusion(t *testing.T) {
+	content := "Real: [[Outside Title]]\n" +
+		"```\n" +
+		"Fake: [[Inside Title]]\n" +
+		"```\n" +
+		"Inline `[[Also Inside]]` then [[Last One]]."
+	got := ExtractWikiLinks(content)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 titles, got %d: %+v", len(got), got)
+	}
+	if got[0].Title != "Outside Title" || got[1].Title != "Last One" {
+		t.Errorf("got titles %q / %q, want %q / %q",
+			got[0].Title, got[1].Title, "Outside Title", "Last One")
 	}
 }
 
@@ -378,12 +518,21 @@ func TestExtractWikiLinks_Edge(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := ExtractWikiLinks(c.content)
 			for _, g := range got {
-				// Anything emitted must at least be a valid ref-form.
-				if g.Kind != WikiLinkKindRef {
-					t.Errorf("emitted non-ref kind in Phase 1: %+v", g)
-				}
-				if g.Ref == "" {
-					t.Errorf("emitted ref-kind with empty Ref: %+v", g)
+				// Phase 2a: emitted kinds are ref or title; cross-ws
+				// is still gated. Whatever the kind, the matching
+				// identifier field must be non-empty so downstream
+				// consumers can rely on it.
+				switch g.Kind {
+				case WikiLinkKindRef:
+					if g.Ref == "" {
+						t.Errorf("emitted ref-kind with empty Ref: %+v", g)
+					}
+				case WikiLinkKindTitle:
+					if g.Title == "" {
+						t.Errorf("emitted title-kind with empty Title: %+v", g)
+					}
+				default:
+					t.Errorf("emitted unexpected kind in Phase 2a: %+v", g)
 				}
 			}
 		})
@@ -442,13 +591,20 @@ func TestExtractWikiLinks_RefVsTitleFallback(t *testing.T) {
 			t.Errorf("Ref: got %q want TASK-5", got[0].Ref)
 		}
 	})
-	t.Run("non-ref body falls to title and is hidden", func(t *testing.T) {
+	t.Run("non-ref body falls to title (Phase 2a emits)", func(t *testing.T) {
 		// "5-Task" (number-led) doesn't match REF_PATTERN even
 		// with the relaxed case rule; parseBody returns a
-		// title-kind ref; Phase 1 gates it out.
+		// title-kind ref; Phase 2a now emits title kinds, so the
+		// body is preserved verbatim as the Title field.
 		got := ExtractWikiLinks("[[5-Task]]")
-		if len(got) != 0 {
-			t.Errorf("expected 0 (title-kind hidden), got %+v", got)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 title-kind row, got %d: %+v", len(got), got)
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		if got[0].Title != "5-Task" {
+			t.Errorf("Title: got %q, want %q", got[0].Title, "5-Task")
 		}
 	})
 }
@@ -633,9 +789,9 @@ func TestCanonicalizeRef(t *testing.T) {
 }
 
 // assertLinks compares two WikiLinkRef slices for the fields Phase 1
-// cares about. Doesn't enforce equality on fields not yet emitted
-// (Title, WorkspaceSlug) so adding test cases for those in Phase 2
-// won't require rewriting these comparisons.
+// + Phase 2a care about. WorkspaceSlug is excluded because Phase 2b
+// (TASK-1597) is the first to emit workspace_ref kinds; once that
+// lands the helper grows another comparison line.
 func assertLinks(t *testing.T, got, want []WikiLinkRef) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -647,6 +803,9 @@ func assertLinks(t *testing.T, got, want []WikiLinkRef) {
 		}
 		if got[i].Ref != want[i].Ref {
 			t.Errorf("[%d] Ref: got %q, want %q", i, got[i].Ref, want[i].Ref)
+		}
+		if got[i].Title != want[i].Title {
+			t.Errorf("[%d] Title: got %q, want %q", i, got[i].Title, want[i].Title)
 		}
 		if got[i].Display != want[i].Display {
 			t.Errorf("[%d] Display: got %q, want %q", i, got[i].Display, want[i].Display)
