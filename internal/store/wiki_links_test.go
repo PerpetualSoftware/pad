@@ -1017,6 +1017,70 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_RefShapedFallsThroughToTitle regresses Codex round 6
+// finding 1. A ref-shaped body like `[[ISO-9001]]` should resolve to
+// an item literally titled "ISO-9001" when no ISO-9001 ref-item
+// exists — the renderer falls through (markdown.ts:513), so the
+// index must too. Without the fallback, GetBacklinks would never
+// find the backlink even though the renderer renders the link.
+func TestWikiLinks_RefShapedFallsThroughToTitle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix "TASKS"
+
+	// Item literally titled with a ref shape that does NOT match
+	// any existing collection's prefix-number. There's no ISO
+	// collection in this workspace, so the body fails the ref
+	// resolution and must fall through to title.
+	target := createTestItem(t, s, ws.ID, col.ID, "ISO-9001", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[ISO-9001]] for the standard.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected ref-shaped body to fall through to title, got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_TitleAndContentRenameCascadesSelfRef regresses Codex
+// round 6 finding 2: a combined title+content update where the new
+// content still contains `[[Old Title]]` must rewrite the self-ref
+// via cascade. The original order (re-index self → cascade) wiped
+// self's `target_item_id=renamedItemID` row before cascade ran,
+// silently missing the self-ref. Fixed by reordering cascade BEFORE
+// the self re-index AND re-reading post-cascade items.content
+// before the final re-index.
+func TestWikiLinks_TitleAndContentRenameCascadesSelfRef(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item := createTestItem(t, s, ws.ID, col.ID, "Old Title", "")
+	body := "I mention myself: [[Old Title]] in old content."
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &body}); err != nil {
+		t.Fatalf("seed self-ref content: %v", err)
+	}
+
+	// Combined title + content rename. New content STILL contains
+	// `[[Old Title]]` (the user wrote it again, perhaps deliberately).
+	// Cascade must catch the self-ref before the re-index.
+	newTitle := "New Title"
+	newBody := "Now updated: [[Old Title]] still mentioned in new content."
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		Title:   &newTitle,
+		Content: &newBody,
+	}); err != nil {
+		t.Fatalf("combined rename + content update: %v", err)
+	}
+
+	post, _ := s.GetItem(item.ID)
+	if strings.Contains(post.Content, "[[Old Title]]") {
+		t.Errorf("combined update: self-ref should have been cascade-rewritten, got %q", post.Content)
+	}
+	if !strings.Contains(post.Content, "[[New Title]]") {
+		t.Errorf("combined update: expected `[[New Title]]` in content, got %q", post.Content)
+	}
+}
+
 // TestWikiLinks_DuplicateSlashTitleNoTheft — Codex round 5 finding 1
 // regression. When item "tasks/Setup" exists and a source has a
 // backlink resolved to it via stage 1 (literal match), creating a

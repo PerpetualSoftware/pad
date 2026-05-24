@@ -1675,31 +1675,48 @@ func (s *Store) UpdateItemWithPreCheck(
 		return nil, fmt.Errorf("update item: %w", err)
 	}
 
+	// Title rename — cascade to title-form backlinks. Fires whether
+	// content changed or not. ORDER MATTERS: cascade runs BEFORE
+	// replaceWikiLinks(self) so the pre-existing wl rows pointing
+	// at self via target_item_id=renamedItemID are still present
+	// when cascade does its SELECT. Codex round 6 finding 2 caught
+	// the original order (re-index self → cascade) silently
+	// breaking the self-ref cascade on title+content combined
+	// updates: re-indexing self first would delete the self-row
+	// that cascade needs to find. Function early-returns when
+	// oldTitle == newTitle so title-shaped-but-unchanged updates
+	// pay nothing. PLAN-1593 / TASK-1595.
+	if input.Title != nil && *input.Title != existing.Title {
+		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title); err != nil {
+			return nil, fmt.Errorf("cascade title rename: %w", err)
+		}
+	}
+
 	// Re-index [[...]] wiki-links if the content was part of this
 	// update (regardless of whether the new content equals the old —
 	// the caller already paid the UPDATE cost so the delete-then-insert
 	// is cheap and keeps the index consistent if a previous reparse
-	// left stale rows). When `input.Content == nil` the content wasn't
-	// touched, so the existing rows remain valid and we skip work.
-	// PLAN-1593 / TASK-1594.
+	// left stale rows). When `input.Content == nil` the content
+	// wasn't touched, so the existing rows remain valid and we skip
+	// work. PLAN-1593 / TASK-1594.
+	//
+	// Read items.content fresh from the DB instead of using
+	// *input.Content directly: cascadeTitleRename above may have
+	// rewritten the renamed item's own content if it contained
+	// self-references (`[[oldTitle]]` → `[[newTitle]]`), and we
+	// want the index to reflect that post-cascade state. Without
+	// the fresh read, this re-index would overwrite the cascade-
+	// rewritten rows back to whatever the user submitted, undoing
+	// the cascade's effect.
 	if input.Content != nil {
-		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, *input.Content); err != nil {
-			return nil, fmt.Errorf("index wiki links: %w", err)
+		currentContent := *input.Content
+		if input.Title != nil && *input.Title != existing.Title {
+			if err := tx.QueryRow(s.q(`SELECT content FROM items WHERE id = ?`), id).Scan(&currentContent); err != nil {
+				return nil, fmt.Errorf("re-read self content after cascade: %w", err)
+			}
 		}
-	}
-
-	// Title rename — cascade to title-form backlinks. Fires whether
-	// content changed or not: a title-only update is the canonical
-	// rename case. Runs AFTER the renamed item's UPDATE so the new
-	// title is visible inside the tx for any cascade-internal
-	// lookups, and AFTER the renamed item's own content reparse so
-	// the renamed item doesn't get its own stale rows re-resolved
-	// twice. The function early-returns when oldTitle == newTitle so
-	// title-shaped-but-unchanged updates pay nothing. PLAN-1593 /
-	// TASK-1595.
-	if input.Title != nil && *input.Title != existing.Title {
-		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title); err != nil {
-			return nil, fmt.Errorf("cascade title rename: %w", err)
+		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, currentContent); err != nil {
+			return nil, fmt.Errorf("index wiki links: %w", err)
 		}
 	}
 

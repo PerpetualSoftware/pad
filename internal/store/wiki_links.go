@@ -87,6 +87,64 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 				targetID = resolveRefTx(tx, s, workspaceID, prefix, number)
 				resolved[key] = targetID
 			}
+			if targetID.Valid {
+				// Ref resolved — store as a ref-kind row.
+				if _, err := tx.Exec(s.q(`
+					INSERT INTO item_wiki_links (
+						source_item_id, target_kind, target_workspace_id,
+						target_item_id, target_ref, target_title,
+						display_text, position
+					) VALUES (?, ?, NULL, ?, ?, NULL, ?, ?)
+				`), sourceItemID, string(links.WikiLinkKindRef),
+					targetID, link.Ref, displayText, link.Position); err != nil {
+					return fmt.Errorf("insert wiki link: %w", err)
+				}
+				continue
+			}
+			// Ref didn't resolve — try title fallback. Mirrors the
+			// renderer's "If the ref doesn't resolve we FALL THROUGH
+			// to the legacy title path" at web/src/lib/utils/markdown.ts:513.
+			// Without this fallback, a ref-shaped body like
+			// `[[ISO-9001]]` writes a broken ref-kind row even when
+			// an item literally titled "ISO-9001" exists; GetBacklinks
+			// would never surface the backlink. Codex round 6 #1.
+			//
+			// Use the original ref string as the title candidate.
+			// Cache by candidate so repeat references in the same
+			// body don't re-query.
+			titleCandidate := link.Ref
+			titleHit, ok := resolvedTitles[titleCandidate]
+			if !ok {
+				titleHit = resolveTitleTx(tx, s, workspaceID, titleCandidate)
+				resolvedTitles[titleCandidate] = titleHit
+			}
+			if titleHit.Valid {
+				// Title fallback resolved — store as a title-kind
+				// row with target_title set to the ref-shaped body.
+				// This lets the rename cascade catch it correctly
+				// (cascadeTitleRename selects on target_kind='title'
+				// + target_item_id). The original ref-shape is lost
+				// to the index, but the backlink surfaces to the
+				// user — matching the renderer.
+				if _, err := tx.Exec(s.q(`
+					INSERT INTO item_wiki_links (
+						source_item_id, target_kind, target_workspace_id,
+						target_item_id, target_ref, target_title,
+						display_text, position
+					) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?)
+				`), sourceItemID, string(links.WikiLinkKindTitle),
+					titleHit, link.Ref, displayText, link.Position); err != nil {
+					return fmt.Errorf("insert wiki link (ref→title fallback): %w", err)
+				}
+				continue
+			}
+			// Both ref and title missed — store as broken ref-kind
+			// row (the original interpretation). A future ref-item
+			// creation will still find this row via the ref-shaped
+			// target_ref; a future title-item creation won't
+			// auto-retarget (target_kind='ref' so
+			// resolveBrokenTitleLinks misses it), which is a known
+			// limitation v3 can revisit.
 			if _, err := tx.Exec(s.q(`
 				INSERT INTO item_wiki_links (
 					source_item_id, target_kind, target_workspace_id,
