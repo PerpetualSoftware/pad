@@ -1017,7 +1017,18 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // resolver-route handling at markdown.ts:485 which forwards
 // ref-shapes verbatim to the server-side resolver, which is itself
 // case-insensitive).
-func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, limit, offset int) ([]models.Backlink, error) {
+//
+// `allowedWorkspaceSlugs` is the OAuth/MCP token's workspace allow-
+// list (TASK-952). A nil slice means "no token-level gate" (PAT or
+// pre-consent token, allow all enumerated workspaces). A slice
+// containing "*" is wildcard consent (allow all). Otherwise only
+// workspaces whose slug appears in the list contribute source rows
+// — preserves consent scope across the cross-ws boundary (Codex
+// round 2 P1 caught the prior bypass: an MCP token consented for
+// workspace A still leaked cross-ws backlinks from workspace B
+// because the cross-ws path enumerated via the user's full
+// workspace list).
+func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, allowedWorkspaceSlugs []string, limit, offset int) ([]models.Backlink, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 50
 	}
@@ -1054,6 +1065,19 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 		}
 	}
 
+	// Apply token allow-list filter. Pre-compute a small set for
+	// constant-time slug membership tests. nil allowlist == no
+	// gate (allow all); a list containing "*" is wildcard.
+	allowAll := allowedWorkspaceSlugs == nil
+	wildcard := false
+	allowSet := make(map[string]bool, len(allowedWorkspaceSlugs))
+	for _, slug := range allowedWorkspaceSlugs {
+		if slug == "*" {
+			wildcard = true
+		}
+		allowSet[slug] = true
+	}
+
 	// Per-workspace cap is offset+limit because, worst case, all
 	// matching rows come from a single workspace and the global
 	// paginate slice needs at least that many rows from that
@@ -1066,6 +1090,13 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 	for _, ws := range workspaces {
 		if ws.ID == targetWorkspaceID {
 			// Same-ws backlinks are GetBacklinks's responsibility.
+			continue
+		}
+		// Token allow-list gate. PAT auth / no-token shapes pass
+		// allowAll=true. Wildcard ("*") consent passes wildcard=true.
+		// Otherwise the source workspace's slug must be explicitly
+		// allowed.
+		if !allowAll && !wildcard && !allowSet[ws.Slug] {
 			continue
 		}
 		fullCollIDs, grantedItemIDs, err := s.ResolveBacklinksVisibility(requesterUserID, ws.ID, false)

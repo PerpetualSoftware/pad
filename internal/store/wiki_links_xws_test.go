@@ -39,7 +39,7 @@ func TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable(t *testing.T) {
 	source := createTestItem(t, s, wsB.ID, colB.ID, "Cross source", body)
 
 	// Cross-ws query from A's perspective should find the source.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
@@ -89,12 +89,12 @@ func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
 	// Owner sees the cross-ws backlink.
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, owner.ID, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, owner.ID, nil, 50, 0)
 	if len(got) != 1 {
 		t.Errorf("owner should see cross-ws backlink, got %d", len(got))
 	}
 	// Outsider does NOT — they have no access to workspace B.
-	got2, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, outsider.ID, 50, 0)
+	got2, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, outsider.ID, nil, 50, 0)
 	if len(got2) != 0 {
 		t.Errorf("outsider should NOT see cross-ws backlink, got %d", len(got2))
 	}
@@ -142,7 +142,7 @@ func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
 	_ = hiddenSrc
 
 	// Guest sees ONLY the visible-collection source.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible(t *testing.T) {
 		t.Fatalf("grant item: %v", err)
 	}
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
 	if len(got) != 1 {
 		t.Fatalf("guest should see exactly 1 cross-ws backlink (the granted item), got %d: %+v", len(got), got)
 	}
@@ -232,7 +232,7 @@ func TestWikiLinks_CrossWorkspaceUnknownSlugBroken(t *testing.T) {
 		t.Fatalf("add user wsB: %v", err)
 	}
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsB.ID, "TASK-1", user.ID, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsB.ID, "TASK-1", user.ID, nil, 50, 0)
 	if len(got) != 0 {
 		t.Errorf("broken cross-ws ref should not surface in cross-ws backlinks, got %d", len(got))
 	}
@@ -261,7 +261,7 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 cross-ws row, got %d", len(got))
 	}
@@ -319,7 +319,7 @@ func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
 
 	// Admin should see the cross-ws backlink via the global
 	// workspace enumeration path.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks (admin): %v", err)
 	}
@@ -379,13 +379,75 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 
 	// Query under the NEW ref — the stored row has OLD ref, but
 	// item_number suffix matches so the fallback should hit.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, nil, 50, 0)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
 	if len(got) != 1 {
 		t.Errorf("expected number-fallback to surface old-prefix backlink, got %d", len(got))
 	}
+}
+
+// TestWikiLinks_CrossWorkspaceTokenAllowListFilters regresses Codex
+// round 2 P1: cross-ws traversal must honor the OAuth/MCP token's
+// workspace allow-list (TASK-952). A token consented for workspace
+// A must not return source rows from workspace B even when the
+// underlying user has B access — the consent boundary lives at the
+// token, not the user.
+//
+// nil allowlist → no token gate (PAT or pre-consent token).
+// `[]string{"*"}` → wildcard consent.
+// Explicit list → strict slug match.
+func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
+	s := testStore(t)
+	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			t.Fatalf("member %s: %v", ws.Slug, err)
+		}
+	}
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	t.Run("nil allowlist (PAT / pre-consent) sees cross-ws", func(t *testing.T) {
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("nil allowlist should allow all, got %d", len(got))
+		}
+	})
+
+	t.Run("wildcard allowlist sees cross-ws", func(t *testing.T) {
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{"*"}, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("wildcard should allow all, got %d", len(got))
+		}
+	})
+
+	t.Run("target-only allowlist hides cross-ws sources", func(t *testing.T) {
+		// Token consented for workspace A only — source workspace
+		// B is filtered out even though the user has access.
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{wsA.Slug}, 50, 0)
+		if len(got) != 0 {
+			t.Errorf("workspace-A-only token should NOT see source from B, got %d", len(got))
+		}
+	})
+
+	t.Run("explicit source-workspace allowlist sees cross-ws", func(t *testing.T) {
+		// Token consented for both A and B.
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID,
+			[]string{wsA.Slug, wsB.Slug}, 50, 0)
+		if len(got) != 1 {
+			t.Errorf("A+B allowlist should see cross-ws from B, got %d", len(got))
+		}
+	})
 }
 
 // TestResolveBacklinksVisibility_RoleMatrix exercises the request-

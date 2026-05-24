@@ -144,7 +144,16 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		// here because the middleware required workspace access.
 		user := currentUser(r)
 		if user != nil {
-			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, remaining, crossOffset)
+			// Propagate the OAuth/MCP token's workspace allow-list
+			// (TASK-952) into the cross-ws enumeration. nil → no
+			// token gate (PAT or pre-consent token, allow all
+			// enumerated workspaces); a slice gates each source
+			// workspace by slug. Without this, an MCP token
+			// consented for workspace A could leak backlinks from
+			// workspace B that the user has independent access to.
+			// Codex round 2 P1.
+			allowedSlugs := TokenAllowedWorkspacesFromContext(r.Context())
+			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, remaining, crossOffset)
 			if err != nil {
 				writeInternalError(w, err)
 				return
