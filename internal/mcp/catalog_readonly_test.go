@@ -121,6 +121,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
 		{"pad_item", "note"}:          {"item", "note"},
 		{"pad_item", "decide"}:        {"item", "decide"},
+		{"pad_item", "backlinks"}:     {"item", "backlinks"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381). All three
 		// passThrough to `pad playbook <subcommand>`.
@@ -256,6 +257,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "bulk-update"}:   {"item", "bulk-update"},
 		{"pad_item", "note"}:          {"item", "note"},
 		{"pad_item", "decide"}:        {"item", "decide"},
+		{"pad_item", "backlinks"}:     {"item", "backlinks"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381).
 		{"pad_playbook", "list"}: {"playbook", "list"},
@@ -603,6 +605,15 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "list comments",
 				Args:    mkArgs("ref"),
 				Flags:   mkFlags("workspace"),
+			},
+			"item backlinks": {
+				Summary: "list inbound [[...]] references",
+				Args:    mkArgs("ref"),
+				Flags: map[string]cmdhelp.Flag{
+					"workspace": {Type: "string"},
+					"limit":     {Type: "int"},
+					"offset":    {Type: "int"},
+				},
 			},
 			"item bulk-update": {
 				Summary: "bulk update",

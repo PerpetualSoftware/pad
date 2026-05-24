@@ -3299,8 +3299,29 @@ func showCmd() *cobra.Command {
 				return err
 			}
 
+			// PLAN-1593 / TASK-1596: fetch the top 5 backlinks
+			// alongside the item so the show command always carries
+			// the "Mentioned in" context. Failures are non-fatal —
+			// the item view should still render even if the
+			// backlinks endpoint is unavailable (e.g. a pre-Phase-1
+			// server, or transient I/O). slog at debug would be
+			// ideal but show is a terminal command; we just swallow
+			// silently to avoid noise in agent transcripts.
+			backlinksTop, _ := client.GetBacklinks(ws, item.Slug, 5, 0)
+
 			if formatFlag == "json" {
-				return cli.PrintJSON(item)
+				// Wrap with the inline `backlinks_top` field per the
+				// task spec. Additive: existing fields on `item` are
+				// unchanged; any consumer that didn't know about
+				// backlinks_top simply ignores it. JSON output of
+				// `pad item show` was already a single-object shape,
+				// so the wrapper keeps the same top-level shape with
+				// one extra optional key.
+				type wrappedItem struct {
+					*models.Item
+					BacklinksTop []models.Backlink `json:"backlinks_top,omitempty"`
+				}
+				return cli.PrintJSON(wrappedItem{Item: item, BacklinksTop: backlinksTop})
 			}
 
 			if formatFlag == "markdown" {
@@ -3438,6 +3459,38 @@ func showCmd() *cobra.Command {
 					fmt.Printf("(%d earlier comments not shown)\n\n", start)
 				}
 				cli.PrintCommentTable(comments[start:])
+			}
+
+			// PLAN-1593 / TASK-1596: inline top-5 backlinks. Use the
+			// list we already fetched above so we don't double-query.
+			// Hidden when no backlinks — most items don't have any
+			// and we don't want to clutter the show output with
+			// empty sections.
+			if len(backlinksTop) > 0 {
+				fmt.Println("\n--- Mentioned in ---")
+				for _, bl := range backlinksTop {
+					header := bl.SourceRef + " " + bl.SourceTitle
+					if bl.SourceCollectionIcon != "" {
+						header = bl.SourceCollectionIcon + " " + header
+					}
+					if bl.SourceWorkspaceSlug != "" {
+						// Cross-workspace badge — make the foreign
+						// workspace visible so the user knows the
+						// source lives elsewhere.
+						header += "  " + color.New(color.Faint).Sprint("→ "+bl.SourceWorkspaceSlug)
+					}
+					fmt.Printf("%s\n", cli.Bold.Sprint(header))
+					if bl.Snippet != "" {
+						cli.Dim.Printf("  %s\n", bl.Snippet)
+					}
+				}
+				// Hint at the full list when we hit the cap and there
+				// might be more. The handler returns up to 5 here;
+				// if exactly 5 came back, the user likely has more
+				// and we point them at the dedicated command.
+				if len(backlinksTop) == 5 {
+					cli.Dim.Printf("\n(run `pad item backlinks %s` for the full list)\n", args[0])
+				}
 			}
 
 			return nil
