@@ -67,6 +67,16 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 			limit = n
 		}
 	}
+	// Normalize at the handler boundary so the same-ws/cross-ws
+	// split math agrees with the store layer's internal clamping.
+	// Without this, `?limit=301` would let the handler compute
+	// `remaining = 301 - len(sameWs)` while the store fetched only
+	// 50 same-ws rows — same-ws tier exhausted at row 50 but the
+	// handler thinks it has 251 same-ws slots left, so the cross-
+	// ws slice starts incorrectly. Codex round 3 P2.
+	if limit > 300 {
+		limit = 300
+	}
 	offset := 0
 	if v := r.URL.Query().Get("offset"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
