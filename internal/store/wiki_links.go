@@ -607,13 +607,31 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 	plainTitleNorm := strings.ToLower(title)
 	qualifiedTitleNorm := strings.ToLower(collSlug + "/" + title)
 
-	// (1) Plain literal flip — NULL only.
+	// "Broken-in-practice" predicate: a row is eligible for flip
+	// when target_item_id IS NULL (never resolved) OR its current
+	// target points at a soft-deleted (or otherwise gone) item.
+	// The renderer hides deleted-target links from clicks, so the
+	// index must follow. Codex round 8 P2 caught the prior NULL-only
+	// constraint missing the soft-delete-then-create-same-title
+	// case. Subquery against items.deleted_at via NOT EXISTS so the
+	// row qualifies when its target is missing entirely (defensive
+	// against hard-delete; FK only cascades on source, not target).
+	brokenPredicate := `(
+		target_item_id IS NULL
+		OR NOT EXISTS (
+			SELECT 1 FROM items t
+			WHERE t.id = item_wiki_links.target_item_id
+			  AND t.deleted_at IS NULL
+		)
+	)`
+
+	// (1) Plain literal flip — broken-in-practice rows.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
 		WHERE target_kind = 'title'
 		  AND target_workspace_id IS NULL
-		  AND target_item_id IS NULL
+		  AND `+brokenPredicate+`
 		  AND LOWER(target_title) = ?
 		  AND source_item_id IN (
 		      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL
@@ -622,13 +640,13 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 		return fmt.Errorf("resolve broken plain titles: %w", err)
 	}
 
-	// (2) Qualified literal flip — NULL only.
+	// (2) Qualified literal flip — broken-in-practice rows.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
 		WHERE target_kind = 'title'
 		  AND target_workspace_id IS NULL
-		  AND target_item_id IS NULL
+		  AND `+brokenPredicate+`
 		  AND LOWER(target_title) = ?
 		  AND source_item_id IN (
 		      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL

@@ -1017,6 +1017,38 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses Codex
+// round 8 P2: when item A "Foo" resolves a backlink and is then
+// soft-deleted, a NEW item B titled "Foo" must flip the row to
+// point at B. The renderer ignores deleted-target links, so an
+// index that keeps pointing at deleted A means GetBacklinks(B)
+// misses the link the UI would actually render to B.
+func TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	a := createTestItem(t, s, ws.ID, col.ID, "Foo", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "Mention [[Foo]].")
+	aBls, _ := s.GetBacklinks(a.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(aBls) != 1 {
+		t.Fatalf("baseline: A should have 1 backlink, got %d", len(aBls))
+	}
+
+	// Soft-delete A.
+	if err := s.DeleteItem(a.ID); err != nil {
+		t.Fatalf("delete A: %v", err)
+	}
+
+	// Create B with same title — should flip the row.
+	b := createTestItem(t, s, ws.ID, col.ID, "Foo", "")
+
+	bBls, _ := s.GetBacklinks(b.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bBls) != 1 {
+		t.Errorf("B should inherit the backlink after A's soft-delete + B's creation, got %d", len(bBls))
+	}
+}
+
 // TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor regresses
 // Codex round 7 finding 2: when items A "Old Title" and B
 // "Old Title|alias" are both referenced from one source, renaming A
