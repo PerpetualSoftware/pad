@@ -156,6 +156,90 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		}
 	})
 
+	t.Run("tilde fence excludes refs inside", func(t *testing.T) {
+		// CommonMark / marked accept ~~~ fences alongside ```.
+		// Refs inside a tilde fence render as code in the UI and
+		// must NOT be indexed. Codex round-6 finding #1.
+		content := "Real: [[OUTSIDE-1]]\n" +
+			"~~~\n" +
+			"Example: [[INSIDE-1]]\n" +
+			"~~~\n" +
+			"After: [[OUTSIDE-2]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"OUTSIDE-1", "OUTSIDE-2"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("tilde fence with language tag", func(t *testing.T) {
+		content := "Before [[A-1]]\n" +
+			"~~~python\n" +
+			"# echo [[B-1]]\n" +
+			"~~~\n" +
+			"After [[C-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "C-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("mixed fence types don't pair", func(t *testing.T) {
+		// A backtick opener must NOT be closed by a tilde line and
+		// vice versa. If the wrong char appears, the fence stays
+		// open until the right char (or EOF) is found.
+		content := "Before [[A-1]]\n" +
+			"```\n" +
+			"~~~ // not a closer for the ``` opener\n" +
+			"[[INSIDE-1]]\n" +
+			"```\n" +
+			"After [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("closer-line strictness — backticks plus other text is not a closer", func(t *testing.T) {
+		// CommonMark §4.5: a closing fence line must contain only
+		// the fence + optional trailing spaces. A line like
+		// `\`\`\`not-closed` inside an open fence does NOT
+		// terminate the block — later refs in the same fence stay
+		// excluded. Codex round-6 finding #2.
+		content := "Real: [[OUTSIDE-1]]\n" +
+			"```\n" +
+			"```not-closed\n" +
+			"[[INSIDE-1]] still inside the fence\n" +
+			"```\n" +
+			"After: [[OUTSIDE-2]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"OUTSIDE-1", "OUTSIDE-2"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("closer-line strictness — trailing spaces OK", func(t *testing.T) {
+		// A real closer may have trailing whitespace.
+		content := "Before [[A-1]]\n" +
+			"```\n" +
+			"[[INSIDE-1]]\n" +
+			"```   \n" +
+			"After [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
 	t.Run("indented fenced block (CommonMark 0-3 spaces)", func(t *testing.T) {
 		// CommonMark allows fenced code blocks indented 0-3 spaces;
 		// marked() (the renderer's markdown parser) implements this.
