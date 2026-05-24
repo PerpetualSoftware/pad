@@ -63,6 +63,14 @@ var padItemTool = ToolDef{
 		"comment":       passThrough([]string{"item", "comment"}),
 		"list-comments": passThrough([]string{"item", "comments"}),
 
+		// Backlinks ("Mentioned in") — PLAN-1593 / TASK-1596.
+		// Returns inbound `[[...]]` references to the given item.
+		// Same-workspace + cross-workspace rows are unioned in the
+		// response; cross-ws rows carry `source_workspace_slug`.
+		// The CLI command takes a ref and optional --limit/--offset
+		// flags; passThrough handles both. PLAN-1593 / TASK-1596.
+		"backlinks": passThrough([]string{"item", "backlinks"}),
+
 		// Bulk + notes + decisions
 		// bulk-update is custom because the CLI takes repeatable
 		// positional refs (one or more); our uniform schema exposes
@@ -133,7 +141,8 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list."},
+	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks. Backlinks defaults to 50, max 300."},
+	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
 	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
 	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
 
@@ -206,6 +215,14 @@ Actions:
                   Optional: reply_to (comment ID for threaded reply).
   list-comments — List comments on an item.
                   Required: ref.
+  backlinks     — List inbound [[...]] references to an item ("Mentioned in").
+                  Required: ref.
+                  Optional: limit (default 50, max 300), offset.
+                  Returns same-workspace rows first, then cross-workspace
+                  rows (each cross-ws row carries source_workspace_slug).
+                  Use this when you need to answer "what other items
+                  reference TASK-5?" without scanning the full content
+                  corpus.
   bulk-update   — Update status/priority across multiple items.
                   Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
                   AND at least one of status / priority.

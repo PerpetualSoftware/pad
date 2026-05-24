@@ -65,13 +65,20 @@ const CmdhelpVersion = "0.1"
 //     context. Purely additive; older clients that ignore unknown
 //     keys keep working.
 //   - pad://workspace/{ws}/bootstrap resource added.
-//   - "0.5" — current. PLAN-1560 / TASK-1563: adds `pad_library` to the
-//     catalog as the ninth resource × action tool. Three actions —
+//   - "0.5" — historical. PLAN-1560 / TASK-1563: adds `pad_library` to
+//     the catalog as the ninth resource × action tool. Three actions —
 //     list / get / activate — surface the global convention + playbook
 //     library (previously CLI-only) to MCP callers. Pure addition; no
 //     existing tool/action/param/bootstrap shapes changed. Backwards-
 //     compatible for any v0.4 consumer that doesn't enumerate the new
 //     tool.
+//   - "0.6" — current. PLAN-1593 / TASK-1596: adds `backlinks` action
+//     to `pad_item` so MCP callers can answer "what mentions X?"
+//     without scanning the full content corpus. Adds `offset` to the
+//     param vocabulary, extends `limit` to cover the backlinks
+//     pagination. Pure addition; existing pad_item actions unchanged.
+//     Backwards-compatible for v0.5 consumers that don't enumerate
+//     the new action.
 //   - "0.4" — PLAN-1410: comprehensive bootstrap-payload
 //     trim, cutting ~40% of bytes off the AgentBootstrap response.
 //     Same tool catalog (still eight resource × action tools +
@@ -114,7 +121,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.5"
+const ToolSurfaceVersion = "0.6"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

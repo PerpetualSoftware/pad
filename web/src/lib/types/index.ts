@@ -605,6 +605,39 @@ export interface ItemLinkCreate {
 	created_by?: string;
 }
 
+// ─── Backlinks ──────────────────────────────────────────────────────────────
+
+/**
+ * One inbound `[[...]]` reference to the queried item. Wire shape returned by
+ * `GET /api/v1/workspaces/{ws}/items/{slug}/backlinks` — populated by the
+ * server-side reverse index from PLAN-1593 (Phases 1, 2a, 2b).
+ *
+ * Mirrors `internal/models/backlink.go`. The Phase 3 UI (TASK-1596) renders
+ * these as the "Mentioned in" panel beneath an item's content.
+ */
+export interface Backlink {
+	source_item_id: string;
+	source_ref: string;
+	source_title: string;
+	source_collection_slug: string;
+	source_collection_icon: string;
+	snippet: string;
+	updated_at: string;
+	/**
+	 * Optional `[[X|display]]` override. `null` (omitted from JSON) when
+	 * the link was a bare `[[X]]`. A non-null empty string represents
+	 * the editor-distinct `[[X|]]` shape.
+	 */
+	display_text?: string | null;
+	/**
+	 * Populated only for cross-workspace backlinks (PLAN-1593 Phase 2b /
+	 * TASK-1597). Same-workspace rows omit this field. The renderer uses
+	 * it to route links to the foreign workspace and show a small
+	 * workspace badge next to the row.
+	 */
+	source_workspace_slug?: string;
+}
+
 // ─── Comments ───────────────────────────────────────────────────────────────
 
 export interface Comment {

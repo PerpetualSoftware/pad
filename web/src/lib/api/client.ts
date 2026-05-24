@@ -5,6 +5,7 @@ import type {
 	Collection,
 	CollectionCreate,
 	CollectionUpdate,
+	Backlink,
 	Item,
 	ItemChangeRow,
 	ItemChangesResponse,
@@ -695,6 +696,33 @@ export const api = {
 						source: 'web'
 					})
 				}
+			),
+
+		/**
+		 * Inbound `[[...]]` references to an item — the "Mentioned in"
+		 * panel data source (PLAN-1593 / TASK-1596). Returns same-
+		 * workspace backlinks first, then cross-workspace backlinks
+		 * (each cross-ws row carries `source_workspace_slug`). The
+		 * server applies visibility filtering: a guest with only
+		 * partial workspace access sees only sources they're permitted
+		 * to read.
+		 *
+		 * Pagination: `limit` defaults to 50 server-side (max 300);
+		 * `offset` enables "Load more" affordances. The panel loads
+		 * the first page on mount; if `combined.length === limit`, the
+		 * server probably has more rows and the UI exposes a "Show
+		 * older" button.
+		 */
+		backlinks: (
+			ws: string,
+			slug: string,
+			opts?: { limit?: number; offset?: number }
+		) =>
+			request<Backlink[]>(
+				`/workspaces/${ws}/items/${slug}/backlinks${qs({
+					limit: opts?.limit,
+					offset: opts?.offset,
+				})}`
 			),
 
 		/** Get child items linked to a parent item */

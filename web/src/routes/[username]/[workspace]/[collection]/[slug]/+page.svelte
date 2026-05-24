@@ -19,6 +19,7 @@
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
+	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -129,6 +130,13 @@
 	let childItemIds = $state<Set<string>>(new Set());
 	let hasChildren = $state(false);
 	let copied = $state(false);
+
+	// PLAN-1593 / TASK-1596: count of inbound `[[...]]` references to
+	// this item, surfaced as a mention badge near the title. Driven by
+	// BacklinksPanel via its onCountChange callback so the badge and
+	// panel stay consistent — when the panel loads zero rows it
+	// notifies us and the badge hides.
+	let backlinksCount = $state(0);
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// Drives BottomSheet vs popover branching for mobile-only surfaces on
@@ -2179,6 +2187,25 @@
 			>
 				Timeline
 			</button>
+			{#if backlinksCount > 0}
+				<!--
+					Mention badge (PLAN-1593 / TASK-1596). Surfaces the inbound
+					`[[...]]` reference count in the action bar so users can see
+					at a glance that this item is referenced from elsewhere AND
+					jump straight to the panel without scrolling. Hidden when
+					the count is 0 so items with no inbound links don't
+					advertise an empty surface. The count is driven by
+					BacklinksPanel's onCountChange callback so the two stay in
+					sync without a separate API call.
+				-->
+				<button
+					class="action-btn"
+					title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
+					onclick={() => { document.getElementById('item-backlinks')?.scrollIntoView({ behavior: 'smooth' }); }}
+				>
+					📎 {backlinksCount}
+				</button>
+			{/if}
 			{#if canEdit}
 				<div class="move-wrapper">
 					<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
@@ -2693,6 +2720,28 @@
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
 		{#if item}
 			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} {canEdit} />
+		{/if}
+
+		<!--
+			Mentioned-in panel (PLAN-1593 / TASK-1596). Placed between
+			child items and the timeline so the reading order matches the
+			page's narrative arc: this item, its decomposition (children),
+			what references it (backlinks), then the activity stream. The
+			panel collapses entirely when there are zero backlinks — no
+			empty header, no whitespace waste — and notifies the badge via
+			the count callback. Anchor id is referenced by the "📎 N"
+			action button's smooth scroll.
+		-->
+		{#if item}
+			<div id="item-backlinks">
+				<BacklinksPanel
+					{wsSlug}
+					{username}
+					{itemSlug}
+					itemId={item.id}
+					onCountChange={(n) => { backlinksCount = n; }}
+				/>
+			</div>
 		{/if}
 
 		<!-- Unified Timeline (comments + activity + versions) -->
