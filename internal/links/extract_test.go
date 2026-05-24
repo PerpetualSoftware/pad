@@ -135,6 +135,51 @@ func TestExtractWikiLinks_TitleForms(t *testing.T) {
 	})
 }
 
+// TestExtractWikiLinks_TitlePreservesWhitespace regresses Codex
+// round 9 P2 against PR #621. The renderer doesn't trim before
+// title matching (web/src/lib/utils/markdown.ts:541-543), so an
+// item titled "Foo" doesn't match `[[ Foo ]]`. The extractor must
+// preserve whitespace in the title kind too, or the index would
+// surface backlinks the UI can't actually click on. Ref/workspace_ref
+// shape detection still trims (the renderer does the same).
+func TestExtractWikiLinks_TitlePreservesWhitespace(t *testing.T) {
+	t.Run("leading and trailing whitespace preserved in title", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[ Foo ]] for details.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindTitle {
+			t.Errorf("Kind: got %q, want title", got[0].Kind)
+		}
+		if got[0].Title != " Foo " {
+			t.Errorf("Title should preserve whitespace, got %q want %q", got[0].Title, " Foo ")
+		}
+	})
+
+	t.Run("padded ref still parses as ref (whitespace forgiveness)", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[ TASK-5 ]] please.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindRef {
+			t.Errorf("padded ref: Kind got %q want ref", got[0].Kind)
+		}
+		if got[0].Ref != "TASK-5" {
+			t.Errorf("padded ref: Ref got %q want TASK-5", got[0].Ref)
+		}
+	})
+
+	t.Run("internal whitespace preserved in title", func(t *testing.T) {
+		got := ExtractWikiLinks("See [[Project  Goals]] (two spaces inside).")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Title != "Project  Goals" {
+			t.Errorf("internal whitespace lost: got %q want %q", got[0].Title, "Project  Goals")
+		}
+	})
+}
+
 // TestExtractWikiLinks_WorkspaceRefStillHidden documents that Phase 2a
 // continues to gate workspace_ref kinds. TASK-1597 lifts this gate
 // once the request-independent ACL helper lands — until then,

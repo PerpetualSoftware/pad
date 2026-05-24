@@ -518,23 +518,32 @@ func parseBody(body string) *WikiLinkRef {
 		hasDisplay = true
 		body = key
 	}
-	// The key/ref side still gets trimmed because refPattern is
-	// anchored — leading/trailing whitespace would force the whole
-	// body to fall through to the title kind even though the
-	// renderer would resolve it as a ref. parseBody's job is to
-	// recognize the SHAPE; whitespace forgiveness in the key is
-	// part of that.
-	body = unescapeWikiBody(strings.TrimSpace(body))
-	if body == "" {
+	// Unescape the post-split key. KEEP UNTRIMMED for the title-kind
+	// fallthrough so the index mirrors the renderer's whitespace-
+	// sensitive title resolution: the renderer compares items.title
+	// against `key` directly with no implicit trim
+	// (web/src/lib/utils/markdown.ts:541-543). If we trimmed here,
+	// `[[ Foo ]]` would index a backlink to item "Foo" that the UI
+	// renders as broken, creating ghost entries in the backlinks
+	// panel. Codex round 9 P2.
+	bodyUnescaped := unescapeWikiBody(body)
+	if bodyUnescaped == "" {
 		return nil
 	}
+	// Trimmed copy for ref / workspace_ref shape detection only.
+	// Refs are whitespace-free by construction (`REF-N`), so this
+	// is forgiveness for `[[ TASK-5 ]]` typed by hand — matches
+	// the renderer's `key.trim()` at L503/L506. The trimmed value
+	// is NEVER stored as target_title.
+	trimmed := strings.TrimSpace(bodyUnescaped)
 
-	// Cross-workspace form: `workspace-slug::REF`. The `::` separator
-	// is unambiguous; if it's present, the workspace + ref must each
-	// match their patterns or the whole thing falls back to title.
-	if sep := strings.Index(body, "::"); sep >= 0 {
-		ws := strings.TrimSpace(body[:sep])
-		rest := strings.TrimSpace(body[sep+2:])
+	// Cross-workspace form: `workspace-slug::REF`. The `::`
+	// separator is unambiguous; if it's present, the workspace +
+	// ref must each match their patterns or the whole thing falls
+	// back to title.
+	if sep := strings.Index(trimmed, "::"); sep >= 0 {
+		ws := strings.TrimSpace(trimmed[:sep])
+		rest := strings.TrimSpace(trimmed[sep+2:])
 		if isWorkspaceSlug(ws) && refPattern.MatchString(rest) {
 			return &WikiLinkRef{
 				Kind:          WikiLinkKindWorkspaceRef,
@@ -547,30 +556,32 @@ func parseBody(body string) *WikiLinkRef {
 		// Fall through to title — the renderer's fallback policy.
 	}
 
-	// Ref form: a bare REF-N pattern. Normalize the prefix to upper-
-	// case at this single chokepoint — collection prefixes are
-	// canonically uppercase in `collections.prefix`, and the
-	// resolver/backlinks queries compare against that column. The
-	// renderer accepts mixed case for input convenience; we store
-	// the canonical form so the index has one shape per (workspace,
-	// prefix, number) and downstream callers don't need to be
-	// case-aware (Codex round-1 P2).
-	if refPattern.MatchString(body) {
+	// Ref form: a bare REF-N pattern (trimmed-shape check). Normalize
+	// the prefix to upper-case at this single chokepoint —
+	// collection prefixes are canonically uppercase in
+	// `collections.prefix`, and the resolver/backlinks queries
+	// compare against that column. The renderer accepts mixed case
+	// for input convenience; we store the canonical form so the
+	// index has one shape per (workspace, prefix, number) and
+	// downstream callers don't need to be case-aware (Codex
+	// round-1 P2).
+	if refPattern.MatchString(trimmed) {
 		return &WikiLinkRef{
 			Kind:       WikiLinkKindRef,
-			Ref:        canonicalizeRef(body),
+			Ref:        canonicalizeRef(trimmed),
 			Display:    display,
 			HasDisplay: hasDisplay,
 		}
 	}
 
 	// Legacy collection-qualified title: `collection/Title`. We
-	// treat the whole body as the title for storage; the resolver
-	// in Phase 2 will split on `/` to bias the lookup.
-	// Plain legacy title.
+	// treat the whole UNTRIMMED body as the title for storage; the
+	// resolver in Phase 2 will split on `/` to bias the lookup.
+	// Plain legacy title — also untrimmed. Whitespace in the body
+	// is preserved verbatim per the renderer.
 	return &WikiLinkRef{
 		Kind:       WikiLinkKindTitle,
-		Title:      body,
+		Title:      bodyUnescaped,
 		Display:    display,
 		HasDisplay: hasDisplay,
 	}
