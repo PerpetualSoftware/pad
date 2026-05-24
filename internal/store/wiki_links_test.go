@@ -779,6 +779,45 @@ func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback regresses
+// Codex round 2 P2: a row resolved via qualified-fallback (stage 2)
+// must flip to point at a later-arriving literal-title match (stage 1
+// always wins per renderer order at markdown.ts:541).
+//
+//	Step 1: source writes `[[tasks/Setup]]`. No literal "tasks/Setup"
+//	        item exists; item "Setup" exists in collection "tasks".
+//	        Row resolves via qualified fallback to <Setup>.
+//	Step 2: item literally titled "tasks/Setup" is created.
+//	        Row MUST retarget to <tasks/Setup> — the literal match.
+//
+// Without the stage-1 NULL-constraint drop, the index would stay
+// stale until the source's content was rewritten.
+func TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
+
+	// Step 1: fallback resolution.
+	fallback := createTestItem(t, s, ws.ID, col.ID, "Setup", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[tasks/Setup]].")
+	fallbackBls, _ := s.GetBacklinks(fallback.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(fallbackBls) != 1 {
+		t.Fatalf("step 1: fallback should resolve, got %d backlinks", len(fallbackBls))
+	}
+
+	// Step 2: literal arrival should win stage 1 and steal the row.
+	literal := createTestItem(t, s, ws.ID, col.ID, "tasks/Setup", "")
+
+	got, _ := s.GetBacklinks(literal.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("literal arrival should retarget qualified-fallback row, got %d backlinks", len(got))
+	}
+	fallbackBls, _ = s.GetBacklinks(fallback.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(fallbackBls) != 0 {
+		t.Errorf("fallback should lose the row after literal arrival, got %d backlinks", len(fallbackBls))
+	}
+}
+
 // TestWikiLinks_TitleRenameResolvesPreExistingBrokenRows covers the
 // other half of cascadeTitleRename: a source that wrote `[[New Title]]`
 // BEFORE any item had that title — so its row stored as broken —

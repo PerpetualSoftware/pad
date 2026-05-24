@@ -405,13 +405,14 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 }
 
 // resolveBrokenTitleLinks flips item_wiki_links rows in the workspace
-// that have target_kind='title', target_item_id IS NULL, and a
-// target_title matching the given (collSlug, title) — case-insensitive
-// — to point at the supplied itemID. Called from two places:
+// that have target_kind='title' and a target_title matching the
+// given (collSlug, title) — case-insensitive — to point at the
+// supplied itemID. Called from two places:
 //
 //   - cascadeTitleRename after a title rename, to pick up any
 //     pre-existing `[[newTitle]]` sources that were stored as broken
-//     at the time their author wrote them.
+//     at the time their author wrote them OR as qualified-fallback
+//     hits that should now resolve to a literal-title match.
 //   - tryCreateItem after a new item lands, so any pre-existing
 //     `[[Title]]` sources that were waiting for an item with this
 //     title resolve immediately (rather than waiting for a backfill
@@ -419,25 +420,41 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 //
 // Two UPDATEs (one per shape — plain vs collection-qualified) instead
 // of one with OR so the partial indexes on target_title can each be
-// used independently. Both queries usually update 0 rows; the second
-// is essentially free for items whose collection slug doesn't appear
-// in any source body.
+// used independently. Both queries usually update 0 rows.
+//
+// The stage-1 UPDATE intentionally drops the `target_item_id IS NULL`
+// constraint: stage 1 (full-key literal title) ALWAYS wins over
+// stage 2 (collection-qualified fallback) per the renderer's order
+// at web/src/lib/utils/markdown.ts:541. If a row currently points
+// at a qualified-fallback target via stage 2 and a literal-title
+// match later arrives, the row should flip to the literal — Codex
+// round 2 P2 caught this arrival-order regression on the qualified-
+// title path. Stage-2 keeps the NULL constraint so already-resolved
+// qualified rows don't churn when another fallback candidate appears.
 func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlug, title string) error {
 	plainTitleNorm := strings.ToLower(title)
 	qualifiedTitleNorm := strings.ToLower(collSlug + "/" + title)
+	// Stage 1: literal title match. Drop the NULL constraint so
+	// previously-fallback-resolved rows flip to the literal match
+	// (the renderer would now prefer it). Add a target_item_id != ?
+	// guard so we don't churn rows that already point at us.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
 		WHERE target_kind = 'title'
 		  AND target_workspace_id IS NULL
-		  AND target_item_id IS NULL
 		  AND LOWER(target_title) = ?
+		  AND (target_item_id IS NULL OR target_item_id != ?)
 		  AND source_item_id IN (
 		      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL
 		  )
-	`), itemID, plainTitleNorm, workspaceID); err != nil {
+	`), itemID, plainTitleNorm, itemID, workspaceID); err != nil {
 		return fmt.Errorf("resolve broken plain titles: %w", err)
 	}
+	// Stage 2: collection-qualified fallback — only flip rows that
+	// have NO current resolution. Avoids churning already-resolved
+	// qualified rows when an additional same-title item joins the
+	// collection.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
