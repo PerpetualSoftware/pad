@@ -1017,6 +1017,31 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle regresses
+// Codex round 10 P2: a ref-shaped body with surrounding whitespace
+// (`[[ TASK-5 ]]`) that doesn't match any actual ref falls through
+// to title lookup using the UNTRIMMED key — matches the renderer's
+// `key.toLowerCase()` (no trim) at markdown.ts:541-543. An item
+// literally titled " TASK-5 " (with spaces) must resolve via the
+// fallback when no real TASK-5 ref exists.
+func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix "TASKS"
+
+	// Item literally titled with whitespace and ref shape. There's
+	// no TASKS collection prefix variant matching "TASK-5", so the
+	// ref resolution misses and title fallback must use the raw
+	// (untrimmed) key.
+	target := createTestItem(t, s, ws.ID, col.ID, " TASK-5 ", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[ TASK-5 ]] anyway.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected ref-fallback to use untrimmed key, got %d backlinks", len(got))
+	}
+}
+
 // TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses Codex
 // round 8 P2: when item A "Foo" resolves a backlink and is then
 // soft-deleted, a NEW item B titled "Foo" must flip the row to

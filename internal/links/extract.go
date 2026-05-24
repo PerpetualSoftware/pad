@@ -72,6 +72,21 @@ type WikiLinkRef struct {
 	// not the code-stripped buffer the parser used to find
 	// outside-code matches.
 	Position int
+
+	// RawKey is the untrimmed unescaped key segment (everything
+	// before the first unescaped pipe, or the whole body if no
+	// pipe). Populated for `WikiLinkKindRef` so the ref→title
+	// fallback in the store layer can mirror the renderer's
+	// untrimmed title lookup at web/src/lib/utils/markdown.ts:541-543
+	// — an item literally titled `" TASK-5 "` (with surrounding
+	// whitespace) resolves via the renderer's untrimmed key but
+	// would miss a canonical-trimmed `"TASK-5"` lookup. Codex
+	// round 10 P2.
+	//
+	// Empty for other kinds — title kind already preserves the
+	// untrimmed body in Title, and workspace_ref kinds are
+	// whitespace-free by construction.
+	RawKey string
 }
 
 // REF_PATTERN matches a Pad item ref like TASK-5 or BUG-585. Mirrors
@@ -569,6 +584,7 @@ func parseBody(body string) *WikiLinkRef {
 		return &WikiLinkRef{
 			Kind:       WikiLinkKindRef,
 			Ref:        canonicalizeRef(trimmed),
+			RawKey:     bodyUnescaped, // untrimmed, for ref→title fallback
 			Display:    display,
 			HasDisplay: hasDisplay,
 		}

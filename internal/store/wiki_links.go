@@ -105,19 +105,28 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// renderer's "If the ref doesn't resolve we FALL THROUGH
 			// to the legacy title path" at web/src/lib/utils/markdown.ts:513.
 			// Order matches the renderer:
-			//   (a) If HasDisplay, try FULL body (Ref+"|"+Display)
+			//   (a) If HasDisplay, try FULL body (RawKey+"|"+Display)
 			//       as a title — covers literal-pipe titles like
 			//       "ISO-9001|Spec" matching `[[ISO-9001|Spec]]`.
 			//       Codex round 7 P1.
-			//   (b) Try the bare ref string as a title — covers
+			//   (b) Try the raw key string as a title — covers
 			//       `[[ISO-9001]]` matching an item titled "ISO-9001".
 			//       Codex round 6 P1.
-			titleCandidates := []string{link.Ref}
-			storedTitleForFallback := link.Ref
+			//
+			// Use link.RawKey (untrimmed unescaped key) NOT link.Ref
+			// (canonical trimmed) for title fallback so an item
+			// literally titled `" TASK-5 "` resolves the same way
+			// the renderer does. Codex round 10 P2.
+			rawKey := link.RawKey
+			if rawKey == "" {
+				rawKey = link.Ref // defensive — shouldn't happen for ref kind
+			}
+			titleCandidates := []string{rawKey}
+			storedTitleForFallback := rawKey
 			storeDisplayForFallback := displayText
 			if link.HasDisplay {
-				fullBody := link.Ref + "|" + link.Display
-				titleCandidates = []string{fullBody, link.Ref}
+				fullBody := rawKey + "|" + link.Display
+				titleCandidates = []string{fullBody, rawKey}
 			}
 			var titleHit sql.NullString
 			for i, candidate := range titleCandidates {
