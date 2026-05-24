@@ -547,6 +547,277 @@ func refOf(item *models.Item) string {
 	return item.CollectionPrefix + "-" + itoa(num)
 }
 
+// -- Phase 2a (TASK-1595): title-form backlinks --
+
+// TestWikiLinks_TitleFormIndexed exercises the headline Phase 2a path:
+// `[[Title]]` in a source's body produces a backlink for the target
+// when the target's title matches (case-insensitive).
+func TestWikiLinks_TitleFormIndexed(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Project Goals", "")
+	source := createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Please see [[Project Goals]] for context.")
+
+	got, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 backlink, got %d: %+v", len(got), got)
+	}
+	if got[0].SourceItemID != source.ID {
+		t.Errorf("SourceItemID: got %q want %q", got[0].SourceItemID, source.ID)
+	}
+}
+
+// TestWikiLinks_TitleFormCaseInsensitive — resolveTitleTx uses LOWER()
+// to mirror the renderer's `.toLowerCase()` comparison. A source that
+// writes `[[project goals]]` must still resolve to an item titled
+// "Project Goals".
+func TestWikiLinks_TitleFormCaseInsensitive(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Project Goals", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"See [[project goals]] for the plan.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected 1 backlink (case-insensitive resolution), got %d", len(got))
+	}
+}
+
+// TestWikiLinks_BrokenTitlePersistedThenResolved covers two beats:
+//
+//   - A `[[Title]]` whose target doesn't exist yet persists with
+//     target_item_id=NULL so the row is queryable later.
+//   - When the missing item is CREATED, resolveBrokenTitleLinks flips
+//     the row to point at it — backlinks resolve on next query without
+//     waiting for a content rewrite or a backfill run.
+func TestWikiLinks_BrokenTitlePersistedThenResolved(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Source first, target later. At this point [[Future Title]]
+	// doesn't resolve.
+	source := createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Anchor for [[Future Title]] which doesn't exist yet.")
+	_ = source
+
+	// Now create the target. The create hook should flip the broken
+	// row to point at the new item.
+	target := createTestItem(t, s, ws.ID, col.ID, "Future Title", "")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected source to resolve to target after creation, got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_TitleRenameCascadesContentAndBacklinks is the headline
+// Phase 2a behavior: rename an item and (a) sources that referenced
+// the old title get their bodies rewritten in-band, (b) their
+// index rows refresh, (c) "who mentions me?" still finds them under
+// the new title.
+func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Old Title", "")
+	source := createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Please see [[Old Title]] and again [[Old Title]] here.")
+
+	// Baseline: target has 1 backlink (multiplicity stored but the
+	// query returns one row per source by snippet position — we get
+	// 2 rows actually since multiplicity is preserved per PLAN-1593;
+	// either way both should point at the same source).
+	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bls) != 2 {
+		t.Fatalf("baseline: expected 2 rows (multiplicity preserved), got %d", len(bls))
+	}
+
+	// Rename the target. Cascade should rewrite the source's content
+	// and refresh its index rows. The renamed target still has its
+	// backlinks queryable.
+	newTitle := "New Title"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("UpdateItem rename: %v", err)
+	}
+
+	// Source's content should have been rewritten in-band.
+	updatedSource, err := s.GetItem(source.ID)
+	if err != nil {
+		t.Fatalf("GetItem source: %v", err)
+	}
+	if strings.Contains(updatedSource.Content, "[[Old Title]]") {
+		t.Errorf("expected [[Old Title]] to be rewritten, source content: %q", updatedSource.Content)
+	}
+	if !strings.Contains(updatedSource.Content, "[[New Title]]") {
+		t.Errorf("expected [[New Title]] in rewritten content, got %q", updatedSource.Content)
+	}
+
+	// Target's backlinks still find the source via the new title.
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 2 {
+		t.Errorf("post-rename: expected 2 backlinks, got %d", len(got))
+	}
+	for _, bl := range got {
+		if bl.SourceItemID != source.ID {
+			t.Errorf("backlink source should still be %q, got %q", source.ID, bl.SourceItemID)
+		}
+	}
+}
+
+// TestWikiLinks_CollectionQualifiedTitleResolved covers the qualified
+// `[[collection_slug/Title]]` form. Stage 1 (full-key match) misses
+// because no item is literally titled "tasks/Setup"; stage 2 (split
+// fallback) finds the item titled "Setup" in collection "tasks".
+func TestWikiLinks_CollectionQualifiedTitleResolved(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Setup", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"See [[tasks/Setup]] for the install steps.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("collection-qualified link should resolve, got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_FullKeyTitleBeatsQualifiedSplit regresses Codex
+// finding #3 from the planning round: an item literally titled
+// "tasks/Setup" must win stage 1 BEFORE the resolver splits on `/`
+// and looks up by collection slug. If we split first, the wrong item
+// would resolve.
+func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
+
+	// Two items: one literally titled "tasks/Setup" (the trick
+	// case), one titled "Setup" in the tasks collection (the
+	// fallback-match case). The link `[[tasks/Setup]]` must
+	// resolve to the FIRST — the literal title beats the qualified-
+	// split interpretation per renderer order.
+	literalTitle := createTestItem(t, s, ws.ID, col.ID, "tasks/Setup", "")
+	fallback := createTestItem(t, s, ws.ID, col.ID, "Setup", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Link: [[tasks/Setup]] here.")
+
+	literalBls, _ := s.GetBacklinks(literalTitle.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(literalBls) != 1 {
+		t.Errorf("literal-title item should win stage 1, got %d backlinks", len(literalBls))
+	}
+	fallbackBls, _ := s.GetBacklinks(fallback.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(fallbackBls) != 0 {
+		t.Errorf("fallback item should NOT resolve when stage 1 hits, got %d backlinks", len(fallbackBls))
+	}
+}
+
+// TestWikiLinks_TitleRenameResolvesPreExistingBrokenRows covers the
+// other half of cascadeTitleRename: a source that wrote `[[New Title]]`
+// BEFORE any item had that title — so its row stored as broken —
+// should resolve when an existing item gets renamed TO "New Title".
+// No content rewrite needed; only the target_item_id flip.
+func TestWikiLinks_TitleRenameResolvesPreExistingBrokenRows(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Source mentions "New Title" before any such item exists.
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"I expect a [[New Title]] item to exist someday.")
+
+	// Now rename an existing item TO "New Title". The cascade's
+	// stage 2 should flip the broken row.
+	target := createTestItem(t, s, ws.ID, col.ID, "Placeholder", "")
+	newTitle := "New Title"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("UpdateItem rename: %v", err)
+	}
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected pre-existing broken row to resolve after rename, got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_TitleRenameNoChangeIsNoOp — calling UpdateItem with
+// the SAME title (or with no title field at all) must not trigger
+// the cascade. Cheap path that paid nothing pre-Phase-2a should pay
+// nothing now either.
+func TestWikiLinks_TitleRenameNoChangeIsNoOp(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Stable Title", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source",
+		"See [[Stable Title]] for details.")
+
+	// Update with same title — cascade should early-return on
+	// oldTitle == newTitle.
+	same := "Stable Title"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &same}); err != nil {
+		t.Fatalf("UpdateItem with same title: %v", err)
+	}
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("backlinks unaffected by no-op rename, got %d", len(got))
+	}
+}
+
+// TestWikiLinks_TitleRenameSelfReferenceUnaffected — if the renamed
+// item mentions its OWN old title in its own body, the cascade must
+// not double-rewrite. The renamed item's own content update is
+// handled by the main UPDATE statement (the test path only updates
+// title here, so content stays as-is); the cascade's s.id != ?
+// filter excludes self-references explicitly.
+func TestWikiLinks_TitleRenameSelfReferenceUnaffected(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Item that mentions itself by title.
+	item := createTestItem(t, s, ws.ID, col.ID, "Self Title", "")
+	body := "I mention myself: [[Self Title]]."
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &body}); err != nil {
+		t.Fatalf("seed self-ref content: %v", err)
+	}
+
+	// Rename. Self-link filter in GetBacklinks hides this from the
+	// panel; the cascade should NOT rewrite the renamed item's own
+	// content (that's the outer UPDATE's job, but here we're not
+	// updating content, just title — so content stays as-is).
+	newTitle := "Renamed Self"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("rename self: %v", err)
+	}
+
+	// Source body unchanged — cascade skipped self.
+	post, _ := s.GetItem(item.ID)
+	if !strings.Contains(post.Content, "[[Self Title]]") {
+		t.Errorf("self-reference should NOT have been rewritten by cascade, got %q", post.Content)
+	}
+
+	// Self still hidden from own backlinks panel.
+	got, _ := s.GetBacklinks(item.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 0 {
+		t.Errorf("self-link must stay hidden, got %d", len(got))
+	}
+}
+
 // itoa is strconv.Itoa renamed to keep test bodies readable when
 // they're already heavy on ref-formatting.
 func itoa(n int) string {

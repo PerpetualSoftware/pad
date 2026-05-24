@@ -447,11 +447,14 @@ func isInRanges(pos int, ranges [][2]int) bool {
 // any fenced or inline code region, parses each into a WikiLinkRef,
 // and returns them in source order.
 //
-// Phase 1 of PLAN-1593: only ref-form links (`[[REF-N]]` /
-// `[[REF-N|Display]]`) populate the returned slice. Title-form and
-// workspace_ref-form links are recognized at parse time (so the
-// caller can persist them as `target_kind` placeholders in Phase 2)
-// but are NOT emitted today — Phase 2 will flip that switch.
+// Phase 2a of PLAN-1593 (TASK-1595): emits ref-form (`[[REF-N]]`)
+// AND title-form (`[[Title]]`, `[[collection/Title]]`) links.
+// Cross-workspace `[[workspace::REF]]` links are recognized by
+// parseBody but still gated out — TASK-1597 (Phase 2b) lifts that
+// last gate once the request-independent per-workspace ACL helper
+// lands. The two-step rollout is deliberate: cross-ws backlinks
+// need visibility plumbing that doesn't exist yet, so emitting the
+// rows now would leak indexed-but-unqueryable data.
 //
 // Returns an empty slice on empty input. Never returns an error —
 // any bracket sequence that fails to parse is silently skipped
@@ -478,10 +481,14 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 			continue
 		}
 		ref.Position = linkStart
-		// Phase 1: only emit ref-form. Drop title and workspace_ref
-		// rows so the Phase-1 store sees only what Phase 1 promises
-		// to index. Phase 2 will remove this gate.
-		if ref.Kind != WikiLinkKindRef {
+		// Phase 2a (TASK-1595): emit ref AND title kinds. The
+		// workspace_ref gate stays until TASK-1597 ships the
+		// per-workspace ACL helper — without it the cross-ws
+		// inbound query can't honor source-workspace visibility,
+		// and emitting rows we can't safely query just bloats
+		// the index. parseBody still RECOGNIZES the kind so
+		// removing the gate in Phase 2b is a one-line change.
+		if ref.Kind == WikiLinkKindWorkspaceRef {
 			continue
 		}
 		out = append(out, *ref)

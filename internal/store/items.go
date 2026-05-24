@@ -225,7 +225,32 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		return fmt.Errorf("index wiki links: %w", err)
 	}
 
+	// Phase 2a (TASK-1595): flip any pre-existing broken `[[Title]]`
+	// rows that have been waiting for an item with this title to
+	// arrive. Cheap when no broken rows match (the common case).
+	// Without this, sources that mention the new item by title would
+	// stay broken until either their content is rewritten or the
+	// next migration-driven backfill — both rare.
+	collSlug, err := s.getCollectionSlugTx(tx, collectionID)
+	if err != nil {
+		return fmt.Errorf("lookup collection slug: %w", err)
+	}
+	if err := s.resolveBrokenTitleLinks(tx, id, workspaceID, collSlug, input.Title); err != nil {
+		return fmt.Errorf("resolve broken titles: %w", err)
+	}
+
 	return tx.Commit()
+}
+
+// getCollectionSlugTx reads collections.slug for a collection_id
+// inside the supplied tx. Tiny helper used by the wiki-link cascade
+// hooks that need the slug to build collection-qualified link keys.
+func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, error) {
+	var slug string
+	if err := tx.QueryRow(s.q(`SELECT slug FROM collections WHERE id = ?`), collectionID).Scan(&slug); err != nil {
+		return "", err
+	}
+	return slug, nil
 }
 
 // isUniqueViolation checks whether an error is a unique constraint violation.
@@ -1660,6 +1685,21 @@ func (s *Store) UpdateItemWithPreCheck(
 	if input.Content != nil {
 		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, *input.Content); err != nil {
 			return nil, fmt.Errorf("index wiki links: %w", err)
+		}
+	}
+
+	// Title rename — cascade to title-form backlinks. Fires whether
+	// content changed or not: a title-only update is the canonical
+	// rename case. Runs AFTER the renamed item's UPDATE so the new
+	// title is visible inside the tx for any cascade-internal
+	// lookups, and AFTER the renamed item's own content reparse so
+	// the renamed item doesn't get its own stale rows re-resolved
+	// twice. The function early-returns when oldTitle == newTitle so
+	// title-shaped-but-unchanged updates pay nothing. PLAN-1593 /
+	// TASK-1595.
+	if input.Title != nil && *input.Title != existing.Title {
+		if err := s.cascadeTitleRename(tx, id, existing.WorkspaceID, existing.Title, *input.Title); err != nil {
+			return nil, fmt.Errorf("cascade title rename: %w", err)
 		}
 	}
 
