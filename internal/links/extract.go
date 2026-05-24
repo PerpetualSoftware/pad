@@ -343,14 +343,24 @@ func inlineCodeRanges(content string, fenced [][2]int) [][2]int {
 		}
 		openLen := j - openStart
 		// Scan for a closing backtick RUN of EXACTLY `openLen`
-		// backticks on the same line. Runs of any other length
-		// are code text, not closers.
+		// backticks. CommonMark §6.1 allows code spans to cross
+		// single newlines BUT a blank line (a line containing only
+		// whitespace) ends the enclosing paragraph and therefore
+		// terminates the span. We allow single-line wraps but break
+		// on blank lines — Codex round-9 P1.
 		closerStart := -1
 		closerEnd := -1
 		k := j
 		for k < n {
 			if content[k] == '\n' {
-				break
+				// Look at the next line: if it's blank
+				// (only whitespace before the next newline
+				// or EOF), the span ends here unmatched.
+				if isBlankLineAt(content, k+1, n) {
+					break
+				}
+				k++
+				continue
 			}
 			if content[k] != '`' {
 				k++
@@ -369,8 +379,9 @@ func inlineCodeRanges(content string, fenced [][2]int) [][2]int {
 			// Wrong-length run; consumed by the loop, keep scanning.
 		}
 		if closerStart < 0 {
-			// Unclosed (or only mismatched runs to EOL) — treat
-			// opener as literal text and resume one byte past it.
+			// Unclosed (or only mismatched runs to scope end) —
+			// treat opener as literal text and resume one byte
+			// past it.
 			i = openStart + 1
 			continue
 		}
@@ -378,6 +389,25 @@ func inlineCodeRanges(content string, fenced [][2]int) [][2]int {
 		i = closerEnd
 	}
 	return ranges
+}
+
+// isBlankLineAt returns true if the line starting at byte position
+// `pos` contains only whitespace (space or tab) before its newline,
+// or runs to EOF without any non-whitespace. Per CommonMark a blank
+// line is one with no chars or only whitespace; this helper matches
+// that definition for the purpose of bounding multi-line inline code
+// spans (inline code spans don't cross blank lines).
+func isBlankLineAt(content string, pos, n int) bool {
+	for i := pos; i < n; i++ {
+		c := content[i]
+		if c == '\n' {
+			return true // line had no non-whitespace chars
+		}
+		if c != ' ' && c != '\t' {
+			return false
+		}
+	}
+	return true // EOF with only whitespace counts as blank
 }
 
 // isInRanges returns true if `pos` falls inside any half-open

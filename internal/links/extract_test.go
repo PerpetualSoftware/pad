@@ -140,6 +140,54 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		}
 	})
 
+	t.Run("inline code spans single newline (CommonMark §6.1)", func(t *testing.T) {
+		// Per CommonMark, an inline-code span can cross a single
+		// newline. The renderer treats `pre\n[[INSIDE-1]]\npost`
+		// as a single code span — the embedded link must NOT be
+		// indexed. Codex round-9 P1.
+		content := "Outside [[A-1]]\n" +
+			"start `pre\n[[INSIDE-1]]\npost` end\n" +
+			"Outside [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("inline code breaks at blank line (paragraph boundary)", func(t *testing.T) {
+		// A blank line terminates the paragraph, so a still-open
+		// inline-code span must end at the blank-line break.
+		// Refs in subsequent paragraphs are NOT part of the span
+		// and must be indexed.
+		content := "Outside [[A-1]]\n" +
+			"open `unclosed-span\n" +
+			"\n" +
+			"new paragraph [[REAL-1]] more text\n" +
+			"Outside [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "REAL-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("inline code breaks at whitespace-only blank line", func(t *testing.T) {
+		// CommonMark treats a line containing only spaces/tabs as
+		// blank. Span must still terminate there.
+		content := "open `unclosed-span\n" +
+			"  \t  \n" +
+			"after-blank [[REAL-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"REAL-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
 	t.Run("inline code closer matches opener length", func(t *testing.T) {
 		// CommonMark §6.1: a span opened with N backticks closes
 		// only on a run of EXACTLY N backticks. Stray single
