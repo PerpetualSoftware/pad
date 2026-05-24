@@ -73,17 +73,20 @@ type WikiLinkRef struct {
 // uppercase form at storage time — see parseBody.
 var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 
-// wikiLinkPattern matches `[[...]]` non-greedily. We split the body
-// ourselves to handle the `|Display` segment and the cross-workspace
-// `workspace::REF` form rather than baking those into the regex —
-// the body-shape logic is easier to read in plain Go than as nested
-// capture groups, and the parser already needs the position info the
-// regex returns.
+// wikiLinkPattern matches `[[...]]` while allowing the body to
+// contain escaped chars (`\]`, `\|`, `\\`). Mirrors the editor's
+// `wikiLinksToMarkdown` grammar in web/src/lib/utils/markdown.ts:461
+// (`(?:\\.|[^\]\\])+`), so any link the editor saves can be indexed
+// — even if its display text contains a literal `]` or `|`.
 //
-// `[^\]]+` excludes `]` from the body so a malformed `[[A]]B]]` won't
-// gobble characters across the inner closer. Matches the renderer's
-// pattern exactly.
-var wikiLinkPattern = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
+// renderMarkdown at markdown.ts:300 uses a simpler regex (`[^\]]+`)
+// that REJECTS escaped-bracket bodies, so escaped links don't
+// currently render as clickable links in the UI. That's a
+// pre-existing inconsistency in the editor pipeline; matching the
+// permissive grammar here makes the index forward-compatible with a
+// renderer fix without leaving a gap when one lands. Codex rounds
+// 4/7/10 P2.
+var wikiLinkPattern = regexp.MustCompile(`\[\[((?:\\.|[^\]\\])+)\]\]`)
 
 // fencedCodeRanges returns half-open `[start, end)` byte ranges that
 // cover every fenced (triple-backtick) code block in `content`,
@@ -477,18 +480,20 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 
 // parseBody decodes the inside of a `[[...]]`. Returns nil if the
 // body doesn't match any of the five recognized forms. Mirrors the
-// renderer's body-parsing logic in markdown.ts so server-side and
-// client-side extraction stay in lockstep.
+// editor's body-parsing logic in markdown.ts so server-side and
+// client-side extraction stay in lockstep — including the editor's
+// `\]`, `\|`, `\\` escape sequences (Codex round-10 P2).
 func parseBody(body string) *WikiLinkRef {
-	// Strip a `|Display` suffix first. We split on the FIRST `|`
-	// because the display text itself may legally contain pipes
-	// (e.g. "[[TASK-5|A | B]]") even though that's rare.
+	// Split on the FIRST UNESCAPED `|`. `\|` is part of the key or
+	// display text (depending on which side of the split it's on)
+	// and must NOT cleave the body. Mirrors splitWikiBody at
+	// markdown.ts:664.
 	var display string
-	if pipe := strings.IndexByte(body, '|'); pipe >= 0 {
-		display = strings.TrimSpace(body[pipe+1:])
-		body = body[:pipe]
+	if key, suffix, ok := splitOnUnescapedPipe(body); ok {
+		display = strings.TrimSpace(unescapeWikiBody(suffix))
+		body = key
 	}
-	body = strings.TrimSpace(body)
+	body = unescapeWikiBody(strings.TrimSpace(body))
 	if body == "" {
 		return nil
 	}
@@ -544,6 +549,50 @@ var workspaceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-
 
 func isWorkspaceSlug(s string) bool {
 	return workspaceSlugPattern.MatchString(s)
+}
+
+// splitOnUnescapedPipe scans `body` for the first `|` that isn't
+// preceded by an unescaped `\`, splitting the body into (key,
+// display, found). Mirrors splitWikiBody at markdown.ts:664. A `\`
+// always consumes the following byte (even if it's not a recognized
+// escape) so the algorithm can't get desynced by stray backslashes.
+func splitOnUnescapedPipe(body string) (key, suffix string, found bool) {
+	i := 0
+	for i < len(body) {
+		if body[i] == '\\' && i+1 < len(body) {
+			i += 2
+			continue
+		}
+		if body[i] == '|' {
+			return body[:i], body[i+1:], true
+		}
+		i++
+	}
+	return body, "", false
+}
+
+// unescapeWikiBody undoes the editor's body-escape sequences:
+// `\]` → `]`, `\|` → `|`, `\\` → `\`. Other backslash sequences are
+// left as-is (the renderer does the same — see unescapeWikiBody at
+// markdown.ts:657). Idempotent on already-unescaped strings.
+func unescapeWikiBody(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			if next == '\\' || next == ']' || next == '|' {
+				b.WriteByte(next)
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // canonicalizeRef uppercases the prefix portion of a "PREFIX-N" ref

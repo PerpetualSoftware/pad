@@ -453,6 +453,121 @@ func TestExtractWikiLinks_RefVsTitleFallback(t *testing.T) {
 	})
 }
 
+// TestExtractWikiLinks_EscapedBodyChars regresses Codex rounds
+// 4/7/10 P2: the editor's wikiLinksToMarkdown can produce bodies
+// containing `\]`, `\|`, `\\` escapes (markdown.ts:461). The
+// extractor must parse those — both the regex and the body parser —
+// so the resulting link is indexed with the unescaped display text.
+func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
+	t.Run("escaped closing bracket in display", func(t *testing.T) {
+		// [[TASK-1|see \] bracket]] — display is "see ] bracket".
+		got := ExtractWikiLinks(`[[TASK-1|see \] bracket]]`)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d: %+v", len(got), got)
+		}
+		if got[0].Ref != "TASK-1" {
+			t.Errorf("Ref: got %q want TASK-1", got[0].Ref)
+		}
+		if got[0].Display != "see ] bracket" {
+			t.Errorf("Display: got %q want %q", got[0].Display, "see ] bracket")
+		}
+	})
+
+	t.Run("escaped pipe in display", func(t *testing.T) {
+		// [[TASK-2|A \| B]] — display is "A | B"; the unescaped
+		// pipe doesn't split the body.
+		got := ExtractWikiLinks(`[[TASK-2|A \| B]]`)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(got))
+		}
+		if got[0].Display != "A | B" {
+			t.Errorf("Display: got %q want %q", got[0].Display, "A | B")
+		}
+	})
+
+	t.Run("escaped backslash in display", func(t *testing.T) {
+		// [[TASK-3|a \\ b]] — display is "a \ b".
+		got := ExtractWikiLinks(`[[TASK-3|a \\ b]]`)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(got))
+		}
+		if got[0].Display != `a \ b` {
+			t.Errorf("Display: got %q want %q", got[0].Display, `a \ b`)
+		}
+	})
+
+	t.Run("non-escape backslash passes through", func(t *testing.T) {
+		// `\n` (or any `\X` where X isn't ]|\) is left alone.
+		got := ExtractWikiLinks(`[[TASK-4|a \n b]]`)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(got))
+		}
+		if got[0].Display != `a \n b` {
+			t.Errorf("Display: got %q want %q", got[0].Display, `a \n b`)
+		}
+	})
+
+	t.Run("position still points at opening [[", func(t *testing.T) {
+		// Escapes shouldn't shift Position — it's the byte offset
+		// in the ORIGINAL content, not the unescaped form.
+		content := "Prefix " + `[[TASK-5|see \] here]]` + " suffix"
+		got := ExtractWikiLinks(content)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(got))
+		}
+		if content[got[0].Position:got[0].Position+2] != "[[" {
+			t.Errorf("Position should point at `[[`, got %q",
+				content[got[0].Position:got[0].Position+2])
+		}
+	})
+}
+
+// TestSplitOnUnescapedPipe / TestUnescapeWikiBody — direct unit
+// tests for the helpers. Round-trip safety against the editor's
+// serializer (escapeWikiBody/unescapeWikiBody in markdown.ts:652-658)
+// is the property we care about.
+func TestSplitOnUnescapedPipe(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantKey    string
+		wantSuffix string
+		wantFound  bool
+	}{
+		{"ref-only", "ref-only", "", false},
+		{"key|display", "key", "display", true},
+		{`key\|with-pipe`, `key\|with-pipe`, "", false},
+		{`first\|second|third`, `first\|second`, "third", true},
+		{`\\|trailing`, `\\`, "trailing", true}, // \\ is escaped backslash, then |
+	}
+	for _, c := range cases {
+		k, s, ok := splitOnUnescapedPipe(c.in)
+		if k != c.wantKey || s != c.wantSuffix || ok != c.wantFound {
+			t.Errorf("splitOnUnescapedPipe(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				c.in, k, s, ok, c.wantKey, c.wantSuffix, c.wantFound)
+		}
+	}
+}
+
+func TestUnescapeWikiBody(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"plain", "plain"},
+		{`\]`, "]"},
+		{`\|`, "|"},
+		{`\\`, `\`},
+		{`a \] b \| c \\ d`, `a ] b | c \ d`},
+		{`\n stays literal`, `\n stays literal`},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := unescapeWikiBody(c.in)
+		if got != c.want {
+			t.Errorf("unescapeWikiBody(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestCanonicalizeRef is the unit-level check on the helper. The
 // integration coverage lives in TestWikiLinks_MixedCaseRefIndexed
 // (store) — but the helper's edge cases (no-hyphen, all-uppercase
