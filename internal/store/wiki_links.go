@@ -330,9 +330,19 @@ func snippetAround(content string, position int) string {
 		end = n
 	}
 	// Trim back to a rune boundary at the start so we don't slice
-	// mid-codepoint. The forward end is safe to clamp at n.
+	// mid-codepoint. UTF-8 continuation bytes have the bit pattern
+	// 10xxxxxx (i.e. (b & 0xC0) == 0x80); advance past them to land
+	// on a leading byte (or ASCII).
 	for start < n && (content[start]&0xC0) == 0x80 {
 		start++
+	}
+	// Same treatment for `end`: if the cut lands inside a multi-byte
+	// rune, advance forward past the continuation bytes so we don't
+	// emit invalid UTF-8. Going forward (not backward) keeps the
+	// snippet anchored slightly past the link rather than slightly
+	// before it. Codex round-8 P3.
+	for end < n && (content[end]&0xC0) == 0x80 {
+		end++
 	}
 	snippet := content[start:end]
 	// Collapse internal newlines so the one-line UI doesn't have to.

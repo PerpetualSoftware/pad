@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -253,6 +254,37 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if len(bls) != 1 {
 		t.Errorf("after backfill: expected 1 backlink, got %d", len(bls))
+	}
+}
+
+// TestWikiLinks_SnippetIsValidUTF8 — `snippetAround` may slice
+// `content` at boundaries that fall mid-rune. The function must
+// extend both edges to rune boundaries so the snippet is always
+// valid UTF-8. Codex round-8 P3.
+func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	tref := refOf(target)
+	// Pad each side of the link with enough multi-byte runes that
+	// the ±40-byte snippet window will likely cut through one.
+	// "🎉" is 4 bytes. "héllo" has é = 2 bytes. Both should round-trip.
+	body := "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉 héllo " + "[" + "[" + tref + "]] héllo 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+	createTestItem(t, s, ws.ID, col.ID, "Source", body)
+
+	bls, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(bls) != 1 {
+		t.Fatalf("expected 1 backlink, got %d", len(bls))
+	}
+	// `utf8.ValidString` is the canonical check; the snippet must
+	// pass regardless of where the ±40-byte cut landed.
+	if !utf8.ValidString(bls[0].Snippet) {
+		t.Errorf("snippet is invalid UTF-8: %q", bls[0].Snippet)
 	}
 }
 
