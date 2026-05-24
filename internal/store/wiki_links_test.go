@@ -675,6 +675,61 @@ func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_TitleRenameCascadesAliasedForms regresses Codex round 1
+// finding: the cascade must preserve display aliases when rewriting
+// title-form links. `[[Old Title|alias]]` AND `[[old title]]` (mixed
+// case) both index via target_item_id, so without alias-aware /
+// case-insensitive rewrite, the trailing re-parse drops them.
+func TestWikiLinks_TitleRenameCascadesAliasedForms(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Old Title", "")
+	source := createTestItem(t, s, ws.ID, col.ID, "Source",
+		"Plain [[Old Title]], aliased [[Old Title|see this]], "+
+			"mixed case [[old title]], and qualified [[tasks/Old Title|qual]] all here.")
+
+	// Baseline: 4 backlink rows (multiplicity preserved).
+	bls, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bls) != 4 {
+		t.Fatalf("baseline: expected 4 rows (multiplicity), got %d", len(bls))
+	}
+
+	// Rename and verify all 4 forms got rewritten in source body AND
+	// stayed resolved.
+	newTitle := "New Title"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("UpdateItem rename: %v", err)
+	}
+	updated, _ := s.GetItem(source.ID)
+	for _, oldShape := range []string{
+		"[[Old Title]]",
+		"[[Old Title|see this]]",
+		"[[old title]]",
+		"[[tasks/Old Title|qual]]",
+	} {
+		if strings.Contains(updated.Content, oldShape) {
+			t.Errorf("expected %q to be rewritten, content: %q", oldShape, updated.Content)
+		}
+	}
+	for _, newShape := range []string{
+		"[[New Title]]",
+		"[[New Title|see this]]",
+		"[[tasks/New Title|qual]]",
+	} {
+		if !strings.Contains(updated.Content, newShape) {
+			t.Errorf("expected %q in rewritten content, got %q", newShape, updated.Content)
+		}
+	}
+
+	// All 4 rows still resolve after rename — none flipped to broken.
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 4 {
+		t.Errorf("post-rename: expected 4 resolved backlinks, got %d", len(got))
+	}
+}
+
 // TestWikiLinks_CollectionQualifiedTitleResolved covers the qualified
 // `[[collection_slug/Title]]` form. Stage 1 (full-key match) misses
 // because no item is literally titled "tasks/Setup"; stage 2 (split

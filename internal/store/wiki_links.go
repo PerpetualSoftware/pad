@@ -348,30 +348,38 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	}
 	rows.Close()
 
-	// Rewrite each source's content. Replace the plain bracket form
-	// AND the collection-qualified form so a body that mentions us
-	// via both surfaces stays consistent. ReplaceTitle is a literal
-	// string replace — it WILL hit occurrences inside code regions
-	// the extractor would have ignored, which is a small leak of
-	// rename behavior into code samples. Acceptable for v2: the
-	// document rename path has the same property and nobody's
-	// complained; the alternative (a code-aware rewriter) doubles
-	// the surface area for a corner case.
-	plainOld := "[[" + oldTitle + "]]"
-	plainNew := "[[" + newTitle + "]]"
-	qualifiedOld := "[[" + collSlug + "/" + oldTitle + "]]"
-	qualifiedNew := "[[" + collSlug + "/" + newTitle + "]]"
+	// Rewrite each source's content via links.RewriteWikiTitle, which
+	// handles all four title-form shapes — plain / aliased / qualified
+	// / qualified+aliased — with case-insensitive title matching that
+	// mirrors resolveTitleTx's resolution rule. Codex round 1 P1
+	// against this PR caught that a literal ReplaceAll on `[[Old]]`
+	// silently dropped `[[Old|alias]]` and `[[old]]` (mixed case)
+	// rows: they were selected via target_item_id (correctly) but
+	// the rewrite missed them, and the trailing re-parse then sees
+	// the same body, fails to resolve under the new title, and
+	// converts the row to broken — exactly the regression the
+	// cascade exists to prevent.
+	//
+	// The rewriter does NOT distinguish code regions from prose, so
+	// occurrences inside fenced/inline code get rewritten too. The
+	// extractor ignores code regions on indexing, but for rename-
+	// rewrite the code-aware alternative doubles the surface area
+	// for a corner case (user mentioning the renamed item inside a
+	// code sample). Matches the document-rename path's behavior;
+	// acceptable for v2.
 	ts := now()
 	for _, src := range sources {
-		newContent := strings.ReplaceAll(src.content, plainOld, plainNew)
-		newContent = strings.ReplaceAll(newContent, qualifiedOld, qualifiedNew)
+		newContent := links.RewriteWikiTitle(src.content, oldTitle, newTitle, collSlug)
 		if newContent == src.content {
 			// Source had a target_item_id row pointing at us but
-			// no literal `[[oldTitle]]` in content — possible if
-			// the user had `[[OldTitle|display]]` with a pipe
-			// (which ReplaceAll above doesn't match) or if the
-			// row was inserted by an earlier-version parser. Skip
-			// the UPDATE; the re-parse below will sort it out.
+			// the rewriter found no literal occurrences — possible
+			// if a stale row was inserted by an earlier-version
+			// parser, or the body uses a title-escape form
+			// (RewriteWikiTitle's documented limitation). Re-parse
+			// without touching content so the index converges; the
+			// row will flip to broken if no clickable match
+			// remains, matching the renderer's behavior on a body
+			// that would no longer render as a link.
 			if err := s.replaceWikiLinks(tx, src.id, src.workspaceID, src.content); err != nil {
 				return fmt.Errorf("cascade rename: reparse %s: %w", src.id, err)
 			}
