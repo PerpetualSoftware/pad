@@ -99,25 +99,56 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			}
 
 		case links.WikiLinkKindTitle:
-			// Phase 2a (TASK-1595). Target_title is stored
-			// VERBATIM (case preserved, `/` preserved) so the
-			// rename cascade can reconstruct the literal bracket
-			// string that's in the source content. Resolution to
-			// target_item_id is case-insensitive (mirrors the
-			// renderer's `.toLowerCase()` comparison at
-			// markdown.ts:543) and lookup order is:
-			//   1. full-key match against items.title
-			//   2. on miss, split on `/`: collection_slug + title
-			// per Codex finding #3 — the renderer tries the
-			// whole-key title first, then treats `collection/Title`
-			// as a qualified-form fallback only when the whole-key
-			// match misses. An item literally titled "tasks/Foo"
-			// must resolve before the qualified-form interpretation
-			// ever fires.
-			cached, ok := resolvedTitles[link.Title]
-			if !ok {
-				cached = resolveTitleTx(tx, s, workspaceID, link.Title)
-				resolvedTitles[link.Title] = cached
+			// Phase 2a (TASK-1595). Target_title is stored VERBATIM
+			// in WHATEVER FORM RESOLVED so the rename cascade can
+			// reconstruct the literal bracket string in source
+			// content. Resolution mirrors the renderer's order at
+			// web/src/lib/utils/markdown.ts:516-558:
+			//
+			//   (a) If a pipe was present (HasDisplay), try the
+			//       FULL body (Title + "|" + Display) as a title.
+			//       Handles legacy items whose title literally
+			//       contains a `|` — `[[A|B]]` rendered as a link
+			//       to the item titled "A|B" before falling back
+			//       to the split interpretation. Codex round 3 P1
+			//       (this PR) caught the parity gap.
+			//   (b) The split key (Title alone) as a title.
+			//
+			// Stage (a)'s match stores target_title=fullBody and
+			// drops the display override (the "display" segment
+			// was actually part of the title). Stage (b) is the
+			// common case: target_title=Title, display preserved.
+			//
+			// Within each stage, resolveTitleTx applies the
+			// renderer's two-step lookup (full-key literal first,
+			// `/`-split fallback on miss) for the SAME case-
+			// insensitive correctness reasons.
+			candidates := []string{link.Title}
+			storeDisplay := displayText
+			if link.HasDisplay {
+				// Stage (a) first, then stage (b).
+				fullBody := link.Title + "|" + link.Display
+				candidates = []string{fullBody, link.Title}
+			}
+			var resolved sql.NullString
+			storedTitle := link.Title // default if nothing resolves
+			for i, candidate := range candidates {
+				cached, ok := resolvedTitles[candidate]
+				if !ok {
+					cached = resolveTitleTx(tx, s, workspaceID, candidate)
+					resolvedTitles[candidate] = cached
+				}
+				if cached.Valid {
+					resolved = cached
+					storedTitle = candidate
+					// If stage (a) matched (i==0 with a pipe in
+					// the candidate), the "display" was consumed
+					// into the title — don't double-store it.
+					if i == 0 && link.HasDisplay {
+						storeDisplay = sql.NullString{}
+					}
+					break
+				}
 			}
 			if _, err := tx.Exec(s.q(`
 				INSERT INTO item_wiki_links (
@@ -126,7 +157,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 					display_text, position
 				) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?)
 			`), sourceItemID, string(links.WikiLinkKindTitle),
-				cached, link.Title, displayText, link.Position); err != nil {
+				resolved, storedTitle, storeDisplay, link.Position); err != nil {
 				return fmt.Errorf("insert wiki link (title): %w", err)
 			}
 
@@ -411,50 +442,54 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 //
 //   - cascadeTitleRename after a title rename, to pick up any
 //     pre-existing `[[newTitle]]` sources that were stored as broken
-//     at the time their author wrote them OR as qualified-fallback
-//     hits that should now resolve to a literal-title match.
+//     OR as qualified-fallback hits that should now resolve to a
+//     literal-title match.
 //   - tryCreateItem after a new item lands, so any pre-existing
-//     `[[Title]]` sources that were waiting for an item with this
-//     title resolve immediately (rather than waiting for a backfill
-//     run or a content rewrite).
+//     `[[Title]]` sources resolve immediately rather than waiting
+//     for a backfill run or a content rewrite.
 //
-// Two UPDATEs (one per shape — plain vs collection-qualified) instead
-// of one with OR so the partial indexes on target_title can each be
-// used independently. Both queries usually update 0 rows.
+// Three UPDATEs cover three distinct cases:
 //
-// The stage-1 UPDATE intentionally drops the `target_item_id IS NULL`
-// constraint: stage 1 (full-key literal title) ALWAYS wins over
-// stage 2 (collection-qualified fallback) per the renderer's order
-// at web/src/lib/utils/markdown.ts:541. If a row currently points
-// at a qualified-fallback target via stage 2 and a literal-title
-// match later arrives, the row should flip to the literal — Codex
-// round 2 P2 caught this arrival-order regression on the qualified-
-// title path. Stage-2 keeps the NULL constraint so already-resolved
-// qualified rows don't churn when another fallback candidate appears.
+//	(1) Plain literal flip — target_title=newTitle, target_item_id IS NULL.
+//	    Just resolves previously-broken plain references.
+//	(2) Qualified literal flip — target_title=collSlug/newTitle,
+//	    target_item_id IS NULL. Resolves previously-broken qualified
+//	    references (no item with this title-in-collection existed).
+//	(3) Literal-arrival retarget (only when newTitle contains `/`) —
+//	    target_title=newTitle, target_item_id non-NULL and not us.
+//	    Handles the arrival-order case Codex round 2 caught: if a
+//	    row was previously resolved to a stage-2 qualified-fallback
+//	    target and now a literal-title match exists, the renderer's
+//	    stage-1 always wins, so the row flips to us.
+//
+// Why (3) is gated on title containing `/`: only `[[<slug>/Title]]`
+// rows could have been resolved via stage-2 fallback (the qualified
+// form REQUIRES a `/`). A row with target_title="Foo" (no slash) was
+// resolved via stage 1 — if a second item titled "Foo" arrives, the
+// renderer's Array.find() is order-dependent (we can't predict which
+// the UI shows), so we leave the row pointing at the original
+// resolution rather than churning. Codex round 3 P2 caught the
+// previous broader UPDATE silently stealing such rows.
 func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlug, title string) error {
 	plainTitleNorm := strings.ToLower(title)
 	qualifiedTitleNorm := strings.ToLower(collSlug + "/" + title)
-	// Stage 1: literal title match. Drop the NULL constraint so
-	// previously-fallback-resolved rows flip to the literal match
-	// (the renderer would now prefer it). Add a target_item_id != ?
-	// guard so we don't churn rows that already point at us.
+
+	// (1) Plain literal flip — NULL only.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
 		WHERE target_kind = 'title'
 		  AND target_workspace_id IS NULL
+		  AND target_item_id IS NULL
 		  AND LOWER(target_title) = ?
-		  AND (target_item_id IS NULL OR target_item_id != ?)
 		  AND source_item_id IN (
 		      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL
 		  )
-	`), itemID, plainTitleNorm, itemID, workspaceID); err != nil {
+	`), itemID, plainTitleNorm, workspaceID); err != nil {
 		return fmt.Errorf("resolve broken plain titles: %w", err)
 	}
-	// Stage 2: collection-qualified fallback — only flip rows that
-	// have NO current resolution. Avoids churning already-resolved
-	// qualified rows when an additional same-title item joins the
-	// collection.
+
+	// (2) Qualified literal flip — NULL only.
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_wiki_links
 		SET target_item_id = ?
@@ -467,6 +502,27 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 		  )
 	`), itemID, qualifiedTitleNorm, workspaceID); err != nil {
 		return fmt.Errorf("resolve broken qualified titles: %w", err)
+	}
+
+	// (3) Literal-arrival retarget. Only meaningful when our title
+	// contains a `/` — then a row with this exact target_title might
+	// have been resolved via stage-2 qualified fallback to a different
+	// item, and our arrival makes the renderer prefer us via stage 1.
+	if strings.Contains(title, "/") {
+		if _, err := tx.Exec(s.q(`
+			UPDATE item_wiki_links
+			SET target_item_id = ?
+			WHERE target_kind = 'title'
+			  AND target_workspace_id IS NULL
+			  AND target_item_id IS NOT NULL
+			  AND target_item_id != ?
+			  AND LOWER(target_title) = ?
+			  AND source_item_id IN (
+			      SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL
+			  )
+		`), itemID, itemID, plainTitleNorm, workspaceID); err != nil {
+			return fmt.Errorf("retarget qualified-fallback to literal: %w", err)
+		}
 	}
 	return nil
 }

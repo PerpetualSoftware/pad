@@ -779,6 +779,83 @@ func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_LiteralPipeInTitleResolves regresses Codex round 3 P1:
+// an item literally titled "A|B" (pipe in title) must match
+// `[[A|B]]` in source content — the renderer's L516-525 tries the
+// full body as a title BEFORE splitting on the pipe. Without this,
+// the index would split-then-look-up "A" and either resolve to a
+// different item or fail to resolve at all, leaving a backlink the
+// UI shows but the index can't surface.
+func TestWikiLinks_LiteralPipeInTitleResolves(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Item literally titled with a pipe character. Pad allows this.
+	target := createTestItem(t, s, ws.ID, col.ID, "A|B", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[A|B]] for the doc.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("expected literal-pipe title to resolve, got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_LiteralPipeInTitleFallsThroughToSplit covers the
+// complement of the above: when no item is literally titled "A|B"
+// but an item titled "A" exists, the split interpretation still
+// kicks in (title="A", display="B"). The candidate-order in
+// replaceWikiLinks tries full body first, then falls through.
+func TestWikiLinks_LiteralPipeInTitleFallsThroughToSplit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "A", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[A|B]] for the doc.")
+
+	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(got) != 1 {
+		t.Errorf("split fallback should resolve `[[A|B]]` to item titled 'A', got %d backlinks", len(got))
+	}
+}
+
+// TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks regresses
+// Codex round 3 P2: dropping the IS NULL constraint on the stage-1
+// UPDATE made the broken-row flip too aggressive. A row already
+// resolved to <Foo-v1> via stage-1 literal match must stay there
+// when a SECOND item titled "Foo-v1" is created — titles aren't
+// unique, the renderer's first-match is array-order-dependent, and
+// the index churning would silently move backlinks without warning.
+// Stage 3 (literal-arrival retarget) is gated to titles containing
+// `/` for exactly this reason.
+func TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	original := createTestItem(t, s, ws.ID, col.ID, "Foo", "")
+	createTestItem(t, s, ws.ID, col.ID, "Source", "Mentions [[Foo]] here.")
+	bls, _ := s.GetBacklinks(original.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(bls) != 1 {
+		t.Fatalf("baseline: expected 1 backlink, got %d", len(bls))
+	}
+
+	// Create a second item with the same title.
+	duplicate := createTestItem(t, s, ws.ID, col.ID, "Foo", "")
+
+	// Original should retain its backlink — no theft.
+	originalBls, _ := s.GetBacklinks(original.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(originalBls) != 1 {
+		t.Errorf("original `Foo` lost its backlink to duplicate creation: got %d", len(originalBls))
+	}
+	// Duplicate should NOT have inherited any backlinks.
+	dupBls, _ := s.GetBacklinks(duplicate.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if len(dupBls) != 0 {
+		t.Errorf("duplicate stole backlinks, got %d", len(dupBls))
+	}
+}
+
 // TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback regresses
 // Codex round 2 P2: a row resolved via qualified-fallback (stage 2)
 // must flip to point at a later-arriving literal-title match (stage 1
