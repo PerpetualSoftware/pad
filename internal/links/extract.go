@@ -50,11 +50,22 @@ type WikiLinkRef struct {
 	// WikiLinkKindTitle (Phase 2). Empty for ref/workspace_ref.
 	Title string
 
-	// Display is the [[X|Display]] override. Empty if the link
-	// didn't carry a pipe segment. Stored verbatim (no escaping)
+	// Display is the [[X|Display]] override. Stored verbatim
+	// (no trimming, no escape stripping beyond `\]`/`\|`/`\\`)
 	// because the renderer is responsible for HTML-escaping at
-	// display time — same convention items.title follows.
+	// display time — same convention items.title follows. Pair
+	// with HasDisplay to distinguish "no pipe" from "pipe with
+	// empty display."
 	Display string
+
+	// HasDisplay distinguishes `[[REF]]` (no pipe → HasDisplay=false)
+	// from `[[REF|]]` (pipe with empty display → HasDisplay=true,
+	// Display==""). The client renderer uses `displayOverride ?? title`
+	// (JS nullish coalescing — empty-string IS preserved), so an
+	// explicit empty display override renders as an empty link. We
+	// preserve that distinction in storage so the backlinks panel can
+	// reproduce it. Codex round-12 P3.
+	HasDisplay bool
 
 	// Position is the byte offset of the opening `[[` in the
 	// source content. Always points into the ORIGINAL content,
@@ -494,8 +505,10 @@ func parseBody(body string) *WikiLinkRef {
 	// padded display text like `[[TASK-1|  spaces  ]]`. Codex
 	// round-11 P3.
 	var display string
+	hasDisplay := false
 	if key, suffix, ok := splitOnUnescapedPipe(body); ok {
 		display = unescapeWikiBody(suffix)
+		hasDisplay = true
 		body = key
 	}
 	// The key/ref side still gets trimmed because refPattern is
@@ -521,6 +534,7 @@ func parseBody(body string) *WikiLinkRef {
 				WorkspaceSlug: ws,
 				Ref:           rest,
 				Display:       display,
+				HasDisplay:    hasDisplay,
 			}
 		}
 		// Fall through to title — the renderer's fallback policy.
@@ -536,9 +550,10 @@ func parseBody(body string) *WikiLinkRef {
 	// case-aware (Codex round-1 P2).
 	if refPattern.MatchString(body) {
 		return &WikiLinkRef{
-			Kind:    WikiLinkKindRef,
-			Ref:     canonicalizeRef(body),
-			Display: display,
+			Kind:       WikiLinkKindRef,
+			Ref:        canonicalizeRef(body),
+			Display:    display,
+			HasDisplay: hasDisplay,
 		}
 	}
 
@@ -547,9 +562,10 @@ func parseBody(body string) *WikiLinkRef {
 	// in Phase 2 will split on `/` to bias the lookup.
 	// Plain legacy title.
 	return &WikiLinkRef{
-		Kind:    WikiLinkKindTitle,
-		Title:   body,
-		Display: display,
+		Kind:       WikiLinkKindTitle,
+		Title:      body,
+		Display:    display,
+		HasDisplay: hasDisplay,
 	}
 }
 

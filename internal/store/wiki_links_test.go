@@ -257,6 +257,54 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_EmptyDisplayDistinct regresses Codex round-12 P3:
+// `[[TASK|]]` (explicit empty display override) and `[[TASK]]` (no
+// override) are distinct shapes in the editor and must store distinct
+// rows. Empty override → display_text=”, no override → display_text
+// IS NULL.
+func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	tref := refOf(target)
+
+	// Two source items: one references with an explicit empty
+	// override `[[REF|]]`, the other with no override `[[REF]]`.
+	srcWith := createTestItem(t, s, ws.ID, col.ID, "With empty override",
+		"See ["+"["+tref+"|]] for details.")
+	srcNo := createTestItem(t, s, ws.ID, col.ID, "No override",
+		"See ["+"["+tref+"]] for details.")
+
+	var withDispValid bool
+	var withText string
+	err := s.db.QueryRow(s.q(`
+		SELECT display_text IS NOT NULL, COALESCE(display_text, '')
+		FROM item_wiki_links WHERE source_item_id = ?
+	`), srcWith.ID).Scan(&withDispValid, &withText)
+	if err != nil {
+		t.Fatalf("query empty-override row: %v", err)
+	}
+	if !withDispValid {
+		t.Errorf("[[REF|]] should store display_text as '' (not NULL)")
+	}
+	if withText != "" {
+		t.Errorf("[[REF|]] display_text should be empty string, got %q", withText)
+	}
+
+	var noDispValid bool
+	err = s.db.QueryRow(s.q(`
+		SELECT display_text IS NOT NULL FROM item_wiki_links WHERE source_item_id = ?
+	`), srcNo.ID).Scan(&noDispValid)
+	if err != nil {
+		t.Fatalf("query no-override row: %v", err)
+	}
+	if noDispValid {
+		t.Errorf("[[REF]] should store display_text as NULL")
+	}
+}
+
 // TestWikiLinks_SnippetIsValidUTF8 — `snippetAround` may slice
 // `content` at boundaries that fall mid-rune. The function must
 // extend both edges to rune boundaries so the snippet is always

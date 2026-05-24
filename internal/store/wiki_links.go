@@ -71,8 +71,12 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 				targetID = resolveRefTx(tx, s, workspaceID, prefix, number)
 				resolved[key] = targetID
 			}
+			// HasDisplay (not Display != "") distinguishes "no
+			// pipe" from "pipe with empty display." Mirrors the
+			// client renderer's `displayOverride ?? title`
+			// semantics, which preserve "". Codex round-12 P3.
 			displayText := sql.NullString{}
-			if link.Display != "" {
+			if link.HasDisplay {
 				displayText = sql.NullString{String: link.Display, Valid: true}
 			}
 			if _, err := tx.Exec(s.q(`

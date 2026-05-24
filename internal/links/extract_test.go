@@ -507,6 +507,34 @@ func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit empty display override is distinguished from no pipe", func(t *testing.T) {
+		// [[X|]] is distinct from [[X]] in the editor: the former
+		// has displayOverride="" (preserved by JS ?? coalescing),
+		// the latter has no override and falls back to title. We
+		// preserve that distinction via HasDisplay. Codex round-12 P3.
+		withPipe := ExtractWikiLinks(`[[TASK-7|]]`)
+		if len(withPipe) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(withPipe))
+		}
+		if !withPipe[0].HasDisplay {
+			t.Errorf("[[TASK-7|]] should have HasDisplay=true")
+		}
+		if withPipe[0].Display != "" {
+			t.Errorf("[[TASK-7|]] Display should be \"\", got %q", withPipe[0].Display)
+		}
+
+		noPipe := ExtractWikiLinks(`[[TASK-7]]`)
+		if len(noPipe) != 1 {
+			t.Fatalf("expected 1 ref, got %d", len(noPipe))
+		}
+		if noPipe[0].HasDisplay {
+			t.Errorf("[[TASK-7]] should have HasDisplay=false")
+		}
+		if noPipe[0].Display != "" {
+			t.Errorf("[[TASK-7]] Display should be \"\", got %q", noPipe[0].Display)
+		}
+	})
+
 	t.Run("display text preserved verbatim (no TrimSpace)", func(t *testing.T) {
 		// The renderer stores display text verbatim — leading and
 		// trailing whitespace are part of the display. Trimming
