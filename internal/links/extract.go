@@ -462,14 +462,13 @@ func isInRanges(pos int, ranges [][2]int) bool {
 // any fenced or inline code region, parses each into a WikiLinkRef,
 // and returns them in source order.
 //
-// Phase 2a of PLAN-1593 (TASK-1595): emits ref-form (`[[REF-N]]`)
-// AND title-form (`[[Title]]`, `[[collection/Title]]`) links.
-// Cross-workspace `[[workspace::REF]]` links are recognized by
-// parseBody but still gated out — TASK-1597 (Phase 2b) lifts that
-// last gate once the request-independent per-workspace ACL helper
-// lands. The two-step rollout is deliberate: cross-ws backlinks
-// need visibility plumbing that doesn't exist yet, so emitting the
-// rows now would leak indexed-but-unqueryable data.
+// Phase 2b of PLAN-1593 (TASK-1597): emits all three kinds — ref
+// (`[[REF-N]]`), title (`[[Title]]` / `[[collection/Title]]`), AND
+// workspace_ref (`[[workspace::REF]]` / `[[workspace::REF|Display]]`).
+// The request-independent ACL helper (Store.ResolveBacklinksVisibility)
+// that TASK-1597 also adds lets the cross-workspace inbound query
+// honor per-source-workspace visibility correctly, so emitting these
+// rows is now safe.
 //
 // Returns an empty slice on empty input. Never returns an error —
 // any bracket sequence that fails to parse is silently skipped
@@ -496,16 +495,12 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 			continue
 		}
 		ref.Position = linkStart
-		// Phase 2a (TASK-1595): emit ref AND title kinds. The
-		// workspace_ref gate stays until TASK-1597 ships the
-		// per-workspace ACL helper — without it the cross-ws
-		// inbound query can't honor source-workspace visibility,
-		// and emitting rows we can't safely query just bloats
-		// the index. parseBody still RECOGNIZES the kind so
-		// removing the gate in Phase 2b is a one-line change.
-		if ref.Kind == WikiLinkKindWorkspaceRef {
-			continue
-		}
+		// Phase 2b (TASK-1597): all three kinds emit. The
+		// workspace_ref gate is lifted now that the cross-workspace
+		// query path (Store.GetCrossWorkspaceBacklinks) and the
+		// request-independent ACL helper
+		// (Store.ResolveBacklinksVisibility) are in place to honor
+		// per-source-workspace visibility correctly.
 		out = append(out, *ref)
 	}
 	return out

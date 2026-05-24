@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -88,16 +89,75 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		vis.GrantedItemIDs = grantedItemIDs
 	}
 
-	backlinks, err := s.store.GetBacklinks(item.ID, workspaceID, limit, offset, vis)
+	// Union pagination across same-ws + cross-ws tiers.
+	//
+	// Tier order: same-workspace first, then cross-workspace —
+	// matches the renderer's UI mental model (your own workspace's
+	// backlinks at the top of the panel, foreign workspaces below).
+	// Within each tier, ordering is updated_at DESC.
+	//
+	// Pagination strategy: count same-ws results so the handler
+	// knows where the cross-ws tier begins. Splits the requested
+	// (limit, offset) window into a same-ws slice and a cross-ws
+	// slice. Computing the count up-front lets pages 2+ correctly
+	// land in the cross-ws tier when same-ws is exhausted.
+	sameCount, err := s.store.CountBacklinks(item.ID, workspaceID, vis)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if backlinks == nil {
+
+	var sameWs []models.Backlink
+	var crossWs []models.Backlink
+
+	// Same-ws slice: offset/limit relative to the same-ws tier.
+	if offset < sameCount {
+		sameLimit := limit
+		if offset+sameLimit > sameCount {
+			sameLimit = sameCount - offset
+		}
+		if sameLimit > 0 {
+			sameWs, err = s.store.GetBacklinks(item.ID, workspaceID, sameLimit, offset, vis)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+	}
+
+	// Cross-ws slice: only fetched when there's room left in the
+	// page after same-ws fills (or when offset already exceeded
+	// same-ws). Cross-ws target ref needs the canonical
+	// PREFIX-NUMBER shape derived from the target item.
+	remaining := limit - len(sameWs)
+	if remaining > 0 && item.CollectionPrefix != "" && item.ItemNumber != nil {
+		// crossOffset is the offset INTO the cross-ws tier — zero
+		// when same-ws filled some of the current page, or
+		// (offset - sameCount) when the offset already passed the
+		// same-ws tier entirely.
+		crossOffset := 0
+		if offset > sameCount {
+			crossOffset = offset - sameCount
+		}
+		targetRef := item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+		// Use currentUser from the request — guaranteed non-nil
+		// here because the middleware required workspace access.
+		user := currentUser(r)
+		if user != nil {
+			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, remaining, crossOffset)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+	}
+
+	combined := append(sameWs, crossWs...)
+	if combined == nil {
 		// Always emit a JSON array, never null — easier for
 		// clients to consume without special-casing.
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	writeJSON(w, http.StatusOK, backlinks)
+	writeJSON(w, http.StatusOK, combined)
 }

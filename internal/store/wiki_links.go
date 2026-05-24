@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -62,6 +63,12 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 	// caching by lowercase would also work but slightly mismatches
 	// the verbatim-storage contract that the rename hook relies on.
 	resolvedTitles := map[string]sql.NullString{}
+	// Per-call cache for workspace slug → ID lookups. A body that
+	// references the same foreign workspace multiple times
+	// (`[[claude::TASK-1]]`, `[[claude::TASK-2]]`) only hits the
+	// workspaces table once. Empty slug map is normal — most bodies
+	// don't contain cross-workspace refs.
+	resolvedWorkspaces := map[string]sql.NullString{}
 
 	for _, link := range extracted {
 		// HasDisplay (not Display != "") distinguishes "no pipe"
@@ -259,11 +266,42 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 				return fmt.Errorf("insert wiki link (title): %w", err)
 			}
 
+		case links.WikiLinkKindWorkspaceRef:
+			// Phase 2b (TASK-1597). Resolve the workspace slug to a
+			// workspace ID; the ref is stored verbatim and resolution
+			// to a target_item_id is INTENTIONALLY deferred to query
+			// time (cross-workspace target resolution is the cross-ws
+			// inbound query's responsibility — see GetCrossWorkspaceBacklinks
+			// — because it has to honor the foreign workspace's ACLs
+			// per the requesting user, which write-time can't
+			// pre-compute).
+			//
+			// Unknown workspace slugs persist with target_workspace_id
+			// = NULL — broken-link semantics, identical to the way
+			// broken ref-form rows persist with target_item_id=NULL.
+			// The renderer's resolver-route fallback (`/-/r/<ws>/<ref>`
+			// at markdown.ts:485) returns 404 in that case; the index
+			// matches that behavior.
+			cachedWS, hit := resolvedWorkspaces[link.WorkspaceSlug]
+			if !hit {
+				cachedWS = resolveWorkspaceSlugTx(tx, s, link.WorkspaceSlug)
+				resolvedWorkspaces[link.WorkspaceSlug] = cachedWS
+			}
+			if _, err := tx.Exec(s.q(`
+				INSERT INTO item_wiki_links (
+					source_item_id, target_kind, target_workspace_id,
+					target_item_id, target_ref, target_title,
+					display_text, position
+				) VALUES (?, ?, ?, NULL, ?, NULL, ?, ?)
+			`), sourceItemID, string(links.WikiLinkKindWorkspaceRef),
+				cachedWS, link.Ref, displayText, link.Position); err != nil {
+				return fmt.Errorf("insert wiki link (workspace_ref): %w", err)
+			}
+
 		default:
-			// Phase 2a still skips workspace_ref kinds. The parser's
-			// gate prevents them from arriving here; this default
-			// branch is a safety net for the day TASK-1597 lifts
-			// the gate.
+			// All recognized kinds are handled above; this default
+			// branch catches any future kind added to the WikiLinkKind
+			// enum without a corresponding store branch.
 			continue
 		}
 	}
@@ -386,6 +424,31 @@ func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string) sql.NullStr
 		  AND LOWER(i.title) = LOWER(?)
 		LIMIT 1
 	`), workspaceID, collSlug, titleRest).Scan(&id)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: id, Valid: true}
+}
+
+// resolveWorkspaceSlugTx looks up `slug` against the workspaces
+// table and returns the workspace ID as a sql.NullString. Returns
+// a NULL when the slug doesn't match any live workspace — the same
+// broken-link persistence pattern resolveRefTx and resolveTitleTx
+// use (PLAN-1593's "broken refs persisted" decision).
+//
+// Deleted workspaces are excluded (deleted_at IS NULL) so a recently
+// deleted workspace's slug doesn't resolve to its stale ID. A real
+// DB error returns NULL so the write doesn't abort — same
+// conservative posture as the sister helpers.
+func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
+	if slug == "" {
+		return sql.NullString{}
+	}
+	var id string
+	err := tx.QueryRow(s.q(`
+		SELECT id FROM workspaces
+		WHERE slug = ? AND deleted_at IS NULL
+	`), slug).Scan(&id)
 	if err != nil {
 		return sql.NullString{}
 	}
@@ -864,6 +927,255 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate backlinks: %w", err)
+	}
+	return out, nil
+}
+
+// CountBacklinks returns the total number of same-workspace
+// backlinks the requester would see for a given target, applying
+// the same visibility filter as GetBacklinks. Used by the backlinks
+// handler to correctly compute pagination offsets across the
+// same-ws / cross-ws union — without a count, paginating past the
+// first page can't know where the cross-ws "tier" of results
+// begins.
+//
+// Same predicate shape as GetBacklinks but with SELECT COUNT(*)
+// instead of the row projection. PLAN-1593 / TASK-1597.
+func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVisibility) (int, error) {
+	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
+		return 0, nil
+	}
+	visClause := ""
+	args := []interface{}{targetItemID, workspaceID, targetItemID}
+	if !vis.Unrestricted {
+		collClause := "FALSE"
+		if len(vis.FullCollectionIDs) > 0 {
+			placeholders := make([]string, len(vis.FullCollectionIDs))
+			for i, cid := range vis.FullCollectionIDs {
+				placeholders[i] = "?"
+				args = append(args, cid)
+			}
+			collClause = "s.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		itemClause := "FALSE"
+		if len(vis.GrantedItemIDs) > 0 {
+			placeholders := make([]string, len(vis.GrantedItemIDs))
+			for i, iid := range vis.GrantedItemIDs {
+				placeholders[i] = "?"
+				args = append(args, iid)
+			}
+			itemClause = "s.id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		visClause = " AND (" + collClause + " OR " + itemClause + ")"
+	}
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*)
+		FROM item_wiki_links wl
+		JOIN items s       ON s.id = wl.source_item_id
+		JOIN collections c ON c.id = s.collection_id
+		WHERE wl.target_item_id = ?
+		  AND s.workspace_id = ?
+		  AND s.deleted_at IS NULL
+		  AND s.id != ?`+visClause+`
+	`), args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count backlinks: %w", err)
+	}
+	return n, nil
+}
+
+// GetCrossWorkspaceBacklinks returns inbound `[[ws::REF]]` backlinks
+// pointing at the queried target (`targetWorkspaceID`, `targetRef`)
+// from EVERY OTHER workspace the requester has access to. Same-ws
+// backlinks are GetBacklinks's responsibility — this method only
+// surfaces the cross-workspace tier.
+//
+// PLAN-1593 / TASK-1597. The approach:
+//
+//  1. Enumerate workspaces the requester can see via
+//     Store.GetUserWorkspaces (which already unions members +
+//     grant-only guest workspaces — Codex round of the planning
+//     phase identified this as broader than a membership query).
+//  2. For each non-target workspace, compute per-workspace
+//     visibility via Store.ResolveBacklinksVisibility (the request-
+//     independent ACL helper — required because cross-ws traversal
+//     can't read workspaceRole from a request scope).
+//  3. Query that workspace's source rows with the per-ws visibility
+//     predicate inline. Empty-visibility workspaces short-circuit.
+//  4. Merge, sort by updated_at DESC, paginate.
+//
+// Pagination shape: sort in Go after collecting all matching rows.
+// Cross-workspace backlinks are typically sparse (most items don't
+// have cross-ws inbound links), so in-memory sort over a few
+// hundred rows beats UNION ALL's verbosity. If profiling shows
+// per-workspace queries dominating, the trivial optimization is a
+// per-workspace LIMIT (offset+limit) as a safety cap — already
+// applied below.
+//
+// `targetRef` matches case-insensitively (mirrors the renderer's
+// resolver-route handling at markdown.ts:485 which forwards
+// ref-shapes verbatim to the server-side resolver, which is itself
+// case-insensitive).
+func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, limit, offset int) ([]models.Backlink, error) {
+	if limit <= 0 || limit > 300 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	workspaces, err := s.GetUserWorkspaces(requesterUserID)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate accessible workspaces: %w", err)
+	}
+
+	// Per-workspace safety cap. A single workspace can't return more
+	// than `offset+limit` rows because anything beyond that would be
+	// trimmed by the final paginate slice anyway. Saves transferring
+	// rows we'd discard.
+	perWsCap := offset + limit
+	if perWsCap > 1000 {
+		perWsCap = 1000 // hard ceiling — defensive
+	}
+
+	var collected []models.Backlink
+	for _, ws := range workspaces {
+		if ws.ID == targetWorkspaceID {
+			// Same-ws backlinks are GetBacklinks's responsibility.
+			continue
+		}
+		fullCollIDs, grantedItemIDs, err := s.ResolveBacklinksVisibility(requesterUserID, ws.ID, false)
+		if err != nil {
+			return nil, fmt.Errorf("resolve visibility for workspace %s: %w", ws.ID, err)
+		}
+		// Unrestricted iff both lists nil (admin user or full-access
+		// member). When restricted with no resources, skip this
+		// workspace entirely — no rows could be visible.
+		unrestricted := fullCollIDs == nil && grantedItemIDs == nil
+		if !unrestricted && len(fullCollIDs) == 0 && len(grantedItemIDs) == 0 {
+			continue
+		}
+		rows, err := s.queryCrossWorkspaceBacklinksForWorkspace(
+			targetWorkspaceID, targetRef, ws, unrestricted,
+			fullCollIDs, grantedItemIDs, perWsCap,
+		)
+		if err != nil {
+			return nil, err
+		}
+		collected = append(collected, rows...)
+	}
+
+	// Sort by updated_at descending; tiebreak by source ID for
+	// deterministic ordering when timestamps collide (same-second
+	// writes).
+	sort.Slice(collected, func(i, j int) bool {
+		if collected[i].UpdatedAt != collected[j].UpdatedAt {
+			return collected[i].UpdatedAt > collected[j].UpdatedAt
+		}
+		return collected[i].SourceItemID < collected[j].SourceItemID
+	})
+
+	// Paginate.
+	if offset >= len(collected) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(collected) {
+		end = len(collected)
+	}
+	return collected[offset:end], nil
+}
+
+// queryCrossWorkspaceBacklinksForWorkspace fetches up to `cap` rows
+// from a single source workspace whose item_wiki_links point at the
+// target via target_workspace_id + target_ref. The visibility
+// predicate is the same shape as GetBacklinks's — collection_id IN
+// (...) OR id IN (...) — with the unrestricted variant skipping the
+// predicate.
+//
+// Each returned Backlink has SourceWorkspaceSlug populated so the
+// caller can route the link to the correct workspace prefix.
+func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
+	targetWorkspaceID, targetRef string,
+	sourceWs models.Workspace,
+	unrestricted bool, fullCollIDs, grantedItemIDs []string,
+	cap int,
+) ([]models.Backlink, error) {
+	// Build the visibility predicate same as GetBacklinks.
+	visClause := ""
+	args := []interface{}{targetWorkspaceID, targetRef, sourceWs.ID}
+	if !unrestricted {
+		collClause := "FALSE"
+		if len(fullCollIDs) > 0 {
+			placeholders := make([]string, len(fullCollIDs))
+			for i, cid := range fullCollIDs {
+				placeholders[i] = "?"
+				args = append(args, cid)
+			}
+			collClause = "s.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		itemClause := "FALSE"
+		if len(grantedItemIDs) > 0 {
+			placeholders := make([]string, len(grantedItemIDs))
+			for i, iid := range grantedItemIDs {
+				placeholders[i] = "?"
+				args = append(args, iid)
+			}
+			itemClause = "s.id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		visClause = " AND (" + collClause + " OR " + itemClause + ")"
+	}
+	args = append(args, cap)
+
+	rows, err := s.db.Query(s.q(`
+		SELECT s.id, c.prefix, s.item_number, s.title, c.slug, c.icon,
+		       s.content, wl.position, wl.display_text, s.updated_at
+		FROM item_wiki_links wl
+		JOIN items s       ON s.id = wl.source_item_id
+		JOIN collections c ON c.id = s.collection_id
+		WHERE wl.target_kind = 'workspace_ref'
+		  AND wl.target_workspace_id = ?
+		  AND LOWER(wl.target_ref) = LOWER(?)
+		  AND s.workspace_id = ?
+		  AND s.deleted_at IS NULL`+visClause+`
+		ORDER BY s.updated_at DESC, wl.position ASC
+		LIMIT ?
+	`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query cross-ws backlinks (workspace %s): %w", sourceWs.ID, err)
+	}
+	defer rows.Close()
+
+	var out []models.Backlink
+	for rows.Next() {
+		var (
+			sourceID, prefix, title, collSlug, collIcon, content, updatedAt string
+			itemNumber                                                      int
+			position                                                        int
+			displayText                                                     sql.NullString
+		)
+		if err := rows.Scan(&sourceID, &prefix, &itemNumber, &title, &collSlug, &collIcon, &content, &position, &displayText, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan cross-ws backlink row: %w", err)
+		}
+		bl := models.Backlink{
+			SourceItemID:         sourceID,
+			SourceRef:            formatRef(prefix, itemNumber),
+			SourceTitle:          title,
+			SourceCollectionSlug: collSlug,
+			SourceCollectionIcon: collIcon,
+			Snippet:              snippetAround(content, position),
+			UpdatedAt:            updatedAt,
+			SourceWorkspaceSlug:  sourceWs.Slug,
+		}
+		if displayText.Valid {
+			ds := displayText.String
+			bl.DisplayText = &ds
+		}
+		out = append(out, bl)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cross-ws backlinks: %w", err)
 	}
 	return out, nil
 }

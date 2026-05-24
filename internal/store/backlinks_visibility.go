@@ -1,0 +1,128 @@
+package store
+
+// ResolveBacklinksVisibility computes the (fullCollectionIDs,
+// grantedItemIDs) access vectors for `userID` in `workspaceID`,
+// REQUEST-INDEPENDENT. Mirrors the server's guestResourceFilterCore
+// (internal/server/server.go::guestResourceFilterCore) but determines
+// the user's effective workspace role from a fresh member+grant
+// lookup instead of reading it from the HTTP request context.
+//
+// This separation exists for the cross-workspace backlinks query
+// (PLAN-1593 / TASK-1597), which iterates over every workspace the
+// requesting user has access to and needs per-workspace visibility
+// for each — a request scope only knows the role for ONE workspace
+// (the URL's target), so the cross-ws traversal must compute the
+// rest itself.
+//
+// Decision tree (matches RequireWorkspaceAccess + guestResourceFilterCore):
+//
+//   - Admin user (`users.role = 'admin'`): unrestricted.
+//   - Workspace member with `collection_access = 'all'` or empty:
+//     unrestricted.
+//   - Workspace member with `collection_access = 'specific'`
+//     (restricted member): grant-based collections ∪ explicit
+//     member_collection_access ∪ system collections, plus any
+//     item grants additively.
+//   - Non-member with grants (guest): grant-based collections AND
+//     item grants only.
+//   - Non-member without grants: returns BOTH lists nil (empty
+//     visibility — caller's GetBacklinks short-circuits to "see
+//     nothing").
+//
+// Returns nil fullCollIDs and nil grantedItemIDs for the unrestricted
+// cases; caller should interpret using BacklinksVisibility semantics
+// (Unrestricted=true sets the no-filter shape).
+//
+// `includeDeletedItems` controls the grant query variant:
+//   - false → GuestVisibleResources (live items only). Cross-ws
+//     backlinks callers pass false.
+//   - true → GuestVisibleResourcesIncludeDeleted (tombstones included).
+//     The server delta-sync wrapper at guestResourceFilterIncludeDeletedItems
+//     passes true; cross-ws doesn't need it.
+//
+// The returned error mirrors the underlying store call (DB error
+// surfaces, "user not found" returns an empty result rather than
+// erroring so the cross-ws traversal can keep going).
+func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
+	// Admin bypass — same as server.guestResourceFilterCore line 1758.
+	user, err := s.GetUser(userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if user == nil {
+		// User vanished mid-query (or stale workspace membership row).
+		// Empty visibility — caller treats nil/nil/no-error as "see
+		// nothing" via BacklinksVisibility{Unrestricted:false} with
+		// both lists empty.
+		return nil, nil, nil
+	}
+	if user.Role == "admin" {
+		return nil, nil, nil
+	}
+
+	// Member lookup determines whether we treat this as a guest (no
+	// member row but has grants) or a member (with full or specific
+	// access).
+	member, err := s.GetWorkspaceMember(workspaceID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Full-access member — unrestricted, same as line 1771.
+	if member != nil && (member.CollectionAccess == "all" || member.CollectionAccess == "") {
+		return nil, nil, nil
+	}
+
+	// Resolve grant-based resources. `member == nil` here means
+	// guest; member != nil with specific access means restricted
+	// member — both fall through to grant lookups, then merge
+	// member-specific collections below if applicable.
+	var grantCollIDs []string
+	if includeDeletedItems {
+		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResourcesIncludeDeleted(workspaceID, userID)
+	} else {
+		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResources(workspaceID, userID)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Guest branch: grant-only. (No member_collection_access merge
+	// because there's no member row to merge from.) Same as line 1789.
+	if member == nil {
+		// One more sanity check: if there are NO grants either,
+		// this user shouldn't be able to see anything. Returning
+		// empty lists is correct — GetBacklinks short-circuits.
+		// (UserHasGrantsInWorkspace would be redundant here since
+		// GuestVisibleResources already returns empty for non-grant
+		// users.)
+		return grantCollIDs, grantedItemIDs, nil
+	}
+
+	// Restricted member branch — merge grant collections with
+	// member_collection_access + system collections. Same as lines
+	// 1798-1825 of server.guestResourceFilterCore.
+	fullCollSet := make(map[string]bool)
+	for _, id := range grantCollIDs {
+		fullCollSet[id] = true
+	}
+	memberColls, err := s.GetMemberCollectionAccess(workspaceID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range memberColls {
+		fullCollSet[id] = true
+	}
+	sysColls, err := s.ListSystemCollectionIDs(workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, id := range sysColls {
+		fullCollSet[id] = true
+	}
+	fullCollIDs = make([]string, 0, len(fullCollSet))
+	for id := range fullCollSet {
+		fullCollIDs = append(fullCollIDs, id)
+	}
+	return fullCollIDs, grantedItemIDs, nil
+}

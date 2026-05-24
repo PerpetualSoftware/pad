@@ -180,26 +180,73 @@ func TestExtractWikiLinks_TitlePreservesWhitespace(t *testing.T) {
 	})
 }
 
-// TestExtractWikiLinks_WorkspaceRefStillHidden documents that Phase 2a
-// continues to gate workspace_ref kinds. TASK-1597 lifts this gate
-// once the request-independent ACL helper lands — until then,
-// emitting these rows would create indexed-but-unqueryable data
-// (the cross-ws inbound query can't honor source-workspace
-// visibility yet).
-func TestExtractWikiLinks_WorkspaceRefStillHidden(t *testing.T) {
-	cases := []string{
-		"Cross [[other-ws::TASK-9]] over.",
-		"Cross [[other-ws::TASK-9|over]] too.",
-	}
-	for _, c := range cases {
-		t.Run(c, func(t *testing.T) {
-			got := ExtractWikiLinks(c)
-			if len(got) != 0 {
-				t.Errorf("expected 0 (Phase 2a still gates workspace_ref), got %d: %+v",
-					len(got), got)
-			}
-		})
-	}
+// TestExtractWikiLinks_WorkspaceRefForms covers Phase 2b emission
+// (TASK-1597). The gate that suppressed workspace_ref kinds in Phase
+// 2a is lifted now that the cross-workspace query path and request-
+// independent ACL helper are in place. Each `[[ws::REF]]` body
+// produces a WikiLinkKindWorkspaceRef row with the parsed workspace
+// slug + ref.
+func TestExtractWikiLinks_WorkspaceRefForms(t *testing.T) {
+	t.Run("bare workspace ref", func(t *testing.T) {
+		got := ExtractWikiLinks("Cross [[other-ws::TASK-9]] over.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindWorkspaceRef {
+			t.Errorf("Kind: got %q, want workspace_ref", got[0].Kind)
+		}
+		if got[0].WorkspaceSlug != "other-ws" {
+			t.Errorf("WorkspaceSlug: got %q, want %q", got[0].WorkspaceSlug, "other-ws")
+		}
+		if got[0].Ref != "TASK-9" {
+			t.Errorf("Ref: got %q, want TASK-9", got[0].Ref)
+		}
+	})
+
+	t.Run("workspace ref with display alias", func(t *testing.T) {
+		got := ExtractWikiLinks("Cross [[other-ws::TASK-9|see this]] too.")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 link, got %d", len(got))
+		}
+		if got[0].Kind != WikiLinkKindWorkspaceRef {
+			t.Errorf("Kind: got %q, want workspace_ref", got[0].Kind)
+		}
+		if got[0].Display != "see this" || !got[0].HasDisplay {
+			t.Errorf("Display: got %q (has=%v), want %q (true)",
+				got[0].Display, got[0].HasDisplay, "see this")
+		}
+	})
+
+	t.Run("mixed-case ref canonicalized in workspace_ref kind", func(t *testing.T) {
+		// parseBody validates the ref segment against refPattern
+		// case-insensitively but does NOT canonicalize for the
+		// workspace_ref kind — the cross-ws resolver compares against
+		// the foreign workspace's own canonical prefix at query time.
+		// What we store IS the verbatim ref the user wrote; matching
+		// happens via LOWER() at lookup. Document this so a future
+		// reviewer doesn't try to "fix" it.
+		got := ExtractWikiLinks("[[other-ws::task-9]]")
+		if len(got) != 1 || got[0].Kind != WikiLinkKindWorkspaceRef {
+			t.Fatalf("expected workspace_ref kind, got %+v", got)
+		}
+		// Verbatim preserved (lowercase here).
+		if got[0].Ref != "task-9" {
+			t.Errorf("Ref: got %q, want task-9 (verbatim)", got[0].Ref)
+		}
+	})
+
+	t.Run("invalid workspace slug falls through to title", func(t *testing.T) {
+		// `INVALID-SLUG::TASK-1` — uppercase slug doesn't match the
+		// workspace slug pattern. parseBody falls through to title
+		// kind, body stored verbatim.
+		got := ExtractWikiLinks("[[INVALID::TASK-1]]")
+		if len(got) != 1 || got[0].Kind != WikiLinkKindTitle {
+			t.Fatalf("expected title fallback for invalid slug, got %+v", got)
+		}
+		if got[0].Title != "INVALID::TASK-1" {
+			t.Errorf("Title: got %q, want %q", got[0].Title, "INVALID::TASK-1")
+		}
+	})
 }
 
 // TestExtractWikiLinks_TitleCodeBlockExclusion ensures Phase 2a

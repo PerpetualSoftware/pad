@@ -1751,80 +1751,30 @@ func (s *Server) guestResourceFilterIncludeDeletedItems(r *http.Request, workspa
 	return s.guestResourceFilterCore(r, workspaceID, true)
 }
 
-// guestResourceFilterCore is the shared implementation. The
-// includeDeletedItems flag swaps the underlying store query.
+// guestResourceFilterCore is the request-scoped wrapper around
+// Store.ResolveBacklinksVisibility. Delegates the role-determination
+// + merge logic to the store helper so cross-workspace backlinks
+// callers can reuse the same code path without a request context
+// (PLAN-1593 / TASK-1597).
+//
+// The wrapper still exists for two reasons:
+//   - Admin bypass uses currentUser(r).Role rather than re-fetching
+//     the user (saves one DB roundtrip per request on the hot path).
+//   - The signature `(r *http.Request, workspaceID, includeDeleted) →
+//     (fullCollIDs, grantedItemIDs, err)` is established across many
+//     handlers — keeping it stable avoids a sprawling refactor.
+//
+// The includeDeletedItems flag swaps the underlying grant query.
 func (s *Server) guestResourceFilterCore(r *http.Request, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
 	if user == nil || user.Role == "admin" {
 		return nil, nil, nil
 	}
-
-	role := workspaceRole(r)
-
-	// For workspace members with "all" collection access, item grants should
-	// not restrict their existing full visibility.
-	if role != "guest" {
-		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if member != nil && (member.CollectionAccess == "all" || member.CollectionAccess == "") {
-			return nil, nil, nil
-		}
-	}
-
-	// Get grant-based resources — delta-sync callers ask for the
-	// include-deleted variant so tombstones can flow through.
-	var grantCollIDs []string
-	if includeDeletedItems {
-		grantCollIDs, grantedItemIDs, err = s.store.GuestVisibleResourcesIncludeDeleted(workspaceID, user.ID)
-	} else {
-		grantCollIDs, grantedItemIDs, err = s.store.GuestVisibleResources(workspaceID, user.ID)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// For guests, grant resources are the only source of access
-	if role == "guest" {
-		return grantCollIDs, grantedItemIDs, nil
-	}
-
-	// For restricted members ("specific" access), merge their normal
-	// member_collection_access + system collections into fullCollIDs so
-	// item grants are additive, not a replacement. This is critical:
-	// without this merge, a member with access to collection A plus one
-	// item grant in collection B would lose collection A in cross-collection
-	// queries that use these IDs.
-	fullCollSet := make(map[string]bool)
-	for _, id := range grantCollIDs {
-		fullCollSet[id] = true
-	}
-
-	// Add member_collection_access collections
-	memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, id := range memberColls {
-		fullCollSet[id] = true
-	}
-
-	// Add system collections (always visible to members)
-	sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, id := range sysColls {
-		fullCollSet[id] = true
-	}
-
-	fullCollIDs = make([]string, 0, len(fullCollSet))
-	for id := range fullCollSet {
-		fullCollIDs = append(fullCollIDs, id)
-	}
-
-	return fullCollIDs, grantedItemIDs, nil
+	// Delegate to the request-independent helper. The store-side
+	// helper duplicates the admin check via GetUser, but for the
+	// request hot path we short-circuit above so the duplicate
+	// lookup never fires.
+	return s.store.ResolveBacklinksVisibility(user.ID, workspaceID, includeDeletedItems)
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.
